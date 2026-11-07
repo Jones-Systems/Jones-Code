@@ -33,13 +33,17 @@ import {
   v3T3Source,
 } from "../testing/registrationV3.ts";
 
+const compiledDecodeUnknownEffect1 = Schema.decodeUnknownEffect(
+  WorkstreamsRegistrationContextResponse,
+);
+
 it.effect("qualifies closed current T3 and independent GitHub registration descriptors", () =>
   Effect.gen(function* () {
     const fixture = makeRegistrationFixture();
     const result = yield* fixture.service.read();
     assert.deepEqual(result.context, response);
     assert.deepEqual(result.t3Availability, { state: "ready" });
-    yield* Schema.decodeUnknownEffect(WorkstreamsRegistrationContextResponse)(result.context);
+    yield* compiledDecodeUnknownEffect1(result.context);
     assert.deepEqual(fixture.reads, { registry: 1, authority: 1, build: 1 });
   }),
 );
@@ -100,7 +104,7 @@ it.effect(
         const result = yield* fixture.service.read();
         assert.deepEqual(result.context, { ...response, sources: [githubSource] });
         assert.deepEqual(result.t3Availability, { state: "unavailable", reason: entry.reason });
-        yield* Schema.decodeUnknownEffect(WorkstreamsRegistrationContextResponse)(result.context);
+        yield* compiledDecodeUnknownEffect1(result.context);
       }
     }),
 );

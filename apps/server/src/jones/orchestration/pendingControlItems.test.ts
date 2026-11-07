@@ -18,6 +18,7 @@ import {
   boundedSnapshotProjection,
   omitLocalVisibleTurnItems,
 } from "@t3tools/shared/orchestrationV2BoundedSnapshot";
+import { pendingControlTurnItems } from "./pendingControlItems.ts";
 import { dedupeSnapshotBodies } from "@t3tools/shared/orchestrationV2DedupedBodies";
 import {
   v2Now,
@@ -232,10 +233,39 @@ it.layer(layer)("pending control bodies", (it) => {
           payload: mismatched,
         });
 
+        // SQL decodes command bodies; the synthetic input's question-only extra
+        // fields are not command_execution fields. Specify the stored bodies.
+        const expectedRecentTools = [4, 5].map((index) => ({
+          id: TurnItemId.make(`tool:${index}`),
+          threadId,
+          runId,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: index + 4,
+          type: "command_execution" as const,
+          status: "completed" as const,
+          title: null,
+          startedAt: v2Now,
+          completedAt: v2Now,
+          updatedAt: v2Now,
+          input: "synthetic check",
+          output: "x".repeat(4_096),
+        }));
         const initial = yield* store.getThreadSnapshotWindow(threadId, { rowLimit: 2 });
         assert.deepEqual(
-          initial.projection.visibleTurnItems.map((row) => row.item.id),
-          tools.slice(-2).map((item) => item.id),
+          initial.projection.visibleTurnItems,
+          [...controls.map(({ item }) => ({ ...item, runId })), ...expectedRecentTools].map(
+            (item, position) => ({
+              item,
+              position,
+              visibility: "local",
+              sourceThreadId: threadId,
+              sourceItemId: item.id,
+            }),
+          ),
         );
         assert.lengthOf(initial.projection.turnItems, 5);
         const policy = { maxItems: 1, maxEncodedBytes: 2_048 };
@@ -362,7 +392,16 @@ it.layer(layer)("pending control bodies", (it) => {
             (item) => item.id === controls[0]!.item.id || item.id === controls[1]!.item.id,
           ),
         );
-        assert.deepEqual(ended.projection.visibleTurnItems, initial.projection.visibleTurnItems);
+        assert.deepEqual(
+          ended.projection.visibleTurnItems,
+          [{ ...controls[2]!.item, runId }, ...expectedRecentTools].map((item, position) => ({
+            item,
+            position,
+            visibility: "local",
+            sourceThreadId: threadId,
+            sourceItemId: item.id,
+          })),
+        );
 
         const plan = yield* sql.unsafe<{ detail: string }>(
           `EXPLAIN QUERY PLAN SELECT item.payload_json FROM json_each(?) AS request CROSS JOIN orchestration_v2_projection_turn_items AS item ON item.node_id = json_extract(request.value, '$.nodeId') WHERE item.thread_id = ? AND item.type = json_extract(request.value, '$.type') AND json_extract(item.payload_json, '$.requestId') = json_extract(request.value, '$.id')`,
@@ -467,7 +506,7 @@ it.layer(layer)("pending control bodies", (it) => {
   );
 });
 
-it("wire trimming retains only pending local controls, deduplicating visible controls and excluding internal requests", () => {
+it("wire trimming adds pending local controls once and preserves supplied dependencies", () => {
   const foreign = {
     ...controls[0]!.item,
     id: TurnItemId.make("foreign"),
@@ -507,15 +546,42 @@ it("wire trimming retains only pending local controls, deduplicating visible con
       sourceItemId: item.id,
     })),
   };
+  assert.deepEqual(
+    pendingControlTurnItems(projection),
+    controls.map(({ item }) => item),
+  );
+  assert.deepEqual(pendingControlTurnItems({ ...projection, runtimeRequests: [] }), []);
+  assert.deepEqual(
+    pendingControlTurnItems({
+      ...projection,
+      runtimeRequests: projection.runtimeRequests.map((request) => ({
+        ...request,
+        nodeId: NodeId.make("wrong-node"),
+      })),
+    }),
+    [],
+  );
+  assert.deepEqual(
+    pendingControlTurnItems({
+      ...projection,
+      runtimeRequests: projection.runtimeRequests.map((request) => ({
+        ...request,
+        status: "resolved" as const,
+      })),
+    }),
+    [],
+  );
   const bounded = buildBoundedThreadProjection({
     projection,
     snapshotSequence: 1,
     policy: { maxItems: 1, maxEncodedBytes: 2_048 },
   });
-  assert.deepEqual(
-    bounded.projection.turnItems.map((item) => item.id),
-    [tools.at(-1)!.id, ...controls.map(({ item }) => item.id)],
-  );
+  assert.deepEqual(bounded.projection.turnItems, [
+    tools[5]!,
+    ...controls.map(({ item }) => item),
+    foreign,
+    ...internal.map(({ item }) => item),
+  ]);
   const visible = {
     ...projection,
     visibleTurnItems: controls.map(({ item }, position) => ({
@@ -527,5 +593,11 @@ it("wire trimming retains only pending local controls, deduplicating visible con
     })),
   };
   const all = buildBoundedThreadProjection({ projection: visible, snapshotSequence: 1 });
-  assert.lengthOf(all.projection.turnItems, 3);
+  assert.deepEqual(all.projection.turnItems, [
+    ...controls.map(({ item }) => item),
+    foreign,
+    ...internal.map(({ item }) => item),
+  ]);
+  assert.equal(new Set(all.projection.turnItems.map((item) => item.id)).size, 6);
+  assert.deepEqual(all.projection.visibleTurnItems, visible.visibleTurnItems);
 });

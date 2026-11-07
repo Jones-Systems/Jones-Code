@@ -3,6 +3,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The native CLI resolves its owned supervisor outside the clean candidate tree without an Effect runtime.
 // @effect-diagnostics globalTimers:off -- The native CLI bounds stdin and its owned child with a deadline cleared in finally; an Effect timeout cannot preempt synchronous SQLite.
 import * as NodeCrypto from "node:crypto";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as NodeProcess from "node:process";
@@ -35,7 +36,6 @@ import {
   reasonNames,
   repository,
   resultNames,
-  worktreePath,
   settingNames,
   shutdownReserveMs,
   terminateGraceMs,
@@ -329,7 +329,7 @@ export async function runSqliteHealth(
       throw new HealthInputError(options.signal?.aborted ? "cancelled" : "worker_deadline");
     const childName = `.jones-sqlite-health-${NodeCrypto.randomUUID()}`;
     // Candidate binding requires a clean tree while independent fixture producers run.
-    const supervisorParent = NodePath.dirname(worktreePath);
+    const supervisorParent = NodeOS.homedir();
     supervisorRoot = NodePath.join(supervisorParent, childName);
     owner = createOwnedRoot({
       parentPath: supervisorParent,

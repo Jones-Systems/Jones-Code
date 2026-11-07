@@ -35,9 +35,6 @@ import { build } from "vite-plus/pack";
 import * as IdentityFixture from "../../../../scripts/jones/updates/native-fixture-support.mjs";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
-import type { JonesColdBackendPermit } from "../jones/updates/jonesColdBackendCustody.ts";
-import * as DesktopApp from "../app/DesktopApp.ts";
-import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
 import * as DesktopBrowserHost from "../preview/DesktopBrowserHost.ts";
@@ -138,6 +135,9 @@ interface MakeInstanceInput {
   readonly onReady?: Effect.Effect<void>;
   readonly onShutdown?: Effect.Effect<void>;
   readonly onStateDirOwned?: Effect.Effect<void>;
+  readonly onStartupFailure?: (
+    failure: DesktopBackendManager.BackendStartupFailure,
+  ) => Effect.Effect<void>;
   readonly onPreflightFailed?: (
     failure: DesktopBackendManager.PreflightFailure,
   ) => Effect.Effect<boolean>;
@@ -197,6 +197,7 @@ function makeTestInstance(input: MakeInstanceInput) {
     ...(input.onShutdown ? { onShutdown: () => input.onShutdown! } : {}),
     ...(input.onStateDirOwned ? { onStateDirOwned: () => input.onStateDirOwned! } : {}),
     ...(input.onPreflightFailed ? { onPreflightFailed: input.onPreflightFailed } : {}),
+    ...(input.onStartupFailure ? { onStartupFailure: input.onStartupFailure } : {}),
   });
 
   return instance.pipe(Effect.provide(layerServices));
@@ -409,41 +410,49 @@ describe("DesktopBackendManager", () => {
       });
     },
   );
-  it.effect("refuses forged cold custody without spawning or scheduling a warm restart", () =>
+  it.effect("notifies readiness waiters on HTTP readiness and stop without clock advancement", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const finalized = yield* Deferred.make<void>();
-        let starts = 0;
+        const probe = yield* Deferred.make<void>();
+        const ready = yield* Deferred.make<void>();
+        const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
         const instance = yield* makeTestInstance({
-          config: {
-            ...baseConfig,
-            bootstrap: { ...baseConfig.bootstrap, desktopBrowserFd: 6, desktopBrowserControlFd: 7 },
-            jonesColdBackendPermit: {} as JonesColdBackendPermit,
-          },
           spawnerLayer: Layer.succeed(
             ChildProcessSpawner.ChildProcessSpawner,
             ChildProcessSpawner.make(() =>
-              Effect.sync(() => {
-                starts++;
-                return makeProcess();
-              }),
+              Effect.acquireRelease(
+                Effect.succeed(
+                  makeProcess({
+                    exitCode: Deferred.await(exit),
+                    kill: () =>
+                      Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)).pipe(Effect.asVoid),
+                  }),
+                ),
+                () => Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)),
+              ),
             ),
           ),
-          desktopTelemetryPublisher: {
-            removeControlSource: () => Deferred.succeed(finalized, undefined).pipe(Effect.asVoid),
-          },
+          httpClientLayer: Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make((request) =>
+              Deferred.succeed(probe, undefined).pipe(
+                Effect.andThen(Deferred.await(ready)),
+                Effect.as(HttpClientResponse.fromWeb(request, new Response("{}"))),
+              ),
+            ),
+          ),
         });
         yield* instance.start;
-        yield* Deferred.await(finalized);
-        yield* TestClock.adjust(Duration.seconds(1));
-        const snapshot = yield* instance.snapshot;
-        assert.equal(starts, 0);
-        assert.isFalse(snapshot.desiredRunning);
-        assert.isFalse(snapshot.restartScheduled);
-        assert.isFalse(snapshot.ready);
-      }).pipe(Effect.provide(TestClock.layer())),
+        yield* Deferred.await(probe);
+        const waiter = yield* instance.waitForReady(Duration.seconds(15)).pipe(Effect.forkChild);
+        yield* Deferred.succeed(ready, undefined);
+        assert.isTrue(yield* Fiber.join(waiter));
+        yield* instance.stop();
+        assert.isFalse(yield* instance.waitForReady(Duration.seconds(15)));
+      }),
     ),
   );
+
   it.effect("spawns the backend with fd3 bootstrap and fd4 telemetry", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -832,365 +841,111 @@ describe("DesktopBackendManager", () => {
     ),
   );
 
-  it.effect("does not notify shutdown when a scheduled restart starts from non-ready state", () =>
+  it.effect("reports a crash loop with the server output on the third restart", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        let shutdownCount = 0;
-
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("unexpected backend spawn")),
-        );
-
+        const message = "Error: Cannot find module 'zod/v4' in /Users/René";
+        let exitCount = 0;
+        const firstExit = yield* Deferred.make<void>();
+        const reports = yield* Queue.unbounded<{
+          readonly exitCount: number;
+          readonly failure: DesktopBackendManager.BackendStartupFailure;
+        }>();
         const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          config: {
-            ...baseConfig,
-            preflightFailure: Option.some({ reason: "preflight failed", fatal: false }),
-          },
-          onShutdown: Effect.sync(() => {
-            shutdownCount += 1;
-          }),
-        });
-
-        yield* instance.start;
-        assert.equal(shutdownCount, 0);
-
-        yield* TestClock.adjust(Duration.millis(500));
-        assert.equal(shutdownCount, 0);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("surfaces a fatal preflight failure once and stops looping after the cap", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const failures: string[] = [];
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("unexpected backend spawn")),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          config: {
-            ...baseConfig,
-            preflightFailure: Option.some({ reason: "Node.js not found", fatal: true }),
-          },
-          onPreflightFailed: (failure) =>
-            Effect.sync(() => {
-              failures.push(failure.reason);
-            }).pipe(Effect.as(false)),
-        });
-
-        yield* instance.start;
-        assert.deepEqual(failures, []);
-
-        yield* TestClock.adjust(Duration.millis(500));
-        yield* TestClock.adjust(Duration.seconds(1));
-        yield* TestClock.adjust(Duration.seconds(2));
-        yield* TestClock.adjust(Duration.seconds(4));
-        assert.deepEqual(failures, ["Node.js not found"]);
-
-        yield* TestClock.adjust(Duration.seconds(8));
-        yield* TestClock.adjust(Duration.seconds(30));
-        assert.deepEqual(failures, ["Node.js not found"]);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("can be started again after a fatal preflight cap once config recovers", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const failing = yield* Ref.make(true);
-        const starts = yield* Queue.unbounded<number>();
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() =>
-            Queue.offer(starts, 123).pipe(
-              Effect.as(
+          spawnerLayer: Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              Effect.succeed(
                 makeProcess({
-                  exitCode: Effect.never,
+                  // "é" split across chunks must not decode as U+FFFD, and the 4,000-char cut
+                  // lands inside the emoji's surrogate pair.
+                  stderr: Stream.make(
+                    new TextEncoder().encode(
+                      `😀${"x".repeat(3_999 - message.length)}${message.slice(0, -1)}`,
+                    ),
+                    new Uint8Array([0xc3]),
+                    new Uint8Array([0xa9]),
+                  ),
+                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
                 }),
               ),
             ),
           ),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          configResolve: Ref.get(failing).pipe(
-            Effect.map((isFailing) =>
-              isFailing
-                ? {
-                    ...baseConfig,
-                    preflightFailure: Option.some({
-                      reason: "Node.js not found",
-                      fatal: true,
-                    }),
-                  }
-                : baseConfig,
-            ),
-          ),
-        });
-
-        yield* instance.start;
-        yield* TestClock.adjust(Duration.millis(500));
-        yield* TestClock.adjust(Duration.seconds(1));
-        yield* TestClock.adjust(Duration.seconds(2));
-        yield* TestClock.adjust(Duration.seconds(4));
-        yield* TestClock.adjust(Duration.seconds(8));
-
-        const parked = yield* instance.snapshot;
-        assert.equal(parked.desiredRunning, false);
-        assert.equal(parked.ready, false);
-        assert.isTrue(Option.isNone(parked.activePid));
-        assert.equal(parked.restartScheduled, false);
-        assert.equal(yield* Queue.size(starts), 0);
-
-        yield* Ref.set(failing, false);
-        yield* instance.start;
-
-        assert.equal(yield* Queue.take(starts), 123);
-        const running = yield* instance.snapshot;
-        assert.equal(running.desiredRunning, true);
-        assert.deepEqual(running.activePid, Option.some(123));
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("keeps retrying a transient (non-fatal) preflight failure without surfacing", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const failures: string[] = [];
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("unexpected backend spawn")),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          config: {
-            ...baseConfig,
-            preflightFailure: Option.some({ reason: "wslpath conversion failed", fatal: false }),
-          },
-          onPreflightFailed: (failure) =>
-            Effect.sync(() => {
-              failures.push(failure.reason);
-            }).pipe(Effect.as(false)),
-        });
-
-        yield* instance.start;
-
-        yield* TestClock.adjust(Duration.minutes(2));
-        assert.deepEqual(failures, []);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("surfaces a bounded transient preflight failure after its retry limit", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const failures: string[] = [];
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("unexpected backend spawn")),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          config: {
-            ...baseConfig,
-            preflightFailure: Option.some({
-              reason: "WSL toolchain probe timed out",
-              fatal: false,
-              retryLimit: 3,
-            }),
-          },
-          onPreflightFailed: (failure) =>
-            Effect.sync(() => {
-              failures.push(failure.reason);
-            }).pipe(Effect.as(false)),
-        });
-
-        yield* instance.start;
-        yield* TestClock.adjust(Duration.millis(500));
-        assert.deepEqual(failures, []);
-
-        yield* TestClock.adjust(Duration.seconds(1));
-        assert.deepEqual(failures, ["WSL toolchain probe timed out"]);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("cancels a scheduled restart when start is requested manually", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const starts = yield* Queue.unbounded<number>();
-        const secondClosed = yield* Deferred.make<void>();
-        let startCount = 0;
-
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() =>
-            Effect.gen(function* () {
-              startCount += 1;
-              yield* Queue.offer(starts, startCount);
-
-              if (startCount === 1) {
-                return makeProcess({
-                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
-                });
-              }
-
-              const scope = yield* Scope.Scope;
-              const close = Deferred.succeed(secondClosed, void 0).pipe(Effect.asVoid);
-              yield* Scope.addFinalizer(scope, close);
-              return makeProcess({
-                exitCode: Deferred.await(secondClosed).pipe(
-                  Effect.as(ChildProcessSpawner.ExitCode(0)),
-                ),
-                kill: () => close,
-              });
-            }),
-          ),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
           httpClientLayer: layerHttpClient(() => Effect.never),
+          backendOutputLog: {
+            persistFailure: () => {
+              exitCount += 1;
+              return Deferred.succeed(firstExit, undefined).pipe(Effect.asVoid);
+            },
+          },
+          onStartupFailure: (failure) =>
+            Queue.offer(reports, { exitCount, failure }).pipe(Effect.asVoid),
         });
-
         yield* instance.start;
-
-        assert.equal(yield* Queue.take(starts), 1);
-        yield* TestClock.adjust(Duration.zero);
-        assert.isTrue((yield* instance.snapshot).restartScheduled);
-
-        yield* instance.start;
-        assert.equal(yield* Queue.take(starts), 2);
-
-        yield* instance.stop();
-        yield* TestClock.adjust(Duration.millis(500));
-
-        assert.equal(yield* Queue.size(starts), 0);
+        yield* Deferred.await(firstExit);
+        yield* TestClock.adjust(Duration.minutes(1));
+        const { exitCount: exitsWhenReported, failure } = yield* Queue.take(reports);
+        assert.equal(exitsWhenReported, 3);
+        assert.equal(failure.reason, "The server could not start (code=1).");
+        assert.isTrue(failure.output.endsWith(message));
+        assert.isTrue(failure.output.isWellFormed());
       }).pipe(Effect.provide(TestClock.layer())),
     ),
   );
 
-  it.effect("does not restart after stop cancels a scheduled restart", () =>
+  it.effect("waits out a slow startup and reports one that never becomes ready", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const starts = yield* Queue.unbounded<number>();
-        let startCount = 0;
-
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() =>
-            Effect.sync(() => {
-              startCount += 1;
-              return makeProcess({
-                exitCode: Queue.offer(starts, startCount).pipe(
-                  Effect.as(ChildProcessSpawner.ExitCode(1)),
-                ),
-              });
-            }),
-          ),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          httpClientLayer: layerHttpClient(() => Effect.never),
-        });
-
-        yield* instance.start;
-        assert.equal(yield* Queue.take(starts), 1);
-
-        yield* TestClock.adjust(Duration.zero);
-        assert.isTrue((yield* instance.snapshot).restartScheduled);
-
-        yield* instance.stop();
-        yield* TestClock.adjust(Duration.millis(500));
-
-        assert.equal(yield* Queue.size(starts), 0);
-        assert.equal((yield* instance.snapshot).desiredRunning, false);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("stopAllPoolInstances waits for every backend to finish teardown", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const teardownStarted = yield* Queue.unbounded<string>();
-        const teardownFinished = yield* Queue.unbounded<string>();
-        const allowFirstTeardown = yield* Deferred.make<void>();
-        const allowSecondTeardown = yield* Deferred.make<void>();
-
-        const makeInstance = (name: string) =>
-          makeTestInstance({
-            id: DesktopBackendManager.BackendInstanceId(name),
+        const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
+        const startInstance = Effect.fn("test.startReadinessInstance")(function* (
+          status: Ref.Ref<number>,
+          onReady?: Effect.Effect<void>,
+        ) {
+          const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+          return yield* makeTestInstance({
             spawnerLayer: Layer.succeed(
               ChildProcessSpawner.ChildProcessSpawner,
               ChildProcessSpawner.make(() =>
-                Effect.gen(function* () {
-                  const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
-                  const scope = yield* Scope.Scope;
-                  yield* Scope.addFinalizer(
-                    scope,
-                    Queue.offer(teardownStarted, name).pipe(
-                      Effect.andThen(
-                        Deferred.await(
-                          name === "instance1" ? allowFirstTeardown : allowSecondTeardown,
-                        ),
-                      ),
-                      Effect.andThen(Queue.offer(teardownFinished, name)),
-                      Effect.andThen(Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0))),
-                      Effect.asVoid,
-                    ),
-                  );
-                  return makeProcess({ exitCode: Deferred.await(exited) });
-                }),
+                Effect.acquireRelease(
+                  Effect.succeed(
+                    makeProcess({
+                      exitCode: Deferred.await(exit),
+                      kill: () =>
+                        Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)).pipe(Effect.asVoid),
+                    }),
+                  ),
+                  () => Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)),
+                ),
               ),
             ),
-            httpClientLayer: layerHttpClient(() => Effect.never),
-          });
-
-        const instance1 = yield* makeInstance("instance1");
-        const instance2 = yield* makeInstance("instance2");
-
-        yield* instance1.start;
-        yield* instance2.start;
-
-        const layerMockPool = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
-          list: Effect.succeed([instance1, instance2]),
-          get: () => Effect.succeedNone,
-          primary: Effect.die(new Error("primary not implemented")),
-          register: () => Effect.die(new Error("register not implemented")),
-          unregister: () => Effect.die(new Error("unregister not implemented")),
+            httpClientLayer: layerHttpClient((request) =>
+              Ref.get(status).pipe(Effect.map((code) => responseForRequest(request, code))),
+            ),
+            onStartupFailure: (failure) => Queue.offer(reports, failure).pipe(Effect.asVoid),
+            ...(onReady ? { onReady } : {}),
+          }).pipe(Effect.tap((instance) => instance.start));
         });
 
-        const quitFiber = yield* Effect.scoped(
-          Effect.addFinalizer(() => DesktopApp.stopAllPoolInstances()),
-        ).pipe(Effect.provide(layerMockPool), Effect.forkChild);
+        const slowStatus = yield* Ref.make(503);
+        const ready = yield* Deferred.make<void>();
+        const first = yield* startInstance(
+          slowStatus,
+          Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+        );
+        yield* TestClock.adjust(Duration.seconds(66));
+        yield* Ref.set(slowStatus, 200);
+        yield* TestClock.adjust(Duration.millis(100));
+        yield* Deferred.await(ready);
+        assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
 
-        const started = yield* Queue.takeN(teardownStarted, 2);
-        assert.deepEqual(started.toSorted(), ["instance1", "instance2"]);
-
-        yield* TestClock.adjust(Duration.seconds(6));
-        assert.isUndefined(quitFiber.pollUnsafe());
-        assert.equal(yield* Queue.size(teardownFinished), 0);
-
-        yield* Deferred.succeed(allowFirstTeardown, undefined);
-        assert.equal(yield* Queue.take(teardownFinished), "instance1");
-        assert.isUndefined(quitFiber.pollUnsafe());
-        yield* Deferred.succeed(allowSecondTeardown, undefined);
-        yield* Fiber.join(quitFiber);
-        assert.equal(yield* Queue.take(teardownFinished), "instance2");
-        for (const instance of [instance1, instance2]) {
-          const snapshot = yield* instance.snapshot;
-          assert.isTrue(Option.isNone(snapshot.activePid));
-          assert.isFalse(snapshot.ready);
-        }
+        yield* first.stop();
+        assert.isFalse(yield* first.waitForReady(Duration.seconds(1)));
+        yield* startInstance(yield* Ref.make(503));
+        yield* TestClock.adjust(Duration.seconds(179));
+        assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
+        yield* TestClock.adjust(Duration.seconds(1));
+        const failure = yield* Queue.take(reports);
+        assert.equal(failure.reason, "The server started but did not become ready in time.");
       }).pipe(Effect.provide(TestClock.layer())),
     ),
   );

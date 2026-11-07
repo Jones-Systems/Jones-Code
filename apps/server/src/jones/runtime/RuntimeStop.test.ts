@@ -234,6 +234,8 @@ const fixture = Effect.fnUntraced(function* (retained = false) {
   };
   const manager = Layer.succeed(ProviderSessions.ProviderSessionManagerV2, {
     isMcpCallerAttached: () => Effect.succeed(false),
+    releaseUnlessBusy: () => Effect.die("Unexpected releaseUnlessBusy"),
+    otherWorkingThreads: () => Effect.die("Unexpected otherWorkingThreads"),
     isLive: () => Effect.die("Runtime stop must use the captured runtime binding"),
     shutdown: Effect.void,
     open: () => Effect.die("unexpected_open"),
@@ -297,6 +299,10 @@ const fixture = Effect.fnUntraced(function* (retained = false) {
   };
   return { sink, sessions, principal, state, input, runId, service, started, completion, provider };
 });
+const compiledLatestSchema6 = Schema.encodeEffect(
+  Schema.fromJsonString(StopStore.RuntimeStopIdentity),
+);
+
 const recordStoppedFixture = Effect.fnUntraced(function* (input: {
   readonly commandId: CommandId;
   readonly binding: ProviderRuntimeBinding;
@@ -309,9 +315,12 @@ const recordStoppedFixture = Effect.fnUntraced(function* (input: {
     threadId: input.binding.threadId,
     target: { binding: input.binding, evidenceRevision: 1 },
   };
-  const identityJson = yield* Schema.encodeEffect(
-    Schema.fromJsonString(StopStore.RuntimeStopIdentity),
-  )({ request, actor: input.actor, actorDigest: "synthetic-readback", affectedRunIds: [] });
+  const identityJson = yield* compiledLatestSchema6({
+    request,
+    actor: input.actor,
+    actorDigest: "synthetic-readback",
+    affectedRunIds: [],
+  });
   yield* sql`INSERT INTO orchestration_command_receipts(command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error) VALUES (${input.commandId},'thread',${input.binding.threadId},'provider-session.detach','2026-10-07T12:00:00Z',1,'accepted',NULL)`;
   yield* sql`INSERT INTO jones_runtime_stop_intents VALUES (${input.commandId},${input.binding.threadId},${identityJson})`;
   const methods = StopStore.makeRuntimeStopMethods(sql);
@@ -424,6 +433,10 @@ it.effect(
       }).pipe(Effect.provide(f.service));
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
+const encodeRuntimeStopIdentityJson = Schema.encodeEffect(
+  Schema.fromJsonString(StopStore.RuntimeStopIdentity),
+);
+
 it.effect(
   "captured queued run fences remain blocked after unknown stop and owner start is compare-and-swap",
   () =>
@@ -432,9 +445,7 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       const methods = StopStore.makeRuntimeStopMethods(sql);
       yield* sql`INSERT INTO orchestration_command_receipts(command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error) VALUES (${f.input.commandId},'thread',${f.input.threadId},'provider-session.detach','2026-10-07T12:00:00Z',1,'accepted',NULL)`;
-      const identityJson = yield* Schema.encodeEffect(
-        Schema.fromJsonString(StopStore.RuntimeStopIdentity),
-      )({
+      const identityJson = yield* encodeRuntimeStopIdentityJson({
         request: f.input,
         actor: {
           sessionId: f.principal.sessionId,

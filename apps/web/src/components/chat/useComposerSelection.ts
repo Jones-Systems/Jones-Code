@@ -148,7 +148,6 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const getModelDisabledReason = makeModelDisabledReason(
     currentModelSelection
       ? {
-          providers: providerStatuses,
           hasStartedSession,
           supportsProviderSwitchingViaHandoff,
           currentModelSelection,
@@ -226,11 +225,10 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       rememberedOptions: store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel],
     });
     const nextModelSelection = options?.effort
-      ? withShortcutEffort(pickerSelection, model, entry.models, options.effort)
+      ? withShortcutEffort(pickerSelection, resolvedModel, entry.models, options.effort)
       : pickerSelection;
     if (!nextModelSelection) return;
     const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
-      providers: providerStatuses,
       hasStartedSession: activeRuntime !== null,
       supportsProviderSwitchingViaHandoff,
       currentModelSelection: activeThread.modelSelection,

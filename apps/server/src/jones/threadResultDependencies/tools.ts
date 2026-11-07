@@ -73,6 +73,8 @@ export const ThreadRequestObserveTool = Tool.make("t3_thread_request_observe", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
 
+const compiledIs1 = Schema.is(OrchestratorMcpFailure);
+
 const update = Effect.fn("ThreadResultDependencies.update")(function* <A, E, R>(
   run: (
     store: ReturnType<typeof makeDependencyStore>,
@@ -86,9 +88,7 @@ const update = Effect.fn("ThreadResultDependencies.update")(function* <A, E, R>(
     const store = makeDependencyStore(sql, makeJonesTablePresence(sql));
     const changes = yield* Changes.DependencyChanges;
     return yield* makeCommit(sql, store, changes)(run(store, bound.thread.threadId));
-  }).pipe(
-    Effect.mapError((error) => (Schema.is(OrchestratorMcpFailure)(error) ? error : unavailable())),
-  );
+  }).pipe(Effect.mapError((error) => (compiledIs1(error) ? error : unavailable())));
 });
 
 export const threadRequestFulfillHandler = Access.actsAsCaller(

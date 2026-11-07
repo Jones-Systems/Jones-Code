@@ -1,8 +1,8 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { CommandId, MessageId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
@@ -78,9 +78,7 @@ it.effect.each(["ensure", "baseline"] as const)(
             expect(live.attemptCount).toBe(original.attemptCount);
             expect(live.commandId).toBe(original.commandId);
             expect(live.payloadIdentity).toBe(original.payloadIdentity);
-            expect(
-              DateTime.toEpochMillis(DateTime.makeUnsafe(live.leaseExpiresAt!)),
-            ).toBeGreaterThan(DateTime.toEpochMillis(yield* DateTime.now));
+            expect(live.updatedAt).toBe(original.updatedAt);
             expect(f.state.resumes).toBe(resumes);
             expect(f.calls.filter((call) => call === "provider-send")).toHaveLength(0);
           }
@@ -111,10 +109,10 @@ it.effect.each(["ensure", "baseline"] as const)(
           ).toBe(1);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
-it.effect.each(["worker", "attempt", "command", "request", "expiry"] as const)(
+it.effect.each(["worker", "attempt", "command", "request", "generation"] as const)(
   "a changed claim %s during real baseline loses custody without sending or settling its successor",
   (change) =>
     Effect.scoped(
@@ -158,9 +156,9 @@ it.effect.each(["worker", "attempt", "command", "request", "expiry"] as const)(
             yield* sql`UPDATE orchestration_v2_effect_outbox SET command_id='successor' WHERE effect_id=${start.id}`;
           if (change === "request")
             yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json=json_set(payload_json,'$.runId','successor') WHERE effect_id=${start.id}`;
-          if (change === "expiry") {
-            const expired = DateTime.formatIso(yield* DateTime.now);
-            yield* sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${expired} WHERE effect_id=${start.id}`;
+          if (change === "generation") {
+            const changedGeneration = "2099-01-01T00:00:00.000Z";
+            yield* sql`UPDATE orchestration_v2_effect_outbox SET updated_at=${changedGeneration} WHERE effect_id=${start.id}`;
           }
           const successor = yield* outbox.get(start.id);
           yield* TestClock.adjust("10 seconds");
@@ -175,7 +173,7 @@ it.effect.each(["worker", "attempt", "command", "request", "expiry"] as const)(
           expect(projection.runs.find((run) => run.id === runId)!.status).toBe("failed");
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -234,7 +232,7 @@ it.effect(
           ]);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -313,7 +311,7 @@ it.effect(
           );
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["present", "removed"] as const)(
@@ -358,7 +356,7 @@ it.effect.each(["present", "removed"] as const)(
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["attempt", "assignment", "birth", "head", "directory", "cancellation"] as const)(
@@ -406,7 +404,7 @@ it.effect.each(["attempt", "assignment", "birth", "head", "directory", "cancella
           expect(f.state.resumes).toBe(1);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["assignment", "birth", "head", "directory"] as const)(
@@ -460,7 +458,7 @@ it.effect.each(["assignment", "birth", "head", "directory"] as const)(
           expect(f.state.resumes).toBe(2);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -515,7 +513,7 @@ it.effect(
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -608,7 +606,7 @@ it.effect(
           expect(f.calls.filter((call) => call === "provider-send")).toHaveLength(1);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["lineage", "branch", "head"] as const)(
@@ -656,5 +654,5 @@ it.effect.each(["lineage", "branch", "head"] as const)(
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

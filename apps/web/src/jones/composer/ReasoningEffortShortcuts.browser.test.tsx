@@ -1,3 +1,5 @@
+import { ComposerEffortColumn } from "../../components/chat/ComposerModelEffort";
+import "~/index.css";
 import { act, render as renderTest, type Screen } from "../../../test/render";
 import { createRef, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -7,13 +9,8 @@ import {
   type ProviderOptionDescriptor,
 } from "@t3tools/contracts";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
-import { Menu, MenuPopup, MenuTrigger } from "../../components/ui/menu";
 import { ReasoningEffortShortcuts } from "./ReasoningEffortShortcuts";
-import {
-  TraitsMenuContent,
-  useTraitsSelection,
-  readPromptUltrathink,
-} from "../../components/chat/TraitsPicker";
+import { useTraitsSelection, readPromptUltrathink } from "../../components/chat/TraitsPicker";
 import { getComposerEffectiveTraitsOptions } from "../../components/chat/composerProviderState";
 
 const instanceId = ProviderInstanceId.make("reasoning-test");
@@ -74,12 +71,9 @@ async function render(
         <>
           <ReasoningEffortShortcuts {...props} />
           {withMenu ? (
-            <Menu open>
-              <MenuTrigger>Traits</MenuTrigger>
-              <MenuPopup>
-                <TraitsMenuContent {...props} />
-              </MenuPopup>
-            </Menu>
+            <div data-model-picker-effort>
+              <ComposerEffortColumn traits={props} />
+            </div>
           ) : null}
         </>,
       ),
@@ -192,6 +186,17 @@ describe("reasoning effort shortcuts", () => {
       expect(container.textContent).not.toContain("Build");
     },
   );
+
+  it("uses agent-declared reasoning after a session-mode descriptor", async () => {
+    await using _fixture = await setupTest();
+    await render({}, [
+      { ...effort, id: "mode", label: "Session mode", options: [{ id: "code", label: "Code" }] },
+      { ...effort, id: "thought_level", role: "reasoning" },
+    ]);
+    await click("Low");
+    expect(currentOptions()).toContainEqual({ id: "thought_level", value: "low" });
+    expect(currentOptions()?.some((option) => option.id === "mode")).toBe(false);
+  });
 
   it("selects every actual effort choice and keeps unknown metadata labels in full", async () => {
     await using _fixture = await setupTest();
@@ -353,9 +358,7 @@ describe("reasoning effort shortcuts", () => {
         allowPromptInjectedEffort: false,
       });
       return (
-        <button onClick={() => traits.handleSelectChange(claude, "ultrathink")}>
-          Attempt injection
-        </button>
+        <button onClick={() => traits.changeSelect(claude, "ultrathink")}>Attempt injection</button>
       );
     }
     await act(async () => await root.rerender(<AttemptInjection />));
@@ -392,13 +395,13 @@ describe("reasoning effort shortcuts", () => {
     await render({}, [effort, fast], true);
     await click("Low");
     await render({ modelOptions: currentOptions() }, [effort, fast], true);
-    const lowItem = Array.from(
-      document.querySelectorAll<HTMLElement>('[role="menuitemradio"]'),
-    ).find((item) => item.textContent?.startsWith("Quick"));
+    const lowItem = Array.from(document.querySelectorAll<HTMLElement>('[role="radio"]')).find(
+      (item) => item.textContent?.startsWith("Quick"),
+    );
     expect(lowItem?.getAttribute("aria-checked")).toBe("true");
-    const maxItem = Array.from(
-      document.querySelectorAll<HTMLElement>('[role="menuitemradio"]'),
-    ).find((item) => item.textContent?.startsWith("Maximum"));
+    const maxItem = Array.from(document.querySelectorAll<HTMLElement>('[role="radio"]')).find(
+      (item) => item.textContent?.startsWith("Maximum"),
+    );
     expect(maxItem).toBeDefined();
     await act(async () => maxItem?.click());
     expect(currentOptions()).toEqual([
@@ -407,9 +410,7 @@ describe("reasoning effort shortcuts", () => {
     ]);
     await render({ modelOptions: currentOptions() }, [effort, fast], true);
     expect(selectedLabel()).toBe("Max");
-    const selectedItem = Array.from(
-      document.querySelectorAll<HTMLElement>('[role="menuitemradio"]'),
-    ).find(
+    const selectedItem = Array.from(document.querySelectorAll<HTMLElement>('[role="radio"]')).find(
       (item) =>
         item.getAttribute("aria-checked") === "true" && item.textContent?.startsWith("Maximum"),
     );

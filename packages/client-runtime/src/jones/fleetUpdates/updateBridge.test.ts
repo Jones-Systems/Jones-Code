@@ -146,6 +146,7 @@ describe("qualified update-only connection", () => {
         rejectedAccessToken?: string;
       }> = [];
       const authorization = RemoteEnvironmentAuthorization.of({
+        renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
         authorizeBearer: () => Effect.die("Unexpected bearer authorization"),
         authorizeDpop: () => Effect.die("Update reads must not replace the socket"),
         authorizeDpopHttp: (input) =>
@@ -229,7 +230,7 @@ describe("qualified update-only connection", () => {
         Array(3).fill("https://updates.example.test/api/jones-updates"),
       );
       expect(authorizations).toEqual(
-        Array(3).fill({ expectedEnvironmentId: target.environmentId }),
+        Array.from({ length: 3 }, () => ({ expectedEnvironmentId: target.environmentId })),
       );
     }),
   );

@@ -306,7 +306,11 @@ it("isolates pending sidebar commits and preserves permission and delegated visi
       ]),
     ),
   });
-  const graph = createEnvironmentThreadShellAtoms({ snapshotAtom, catalogValueAtom });
+  const graph = createEnvironmentThreadShellAtoms({
+    snapshotAtom,
+    catalogValueAtom,
+    hiddenThreadTagsAtom: () => Atom.make(null),
+  });
   registry.set(snapshotAtom(A), snapshot(WIRES));
   registry.set(snapshotAtom(B), snapshot(WIRES));
   registry.set(sessionSource(A), OK);

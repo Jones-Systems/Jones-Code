@@ -138,15 +138,16 @@ it.effect(
     }).pipe(Effect.provide(memory)),
 );
 
+const compiledIs1 = Schema.is(Evidence.NativeProviderEvidenceReadError);
+
 it.effect("missing schema and invalid scalar records produce content-free typed errors", () =>
   Effect.gen(function* () {
     const reader = yield* Evidence.NativeProviderEvidence;
     const absent = yield* Effect.flip(
       reader.readSnapshotByCommandId("command-synthetic", threadId),
     );
-    assert.strictEqual(Schema.is(Evidence.NativeProviderEvidenceReadError)(absent), true);
-    if (!Schema.is(Evidence.NativeProviderEvidenceReadError)(absent))
-      throw new Error("Expected typed failure.");
+    assert.strictEqual(compiledIs1(absent), true);
+    if (!compiledIs1(absent)) throw new Error("Expected typed failure.");
     assert.strictEqual(absent.reason, "reader_unavailable");
     assert.strictEqual(Object.hasOwn(absent, "cause"), false);
     const sql = yield* initialize;
@@ -155,8 +156,7 @@ it.effect("missing schema and invalid scalar records produce content-free typed 
     const invalid = yield* Effect.flip(
       reader.readSnapshotByCommandId("command-synthetic", threadId),
     );
-    if (!Schema.is(Evidence.NativeProviderEvidenceReadError)(invalid))
-      throw new Error("Expected typed failure.");
+    if (!compiledIs1(invalid)) throw new Error("Expected typed failure.");
     assert.strictEqual(invalid.reason, "invalid_snapshot");
     assert.strictEqual(Object.hasOwn(invalid, "cause"), false);
     assert.strictEqual(invalid.message, "Native command evidence could not be read.");
@@ -173,8 +173,7 @@ it.effect("ambiguous receipt rows fail closed instead of selecting one", () =>
     const invalid = yield* Effect.flip(
       reader.readSnapshotByCommandId("command-synthetic", threadId),
     );
-    if (!Schema.is(Evidence.NativeProviderEvidenceReadError)(invalid))
-      throw new Error("Expected typed failure.");
+    if (!compiledIs1(invalid)) throw new Error("Expected typed failure.");
     assert.strictEqual(invalid.reason, "invalid_snapshot");
   }).pipe(Effect.provide(memory)),
 );
@@ -265,9 +264,8 @@ it.effect.each(["receipt", "surviving-event", "proof", "missing-proof"] as const
         const result = yield* Effect.flip(
           reader.readSnapshotByCommandId(proofReceipt.commandId, threadId),
         );
-        assert.isTrue(Schema.is(Evidence.NativeProviderEvidenceReadError)(result));
-        if (!Schema.is(Evidence.NativeProviderEvidenceReadError)(result))
-          throw new Error("Expected typed evidence failure.");
+        assert.isTrue(compiledIs1(result));
+        if (!compiledIs1(result)) throw new Error("Expected typed evidence failure.");
         assert.strictEqual(result.reason, "invalid_snapshot");
       }
     }).pipe(Effect.provide(memory)),

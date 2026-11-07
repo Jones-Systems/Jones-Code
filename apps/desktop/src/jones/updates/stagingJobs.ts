@@ -329,6 +329,10 @@ function finalizeNativeReferences(
 }
 
 /** Validate reference identity, never grant activation or retirement authority. */
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(
+  Schema.Struct({ prepared: Schema.Literal(true) }),
+);
+
 function validateNativeReference(
   value: unknown,
   file: string,
@@ -441,7 +445,8 @@ function validateNativeReference(
     case "intent.json":
     case "activation-request.json":
       requireWarmJonesInstallIntent(value);
-      rememberIntent(Schema.decodeUnknownSync(intent)(value));
+      const decodeNativeReference1 = Schema.decodeUnknownSync(intent);
+      rememberIntent(decodeNativeReference1(value));
       return;
     case "journal.json": {
       // Inspect the original intent before decoding can strip future discriminators.
@@ -452,7 +457,7 @@ function validateNativeReference(
         Schema.String,
         Schema.Union([Schema.String, Schema.Number]),
       );
-      const journal = Schema.decodeUnknownSync(
+      const decodeNativeReference3 = Schema.decodeUnknownSync(
         Schema.Struct({
           intent,
           phase: Schema.Literals(["resumed", "rolled-back"]),
@@ -540,7 +545,8 @@ function validateNativeReference(
             }),
           ),
         }),
-      )(
+      );
+      const journal = decodeNativeReference3(
         Object.hasOwn(raw, "trialReceipt")
           ? { ...raw, trialReceipt: trialValue(raw.trialReceipt) }
           : value,
@@ -555,8 +561,7 @@ function validateNativeReference(
     case "continuation.json": {
       const continuation = NodePath.basename(file) === "continuation.json";
       const requirePrepared = () => {
-        if (continuation)
-          Schema.decodeUnknownSync(Schema.Struct({ prepared: Schema.Literal(true) }))(value);
+        if (continuation) compiledDecodeUnknownSync1(value);
       };
       let legacyClaim: NonNullable<NativeReferenceContext["legacyClaim"]>;
       if (!Object.hasOwn(raw, "preparationClaimProtocol")) {
@@ -567,15 +572,16 @@ function validateNativeReference(
           )
         )
           throw new Error("Unknown undiscriminated preparation reference; cleanup held.");
-        const record = Schema.decodeUnknownSync(
+        const decodeNativeReference5 = Schema.decodeUnknownSync(
           Schema.Struct({ ...binding, prepared: Schema.Literal(true) }),
-        )(value);
+        );
+        const record = decodeNativeReference5(value);
         rememberNativeBinding(context, record);
         legacyClaim = { variant: "unversioned" };
       } else if (raw.preparationClaimProtocol === 1) {
         if (Object.hasOwn(raw, "stagedHandle"))
           throw new Error("Unknown legacy preparation handle; cleanup held.");
-        const record = Schema.decodeUnknownSync(
+        const decodeNativeReference7 = Schema.decodeUnknownSync(
           Schema.Struct({
             ...binding,
             preparationClaimProtocol: Schema.Literal(1),
@@ -584,7 +590,8 @@ function validateNativeReference(
             ),
             selectionSha256: ReferenceHash,
           }),
-        )(value);
+        );
+        const record = decodeNativeReference7(value);
         requirePrepared();
         rememberNativeBinding(context, record);
         legacyClaim = {
@@ -594,7 +601,8 @@ function validateNativeReference(
         };
       } else {
         // A present discriminator selects the strict current decoder; failure never falls back.
-        Schema.decodeUnknownSync(Schema.Struct(claim))(value);
+        const decodeNativeReference9 = Schema.decodeUnknownSync(Schema.Struct(claim));
+        decodeNativeReference9(value);
         requirePrepared();
         context.modernClaim = true;
         return;
@@ -609,7 +617,7 @@ function validateNativeReference(
       return;
     }
     case "prepare-request.json":
-      Schema.decodeUnknownSync(
+      const decodeNativeReference11 = Schema.decodeUnknownSync(
         Schema.Struct({
           protocol: binding.protocol,
           transactionId: binding.transactionId,
@@ -617,10 +625,11 @@ function validateNativeReference(
           claimSha256: ReferenceHash,
           processes: ProcessReferences,
         }),
-      )(value);
+      );
+      decodeNativeReference11(value);
       return;
     case "prepare-refused.json":
-      Schema.decodeUnknownSync(
+      const decodeNativeReference13 = Schema.decodeUnknownSync(
         Schema.Struct({
           protocol: binding.protocol,
           transactionId: binding.transactionId,
@@ -628,15 +637,17 @@ function validateNativeReference(
           claimSha256: ReferenceHash,
           reason: Schema.String,
         }),
-      )(value);
+      );
+      decodeNativeReference13(value);
       return;
     case "prepare-failure.json":
-      Schema.decodeUnknownSync(
+      const decodeNativeReference15 = Schema.decodeUnknownSync(
         Schema.Struct({ protocol: binding.protocol, reason: Schema.String }),
-      )(value);
+      );
+      decodeNativeReference15(value);
       return;
     case "preparation-withdrawal.json":
-      Schema.decodeUnknownSync(
+      const decodeNativeReference17 = Schema.decodeUnknownSync(
         Schema.Struct({
           protocol: binding.protocol,
           transactionId: binding.transactionId,
@@ -646,21 +657,23 @@ function validateNativeReference(
           expected: Schema.Struct({ ...JonesActiveInstall.fields, home: binding.home }),
           evidence: Schema.Literal("withdrawal-protocol"),
         }),
-      )(value);
+      );
+      decodeNativeReference17(value);
       context.modernClaim = true;
       return;
     case "preparation-retirement.json":
-      Schema.decodeUnknownSync(
+      const decodeNativeReference19 = Schema.decodeUnknownSync(
         Schema.Struct({
           protocol: binding.protocol,
           planSha256: ReferenceHash,
           plan,
           evidence: RetirementEvidence,
         }),
-      )(value);
+      );
+      decodeNativeReference19(value);
       return;
     case "preparation-retirement-receipt.json":
-      Schema.decodeUnknownSync(
+      const decodeNativeReference21 = Schema.decodeUnknownSync(
         Schema.Struct({
           protocol: binding.protocol,
           transactionId: binding.transactionId,
@@ -668,14 +681,15 @@ function validateNativeReference(
           status: Schema.Literal("retired"),
           evidence: RetirementEvidence,
         }),
-      )(value);
+      );
+      decodeNativeReference21(value);
       return;
     case "retirement-intent.json": {
       const natural = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
       const decimal = Schema.String.check(Schema.isPattern(/^[0-9]+$/));
       const kind = Schema.Literals(["file", "directory", "link"]);
       // retirement_context's inventories are evidence only; this worker never executes them.
-      Schema.decodeUnknownSync(
+      const decodeNativeReference23 = Schema.decodeUnknownSync(
         Schema.Struct({
           protocol: binding.protocol,
           planSha256: ReferenceHash,
@@ -707,21 +721,23 @@ function validateNativeReference(
             ),
           }),
         }),
-      )(value);
+      );
+      decodeNativeReference23(value);
       return;
     }
     case "retirement-receipt.json":
-      Schema.decodeUnknownSync(
+      const decodeNativeReference25 = Schema.decodeUnknownSync(
         Schema.Struct({
           protocol: binding.protocol,
           transactionId: binding.transactionId,
           planSha256: ReferenceHash,
           status: Schema.Literal("retired"),
         }),
-      )(value);
+      );
+      decodeNativeReference25(value);
       return;
     case "advanced-state-authority-guard.json":
-      Schema.decodeUnknownSync(
+      const decodeNativeReference27 = Schema.decodeUnknownSync(
         Schema.Struct({
           protocol: binding.protocol,
           guard: Schema.Union([
@@ -736,7 +752,8 @@ function validateNativeReference(
             }),
           ]),
         }),
-      )(value);
+      );
+      decodeNativeReference27(value);
       return;
     case "attempt-selection.json": {
       const attempt = decodeAttemptReference(value);
@@ -753,27 +770,26 @@ function validateNativeReference(
     default: {
       switch (NodePath.basename(file)) {
         case "trial-descriptor.json":
-          rememberTrial(
-            Schema.decodeUnknownSync(
-              Schema.Struct({
-                ...trial,
-                trialReceiptPath: Schema.Literal(NodePath.join(tx, "trial-receipt.json")),
-                commitGrantPath: Schema.Literal(NodePath.join(tx, "commit-grant.json")),
-              }),
-            )(trialValue(value)),
+          const decodeNativeReference29 = Schema.decodeUnknownSync(
+            Schema.Struct({
+              ...trial,
+              trialReceiptPath: Schema.Literal(NodePath.join(tx, "trial-receipt.json")),
+              commitGrantPath: Schema.Literal(NodePath.join(tx, "commit-grant.json")),
+            }),
           );
+          rememberTrial(decodeNativeReference29(trialValue(value)));
           context.legacyDescriptor = !Object.hasOwn(raw, "stagedHandle");
           return;
         case "commit-grant.json":
-          rememberTrial(
-            Schema.decodeUnknownSync(
-              Schema.Struct({ ...trial, generation: binding.transactionId }),
-            )(trialValue(value)),
+          const decodeNativeReference31 = Schema.decodeUnknownSync(
+            Schema.Struct({ ...trial, generation: binding.transactionId }),
           );
+          rememberTrial(decodeNativeReference31(trialValue(value)));
           return;
         case "trial-receipt.json":
         case "resume-dispatched.json":
-          rememberTrial(Schema.decodeUnknownSync(trialReceipt)(trialValue(value)));
+          const decodeNativeReference33 = Schema.decodeUnknownSync(trialReceipt);
+          rememberTrial(decodeNativeReference33(trialValue(value)));
           return;
         default:
           throw new Error("Unknown staging reference format; cleanup held.");

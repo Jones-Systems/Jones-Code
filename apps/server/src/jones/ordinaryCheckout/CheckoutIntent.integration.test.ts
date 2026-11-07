@@ -470,16 +470,19 @@ it.effect.each(["writeWithEffects", "writeIfRunCurrent"] as const)(
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const claim = yield* outbox.claimNext({
         workerId: "synthetic-worker",
-        leaseDurationMs: 60000,
       });
       assert.isTrue(Option.isSome(claim));
       if (Option.isNone(claim)) return;
       const source: Source = {
-        kind: "outbox",
+        kind: "outbox_process_v2",
+        commandId: claim.value.commandId,
+        threadId: claim.value.threadId,
+        runId: "runId" in claim.value.request ? claim.value.request.runId : null,
+        claimedAt: claim.value.updatedAt,
+        requestDigest: digest(claim.value.request),
         effectId: claim.value.id,
         workerId: "synthetic-worker",
         attempt: claim.value.attemptCount,
-        claimExpiresAt: claim.value.leaseExpiresAt!,
       };
       const binding: Binding = {
         version: 1,

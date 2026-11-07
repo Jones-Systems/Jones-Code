@@ -35,7 +35,8 @@ export const makeFixture = Effect.fn("GitAdmissionFixture.make")(function* (
       if (!ChildProcess.isStandardCommand(command)) {
         return yield* Effect.die("expected a standard Git command");
       }
-      const label = command.args[0]!;
+      const label = command.args[0];
+      if (typeof label !== "string") return yield* Effect.die("expected a synthetic string label");
       const gate = gates.get(label);
       if (gate === undefined) return yield* Effect.die(`unexpected Git command: ${label}`);
       started.push(label);

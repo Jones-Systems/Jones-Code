@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cache from "effect/Cache";
 import * as Effect from "effect/Effect";
@@ -67,7 +69,7 @@ describe("background Git admission", () => {
             8,
           );
         }),
-      ).pipe(Effect.provide(dependencies)),
+      ).pipe(Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
   );
 
   it.effect("inherits the mark through forked work and lookups in a cache created outside it", () =>
@@ -95,7 +97,7 @@ describe("background Git admission", () => {
         expect(fixture.peakBackground()).toBe(4);
         expect(fixture.started).toHaveLength(6);
       }),
-    ).pipe(Effect.provide(dependencies)),
+    ).pipe(Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
   );
 
   it.effect("cancels queued work without spawning and returns running and shared permits", () =>
@@ -138,6 +140,6 @@ describe("background Git admission", () => {
         yield* Fiber.join(foreground);
         expect(fixture.peakBackground()).toBe(4);
       }),
-    ).pipe(Effect.provide(dependencies)),
+    ).pipe(Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
   );
 });

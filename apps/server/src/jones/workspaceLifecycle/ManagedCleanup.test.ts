@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { NativeObservations } from "../workspaceRetirement/NativeObservations.ts";
 import { LifecycleRegistry } from "./RegistryCli.ts";
 import * as RetirementGate from "../workspaceRetirement/RemovalGate.ts";
@@ -138,7 +139,7 @@ it.effect.each(["matching", "missing", "head-changed", "successor", "native-chan
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const)(
@@ -229,7 +230,7 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           Effect.provide(f.layer),
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const)(
@@ -301,5 +302,5 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           Effect.provide(f.layer),
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

@@ -3,6 +3,18 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./assembly-highlighting": {
+      "types": "./src/assemblyHighlighting.ts",
+      "default": "./src/assemblyHighlighting.ts"
+    },
+    "./zip/bounded-zip": {
+      "types": "./src/zip/boundedZip.ts",
+      "default": "./src/zip/boundedZip.ts"
+    },
+    "./zip/directory": {
+      "types": "./src/zip/zipDirectory.ts",
+      "default": "./src/zip/zipDirectory.ts"
+    },
     "./jones/deliveryEvidence": {
       "types": "./src/jones/deliveryEvidence.ts",
       "default": "./src/jones/deliveryEvidence.ts"
@@ -66,6 +78,10 @@
     "./secret-request": {
       "types": "./src/secretRequest.ts",
       "default": "./src/secretRequest.ts"
+    },
+    "./link-request": {
+      "types": "./src/linkRequest.ts",
+      "default": "./src/linkRequest.ts"
     },
     "./scheduled-task-webhook": {
       "types": "./src/scheduledTaskWebhook.ts",
@@ -203,6 +219,10 @@
       "types": "./src/state/orchestration.ts",
       "default": "./src/state/orchestration.ts"
     },
+    "./state/thread-history-merge": {
+      "types": "./src/state/threadHistoryMerge.ts",
+      "default": "./src/state/threadHistoryMerge.ts"
+    },
     "./state/orchestration-v2-projection": {
       "types": "./src/state/orchestrationV2Projection.ts",
       "default": "./src/state/orchestrationV2Projection.ts"
@@ -218,6 +238,14 @@
     "./state/deviceHubAccess": {
       "types": "./src/state/deviceHubAccess.ts",
       "default": "./src/state/deviceHubAccess.ts"
+    },
+    "./state/peerLinks": {
+      "types": "./src/state/peerLinks.ts",
+      "default": "./src/state/peerLinks.ts"
+    },
+    "./state/peerPairingCode": {
+      "types": "./src/state/peerPairingCode.ts",
+      "default": "./src/state/peerPairingCode.ts"
     },
     "./state/preview": {
       "types": "./src/state/preview.ts",
@@ -323,6 +351,10 @@
       "types": "./src/state/threadExecution.ts",
       "default": "./src/state/threadExecution.ts"
     },
+    "./state/pending-user-input": {
+      "types": "./src/state/pendingUserInput.ts",
+      "default": "./src/state/pendingUserInput.ts"
+    },
     "./state/thread-requests": {
       "types": "./src/state/threadRequests.ts",
       "default": "./src/state/threadRequests.ts"
@@ -402,6 +434,10 @@
     "./thread-reference": {
       "types": "./src/threadReference.ts",
       "default": "./src/threadReference.ts"
+    },
+    "./pull-request-project-filter": {
+      "types": "./src/pullRequestProjectFilter.ts",
+      "default": "./src/pullRequestProjectFilter.ts"
     },
     "./thread-pull-request-compatibility": {
       "types": "./src/threadPullRequestCompatibility.ts",
@@ -491,6 +527,10 @@
       "types": "./src/modelTraits.ts",
       "default": "./src/modelTraits.ts"
     },
+    "./provider-clients": {
+      "types": "./src/providerClients.ts",
+      "default": "./src/providerClients.ts"
+    },
     "./jones/linked-threads": {
       "types": "./src/jones/linkedThreads/index.ts",
       "default": "./src/jones/linkedThreads/index.ts"
@@ -514,10 +554,6 @@
     "./jones/fleet-updates": {
       "types": "./src/jones/fleetUpdates/index.ts",
       "default": "./src/jones/fleetUpdates/index.ts"
-    },
-    "./state/peerLinks": {
-      "types": "./src/state/peerLinks.ts",
-      "default": "./src/state/peerLinks.ts"
     },
     "./jones/provider-workspace-refresh": {
       "types": "./src/jones/providerWorkspaceRefresh.ts",
@@ -546,22 +582,6 @@
     "./jones/design-requests": {
       "types": "./src/jones/designRequests/index.ts",
       "default": "./src/jones/designRequests/index.ts"
-    },
-    "./voice-review/fixtures": {
-      "types": "./src/voiceReview/fixtures.ts",
-      "default": "./src/voiceReview/fixtures.ts"
-    },
-    "./conversations": {
-      "types": "./src/conversations/index.ts",
-      "default": "./src/conversations/index.ts"
-    },
-    "./voice-review": {
-      "types": "./src/voice-review.ts",
-      "default": "./src/voice-review.ts"
-    },
-    "./state/workstreams": {
-      "types": "./src/state/workstreams/index.ts",
-      "default": "./src/state/workstreams/index.ts"
     },
     "./jones/updates": {
       "types": "./src/jones/updates/jonesUpdates.ts",
@@ -618,6 +638,22 @@
     "./jones/descendant-approval": {
       "types": "./src/jones/descendantApproval/index.ts",
       "default": "./src/jones/descendantApproval/index.ts"
+    },
+    "./voice-review/fixtures": {
+      "types": "./src/voiceReview/fixtures.ts",
+      "default": "./src/voiceReview/fixtures.ts"
+    },
+    "./conversations": {
+      "types": "./src/conversations/index.ts",
+      "default": "./src/conversations/index.ts"
+    },
+    "./voice-review": {
+      "types": "./src/voice-review.ts",
+      "default": "./src/voice-review.ts"
+    },
+    "./state/workstreams": {
+      "types": "./src/state/workstreams/index.ts",
+      "default": "./src/state/workstreams/index.ts"
     }
   },
   "scripts": {
@@ -628,10 +664,20 @@
   "dependencies": {
     "@pierre/diffs": "catalog:",
     "@t3tools/contracts": "workspace:*",
+    "@t3tools/provider-acp-registry": "workspace:*",
+    "@t3tools/provider-core": "workspace:*",
+    "@t3tools/provider-cursor": "workspace:*",
+    "@t3tools/provider-fx": "workspace:*",
+    "@t3tools/provider-grok": "workspace:*",
+    "@t3tools/provider-kiro": "workspace:*",
+    "@t3tools/provider-muse": "workspace:*",
+    "@t3tools/provider-opencode": "workspace:*",
+    "@t3tools/provider-pi": "workspace:*",
     "@t3tools/shared": "workspace:*",
     "@t3tools/source-control-core": "workspace:*",
     "@t3tools/source-control-definitions": "workspace:*",
     "effect": "catalog:",
+    "jszip": "3.10.1",
     "three": "0.180.0"
   },
   "devDependencies": {

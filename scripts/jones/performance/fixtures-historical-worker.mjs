@@ -318,13 +318,13 @@ function some(modules, value, label) {
 async function produceFiles(state) {
   const { modules, paths, workspace, worktree } = state;
   const { Schema } = modules;
-  const settings = Schema.encodeSync(modules.Settings.ServerSettings)({
+  const decodeHistoricalFixture1 = Schema.encodeSync(modules.Settings.ServerSettings);
+  const settings = decodeHistoricalFixture1({
     ...modules.Settings.DEFAULT_SERVER_SETTINGS,
     providerInstances: { codex: { driver: "codex", displayName: "Synthetic offline", config: {} } },
   });
-  const keybindings = Schema.decodeUnknownSync(modules.Keybindings.KeybindingsConfig)([
-    { key: "mod+shift+k", command: "thread.stop" },
-  ]);
+  const decodeHistoricalFixture3 = Schema.decodeUnknownSync(modules.Keybindings.KeybindingsConfig);
+  const keybindings = decodeHistoricalFixture3([{ key: "mod+shift+k", command: "thread.stop" }]);
   const attachmentId = modules.Attachments.createAttachmentId("fixture-history", ".png");
   const attachment = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4WQAAAAASUVORK5CYII=",
@@ -366,7 +366,10 @@ async function produceNative(state, dispatch) {
   if (!modules.Native) return;
   const { Effect, Schema, Contracts, NativePreparation: preparationModule } = modules;
   const repository = await state.run(modules.Native.make);
-  const binding = Schema.decodeUnknownSync(preparationModule.NativePreparationBinding)({
+  const decodeHistoricalFixture5 = Schema.decodeUnknownSync(
+    preparationModule.NativePreparationBinding,
+  );
+  const binding = decodeHistoricalFixture5({
     backend_instance: "synthetic-backend",
     environment_id: "synthetic-environment",
     project_id: "fixture-project",
@@ -406,7 +409,10 @@ async function produceNative(state, dispatch) {
       ),
     ),
   );
-  const historical = Schema.decodeUnknownSync(Contracts.NativeCreationHistoricalBinding)({
+  const decodeHistoricalFixture7 = Schema.decodeUnknownSync(
+    Contracts.NativeCreationHistoricalBinding,
+  );
+  const historical = decodeHistoricalFixture7({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -449,16 +455,18 @@ async function produceNative(state, dispatch) {
       `${raw.commandId}:bootstrap-thread-create`,
     ]),
   );
+  const decodeHistoricalFixture9 = Schema.decodeUnknownSync(Contracts.OrchestrationCommand);
   await state.run(
     repository.recordNormalizedCommand(
       claimId,
-      Schema.decodeUnknownSync(Contracts.OrchestrationCommand)({
+      decodeHistoricalFixture9({
         ...raw,
         modelSelection: binding.provider_model_selection,
       }),
     ),
   );
-  const command = Schema.decodeUnknownSync(Contracts.OrchestrationCommand)({
+  const decodeHistoricalFixture11 = Schema.decodeUnknownSync(Contracts.OrchestrationCommand);
+  const command = decodeHistoricalFixture11({
     type: "thread.create",
     commandId: `${raw.commandId}:bootstrap-thread-create`,
     threadId: raw.threadId,

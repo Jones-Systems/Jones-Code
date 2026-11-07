@@ -36,6 +36,8 @@ export interface NativeTerminalSurfaceProps extends ViewProps {
   readonly terminalKey: string;
   readonly initialBuffer: string;
   readonly fontSize: number;
+  /** `[cols, rows]` of the shared PTY, or empty before the server reports one. */
+  readonly sharedGrid?: ReadonlyArray<number>;
   readonly onInput?: (event: NativeSyntheticEvent<TerminalInputEvent>) => void;
   readonly onResize?: (event: NativeSyntheticEvent<TerminalResizeEvent>) => void;
 }
@@ -82,20 +84,6 @@ export function resolveNativeTerminalSurfaceView(): ComponentType<NativeTerminal
   }
 
   return cachedNativeTerminalSurfaceView ?? null;
-}
-
-export function getNativeTerminalHardwareKeyRevision(): number | null {
-  try {
-    if (typeof requireOptionalNativeModule !== "function") {
-      return null;
-    }
-    const module = requireOptionalNativeModule<{ readonly hardwareKeyRevision?: number }>(
-      NATIVE_TERMINAL_MODULE_NAME,
-    );
-    return module?.hardwareKeyRevision ?? null;
-  } catch {
-    return null;
-  }
 }
 
 export function hasNativeTerminalSurface() {

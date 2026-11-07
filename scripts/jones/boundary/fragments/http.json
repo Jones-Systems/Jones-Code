@@ -9,6 +9,13 @@
       "from": "packages/contracts/src/environmentHttp.ts",
       "to": "packages/contracts/src/jones/environmentHttpGroups.ts"
     },
-    { "from": "apps/server/src/server.ts", "to": "apps/server/src/jones/http/registration.ts" }
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/http/registration.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/DesktopNativeOwner.ts"
+    }
   ]
 }

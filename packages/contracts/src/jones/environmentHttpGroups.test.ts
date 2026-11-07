@@ -173,6 +173,8 @@ it("requires a nonnegative integer count in quit preparation responses", () => {
   }
 });
 
+const compiledDecodeSync1 = Schema.decodeSync(JonesUpdateInstallInput);
+
 it("requires an explicit native attempt without changing ordinary install requests", () => {
   const base = { stagedHandle: "a".repeat(64), environmentId: "fixture", currentVersion: "1.0.0" };
   const decode = Schema.decodeUnknownSync(JonesNativePrepareInput);
@@ -182,8 +184,10 @@ it("requires an explicit native attempt without changing ordinary install reques
     ...base,
     transactionId: "b".repeat(64),
   });
-  expect(Schema.decodeSync(JonesUpdateInstallInput)(base)).toEqual(base);
+  expect(compiledDecodeSync1(base)).toEqual(base);
 });
+
+const compiledDecodeSync2 = Schema.decodeSync(JonesUpdateCapability);
 
 it("selects an exact source by full commit only and keeps older capability shapes decodable", () => {
   const decode = Schema.decodeUnknownSync(JonesUpdateExactInput);
@@ -193,8 +197,8 @@ it("selects an exact source by full commit only and keeps older capability shape
     expect(() => decode({ targetSource: invalid })).toThrow();
   expect(() => decode({})).toThrow();
   const legacy = { check: true, download: true, install: false };
-  expect(Schema.decodeSync(JonesUpdateCapability)(legacy)).toEqual(legacy);
-  expect(Schema.decodeSync(JonesUpdateCapability)({ ...legacy, exactSource: true })).toEqual({
+  expect(compiledDecodeSync2(legacy)).toEqual(legacy);
+  expect(compiledDecodeSync2({ ...legacy, exactSource: true })).toEqual({
     ...legacy,
     exactSource: true,
   });
@@ -233,7 +237,7 @@ it("requires the complete immutable binding for an optional staged replacement",
     exactSource: true,
     replaceStaged: true,
   };
-  expect(Schema.decodeSync(JonesUpdateCapability)(capability)).toEqual(capability);
+  expect(compiledDecodeSync2(capability)).toEqual(capability);
 });
 
 it("accepts both explicitly versioned registration responses on the local HTTP boundary", () => {

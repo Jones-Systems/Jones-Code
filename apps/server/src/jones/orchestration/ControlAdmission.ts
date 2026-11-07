@@ -153,20 +153,23 @@ export const layer = Layer.sync(ControlAdmission, () => {
     Array.from(startups.values()).some((held) => conflicts(held, target));
   const fail = (instanceId: string) => Effect.fail(new ControlAdmissionHeld({ instanceId }));
   return ControlAdmission.of({
-    assertOpen: (target) =>
+    assertOpen: Effect.fn("ControlAdmission.assertOpen")((target) =>
       Effect.suspend(() => (blocked(target) ? fail(target.instanceId) : Effect.void)),
-    begin: (binding) =>
+    ),
+    begin: Effect.fn("ControlAdmission.begin")((binding) =>
       Effect.suspend(() => {
         if (blocked(targetFromDispatch(binding))) return fail(binding.instanceId);
         const dispatch: ControlDispatch = { binding: { ...binding } };
         dispatches.set(dispatch, false);
         return Effect.succeed(dispatch);
       }),
-    markUnknown: (dispatch) =>
+    ),
+    markUnknown: Effect.fn("ControlAdmission.markUnknown")((dispatch) =>
       Effect.sync(() => {
         if (dispatches.has(dispatch)) dispatches.set(dispatch, true);
       }),
-    acknowledge: (dispatch, binding) =>
+    ),
+    acknowledge: Effect.fn("ControlAdmission.acknowledge")((dispatch, binding) =>
       Effect.sync(() => {
         if (!dispatches.has(dispatch)) return false;
         for (const key of Object.keys(dispatch.binding) as Array<keyof ControlDispatchBinding>) {
@@ -175,11 +178,13 @@ export const layer = Layer.sync(ControlAdmission, () => {
         dispatches.delete(dispatch);
         return true;
       }),
-    rejectNonApplying: (dispatch) =>
+    ),
+    rejectNonApplying: Effect.fn("ControlAdmission.rejectNonApplying")((dispatch) =>
       Effect.sync(() => {
         dispatches.delete(dispatch);
       }),
-    holdStartup: (target) =>
+    ),
+    holdStartup: Effect.fn("ControlAdmission.holdStartup")((target) =>
       Effect.sync(() => {
         const hold = Object.freeze({}) as StartupHold;
         // A missing native ID must retain a logical owner and producer, never an account veto.
@@ -194,7 +199,8 @@ export const layer = Layer.sync(ControlAdmission, () => {
         });
         return hold;
       }),
-    identifyStartup: (hold, nativeThreadId) =>
+    ),
+    identifyStartup: Effect.fn("ControlAdmission.identifyStartup")((hold, nativeThreadId) =>
       Effect.suspend(() => {
         const target = startups.get(hold);
         if (
@@ -206,7 +212,8 @@ export const layer = Layer.sync(ControlAdmission, () => {
         startups.set(hold, { ...target, nativeThreadId });
         return Effect.void;
       }),
-    resolveStartup: (hold, resolution) =>
+    ),
+    resolveStartup: Effect.fn("ControlAdmission.resolveStartup")((hold, resolution) =>
       Effect.suspend(() => {
         const target = startups.get(hold);
         if (target === undefined) return fail("unknown");
@@ -226,7 +233,8 @@ export const layer = Layer.sync(ControlAdmission, () => {
         startups.delete(hold);
         return Effect.void;
       }),
-    retireGeneration: (producer) =>
+    ),
+    retireGeneration: Effect.fn("ControlAdmission.retireGeneration")((producer) =>
       Effect.sync(() => {
         for (const dispatch of dispatches.keys()) {
           if (sameProducer(dispatch.binding, producer)) dispatches.delete(dispatch);
@@ -235,7 +243,8 @@ export const layer = Layer.sync(ControlAdmission, () => {
           if (sameProducer(target.producer, producer)) startups.delete(hold);
         }
       }),
-    snapshot: (instanceId) =>
+    ),
+    snapshot: Effect.fn("ControlAdmission.snapshot")((instanceId) =>
       Effect.sync(() =>
         Array.from(dispatches).flatMap(([dispatch, unknown]) =>
           dispatch.binding.instanceId === instanceId
@@ -243,5 +252,6 @@ export const layer = Layer.sync(ControlAdmission, () => {
             : [],
         ),
       ),
+    ),
   });
 });

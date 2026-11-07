@@ -217,6 +217,13 @@ const inspectPlatforms = () => {
     else if (!gateway && fs.existsSync(path.join(state, 'direct-gateway-' + direct.generation + '.cjs'))) throw Error('Direct gateway startup effect is unconfirmed.');
     return;
   }
+  const stopAgent = () => {
+    const entry = read(agentFile)?.entryPath || path.join(root, 'tools', 'agent-device@' + agentVersion, 'node_modules', 'agent-device', 'bin', 'agent-device.mjs');
+    if (fs.existsSync(entry)) return run(process.execPath, [entry, 'daemon', 'stop', '--state-dir', state]).status === 0;
+    // A running daemon outlives its deleted CLI, so without one only a recorded pid that is gone counts as stopped.
+    const pid = read(daemonFile)?.pid;
+    return Number.isSafeInteger(pid) && pid > 0 && !maintenanceAlive(pid);
+  };
   if (mode === 'stop' || mode === 'stop-agent') {
     const hub = read(hubFile);
     if (mode === 'stop') {
@@ -227,9 +234,15 @@ const inspectPlatforms = () => {
       stopHub(hub);
       fs.rmSync(hubFile, { force: true });
     }
-    const entry = read(agentFile)?.entryPath || path.join(root, 'tools', 'agent-device@' + agentVersion, 'node_modules', 'agent-device', 'bin', 'agent-device.mjs');
-    if (fs.existsSync(entry)) run(process.execPath, [entry, 'daemon', 'stop', '--state-dir', state]);
+    stopAgent();
     return;
+  }
+  // A start without agent tools means the server holds no claims, so a daemon still here is
+  // orphaned. Agent access was turned off while the tunnel was down, or a server crashed.
+  // Close skips the release when start returns no endpoint, so the claims must end here.
+  if (mode === 'start' && read(daemonFile)) {
+    if (!stopAgent()) throw Error('Could not stop the agent-device daemon in ' + state);
+    fs.rmSync(daemonFile, { force: true });
   }
   const { ios, android, platforms } = inspectPlatforms();
   if (!ios && !android) throw Error(platforms.map(p => p.reason).join(' '));

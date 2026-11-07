@@ -1,3 +1,4 @@
+import * as ServerSettings from "../../serverSettings.ts";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
@@ -108,6 +109,7 @@ describe("Jones remote evaluation routing", () => {
                 ),
               ];
         const generation = yield* TextGeneration.make.pipe(
+          Effect.provide(ServerSettings.layerTest()),
           Effect.provideService(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             makeStubRegistry(instances),

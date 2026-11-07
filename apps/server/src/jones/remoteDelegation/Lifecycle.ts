@@ -188,7 +188,11 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
             }
           }
           let launched = intent.launched;
-          if (launched === null || (launched.runId === null && task.result === null)) {
+          // A successful launch response with no attributed run may already have effects.
+          // Retain its child/response identity and park reconciliation without another mutation.
+          if (launched !== null && launched.runId === null && task.result === null)
+            return yield* park(id);
+          if (launched === null) {
             if (
               !(yield* ObservationSupport.supported(forwarding, caller, envelope.environmentId))
             ) {
@@ -248,7 +252,7 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
             label: envelope.label,
             ...(launched.runId === null ? {} : { runId: launched.runId }),
           };
-          if (launched.runId === null && task.result === null) return yield* unavailable();
+          if (launched.runId === null && task.result === null) return;
           yield* threads
             .dispatch({
               type: "delegated_task.remote.bind",

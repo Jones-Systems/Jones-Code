@@ -109,6 +109,18 @@ instance:
 
 ## Model defaults
 
+On web and desktop, open the composer's provider and model control to choose an
+account, search models, and set model options. Favorites appear first, even when
+you have not added any yet. Star models you want to keep there. The account badge
+distinguishes accounts that offer the same model.
+
+Account, model, and reasoning shortcuts remain available below the composer,
+including in narrow windows. Choices that cannot be used are disabled. For
+supported models, **M**, **H**, and **E** beside the model control select reasoning
+effort; the lightning control changes Fast mode. Permissions are always available
+at the bottom of the model menu. A nondefault permission selection also appears
+beside the composer controls.
+
 T3 Code remembers your provider, model, and model options for new threads. A
 project's configured model takes precedence; resetting that project setting
 returns to the remembered selection.
@@ -120,6 +132,13 @@ saved by its agent, including work still waiting to start. Your choice stays sav
 until a later change; the agent can still save a new selection for future turns.
 An already admitted turn keeps its selection until a supported transition or its
 next turn. **Steer all** explicitly targets the currently running agent.
+
+## Answer questions
+
+On web and desktop, answer a question in its card above the composer. Your
+ordinary message draft stays separate and editable while the question is open.
+In a short window, scroll the notices and questions to reach the answer field;
+the message editor and its shortcuts stay in place.
 
 ## Quote an assistant response
 
@@ -247,8 +266,9 @@ still requires the queued messages to match the active provider and model.
 
 If you stop the agent or the server restarts, queued messages keep their order and are held.
 Press **Resume** in an empty composer on web and desktop, or **Resume queue** on mobile, to
-continue. Sending a new message also resumes the queue, unless it steers a turn that is already
-running. You can edit, reorder, or remove held messages without starting them.
+continue. Sending a new message does not release messages held by Stop. A new
+message can start independently when it is otherwise eligible. You can edit,
+reorder, or remove held messages without starting them.
 
 The pencil on a queued row opens that message in the composer for editing. The original message
 stays in the queue until you save, and its row is highlighted while you edit. The message's

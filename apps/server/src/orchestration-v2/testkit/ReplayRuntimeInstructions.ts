@@ -15,9 +15,13 @@ export function materializeReplayTranscriptRuntimeInstructions(
       ? "Cursor"
       : runtime.driver === "grok"
         ? "Grok"
-        : runtime.driver === "acpRegistry"
-          ? "acpRegistry"
-          : undefined;
+        : runtime.driver === "kiro"
+          ? "Kiro"
+          : runtime.driver === "acpRegistry"
+            ? "acpRegistry"
+            : runtime.driver === "fx"
+              ? "fx"
+              : undefined;
   if (harness === undefined) return transcript;
   const instructions = buildRuntimeInstructions({
     appIdentity: APP_IDENTITY,
@@ -59,7 +63,10 @@ export function materializeReplayTranscriptRuntimeInstructions(
           "type" in lastPart &&
           lastPart.type === "text" &&
           "text" in lastPart &&
-          lastPart.text === instructions
+          typeof lastPart.text === "string" &&
+          // A recording that switched models mid-thread already carries the
+          // instructions for the model each prompt ran on.
+          (lastPart.text === instructions || lastPart.text.startsWith("<runtime_info>"))
         ) {
           return entry;
         }

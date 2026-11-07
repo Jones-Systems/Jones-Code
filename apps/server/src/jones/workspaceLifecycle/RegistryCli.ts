@@ -97,6 +97,25 @@ const decodeResumed = Schema.decodeEffect(Schema.fromJsonString(resumed));
 const decodeBinding = Schema.decodeEffect(Binding, { onExcessProperty: "error" });
 
 // Construction requires an explicitly supplied executable and existing store. There is no discovery, init or migration path.
+const compiledMain3acaCodec34 = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      schema: Schema.Literal("workspace-lifecycle-cli/v1"),
+      command: Schema.Literal("assess"),
+      result: Schema.Struct({
+        schema: Schema.Literal("workspace-write/v1"),
+        outcome: Schema.Literal("assessed"),
+        generation: Schema.String,
+        authority_effect: Schema.Literal("none"),
+      }),
+    }),
+  ),
+);
+
+const compiledMain3acaCodec33 = Schema.is(LifecycleError);
+
+const compiledMain3acaCodec32 = Schema.decodeEffect(OutputReplyJson);
+
 export const layer = (configuration: RegistryCommand, outputs?: RegistryCommand) =>
   Layer.effect(
     LifecycleRegistry,
@@ -155,14 +174,12 @@ export const layer = (configuration: RegistryCommand, outputs?: RegistryCommand)
             result.stderrTruncated
           )
             return yield* new LifecycleError({ reason: "unknown" });
-          return yield* Schema.decodeEffect(OutputReplyJson)(result.stdout).pipe(
+          return yield* compiledMain3acaCodec32(result.stdout).pipe(
             Effect.mapError((cause) => new LifecycleError({ reason: "unknown", cause })),
           );
         },
         Effect.mapError((cause) =>
-          Schema.is(LifecycleError)(cause)
-            ? cause
-            : new LifecycleError({ reason: "unknown", cause }),
+          compiledMain3acaCodec33(cause) ? cause : new LifecycleError({ reason: "unknown", cause }),
         ),
       );
       return LifecycleRegistry.of({
@@ -182,20 +199,7 @@ export const layer = (configuration: RegistryCommand, outputs?: RegistryCommand)
             return yield* new LifecycleError({
               reason: result.code === 4 ? "conflict" : "unknown",
             });
-          const decoded = yield* Schema.decodeEffect(
-            Schema.fromJsonString(
-              Schema.Struct({
-                schema: Schema.Literal("workspace-lifecycle-cli/v1"),
-                command: Schema.Literal("assess"),
-                result: Schema.Struct({
-                  schema: Schema.Literal("workspace-write/v1"),
-                  outcome: Schema.Literal("assessed"),
-                  generation: Schema.String,
-                  authority_effect: Schema.Literal("none"),
-                }),
-              }),
-            ),
-          )(result.stdout).pipe(
+          const decoded = yield* compiledMain3acaCodec34(result.stdout).pipe(
             Effect.mapError((cause) => new LifecycleError({ reason: "unknown", cause })),
           );
           return decoded.result.generation;

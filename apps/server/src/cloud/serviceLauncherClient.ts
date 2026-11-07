@@ -605,11 +605,17 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     qualifiedRetirement: context?.updateRetirementProtocol === 1,
     qualifiedOutcomes: context?.updateOutcomeProtocol === 1,
     qualifiedSettlement: context?.updateSettlementProtocol === 1,
-    reconcileFailedUpdate: (input) =>
-      reconcileFailed({ type: "reconcile-failed-update", ...input }),
-    recordRetiredOperation: (input) =>
-      reconcileFailed({ type: "record-retired-operation", ...input }),
-    reconcileUpdate: (operationId) =>
+    reconcileFailedUpdate: Effect.fn("ServiceLauncherClient.reconcileFailedUpdate")(
+      function* (input) {
+        return yield* reconcileFailed({ type: "reconcile-failed-update", ...input });
+      },
+    ),
+    recordRetiredOperation: Effect.fn("ServiceLauncherClient.recordRetiredOperation")(
+      function* (input) {
+        return yield* reconcileFailed({ type: "record-retired-operation", ...input });
+      },
+    ),
+    reconcileUpdate: Effect.fn("ServiceLauncherClient.reconcileUpdate")((operationId) =>
       context?.updateOutcomeProtocol !== 1
         ? Effect.succeed({
             outcome: "unknown" as const,
@@ -634,7 +640,8 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
               }),
             );
           }),
-    retireUpdate: (input) =>
+    ),
+    retireUpdate: Effect.fn("ServiceLauncherClient.retireUpdate")((input) =>
       context?.updateRetirementProtocol !== 1
         ? Effect.succeed({
             retired: false,
@@ -656,6 +663,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
               };
             }),
           ),
+    ),
     ...(context === undefined ? {} : { currentVersion: context.childVersion }),
     ...(context?.launcherVersion === undefined ? {} : { launcherVersion: context.launcherVersion }),
     requestUpdate,

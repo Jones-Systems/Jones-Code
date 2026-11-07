@@ -20,7 +20,7 @@ export function PlanCreationStatus(props: {
     held: boolean;
   } | null>(null);
   const [inFlight, setInFlight] = useState<string | null>(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Hydrate and subscribe to the acknowledged platform journal so reload recovery does not depend on the current picker or active plan.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Hydrate and subscribe to the acknowledged platform journal so reload recovery does not depend on the current picker or active plan.
   useEffect(() => {
     let current = true;
     const load = () => {

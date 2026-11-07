@@ -78,7 +78,7 @@ export function useQuestionAnswerAttachments(input: {
   const attachments = [...(draft?.images ?? []), ...(draft?.files ?? [])];
   const canAttach = !disabled && input.allowAdding && capabilities.supportsQuestionAttachments;
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Upload newly restored question attachments when server capabilities become available, preserving reattachment guards.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Upload newly restored question attachments when server capabilities become available, preserving reattachment guards.
   useEffect(() => {
     if (
       disabled ||

@@ -54,6 +54,8 @@ export class OrganizationMetadataMcpService extends Context.Service<
 
 const iso = (value: DateTime.Utc | null | undefined) =>
   value == null ? null : DateTime.formatIso(value);
+const compiledIs1 = Schema.is(ProviderRequestKind);
+
 const organizationThreadMetadata = (
   thread: OrchestrationV2ThreadShell,
 ): OrganizationThreadMetadata => ({
@@ -76,7 +78,7 @@ const organizationThreadMetadata = (
   latestRunRequestedAt: iso(thread.latestRunRequestedAt),
   latestRunStartedAt: iso(thread.latestRunStartedAt),
   latestRunCompletedAt: iso(thread.latestRunCompletedAt),
-  hasPendingApprovals: Schema.is(ProviderRequestKind)(thread.pendingRuntimeRequest?.kind),
+  hasPendingApprovals: compiledIs1(thread.pendingRuntimeRequest?.kind),
   hasPendingUserInput: thread.pendingRuntimeRequest?.kind === "user_input",
   hasActionableProposedPlan: thread.hasActionableProposedPlan,
 });

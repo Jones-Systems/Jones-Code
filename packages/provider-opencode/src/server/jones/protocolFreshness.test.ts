@@ -19,6 +19,24 @@ import { readOpenCodeProtocolSource } from "./protocolFreshness.ts";
 const v1: ProbedOpenCode = { generation: "v1", version: "1.18.32" };
 const v2: ProbedOpenCode = { generation: "v2", version: "2.0.18" };
 
+const compiledMainSchema15 = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      shell: Schema.Boolean,
+      command: Schema.String,
+      args: Schema.Array(Schema.String),
+    }),
+  ),
+);
+
+const compiledMainSchema14 = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      info: Schema.Struct({ dev: Schema.String, ino: Schema.String, size: Schema.String }),
+    }),
+  ),
+);
+
 describe("OpenCode protocol source identity", () => {
   it.effect("preserves real filesystem device and inode metadata without numeric coercion", () =>
     Effect.gen(function* () {
@@ -32,13 +50,7 @@ describe("OpenCode protocol source identity", () => {
       assert.isTrue(Option.isSome(info.ino));
       const read = readOpenCodeProtocolSource({ binaryPath, serverUrl: "" }, { PATH: root });
       const source = yield* read;
-      const represented = yield* Schema.decodeEffect(
-        Schema.fromJsonString(
-          Schema.Struct({
-            info: Schema.Struct({ dev: Schema.String, ino: Schema.String, size: Schema.String }),
-          }),
-        ),
-      )(source);
+      const represented = yield* compiledMainSchema14(source);
       assert.deepStrictEqual(represented.info, {
         dev: info.dev.toString(10),
         ino: Option.getOrThrow(info.ino).toString(10),
@@ -68,15 +80,7 @@ describe("OpenCode protocol source identity", () => {
         ),
       );
       const source = yield* read;
-      const represented = yield* Schema.decodeEffect(
-        Schema.fromJsonString(
-          Schema.Struct({
-            shell: Schema.Boolean,
-            command: Schema.String,
-            args: Schema.Array(Schema.String),
-          }),
-        ),
-      )(source);
+      const represented = yield* compiledMainSchema15(source);
       assert.deepStrictEqual(represented, {
         shell: true,
         command: String.raw`^"C:\protocol-source\open^ code.cmd^" ^"--version^"`,

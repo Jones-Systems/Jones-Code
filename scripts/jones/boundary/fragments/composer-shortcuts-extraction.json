@@ -15,13 +15,23 @@
     "apps/web/src/jones/composer/providerShortcutLabelColor.ts",
     "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts",
     "apps/web/src/jones/subagents/accountDisplayName.ts",
-    "apps/web/src/jones/subagents/accountDisplayName.test.ts"
+    "apps/web/src/jones/subagents/accountDisplayName.test.ts",
+    "apps/web/src/jones/composer/traitsOptions.ts",
+    "apps/web/src/jones/composer/useComposerPickerSession.ts",
+    "apps/web/src/jones/composer/useWorktreeSetupRoute.browser.test.tsx",
+    "apps/web/src/jones/composer/useComposerCardViewport.ts",
+    "apps/web/src/jones/composer/useComposerCardViewport.browser.test.tsx",
+    "apps/web/src/jones/subagents/accountGlyph.browser.test.tsx"
   ],
   "hookPaths": [
     "apps/web/src/components/ChatView.tsx",
     "apps/web/src/components/chat/ChatComposer.tsx",
     "apps/web/src/components/chat/ModelPickerContent.tsx",
-    "apps/web/src/components/chat/V2LifecycleRow.tsx"
+    "apps/web/src/components/chat/V2LifecycleRow.tsx",
+    "apps/web/src/components/chat/TraitsPicker.tsx",
+    "apps/web/src/components/chat/ProviderModelPicker.tsx",
+    "apps/web/src/components/chat/useComposerSelection.ts",
+    "apps/web/src/components/chat/ChildThreadApprovals.tsx"
   ],
   "tombstones": [
     "apps/web/src/components/chat/ProviderInstanceShortcuts.test.ts",
@@ -71,6 +81,26 @@
     {
       "from": "apps/web/src/components/chat/V2LifecycleRow.tsx",
       "to": "apps/web/src/jones/subagents/accountDisplayName.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/TraitsPicker.tsx",
+      "to": "apps/web/src/jones/composer/traitsOptions.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ProviderModelPicker.tsx",
+      "to": "apps/web/src/jones/composer/useComposerPickerSession.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSelection.ts",
+      "to": "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSelection.ts",
+      "to": "apps/web/src/jones/composer/composerModelEffortShortcuts.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/composer/useComposerCardViewport.ts"
     }
   ]
 }

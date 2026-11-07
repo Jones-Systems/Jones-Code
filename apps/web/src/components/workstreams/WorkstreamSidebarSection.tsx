@@ -10,7 +10,7 @@ import {
   workstreamBindingKey,
   resolveWorkstreamCompletionAuthority,
 } from "@t3tools/client-runtime/state/workstreams";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type ReactNode, type DragEvent } from "react";
@@ -46,8 +46,8 @@ import {
 
 export const workstreamCommandId = () =>
   runtime.runPromise(
-    Crypto.Crypto.pipe(
-      Effect.flatMap((crypto) => crypto.randomUUIDv4()),
+    SecureRandom.SecureRandom.pipe(
+      Effect.flatMap((crypto) => crypto.uuidV4()),
       Effect.map((uuid) => `t3-workstream-${uuid}`),
     ),
   );
@@ -84,7 +84,7 @@ export function WorkstreamCreateForm({
     setError(null);
   }
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Retire the open editor when its registry binding changes and clear its session on unmount.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Retire the open editor when its registry binding changes and clear its session on unmount.
   useLayoutEffect(() => {
     if (bindingRef.current !== binding) onClose();
     bindingRef.current = binding;
@@ -94,7 +94,7 @@ export function WorkstreamCreateForm({
     };
   }, [binding, session, onClose]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own document dismissal listeners and focus only while this authorized editor is open.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own document dismissal listeners and focus only while this authorized editor is open.
   useLayoutEffect(() => {
     if (!open) return;
     if (!canWrite) {
@@ -287,11 +287,11 @@ export function WorkstreamSidebarSection(props: {
     }
   }
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed PR authority to pending request callbacks before they can accept a result.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed PR authority to pending request callbacks before they can accept a result.
   useLayoutEffect(() => {
     prAuthorityKeyRef.current = prAuthorityKey;
   }, [prAuthorityKey]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Abort detail and refresh requests when their registry binding retires or the panel unmounts.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Abort detail and refresh requests when their registry binding retires or the panel unmounts.
   useLayoutEffect(() => {
     bindingKeyRef.current = bindingKey;
     detailRequest.current?.abort();
@@ -305,7 +305,7 @@ export function WorkstreamSidebarSection(props: {
       manualRefreshRequest.current = null;
     };
   }, [bindingKey]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Focus the mounted detail panel after its selected workstream commits.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Focus the mounted detail panel after its selected workstream commits.
   useLayoutEffect(() => {
     if (selected) panelRef.current?.focus();
   }, [selected]);

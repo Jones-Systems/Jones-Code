@@ -8,10 +8,10 @@ import { act, render } from "../../../test/render.tsx";
 
 import { serializeEditorDoc } from "~/composer-rich-text-doc";
 import {
-  ComposerPromptEditor,
+  ComposerPromptEditorTiptap as ComposerPromptEditor,
   type ComposerPromptEditorHandle,
   type ComposerPromptEditorProps,
-} from "~/components/ComposerPromptEditor";
+} from "~/components/ComposerPromptEditorTiptap";
 import { formatInlineContextReference } from "~/lib/composerContextReferences";
 
 const review: ServerProviderSkill = {
@@ -156,10 +156,10 @@ it("invalidates for content, marks, skill chips, undo, redo and controlled repla
   await changesDoc(() => editor.commands.setMark("bold"), "x**hello** world");
   await changesDoc(
     () => editor.commands.insertContent({ type: "composer-skill", attrs: { skillName: "review" } }),
-    "$review" + "x**hello** world",
+    "$reviewx**hello** world",
   );
   await changesDoc(() => editor.commands.undo(), "x**hello** world");
-  await changesDoc(() => editor.commands.redo(), "$review" + "x**hello** world");
+  await changesDoc(() => editor.commands.redo(), "$reviewx**hello** world");
   counts.serialize.mockClear();
   await act(async () => replace("replacement"));
   expect(counts.serialize).toHaveBeenCalledWith(editor.state.doc);

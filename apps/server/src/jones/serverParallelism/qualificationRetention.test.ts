@@ -182,6 +182,7 @@ function milestoneController() {
     to: number;
     collections: number[];
   }[] = [];
+  const lastLive = new Map<number, number>();
   let changed = deferred();
   let closed = false;
   let advancing = false;
@@ -210,6 +211,11 @@ function milestoneController() {
   };
   const edge = async (milestone: Milestone, signal?: AbortSignal) => {
     if (closed) return;
+    if (milestone.kind === "retire") {
+      // Root259: the last live sample must precede closing admission/entering native retirement.
+      expect(lastCollection?.pids).toContain(milestone.pid);
+      lastLive.set(milestone.pid, lastCollection!.ordinal);
+    }
     const gate = deferred();
     const release = () => {
       signal?.removeEventListener("abort", abort);
@@ -302,7 +308,11 @@ function milestoneController() {
     if (last.kind !== "sampler-wait") throw new Error("Missing next sampler identity");
     expect(last.ordinal).toBe(first.ordinal + 1);
     expect(collected).toBeGreaterThan(before);
-    expect(lastCollection?.pids.includes(boundary.pid)).toBe(boundary.kind === "retire");
+    expect(lastLive.has(boundary.pid)).toBe(true);
+    expect(lastLive.get(boundary.pid)).toBeLessThanOrEqual(before);
+    // New resource reads exclude the closed capture during retirement AND journal proof;
+    // native exit/journal guards below still own actual retirement and allocation charges.
+    expect(lastCollection?.pids.includes(boundary.pid)).toBe(false);
     if (boundary.kind === "replacement-pool") throw new Error("Unexpected sampler boundary");
     samplerReceipts.push({
       kind: boundary.kind,

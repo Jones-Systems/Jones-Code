@@ -39,6 +39,7 @@ export function createPendingComposerRecovery(
         owner.composerImagesRef.current = [];
         owner.composerFilesRef.current = [];
         owner.composerTerminalContextsRef.current = [];
+        if (owner.composerEnvironmentContextsRef) owner.composerEnvironmentContextsRef.current = [];
       }
       restored = undefined;
     },
@@ -58,6 +59,7 @@ export function createPendingPromptRecovery(target: ComposerThreadTarget, prompt
     composerImagesRef: { current: [] },
     composerFilesRef: { current: [] },
     composerTerminalContextsRef: { current: [] },
+    composerEnvironmentContextsRef: { current: [] },
     snapshot: {
       prompt,
       images: [],
@@ -66,6 +68,7 @@ export function createPendingPromptRecovery(target: ComposerThreadTarget, prompt
       previewAnnotations: [],
       reviewComments: [],
       threadContexts: [],
+      environmentContexts: [],
     },
     resetCursor: () => {},
   }));

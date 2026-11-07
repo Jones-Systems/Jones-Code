@@ -62,7 +62,7 @@
       "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
     },
     {
-      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
       "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
     },
     {
@@ -106,7 +106,7 @@
       "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
     },
     {
-      "from": "apps/mobile/src/state/use-thread-outbox-drain.permissions.test.ts",
+      "from": "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts",
       "to": "packages/client-runtime/src/jones/preparedThreadTurn.ts"
     },
     {
@@ -126,7 +126,7 @@
       "to": "packages/contracts/src/jones/deliveryEvidence.ts"
     },
     {
-      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
       "to": "apps/mobile/src/jones/threadConfiguration/legacyOutbox.ts"
     },
     {

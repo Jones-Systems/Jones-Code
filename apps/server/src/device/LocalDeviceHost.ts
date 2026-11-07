@@ -41,6 +41,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import { releaseAgentDeviceSession } from "./AgentDeviceTarget.ts";
 import * as DeviceHost from "./DeviceHost.ts";
 import { makeDeviceHubOperations } from "./DeviceHubOperations.ts";
 import {
@@ -528,7 +529,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
   });
 
   const startAgentDeviceDaemon = Effect.fn("LocalDeviceHost.startAgentDeviceDaemon")(function* (
-    agentTool: DeviceToolPaths,
+    agentTool: Pick<DeviceToolPaths, "entryPath">,
     nodePath: string,
   ): Effect.fn.Return<
     DeviceHost.AgentDeviceEndpoint,
@@ -669,10 +670,8 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       platformAvailability("android"),
     ]);
     if (!platforms.some((platform) => platform.available)) {
-      if (running) {
-        yield* Ref.set(runningRef, null);
-        yield* stopHub(running.hub);
-      }
+      // Retain the record for close: an agent daemon can outlive the stopped hub.
+      if (running) yield* stopHub(running.hub);
       return yield* new DeviceHost.DeviceHostError({
         hostId,
         step: unavailablePlatformReason(platforms),
@@ -680,10 +679,11 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       });
     }
     const platform = availableHubPlatform(platforms);
+    // A dead hub's record stays until a replacement is published: the agent
+    // daemon outlives the hub, and close needs its endpoint if the restart fails.
     if (running) {
       const alive = yield* running.hub.child.isRunning.pipe(Effect.orElseSucceed(() => false));
       if (alive && running.hub.platform === platform) return running;
-      yield* Ref.set(runningRef, null);
       if (alive) yield* stopHub(running.hub);
     }
     const installed = yield* isDeviceHubInstalled(config.baseDir).pipe(
@@ -722,7 +722,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       ]);
       const next: RunningHost = {
         hub,
-        agentDevice: null,
+        agentDevice: running?.agentDevice ?? null,
         helpers: {
           serveSimAxSettings: axExists ? candidate.serveSimAxSettings : null,
           serveSimCli: cliExists ? candidate.serveSimCli : null,
@@ -752,7 +752,14 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
         DeviceHost.DeviceHostAgentReady
       > {
         const running = yield* ensureHubReady(onPhase);
-        if (running.agentDevice) return { ...toReady(running), agentDevice: running.agentDevice };
+        if (running.agentDevice) {
+          const agentDevice = yield* startAgentDeviceDaemon(
+            running.agentDevice,
+            running.hub.nodePath,
+          );
+          yield* Ref.set(runningRef, { ...running, agentDevice });
+          return { ...toReady(running), agentDevice };
+        }
         const installed = yield* isAgentDeviceInstalled(config.baseDir).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
@@ -847,6 +854,9 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     nodePath: running.hub.nodePath,
     run,
     helpers: running.helpers,
+    ...(running.agentDevice
+      ? { releaseAgentSession: releaseAgentDeviceSession(httpClient, running.agentDevice) }
+      : {}),
   });
 
   const current: DeviceHost.DeviceHost["Service"]["current"] = Ref.get(runningRef).pipe(

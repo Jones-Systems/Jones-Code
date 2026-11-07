@@ -150,6 +150,8 @@ function workerAbsent(worker: { readonly pid: number; readonly processGroup: num
   return absent(-worker.processGroup) && absent(worker.pid);
 }
 
+const compiledIs1 = Schema.is(RequestSchema);
+
 export function createInstallPlanCoordinator(options: {
   readonly store: InstallPlanStore;
   readonly controller: Pick<
@@ -547,7 +549,7 @@ export function createInstallPlanCoordinator(options: {
         // Cold staged review has no plan ID, reservation, disposition or install authority.
         return await transact(async (snapshot, evidence) => {
           let extras: Omit<JonesInstallPlanResult, "state">;
-          if (!Schema.is(RequestSchema)(req))
+          if (!compiledIs1(req))
             extras = {
               refused: { code: "invalid-evidence", message: "Invalid recovery preflight binding." },
             };
@@ -628,7 +630,7 @@ export function createInstallPlanCoordinator(options: {
         }
         document = refreshCommands(document);
         const command = "command" in req ? req.command : undefined;
-        if (Schema.is(RequestSchema)(req) && command !== undefined) {
+        if (compiledIs1(req) && command !== undefined) {
           const recorded = document.commands?.find(
             (entry) => entry.receipt.command.commandId === command.commandId,
           );
@@ -848,7 +850,7 @@ export function createInstallPlanCoordinator(options: {
             );
           return false;
         };
-        if (!Schema.is(RequestSchema)(req)) refuse("invalid-evidence", "Invalid plan request.");
+        if (!compiledIs1(req)) refuse("invalid-evidence", "Invalid plan request.");
         else if (snapshot.readOnly !== undefined) {
           if (req.type !== "read")
             refuse(
@@ -1381,7 +1383,7 @@ export function createInstallPlanCoordinator(options: {
         }
         if (
           command !== undefined &&
-          Schema.is(RequestSchema)(req) &&
+          compiledIs1(req) &&
           snapshot.readOnly === undefined &&
           ["start", "edit", "laptop", "claim"].includes(req.type)
         ) {

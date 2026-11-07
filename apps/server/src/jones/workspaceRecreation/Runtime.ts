@@ -24,6 +24,8 @@ import {
   type RecreationResult,
 } from "./Native.ts";
 
+const decodeRetirementReceipt = Schema.decodeEffect(RetirementReceiptJson);
+
 class TurnClaims extends Context.Service<
   TurnClaims,
   { readonly hold: (path: string) => Effect.Effect<void, RetirementError> }
@@ -99,9 +101,7 @@ const retiredSource = Effect.fn("CheckoutRecreation.retiredSource")(function* (w
   if (rows[0].state !== "retired")
     return yield* new RetirementError({ reason: "retiring", target: worktree });
   const receipt =
-    rows[0].receipt_json === null
-      ? null
-      : yield* Schema.decodeEffect(RetirementReceiptJson)(rows[0].receipt_json);
+    rows[0].receipt_json === null ? null : yield* decodeRetirementReceipt(rows[0].receipt_json);
   if (
     !receipt ||
     receipt.state !== "retired" ||

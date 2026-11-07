@@ -1,0 +1,26 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workspace-pdf-session",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/filePreview/workspacePdfSession.ts",
+    "apps/web/src/jones/filePreview/workspacePdfSession.test.ts",
+    "apps/web/src/jones/filePreview/workspacePdfSession.browser.test.tsx"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/files/BrowserDocumentFrame.tsx",
+    "apps/web/src/components/files/FilePreviewPanel.tsx",
+    "apps/web/src/components/files/pdfDocument.ts",
+    "apps/web/src/components/files/AttachmentFilePreview.tsx"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/files/BrowserDocumentFrame.tsx",
+      "to": "apps/web/src/jones/filePreview/workspacePdfSession.ts"
+    },
+    {
+      "from": "apps/web/src/components/files/FilePreviewPanel.tsx",
+      "to": "apps/web/src/jones/filePreview/workspacePdfSession.ts"
+    }
+  ]
+}

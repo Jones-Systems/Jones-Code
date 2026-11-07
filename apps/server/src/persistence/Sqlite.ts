@@ -35,8 +35,10 @@ const layerSetup = Layer.effectDiscard(
     // Checkpoints are now the only sync, and macOS fsync() does not flush the
     // drive cache. F_FULLFSYNC makes them reach disk; other platforms ignore it.
     yield* sql`PRAGMA checkpoint_fullfsync = ON;`;
-    // PASSIVE checkpoints never shrink the -wal file, so it otherwise keeps its
-    // largest size until the last connection closes.
+    // Keep statement journals and sort spills off the main thread's disk path.
+    // Large statements and open savepoints can increase peak memory use.
+    yield* sql`PRAGMA temp_store = MEMORY;`;
+    // PASSIVE checkpoints retain peak WAL size until the last connection closes.
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
     yield* runMigrations();
     // Planner statistics read every page and can preserve small-table scan plans after growth.
@@ -47,7 +49,7 @@ const layerSetup = Layer.effectDiscard(
       yield* sql`DELETE FROM sqlite_stat1;`;
       yield* sql`ANALYZE sqlite_schema;`;
     }
-  }),
+  }).pipe(Effect.withSpan("Sqlite.setup")),
 );
 
 export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (

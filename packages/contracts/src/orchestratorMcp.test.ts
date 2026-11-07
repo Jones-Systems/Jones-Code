@@ -124,6 +124,8 @@ describe("self settlement contracts", () => {
   });
 });
 
+const compiledIs1 = Schema.is(OrchestratorMcp.OrchestratorMcpThreadActivityObservation);
+
 it("keeps native activity optional and validates explicit incomplete background evidence", () => {
   const decode = Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadActivityObservation);
   expect(
@@ -140,7 +142,7 @@ it("keeps native activity optional and validates explicit incomplete background 
     reason: "native_background_coverage_incomplete",
   });
   expect(
-    Schema.is(OrchestratorMcp.OrchestratorMcpThreadActivityObservation)({
+    compiledIs1({
       foreground: null,
       background: "busy",
       backgroundStatus: "known",

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -15,7 +16,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexReplay from "effect-codex-app-server/replay";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -33,6 +34,11 @@ import {
 } from "../../../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
 import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
 import { materializeCodexReplayAppIdentity } from "../../runtimeIdentity/CodexReplayIdentity.ts";
+
+const layerNodeServicesWithCrypto = Layer.merge(NodeServices.layer, NodeCrypto.layer);
+
+const decodeCodexTranscript = Schema.decodeUnknownSync(CodexReplay.CodexAppServerReplayTranscript);
+const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 
 const rootThread = "reader-root";
 const rootTurn = "reader-root-turn";
@@ -66,7 +72,7 @@ const inbound = (frame: unknown, label?: string): CodexReplay.CodexAppServerRepl
   ...(label === undefined ? {} : { label }),
 });
 
-const transcript = Schema.decodeUnknownSync(CodexReplay.CodexAppServerReplayTranscript)(
+const transcript = decodeCodexTranscript(
   materializeCodexReplayAppIdentity({
     provider: "codex",
     protocol: "codex.app-server",
@@ -221,9 +227,9 @@ describe("Codex late subagent reader progress", () => {
       });
       const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
         instanceId: modelSelection.instanceId,
-        settings: yield* Schema.decodeEffect(CodexSettings)({}),
+        settings: yield* decodeCodexSettings({}),
         environment: {},
-        crypto: yield* Crypto.Crypto,
+        digest: yield* Digest.Digest,
         fileSystem,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         serverConfig: yield* makeReplayServerConfig(scenario).pipe(
@@ -355,7 +361,7 @@ describe("Codex late subagent reader progress", () => {
           IdAllocator.layer,
           McpProviderSessions.layer,
           ControlAdmission.layer,
-          NodeServices.layer,
+          layerNodeServicesWithCrypto,
         ),
       ),
     ),

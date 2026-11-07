@@ -20,7 +20,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -89,11 +89,11 @@ const encodeHandoffRequest = Schema.encodeEffect(
 );
 
 export const make = Effect.gen(function* () {
+  const random = yield* SecureRandom.SecureRandom;
   const retirementOutcome = yield* RetirementOutcome.lookup;
   const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
   const conversationPolicy = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
   const lookupProvenance = yield* WorkspaceProvenance.optionalLookup;
-  const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -163,7 +163,7 @@ export const make = Effect.gen(function* () {
   );
 
   const handoffIds = (scope: McpThreadInvocationScope) =>
-    crypto.randomUUIDv4().pipe(
+    random.uuidV4().pipe(
       Effect.map((uuid) => {
         const part = (kind: string, operation: string) =>
           [kind, "mcp", encodeURIComponent(scope.thread.providerSessionId), operation, uuid].join(
@@ -938,7 +938,7 @@ export const make = Effect.gen(function* () {
 export const layer: Layer.Layer<
   WorktreeMcpService,
   never,
-  | Crypto.Crypto
+  | SecureRandom.SecureRandom
   | ThreadManagementService.ThreadManagementService
   | ProjectService.ProjectService
   | ServerSettings.ServerSettingsService

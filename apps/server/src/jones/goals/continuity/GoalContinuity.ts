@@ -156,6 +156,11 @@ function immutableJson<A>(value: A): A {
   return copy;
 }
 
+const compiledIs1 = Schema.is(C.ContinuityRecoveryBoundary);
+const compiledIs2 = Schema.is(C.ContinuityRequest);
+const compiledIs3 = Schema.is(C.ContinuityRecoveryTransition);
+const compiledIs4 = Schema.is(C.ContinuityDeliveryEvidence);
+
 const make = Effect.gen(function* () {
   const store = yield* Store.GoalContinuityStore;
   const callers = new WeakSet<ContinuityCaller>();
@@ -421,7 +426,7 @@ const make = Effect.gen(function* () {
   ) {
     const { witness, producer, producerOrigin } = boundary;
     if (
-      !Schema.is(C.ContinuityRecoveryBoundary)(serialBoundary(boundary)) ||
+      !compiledIs1(serialBoundary(boundary)) ||
       producerOrigin.driver !== witness.driver ||
       producerOrigin.instanceId !== witness.providerInstanceId ||
       producerOrigin.providerSessionId !== witness.providerSessionId ||
@@ -621,8 +626,7 @@ const make = Effect.gen(function* () {
 
   const execute: GoalContinuity["Service"]["execute"] = Effect.fn("GoalContinuity.execute")(
     function* (caller, request) {
-      if (!callers.has(caller) || !Schema.is(C.ContinuityRequest)(request))
-        return yield* authError();
+      if (!callers.has(caller) || !compiledIs2(request)) return yield* authError();
       const write = !readonlyActions.has(request.action);
       if (write && !caller.writable) return yield* authError();
       yield* caller.revalidate(write);
@@ -936,8 +940,7 @@ const make = Effect.gen(function* () {
               : ({ outcome: "absent", gate } as const);
           }
           yield* validateBoundary(boundary);
-          if (!Schema.is(C.ContinuityRecoveryTransition)(transition))
-            return refused("invalid_transition");
+          if (!compiledIs3(transition)) return refused("invalid_transition");
           const projected = buildRecoveryCapsule(record.snapshot, {
             owner,
             capability,
@@ -1286,8 +1289,7 @@ const make = Effect.gen(function* () {
     "GoalContinuity.settleDelivery",
   )(function* ({ permit, evidence }) {
     const association = permits.get(permit);
-    if (!association || !Schema.is(C.ContinuityDeliveryEvidence)(evidence))
-      return refused("permit_revoked");
+    if (!association || !compiledIs4(evidence)) return refused("permit_revoked");
     // Currentness is deliberately not required for authentic late acknowledgement:
     // its original permit and producer association remain the only authority.
     const boundary = association.boundary;

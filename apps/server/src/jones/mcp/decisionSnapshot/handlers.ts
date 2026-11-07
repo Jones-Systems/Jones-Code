@@ -76,15 +76,18 @@ export const DecisionSnapshotNativeCountsLive = Layer.effect(
     const census = yield* RuntimeCensus.RuntimeCensus;
     const workstreams = yield* WorkstreamGateway.WorkstreamGateway;
     return DecisionSnapshotNativeCounts.of({
-      readRegistryCounts: () =>
+      readRegistryCounts: Effect.fn("DecisionSnapshotNativeCounts.readRegistryCounts")(() =>
         workstreams.readRegistryCounts().pipe(
           Effect.map((observation) => ({ ...observation, complete: true })),
           Effect.mapError(() => new NativeCountReadError({ source: "workstreams" })),
         ),
-      readOperatingCounts: (projectId) =>
-        census
-          .readOperatingCounts(projectId)
-          .pipe(Effect.mapError(() => new NativeCountReadError({ source: "threads" }))),
+      ),
+      readOperatingCounts: Effect.fn("DecisionSnapshotNativeCounts.readOperatingCounts")(
+        (projectId) =>
+          census
+            .readOperatingCounts(projectId)
+            .pipe(Effect.mapError(() => new NativeCountReadError({ source: "threads" }))),
+      ),
     });
   }),
 ).pipe(Layer.provide(RuntimeCensus.layer));
@@ -110,6 +113,9 @@ const absentEntry = (
   reason,
 });
 const isoNow = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeDecisionSnapshotJson = Schema.decodeEffect(Schema.fromJsonString(DecisionSnapshot));
+
 export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
   DecisionSnapshotToolkit,
   Effect.gen(function* () {
@@ -234,7 +240,7 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
           );
           const nativePacket = Fiber.join(nativeCounts).pipe(
             Effect.flatMap(([threadEntry, workstreamEntry]) =>
-              Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+              encodeUnknownJson({
                 schema: "codex.decision-snapshot-native/v1",
                 authority_effect: "none",
                 provenance: "native_observed",
@@ -245,7 +251,7 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
           );
           const output = yield* collector.collect(purpose, nativePacket, deadlineMonotonic).pipe(
             Effect.flatMap((text) =>
-              Schema.decodeEffect(Schema.fromJsonString(DecisionSnapshot))(text, {
+              decodeDecisionSnapshotJson(text, {
                 onExcessProperty: "error",
               }),
             ),

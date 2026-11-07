@@ -20,14 +20,20 @@
     },
     "scripts": {
       // Knip loads its preprocessor through a CLI option; native verification and
-      // Worktree setup, retained archive verifiers, the macOS signer, and mobile
-      // device CLIs are invoked by path rather than through traced imports.
+      // worktree setup (from t3.json) run directly. release-desktop.yml bundles the
+      // Windows verify script with esbuild through a path knip does not trace,
+      // electron-builder loads the macOS signer and the Linux afterPack hook by path, and mobile-e2e.ts runs
+      // agent-device's CLI by path, and mobile-behavior.ts spawns its runner by path.
+      // release-desktop.yml runs the desktop launch check through xvfb-run, which knip
+      // does not trace.
       "entry": [
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
         "knip-schemas.ts",
-        // Retained upstream release CLI; its publishing workflow stays disabled.
+        // Retained release CLI; publication workflows stay disabled for this sync.
         "resolve-nightly-release.ts",
+        "linux-after-pack.ts",
+        "mobile-behavior/run.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
@@ -47,6 +53,8 @@
         "jones/performance/migration-restore-worker.mjs",
         "jones/performance/current-qualification-worker.mjs",
         "sign-macos.ts",
+        "prepare-server-compile-cache.cjs",
+        "smoke-desktop-app.ts",
         "verify-windows-desktop-artifact.ts",
         // Candidate CI builds and invokes these disposable SEA qualification entries.
         "jones/native-enrollment/candidate.vite.config.ts",
@@ -76,7 +84,6 @@
         "src/jones/updates/*.ts",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
-        "scripts/evaluate-thread-titles.ts",
         "scripts/fetch-expo-schema.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",
@@ -100,9 +107,19 @@
       // The Vite+ web build prerequisite.
       // Native and disk-loaded provider packages stay external to the bundle; the
       // CLI archive and desktop sidecar stage them from this manifest.
-      "ignoreDependencies": ["@effect/platform-node-shared", "@t3tools/web", "@napi-rs/keyring"],
+      "ignoreDependencies": [
+        "@effect/platform-node-shared",
+        "@t3tools/web",
+        "@napi-rs/keyring",
+        "ffi-rs",
+      ],
     },
     "apps/desktop": {
+      // Exact filenames emitted by the desktop build and required by boot.
+      "paths": {
+        "./compileCache.cjs": ["./src/compileCache.ts"],
+        "./main.cjs": ["./src/main.ts"],
+      },
       // Electron loads these bundles by filename rather than importing them.
       "entry": [
         "gnome-extension/extension.js!",
@@ -113,6 +130,7 @@
         "src/jones/updates/jonesStagingWorker.ts!",
         "src/boot.ts!",
         "src/compileCache.ts!",
+        "src/serverCompileCache.ts!",
         "src/main.ts!",
         "src/preload.ts!",
         "src/jones/threadMonitor/preload.ts!",
@@ -172,6 +190,12 @@
       "ignoreDependencies": ["@astrojs/check"],
     },
     "apps/mobile": {
+      // Awaited Metro generators create these string modules and license manifest.
+      "paths": {
+        "@t3tools/mobile-preview-stream": [".generated/preview-stream/index.js"],
+        "@t3tools/mobile-device-stream": [".generated/device-stream/index.js"],
+        "@t3tools/mobile-third-party-licenses": [".generated/third-party-licenses/index.js"],
+      },
       // Expo loads plugins and the fingerprint config by string; Metro embeds the browser entry in the native WebView.
       "entry": [
         "index.ts!",
@@ -181,6 +205,9 @@
         "scripts/generate-device-stream.mts",
         "src/features/devices/device-stream.browser.ts!",
         "src/features/browser/preview-stream.browser.ts!",
+        ".generated/preview-stream/index.js!",
+        ".generated/device-stream/index.js!",
+        ".generated/third-party-licenses/index.js!",
       ],
       // Fonts are configured as asset paths; Expo autolinks the native packages.
       "ignoreDependencies": [
@@ -208,7 +235,8 @@
       ],
     },
     "infra/relay": {
-      "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!"],
+      // Alchemy loads src/worker.ts as the Worker entry and reads its default export.
+      "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!", "src/worker.ts!"],
     },
     "packages/client-runtime": {
       "includeEntryExports": true,

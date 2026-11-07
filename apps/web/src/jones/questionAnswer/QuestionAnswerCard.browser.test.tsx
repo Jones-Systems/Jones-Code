@@ -63,7 +63,7 @@ function Harness({
     () => initialAnswers ?? seedUserInputDraftAnswers(questions, {}),
   );
   const [index, setIndex] = useState(initialIndex);
-  const [result, setResult] = useState<Record<string, string | string[]> | null>(null);
+  const [result, setResult] = useState<Record<string, string | readonly string[]> | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const cardCallbacks = {
     onChangeCustomAnswer: (id: string, value: string) =>

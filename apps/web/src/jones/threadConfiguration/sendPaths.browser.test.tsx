@@ -23,6 +23,8 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 import "~/index.css";
+// Load the real routed view before the scenario starts its synthetic transport.
+import "../../components/ThreadRouteView";
 import { AppRoot } from "../../AppRoot";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import type { ComposerHandleRef } from "../../composerHandleContext";
@@ -200,6 +202,31 @@ vi.mock(import("../../rpc/requestLatencyState"), async (original) => ({
   trackRpcRequestSent: () => {},
 }));
 
+// App modules can subscribe before a test starts. Admit real primary HTTP only
+// after this file has installed its synthetic descriptor/session/transport.
+const primaryFixtureAdmission = vi.hoisted(() => {
+  let admit!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    admit = resolve;
+  });
+  return { ready, admit };
+});
+vi.mock(import("~/environments/primary/httpLayer"), async (original) => {
+  const [actual, Effect, Layer] = await Promise.all([
+    original(),
+    import("effect/Effect"),
+    import("effect/Layer"),
+  ]);
+  return {
+    ...actual,
+    layer: Layer.unwrap(
+      Effect.promise(() => primaryFixtureAdmission.ready).pipe(
+        Effect.map(() => actual.layerForCurrentOrigin()),
+      ),
+    ),
+  };
+});
+
 const cases = [
   ["plan", false],
   ["plan", true],
@@ -249,6 +276,7 @@ it.each(cases)(
     };
     const fixture = fixtures.find((thread) => thread.id === `intent-${path}-${explicit}`)!;
     using _environment = installFakeEnvironment(fixtures);
+    primaryFixtureAdmission.admit();
     using delivery = deferFakeSends();
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,
@@ -316,6 +344,7 @@ it.each(cases)(
       previewAnnotations: [],
       reviewComments: [],
       threadContexts: [],
+      environmentContexts: [],
       shownPendingApprovalIds: [],
       selectedModelSelection: thread.modelSelection,
       selectedProvider: ProviderDriverKind.make("codex"),
@@ -342,7 +371,6 @@ it.each(cases)(
         activeProposedPlan: null,
         isServerThread: true,
         isSendBusy: false,
-        isConnecting: false,
         composerRef,
         composerDraftTarget: target,
         beginLocalDispatch: vi.fn(),
@@ -369,7 +397,6 @@ it.each(cases)(
         },
         isServerThread: true,
         isSendBusy: false,
-        isConnecting: false,
         composerRef,
         composerDraftTarget: target,
         beginLocalDispatch: vi.fn(),
@@ -387,6 +414,8 @@ it.each(cases)(
         activeThread: thread,
         activeThreadId: thread.id,
         activeThreadRef: target,
+        threadDetailRef: target,
+        turnItems: [],
         activeThreadKey: routeThreadKey,
         activeThreadShell: thread,
         activeLatestRun: thread.latestRun,
@@ -408,7 +437,6 @@ it.each(cases)(
         clearUsageLimitsFor: vi.fn(),
         beginLocalDispatch: vi.fn(),
         resetLocalDispatch: vi.fn(),
-        scheduleComposerFocus: vi.fn(),
         scrollToEnd: vi.fn(),
         persistThreadSettingsForNextTurn: persistSettings,
       }).sendStandaloneCommand;
@@ -535,6 +563,7 @@ async function withPlanAction(
     previewAnnotations: [],
     reviewComments: [],
     threadContexts: [],
+    environmentContexts: [],
     shownPendingApprovalIds: [],
     selectedModelSelection: thread.modelSelection,
     selectedProvider: ProviderDriverKind.make("codex"),
@@ -568,7 +597,6 @@ async function withPlanAction(
         : null,
       isServerThread: true,
       isSendBusy: false,
-      isConnecting: false,
       composerRef,
       composerDraftTarget: target,
       beginLocalDispatch: () => {},

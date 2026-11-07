@@ -115,6 +115,8 @@ it.effect("denies snapshot without its focused capability before collecting any 
     expect(h.state().launches).toBe(0);
   }),
 );
+const compiledDecodeEffect1 = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+
 it.effect("retains native thread facts when registry and bound runtime are unavailable", () =>
   Effect.gen(function* () {
     const h = yield* harness();
@@ -132,9 +134,10 @@ it.effect("retains native thread facts when registry and bound runtime are unava
         host: { status: "unavailable", reason: "runtime_unavailable" },
       },
     });
-    expect(
-      yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(h.state().envelope),
-    ).toMatchObject({ schema: "codex.decision-snapshot-native/v1", provenance: "native_observed" });
+    expect(yield* compiledDecodeEffect1(h.state().envelope)).toMatchObject({
+      schema: "codex.decision-snapshot-native/v1",
+      provenance: "native_observed",
+    });
     expect(h.state().reads).toBe(1);
     expect(h.state().registryReads).toBe(1);
     expect(h.state().launches).toBe(1);
@@ -170,9 +173,7 @@ it.effect("preserves incomplete V2 native background coverage as partial counts"
         },
       },
     });
-    expect(
-      yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(h.state().envelope),
-    ).toMatchObject({
+    expect(yield* compiledDecodeEffect1(h.state().envelope)).toMatchObject({
       sources: {
         threads: { status: "partial", reason: "native_background_coverage_incomplete" },
       },
@@ -301,9 +302,7 @@ it.effect(
       );
       const h = yield* harness(false, 0, nativePorts);
       assertApplicationScope(yield* h.call(["decision-snapshot"]));
-      expect(
-        yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(h.state().envelope),
-      ).toMatchObject({
+      expect(yield* compiledDecodeEffect1(h.state().envelope)).toMatchObject({
         sources: {
           threads: {
             status: "partial",
@@ -422,6 +421,9 @@ it.effect(
     }),
 );
 
+const compiledEncodeEffect2 = Schema.encodeEffect(Schema.fromJsonString(DecisionSnapshot));
+const compiledDecodeEffect3 = Schema.decodeEffect(Schema.fromJsonString(DecisionSnapshot));
+
 it.effect(
   "round-trips adapter counts and a v1 thread entry through the unchanged real collector",
   () =>
@@ -513,9 +515,7 @@ print(json.dumps(asyncio.run(module.compose({}, purpose=sys.argv[2], native=json
         values: { total: 4, operating: 2 },
       });
       expect(result.sources.host.reason).toBe("source_not_bound");
-      const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(DecisionSnapshot))(result);
-      expect(yield* Schema.decodeEffect(Schema.fromJsonString(DecisionSnapshot))(encoded)).toEqual(
-        result,
-      );
+      const encoded = yield* compiledEncodeEffect2(result);
+      expect(yield* compiledDecodeEffect3(encoded)).toEqual(result);
     }),
 );

@@ -1,3 +1,4 @@
+import { applyShellStreamEvent } from "./shellReducer.ts";
 import {
   ORCHESTRATION_V2_WS_METHODS,
   type EnvironmentId,
@@ -42,7 +43,8 @@ import {
 import * as ShellSnapshotLoader from "./shellSnapshotHttp.ts";
 import type { DeferredShellSnapshot } from "./shellPullRequests.ts";
 import {
-  applyShellStreamEvent,
+  applyShellStreamEvents,
+  type ShellStreamEvent,
   mergeShellSnapshotProjects,
   reuseUnchangedThreadShells,
   sameThreadPullRequests,
@@ -221,11 +223,63 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       let waiting = awaitingCompletion;
       let next = initial;
       let receivedSnapshot = false;
-      for (const item of items) {
+      for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+        const item = items[itemIndex]!;
+        if (
+          refreshedAt.size === 0 &&
+          Option.isSome(next.snapshot) &&
+          item.kind !== "snapshot" &&
+          item.kind !== "synchronized" &&
+          item.kind !== "thread.refreshed" &&
+          item.kind !== "thread.omitted"
+        ) {
+          const batch: ShellStreamEvent[] = [];
+          let sequence = next.snapshot.value.snapshotSequence;
+          let removals: Map<ThreadId, number> | undefined;
+          while (itemIndex < items.length) {
+            const delta = items[itemIndex]!;
+            if (
+              delta.kind === "snapshot" ||
+              delta.kind === "synchronized" ||
+              delta.kind === "thread.refreshed" ||
+              delta.kind === "thread.omitted"
+            )
+              break;
+            batch.push(delta);
+            if (
+              delta.sequence > sequence &&
+              (delta.kind === "thread.removed" ||
+                delta.kind === "thread.updated" ||
+                delta.kind === "project.updated" ||
+                delta.kind === "project.removed")
+            ) {
+              if (
+                delta.kind === "thread.removed" ||
+                (delta.kind === "thread.updated" && delta.location === "archive")
+              ) {
+                removals ??= new Map(next.removedAt);
+                removals.set(
+                  delta.kind === "thread.removed" ? delta.threadId : delta.thread.id,
+                  delta.sequence,
+                );
+              }
+              sequence = delta.sequence;
+            }
+            itemIndex++;
+          }
+          itemIndex--;
+          next = Object.assign({}, next, {
+            snapshot: Option.some(applyShellStreamEvents(next.snapshot.value, batch)),
+            removedAt: removals ?? next.removedAt,
+            status: waiting ? "synchronizing" : "live",
+            error: Option.none(),
+          });
+          continue;
+        }
         if (item.kind === "synchronized") {
           waiting = false;
           if (Option.isSome(next.snapshot)) {
-            next = { ...next, status: "live", error: Option.none() };
+            next = Object.assign({}, next, { status: "live", error: Option.none() });
           }
           continue;
         }
@@ -376,7 +430,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       ORCHESTRATION_V2_WS_METHODS.subscribeShell,
       Effect.fn("EnvironmentShellState.makeSubscribeInput")(function* (producer) {
         yield* producerGuard.begin(producer);
-        const { session } = producer;
+        const session = producer.session;
         const {
           supportsCompletionMarker,
           omitIdleSubagents,
@@ -518,16 +572,12 @@ function shellStateChanges(environmentId: EnvironmentId) {
 export interface EnvironmentShellSummary {
   readonly hasSnapshot: boolean;
   readonly hasSynchronizingShell: boolean;
-  readonly hasCachedShell: boolean;
-  readonly hasLiveShell: boolean;
   readonly firstError: string | null;
 }
 
 const EMPTY_ENVIRONMENT_SHELL_SUMMARY: EnvironmentShellSummary = Object.freeze({
   hasSnapshot: false,
   hasSynchronizingShell: false,
-  hasCachedShell: false,
-  hasLiveShell: false,
   firstError: null,
 });
 
@@ -540,8 +590,6 @@ function shellSummariesEqual(
   return (
     left.hasSnapshot === right.hasSnapshot &&
     left.hasSynchronizingShell === right.hasSynchronizingShell &&
-    left.hasCachedShell === right.hasCachedShell &&
-    left.hasLiveShell === right.hasLiveShell &&
     left.firstError === right.firstError
   );
 }
@@ -566,15 +614,11 @@ export function createEnvironmentShellSummaryAtom(input: {
   return Atom.make((get) => {
     let hasSnapshot = false;
     let hasSynchronizingShell = false;
-    let hasCachedShell = false;
-    let hasLiveShell = false;
     let firstError: string | null = null;
 
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
       const state = get(input.shellStateValueAtom(environmentId));
       hasSynchronizingShell ||= state.status === "synchronizing";
-      hasCachedShell ||= state.status === "cached";
-      hasLiveShell ||= state.status === "live";
       if (firstError === null) {
         firstError = Option.getOrNull(state.error);
       }
@@ -587,8 +631,6 @@ export function createEnvironmentShellSummaryAtom(input: {
     const next: EnvironmentShellSummary = {
       hasSnapshot,
       hasSynchronizingShell,
-      hasCachedShell,
-      hasLiveShell,
       firstError,
     };
     if (shellSummariesEqual(previousSummary, next)) {
@@ -660,7 +702,7 @@ export function createEnvironmentShellAtoms<R, E>(
   );
   const stateValueAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) =>
-      Option.getOrElse(AsyncResult.value(get(stateAtom(environmentId))), () => EMPTY_SHELL_STATE),
+      AsyncResult.getOrElse(get(stateAtom(environmentId)), () => EMPTY_SHELL_STATE),
     ).pipe(Atom.withLabel(`environment-shell-state-value:${environmentId}`)),
   );
 

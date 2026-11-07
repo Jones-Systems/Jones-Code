@@ -444,7 +444,6 @@ export const make = Effect.gen(function* () {
           emit({ type: "cdp", ...tab.key, message });
         }
       },
-      tab.downloadPolicy === "deny" ? companionCdpPolicy : undefined,
       // Keep the tab detached so reconnecting cannot replay the oversized event.
       () => {
         if (tab.relay !== relay || tabs.get(keyOf(tab.key)) !== tab) return;
@@ -462,6 +461,7 @@ export const make = Effect.gen(function* () {
         setFocusEmulation(tab, false);
         detach(tab.key);
       },
+      tab.downloadPolicy === "deny" ? companionCdpPolicy : undefined,
     );
     tab.relay = relay;
     return relay;
@@ -544,7 +544,7 @@ export const make = Effect.gen(function* () {
       focusReleasing: false,
       screencasts: new Set(),
       onMessage: (_event, method, params, sessionId) => {
-        if (method === "Browser.downloadWillBegin") {
+        if (method === "Page.downloadWillBegin") {
           const guid = (params as { guid?: unknown } | undefined)?.guid;
           tab.pendingDownloadGuid = typeof guid === "string" ? guid : null;
         }

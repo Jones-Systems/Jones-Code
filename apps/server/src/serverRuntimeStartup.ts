@@ -1,3 +1,4 @@
+import { installSelectedSyntheticPresentation } from "./jones/testing/SyntheticPresentation.ts";
 import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Option from "effect/Option";
@@ -9,6 +10,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_SERVER_SETTINGS,
+  isListedThreadLineage,
   type ModelSelection,
   type Project,
   ProjectId,
@@ -19,7 +21,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -179,9 +181,9 @@ const recordStartupHeartbeat = Effect.gen(function* () {
 
   const { threadCount, projectCount } = yield* Effect.all({
     projects: projects.snapshot,
-    threads: metadata.count.pipe(NodeSqliteClient.readOnly),
+    threadCount: metadata.count.pipe(NodeSqliteClient.readOnly),
   }).pipe(
-    Effect.map(({ projects: projectSnapshot, threads: threadCount }) => ({
+    Effect.map(({ projects: projectSnapshot, threadCount }) => ({
       projectCount: projectSnapshot.projects.length,
       threadCount,
     })),
@@ -286,8 +288,8 @@ const resolveWelcomeBase = Effect.gen(function* () {
 });
 
 const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
-  const crypto = yield* Crypto.Crypto;
-  const randomUUID = crypto.randomUUIDv4();
+  const random = yield* SecureRandom.SecureRandom;
+  const randomUUID = random.uuidV4();
   const serverConfig = yield* ServerConfig.ServerConfig;
   const projects = yield* ProjectService.ProjectService;
   const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
@@ -305,10 +307,10 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
       title: path.basename(serverConfig.cwd) || "project",
       workspaceRoot: serverConfig.cwd,
     });
-    const snapshot = yield* metadata.list({ projectId: project.id, location: "active" });
-    const existingThread = snapshot.threads.find(
-      (thread) => thread.lineage.relationshipToParent !== "subagent",
-    );
+    const existingThread = (yield* metadata.list({
+      projectId: project.id,
+      location: "active",
+    })).threads.find((thread) => isListedThreadLineage(thread.lineage));
     if (existingThread === undefined) {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const settings = yield* serverSettings.getSettings;
@@ -502,7 +504,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
 
   const plannedContinuity = yield* Effect.serviceOption(
@@ -663,7 +665,9 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       autoBootstrap: (serverConfig.autoBootstrapProjectFromCwd
         ? runStartupPhase(
             "welcome.autobootstrap",
-            resolveAutoBootstrapWelcomeTargets.pipe(Effect.provideService(Crypto.Crypto, crypto)),
+            resolveAutoBootstrapWelcomeTargets.pipe(
+              Effect.provideService(SecureRandom.SecureRandom, random),
+            ),
           )
         : Effect.succeed({})
       ).pipe(Effect.map((targets): AutoBootstrapWelcomeTargets => targets)),
@@ -741,6 +745,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     yield* runStartupPhase("auxiliary-roots.parked", options?.awaitAuxiliaryParked ?? Effect.void);
 
     const updateOutcome = yield* launcher.prepareTrial;
+    yield* installSelectedSyntheticPresentation();
 
     yield* Effect.logDebug("startup phase: publishing welcome event", {
       environmentId: environment.environmentId,

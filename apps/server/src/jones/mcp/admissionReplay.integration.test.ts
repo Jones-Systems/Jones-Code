@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -377,7 +378,7 @@ it.effect.each(["delegate-task", "create-thread"] as const)(
           assert.isAbove(yield* Ref.get(f.catalogReads), 0);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(NodeServices.layer.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
 it.effect.each(["provider", "model", "options"] as const)(
@@ -450,7 +451,7 @@ it.effect.each(["provider", "model", "options"] as const)(
           );
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(NodeServices.layer.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
 it.effect(
@@ -534,7 +535,7 @@ it.effect(
           assert.equal(accepted.threads[0]?.runId, before.runs[0]?.id);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(NodeServices.layer.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
 const attachRunningTurn = (cwd: string, queueOnly: boolean) =>
@@ -661,7 +662,7 @@ it.effect.each([true, false])(
           );
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(NodeServices.layer.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
 it.effect(
@@ -710,7 +711,7 @@ it.effect(
           assert.lengthOf((yield* original.getThreadProjection(parentId)).messages, 2);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(NodeServices.layer.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
 it.effect.each(["queue", "steer", "restart"] as const)(
@@ -763,7 +764,7 @@ it.effect.each(["queue", "steer", "restart"] as const)(
           }
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(NodeServices.layer.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
 it.effect(
@@ -849,7 +850,7 @@ it.effect(
           assert.lengthOf((yield* threads.getThreadProjection(childId)).messages, 0);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(NodeServices.layer.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
 it.effect(
@@ -922,5 +923,5 @@ it.effect(
           );
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(NodeServices.layer.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );

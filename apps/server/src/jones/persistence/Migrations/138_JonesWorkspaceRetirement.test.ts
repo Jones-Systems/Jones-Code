@@ -89,7 +89,7 @@ it.effect(
 );
 
 it.effect(
-  "a fresh current source database contains the complete138 feature without a140 migration",
+  "a fresh current source database contains complete released138 and the allocated task tail",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -99,6 +99,10 @@ it.effect(
         [
           { migration_id: 138, name: "WorkspaceRetirement" },
           { migration_id: 139, name: "ConversationWorkspace" },
+          { migration_id: 140, name: "NativeExecutionProcessCustody" },
+          { migration_id: 141, name: "OrdinaryCheckoutProcessCustody" },
+          { migration_id: 142, name: "AuthSessionClientMetadata" },
+          { migration_id: 143, name: "WorkspaceRuntimeUses" },
         ],
       );
       for (const table of tables)

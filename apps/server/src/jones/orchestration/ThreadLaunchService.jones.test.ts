@@ -218,6 +218,8 @@ function makeHarness(options: HarnessOptions = {}) {
               defaultModelSelection: project.defaultModelSelection,
               defaultThreadEnvMode: null,
               autoPull: false,
+              pinnedAt: null,
+              archivedAt: null,
               faviconPath: null,
               projectIcon: null,
               scripts: project.scripts,
@@ -579,7 +581,9 @@ it.effect.each([
       );
       assert.deepEqual(operations, ["resolve", "fetch"]);
       assert.deepEqual(resolveWorktreeBaseRemote.mock.calls, [[{ cwd: "/repo", refName: base }]]);
-      assert.deepEqual(fetchWorktreeBaseCommit.mock.calls, [[{ cwd: "/repo", refName: base }]]);
+      assert.deepEqual(fetchWorktreeBaseCommit.mock.calls, [
+        [{ cwd: "/repo", refName: base, remote: { remoteName, branchName } }],
+      ]);
       assert.equal(
         harness.createWorktree.mock.calls[0]?.[0].refName,
         missing ? base : "pinned-origin-sha",
@@ -810,7 +814,13 @@ it.effect(
       assert.equal(listRefs.mock.calls.length, 0);
       assert.equal(resolveWorktreeBaseRemote.mock.calls.length, 1);
       assert.deepEqual(fetchWorktreeBaseCommit.mock.calls, [
-        [{ cwd: "/repo", refName: "origin/release" }],
+        [
+          {
+            cwd: "/repo",
+            refName: "origin/release",
+            remote: { remoteName: "origin", branchName: "origin/release" },
+          },
+        ],
       ]);
       assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, "local-origin-prefixed-sha");
       assert.equal(

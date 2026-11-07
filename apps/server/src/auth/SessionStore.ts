@@ -7,12 +7,14 @@ import {
   type AuthClientSession,
   type AuthEnvironmentScope,
   AuthWebSocketTicketUse,
-  type ClientSurface,
   RuntimeMode,
   type ServerAuthSessionMethod,
 } from "@t3tools/contracts";
+import { makeSessionPresentation } from "../jones/auth/SessionPresentation.ts";
+import type { JonesAuthClientPresentation } from "@t3tools/contracts/jones/authClientPresentation";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -410,9 +412,15 @@ export class SessionStore extends Context.Service<
       ReadonlyArray<AuthClientSession>,
       SessionCredentialInternalError
     >;
+    readonly recordClientConnection: (
+      sessionId: AuthSessionId,
+      hints: JonesAuthClientPresentation,
+    ) => Effect.Effect<void, SessionCredentialVerificationError>;
     readonly streamChanges: Stream.Stream<SessionCredentialChange>;
+    /** Completes when a live socket's session is revoked or expires without a renewal for its DPoP key. */
     readonly awaitInvalidation: (
       sessionId: AuthSessionId,
+      proofKeyThumbprint?: string,
     ) => Effect.Effect<void, SessionCredentialVerificationError>;
     readonly revoke: (
       sessionId: AuthSessionId,
@@ -422,13 +430,6 @@ export class SessionStore extends Context.Service<
     ) => Effect.Effect<number, SessionCredentialInternalError>;
     readonly markConnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
     readonly markDisconnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
-    readonly recordClientConnection: (
-      sessionId: AuthSessionId,
-      client: {
-        readonly surface?: ClientSurface | undefined;
-        readonly appVersion?: string | undefined;
-      },
-    ) => Effect.Effect<void, never>;
   }
 >()("t3/auth/SessionStore") {}
 
@@ -496,6 +497,13 @@ function toAuthClientSession(input: Omit<AuthClientSession, "current">): AuthCli
     current: false,
   };
 }
+
+const encodeEffectFromJsonStringSessionClaims = Schema.encodeEffect(
+  Schema.fromJsonString(SessionClaims),
+);
+const encodeEffectFromJsonStringWebSocketClaims = Schema.encodeEffect(
+  Schema.fromJsonString(WebSocketClaims),
+);
 
 export const matchesReservedAuthSession = (
   record: AuthSessions.AuthSessionRecord,
@@ -588,14 +596,19 @@ export const makeReservedBearerSessionMaterializer = Effect.gen(function* () {
 });
 
 export const make = Effect.gen(function* () {
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const serverConfig = yield* ServerConfig.ServerConfig;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
+  const sql = yield* SqlClient.SqlClient;
+  const presentation = yield* makeSessionPresentation;
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
+  // Newest session per DPoP key. A live socket moves to it at expiry, so a
+  // client that renews its short-lived token keeps its socket.
+  const latestSessionByProofKey = new Map<string, AuthSessionId>();
   const cookieInput = {
     mode: serverConfig.mode,
     port: serverConfig.port,
@@ -659,17 +672,19 @@ export const make = Effect.gen(function* () {
       return Option.none<AuthClientSession>();
     }
     return Option.some(
-      toAuthClientSession({
-        sessionId: row.value.sessionId,
-        subject: row.value.subject,
-        scopes: row.value.scopes,
-        method: row.value.method,
-        client: toClientMetadata(row.value.client),
-        issuedAt: row.value.issuedAt,
-        expiresAt: row.value.expiresAt,
-        lastConnectedAt: row.value.lastConnectedAt,
-        connected,
-      }),
+      yield* presentation.overlay(
+        toAuthClientSession({
+          sessionId: row.value.sessionId,
+          subject: row.value.subject,
+          scopes: row.value.scopes,
+          method: row.value.method,
+          client: toClientMetadata(row.value.client),
+          issuedAt: row.value.issuedAt,
+          expiresAt: row.value.expiresAt,
+          lastConnectedAt: row.value.lastConnectedAt,
+          connected,
+        }),
+      ),
     );
   });
 
@@ -707,27 +722,6 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("SessionStore.markConnected"),
     );
 
-  const recordClientConnection: SessionStore["Service"]["recordClientConnection"] = (
-    sessionId,
-    client,
-  ) =>
-    client.surface === undefined && client.appVersion === undefined
-      ? Effect.void
-      : authSessions
-          .setClientConnection({
-            sessionId,
-            surface: client.surface ?? null,
-            appVersion: client.appVersion ?? null,
-          })
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Failed to record session client connection metadata.").pipe(
-                Effect.annotateLogs({ sessionId, cause }),
-              ),
-            ),
-            Effect.withSpan("SessionStore.recordClientConnection"),
-          );
-
   const markDisconnected: SessionStore["Service"]["markDisconnected"] = (sessionId) =>
     Ref.update(connectedSessionsRef, (current) => {
       const next = new Map(current);
@@ -754,12 +748,12 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("SessionStore.markDisconnected"),
     );
 
-  const encodeClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
+  const encodeClaims = encodeEffectFromJsonStringSessionClaims;
   const issue: SessionStore["Service"]["issue"] = Effect.fn("SessionStore.issue")(
     function* (input) {
       const sessionId = AuthSessionId.make(
-        yield* crypto
-          .randomUUIDv4()
+        yield* random
+          .uuidV4()
           .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause }))),
       );
       const issuedAt = yield* DateTime.now;
@@ -823,6 +817,7 @@ export const make = Effect.gen(function* () {
             })
           : authSessions.create(sessionRecord).pipe(Effect.as([] as ReadonlyArray<AuthSessionId>))
       ).pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ sessionId, cause })));
+      if (claims.jkt) latestSessionByProofKey.set(claims.jkt, sessionId);
       if (replacedSessionIds.length > 0) {
         yield* Ref.update(connectedSessionsRef, (current) => {
           const next = new Map(current);
@@ -954,7 +949,7 @@ export const make = Effect.gen(function* () {
         client: toClientMetadata(row.value.client),
         expiresAt: expiresAt.value,
         subject: claims.sub,
-        scopes: claims.scopes,
+        scopes: row.value.scopes,
         ...(claims.jkt ? { proofKeyThumbprint: claims.jkt } : {}),
         ...(claims.rtc ? { runtimeModeCeiling: claims.rtc } : {}),
         ...(claims.plk === 1 ? { peerLink: true as const } : {}),
@@ -962,7 +957,7 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  const encodeWsClaims = Schema.encodeEffect(Schema.fromJsonString(WebSocketClaims));
+  const encodeWsClaims = encodeEffectFromJsonStringWebSocketClaims;
   const issueWebSocketToken: SessionStore["Service"]["issueWebSocketToken"] = Effect.fn(
     "SessionStore.issueWebSocketToken",
   )(function* (sessionId, input) {
@@ -1082,18 +1077,20 @@ export const make = Effect.gen(function* () {
         connectedSessionIds: Array.from(connectedSessions.keys()),
       });
 
-      return rows.map((row) =>
-        toAuthClientSession({
-          sessionId: row.sessionId,
-          subject: row.subject,
-          scopes: row.scopes,
-          method: row.method,
-          client: toClientMetadata(row.client),
-          issuedAt: row.issuedAt,
-          expiresAt: row.expiresAt,
-          lastConnectedAt: row.lastConnectedAt,
-          connected: connectedSessions.has(row.sessionId),
-        }),
+      return yield* Effect.forEach(rows, (row) =>
+        presentation.overlay(
+          toAuthClientSession({
+            sessionId: row.sessionId,
+            subject: row.subject,
+            scopes: row.scopes,
+            method: row.method,
+            client: toClientMetadata(row.client),
+            issuedAt: row.issuedAt,
+            expiresAt: row.expiresAt,
+            lastConnectedAt: row.lastConnectedAt,
+            connected: connectedSessions.has(row.sessionId),
+          }),
+        ),
       );
     },
     Effect.mapError((cause) => new ActiveSessionsListError({ cause })),
@@ -1154,28 +1151,84 @@ export const make = Effect.gen(function* () {
     return revokedSessionIds.length;
   });
 
-  const awaitInvalidation = Effect.fn(function* (sessionId: AuthSessionId) {
+  const awaitInvalidation = Effect.fn(function* (
+    sessionId: AuthSessionId,
+    proofKeyThumbprint?: string,
+  ) {
     return yield* Effect.scoped(
       Effect.gen(function* () {
         // Subscribe before reading: revocation can race with the WebSocket upgrade.
         const subscription = yield* PubSub.subscribe(changesPubSub);
-        const row = yield* authSessions
-          .getById({ sessionId })
-          .pipe(
-            Effect.mapError(
-              (cause) => new SessionCredentialVerificationError({ sessionId, cause }),
-            ),
-          );
-        if (Option.isNone(row) || row.value.revokedAt !== null) return;
-        yield* Stream.fromSubscription(subscription).pipe(
-          Stream.filter(
-            (change) => change.type === "clientRemoved" && change.sessionId === sessionId,
-          ),
-          Stream.runHead,
-        );
+        const readRow = (id: AuthSessionId) =>
+          authSessions
+            .getById({ sessionId: id })
+            .pipe(
+              Effect.mapError(
+                (cause) => new SessionCredentialVerificationError({ sessionId: id, cause }),
+              ),
+            );
+        const original = yield* readRow(sessionId);
+        if (Option.isNone(original)) return;
+        // Revoking any session the socket has used closes it. Events only wake this loop
+        // and the rows decide: revocations are written before they are published, and
+        // clientRemoved also reports an expired session losing its last socket.
+        const chain = [sessionId];
+        const nextRemoval = Effect.gen(function* () {
+          while (true) {
+            const change = yield* PubSub.take(subscription);
+            if (change.type === "clientRemoved" && chain.includes(change.sessionId)) return;
+          }
+        });
+        let current = original.value;
+        while (true) {
+          const rows = yield* Effect.forEach(chain, readRow);
+          if (rows.some((row) => Option.isNone(row) || row.value.revokedAt !== null)) return;
+          const now = yield* DateTime.now;
+          const remaining = current.expiresAt.epochMilliseconds - now.epochMilliseconds;
+          if (remaining > 0) {
+            yield* Effect.raceFirst(nextRemoval, Effect.sleep(Duration.millis(remaining)));
+            continue;
+          }
+          const successorId =
+            proofKeyThumbprint === undefined
+              ? undefined
+              : latestSessionByProofKey.get(proofKeyThumbprint);
+          if (successorId === undefined || successorId === current.sessionId) return;
+          const successor = yield* readRow(successorId);
+          // The socket keeps its original scopes, so the renewal must still grant all of them.
+          if (
+            Option.isNone(successor) ||
+            successor.value.subject !== original.value.subject ||
+            !original.value.scopes.every((scope) => successor.value.scopes.includes(scope))
+          ) {
+            return;
+          }
+          chain.push(successorId);
+          current = successor.value;
+        }
       }),
     );
   });
+
+  const recordClientConnection: SessionStore["Service"]["recordClientConnection"] = (
+    sessionId,
+    hints,
+  ) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const actual = yield* authSessions.getById({ sessionId });
+          if (Option.isNone(actual))
+            return yield* new SessionCredentialVerificationError({
+              sessionId,
+              cause: "Missing underlying session",
+            });
+          yield* presentation.write(actual.value, hints);
+        }),
+      )
+      .pipe(
+        Effect.mapError((cause) => new SessionCredentialVerificationError({ sessionId, cause })),
+      );
 
   return SessionStore.of({
     cookieName,
@@ -1185,6 +1238,7 @@ export const make = Effect.gen(function* () {
     issueWebSocketToken,
     verifyWebSocketToken,
     listActive,
+    recordClientConnection,
     awaitInvalidation,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
@@ -1193,7 +1247,6 @@ export const make = Effect.gen(function* () {
     revokeAllExcept,
     markConnected,
     markDisconnected,
-    recordClientConnection,
   });
 });
 

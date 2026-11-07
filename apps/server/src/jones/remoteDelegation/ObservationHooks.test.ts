@@ -71,6 +71,8 @@ const task: OrchestrationV2Subagent = {
   updatedAt: DateTime.makeUnsafe(0),
 };
 
+const compiledIs1 = Schema.is(EventSink.EventSinkWriteError);
+
 const fixture = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const parent = yield* Ref.make<OrchestrationV2ThreadProjection>({
@@ -118,7 +120,7 @@ const fixture = Effect.gen(function* () {
           return [];
         }).pipe(
           Effect.mapError((cause) =>
-            Schema.is(EventSink.EventSinkWriteError)(cause)
+            compiledIs1(cause)
               ? cause
               : new EventSink.EventSinkWriteError({ eventCount: events.length, cause }),
           ),

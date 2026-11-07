@@ -61,60 +61,72 @@ interface FixtureCorpus {
     readonly value: unknown;
   }>;
 }
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(WorkstreamCommand);
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(Workstream);
+const compiledDecodeUnknownSync3 = Schema.decodeUnknownSync(NativeReference);
+const compiledDecodeUnknownSync4 = Schema.decodeUnknownSync(WorkstreamNativeIdentity);
+const compiledDecodeUnknownSync5 = Schema.decodeUnknownSync(WorkstreamPrLocator);
+const compiledDecodeUnknownSync6 = Schema.decodeUnknownSync(MembershipEpisode);
+const compiledDecodeUnknownSync7 = Schema.decodeUnknownSync(DeclarationRevision);
+const compiledDecodeUnknownSync8 = Schema.decodeUnknownSync(WorkstreamEdge);
+const compiledDecodeUnknownSync9 = Schema.decodeUnknownSync(WorkstreamLifecycleDeclaration);
+const compiledDecodeUnknownSync10 = Schema.decodeUnknownSync(WorkstreamProgress);
+const compiledDecodeUnknownSync11 = Schema.decodeUnknownSync(WorkstreamDelivery);
+const compiledDecodeUnknownSync12 = Schema.decodeUnknownSync(WorkstreamFreshness);
+const compiledDecodeUnknownSync13 = Schema.decodeUnknownSync(WorkstreamRegistrationVerification);
+const compiledDecodeUnknownSync14 = Schema.decodeUnknownSync(WorkstreamPrObservation);
+const compiledDecodeUnknownSync15 = Schema.decodeUnknownSync(WorkstreamReceipt);
+const compiledDecodeUnknownSync16 = Schema.decodeUnknownSync(WorkstreamCommittedReceipt);
+const compiledDecodeUnknownSync17 = Schema.decodeUnknownSync(WorkstreamPendingReceipt);
+const compiledDecodeUnknownSync18 = Schema.decodeUnknownSync(WorkstreamRejectedReceipt);
+const compiledDecodeUnknownSync19 = Schema.decodeUnknownSync(WorkstreamTerminalReceipt);
+const compiledDecodeUnknownSync20 = Schema.decodeUnknownSync(WorkstreamAuditEvent);
+const compiledDecodeUnknownSync21 = Schema.decodeUnknownSync(WorkstreamPage);
+const compiledDecodeUnknownSync22 = Schema.decodeUnknownSync(WorkstreamReferencePage);
+const compiledDecodeUnknownSync23 = Schema.decodeUnknownSync(WorkstreamMembershipPage);
+const compiledDecodeUnknownSync24 = Schema.decodeUnknownSync(WorkstreamDeclarationPage);
+const compiledDecodeUnknownSync25 = Schema.decodeUnknownSync(WorkstreamEdgePage);
+const compiledDecodeUnknownSync26 = Schema.decodeUnknownSync(WorkstreamHistoryPage);
+const compiledDecodeUnknownSync27 = Schema.decodeUnknownSync(WorkstreamDetail);
+const compiledDecodeUnknownSync28 = Schema.decodeUnknownSync(WorkstreamReferenceDetail);
+const compiledDecodeUnknownSync29 = Schema.decodeUnknownSync(WorkstreamCapabilities);
+const compiledDecodeUnknownSync30 = Schema.decodeUnknownSync(WorkstreamOwnerGrant);
+const compiledDecodeUnknownSync31 = Schema.decodeUnknownSync(WorkstreamError);
+const compiledDecodeUnknownSync32 = Schema.decodeUnknownSync(WorkstreamSession);
+
 const supported = new Map<string, (value: unknown) => unknown>([
-  ["Command", (value) => Schema.decodeUnknownSync(WorkstreamCommand)(value, options)],
-  ["Workstream", (value) => Schema.decodeUnknownSync(Workstream)(value, options)],
-  ["NativeReference", (value) => Schema.decodeUnknownSync(NativeReference)(value, options)],
-  ["NativeIdentity", (value) => Schema.decodeUnknownSync(WorkstreamNativeIdentity)(value, options)],
-  ["PrLocator", (value) => Schema.decodeUnknownSync(WorkstreamPrLocator)(value, options)],
-  ["MembershipEpisode", (value) => Schema.decodeUnknownSync(MembershipEpisode)(value, options)],
-  ["DeclarationRevision", (value) => Schema.decodeUnknownSync(DeclarationRevision)(value, options)],
-  ["Edge", (value) => Schema.decodeUnknownSync(WorkstreamEdge)(value, options)],
-  [
-    "LifecycleDeclaration",
-    (value) => Schema.decodeUnknownSync(WorkstreamLifecycleDeclaration)(value, options),
-  ],
-  ["ProgressCondition", (value) => Schema.decodeUnknownSync(WorkstreamProgress)(value, options)],
-  ["DeliveryState", (value) => Schema.decodeUnknownSync(WorkstreamDelivery)(value, options)],
-  ["FreshnessState", (value) => Schema.decodeUnknownSync(WorkstreamFreshness)(value, options)],
-  [
-    "RegistrationVerification",
-    (value) => Schema.decodeUnknownSync(WorkstreamRegistrationVerification)(value, options),
-  ],
-  ["PrObservation", (value) => Schema.decodeUnknownSync(WorkstreamPrObservation)(value, options)],
-  ["Receipt", (value) => Schema.decodeUnknownSync(WorkstreamReceipt)(value, options)],
-  [
-    "CommittedReceipt",
-    (value) => Schema.decodeUnknownSync(WorkstreamCommittedReceipt)(value, options),
-  ],
-  ["PendingReceipt", (value) => Schema.decodeUnknownSync(WorkstreamPendingReceipt)(value, options)],
-  [
-    "RejectedReceipt",
-    (value) => Schema.decodeUnknownSync(WorkstreamRejectedReceipt)(value, options),
-  ],
-  [
-    "TerminalReceipt",
-    (value) => Schema.decodeUnknownSync(WorkstreamTerminalReceipt)(value, options),
-  ],
-  ["AuditEvent", (value) => Schema.decodeUnknownSync(WorkstreamAuditEvent)(value, options)],
-  ["WorkstreamPage", (value) => Schema.decodeUnknownSync(WorkstreamPage)(value, options)],
-  ["ReferencePage", (value) => Schema.decodeUnknownSync(WorkstreamReferencePage)(value, options)],
-  ["MembershipPage", (value) => Schema.decodeUnknownSync(WorkstreamMembershipPage)(value, options)],
-  [
-    "DeclarationPage",
-    (value) => Schema.decodeUnknownSync(WorkstreamDeclarationPage)(value, options),
-  ],
-  ["EdgePage", (value) => Schema.decodeUnknownSync(WorkstreamEdgePage)(value, options)],
-  ["HistoryPage", (value) => Schema.decodeUnknownSync(WorkstreamHistoryPage)(value, options)],
-  ["WorkstreamDetail", (value) => Schema.decodeUnknownSync(WorkstreamDetail)(value, options)],
-  [
-    "ReferenceDetail",
-    (value) => Schema.decodeUnknownSync(WorkstreamReferenceDetail)(value, options),
-  ],
-  ["Capabilities", (value) => Schema.decodeUnknownSync(WorkstreamCapabilities)(value, options)],
-  ["OwnerGrant", (value) => Schema.decodeUnknownSync(WorkstreamOwnerGrant)(value, options)],
-  ["Error", (value) => Schema.decodeUnknownSync(WorkstreamError)(value, options)],
-  ["BrowserSession", (value) => Schema.decodeUnknownSync(WorkstreamSession)(value, options)],
+  ["Command", (value) => compiledDecodeUnknownSync1(value, options)],
+  ["Workstream", (value) => compiledDecodeUnknownSync2(value, options)],
+  ["NativeReference", (value) => compiledDecodeUnknownSync3(value, options)],
+  ["NativeIdentity", (value) => compiledDecodeUnknownSync4(value, options)],
+  ["PrLocator", (value) => compiledDecodeUnknownSync5(value, options)],
+  ["MembershipEpisode", (value) => compiledDecodeUnknownSync6(value, options)],
+  ["DeclarationRevision", (value) => compiledDecodeUnknownSync7(value, options)],
+  ["Edge", (value) => compiledDecodeUnknownSync8(value, options)],
+  ["LifecycleDeclaration", (value) => compiledDecodeUnknownSync9(value, options)],
+  ["ProgressCondition", (value) => compiledDecodeUnknownSync10(value, options)],
+  ["DeliveryState", (value) => compiledDecodeUnknownSync11(value, options)],
+  ["FreshnessState", (value) => compiledDecodeUnknownSync12(value, options)],
+  ["RegistrationVerification", (value) => compiledDecodeUnknownSync13(value, options)],
+  ["PrObservation", (value) => compiledDecodeUnknownSync14(value, options)],
+  ["Receipt", (value) => compiledDecodeUnknownSync15(value, options)],
+  ["CommittedReceipt", (value) => compiledDecodeUnknownSync16(value, options)],
+  ["PendingReceipt", (value) => compiledDecodeUnknownSync17(value, options)],
+  ["RejectedReceipt", (value) => compiledDecodeUnknownSync18(value, options)],
+  ["TerminalReceipt", (value) => compiledDecodeUnknownSync19(value, options)],
+  ["AuditEvent", (value) => compiledDecodeUnknownSync20(value, options)],
+  ["WorkstreamPage", (value) => compiledDecodeUnknownSync21(value, options)],
+  ["ReferencePage", (value) => compiledDecodeUnknownSync22(value, options)],
+  ["MembershipPage", (value) => compiledDecodeUnknownSync23(value, options)],
+  ["DeclarationPage", (value) => compiledDecodeUnknownSync24(value, options)],
+  ["EdgePage", (value) => compiledDecodeUnknownSync25(value, options)],
+  ["HistoryPage", (value) => compiledDecodeUnknownSync26(value, options)],
+  ["WorkstreamDetail", (value) => compiledDecodeUnknownSync27(value, options)],
+  ["ReferenceDetail", (value) => compiledDecodeUnknownSync28(value, options)],
+  ["Capabilities", (value) => compiledDecodeUnknownSync29(value, options)],
+  ["OwnerGrant", (value) => compiledDecodeUnknownSync30(value, options)],
+  ["Error", (value) => compiledDecodeUnknownSync31(value, options)],
+  ["BrowserSession", (value) => compiledDecodeUnknownSync32(value, options)],
 ]);
 
 const schemaName = (reference: string) => reference.slice(reference.lastIndexOf("/") + 1);
@@ -132,6 +144,8 @@ const commandFor = (operation: string): Record<string, any> => {
   if (fixture === undefined) throw new Error(`Missing ${operation} command fixture`);
   return structuredClone(fixture.value) as Record<string, any>;
 };
+
+const compiledDecodeSync33 = Schema.decodeSync(WorkstreamRegistrationVerification);
 
 describe("frozen accepted Workstream v1 fixtures", () => {
   it("preserves all immutable source bytes", () => {
@@ -203,9 +217,7 @@ describe("frozen accepted Workstream v1 fixtures", () => {
     for (const mutate of mutations) {
       const candidate = structuredClone(receipt);
       mutate(candidate);
-      expect(() =>
-        Schema.decodeUnknownSync(WorkstreamCommittedReceipt)(candidate, options),
-      ).toThrow();
+      expect(() => compiledDecodeUnknownSync16(candidate, options)).toThrow();
     }
   });
 
@@ -219,22 +231,20 @@ describe("frozen accepted Workstream v1 fixtures", () => {
     ]) {
       const candidate = structuredClone(committed);
       mutate(candidate);
-      expect(() =>
-        Schema.decodeUnknownSync(WorkstreamCommittedReceipt)(candidate, options),
-      ).toThrow();
+      expect(() => compiledDecodeUnknownSync16(candidate, options)).toThrow();
     }
 
     const pending = fixtureFor("PendingReceipt") as Record<string, any>;
     pending.retry_after_seconds = 3601;
-    expect(() => Schema.decodeUnknownSync(WorkstreamPendingReceipt)(pending, options)).toThrow();
+    expect(() => compiledDecodeUnknownSync17(pending, options)).toThrow();
 
     const error = fixtureFor("Error") as Record<string, any>;
     error.status = 500;
-    expect(() => Schema.decodeUnknownSync(WorkstreamError)(error, options)).toThrow();
+    expect(() => compiledDecodeUnknownSync31(error, options)).toThrow();
 
     const observation = fixtureFor("PrObservation") as Record<string, any>;
     observation.last_success.observed_at = "yesterday";
-    expect(() => Schema.decodeUnknownSync(WorkstreamPrObservation)(observation, options)).toThrow();
+    expect(() => compiledDecodeUnknownSync14(observation, options)).toThrow();
 
     const audit = fixtureFor("AuditEvent") as Record<string, any>;
     for (const mutate of [
@@ -247,7 +257,7 @@ describe("frozen accepted Workstream v1 fixtures", () => {
     ]) {
       const candidate = structuredClone(audit);
       mutate(candidate);
-      expect(() => Schema.decodeUnknownSync(WorkstreamAuditEvent)(candidate, options)).toThrow();
+      expect(() => compiledDecodeUnknownSync20(candidate, options)).toThrow();
     }
   });
 
@@ -259,36 +269,26 @@ describe("frozen accepted Workstream v1 fixtures", () => {
       expires_at: null,
       evidence: null,
     };
+    expect(() => compiledDecodeSync33(quarantined, options)).not.toThrow();
     expect(() =>
-      Schema.decodeSync(WorkstreamRegistrationVerification)(quarantined, options),
-    ).not.toThrow();
-    expect(() =>
-      Schema.decodeSync(WorkstreamRegistrationVerification)(
-        { ...quarantined, attestation_version: 1 },
-        options,
-      ),
+      compiledDecodeSync33({ ...quarantined, attestation_version: 1 }, options),
     ).toThrow();
-    expect(() =>
-      Schema.decodeSync(WorkstreamRegistrationVerification)(
-        { ...quarantined, state: "attested" },
-        options,
-      ),
-    ).toThrow();
+    expect(() => compiledDecodeSync33({ ...quarantined, state: "attested" }, options)).toThrow();
   });
 
   it("enforces conditional explanation fields and positive settlement fencing", () => {
     const disposition = commandFor("set_coordination_disposition");
     disposition.action.other_disposition = "unexpected explanation";
-    expect(() => Schema.decodeUnknownSync(WorkstreamCommand)(disposition, options)).toThrow();
+    expect(() => compiledDecodeUnknownSync1(disposition, options)).toThrow();
 
     const otherDisposition = commandFor("set_coordination_disposition");
     otherDisposition.action.disposition = "other";
     otherDisposition.action.other_disposition = null;
-    expect(() => Schema.decodeUnknownSync(WorkstreamCommand)(otherDisposition, options)).toThrow();
+    expect(() => compiledDecodeUnknownSync1(otherDisposition, options)).toThrow();
 
     const settlement = commandFor("request_native_t3_settlement");
     settlement.action.expected_attestation_version = 0;
-    expect(() => Schema.decodeUnknownSync(WorkstreamCommand)(settlement, options)).toThrow();
+    expect(() => compiledDecodeUnknownSync1(settlement, options)).toThrow();
 
     const membership = fixtureFor("MembershipEpisode") as Record<string, any>;
     membership.closed = {
@@ -299,13 +299,13 @@ describe("frozen accepted Workstream v1 fixtures", () => {
       reason: "removed",
       other_reason: "unexpected explanation",
     };
-    expect(() => Schema.decodeUnknownSync(MembershipEpisode)(membership, options)).toThrow();
+    expect(() => compiledDecodeUnknownSync6(membership, options)).toThrow();
   });
 
   it("accepts reattaching a primary membership through the shared attach shape", () => {
     const command = commandFor("attach_primary");
     command.action.operation = "reattach_primary";
-    expect(() => Schema.decodeUnknownSync(WorkstreamCommand)(command, options)).not.toThrow();
+    expect(() => compiledDecodeUnknownSync1(command, options)).not.toThrow();
   });
 
   it("rejects impossible UTC calendar and clock timestamps from the frozen semantics", () => {
@@ -323,14 +323,14 @@ describe("frozen accepted Workstream v1 fixtures", () => {
     ]) {
       const candidate = structuredClone(workstream);
       candidate.updated_at = invalidTimestamp;
-      expect(() => Schema.decodeUnknownSync(Workstream)(candidate, options)).toThrow();
+      expect(() => compiledDecodeUnknownSync2(candidate, options)).toThrow();
     }
   });
 
   it("requires a positive declaration registry version", () => {
     const declaration = fixtureFor("DeclarationRevision") as Record<string, any>;
     declaration.registry_version = 0;
-    expect(() => Schema.decodeUnknownSync(DeclarationRevision)(declaration, options)).toThrow();
+    expect(() => compiledDecodeUnknownSync7(declaration, options)).toThrow();
   });
 
   it("caps every decoded collection page at 100 items", () => {
@@ -348,9 +348,12 @@ describe("frozen accepted Workstream v1 fixtures", () => {
     }
     const history = fixtureFor("HistoryPage") as Record<string, any>;
     history.items = Array.from({ length: 101 }, () => fixtureFor("AuditEvent"));
-    expect(() => Schema.decodeUnknownSync(WorkstreamHistoryPage)(history, options)).toThrow();
+    expect(() => compiledDecodeUnknownSync26(history, options)).toThrow();
   });
 });
+
+const compiledDecodeUnknownSync34 = Schema.decodeUnknownSync(WorkstreamRegistryCounts);
+const compiledDecodeUnknownSync35 = Schema.decodeUnknownSync(WorkstreamCountsCapabilities);
 
 describe("independently negotiated registry counts", () => {
   const fixture = JSON.parse(countsRaw) as {
@@ -371,18 +374,14 @@ describe("independently negotiated registry counts", () => {
   });
   it.each(fixture.conformance.cases)("accepts provider example: $name", (entry) => {
     const decoded = entry.schema.endsWith("/RegistryCounts")
-      ? Schema.decodeUnknownSync(WorkstreamRegistryCounts)(entry.value, options)
-      : Schema.decodeUnknownSync(WorkstreamCountsCapabilities)(entry.value, options);
+      ? compiledDecodeUnknownSync34(entry.value, options)
+      : compiledDecodeUnknownSync35(entry.value, options);
     expect(decoded).toEqual(entry.value);
     if (entry.schema.endsWith("/Capabilities"))
-      expect(() =>
-        Schema.decodeUnknownSync(WorkstreamCapabilities)(entry.value, options),
-      ).toThrow();
+      expect(() => compiledDecodeUnknownSync29(entry.value, options)).toThrow();
   });
   it.each(fixture.negative.cases)("rejects provider example: $name", (entry) => {
-    expect(() =>
-      Schema.decodeUnknownSync(WorkstreamRegistryCounts)(entry.value, options),
-    ).toThrow();
+    expect(() => compiledDecodeUnknownSync34(entry.value, options)).toThrow();
   });
   const counts = fixture.conformance.cases.find((entry) =>
     entry.schema.endsWith("/RegistryCounts"),
@@ -398,14 +397,12 @@ describe("independently negotiated registry counts", () => {
     { authority_effect: "write" },
     { context: { owner_id: "owner.synthetic", server_generation: 0, registry_version: 7 } },
   ])("rejects invalid counts %j", (invalid) => {
-    expect(() =>
-      Schema.decodeUnknownSync(WorkstreamRegistryCounts)({ ...counts, ...invalid }, options),
-    ).toThrow();
+    expect(() => compiledDecodeUnknownSync34({ ...counts, ...invalid }, options)).toThrow();
   });
   it("accepts an empty registry and safe-integer boundary", () => {
     for (const total of [0, Number.MAX_SAFE_INTEGER])
       expect(
-        Schema.decodeUnknownSync(WorkstreamRegistryCounts)(
+        compiledDecodeUnknownSync34(
           {
             ...counts,
             total,

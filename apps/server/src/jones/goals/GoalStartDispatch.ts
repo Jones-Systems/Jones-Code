@@ -77,7 +77,7 @@ const make = Effect.gen(function* () {
   });
   return GoalStartDispatch.of({
     observe,
-    capture: (threadId) =>
+    capture: Effect.fn("GoalStartDispatch.capture")((threadId) =>
       query.getTarget(threadId).pipe(
         Effect.map(({ snapshotSequence, target }) =>
           target?.idle
@@ -93,6 +93,7 @@ const make = Effect.gen(function* () {
         ),
         Effect.mapError(unavailable),
       ),
+    ),
     start: Effect.fn("GoalStartDispatch.start")(function* (input) {
       const commandId = CommandId.make(`goal:${input.requestId}`);
       const messageId = MessageId.make(`goal:${input.requestId}`);

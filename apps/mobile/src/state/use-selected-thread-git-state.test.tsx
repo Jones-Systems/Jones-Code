@@ -1,72 +1,106 @@
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import { act, useLayoutEffect } from "react";
+import { createRoot } from "react-dom/client";
+import { expect, it, vi } from "vite-plus/test";
 
 const harness = vi.hoisted(() => ({
-  discoveryTargets: [] as unknown[],
+  root: "",
+  cwd: "",
 }));
 
-// Each discovery run spawns provider CLIs on the server, so a thread screen must not start one.
-vi.mock("./sourceControl", () => ({
-  sourceControlEnvironment: {
-    discovery: (target: unknown) => {
-      harness.discoveryTargets.push(target);
-      return null;
-    },
-  },
+vi.mock("./use-thread-selection", () => ({
+  useThreadSelection: () => ({
+    selectedThread: { environmentId: "environment-1" },
+    selectedThreadProject: { workspaceRoot: harness.root },
+  }),
 }));
+vi.mock("./use-selected-thread-worktree", () => ({
+  useSelectedThreadWorktree: () => ({ selectedThreadCwd: harness.cwd }),
+}));
+vi.mock("./use-vcs-action-state", () => ({
+  useVcsActionState: () => ({ currentLabel: null }),
+}));
+vi.mock("./sourceControl", () => ({
+  sourceControlEnvironment: { discovery: () => null },
+}));
+vi.mock("./query", () => ({ useEnvironmentQuery: () => ({ data: null }) }));
 vi.mock("./queries", () => ({
-  useBranches: () => ({
+  useBranches: ({ cwd }: { cwd: string }) => ({
     data: {
-      refs: [
-        { name: "main", isRemote: false, current: true, isDefault: true, worktreePath: null },
-        { name: "origin/main", isRemote: true, remoteName: "origin", current: false },
-      ],
+      refs: NodeChildProcess.execFileSync(
+        "git",
+        ["for-each-ref", "--format=%(refname:short) %(HEAD)", "refs/heads"],
+        {
+          cwd,
+          encoding: "utf8",
+        },
+      )
+        .trim()
+        .split("\n")
+        .map((line) => ({
+          name: line.split(" ")[0],
+          current: line.endsWith("*"),
+          isRemote: false,
+        })),
     },
     isPending: false,
   }),
 }));
-vi.mock("./use-vcs-action-state", () => ({
-  useVcsActionState: () => ({ currentLabel: "Pushing" }),
-}));
-vi.mock("./use-thread-selection", () => ({
-  useThreadSelection: () => ({
-    selectedThread: { environmentId: "environment-1", id: "thread-1" },
-    selectedThreadProject: { workspaceRoot: "/repo" },
-  }),
-}));
-vi.mock("./use-selected-thread-worktree", () => ({
-  useSelectedThreadWorktree: () => ({ selectedThreadCwd: "/repo" }),
-}));
 
 import { useSelectedThreadGitState } from "./use-selected-thread-git-state";
 
-let root: Root | null = null;
-let gitState: ReturnType<typeof useSelectedThreadGitState> | null = null;
-
-function Consumer() {
-  gitState = useSelectedThreadGitState();
-  return null;
-}
-
-beforeEach(() => {
+it("marks the selected checkout's branch current when switching threads in one project", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "mobile-branches-"));
+  const git = (...args: string[]) =>
+    NodeChildProcess.execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+  const root = createRoot(document.createElement("div"));
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  harness.discoveryTargets = [];
-  gitState = null;
-});
+  let currentBranches: string[] = [];
+  function Consumer() {
+    const { selectedThreadBranches } = useSelectedThreadGitState();
+    useLayoutEffect(() => {
+      currentBranches = selectedThreadBranches
+        .filter((branch) => branch.current)
+        .map((branch) => branch.name);
+    }, [selectedThreadBranches]);
+    return null;
+  }
 
-afterEach(() => {
-  act(() => root?.unmount());
-  root = null;
-});
+  try {
+    git("init", "--initial-branch=main");
+    git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "initial",
+    );
+    const worktree = NodePath.join(directory, "linked");
+    git("worktree", "add", "-b", "feature/mobile", worktree);
+    harness.root = directory;
+    harness.cwd = directory;
+    act(() => root.render(<Consumer />));
+    expect(currentBranches).toEqual(["main"]);
 
-describe("useSelectedThreadGitState", () => {
-  it("serves a selected thread's git state without starting source-control discovery", () => {
-    root = createRoot(document.createElement("div"));
-    act(() => root!.render(<Consumer />));
+    harness.cwd = worktree;
+    act(() => root.render(<Consumer />));
+    expect(currentBranches).toEqual(["feature/mobile"]);
 
-    expect(gitState?.gitOperationLabel).toBe("Pushing");
-    expect(gitState?.selectedThreadBranches.map((branch) => branch.name)).toEqual(["main"]);
-    expect(harness.discoveryTargets).toEqual([]);
-  });
+    harness.cwd = directory;
+    act(() => root.render(<Consumer />));
+    expect(currentBranches).toEqual(["main"]);
+  } finally {
+    act(() => root.unmount());
+    NodeFS.rmSync(directory, { recursive: true, force: true });
+  }
 });

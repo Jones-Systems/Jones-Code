@@ -213,6 +213,8 @@ const fixture = Effect.fnUntraced(function* (attachmentAvailable = true) {
   };
   const manager = Layer.succeed(ProviderSessions.ProviderSessionManagerV2, {
     isMcpCallerAttached: () => Effect.succeed(false),
+    releaseUnlessBusy: () => Effect.die("Unexpected releaseUnlessBusy"),
+    otherWorkingThreads: () => Effect.die("Unexpected otherWorkingThreads"),
     shutdown: Effect.void,
     isLive: () => Effect.die("unexpected_isLive"),
     open: () => Effect.die("unexpected_open"),
@@ -296,6 +298,14 @@ it.effect(
           "providerThreads",
           "runs",
         ]);
+        const selectedOld = before.providerThreads.find((row) => row.id === f.old.id);
+        if (selectedOld === undefined)
+          return yield* Effect.die("Missing original selected provider metadata");
+        assert.deepEqual(
+          (yield* f.projections.getRuntimeRecoveryProjection(f.input.threadId)).providerThreads,
+          [selectedOld],
+        );
+        assert.deepEqual(yield* f.projections.getRecoveryThreadIds("runtime"), []);
         const result = yield* service.reselect(
           {
             ...f.input,
@@ -317,6 +327,11 @@ it.effect(
         const updated = after.providerThreads.find((row) => row.id === f.target.id)!;
         assert.deepEqual({ ...updated, updatedAt: f.target.updatedAt }, f.target);
         assert.deepEqual(after.runs, before.runs);
+        assert.deepEqual(
+          (yield* f.projections.getRuntimeRecoveryProjection(f.input.threadId)).providerThreads,
+          [updated],
+        );
+        assert.deepEqual(yield* f.projections.getRecoveryThreadIds("runtime"), []);
         const events = yield* (yield* EventStore.EventStoreV2)
           .readByCommandId({ commandId: result.commandId })
           .pipe(Stream.runCollect);

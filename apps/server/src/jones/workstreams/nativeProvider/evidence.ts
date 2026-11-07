@@ -26,6 +26,10 @@ export class NativeProviderEvidence extends Context.Service<
   NativeProviderEvidencePort
 >()("t3/jones/workstreams/nativeProvider/evidence/NativeProviderEvidence") {}
 
+const compiledDecodeUnknownEffect1 = Schema.decodeUnknownEffect(NativeProviderMetadataSnapshot);
+const compiledDecodeOption2 = Schema.decodeOption(SettlementProofJson);
+const compiledIs3 = Schema.is(NativeProviderEvidenceReadError);
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const readSnapshotByCommandId: NativeProviderEvidencePort["readSnapshotByCommandId"] = (
@@ -38,9 +42,7 @@ const make = Effect.gen(function* () {
           const rows = yield* readNativeProviderCommandMetadata(commandId).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           );
-          const snapshot = yield* Schema.decodeUnknownEffect(NativeProviderMetadataSnapshot)(
-            rows,
-          ).pipe(
+          const snapshot = yield* compiledDecodeUnknownEffect1(rows).pipe(
             Effect.mapError(
               () => new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" }),
             ),
@@ -59,7 +61,7 @@ const make = Effect.gen(function* () {
           const row = proofRows[0];
           if (row === undefined || row.proof_json === null)
             return { receipt: Option.some(receipt), events: snapshot.events };
-          const proof = Schema.decodeOption(SettlementProofJson)(row.proof_json);
+          const proof = compiledDecodeOption2(row.proof_json);
           if (
             Option.isNone(proof) ||
             !matchesSettlementProof(proof.value, commandId, row.thread_id, row.native_action) ||
@@ -75,7 +77,7 @@ const make = Effect.gen(function* () {
       )
       .pipe(
         Effect.mapError((error) =>
-          Schema.is(NativeProviderEvidenceReadError)(error)
+          compiledIs3(error)
             ? error
             : new NativeProviderEvidenceReadError({ reason: "reader_unavailable" }),
         ),

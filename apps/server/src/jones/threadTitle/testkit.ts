@@ -72,6 +72,8 @@ export function makeHarness(
               defaultModelSelection: modelSelection,
               defaultThreadEnvMode: null,
               autoPull: false,
+              pinnedAt: null,
+              archivedAt: null,
               faviconPath: null,
               projectIcon: null,
               scripts: [],

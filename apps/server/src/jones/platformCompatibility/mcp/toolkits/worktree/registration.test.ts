@@ -1,3 +1,7 @@
+import * as ProjectCloneTracker from "../../../../../project/ProjectCloneTracker.ts";
+import * as PeerLinks from "../../../../../peer/PeerLinks.ts";
+import * as PeerLinkRequests from "../../../../../peer/PeerLinkRequests.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ConversationPolicy from "../../../../conversationWorkspace/ConversationPolicy.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -58,6 +62,9 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
       ownsPath: () => false,
       registerTurnAttachment: (attach) => Effect.sync(() => onAttachment(attach)),
     }),
+    Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
+    Layer.mock(PeerLinks.PeerLinks)({}),
+    Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
     McpProviderSessions.layer,
     NodeSqliteClient.layer({ filename: ":memory:" }),
     Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
@@ -225,9 +232,9 @@ it.effect("production mcp layer lists worktree tools over http", () =>
       Layer.mergeAll(
         NodeHttpServer.layerTest,
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-worktree-mcp-" }).pipe(
-          Layer.provide(NodeServices.layer),
+          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         ),
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
       ),
     ),
   ),

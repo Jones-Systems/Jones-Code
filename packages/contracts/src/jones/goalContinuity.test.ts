@@ -34,6 +34,15 @@ const target = { goalId: "goal", revision: "1", generation: "9007199254740993", 
 const isContinuityRequest = Schema.is(ContinuityRequest);
 const isContinuityResult = Schema.is(ContinuityResult);
 
+const compiledIs1 = Schema.is(ContinuityOwner);
+const compiledIs2 = Schema.is(ContinuityWitness);
+const compiledIs3 = Schema.is(ContinuityPatch);
+const compiledIs4 = Schema.is(ContinuityRequest);
+const compiledIs5 = Schema.is(ContinuityProducerIdentity);
+const compiledIs6 = Schema.is(ContinuityResult);
+const compiledIs7 = Schema.is(ContinuityRecoveryCapability);
+const compiledDecodeSync8 = Schema.decodeSync(ContinuityRequest);
+
 describe("goal continuity wire vocabulary", () => {
   it("adds bounded delivery discovery without producer authority or request-key mutation", () => {
     const request = {
@@ -91,10 +100,10 @@ describe("goal continuity wire vocabulary", () => {
   });
 
   it("keeps durable ownership separate from required execution witness fields", () => {
-    expect(Schema.is(ContinuityOwner)(owner)).toBe(true);
-    expect(Schema.is(ContinuityWitness)(owner)).toBe(false);
+    expect(compiledIs1(owner)).toBe(true);
+    expect(compiledIs2(owner)).toBe(false);
     expect(
-      Schema.is(ContinuityWitness)({
+      compiledIs2({
         ...owner,
         providerSessionId: "runtime-session",
         runtimeGeneration: "incarnation",
@@ -102,15 +111,15 @@ describe("goal continuity wire vocabulary", () => {
         attemptId: "attempt",
       }),
     ).toBe(true);
-    expect(Schema.is(ContinuityOwner)({ ...owner, nativeThreadId: " " })).toBe(false);
+    expect(compiledIs1({ ...owner, nativeThreadId: " " })).toBe(false);
   });
 
   it("models explicit collection operations and disallows ordinary patch-to-complete", () => {
-    expect(Schema.is(ContinuityPatch)({ status: "complete" })).toBe(false);
-    expect(Schema.is(ContinuityPatch)({ blockers: [] })).toBe(false);
-    expect(Schema.is(ContinuityPatch)({ boundaries: { remove: ["boundary"] } })).toBe(false);
+    expect(compiledIs3({ status: "complete" })).toBe(false);
+    expect(compiledIs3({ blockers: [] })).toBe(false);
+    expect(compiledIs3({ boundaries: { remove: ["boundary"] } })).toBe(false);
     expect(
-      Schema.is(ContinuityPatch)({
+      compiledIs3({
         boundaries: {
           append: [
             { id: "boundary", text: "Completed", finishIds: ["finish"], evidenceIds: ["proof"] },
@@ -119,13 +128,13 @@ describe("goal continuity wire vocabulary", () => {
       }),
     ).toBe(true);
     expect(
-      Schema.is(ContinuityPatch)({
+      compiledIs3({
         blockers: { add: [{ id: "gate", text: "Owner proof" }], remove: [] },
         focus: null,
       }),
     ).toBe(true);
     expect(
-      Schema.is(ContinuityRequest)({
+      compiledIs4({
         action: "checkpoint",
         clientRequestId: "req",
         expected: target,
@@ -133,7 +142,7 @@ describe("goal continuity wire vocabulary", () => {
       }),
     ).toBe(true);
     expect(
-      Schema.is(ContinuityRequest)({
+      compiledIs4({
         action: "close",
         clientRequestId: "req",
         expected: target,
@@ -141,14 +150,14 @@ describe("goal continuity wire vocabulary", () => {
       }),
     ).toBe(true);
     expect(
-      Schema.is(ContinuityRequest)({
+      compiledIs4({
         action: "checkpoint",
         expected: target,
         patch: { focus: "new" },
       }),
     ).toBe(false);
     expect(
-      Schema.is(ContinuityRequest)({
+      compiledIs4({
         action: "checkpoint",
         clientRequestId: " req ",
         expected: target,
@@ -162,7 +171,7 @@ describe("goal continuity wire vocabulary", () => {
       "event:thread:" + "nested-delegation:".repeat(32) + "provider-session:incarnation";
     expect(runtimeGeneration.length).toBeGreaterThan(256);
     expect(
-      Schema.is(ContinuityWitness)({
+      compiledIs2({
         ...owner,
         providerSessionId: "runtime-session",
         runtimeGeneration,
@@ -171,7 +180,7 @@ describe("goal continuity wire vocabulary", () => {
       }),
     ).toBe(true);
     expect(
-      Schema.is(ContinuityProducerIdentity)({
+      compiledIs5({
         producerId: "producer",
         driver: "codex",
         providerInstanceId: "codex",
@@ -202,19 +211,19 @@ describe("goal continuity wire vocabulary", () => {
       intent,
     };
     expect(
-      Schema.is(ContinuityRequest)({
+      compiledIs4({
         ...request,
         initialization: { type: "confirm", proposalId: "proposal", confirmationId: "response" },
       }),
     ).toBe(true);
     expect(
-      Schema.is(ContinuityRequest)({
+      compiledIs4({
         ...request,
         initialization: { type: "confirm", confirmed: true },
       }),
     ).toBe(false);
     expect(
-      Schema.is(ContinuityRequest)({
+      compiledIs4({
         ...request,
         initialization: { type: "propose", proposalId: "proposal" },
       }),
@@ -223,7 +232,7 @@ describe("goal continuity wire vocabulary", () => {
 
   it("keeps request uncertainty and unsupported strict restoration explicit", () => {
     expect(
-      Schema.is(ContinuityResult)({
+      compiledIs6({
         outcome: "unknown",
         clientRequestId: "req",
         requestDigest: "a".repeat(64),
@@ -231,9 +240,9 @@ describe("goal continuity wire vocabulary", () => {
         attemptedGeneration: "9007199254740994",
       }),
     ).toBe(true);
-    expect(Schema.is(ContinuityResult)({ outcome: "unknown", clientRequestId: "req" })).toBe(false);
+    expect(compiledIs6({ outcome: "unknown", clientRequestId: "req" })).toBe(false);
     expect(
-      Schema.is(ContinuityRecoveryCapability)({
+      compiledIs7({
         strongIdentity: true,
         turnStart: "fresh_context",
         compaction: "fresh_context_injection",
@@ -251,7 +260,7 @@ describe("goal continuity wire vocabulary", () => {
     ])
       expect(() => decode({ boundaries: operations })).toThrow();
     expect(() =>
-      Schema.decodeSync(ContinuityRequest)({
+      compiledDecodeSync8({
         action: "checkpoint",
         clientRequestId: "req",
         expected: target,
@@ -327,16 +336,28 @@ const reconcile = {
   disposition: { type: "accept_unknown_for_one_recovery", recoveryTarget: preparation.target },
 };
 
+const compiledIs9 = Schema.is(ContinuityPendingTicket);
+const compiledIs10 = Schema.is(ContinuityPreparedTicket);
+const compiledIs11 = Schema.is(ContinuityDispatchPermit);
+const compiledIs12 = Schema.is(ContinuityDeliverySettlement);
+const compiledIs13 = Schema.is(DeliveryPhase);
+const compiledIs14 = Schema.is(ContinuityDeliveryReceipt);
+const compiledIs15 = Schema.is(DeliveryGate);
+const compiledIs16 = Schema.is(ContinuityRecoveryTransitionResult);
+const compiledIs17 = Schema.is(ReconcileDeliveryRequest);
+const compiledIs18 = Schema.is(ReconcileDeliveryResult);
+const compiledIs19 = Schema.is(ContinuityRecoveryAuthorization);
+
 describe("durable recovery delivery contracts", () => {
   it("separates pending and prepared tickets from the single-use dispatch permit", () => {
-    expect(Schema.is(ContinuityPendingTicket)(pending)).toBe(true);
-    expect(Schema.is(ContinuityPreparedTicket)(prepared)).toBe(true);
-    expect(Schema.is(ContinuityDispatchPermit)(pending)).toBe(false);
-    expect(Schema.is(ContinuityDispatchPermit)(prepared)).toBe(false);
-    expect(Schema.is(ContinuityDispatchPermit)(permit)).toBe(true);
-    expect(Schema.is(ContinuityDispatchPermit)({ ...permit, rpcRequestId: undefined })).toBe(false);
+    expect(compiledIs9(pending)).toBe(true);
+    expect(compiledIs10(prepared)).toBe(true);
+    expect(compiledIs11(pending)).toBe(false);
+    expect(compiledIs11(prepared)).toBe(false);
+    expect(compiledIs11(permit)).toBe(true);
+    expect(compiledIs11({ ...permit, rpcRequestId: undefined })).toBe(false);
     expect(
-      Schema.is(ContinuityPreparedTicket)({
+      compiledIs10({
         ...prepared,
         preparation: { target: preparation.target },
       }),
@@ -351,25 +372,23 @@ describe("durable recovery delivery contracts", () => {
       witness,
       producer,
     };
-    expect(Schema.is(ContinuityDeliverySettlement)({ permit, evidence })).toBe(true);
+    expect(compiledIs12({ permit, evidence })).toBe(true);
     for (const incomplete of [
       { ...evidence, producer: undefined },
       { ...evidence, witness: owner },
       { ...evidence, rpcRequestId: undefined },
       { ...evidence, acknowledgementRef: undefined },
     ])
-      expect(Schema.is(ContinuityDeliverySettlement)({ permit, evidence: incomplete })).toBe(false);
+      expect(compiledIs12({ permit, evidence: incomplete })).toBe(false);
     expect(
-      Schema.is(ContinuityDeliverySettlement)({
+      compiledIs12({
         permit,
         evidence: { outcome: "unknown", cause: "lost_response" },
       }),
     ).toBe(true);
+    expect(compiledIs12({ permit, evidence: { outcome: "not_sent" } })).toBe(false);
     expect(
-      Schema.is(ContinuityDeliverySettlement)({ permit, evidence: { outcome: "not_sent" } }),
-    ).toBe(false);
-    expect(
-      Schema.is(ContinuityDeliverySettlement)({
+      compiledIs12({
         permit,
         evidence: {
           outcome: "not_sent",
@@ -388,7 +407,7 @@ describe("durable recovery delivery contracts", () => {
       "not_sent",
       "unknown",
     ]) {
-      expect(Schema.is(DeliveryPhase)(phase)).toBe(true);
+      expect(compiledIs13(phase)).toBe(true);
       const receipt = {
         identity,
         deliveryRevision: "9007199254740994",
@@ -425,11 +444,11 @@ describe("durable recovery delivery contracts", () => {
         ],
         dispositions: [],
       };
-      expect(Schema.is(ContinuityDeliveryReceipt)(receipt)).toBe(true);
-      expect(Schema.is(ContinuityDeliveryReceipt)({ ...receipt, deliveryRevision: 1 })).toBe(false);
+      expect(compiledIs14(receipt)).toBe(true);
+      expect(compiledIs14({ ...receipt, deliveryRevision: 1 })).toBe(false);
       if (phase === "dispatching" || phase === "acknowledged") {
         expect(
-          Schema.is(ContinuityDeliveryReceipt)({
+          compiledIs14({
             ...receipt,
             events: [{ ...receipt.events[0], permit: null }],
           }),
@@ -437,20 +456,20 @@ describe("durable recovery delivery contracts", () => {
       }
       if (phase === "not_sent" || phase === "acknowledged" || phase === "unknown") {
         expect(
-          Schema.is(ContinuityDeliveryReceipt)({
+          compiledIs14({
             ...receipt,
             events: [{ ...receipt.events[0], evidence: null }],
           }),
         ).toBe(false);
       }
     }
-    expect(Schema.is(DeliveryPhase)("known_no_effect")).toBe(false);
-    expect(Schema.is(DeliveryGate)(gate)).toBe(true);
-    expect(Schema.is(DeliveryGate)({ ...gate, deliveryIds: [] })).toBe(false);
-    expect(Schema.is(DeliveryGate)({ ...gate, deliveryIds: ["delivery", "delivery"] })).toBe(false);
-    expect(Schema.is(ContinuityRecoveryTransitionResult)({ outcome: "absent", gate })).toBe(true);
+    expect(compiledIs13("known_no_effect")).toBe(false);
+    expect(compiledIs15(gate)).toBe(true);
+    expect(compiledIs15({ ...gate, deliveryIds: [] })).toBe(false);
+    expect(compiledIs15({ ...gate, deliveryIds: ["delivery", "delivery"] })).toBe(false);
+    expect(compiledIs16({ outcome: "absent", gate })).toBe(true);
     expect(
-      Schema.decodeSync(ContinuityRequest)({
+      compiledDecodeSync8({
         action: "delivery_receipt",
         deliveryId: "delivery",
       }),
@@ -459,7 +478,7 @@ describe("durable recovery delivery contracts", () => {
 
   it("allows idle owner expectations while rejecting fabricated authority and quiescence claims", () => {
     const decode = Schema.decodeUnknownSync(ContinuityRequest);
-    expect(Schema.is(ReconcileDeliveryRequest)(reconcile)).toBe(true);
+    expect(compiledIs17(reconcile)).toBe(true);
     expect(decode(reconcile).action).toBe("reconcile_delivery");
     for (const forged of [
       { actor: "owner" },
@@ -470,7 +489,7 @@ describe("durable recovery delivery contracts", () => {
       { quiescence: { outcome: "confirmed" } },
     ]) {
       expect(() => decode({ ...reconcile, ...forged })).toThrow();
-      expect(Schema.is(ReconcileDeliveryRequest)({ ...reconcile, ...forged })).toBe(false);
+      expect(compiledIs17({ ...reconcile, ...forged })).toBe(false);
     }
     expect(() =>
       decode({
@@ -478,23 +497,21 @@ describe("durable recovery delivery contracts", () => {
         disposition: { type: "retire_without_redelivery", acknowledged: true },
       }),
     ).toThrow();
+    expect(compiledIs17({ ...reconcile, expectedFenceRevision: undefined })).toBe(false);
     expect(
-      Schema.is(ReconcileDeliveryRequest)({ ...reconcile, expectedFenceRevision: undefined }),
-    ).toBe(false);
-    expect(
-      Schema.is(ReconcileDeliveryRequest)({
+      compiledIs17({
         ...reconcile,
         disposition: { type: "accept_unknown_for_one_recovery" },
       }),
     ).toBe(false);
     expect(
-      Schema.is(ReconcileDeliveryRequest)({
+      compiledIs17({
         ...reconcile,
         disposition: { type: "retry_proven_not_sent", recoveryTarget: preparation.target },
       }),
     ).toBe(true);
     expect(
-      Schema.is(ReconcileDeliveryRequest)({
+      compiledIs17({
         ...reconcile,
         disposition: { type: "retire_without_redelivery" },
       }),
@@ -512,9 +529,7 @@ describe("durable recovery delivery contracts", () => {
       quiescence: { outcome: "unproven" },
       effect: { type: "held", reason: "quiescence_required" },
     };
-    expect(
-      Schema.is(ReconcileDeliveryResult)({ outcome: "delivery_reconciled", disposition, gate }),
-    ).toBe(true);
+    expect(compiledIs18({ outcome: "delivery_reconciled", disposition, gate })).toBe(true);
     const authorization = {
       type: "single_use_recovery",
       authorizationId: "grant",
@@ -524,9 +539,9 @@ describe("durable recovery delivery contracts", () => {
       recoveryTarget: preparation.target,
       fenceRevision: "9",
     };
-    expect(Schema.is(ContinuityRecoveryAuthorization)(authorization)).toBe(true);
+    expect(compiledIs19(authorization)).toBe(true);
     expect(
-      Schema.is(ReconcileDeliveryResult)({
+      compiledIs18({
         outcome: "delivery_reconciled",
         disposition: {
           ...disposition,
@@ -536,13 +551,13 @@ describe("durable recovery delivery contracts", () => {
       }),
     ).toBe(false);
     expect(
-      Schema.is(ContinuityRecoveryAuthorization)({
+      compiledIs19({
         ...authorization,
         recoveryTarget: { ...target },
       }),
     ).toBe(false);
     expect(
-      Schema.is(ReconcileDeliveryResult)({
+      compiledIs18({
         outcome: "delivery_reconciled",
         disposition: {
           ...disposition,

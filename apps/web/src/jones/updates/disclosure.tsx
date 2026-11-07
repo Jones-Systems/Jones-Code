@@ -53,7 +53,9 @@ export function DetailItem({
   return (
     <>
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5">{children}</dd>
+      <dd className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 wrap-anywhere">
+        {children}
+      </dd>
     </>
   );
 }

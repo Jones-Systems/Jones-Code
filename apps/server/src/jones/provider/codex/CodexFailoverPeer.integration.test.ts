@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -374,6 +375,7 @@ describe("Codex synthetic peer real adapter fixture qualification", () => {
           ProviderEventLoggers.ProviderEventLoggers,
           ProviderEventLoggers.NoOpProviderEventLoggers,
         ),
+        Effect.provide(NodeCrypto.layer),
       ),
   );
 });

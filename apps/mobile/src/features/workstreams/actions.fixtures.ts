@@ -18,7 +18,7 @@ export const thread = {
   pinnedAt: null,
   settledOverride: null,
 };
-export const metadata = (id: string, sortOrder: number) => ({
+const metadata = (id: string, sortOrder: number) => ({
   workstreamId: id,
   name: id,
   sortOrder,
@@ -124,7 +124,7 @@ const opened = {
   registry_version: 1,
 };
 /** A stored reference for any environment and thread, attested once and then expired. */
-export const referenceFor = (environmentId: string, threadId: string): NativeReference => ({
+const referenceFor = (environmentId: string, threadId: string): NativeReference => ({
   ...reference,
   native_reference_id: `reference:${environmentId}:${threadId}`,
   identity: { ...reference.identity, source_instance_id: environmentId, native_id: threadId },

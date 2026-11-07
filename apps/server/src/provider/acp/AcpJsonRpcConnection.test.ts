@@ -4,10 +4,13 @@ import * as NodeOS from "node:os";
 import * as NodeURL from "node:url";
 import * as NodeFS from "node:fs";
 
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Layer from "effect/Layer";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -91,7 +94,7 @@ describe("AcpSessionRuntime", () => {
         expect(
           (yield* runtime.getConfigOptions).find((option) => option.category === "model"),
         ).toMatchObject({ currentValue: "gpt-5.4" });
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("publishes model changes returned by a config request and live notifications", () =>
@@ -105,7 +108,7 @@ describe("AcpSessionRuntime", () => {
       expect((yield* updates)[0]?.configOptions).toEqual(selected.configOptions);
       yield* runtime.request("_test/startup-metadata", {});
       expect((yield* updates)[0]?.configOptions).toEqual(yield* runtime.getConfigOptions);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("waits for native cancellation and drains final updates before another prompt", () =>
@@ -190,7 +193,7 @@ describe("AcpSessionRuntime", () => {
       }
       expect(yield* Fiber.join(replacement)).toMatchObject({ stopReason: "end_turn" });
       expect(promptRequests).toBe(2);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("reports an idle child exit and rejects later prompts", () =>
@@ -248,7 +251,7 @@ describe("AcpSessionRuntime", () => {
         ),
       ).toBe(event.error);
       expect(yield* runtime.notify("_test/exit", {}).pipe(Effect.flip)).toBe(event.error);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("retires a native runtime when its prompt caller is interrupted", () =>
@@ -288,7 +291,7 @@ describe("AcpSessionRuntime", () => {
           })
           .pipe(Effect.flip),
       ).toBe(events[0]?.error);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("fails a pending request when the stderr handler rejects the runtime", () =>
@@ -310,7 +313,32 @@ describe("AcpSessionRuntime", () => {
       );
       expect(events[0]?.error).toBe(failure);
       expect(yield* runtime.initialize().pipe(Effect.flip)).toBe(failure);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
+  it.effect("preserves caller cancellation while initialize is consumed by a live child", () =>
+    Effect.gen(function* () {
+      const observed = yield* Deferred.make<void>();
+      const runtime = yield* AcpSessionRuntime.make({
+        ...mockRuntimeOptions,
+        spawn: {
+          command: process.execPath,
+          args: [
+            "-e",
+            "process.stdin.once('data', () => { process.stderr.write('initialize-consumed\\n'); }); process.stdin.resume();",
+          ],
+        },
+        onStderr: (chunk) =>
+          chunk.includes("initialize-consumed")
+            ? Deferred.succeed(observed, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+      });
+      const caller = yield* runtime.initialize().pipe(Effect.forkChild);
+      yield* Deferred.await(observed);
+      yield* Fiber.interrupt(caller);
+      const result = yield* Fiber.await(caller);
+      expect(Exit.isFailure(result) && Cause.hasInterruptsOnly(result.cause)).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect.each([
@@ -358,7 +386,7 @@ describe("AcpSessionRuntime", () => {
           },
         });
       }
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("drains large stderr output and keeps auth-sized logging chunks", () =>
@@ -384,7 +412,7 @@ describe("AcpSessionRuntime", () => {
       expect(lengths.length).toBeGreaterThan(0);
       expect(Math.max(...lengths)).toBeGreaterThanOrEqual(16_384);
       expect(Math.max(...lengths)).toBeLessThanOrEqual(32_768);
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("releases a queued event drain when its runtime scope closes", () =>
@@ -414,7 +442,7 @@ describe("AcpSessionRuntime", () => {
         _tag: "AcpTransportError",
         detail: "The ACP session runtime is closed.",
       });
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("does not restore ambient variables to a sanitized child environment", () =>
@@ -445,7 +473,7 @@ describe("AcpSessionRuntime", () => {
         inherited: false,
         explicit: true,
       });
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it("selects explicit or agent-managed authentication without choosing terminal auth", () => {
@@ -491,7 +519,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
   });
 
@@ -543,7 +571,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
   });
 
@@ -587,7 +615,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
   });
 
@@ -629,7 +657,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
   });
 
@@ -686,7 +714,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     ),
   );
 
@@ -724,7 +752,7 @@ describe("AcpSessionRuntime", () => {
       const afterRestart = yield* collectFirstAssistantItemId;
 
       expect(afterRestart).not.toBe(beforeRestart);
-    }).pipe(Effect.provide(NodeServices.layer));
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
   });
 
   it.effect("drops session updates emitted for a child ACP session", () =>
@@ -767,7 +795,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     ),
   );
 
@@ -828,7 +856,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     ),
   );
 
@@ -874,7 +902,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     ),
   );
 
@@ -921,7 +949,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     ),
   );
 
@@ -966,6 +994,16 @@ describe("AcpSessionRuntime", () => {
           "logout",
         ]),
       );
+      // Omitted roots clear an agent's stored ones, so every activation resends them.
+      for (const method of ["session/new", "session/fork", "session/resume"]) {
+        expect(
+          requestEvents.find((event) => event.method === method && event.status === "started")
+            ?.payload,
+        ).toMatchObject({
+          additionalDirectories: ["/tmp/t3-attachments"],
+          _meta: { negotiated: "0.0.0" },
+        });
+      }
     }).pipe(
       Effect.provide(
         AcpSessionRuntime.layer({
@@ -977,6 +1015,10 @@ describe("AcpSessionRuntime", () => {
               T3_ACP_SESSION_LIFECYCLE: "1",
             },
           },
+          additionalDirectories: ["/tmp/t3-attachments"],
+          sessionMeta: (initializeResult) => ({
+            negotiated: initializeResult.agentInfo?.version ?? "none",
+          }),
           cwd: process.cwd(),
           clientInfo: { name: "t3-test", version: "0.0.0" },
           requestLogger: (event) =>
@@ -986,7 +1028,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
   });
 
@@ -1035,7 +1077,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     ),
   );
 
@@ -1063,7 +1105,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     ),
   );
 
@@ -1094,7 +1136,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     ),
   );
 
@@ -1131,7 +1173,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     ),
   );
 
@@ -1180,7 +1222,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
     );
   });
@@ -1217,7 +1259,7 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
     );
   });

@@ -1,3 +1,5 @@
+import { useNowMinuteMs } from "../../lib/clock";
+import * as Digest from "effect/crypto/Digest";
 import {
   WorkstreamOperationsClient,
   supportsWorkstreamOperations,
@@ -33,7 +35,7 @@ import {
   type WorkstreamCommand,
   type WorkstreamReceipt,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -83,6 +85,12 @@ import type { MobileWorkstreams } from "./types";
 const COLLAPSE_KEY = "t3code.workstream-collapse.v1";
 const decodeEnvironmentIds = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Array(EnvironmentId)),
+);
+const decodeCollapseKeys = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
+const decodePlacementIdentities = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Array(T3PlacementIdentity)),
 );
 const refreshSubscribers = new Set<() => void>();
 // Home and the thread sidebar share retained requests and one polling loop per connection.
@@ -180,7 +188,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     [loaded, connections, retained],
   );
   const snapshotsRef = useRef(snapshots);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed connection and snapshot identities to pending mobile workstream callbacks.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed connection and snapshot identities to in-flight workstream requests.
   useLayoutEffect(() => {
     retainedRef.current = retained;
     loadedRef.current = loaded;
@@ -266,7 +274,9 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
             ),
         },
         () =>
-          runtime.runPromise(Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4()))),
+          runtime.runPromise(
+            SecureRandom.SecureRandom.pipe(Effect.flatMap((crypto) => crypto.uuidV4())),
+          ),
       );
       mobileOperationClients.set(connectionKey, client);
     }
@@ -408,32 +418,25 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     },
     [request],
   );
-  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile asynchronously retained workstream snapshots when their source connections change.
-  useEffect(() => {
-    setLoaded((previous) => {
-      const next = settleMobileWorkstreamSnapshots(previous, new Map(), retained);
-      return next.size === previous.size ? previous : next;
-    });
-  }, [retained]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Register the mounted workstream refresh subscriber and remove it on unmount.
+  const [previousRetained, setPreviousRetained] = useState(() => retained);
+  if (previousRetained !== retained) {
+    setPreviousRetained(() => retained);
+    setLoaded((previous) => settleMobileWorkstreamSnapshots(previous, new Map(), retained));
+  }
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Register the mounted workstream refresh subscriber and remove it on unmount.
   useEffect(() => {
     refreshSubscribers.add(refresh);
     return () => {
       refreshSubscribers.delete(refresh);
     };
   }, [refresh]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Restore workstream collapse preferences from secure storage without updating an unmounted screen.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Restore workstream collapse preferences from secure storage without updating an unmounted screen.
   useEffect(() => {
     let active = true;
     void runtime
       .runPromise(MobileSecureStorage.pipe(Effect.flatMap((store) => store.getItem(COLLAPSE_KEY))))
       .then((value) => {
-        if (active && value)
-          setCollapsedKeys(
-            new Set(
-              Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(value),
-            ),
-          );
+        if (active && value) setCollapsedKeys(new Set(decodeCollapseKeys(value)));
       })
       .catch(() => {});
     void runtime
@@ -479,20 +482,27 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       }),
     [],
   );
-  // oxlint-disable-next-line t3code/react-effect-budget -- Load registry snapshots for the current connections and abort requests when their owner retires.
+  const [previousLoad, setPreviousLoad] = useState({ connections, context, inventory, revision });
+  if (
+    previousLoad.connections !== connections ||
+    previousLoad.context !== context ||
+    previousLoad.inventory !== inventory ||
+    previousLoad.revision !== revision
+  ) {
+    setPreviousLoad({ connections, context, inventory, revision });
+    setSelection(null);
+    setError(null);
+  }
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Load registry snapshots for the current connections and abort requests when their owner retires.
   useEffect(() => {
     const controller = new AbortController();
     controllers.current.add(controller);
-    setSelection(null);
-    setError(null);
     if (pendingConnections.current !== connections) {
       pendingCommands.current.clear();
       pendingConnections.current = connections;
     }
     if (!AsyncResult.isSuccess(context)) return () => controller.abort();
-    const identities = Schema.decodeUnknownSync(
-      Schema.fromJsonString(Schema.Array(T3PlacementIdentity)),
-    )(inventory);
+    const identities = decodePlacementIdentities(inventory);
     void Promise.all(
       connections.map(
         async (
@@ -551,7 +561,9 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 Date.now,
                 (bytes) =>
                   runtime.runPromise(
-                    Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.digest("SHA-256", bytes))),
+                    Digest.Digest.pipe(
+                      Effect.flatMap((digest) => digest.digest(Digest.sha256, bytes)),
+                    ),
                   ),
               );
             })().catch((cause: unknown) => {
@@ -596,6 +608,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       for (const pending of controllers.current) pending.abort();
       controllers.current.clear();
     };
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- The explicit refresh revision invalidates the registry and placement observations.
   }, [connections, context, inventory, revision, request, registryFetchers]);
   const bindingRevision = snapshots
     .map((snapshot) =>
@@ -606,7 +619,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       ]),
     )
     .join("|");
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own appearance refresh subscriptions and abort their reads when the mounted snapshot set changes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own appearance refresh subscriptions and abort their reads when the mounted snapshot set changes.
   useEffect(() => {
     const abort = new AbortController();
     let loading = false;
@@ -678,7 +691,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       clearInterval(timer);
       subscription.remove();
     };
-  }, [connections, request]);
+  }, [request]);
 
   const operationClientsForWatch = useEffectEvent(() =>
     snapshotsRef.current
@@ -697,10 +710,22 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       ]),
     )
     .join("|");
-  // oxlint-disable-next-line t3code/react-effect-budget -- Watch retained operation results and release their subscriptions and abort signal on unmount.
+  const [previousWatch, setPreviousWatch] = useState({
+    operationBindingKey,
+    request,
+    operationWatchRevision,
+  });
+  if (
+    previousWatch.operationBindingKey !== operationBindingKey ||
+    previousWatch.request !== request ||
+    previousWatch.operationWatchRevision !== operationWatchRevision
+  ) {
+    setPreviousWatch({ operationBindingKey, request, operationWatchRevision });
+    setOperationStatus(null);
+  }
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Watch retained operation results and release their subscriptions and abort signal on unmount.
   useEffect(() => {
     const abort = new AbortController();
-    setOperationStatus(null);
     const seen = new Set<string>();
     const subscriptions: (() => void)[] = [];
     for (const client of operationClientsForWatch()) {
@@ -728,7 +753,8 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       for (const unsubscribe of subscriptions) unsubscribe();
     };
     // A connection/binding change replaces the polling lifetime, never the retained request.
-  }, [operationBindingKey, request, operationWatchRevision]);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Retry recovery starts a fresh watch for the same retained operation.
+  }, [operationBindingKey, operationWatchRevision]);
   const assertCurrent = (snapshot: MobileWorkstreamSnapshot) => {
     if (
       !current.current.some(
@@ -848,7 +874,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     return await (async () => {
       for (const action of actions) {
         const command_id = await runtime.runPromise(
-          Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
+          SecureRandom.SecureRandom.pipe(Effect.flatMap((crypto) => crypto.uuidV4())),
         );
         assertCurrent(snapshot);
         const command: WorkstreamCommand = {
@@ -923,9 +949,10 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       }));
     return submitActions(group.snapshot, actions);
   };
+  const nowMs = useNowMinuteMs();
   const projection = useMemo(
-    () => projectMobileWorkstreams(snapshots, threads, Date.now(), liveEnvironments),
-    [snapshots, threads, liveEnvironments],
+    () => projectMobileWorkstreams(snapshots, threads, nowMs, liveEnvironments),
+    [snapshots, threads, nowMs, liveEnvironments],
   );
   const saveAppearance = async (
     snapshot: MobileWorkstreamSnapshot,

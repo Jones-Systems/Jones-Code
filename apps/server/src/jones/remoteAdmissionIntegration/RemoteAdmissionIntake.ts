@@ -155,6 +155,11 @@ const pending = (record: RemoteAdmissionRecord) =>
     remoteAdmission: { id: record.id, bindingDigest: record.bindingDigest, status: record.status },
   });
 const intakeError = (cause: unknown) => new RemoteAdmissionIntakeError({ cause });
+const decodeRemoteAdmissionReceiverPolicyJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionReceiverPolicy),
+);
+const decodeOrchestratorMcpFailure = Schema.decodeUnknownEffect(OrchestratorMcpFailure);
+const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -169,9 +174,7 @@ const make = Effect.gen(function* () {
       policy_json: string;
     }>`SELECT policy_json FROM jones_remote_admission_policy WHERE singleton = 1`;
     const saved = rows[0]
-      ? yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionReceiverPolicy))(
-          rows[0].policy_json,
-        )
+      ? yield* decodeRemoteAdmissionReceiverPolicyJson(rows[0].policy_json)
       : defaultPolicy;
     return saved;
   });
@@ -184,7 +187,7 @@ const make = Effect.gen(function* () {
   const deliver = (saved: { ok: boolean; value: unknown }) =>
     saved.ok
       ? Effect.succeed(saved.value)
-      : Schema.decodeUnknownEffect(OrchestratorMcpFailure)(saved.value).pipe(
+      : decodeOrchestratorMcpFailure(saved.value).pipe(
           Effect.flatMap((error) => Effect.fail(error)),
         );
   const validateTarget = Effect.fn("RemoteAdmissionIntake.validateTarget")(function* (
@@ -227,10 +230,8 @@ const make = Effect.gen(function* () {
     // reusable; an unknown handler effect remains visible for reconciliation.
     const outcome = yield* handler(params, invocation).pipe(
       Effect.map((value) => ({ ok: true, value })),
-      Effect.catch((error) =>
-        Schema.is(OrchestratorMcpFailure)(error)
-          ? Effect.succeed({ ok: false, value: error })
-          : Effect.fail(error),
+      Effect.catchIf(Schema.is(OrchestratorMcpFailure), (error) =>
+        Effect.succeed({ ok: false, value: error }),
       ),
     );
     yield* sql`INSERT INTO jones_remote_admission_results (admission_id, result_json) VALUES (${record.id}, ${encodeJson(outcome)})`;
@@ -362,7 +363,7 @@ const make = Effect.gen(function* () {
       }),
       Effect.catch((error) =>
         Effect.fail(
-          Schema.is(OrchestratorMcpFailure)(error)
+          isOrchestratorMcpFailure(error)
             ? error
             : new OrchestratorMcpFailure({
                 code: "orchestration_error",
@@ -372,32 +373,33 @@ const make = Effect.gen(function* () {
       ),
     ),
     snapshot,
-    attention: () =>
+    attention: Effect.fn("RemoteAdmissionIntake.attention")(() =>
       sql<{
         count: number;
       }>`SELECT COUNT(*) AS count FROM jones_remote_admissions WHERE status = 'held'`.pipe(
         Effect.map((rows) => ({ count: rows[0]?.count ?? 0 })),
         Effect.mapError(intakeError),
       ),
-    withdraw: (input, clientId) =>
+    ),
+    withdraw: Effect.fn("RemoteAdmissionIntake.withdraw")((input, clientId) =>
       admissions.withdraw({ ...input, clientId }).pipe(
         Effect.catchTags({
           RemoteAdmissionStateConflict: (error) =>
             error.status === "dispatching" ||
             error.status === "dispatched" ||
             error.status === "denied"
-              ? admissions
-                  .get(input.id)
-                  .pipe(
-                    Effect.flatMap((record) =>
-                      record === null ? Effect.fail(error) : Effect.succeed(record),
-                    ),
-                  )
+              ? admissions.get(input.id).pipe(
+                  Effect.filterOrFail(
+                    (record) => record !== null,
+                    () => error,
+                  ),
+                )
               : Effect.fail(error),
         }),
         Effect.map(publicRemoteAdmission),
         Effect.mapError(intakeError),
       ),
+    ),
     updatePolicy: Effect.fn("RemoteAdmissionIntake.updatePolicy")(function* (input) {
       yield* sql.withTransaction(
         Effect.gen(function* () {

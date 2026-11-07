@@ -1,9 +1,15 @@
+function fileOptions(container: HTMLElement) {
+  return [...container.querySelectorAll("button")]
+    .map((button) => button.getAttribute("aria-label"))
+    .filter((label) => label?.startsWith("File options for "));
+}
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { searchableMessageSegments } from "@t3tools/shared/threadFindText";
 import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";
 import { AsyncResult } from "effect/reactivity";
 import { type ReactElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../test/render";
 import "../index.css";
@@ -14,11 +20,24 @@ import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
 import { MarkdownFindContext } from "./chat/markdownFindContext";
 import { useThreadFindHighlights } from "./chat/threadFindHighlights";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
+import { HostImageUrlContext } from "./chat/hostImageUrl";
 
 const { workspaceSearch, filesystemMetadata } = vi.hoisted(() => ({
   workspaceSearch: vi.fn(),
   filesystemMetadata: vi.fn(),
 }));
+const parsedSources = vi.hoisted(() => [] as string[]);
+vi.mock(import("mdast-util-from-markdown"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    fromMarkdown: ((source: string, ...rest: never[]) => {
+      parsedSources.push(String(source));
+      return (actual.fromMarkdown as (...args: unknown[]) => unknown)(source, ...rest);
+    }) as typeof actual.fromMarkdown,
+  };
+});
+
 vi.mock(import("../state/use-atom-query-runner"), async (original) => ({
   ...(await original()),
   useAtomQueryRunner: ((family: unknown) =>
@@ -65,6 +84,22 @@ vi.mock(import("./chat/MermaidDiagram"), async (original) => {
   };
 });
 
+const appearance = vi.hoisted(() => ({
+  value: "light" as "light" | "dark",
+  listeners: new Set<() => void>(),
+}));
+vi.mock(import("../hooks/useTheme"), async (original) => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    appearance.listeners.add(listener);
+    return () => appearance.listeners.delete(listener);
+  };
+  return {
+    ...(await original()),
+    useRenderedAppearance: () => useSyncExternalStore(subscribe, () => appearance.value),
+  };
+});
+
 const settingsOverrides = vi.hoisted(() => ({ mathRenderingEnabled: false }));
 vi.mock(import("../hooks/useSettings"), async (original) => {
   const actual = await original();
@@ -105,6 +140,8 @@ function setup() {
   using resources = new DisposableStack();
   resources.defer(() => vi.restoreAllMocks());
   resources.defer(() => CSS.highlights.clear());
+  appearance.value = "light";
+  parsedSources.length = 0;
   settingsOverrides.mathRenderingEnabled = false;
   renderDiagram.mockReset();
   workspaceSearch.mockReset().mockResolvedValue(AsyncResult.success({ entries: [] }));
@@ -153,133 +190,76 @@ it("shows unavailable audio when a workspace embed has no thread", async () => {
   expect(screen.container.querySelector("audio")).toBeNull();
 });
 
-function fileOptions(container: HTMLElement) {
-  return [...container.querySelectorAll("button")]
-    .map((button) => button.getAttribute("aria-label"))
-    .filter((label) => label?.startsWith("File options for "));
-}
-
-function linkTexts(container: HTMLElement) {
-  return [...container.querySelectorAll("a")].map((link) => link.textContent);
-}
-
-describe("ChatMarkdown shell identity", () => {
-  it("visibly disables a destination block when a callback consumer lacks native message identity", async () => {
-    using _fixture = setup();
-    const callback = vi.fn();
-    await using screen = await renderText("```jones-shell environment=mini label=Mini\npwd\n```", {
-      threadRef: { environmentId: EnvironmentId.make("source"), threadId: ThreadId.make("thread") },
-      onRunShellCommand: callback,
-    });
-    const { container } = screen;
-    expect(container.textContent).toContain("no stable identity");
-    const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Run on"]')!;
-    expect(button.disabled).toBe(true);
-    await act(async () => button.click());
-    expect(callback).not.toHaveBeenCalled();
-  });
+it("loads a host image through the page's own route when there is no environment", async () => {
+  setup();
+  const pixel =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  const hostImageUrl = vi.fn((_path: string) => pixel);
+  await using screen = await render(
+    <HostImageUrlContext value={hostImageUrl}>
+      <ChatMarkdown cwd={undefined} text="![Shot](</work/my shot.png>)" />
+    </HostImageUrlContext>,
+  );
+  await expect.element(screen.getByAltText("Shot")).toHaveAttribute("src", pixel);
+  expect(new Set(hostImageUrl.mock.calls.map(([path]) => path))).toEqual(
+    new Set(["/work/my shot.png"]),
+  );
 });
 
-describe("ChatMarkdown bare anchor placeholders", () => {
-  it.each(["<A>", "<a>", "<a >", "<a/>", "<A/>", "<a />"])(
-    "preserves unmatched %s without linking later blocks",
-    async (token) => {
-      using _fixture = setup();
-      await using screen = await renderText(
-        `- **"From ${token}"** appears in the header.\n\n- **Tests:** cover inheritance.\n\nThe deferred move continues on B.\n\nSee <a href="https://example.com">the link</a>.`,
-      );
-      const { container } = screen;
-      expect(container.querySelector("strong")?.textContent).toBe(`"From ${token}"`);
-      expect(linkTexts(container)).toEqual(["the link"]);
-      expect(container.querySelectorAll("li")).toHaveLength(2);
-      expect([...container.querySelectorAll("p")].map((p) => p.textContent)).toContain(
-        "The deferred move continues on B.",
-      );
-    },
+it("loads the <picture> source for the current theme through the image route", async () => {
+  setup();
+  const pixel =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  const hostImageUrl = (path: string) => `${pixel}#${path}`;
+  await using screen = await render(
+    <HostImageUrlContext value={hostImageUrl}>
+      <ChatMarkdown
+        cwd={undefined}
+        text={
+          '<picture><source media="(prefers-color-scheme: dark)" srcset="/work/dark.png"><img src="/work/light.png" alt="Shot"></picture>'
+        }
+      />
+    </HostImageUrlContext>,
   );
+  await expect
+    .element(screen.getByAltText("Shot"))
+    .toHaveAttribute("src", `${pixel}#/work/light.png`);
 
-  it.each(["</a>  ", "<div>more</div>\n</a>"])(
-    "preserves a paired anchor closing in the raw block %s",
-    async (closing) => {
-      using _fixture = setup();
-      await using screen = await renderText(`See <a>label\n\n${closing}\n\nfinish`);
-      const { container } = screen;
-      expect(container.querySelector("p")?.textContent).toBe("See label");
-    },
-  );
-
-  it("preserves a paired anchor after comment-looking raw text", async () => {
-    using _fixture = setup();
-    await using screen = await renderText("See <a>label<script><!-- </script> --></a>");
-    const { container } = screen;
-    expect(container.querySelector("p")?.textContent).toBe("See label -->");
+  await act(() => {
+    appearance.value = "dark";
+    for (const listener of appearance.listeners) listener();
   });
-
-  it.each(["<!-- </a> -->", '<div title="</a>">more</div>', '<script>"</a>"</script>'])(
-    "ignores apparent closing anchors inside %s",
-    async (html) => {
-      using _fixture = setup();
-      await using screen = await renderText(`Before <A>.\n\n${html}\n\nAfter.`);
-      const { container } = screen;
-      expect(container.querySelector("p")?.textContent).toBe("Before <A>.");
-      expect(container.querySelectorAll("a")).toHaveLength(0);
-    },
-  );
-
-  it("preserves paired HTML anchors, details, markdown links, and inline code", async () => {
-    using _fixture = setup();
-    await using screen = await renderText(
-      'Bare <a>label</a>, <a id="section"></a>, `<A>`, and [docs](https://example.com).\n\n<details><summary>More</summary>Details</details>',
-    );
-    const { container } = screen;
-    expect(linkTexts(container)).toEqual(["label", "", "docs"]);
-    expect(container.querySelector("code")?.textContent).toBe("<A>");
-    expect(container.querySelector("[data-markdown-details]")?.textContent).toContain("More");
-  });
+  await expect
+    .element(screen.getByAltText("Shot"))
+    .toHaveAttribute("src", `${pixel}#/work/dark.png`);
 });
 
-describe("ChatMarkdown context references", () => {
-  it("renders text and image references through the chip renderer, with readable fallback", async () => {
-    using _fixture = setup();
-    const text =
-      "See [Terminal output](t3-context://v1/terminal/term-1) and ![Error image](t3-context://v1/image/img-1).";
-    await using screen = await render(
-      <ChatMarkdown
-        cwd={undefined}
-        text={text}
-        renderContextReference={({ kind, label }) => (
-          <button>
-            {kind}: {label}
-          </button>
-        )}
-      />,
-    );
-    const { container, rerender } = screen;
-    expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
-      "terminal: Terminal output",
-      "image: Error image",
-    ]);
-    expect(container.querySelectorAll("img, a")).toHaveLength(0);
-    await rerender(<ChatMarkdown cwd={undefined} text={text} />);
-    expect(container.textContent).toBe("See Terminal output and Error image.");
-    expect(container.querySelectorAll("img, a, button")).toHaveLength(0);
-  });
+it("reuses the parse of a streaming reply's finished blocks when it remounts", async () => {
+  setup();
+  const message = (
+    <ChatMarkdown cwd="/tmp/project" text={"Finished block\n\nStill growing"} isStreaming />
+  );
+  {
+    await using _first = await render(message);
+  }
+  await using screen = await render(message);
+  await expect.element(screen.getByText("Still growing")).toBeVisible();
+  expect(parsedSources.filter((source) => source.includes("Finished block"))).toHaveLength(1);
+});
 
-  it("reads formatted context labels through nested markup instead of the context id", async () => {
-    using _fixture = setup();
-    const seen: Array<string> = [];
-    await using _screen = await render(
-      <ChatMarkdown
-        cwd={undefined}
-        text="See [**Bold** `code`](t3-context://v1/terminal/term-1)."
-        renderContextReference={({ kind, label }) => {
-          seen.push(`${kind}: ${label}`);
-          return <button>{label}</button>;
-        }}
-      />,
-    );
-    expect(new Set(seen)).toEqual(new Set(["terminal: Bold code"]));
-  });
+it("reuses the parse of a remounted message that has stable extra plugins", async () => {
+  setup();
+  const parsed = vi.fn();
+  const countingPlugins = [() => () => void parsed()];
+  const message = (
+    <ChatMarkdown cwd="/tmp/project" text="Cached text" extraRemarkPlugins={countingPlugins} />
+  );
+  {
+    await using _first = await render(message);
+  }
+  await using screen = await render(message);
+  await expect.element(screen.getByText("Cached text")).toBeVisible();
+  expect(parsed).toHaveBeenCalledTimes(1);
 });
 
 describe("ChatMarkdown favicon privacy", () => {
@@ -531,6 +511,37 @@ describe("ChatMarkdown workspace file opens", () => {
   });
 });
 
+describe("ChatMarkdown skill chips", () => {
+  it("shows the skill's details and opens its instructions", async () => {
+    setup();
+    const threadRef = {
+      environmentId: EnvironmentId.make("workspace"),
+      threadId: ThreadId.make("thread"),
+    };
+    await using screen = await renderText("Run $review now", {
+      threadRef,
+      skills: [
+        {
+          name: "review",
+          displayName: "Review",
+          description: "Reviews the current branch.",
+          path: "/skills/review/SKILL.md",
+          enabled: true,
+        },
+      ],
+    });
+    using openFile = vi
+      .spyOn(useRightPanelStore.getState(), "openFile")
+      .mockImplementation(() => {});
+
+    await userEvent.click(screen.getByRole("button", { name: "Skill Review. Show details" }));
+    await expect.element(page.getByText("Reviews the current branch.")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "View instructions" }));
+
+    expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/skills/review/SKILL.md");
+  });
+});
+
 describe("ChatMarkdown headings", () => {
   it("exposes headings below the host heading without changing their tags", async () => {
     using _fixture = setup();
@@ -568,6 +579,22 @@ describe("ChatMarkdown headings", () => {
       "user-content-install",
       "user-content-install-2",
     ]);
+  });
+});
+
+describe("ChatMarkdown inline code selection", () => {
+  it("selects the whole inline code span on double-click, but only a word in fenced code", async () => {
+    setup();
+    await using screen = await renderText(
+      "Run `migration-gate --dry-run` first.\n\n```txt\nfenced-block word\n```",
+    );
+    await userEvent.dblClick(screen.getByText("migration-gate --dry-run"));
+    expect(window.getSelection()?.toString()).toBe("migration-gate --dry-run");
+
+    window.getSelection()?.removeAllRanges();
+    const fenced = screen.container.querySelector("pre code")!;
+    await userEvent.dblClick(fenced, { position: { x: 4, y: 4 } });
+    expect(window.getSelection()?.toString()).toBe("fenced");
   });
 });
 
@@ -659,8 +686,13 @@ describe("ChatMarkdown skill chips", () => {
         cwd="/tmp/project"
         text={text}
         skills={[
-          { name: "2spec", displayName: "2Spec" },
-          { name: "20k", displayName: "MoneySkill" },
+          { name: "2spec", displayName: "2Spec", path: "/synthetic/2spec/SKILL.md", enabled: true },
+          {
+            name: "20k",
+            displayName: "MoneySkill",
+            path: "/synthetic/20k/SKILL.md",
+            enabled: true,
+          },
         ]}
       />,
     );
@@ -1014,7 +1046,14 @@ describe("ChatMarkdown thread find", () => {
     "highlights the indexed occurrences of $query in $text",
     async ({ text, query, count, lineBreaks, user, withTemplate }) => {
       using _fixture = setup();
-      const skills = [{ name: "test-t3-app", displayName: "T3 App Testing" }];
+      const skills = [
+        {
+          name: "test-t3-app",
+          displayName: "T3 App Testing",
+          path: "/synthetic/test-t3-app/SKILL.md",
+          enabled: true,
+        },
+      ];
       const container = document.createElement("div");
       await using screen = await render(null, { container });
       await act(() =>

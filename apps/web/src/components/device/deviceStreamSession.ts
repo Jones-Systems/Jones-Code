@@ -49,6 +49,8 @@ export interface DeviceStreamKey {
   readonly platform: DevicePlatform;
   readonly deviceId: string;
   readonly access: DeviceHubAccess;
+  /** See `DeviceStreamTarget.serveSimOnly`. */
+  readonly serveSimOnly: boolean;
   /** Each mounted view owns its own client: one canvas cannot be in two places. */
   readonly viewId: string;
   readonly lifecycle?: DeviceStreamLifecycle;
@@ -98,10 +100,13 @@ export const deviceStreamSessionAtom = Atom.family((key: DeviceStreamKey) =>
       get.setSelf(session);
     };
     const client = createDeviceStreamClient(
-      { platform: key.platform, deviceId: key.deviceId, access: key.access },
-      createCanvasFrameSink(canvas, () => {
-        if (active) frameListener?.();
-      }),
+      {
+        platform: key.platform,
+        deviceId: key.deviceId,
+        access: key.access,
+        serveSimOnly: key.serveSimOnly,
+      },
+      createCanvasFrameSink(canvas, () => frameListener?.()),
       {
         onDuoControl: (duoControl) => {
           if (!active) return;

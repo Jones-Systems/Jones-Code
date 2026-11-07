@@ -120,6 +120,8 @@ vi.mock("./threads", async () => {
     environmentThreadDetails: {
       queueWorkflowAtom: () => Atom.make(null),
       checkpointSummariesAtom: () => Atom.make([]),
+      sequenceAtom: () => Atom.make(0),
+      pendingRequestsAtom: () => Atom.make(state.pendingRequests),
     },
     threadEnvironment: {
       respondToApproval: state.approve,
@@ -167,7 +169,6 @@ vi.mock("./use-composer-drafts", async () => {
 });
 vi.mock("../lib/composerImages", () => ({
   convertPastedImagesToAttachments: vi.fn(),
-  pasteComposerClipboard: vi.fn(),
   pickComposerFiles: vi.fn(),
   pickComposerMedia: vi.fn(),
 }));
@@ -343,6 +344,13 @@ describe("mobile task permissions", () => {
     };
     const requestId = RuntimeRequestId.make("input");
     useSelectedThreadRequests().onSelectUserInputOption(requestId, state.question, "TypeScript");
+    expect(useSelectedThreadRequests().activePendingUserInputAnswers).toBeNull();
+    // Selecting a live option is an action; text draft editing remains local.
+    useSelectedThreadRequests().onChangeUserInputCustomAnswer(
+      requestId,
+      state.question.id,
+      "TypeScript",
+    );
     state.grantedEnvironments.add("secondary");
     const requests = useSelectedThreadRequests();
     expect(requests.activePendingUserInputAnswers).toEqual({ language: "TypeScript" });

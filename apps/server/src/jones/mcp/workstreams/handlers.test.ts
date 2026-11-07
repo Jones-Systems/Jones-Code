@@ -30,8 +30,10 @@ const request = Schema.decodeUnknownSync(Operations.WorkstreamSetPrimaryRequest)
   ...corpus.cases.find((c) => c.name === "set-primary")!.value,
   origin: { kind: "agent" },
 });
+const compiledIs1 = Schema.is(Operations.WorkstreamSetupStatus);
+
 const setup = Schema.decodeUnknownSync(Operations.WorkstreamSetupStatus)(
-  corpus.cases.find((c) => Schema.is(Operations.WorkstreamSetupStatus)(c.value))!.value,
+  corpus.cases.find((c) => compiledIs1(c.value))!.value,
 );
 const pending: Operations.WorkstreamOperationResult = {
   contract: Operations.WORKSTREAM_OPERATIONS_CONTRACT,
@@ -192,11 +194,13 @@ it.effect("requires orchestration capability for setup reads", () =>
   ),
 );
 
+const compiledDecodeEffect2 = Schema.decodeEffect(Operations.WorkstreamCreateRequest);
+
 it.effect("delegates list, create, thread read and setup to the backend", () =>
   Effect.gen(function* () {
     const calls: unknown[] = [];
     const toolkit = yield* build(calls);
-    const create = yield* Schema.decodeEffect(Operations.WorkstreamCreateRequest)({
+    const create = yield* compiledDecodeEffect2({
       contract: Operations.WORKSTREAM_OPERATIONS_CONTRACT,
       operation_id: "create-operation-0001",
       origin: { kind: "agent" },

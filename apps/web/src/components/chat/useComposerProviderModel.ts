@@ -6,16 +6,15 @@ import {
 import {
   type ModelSelection,
   type ProjectId,
+  type ProviderInstanceId,
   ProviderDriverKind,
   type ScopedThreadRef,
   type ServerProvider,
 } from "@t3tools/contracts";
 import {
   NO_PROVIDER_MODEL_SELECTION,
+  providerInstanceEntriesFor,
   type ProviderInstanceEntry,
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
-  sortProviderInstanceEntries,
 } from "../../providerInstances";
 import { type UnifiedSettings } from "@t3tools/contracts/settings";
 import { getComposerPromptInjectionState, getComposerProviderState } from "./composerProviderState";
@@ -30,6 +29,7 @@ const NO_PROVIDER_MODELS: ServerProvider["models"] = [];
  */
 export function useComposerProviderModel(
   input: Omit<Parameters<typeof resolveComposerProviderSelection>[0], "entries"> & {
+    readonly requiredInstanceId?: ProviderInstanceId | null | undefined;
     readonly providerStatuses: ReadonlyArray<ServerProvider>;
     readonly settings: UnifiedSettings;
     readonly activeProjectId: ProjectId | null;
@@ -53,12 +53,10 @@ export function useComposerProviderModel(
     requiredInstanceId,
   } = input;
   const draftModelState = useComposerDraftModelState(threadRef);
-  const providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry> = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(
-      deriveProviderInstanceEntries(providerStatuses),
-      settings,
-      activeProjectId,
-    ),
+  const providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry> = providerInstanceEntriesFor(
+    providerStatuses,
+    settings,
+    activeProjectId,
   );
   const selection = resolveComposerProviderSelection({
     entries: providerInstanceEntries,
@@ -78,6 +76,7 @@ export function useComposerProviderModel(
     providers: providerStatuses,
     selectedProvider,
     selectedInstanceId,
+    requestedInstanceId: selection.requestedInstanceId,
     threadModelSelection,
     projectModelSelection,
     settings,

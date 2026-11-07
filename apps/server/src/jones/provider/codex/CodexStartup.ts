@@ -45,19 +45,23 @@ class CodexStartupNotDispatched extends Schema.TaggedError<CodexStartupNotDispat
   }
 }
 
+const compiledIs1 = Schema.is(CodexErrors.CodexAppServerRequestError);
+
 export const isNonApplyingStartupRejection = (error: unknown, method: string | undefined) =>
   method !== undefined &&
-  Schema.is(CodexErrors.CodexAppServerRequestError)(error) &&
+  compiledIs1(error) &&
   error.operation === "receive-response" &&
   error.method === method &&
   (error.code === -32600 || error.code === -32601 || error.code === -32602);
+
+const compiledLatestSchema1 = Schema.is(ControlAdmission.ControlAdmissionHeld);
 
 const isPreDispatchRefusal = (error: unknown) => {
   const seen = new Set<unknown>();
   let current = error;
   while (typeof current === "object" && current !== null && !seen.has(current)) {
     seen.add(current);
-    if (Schema.is(ControlAdmission.ControlAdmissionHeld)(current)) return true;
+    if (compiledLatestSchema1(current)) return true;
     current = "cause" in current ? current.cause : undefined;
   }
   return false;
@@ -161,6 +165,58 @@ export function makeCodexStartup(
       );
     }),
     completeWith,
+    // Metadata-only resume has no app owner to publish. Seal the original live
+    // attempt before dispatch; its reply cannot settle another attempt or hold.
+    captureUnmanagedResume: Effect.fn("CodexStartup.captureUnmanagedResume")(function* (
+      producer: StartupProducer,
+      expectedNativeId: string,
+      isCurrent: () => boolean,
+    ) {
+      const attempt = yield* StartupAttemptContext;
+      const generation = producer.generation;
+      const target = attempt?.target;
+      const valid = () =>
+        attempt !== undefined &&
+        attempt.operation === "resume" &&
+        !attempt.abandoned &&
+        !attempt.complete &&
+        attempt.hold === undefined &&
+        (attempt.producer === undefined || attempt.producer === producer) &&
+        (uncertain.get(producer)?.size ?? 0) === 0 &&
+        ![...holdOwners.values()].some((owner) => owner.producer === producer) &&
+        producer.generation === generation &&
+        isCurrent() &&
+        target !== undefined &&
+        target.nativeThreadId === expectedNativeId &&
+        attempt.target?.nativeThreadId === expectedNativeId &&
+        attempt.target.instanceId === target.instanceId &&
+        attempt.target.threadId === target.threadId &&
+        attempt.target.producer?.instanceId === target.producer?.instanceId &&
+        attempt.target.producer?.providerSessionId === target.producer?.providerSessionId &&
+        attempt.target.producer?.runtimeGeneration === generation;
+      if (!valid() || (yield* Clock.currentTimeMillis) >= attempt!.deadlineAtMillis)
+        return yield* unknown();
+      if (admission !== undefined) yield* admission.assertOpen(target!);
+      return Effect.fn("CodexStartup.completeUnmanagedResume")(function* <A>(
+        nativeId: string,
+        value: A,
+      ) {
+        const current = yield* StartupAttemptContext;
+        if (
+          current !== attempt ||
+          !valid() ||
+          attempt!.producer !== producer ||
+          !attempt!.mayHaveIssued ||
+          nativeId !== expectedNativeId ||
+          (yield* Clock.currentTimeMillis) >= attempt!.deadlineAtMillis
+        )
+          return yield* unknown();
+        if (admission !== undefined) yield* admission.assertOpen(attempt!.target!);
+        return yield* Effect.suspend(() =>
+          valid() ? completeWith(() => value) : Effect.fail(unknown()),
+        );
+      });
+    }),
     // Fork follow-ups inherit the original issuance uncertainty. Keep their
     // raw observers without adding a binding error to the native client port.
     retainRequest: Effect.fn("CodexStartup.retainRequest")(function* <A, E, R>(

@@ -1,3 +1,4 @@
+import { readServiceEnv } from "../../cli/service.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Synchronous fixture provenance hashes must match the staged executable bytes.
 import * as NodeCrypto from "node:crypto";
 import { expect, it } from "@effect/vitest";
@@ -63,6 +64,7 @@ function fixture(
     readonly foreground?: boolean;
     readonly unverified?: boolean;
     readonly initiallyInstalled?: boolean;
+    readonly initiallyCurrent?: boolean;
     readonly unreadableState?: boolean;
   } = {},
 ) {
@@ -73,6 +75,7 @@ function fixture(
   let persisted: HostServiceConfig.HostServiceConfigData = claim;
   files.set(`${baseDir}/jones/host-service.json`, JSON.stringify(claim));
   let installed = options.initiallyInstalled ?? true;
+  let current = options.initiallyCurrent ?? installed;
   let serveRead = 0;
   const platform = options.platform ?? "linux";
   const entry = "synthetic Jones executable";
@@ -128,6 +131,7 @@ function fixture(
             }),
           );
   const fs = FileSystem.makeNoop({
+    makeDirectory: () => Effect.void,
     readFileString: read,
     readFile: (name) => read(name).pipe(Effect.map(encode)),
     exists: (name) => Effect.succeed(files.has(name)),
@@ -153,7 +157,7 @@ function fixture(
     status: Effect.sync(() => ({
       supported: true,
       installed,
-      current: installed,
+      current,
       ...(installed
         ? {
             installedVersion: packageJson.version,
@@ -166,6 +170,7 @@ function fixture(
     install: (input) =>
       Effect.sync(() => {
         installed = true;
+        current = true;
         installs.push(input ?? {});
         return {
           baseDir,
@@ -253,6 +258,7 @@ function fixture(
   );
   return {
     files,
+    dependencies,
     commands,
     writes,
     installs,
@@ -323,7 +329,8 @@ it.effect(
       expect(result.warnings).toHaveLength(1);
       expect(result.status?.provenance).toBe("verified");
       expect(f.installs).toEqual([{ start: true }]);
-      expect(f.writes).toEqual(["host-service.json"]);
+      expect(f.writes).toEqual(["host-service.json", `${baseDir}/service.env`]);
+      expect(f.files.get(`${baseDir}/service.env`)).toBe("T3CODE_LAN=false\n");
       expect(f.commands.some((args) => args.includes("off") || args.includes("--bg"))).toBe(false);
     }),
 );
@@ -336,6 +343,7 @@ it.effect("Mac without a GUI login installs without bootstrap and reports awaiti
     ).pipe(Effect.provide(f.layer));
     expect(result.state).toBe("installed-awaiting-gui-login");
     expect(f.installs).toEqual([{ start: false }]);
+    expect(f.files.get(`${baseDir}/service.env`)).toBe("T3CODE_LAN=false\n");
     expect(result.status?.mac).toMatchObject({
       consoleUser: "gui-login-required",
       autoLogin: "yes",
@@ -344,6 +352,93 @@ it.effect("Mac without a GUI login installs without bootstrap and reports awaiti
     const statusJson = yield* encodeUnknownJson(result.status);
     expect(statusJson).not.toContain("synthetic-user");
     expect(f.commands.some((args) => args.includes("bootstrap"))).toBe(false);
+  }),
+);
+
+it.effect.each([
+  "T3CODE_LAN=true\n",
+  "T3CODE_LAN=false\n",
+  "T3CODE_HOST=::\n",
+  "T3CODE_LAN=true\nT3CODE_HOST=127.0.0.2\n",
+  "T3CODE_LAN=\n",
+  "T3CODE_HOST=\n",
+])("new-service setup preserves explicit file bind configuration %j", (contents) =>
+  Effect.gen(function* () {
+    const f = fixture({ initiallyInstalled: false });
+    f.files.set(`${baseDir}/service.env`, contents);
+    yield* Effect.flatMap(HostService.HostService, (service) =>
+      service.setup({ baseDir, port: 4321 }),
+    ).pipe(Effect.provide(f.layer));
+    expect(f.files.get(`${baseDir}/service.env`)).toBe(contents);
+    expect(f.writes).toEqual(["host-service.json"]);
+    expect(f.installs).toEqual([{ start: true }]);
+  }),
+);
+
+it.effect.each(['OTHER="first\nT3CODE_LAN=note\nlast"', "OTHER=retained\n\n\n", "OTHER=retained"])(
+  "missing loopback default preserves all unrelated bytes %j",
+  (contents) =>
+    Effect.gen(function* () {
+      const f = fixture({ initiallyInstalled: false });
+      f.files.set(`${baseDir}/service.env`, contents);
+      yield* Effect.flatMap(HostService.HostService, (service) =>
+        service.setup({ baseDir, port: 4321 }),
+      ).pipe(Effect.provide(f.layer));
+      const expected = `${contents}${contents.endsWith("\n") ? "" : "\n"}T3CODE_LAN=false\n`;
+      expect(f.files.get(`${baseDir}/service.env`)).toBe(expected);
+      const parsed = yield* readServiceEnv(baseDir).pipe(Effect.provide(f.dependencies));
+      expect(parsed.entries.T3CODE_LAN).toBe("false");
+      expect(parsed.entries.OTHER).toBe(
+        contents.startsWith('OTHER="') ? "first\nT3CODE_LAN=note\nlast" : "retained",
+      );
+      expect(f.writes).toEqual(["host-service.json", `${baseDir}/service.env`]);
+      yield* Effect.flatMap(HostService.HostService, (service) =>
+        service.setup({ baseDir, port: 4321 }),
+      ).pipe(Effect.provide(f.layer));
+      expect(f.files.get(`${baseDir}/service.env`)).toBe(expected);
+      expect(f.writes).toEqual([
+        "host-service.json",
+        `${baseDir}/service.env`,
+        "host-service.json",
+      ]);
+      expect(f.installs).toEqual([{ start: true }]);
+    }),
+);
+
+it.effect.each([
+  { current: true, contents: undefined },
+  { current: false, contents: undefined },
+  { current: true, contents: "OTHER=retained\n\n" },
+  { current: false, contents: "OTHER=retained\n\n" },
+])("installed service never seeds a loopback default %j", ({ current, contents }) =>
+  Effect.gen(function* () {
+    const f = fixture({ initiallyInstalled: true, initiallyCurrent: current });
+    if (contents !== undefined) f.files.set(`${baseDir}/service.env`, contents);
+    yield* Effect.flatMap(HostService.HostService, (service) =>
+      service.setup({ baseDir, port: 4321 }),
+    ).pipe(Effect.provide(f.layer));
+    expect(f.files.get(`${baseDir}/service.env`)).toBe(contents);
+    expect(f.writes).toEqual(["host-service.json"]);
+    expect(f.installs).toEqual(current ? [] : [{ start: true }]);
+  }),
+);
+
+it.effect.each([
+  [{ foreground: true }, "not owned"],
+  [{ busy: true }, "busy"],
+  [{ linger: "no" }, "lingering is disabled"],
+  [{ unverified: true }, "Operation failed"],
+  [{ serveReads: [exact.replace("4321", "9000")] }, "conflicting mapping"],
+] as const)("new-service preflight refusal %j cannot seed defaults", ([options, reason]) =>
+  Effect.gen(function* () {
+    const f = fixture({ ...options, initiallyInstalled: false });
+    const error = yield* Effect.flatMap(HostService.HostService, (service) =>
+      service.setup({ baseDir, port: 4321 }),
+    ).pipe(Effect.provide(f.layer), Effect.flip);
+    expect(error.message).toContain(reason);
+    expect(f.writes).toEqual([]);
+    expect(f.installs).toEqual([]);
+    expect(f.files.has(`${baseDir}/service.env`)).toBe(false);
   }),
 );
 
@@ -357,7 +452,7 @@ it.effect("removes only the exact persisted claim and confirms absence", () =>
     expect(f.commands).toEqual([
       ["serve", "status", "--json"],
       ["serve", "status", "--json"],
-      ["serve", "--https=8443", "off"],
+      ["serve", "--https=8443", "--set-path=/", "off"],
       ["serve", "status", "--json"],
     ]);
   }),

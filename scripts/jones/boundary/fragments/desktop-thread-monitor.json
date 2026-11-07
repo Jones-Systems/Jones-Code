@@ -110,6 +110,10 @@
     {
       "from": "apps/server/src/orchestration-v2/ShellStream.ts",
       "to": "packages/shared/src/jones/threadAttention.ts"
+    },
+    {
+      "from": "apps/web/src/connection/platform.test.ts",
+      "to": "apps/web/src/jones/threadMonitor/store.ts"
     }
   ]
 }

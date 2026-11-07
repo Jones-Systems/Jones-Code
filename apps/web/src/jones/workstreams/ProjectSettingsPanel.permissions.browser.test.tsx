@@ -1,4 +1,8 @@
 import { RegistryContext } from "@effect/atom-react";
+import {
+  BearerConnectionTarget,
+  PrimaryConnectionTarget,
+} from "@t3tools/client-runtime/connection";
 import type {
   DeleteProjectInput,
   UpdateProjectInput,
@@ -7,8 +11,10 @@ import {
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
   EnvironmentId,
+  ORCHESTRATION_PROTOCOL_VERSION,
   ProjectId,
   ProviderInstanceId,
+  ServerConfig,
   type AuthEnvironmentScope,
   type AuthSessionState,
 } from "@t3tools/contracts";
@@ -22,6 +28,7 @@ import {
 } from "@tanstack/react-router";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { act, render } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -53,6 +60,10 @@ const state = vi.hoisted(() => ({
 }));
 
 // Session grants come from the server; each test drives them through these atoms.
+vi.mock(import("~/localEnvironment"), async (original) => ({
+  ...(await original()),
+  isLocalEnvironmentDisabled: () => true,
+}));
 vi.mock(import("@t3tools/client-runtime/state/session"), async (original) => {
   const actual = await original();
   return {
@@ -69,6 +80,8 @@ vi.mock(import("~/state/environments"), async (original) => ({
   ...(await original()),
   useEnvironments: (() => ({ environments })) as never,
   usePrimaryEnvironmentId: () => primaryId,
+  readEnvironment: (id: EnvironmentId) =>
+    environments.find((environment) => environment.environmentId === id) ?? null,
 }));
 vi.mock(import("~/state/entities"), async (original) => ({
   ...(await original()),
@@ -90,6 +103,10 @@ vi.mock(import("~/state/projects"), async (original) => {
 vi.mock(import("~/state/use-atom-command"), async (original) => ({
   ...(await original()),
   useAtomCommand: ((command: "update" | "delete") => state[command]) as never,
+}));
+vi.mock(import("~/state/use-orchestration-command"), async (original) => ({
+  ...(await original()),
+  useOrchestrationCommand: ((command: "update" | "delete") => state[command]) as never,
 }));
 vi.mock(import("~/hooks/useSettings"), async (original) => ({
   ...(await original()),
@@ -123,11 +140,63 @@ import { ProjectSettingsPanel } from "~/components/settings/ProjectSettingsPanel
 const primaryId = EnvironmentId.make("primary");
 const remoteId = EnvironmentId.make("remote");
 const instanceId = ProviderInstanceId.make("codex");
+const decodeServerConfig = Schema.decodeSync(ServerConfig);
+
 const environments = [primaryId, remoteId].map((environmentId) => ({
   environmentId,
   label: environmentId,
-  connection: { phase: "connected" },
-  serverConfig: { keybindings: DEFAULT_RESOLVED_KEYBINDINGS },
+  displayUrl: null,
+  relayManaged: false,
+  entry: {
+    target:
+      environmentId === primaryId
+        ? new PrimaryConnectionTarget({
+            environmentId,
+            label: environmentId,
+            httpBaseUrl: "https://synthetic-primary.example.test",
+            wsBaseUrl: "wss://synthetic-primary.example.test",
+          })
+        : new BearerConnectionTarget({
+            environmentId,
+            label: environmentId,
+            connectionId: "synthetic-remote",
+          }),
+    enabled: true,
+    profile: Option.none(),
+  },
+  connection: { phase: "connected" as const, error: null, traceId: null },
+  serverConfig: {
+    ...decodeServerConfig({
+      environment: {
+        environmentId,
+        label: environmentId,
+        platform: { os: "linux", arch: "x64" },
+        serverVersion: "0.1.2",
+        orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
+        capabilities: {},
+      },
+      auth: {
+        policy: "remote-reachable",
+        bootstrapMethods: ["one-time-token"],
+        sessionMethods: ["bearer-access-token"],
+        sessionCookieName: "t3_session",
+      },
+      cwd: `/work/${environmentId}`,
+      keybindingsConfigPath: "/synthetic/keybindings.json",
+      keybindings: [],
+      issues: [],
+      providers: [],
+      availableEditors: [],
+      observability: {
+        logsDirectoryPath: "/synthetic/logs",
+        localTracingEnabled: false,
+        otlpTracesEnabled: false,
+        otlpMetricsEnabled: false,
+      },
+      settings: {},
+    }),
+    keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+  },
 }));
 const session = (scopes: ReadonlyArray<AuthEnvironmentScope>): AuthSessionState => ({
   authenticated: true,
@@ -146,9 +215,11 @@ let container: HTMLElement;
 function setup(): Disposable {
   const { clearProjectDraftThreadId } = useComposerDraftStore.getState();
   vi.clearAllMocks();
-  state.sessions.clear();
-  for (const id of [primaryId, remoteId])
-    state.sessions.set(id, Atom.make<SessionResult>(writable()).pipe(Atom.keepAlive));
+  for (const id of [primaryId, remoteId]) {
+    const existing = state.sessions.get(id);
+    if (existing) appAtomRegistry.set(existing, writable());
+    else state.sessions.set(id, Atom.make<SessionResult>(writable()).pipe(Atom.keepAlive));
+  }
   state.projects = [primaryId, remoteId].map((environmentId) => ({
     id: ProjectId.make(`project-${environmentId}`),
     environmentId,

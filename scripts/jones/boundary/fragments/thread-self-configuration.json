@@ -32,7 +32,8 @@
     "apps/server/src/orchestration-v2/ProviderSwitchService.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
     "packages/shared/src/t3McpToolPresentation.ts",
-    "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
+    "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts",
+    "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -89,7 +90,7 @@
       "to": "apps/mobile/src/jones/threadConfiguration/outboxSelection.ts"
     },
     {
-      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
       "to": "apps/mobile/src/jones/threadConfiguration/outboxSelection.ts"
     },
     {
@@ -111,6 +112,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
       "to": "apps/server/src/jones/threadConfiguration/ownerSelectionStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ownerIngress.ts"
     }
   ]
 }

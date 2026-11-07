@@ -185,6 +185,8 @@ it("preserves the fixed product role through transport changes and omits it for 
   expect(fixture().controller.getState().browserOnlyLocked).toBeUndefined();
 });
 
+const compiledDecodeSync1 = Schema.decodeSync(DesktopCompanionConfig);
+
 describe("outbound companion lifecycle", () => {
   it("routes tabless turn activity only for assigned threads and fences stale generations", () => {
     const f = fixture();
@@ -248,8 +250,7 @@ describe("outbound companion lifecycle", () => {
       environmentId:
         config.environmentId === null
           ? old.environmentId
-          : Schema.decodeSync(DesktopCompanionConfig)({ ...config, environmentId: "other" })
-              .environmentId!,
+          : compiledDecodeSync1({ ...config, environmentId: "other" }).environmentId!,
       result: { _tag: "ready", url },
     });
     expect(f.sockets).toHaveLength(0);

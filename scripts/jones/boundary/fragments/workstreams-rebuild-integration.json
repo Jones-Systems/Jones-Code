@@ -186,7 +186,8 @@
     "apps/server/src/bin.ts",
     "apps/server/src/entrypoint.test.ts",
     "apps/web/src/components/Sidebar.pointer.ts",
-    "apps/web/src/components/threadActionMenu.logic.ts"
+    "apps/web/src/components/threadActionMenu.logic.ts",
+    "apps/server/src/provider/AgentContextBudget.test.ts"
   ],
   "tombstones": ["apps/mobile/src/features/workstreams/useWorkstreams.ts"],
   "allowedImports": [
@@ -357,6 +358,22 @@
     {
       "from": "packages/contracts/src/server.ts",
       "to": "packages/contracts/src/workstreamPlacements.ts"
+    },
+    {
+      "from": "apps/server/src/auth/SessionStore.ts",
+      "to": "apps/server/src/jones/auth/SessionPresentation.ts"
+    },
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/workstreams/operations/service.ts"
+    },
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/workstreams/WorkstreamGateway.ts"
+    },
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts"
     }
   ]
 }

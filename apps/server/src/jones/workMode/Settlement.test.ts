@@ -7,7 +7,7 @@ import {
   type ServerSettings as ContractServerSettings,
 } from "@t3tools/contracts";
 import { WORK_MODE_SENTINEL } from "@t3tools/shared/jones/workMode";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -178,11 +178,8 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
     ),
     Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
     Layer.succeed(
-      Crypto.Crypto,
-      Crypto.make({
-        randomBytes: (size) => new Uint8Array(size).fill(1),
-        digest: (_algorithm, data) => Effect.succeed(data),
-      }),
+      SecureRandom.SecureRandom,
+      SecureRandom.make((size) => new Uint8Array(size).fill(1)),
     ),
     FileSystem.layerNoop({ exists: () => Effect.succeed(false) }),
   );
@@ -195,7 +192,14 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
     yield* Queue.take(candidateReads);
     yield* service.drain;
     return { commands: yield* Ref.get(commands), recordReads: yield* Ref.get(recordReads) };
-  }).pipe(Effect.provide(ThreadSettlementService.layer.pipe(Layer.provide(dependencies))));
+  }).pipe(
+    Effect.provide(
+      Layer.effect(
+        ThreadSettlementService.ThreadSettlementServiceV2,
+        ThreadSettlementService.make,
+      ).pipe(Layer.provide(dependencies)),
+    ),
+  );
 
   // Changes settings once the sweep is reading history, then lets the read finish.
   const changeSettingsDuringRecordRead = (next: ContractServerSettings) =>

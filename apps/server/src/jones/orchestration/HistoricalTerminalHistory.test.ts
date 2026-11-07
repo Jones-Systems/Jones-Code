@@ -1,3 +1,4 @@
+import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -73,6 +74,8 @@ const modes = [
   "ordinary-same-session-race",
   "ordinary-same-session-unrelated-race",
 ] as const;
+const isProviderEventPublishError = Schema.is(ProviderEventIngestor.ProviderEventPublishError);
+
 it.effect.each([
   ...modes.map((mode) => ({ mode, lockFailures: 0 })),
   ...(
@@ -167,6 +170,9 @@ it.effect.each([
   );
   const sinkLayer = EventSink.layer.pipe(Layer.provide(stores));
   const dependencies = Layer.mergeAll(
+    Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+      getCatalogSource: () => undefined,
+    }),
     stores,
     sinkLayer,
     IdAllocator.layer,
@@ -671,7 +677,7 @@ it.effect.each([
       assert.isTrue(Exit.isFailure(result));
       const failure = Exit.isFailure(result) ? Cause.squash(result.cause) : undefined;
       assert.instanceOf(failure, ProviderEventIngestor.ProviderEventPublishError);
-      if (!Schema.is(ProviderEventIngestor.ProviderEventPublishError)(failure))
+      if (!isProviderEventPublishError(failure))
         return assert.fail("Expected the historical write's publication error");
       assert.equal(failure.providerSessionId, providerSessionId);
       assert.equal(failure.eventCount, 1);

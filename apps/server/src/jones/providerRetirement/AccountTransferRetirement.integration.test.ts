@@ -15,7 +15,9 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
+import * as NodeCryptoServices from "@effect/platform-node/NodeCrypto";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -225,7 +227,8 @@ const scenario = (
       Effect.provide(Codex.layerAppServerClientFactory),
     );
     const adapterDependencies = yield* Effect.context<
-      | Crypto.Crypto
+      | SecureRandom.SecureRandom
+      | Digest.Digest
       | FileSystem.FileSystem
       | Path.Path
       | IdAllocator.IdAllocatorV2
@@ -333,8 +336,8 @@ const scenario = (
       predicate: (traces: ReadonlyArray<typeof Trace.Type>) => boolean,
     ) {
       return yield* Effect.gen(function* () {
-        const crypto = yield* Crypto.Crypto;
-        const probe = path.join(stateDir, `watch-ready-${yield* crypto.randomUUIDv4()}`);
+        const random = yield* SecureRandom.SecureRandom;
+        const probe = path.join(stateDir, `watch-ready-${yield* random.uuidV4()}`);
         yield* Effect.acquireRelease(fs.writeFileString(probe, "", { flag: "wx" }), () =>
           fs.remove(probe).pipe(Effect.orDie),
         );
@@ -715,6 +718,7 @@ const scenario = (
     Effect.provide(
       Layer.mergeAll(
         NodeServices.layer,
+        NodeCryptoServices.layer,
         IdAllocator.layer,
         ControlAdmission.layer,
         ProcessAttribution.layer,

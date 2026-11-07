@@ -27,10 +27,13 @@ const descriptor = {
   },
 };
 
+const compiledEncodeSync1 = Schema.encodeSync(QueueDispatchCapability);
+const compiledEncodeSync2 = Schema.encodeSync(ThreadTurnDispatchGuard);
+
 describe("queue dispatch capability", () => {
   it("round-trips the cross-language fixture without depending on a build version", () => {
     const decoded = decodeCapability(capabilityFixture);
-    expect(Schema.encodeSync(QueueDispatchCapability)(decoded)).toEqual(capabilityFixture);
+    expect(compiledEncodeSync1(decoded)).toEqual(capabilityFixture);
     expect(QUEUE_DISPATCH_CAPABILITY).toEqual(capabilityFixture);
     expect(decoded.orchestrationProtocolVersion).toBe(LEGACY_ORCHESTRATION_PROTOCOL_VERSION);
     expect(LEGACY_ORCHESTRATION_PROTOCOL_VERSION).toBe(1);
@@ -92,7 +95,7 @@ describe("queue dispatch capability", () => {
       requireIdle: true,
     };
     const decodeGuard = Schema.decodeUnknownSync(ThreadTurnDispatchGuard);
-    expect(Schema.encodeSync(ThreadTurnDispatchGuard)(decodeGuard(guard))).toEqual(guard);
+    expect(compiledEncodeSync2(decodeGuard(guard))).toEqual(guard);
     expect(() => decodeGuard({ ...guard, requireIdle: false })).toThrow();
     const { requireIdle: _requireIdle, ...unguarded } = guard;
     expect(() => decodeGuard(unguarded)).toThrow();

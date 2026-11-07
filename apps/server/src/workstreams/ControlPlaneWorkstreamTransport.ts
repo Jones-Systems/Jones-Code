@@ -219,6 +219,7 @@ async function readBoundedResponse(
     reader.releaseLock();
   }
 }
+const decodeWorkstreamErrorJson = Schema.decodeSync(Schema.fromJsonString(WorkstreamError));
 
 function decodeResponse(
   response: Response,
@@ -228,7 +229,7 @@ function decodeResponse(
   const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   if (!response.ok) {
     try {
-      const error = Schema.decodeSync(Schema.fromJsonString(WorkstreamError))(body, {
+      const error = decodeWorkstreamErrorJson(body, {
         onExcessProperty: "error",
       });
       if (
@@ -432,6 +433,7 @@ async function performRequest(input: {
   }
   return decodeResponse(response, bytes, input.recovery);
 }
+const encodeT3PlacementRequestJson = Schema.encodeEffect(Schema.fromJsonString(T3PlacementRequest));
 
 export function makeControlPlaneWorkstreamTransport(
   activation: WorkstreamActivation = activationFromEnvironment(),
@@ -650,10 +652,10 @@ export function makeControlPlaneWorkstreamTransport(
           "receipt",
         ).pipe(
           Effect.map((receipt): WorkstreamReceiptRead => ({ kind: "receipt", receipt })),
-          Effect.catch((error) =>
-            error.cause instanceof VerifiedRecoveryResponse && error.cause.code === "not_found"
-              ? Effect.succeed<WorkstreamReceiptRead>({ kind: "absent" })
-              : Effect.fail(error),
+          Effect.catchIf(
+            (error) =>
+              error.cause instanceof VerifiedRecoveryResponse && error.cause.code === "not_found",
+            () => Effect.succeed<WorkstreamReceiptRead>({ kind: "absent" }),
           ),
         ),
       resubmitCommand: ({ body, idempotencyKey }) =>
@@ -668,11 +670,11 @@ export function makeControlPlaneWorkstreamTransport(
           "submit",
         ).pipe(
           Effect.map((receipt): WorkstreamRecoverySubmitResult => ({ kind: "receipt", receipt })),
-          Effect.catch((error) =>
-            error.cause instanceof VerifiedRecoveryResponse &&
-            error.cause.code === "idempotency_conflict"
-              ? Effect.succeed<WorkstreamRecoverySubmitResult>({ kind: "idempotency_conflict" })
-              : Effect.fail(error),
+          Effect.catchIf(
+            (error) =>
+              error.cause instanceof VerifiedRecoveryResponse &&
+              error.cause.code === "idempotency_conflict",
+            () => Effect.succeed<WorkstreamRecoverySubmitResult>({ kind: "idempotency_conflict" }),
           ),
         ),
       readAppearance: (input) =>
@@ -685,10 +687,9 @@ export function makeControlPlaneWorkstreamTransport(
           NodeCrypto.randomUUID(),
         ).pipe(
           Effect.map((page) => ({ supported: true as const, page })),
-          Effect.catch((error) =>
-            error.detail === "unsupported_appearance"
-              ? Effect.succeed({ supported: false as const })
-              : Effect.fail(error),
+          Effect.catchIf(
+            (error) => error.detail === "unsupported_appearance",
+            () => Effect.succeed({ supported: false as const }),
           ),
         ),
       saveAppearance: (input) =>
@@ -701,7 +702,7 @@ export function makeControlPlaneWorkstreamTransport(
           input.command_id,
         ),
       listThreadPlacements: (input) =>
-        Schema.encodeEffect(Schema.fromJsonString(T3PlacementRequest))(input, {
+        encodeT3PlacementRequestJson(input, {
           onExcessProperty: "error",
         }).pipe(
           Effect.mapError(

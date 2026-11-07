@@ -468,6 +468,10 @@ it.effect(
           [137, "NativeCreationLeaseRenewal"],
           [138, "WorkspaceRetirement"],
           [139, "ConversationWorkspace"],
+          [140, "NativeExecutionProcessCustody"],
+          [141, "OrdinaryCheckoutProcessCustody"],
+          [142, "AuthSessionClientMetadata"],
+          [143, "WorkspaceRuntimeUses"],
         ],
       );
       assert.deepStrictEqual(
@@ -595,6 +599,10 @@ it.effect(
           { name: "jones_native_creation_execution_acceptances" },
           { name: "jones_native_creation_execution_confirmations" },
           { name: "jones_native_creation_execution_holds" },
+          { name: "jones_native_creation_execution_process_bindings" },
+          { name: "jones_native_creation_execution_process_claims" },
+          { name: "jones_native_creation_execution_process_confirmations" },
+          { name: "jones_native_creation_execution_process_holds" },
           { name: "jones_native_creation_execution_starts" },
         ],
       );
@@ -685,6 +693,10 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [137, "NativeCreationLeaseRenewal"],
       [138, "WorkspaceRetirement"],
       [139, "ConversationWorkspace"],
+      [140, "NativeExecutionProcessCustody"],
+      [141, "OrdinaryCheckoutProcessCustody"],
+      [142, "AuthSessionClientMetadata"],
+      [143, "WorkspaceRuntimeUses"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;
@@ -759,25 +771,28 @@ it.effect(
       });
       const before = yield* readState;
       const failed = yield* runJonesMigrations(
-        jonesMigrationEntries.map(
-          ([id, name, migration]) =>
-            [
-              id,
-              name,
-              id === 139
-                ? migration.pipe(
-                    Effect.andThen(sql`SELECT * FROM controlled_missing_after139_ddl`),
-                    Effect.asVoid,
-                  )
-                : migration,
-            ] as const,
-        ),
+        jonesMigrationEntries
+          .filter(([id]) => id <= 139)
+          .map(
+            ([id, name, migration]) =>
+              [
+                id,
+                name,
+                id === 139
+                  ? migration.pipe(
+                      Effect.andThen(sql`SELECT * FROM controlled_missing_after139_ddl`),
+                      Effect.asVoid,
+                    )
+                  : migration,
+              ] as const,
+          ),
       ).pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(failed));
       assert.deepStrictEqual(yield* readState, before);
-      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-        [139, "ConversationWorkspace"],
-      ]);
+      assert.deepStrictEqual(
+        yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 139)),
+        [[139, "ConversationWorkspace"]],
+      );
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE type='table'
           AND name LIKE 'jones_conversation_%' ORDER BY name`,
@@ -828,7 +843,10 @@ it.effect(
           { migration_id: 139, name: "ConversationWorkspace" },
         ],
       );
-      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(
+        yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 139)),
+        [],
+      );
       assert.deepStrictEqual(yield* readState, after);
       assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
     }).pipe(Effect.provide(memory)),

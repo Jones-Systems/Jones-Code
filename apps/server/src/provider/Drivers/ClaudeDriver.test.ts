@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -26,6 +27,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   prefix: "claude-driver-evaluator-capability-",
 }).pipe(
   Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(NodeCrypto.layer),
   Layer.provideMerge(IdAllocator.layer),
   Layer.provideMerge(McpProviderSessions.layer),
   Layer.provideMerge(Layer.mock(ClaudeAdapterV2.ClaudeAgentSdkQueryRunner)({})),
@@ -83,6 +85,6 @@ it.layer(layerTest)("ClaudeDriver evaluator capability", (it) => {
         expect(snapshot.status).toBe("disabled");
         expect(instance.orchestrationAdapter).toBeDefined();
         expect(instance.textGeneration).toBeDefined();
-      }).pipe(Effect.scoped),
+      }).pipe(Effect.scoped, Effect.provide(NodeCrypto.layer)),
   );
 });

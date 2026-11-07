@@ -65,6 +65,41 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
+const decodeSyncLegacyOwnedTerminalControl = Schema.decodeSync(LegacyOwnedTerminalControl);
+
+function ownedCleanupBinding() {
+  const createCommandId = legacyBootstrapCreateCommandId(
+    threadId,
+    CommandId.make("owned-cleanup:C"),
+  );
+  return decodeSyncLegacyOwnedTerminalControl({
+    version: 1,
+    threadId,
+    runId,
+    terminalId: "legacy-owned-setup",
+    generation: "owned-cleanup:terminal-generation",
+    preparationGeneration: "owned-cleanup:birth-generation",
+    claimEventId: "owned-cleanup:claim",
+    claimSequence: 1,
+    claimReceiptSequence: 1,
+    birthEventId: "owned-cleanup:birth",
+    birthSequence: 2,
+    birthReceiptSequence: 2,
+    policy: {
+      version: 1,
+      createCommandId,
+      birthCommandId: `${createCommandId}:initial-message`,
+      releaseCommandId: "owned-cleanup:C",
+      projectId: "owned-cleanup:project",
+      threadId,
+      messageId: "owned-cleanup:M",
+      runId,
+      payloadHash: "owned-cleanup:hash",
+      ownsNewThread: true,
+    },
+  });
+}
+
 const threadId = ThreadId.make("thread:effect-worker-restart");
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
 const providerThreadId = ProviderThreadId.make("provider-thread:effect-worker-restart");
@@ -99,7 +134,6 @@ function restartEffect(
     attemptCount: 1,
     availableAt: timestamp,
     leaseOwner: "test-worker",
-    leaseExpiresAt: timestamp,
     createdAt: timestamp,
     updatedAt: timestamp,
     completedAt: null,
@@ -147,6 +181,8 @@ function layerExecutorFor(input: {
         closeInstance: () => Effect.void,
         release: () => record("release"),
         detach: input.detach ?? (() => record("detach")),
+        otherWorkingThreads: () => Effect.succeed([]),
+        releaseUnlessBusy: () => Effect.succeed(true),
       }),
     ),
     Layer.succeed(
@@ -227,38 +263,6 @@ function layerExecutorFor(input: {
   );
 }
 
-function ownedCleanupBinding() {
-  const createCommandId = legacyBootstrapCreateCommandId(
-    threadId,
-    CommandId.make("owned-cleanup:C"),
-  );
-  return Schema.decodeSync(LegacyOwnedTerminalControl)({
-    version: 1,
-    threadId,
-    runId,
-    terminalId: "legacy-owned-setup",
-    generation: "owned-cleanup:terminal-generation",
-    preparationGeneration: "owned-cleanup:birth-generation",
-    claimEventId: "owned-cleanup:claim",
-    claimSequence: 1,
-    claimReceiptSequence: 1,
-    birthEventId: "owned-cleanup:birth",
-    birthSequence: 2,
-    birthReceiptSequence: 2,
-    policy: {
-      version: 1,
-      createCommandId,
-      birthCommandId: `${createCommandId}:initial-message`,
-      releaseCommandId: "owned-cleanup:C",
-      projectId: "owned-cleanup:project",
-      threadId,
-      messageId: "owned-cleanup:M",
-      runId,
-      payloadHash: "owned-cleanup:hash",
-      ownsNewThread: true,
-    },
-  });
-}
 it.effect(
   "routes legacy owned terminal cleanup unchanged through the actual executor and cleanup owner",
   () =>
@@ -288,13 +292,11 @@ it.effect(
             }),
             Layer.succeed(PreviewManager.PreviewManager, {
               open: unexpectedPreview,
-              navigate: unexpectedPreview,
               reportStatus: unexpectedPreview,
               markHeadless: unexpectedPreview,
               requestReveal: unexpectedPreview,
               resize: unexpectedPreview,
               adjust: unexpectedPreview,
-              refresh: unexpectedPreview,
               close: unexpectedPreview,
               list: unexpectedPreview,
               events: Stream.die("unexpected preview events during terminal cleanup"),
@@ -379,7 +381,18 @@ it("does not retry pure interrupt races where the turn is already gone", () => {
   );
 });
 
-it.effect("settles a stopped run when its adapter has already lost the native turn", () =>
+it.effect.each([
+  {
+    name: "settles a stopped run when its adapter has already lost the native turn",
+    unresponsive: false,
+    dispatched: ["thread.background-work.settle"],
+  },
+  {
+    name: "leaves the run running and flags the Stop when the provider never confirms it",
+    unresponsive: true,
+    dispatched: ["thread.interrupt.unresponsive"],
+  },
+])("$name", ({ unresponsive, dispatched }) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
     const events = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -390,7 +403,8 @@ it.effect("settles a stopped run when its adapter has already lost the native tu
           threadId,
           operation: "interrupt",
           providerTurnId,
-          cause: "Provider turn is not active.",
+          ...(unresponsive ? { unresponsive } : {}),
+          cause: unresponsive ? "Timed out." : "Provider turn is not active.",
         }),
       threads: {
         dispatch: (command) =>
@@ -411,7 +425,7 @@ it.effect("settles a stopped run when its adapter has already lost the native tu
         },
       });
     }).pipe(Effect.provide(layer));
-    assert.deepEqual(yield* Ref.get(events), ["thread.background-work.settle"]);
+    assert.deepEqual(yield* Ref.get(events), dispatched);
   }),
 );
 
@@ -534,7 +548,6 @@ it.effect("requeues a claim when a pre-execution worker check fails", () =>
       attemptCount: 1,
       availableAt: now,
       leaseOwner: workerId,
-      leaseExpiresAt: now,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -607,7 +620,6 @@ it.effect("arms cancellation before the durable pre-execution check", () =>
       attemptCount: 1,
       availableAt: now,
       leaseOwner: workerId,
-      leaseExpiresAt: now,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -676,7 +688,6 @@ it.effect("terminalizes a process-bound claim when success settlement fails", ()
       attemptCount: 1,
       availableAt: now,
       leaseOwner: workerId,
-      leaseExpiresAt: now,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -730,7 +741,7 @@ it.effect("terminalizes a process-bound claim when success settlement fails", ()
 );
 
 it.effect(
-  "renewal refusal follows the executor failure path once and never retries a process-bound start",
+  "observation failure follows the executor failure path once and never retries a process-bound start",
   () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
@@ -745,26 +756,35 @@ it.effect(
         attemptCount: 1,
         availableAt: timestamp,
         leaseOwner: workerId,
-        leaseExpiresAt: DateTime.formatIso(DateTime.add(now, { seconds: 30 })),
         createdAt: timestamp,
         updatedAt: timestamp,
         completedAt: null,
         lastError: null,
+        payloadIdentity: JSON.stringify({ type: "provider-turn.start", runId: "run:lost-custody" }),
       };
       const entered = yield* Deferred.make<void>();
-      let renewals = 0;
+      let observations = 0;
+      let observingFailure = false;
       let retries = 0;
       let failures = 0;
       let runFailures = 0;
       const outbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
         claimNext: () => Effect.succeedSome(captured),
-        get: () => Effect.succeedSome(captured),
+        get: () =>
+          observingFailure
+            ? Effect.suspend(() => {
+                observations++;
+                return Effect.fail(
+                  new EffectOutbox.EffectOutboxError({
+                    operation: "get",
+                    effectId: captured.id,
+                    cause: "Synthetic observation failed",
+                  }),
+                );
+              })
+            : Effect.succeedSome(captured),
         awaitCancellation: () => Effect.never,
         clearCancellation: () => Effect.void,
-        renew: () => {
-          renewals++;
-          return Effect.fail(new EffectOutbox.EffectClaimRenewalRefused({ effectId: captured.id }));
-        },
         retry: () =>
           Effect.sync(() => {
             retries++;
@@ -774,13 +794,20 @@ it.effect(
           Effect.sync(() => {
             failures++;
             assert.strictEqual(input.claim?.attemptCount, captured.attemptCount);
-            assert.strictEqual(input.claim?.leaseExpiresAt, captured.leaseExpiresAt);
+            assert.strictEqual(input.claim?.updatedAt, captured.updatedAt);
             return true;
           }),
       });
       const executor = Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
         execute: () =>
-          guardClaim(Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never))).pipe(
+          guardClaim(
+            Effect.sync(() => {
+              observingFailure = true;
+            }).pipe(
+              Effect.andThen(Deferred.succeed(entered, undefined)),
+              Effect.andThen(Effect.never),
+            ),
+          ).pipe(
             Effect.catchTags({
               EffectClaimLost: (cause) =>
                 Effect.sync(() => {
@@ -817,7 +844,7 @@ it.effect(
       yield* TestClock.adjust("10 seconds");
       assert.isTrue(yield* Fiber.join(pending));
       yield* TestClock.adjust("1 minute");
-      assert.strictEqual(renewals, 1);
+      assert.strictEqual(observations, 1);
       assert.strictEqual(runFailures, 1);
       assert.strictEqual(failures, 1);
       assert.strictEqual(retries, 0);
@@ -900,7 +927,6 @@ it.effect.each([false, true])(
       assert.equal(stop.status, "failed");
       assert.equal(stop.attemptCount, 1);
       assert.isNull(stop.leaseOwner);
-      assert.isNull(stop.leaseExpiresAt);
       assert.isNotNull(stop.completedAt);
       assert.equal(Option.getOrThrow(yield* outbox.get(nextId)).status, "succeeded");
       assert.equal(stops, 1);
@@ -1007,7 +1033,6 @@ it.effect.each([true, false])(
         assert.equal(stop.status, typedUnknown ? "failed" : "succeeded");
         assert.equal(stop.attemptCount, 1);
         assert.isNull(stop.leaseOwner);
-        assert.isNull(stop.leaseExpiresAt);
         assert.isNotNull(stop.completedAt);
         assert.isTrue(yield* worker.runOnce);
         assert.isFalse(yield* worker.runOnce);
@@ -1095,7 +1120,6 @@ it.effect.each(["issue", "successor"] as const)(
         status: "running",
         attemptCount: 1,
         leaseOwner: "worker:preissue",
-        leaseExpiresAt: DateTime.formatIso(DateTime.add(now, { seconds: 30 })),
         availableAt: timestamp,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1109,7 +1133,12 @@ it.effect.each(["issue", "successor"] as const)(
           stage: "native_command",
         },
       };
-      let current = captured;
+      const capturedPayload = JSON.stringify({
+        request: captured.request,
+        nativeCreationExecutionReference: captured.nativeCreationExecutionReference,
+      });
+      const original = { ...captured, payloadIdentity: capturedPayload };
+      let current = original;
       let issues = 0;
       let holds = 0;
       let runFailures = 0;
@@ -1119,7 +1148,7 @@ it.effect.each(["issue", "successor"] as const)(
         events,
         captureStartFailure: () =>
           Effect.sync(() => {
-            if (stage !== "issue") current = { ...captured, attemptCount: 2 };
+            if (stage !== "issue") current = { ...original, attemptCount: 2 };
             return () =>
               Effect.sync(() => {
                 runFailures++;
@@ -1127,7 +1156,7 @@ it.effect.each(["issue", "successor"] as const)(
           }),
       });
       const outbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
-        claimNext: () => Effect.succeedSome(captured),
+        claimNext: () => Effect.succeedSome(original),
         get: () => Effect.sync(() => Option.some(current)),
         awaitCancellation: () => Effect.never,
         clearCancellation: () => Effect.void,
@@ -1212,7 +1241,6 @@ it.effect("settles a delegated child once its restart continuation fails for goo
       attemptCount: 1,
       availableAt: timestamp,
       leaseOwner: "test-worker",
-      leaseExpiresAt: timestamp,
       createdAt: timestamp,
       updatedAt: timestamp,
       completedAt: null,
@@ -1638,6 +1666,161 @@ it.effect(
         ),
       );
     }),
+);
+
+it.effect(
+  "routes legacy owned terminal cleanup unchanged through the actual executor and cleanup owner",
+  () =>
+    Effect.gen(function* () {
+      const calls: Array<{
+        input: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[0];
+        binding: LegacyOwnedTerminalControl | undefined;
+      }> = [];
+      const binding = ownedCleanupBinding();
+      const terminals = Layer.mock(TerminalManager.TerminalManager)({
+        close: (
+          input,
+          options: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[1] = {},
+        ) =>
+          Effect.sync(() => {
+            calls.push({ input, binding: options?.legacyOwnedControl });
+          }),
+      });
+      const unexpectedPreview = () =>
+        Effect.die("unexpected preview operation during terminal cleanup");
+      const cleanup = ResourceCleanupService.layer.pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            terminals,
+            Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+              deleteForThread: () => Effect.die("unexpected scheduled task cleanup"),
+            }),
+            Layer.succeed(PreviewManager.PreviewManager, {
+              open: unexpectedPreview,
+              reportStatus: unexpectedPreview,
+              markHeadless: unexpectedPreview,
+              requestReveal: unexpectedPreview,
+              resize: unexpectedPreview,
+              adjust: unexpectedPreview,
+              close: unexpectedPreview,
+              list: unexpectedPreview,
+              events: Stream.die("unexpected preview events during terminal cleanup"),
+              subscribeEvents: unexpectedPreview(),
+            }),
+            ServerConfig.layerTest(process.cwd(), { prefix: "legacy-owned-cleanup-route-" }),
+          ),
+        ),
+      );
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const layer = layerExecutorFor({ events }).pipe(Layer.provide(cleanup));
+      const now = yield* DateTime.now;
+      const template = restartEffect(now, { type: "detach" });
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        yield* executor.execute({
+          ...template,
+          request: { type: "terminal.cleanup", legacyOwnedControl: binding },
+        });
+        assert.deepEqual(calls, [{ input: { threadId, deleteHistory: true }, binding }]);
+        yield* executor.execute({ ...template, request: { type: "terminal.cleanup" } });
+        assert.deepEqual(calls[1], {
+          input: { threadId, deleteHistory: true },
+          binding: undefined,
+        });
+        assert.deepEqual(yield* Ref.get(events), []);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("bound legacy terminal cleanup refuses a default no-op owner", () =>
+  Effect.gen(function* () {
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = layerExecutorFor({ events });
+    const template = restartEffect(yield* DateTime.now, { type: "detach" });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const bound = yield* executor
+        .execute({
+          ...template,
+          request: { type: "terminal.cleanup", legacyOwnedControl: ownedCleanupBinding() },
+        })
+        .pipe(Effect.result);
+      assert.equal(bound._tag, "Failure");
+      const native = yield* executor
+        .execute({ ...template, request: { type: "terminal.cleanup" } })
+        .pipe(Effect.result);
+      assert.equal(native._tag, "Success");
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
+it("does not retry pure interrupt races where the turn is already gone", () => {
+  assert.isTrue(
+    EffectWorker.isNonRetryableProviderTurnControlFailure(
+      "provider-turn.interrupt",
+      "ProviderAdapterInterruptError: ... ACP provider turn provider-turn:x is not active",
+    ),
+  );
+  assert.isTrue(
+    EffectWorker.isNonRetryableProviderTurnControlFailure(
+      "provider-turn.interrupt",
+      "Provider session provider-session:x is not active.",
+    ),
+  );
+  assert.isFalse(
+    EffectWorker.isNonRetryableProviderTurnControlFailure(
+      "provider-turn.restart",
+      "Provider session provider-session:x is not active.",
+    ),
+  );
+  assert.isFalse(
+    EffectWorker.isNonRetryableProviderTurnControlFailure(
+      "provider-turn.start",
+      "Provider session provider-session:x is not active.",
+    ),
+  );
+  assert.isFalse(
+    EffectWorker.isNonRetryableProviderTurnControlFailure(
+      "provider-turn.interrupt",
+      "ACP hard teardown failed unexpectedly; the session is poisoned",
+    ),
+  );
+});
+
+it.effect("settles a stopped run when its adapter has already lost the native turn", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = layerExecutorFor({
+      events,
+      interrupt: () =>
+        new ProviderTurnControlService.ProviderTurnControlError({
+          threadId,
+          operation: "interrupt",
+          providerTurnId,
+          cause: "Provider turn is not active.",
+        }),
+      threads: {
+        dispatch: (command) =>
+          Ref.update(events, (current) => [...current, command.type]).pipe(
+            Effect.as({ sequence: 1, storedEvents: [] }),
+          ),
+      },
+    });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      yield* executor.execute({
+        ...restartEffect(now, { type: "detach" }),
+        request: {
+          type: "provider-turn.interrupt",
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+        },
+      });
+    }).pipe(Effect.provide(layer));
+    assert.deepEqual(yield* Ref.get(events), ["thread.background-work.settle"]);
+  }),
 );
 
 it.effect(

@@ -254,7 +254,7 @@ describe("companion isolation", () => {
         host.isCompanionAssigned,
       );
       yield* settleCommands;
-      expect(companion.sendCommand).toHaveBeenCalledWith("Browser.setDownloadBehavior", {
+      expect(companion.sendCommand).toHaveBeenCalledWith("Page.setDownloadBehavior", {
         behavior: "deny",
       });
       host.replaceCompanionAssignments([]);

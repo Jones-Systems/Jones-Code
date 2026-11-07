@@ -157,6 +157,7 @@ describe("result dependencies in pending background work", () => {
           number: 720,
           url: "https://github.com/Jones-Systems/Jones-Code/pull/720",
           source: "agent",
+          snapshot: null,
           watch: {
             startedAt: "2026-10-26T00:00:00.000Z",
             headSha: null,

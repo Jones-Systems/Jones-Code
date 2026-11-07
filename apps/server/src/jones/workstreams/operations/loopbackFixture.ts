@@ -23,6 +23,7 @@ import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import { ProjectionStoreV2 } from "../../../orchestration-v2/ProjectionStore.ts";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeEffectCrypto from "@effect/platform-node/NodeCrypto";
 import {
   AuthSessionId,
   EnvironmentAuthenticatedAuth,
@@ -47,6 +48,7 @@ import {
 } from "../registrationContext/service.ts";
 
 const decodeCommand = Schema.decodeUnknownSync(Schema.fromJsonString(WorkstreamCommand));
+const decodePlacementRequest = Schema.decodeSync(Schema.fromJsonString(T3PlacementRequest));
 const signingSecret = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
 const build = {
   repository: "Jones-Systems/Jones-Code" as const,
@@ -330,9 +332,7 @@ export async function startLoopbackControlPlane(
       result = await Effect.runPromise(registry.getCapabilities(contract));
     } else if (url.pathname === "/workstreams/internal/v1/t3-thread-placements") {
       result = await Effect.runPromise(
-        registry.listThreadPlacements!(
-          Schema.decodeSync(Schema.fromJsonString(T3PlacementRequest))(body),
-        ),
+        registry.listThreadPlacements!(decodePlacementRequest(body)),
       );
     } else if (segments[2] === "commands" && request.method === "POST") {
       const command = decodeCommand(body);
@@ -523,6 +523,7 @@ export async function startEnvironment(
       Layer.provide(workstreamResponseHeadersLayer),
       Layer.provide(HttpPlatform.layer.pipe(Layer.provide(NodeServices.layer))),
       Layer.provide(Etag.layerWeak),
+      Layer.provide(NodeEffectCrypto.layer),
       Layer.provide(NodeServices.layer),
     ),
     { disableLogger: true },

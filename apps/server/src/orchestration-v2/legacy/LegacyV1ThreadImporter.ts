@@ -679,7 +679,7 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  // transcript_imported_at never resets; cache confirmed imports for the process lifetime to skip repeated locks and reads.
+  // Both results are final for this process: transcript_imported_at never resets, and only startup shell reconciliation creates legacy rows.
   const confirmedTranscriptThreadIds = new Set<ThreadId>();
 
   const readImport = (threadId: ThreadId) =>
@@ -696,9 +696,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const imported = yield* readImport(threadId);
         if (imported === undefined || imported.transcript_imported_at !== null) {
-          if (imported !== undefined) {
-            confirmedTranscriptThreadIds.add(threadId);
-          }
+          if (imported !== undefined) confirmedTranscriptThreadIds.add(threadId);
           return { importedThreadCount: 0, importedMessageCount: 0 };
         }
         const messages = yield* listMessages(threadId);
@@ -754,19 +752,35 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  // Native threads have no import row to cache, so every open would otherwise
-  // queue this lookup behind writer commits. The reader sees each committed
-  // row; a missing row is not cached because reconcileShells can still add one.
-  // A pending import is rechecked and written under the lock on the writer.
+  // Read the import marker and immutable V2 birth in one reader snapshot.
+  // Reconciliation cannot create a legacy row for an existing V2 birth. Only
+  // that absence is final; unknown IDs remain eligible for a later shell import.
+  // Pending imports are still rechecked and written under the writer lock.
   const ensureTranscript = (threadId: ThreadId) =>
     confirmedTranscriptThreadIds.has(threadId)
       ? Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 })
       : Effect.gen(function* () {
-          const imported = yield* readImport(threadId).pipe(NodeSqliteClient.readOnly);
+          const { imported, nativeV2 } = yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const imported = yield* readImport(threadId);
+                if (imported !== undefined) return { imported, nativeV2: false };
+                const births = yield* sql`
+              SELECT 1 FROM orchestration_events AS event
+                INDEXED BY orchestration_events_v2_created_threads_idx
+              WHERE event.application_event_version = 2
+                AND event.aggregate_kind = 'thread'
+                AND event.stream_id = ${threadId}
+                AND event.event_type = 'thread.created'
+                AND event.event_id <> ${`${IMPORT_EVENT_PREFIX}:thread:${threadId}:created`}
+              LIMIT 1
+            `;
+                return { imported, nativeV2: births.length > 0 };
+              }),
+            )
+            .pipe(NodeSqliteClient.readOnly);
           if (imported === undefined || imported.transcript_imported_at !== null) {
-            if (imported !== undefined) {
-              confirmedTranscriptThreadIds.add(threadId);
-            }
+            if (imported !== undefined || nativeV2) confirmedTranscriptThreadIds.add(threadId);
             return { importedThreadCount: 0, importedMessageCount: 0 };
           }
           return yield* ensureTranscriptBase(threadId);

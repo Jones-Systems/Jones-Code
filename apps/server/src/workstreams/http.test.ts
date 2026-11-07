@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off -- Tests exercise real POSIX filesystem custody and exact scratch cleanup.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -203,11 +204,11 @@ const withHttpFixture = Effect.fn(function* (
     Layer.provide(workstreamResponseHeadersLayer),
     Layer.provideMerge(
       HttpPlatform.layer.pipe(
-        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         Layer.provideMerge(Etag.layerWeak),
       ),
     ),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   return yield* Effect.acquireUseRelease(
     Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
@@ -225,6 +226,8 @@ const credentials: readonly {
   { kind: "cookie", headers: { cookie: "synthetic-session=fixture" } },
 ];
 
+const decodeUnknownSyncT3WorkstreamListResult = Schema.decodeUnknownSync(T3WorkstreamListResult);
+
 it.effect.each(credentials)(
   "serves registry metadata through authenticated $kind read scope",
   ({ headers }) =>
@@ -233,13 +236,17 @@ it.effect.each(credentials)(
         new Request("http://fixture/api/workstreams?limit=50", { headers }),
       );
       expect(response.status).toBe(200);
-      const body = Schema.decodeUnknownSync(T3WorkstreamListResult)(await response.json());
+      const body = decodeUnknownSyncT3WorkstreamListResult(await response.json());
       expect(body.source).toBe("live");
       expect(body.binding.registryId).toBe("https://workstream-registry.invalid");
       expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
       expect(calls).toEqual({ reads: 1, writes: 0 });
     }),
+);
+
+const decodeUnknownSyncEnvironmentScopeRequiredError = Schema.decodeUnknownSync(
+  EnvironmentScopeRequiredError,
 );
 
 it.effect.each(credentials)(
@@ -257,13 +264,14 @@ it.effect.each(credentials)(
       expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
       expect(
-        Schema.decodeUnknownSync(EnvironmentScopeRequiredError)(await response.json())
-          .requiredScope,
+        decodeUnknownSyncEnvironmentScopeRequiredError(await response.json()).requiredScope,
       ).toBe(AuthOrchestrationOperateScope);
       expect(calls).toEqual({ reads: 0, writes: 0 });
       expect(submissions.count).toBe(0);
     }),
 );
+
+const decodeUnknownSyncWorkstreamReceipt = Schema.decodeUnknownSync(WorkstreamReceipt);
 
 it.effect.each(credentials)(
   "submits a scoped $kind command and returns its committed receipt",
@@ -277,13 +285,15 @@ it.effect.each(credentials)(
         }),
       );
       expect(response.status).toBe(200);
-      expect(Schema.decodeUnknownSync(WorkstreamReceipt)(await response.json()).state).toBe(
-        "committed",
-      );
+      expect(decodeUnknownSyncWorkstreamReceipt(await response.json()).state).toBe("committed");
       expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
       expect(calls).toEqual({ reads: 0, writes: 1 });
     }),
+);
+
+const decodeUnknownSyncEnvironmentAuthInvalidError = Schema.decodeUnknownSync(
+  EnvironmentAuthInvalidError,
 );
 
 it.effect("rejects missing HTTP credentials before registry reads", () =>
@@ -292,12 +302,18 @@ it.effect("rejects missing HTTP credentials before registry reads", () =>
     expect(response.status).toBe(401);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(
-      Schema.decodeUnknownSync(EnvironmentAuthInvalidError)(await response.json()).reason,
-    ).toBe("missing_credential");
+    expect(decodeUnknownSyncEnvironmentAuthInvalidError(await response.json()).reason).toBe(
+      "missing_credential",
+    );
     expect(calls).toEqual({ reads: 0, writes: 0 });
   }),
 );
+
+const decodeUnknownSyncEnvironmentHttpConflictError = Schema.decodeUnknownSync(
+  EnvironmentHttpConflictError,
+);
+const decodeUnknownSyncEnvironmentInternalError =
+  Schema.decodeUnknownSync(EnvironmentInternalError);
 
 it.effect.each([
   ["offline", 500, undefined],
@@ -320,13 +336,8 @@ it.effect.each([
         expect(calls).toEqual({ reads: 1, writes: 0 });
         const body = await response.json();
         if (conflict !== undefined)
-          expect(Schema.decodeUnknownSync(EnvironmentHttpConflictError)(body).message).toBe(
-            conflict,
-          );
-        else
-          expect(Schema.decodeUnknownSync(EnvironmentInternalError)(body).reason).toBe(
-            "internal_error",
-          );
+          expect(decodeUnknownSyncEnvironmentHttpConflictError(body).message).toBe(conflict);
+        else expect(decodeUnknownSyncEnvironmentInternalError(body).reason).toBe("internal_error");
       },
       reason,
     ),
@@ -610,7 +621,7 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
             on: () => {},
             off: () => {},
           }),
-          NodeServices.layer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
         ),
       ),
     );

@@ -1,14 +1,14 @@
+import { imageFit, type ImageView } from "~/jones/filePreview/imageView";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { observeResize } from "~/lib/observeResize";
 import {
-  useEffect,
-  useEffectEvent,
   useImperativeHandle,
   useRef,
   useState,
   useSyncExternalStore,
   type Ref,
+  type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
 
@@ -60,7 +60,7 @@ export function ZoomableImage({
   ref,
   layout = "dialog",
   controls = true,
-  onViewChange,
+  renderLayout,
 }: {
   src: string;
   name: string;
@@ -69,9 +69,7 @@ export function ZoomableImage({
   ref?: Ref<ZoomableImageHandle>;
   layout?: "dialog" | "panel";
   controls?: boolean;
-  onViewChange?:
-    | ((view: { width: number; height: number; zoom: number; fit: number }) => void)
-    | undefined;
+  renderLayout?: ((content: ReactNode, view: ImageView) => ReactNode) | undefined;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
@@ -99,16 +97,7 @@ export function ZoomableImage({
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
   const maxHeight = Math.max(1, Math.min(viewerSize.height * 0.86, viewerSize.height - 160));
-  const fit = Math.max(
-    0,
-    Math.min(
-      1,
-      (layout === "panel"
-        ? panelSize.width
-        : viewerSize.width * 0.92 - (viewerSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
-      (layout === "panel" ? panelSize.height : maxHeight) / (naturalSize.height || 1),
-    ),
-  );
+  const fit = imageFit({ naturalSize, viewerSize, panelSize, layout, mimeType, maxHeight });
   const width = naturalSize.width * fit * zoom;
   const height = naturalSize.height * fit * zoom;
 
@@ -134,7 +123,7 @@ export function ZoomableImage({
     viewport.scrollTop = anchorY * clamped - (clientY - resized.top);
   };
 
-  useImperativeHandle(ref, () => ({
+  const controller: ZoomableImageHandle = {
     zoomTo: (value) => changeZoom(value),
     actualSize: () => changeZoom(1 / (fit || 1)),
     pan(key) {
@@ -164,7 +153,8 @@ export function ZoomableImage({
       }
       return true;
     },
-  }));
+  };
+  useImperativeHandle(ref, () => controller);
 
   const attachSizing = (sizing: HTMLDivElement | null) => {
     if (!sizing || layout !== "panel") return;
@@ -218,14 +208,7 @@ export function ZoomableImage({
     };
   };
 
-  const reportView = useEffectEvent(
-    (view: { width: number; height: number; zoom: number; fit: number }) => onViewChange?.(view),
-  );
-  useEffect(() => {
-    reportView({ width: naturalSize.width, height: naturalSize.height, zoom, fit });
-  }, [naturalSize.width, naturalSize.height, zoom, fit]);
-
-  return (
+  const content = (
     <div
       className={
         layout === "panel"
@@ -405,4 +388,7 @@ export function ZoomableImage({
       </span>
     </div>
   );
+  return renderLayout
+    ? renderLayout(content, { width: naturalSize.width, height: naturalSize.height, zoom, fit })
+    : content;
 }

@@ -1,5 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Real response encoding and credits use bounded synthetic pipes, without a native finder.
 import * as NodeStream from "node:stream";
+import * as NodeOS from "node:os";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import * as NodeProcess from "node:process";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeUtil from "node:util";
 import { expect, it } from "vite-plus/test";
 import {
   decodeReply,
@@ -10,7 +17,13 @@ import {
   type Operation,
   type Reply,
 } from "./protocol.ts";
-import { WorkerAllocations, WorkerReplies, decodeNativeBlockQualification } from "./worker.ts";
+import {
+  WorkerAllocations,
+  WorkerReplies,
+  decodeNativeBlockQualification,
+  configureComputeSelfPriority,
+} from "./worker.ts";
+import { minimalWorkerEnvironment } from "./workerCommand.ts";
 
 const boot: Bootstrap = {
   version: 1,
@@ -34,7 +47,15 @@ const request: Request = {
   },
 };
 
-it.each(["open", "list", "search", "searchContents", "refresh", "close"] as const)(
+it.each([
+  "open",
+  "list",
+  "search",
+  "searchContents",
+  "refresh",
+  "refreshContent",
+  "close",
+] as const)(
   "brackets %s execution separately from chunking and preserves failure/cancellation settlement",
   async (operation: Operation) => {
     for (const mode of ["ok", "failed", "cancelled"] as const) {
@@ -119,7 +140,7 @@ it.each(["open", "list", "search", "searchContents", "refresh", "close"] as cons
                 ? "cancelled"
                 : operation === "open"
                   ? "finder-create"
-                  : operation === "refresh"
+                  : operation === "refresh" || operation === "refreshContent"
                     ? "finder-refresh"
                     : "finder-search",
           });
@@ -214,3 +235,114 @@ it("closes the qualification argument to a single path-shaped native log option"
   expect(() => decodeNativeBlockQualification(JSON.stringify(value))).toThrow();
   expect(() => decodeNativeBlockQualification("--qualification-native-block={")).toThrow();
 });
+
+it.each([-20, 0, 10, 15, 19])("compute self-priority never raises initial nice %s", (initial) => {
+  const writes: number[] = [];
+  let actual = initial;
+  const selected = configureComputeSelfPriority({
+    read: () => actual,
+    write: (value) => {
+      writes.push(value);
+      actual = value;
+    },
+  });
+  expect(selected).toBe(Math.max(initial, NodeOS.constants.priority.PRIORITY_BELOW_NORMAL));
+  expect(writes).toEqual(
+    initial < NodeOS.constants.priority.PRIORITY_BELOW_NORMAL
+      ? [NodeOS.constants.priority.PRIORITY_BELOW_NORMAL]
+      : [],
+  );
+});
+it.each([NaN, Infinity, -21, 20, 1.5])(
+  "compute self-priority refuses invalid read %s before writing",
+  (invalid) => {
+    const writes: number[] = [];
+    expect(() =>
+      configureComputeSelfPriority({
+        read: () => invalid,
+        write: (value) => {
+          writes.push(value);
+        },
+      }),
+    ).toThrow(expect.objectContaining({ reason: "unavailable" }));
+    expect(writes).toEqual([]);
+  },
+);
+it.each(["first-read", "write", "readback", "wrong-readback"])(
+  "compute self-priority fails closed on %s",
+  (failure) => {
+    const writes: number[] = [];
+    let reads = 0;
+    expect(() =>
+      configureComputeSelfPriority({
+        read: () => {
+          reads++;
+          if (failure === "first-read" || (failure === "readback" && reads === 2))
+            throw new Error(failure);
+          return reads === 1 ? 0 : failure === "wrong-readback" ? 0 : 10;
+        },
+        write: (value) => {
+          writes.push(value);
+          if (failure === "write") throw new Error(failure);
+        },
+      }),
+    ).toThrow(expect.objectContaining({ reason: "unavailable" }));
+    expect(writes).toEqual(failure === "first-read" ? [] : [10]);
+  },
+);
+
+it.each(["args", "bootstrap", "build", "heap", "priority"])(
+  "real private entry refuses %s before forbidden priority/guardian/native effects",
+  async (mode) => {
+    const directory = await NodeFSP.mkdtemp(
+      NodePath.join(NodeOS.tmpdir(), "jones-compute-priority-guard-"),
+    );
+    const filename = NodePath.join(directory, "guard.mjs");
+    const worker = NodeURL.pathToFileURL(NodePath.join(import.meta.dirname, "worker.ts")).href;
+    const command = NodeURL.pathToFileURL(
+      NodePath.join(import.meta.dirname, "workerCommand.ts"),
+    ).href;
+    const entry = NodePath.resolve(import.meta.dirname, "../../bin.ts");
+    const source = [
+      'import { createRequire, syncBuiltinESMExports, registerHooks } from "node:module";',
+      'const require=createRequire(import.meta.url);const os=require("node:os"),threads=require("node:worker_threads");',
+      'const trace=[];os.getPriority=pid=>{if(pid!==0)throw Error("Nonself priority target");trace.push("read");return 0;};os.setPriority=(pid,nice)=>{if(pid!==0 || nice!==10)throw Error("Unexpected priority target/value");trace.push("write");};',
+      'threads.Worker=class {constructor(){trace.push("guardian");throw Error("Forbidden guardian entry");}};syncBuiltinESMExports();',
+      'registerHooks({resolve(specifier,context,next){if(specifier.endsWith("nativeSearchRuntime.ts")){trace.push("native");throw Error("Forbidden native entry");}return next(specifier,context);}});',
+      `const {runServerComputeWorkerCommand}=await import(${JSON.stringify(worker)});`,
+      "const before=trace.slice();",
+      `const {currentBuildIdentity}=await import(${JSON.stringify(command)});`,
+      `process.argv[1]=${JSON.stringify(entry)};`,
+      `const mode=${JSON.stringify(mode)};const build=await currentBuildIdentity();`,
+      'const boot={version:1,build:mode==="build"?"b".repeat(64):build,authorityId:"synthetic",slotId:0,slotGeneration:1,nonce:"synthetic"};',
+      'const args=mode==="args"?["1","2","3"]:[JSON.stringify(mode==="bootstrap"?{}:boot)];',
+      'let reason;try{await runServerComputeWorkerCommand(args);throw Error("Unexpected success");}catch(error){reason=error.reason??error.message;}',
+      'process.stdout.write(JSON.stringify({before,trace,reason})+"\\n");',
+    ].join("\n");
+    try {
+      await NodeFSP.writeFile(filename, source);
+      const execute = NodeUtil.promisify(NodeChildProcess.execFile);
+      const result = await execute(
+        NodeProcess.execPath,
+        [...(mode === "heap" ? [] : ["--max-old-space-size=256"]), filename],
+        {
+          env: {
+            ...minimalWorkerEnvironment(NodeProcess.env, false, false),
+            HOME: directory,
+            NODE_OPTIONS: "",
+          },
+          maxBuffer: 65536,
+          timeout: 10000,
+        },
+      );
+      const receipt = JSON.parse(result.stdout);
+      expect(receipt.before).toEqual([]);
+      expect(receipt.reason).toBe(
+        mode === "heap" || mode === "priority" ? "unavailable" : "protocol",
+      );
+      expect(receipt.trace).toEqual(mode === "priority" ? ["read", "write", "read"] : []);
+    } finally {
+      await NodeFSP.rm(directory, { recursive: true });
+    }
+  },
+);

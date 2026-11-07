@@ -7,7 +7,7 @@ import {
   type ThreadRequestObservation,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -38,7 +38,7 @@ export class DependencyReactor extends Context.Service<
 >()("t3/jones/threadResultDependencies/DependencyReactor") {}
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const store = makeDependencyStore(sql, makeJonesTablePresence(sql));
   const changes = yield* Changes.DependencyChanges;
   const watcher = yield* RequestWatch.RequestWatch;
@@ -48,12 +48,12 @@ const make = Effect.gen(function* () {
   const running = new Map<string, { generation: number; fiber?: Fiber.Fiber<void> }>();
   const mutate = makeCommit(sql, store, changes);
   const wake = Effect.fn("DependencyReactor.wake")(function* (dependency: Dependency) {
-    const messageId = MessageId.make(yield* crypto.randomUUIDv4());
+    const messageId = MessageId.make(yield* crypto.uuidV4());
     const value = notification(dependency);
     yield* orchestrator
       .dispatch({
         type: "message.dispatch",
-        commandId: CommandId.make(yield* crypto.randomUUIDv4()),
+        commandId: CommandId.make(yield* crypto.uuidV4()),
         messageId,
         threadId: dependency.waiterThreadId,
         text: `${value.summary}\n\n${value.detail}`,

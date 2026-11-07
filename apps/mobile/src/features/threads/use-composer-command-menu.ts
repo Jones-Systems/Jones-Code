@@ -1,3 +1,4 @@
+import { useProviderWorkspaceRefresh } from "../../jones/providerWorkspaceRefresh/useProviderWorkspaceRefresh";
 import * as Dialog from "../../components/ui/Dialog";
 import type {
   EnvironmentId,
@@ -7,18 +8,27 @@ import type {
   ThreadId,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
-import { matchComposerThreadItems } from "@t3tools/client-runtime/composerThreadItems";
+import {
+  type ComposerEnvironmentCandidate,
+  matchComposerEnvironmentItems,
+  matchComposerThreadItems,
+} from "@t3tools/client-runtime/composerThreadItems";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 
 const EMPTY_THREAD_SHELLS: ReadonlyArray<EnvironmentThreadShell> = [];
+const EMPTY_ENVIRONMENTS: ReadonlyArray<ComposerEnvironmentCandidate> = [];
+const NO_LINKED_ENVIRONMENTS: ReadonlyMap<EnvironmentId, string> = new Map();
 import { COMPOSER_CONTEXT_MAX_RECORDS } from "@t3tools/contracts";
-import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
-import { pullRequestComposerContext, threadComposerContext } from "../../lib/composerContext";
+import {
+  formatComposerContextReference,
+  threadContextRecord,
+} from "@t3tools/shared/composerContextReferences";
+import { environmentComposerContext, pullRequestComposerContext } from "../../lib/composerContext";
 import { uuidv4 } from "../../lib/uuid";
 import {
   getComposerDraftSnapshot,
-  readComposerDraftSelection,
   setComposerDraftContext,
+  useComposerDraftSelection,
 } from "../../state/use-composer-drafts";
 import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import {
@@ -37,16 +47,12 @@ import {
   getProviderSkillsForSlashMenu,
   getProviderSlashCommandsForSlashMenu,
   isProviderSkillUserInvocable,
-  hasCompleteProviderWorkspaceSnapshot,
-  hasCurrentProviderWorkspaceSnapshot,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
-import { serverEnvironment } from "../../state/server";
-import { useAtomCommand } from "../../state/use-atom-command";
 import {
   useComposerPathSearch,
   useComposerPullRequestSearch,
@@ -55,14 +61,29 @@ import {
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
 
-// Jones retry policy gives each provider/workspace selection its own failure budget.
-import {
-  createProviderWorkspaceRefresh,
-  providerWorkspaceRefreshKey,
-} from "@t3tools/client-runtime/jones/provider-workspace-refresh";
-
 function composerSelectionAtEnd(draftMessage: string): ComposerEditorSelection {
   return { start: draftMessage.length, end: draftMessage.length };
+}
+
+/**
+ * A caret placed by an insertion (chips, pasted context) wins while the draft
+ * still has the text it was placed in. Otherwise the composer's own caret is
+ * clamped to the draft, and a caret from another owner starts at the end.
+ */
+export function resolveComposerMenuSelection(input: {
+  readonly draftMessage: string;
+  readonly ownerKey: string | null;
+  readonly inserted: ComposerEditorSelection | null;
+  readonly local: {
+    readonly ownerKey: string | null;
+    readonly start: number;
+    readonly end: number;
+  };
+}): ComposerEditorSelection {
+  if (input.inserted) return input.inserted;
+  if (input.local.ownerKey !== input.ownerKey) return composerSelectionAtEnd(input.draftMessage);
+  const length = input.draftMessage.length;
+  return { start: Math.min(input.local.start, length), end: Math.min(input.local.end, length) };
 }
 
 export function buildComposerSlashCommandItems(input: {
@@ -177,6 +198,8 @@ export function useComposerCommandMenu({
   ownerKey,
   environmentId,
   threadShells = EMPTY_THREAD_SHELLS,
+  environments = EMPTY_ENVIRONMENTS,
+  linkedEnvironments = NO_LINKED_ENVIRONMENTS,
   currentThreadId = null,
   projectCwd,
   pullRequestProjectId = null,
@@ -195,6 +218,9 @@ export function useComposerCommandMenu({
   readonly ownerKey: string | null;
   readonly environmentId: EnvironmentId | null;
   readonly threadShells?: ReadonlyArray<EnvironmentThreadShell>;
+  readonly environments?: ReadonlyArray<ComposerEnvironmentCandidate>;
+  /** The machines `environmentId` links to, by name, whose threads the picker also offers. */
+  readonly linkedEnvironments?: ReadonlyMap<EnvironmentId, string>;
   readonly currentThreadId?: ThreadId | null;
   readonly projectCwd: string | null;
   readonly pullRequestProjectId?: ProjectId | null;
@@ -209,92 +235,34 @@ export function useComposerCommandMenu({
   readonly onUpdateInteractionMode?: (mode: ProviderInteractionMode) => void;
   readonly onUsageLimits?: () => void;
 }) {
-  const [selection, setSelection] = useState(() => composerSelectionAtEnd(draftMessage));
+  const [localSelection, setLocalSelection] = useState(() => ({
+    ownerKey,
+    ...composerSelectionAtEnd(draftMessage),
+  }));
   // Thread mentions rank by recency as of when the composer mounted.
   const [now] = useState(() => Date.now());
-  const previousOwnerKeyRef = useRef(ownerKey);
-  const onSelectionChange = (nextSelection: ComposerEditorSelection) => {
-    setSelection(nextSelection);
-  };
-  useEffect(() => {
-    const inserted = ownerKey ? readComposerDraftSelection(ownerKey, draftMessage) : null;
-    if (inserted) {
-      setSelection((current) =>
-        current.start === inserted.start && current.end === inserted.end ? current : inserted,
-      );
-      return;
-    }
-    const end = draftMessage.length;
-    setSelection((current) => {
-      const start = Math.min(current.start, end);
-      const selectionEnd = Math.min(current.end, end);
-      if (start === current.start && selectionEnd === current.end) {
-        return current;
-      }
-      return { start, end: selectionEnd };
-    });
-  }, [draftMessage, ownerKey]);
-  useEffect(() => {
-    if (previousOwnerKeyRef.current === ownerKey) return;
-    previousOwnerKeyRef.current = ownerKey;
-    setSelection(composerSelectionAtEnd(draftMessage));
-  }, [draftMessage, ownerKey]);
+  const insertedSelection = useComposerDraftSelection(ownerKey, draftMessage);
+  const selection = resolveComposerMenuSelection({
+    draftMessage,
+    ownerKey,
+    inserted: insertedSelection,
+    local: localSelection,
+  });
+  const setSelection = (next: ComposerEditorSelection) =>
+    setLocalSelection({ ownerKey, start: next.start, end: next.end });
 
   const skills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd)
     : [];
-  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
-    reportFailure: false,
-  });
-  const selectedProviderInstanceId = selectedProviderStatus?.instanceId;
-  const [workspaceRefresh] = useState(createProviderWorkspaceRefresh);
-  const [workspaceRefreshRetry, setWorkspaceRefreshRetry] = useState(0);
-  useEffect(() => () => workspaceRefresh.pause(), [workspaceRefresh]);
-  useEffect(() => {
-    if (!environmentId || !projectCwd || !selectedProviderInstanceId) {
-      workspaceRefresh.update(null);
-      return;
-    }
-    workspaceRefresh.update({
-      key: providerWorkspaceRefreshKey(environmentId, selectedProviderInstanceId, projectCwd),
-      hasSnapshot: hasCompleteProviderWorkspaceSnapshot(selectedProviderStatus, projectCwd),
-      isCurrent: hasCurrentProviderWorkspaceSnapshot(
-        selectedProviderStatus,
-        projectCwd,
-        Date.now(),
-      ),
-      retryPending:
-        selectedProviderStatus?.workspaceSnapshots?.some(
-          (snapshot) => snapshot.cwd === projectCwd && snapshot.slashCommandsPending === true,
-        ) ?? false,
-      onRetry: () => setWorkspaceRefreshRetry((retry) => retry + 1),
-      refresh: () =>
-        refreshProviders({
-          environmentId,
-          input: { instanceId: selectedProviderInstanceId, cwd: projectCwd },
-        }).then(
-          (result) =>
-            result._tag === "Success" &&
-            hasCompleteProviderWorkspaceSnapshot(
-              result.value.providers.find(
-                (provider) => provider.instanceId === selectedProviderInstanceId,
-              ),
-              projectCwd,
-            ),
-        ),
-    });
-  }, [
-    // Typing and timer wakeups deliberately recheck freshness even when scope is unchanged.
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies
-    draftMessage,
+  useProviderWorkspaceRefresh({
     environmentId,
     projectCwd,
-    refreshProviders,
-    selectedProviderInstanceId,
-    selectedProviderStatus,
-    workspaceRefresh,
-    workspaceRefreshRetry,
-  ]);
+    provider: selectedProviderStatus,
+    draftMessage,
+  });
+  const onSelectionChange = (nextSelection: ComposerEditorSelection) => {
+    setSelection(nextSelection);
+  };
 
   const trigger = (() => {
     if (!enabled || selection.start !== selection.end) {
@@ -468,13 +436,18 @@ export function useComposerCommandMenu({
         ? matchComposerThreadItems({
             shells: threadShells,
             environmentId,
+            linkedEnvironments,
             excludeThreadId: currentThreadId,
             query: trigger.query,
             now,
           })
         : [];
+      const environmentItems = environmentId
+        ? matchComposerEnvironmentItems({ environments, environmentId, query: trigger.query })
+        : [];
       return [
         ...threadItems,
+        ...environmentItems,
         ...pathSearch.entries.map((entry) => {
           const parts = entry.path.split("/");
           return {
@@ -494,6 +467,32 @@ export function useComposerCommandMenu({
 
   const onSelect = (item: ComposerCommandItem) => {
     if (!trigger) return;
+    if (item.type === "environment") {
+      if (!ownerKey || trigger.kind !== "path") return;
+      const record = environmentComposerContext(item.environmentId, item.label);
+      const existing = getComposerDraftSnapshot(ownerKey).context?.records ?? [];
+      const alreadyAttached = existing.some((entry) => entry.contextId === record.contextId);
+      if (!alreadyAttached && existing.length >= COMPOSER_CONTEXT_MAX_RECORDS) {
+        Dialog.alert("Too many context items", "Remove some context from the draft and try again.");
+        return;
+      }
+      const result = replaceTextRange(
+        draftMessage,
+        trigger.rangeStart,
+        trigger.rangeEnd,
+        `${formatComposerContextReference(record)} `,
+      );
+      onChangeDraftMessage(result.text);
+      if (!alreadyAttached) {
+        const draft = getComposerDraftSnapshot(ownerKey);
+        setComposerDraftContext(ownerKey, {
+          version: 1,
+          records: [...(draft.context?.records ?? []), record],
+        });
+      }
+      setSelection({ start: result.cursor, end: result.cursor });
+      return;
+    }
     if (item.type === "thread") {
       if (!ownerKey || trigger.kind !== "path") return;
       const shell = threadShells.find(
@@ -502,7 +501,7 @@ export function useComposerCommandMenu({
           candidate.id === item.thread.threadId,
       );
       if (!shell) return;
-      const record = threadComposerContext(item.thread, shell.title);
+      const record = threadContextRecord(item.thread, shell.title);
       const existing = getComposerDraftSnapshot(ownerKey).context?.records ?? [];
       const alreadyAttached = existing.some((entry) => entry.contextId === record.contextId);
       if (!alreadyAttached && existing.length >= COMPOSER_CONTEXT_MAX_RECORDS) {

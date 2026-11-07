@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Option from "effect/Option";
 import * as RcMap from "effect/RcMap";
 import * as Schema from "effect/Schema";
 
@@ -108,6 +109,12 @@ export class WorkspaceEntries extends Context.Service<
       input: ProjectSearchContentsInput,
     ) => Effect.Effect<ProjectSearchContentsResult, WorkspaceEntriesError>;
     readonly refresh: (cwd: string) => Effect.Effect<void>;
+    readonly refreshContentAfterWrite: (
+      cwd: string,
+    ) => Effect.Effect<
+      void,
+      WorkspaceEntriesError | WorkspaceSearchIndex.WorkspaceSearchIndexRefreshFailed
+    >;
   }
 >()("t3/workspace/WorkspaceEntries") {}
 
@@ -116,6 +123,9 @@ const IGNORED_FILES_LIMIT = 200;
 
 /** Paths sent to one `git check-ignore` call when labelling a folder's children. */
 const IGNORE_CHECK_CHUNK_SIZE = 1000;
+
+/** Children classified at once when listing a folder; each symlink costs a realpath and a stat. */
+const SYMLINK_RESOLVE_BATCH_SIZE = 64;
 
 const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(function* (
   input: FilesystemBrowseInput,
@@ -203,6 +213,22 @@ export const make = Effect.gen(function* () {
       });
     },
   );
+
+  // getOption atomically retains the existing context without creating a missing finder.
+  const refreshContentAfterWrite: WorkspaceEntries["Service"]["refreshContentAfterWrite"] =
+    Effect.fn("WorkspaceEntries.refreshContentAfterWrite")((cwd) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const normalizedCwd = yield* normalizeWorkspaceRoot(cwd);
+          const context = yield* workspaceSearchIndexes.contextEffectOption(
+            WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "content"),
+          );
+          if (Option.isNone(context)) return;
+          const index = Context.get(context.value, WorkspaceSearchIndex.WorkspaceSearchIndex);
+          yield* index.refreshContent();
+        }),
+      ),
+    );
 
   const browse: WorkspaceEntries["Service"]["browse"] = Effect.fn("WorkspaceEntries.browse")(
     function* (input) {
@@ -324,13 +350,71 @@ export const make = Effect.gen(function* () {
               throw new Error("Directory must be inside the workspace and outside .git.");
             }
             const children = await NodeFSP.readdir(directory, { withFileTypes: true });
+            const isSameOrInside = (parent: string, child: string) => {
+              const relativeChild = path.relative(parent, child);
+              return (
+                relativeChild !== ".." &&
+                !relativeChild.startsWith(`..${path.sep}`) &&
+                !path.isAbsolute(relativeChild)
+              );
+            };
+            // Reject canonical ancestors so "Expand all folders" cannot follow a cycle.
+            let visitedFolders: Promise<ReadonlyArray<string>> | undefined;
+            const loadVisitedFolders = () =>
+              (visitedFolders ??= (async () => {
+                const folders = [root];
+                let current = normalizedCwd;
+                for (const segment of target.relativePath.split("/").filter(Boolean)) {
+                  current = path.join(current, segment);
+                  folders.push(await NodeFSP.realpath(current));
+                }
+                return folders;
+              })());
+            const resolveSymlinkKind = async (
+              name: string,
+            ): Promise<ProjectEntry["kind"] | undefined> => {
+              const resolved = await NodeFSP.realpath(path.join(directory, name)).catch(
+                () => undefined,
+              );
+              if (
+                resolved === undefined ||
+                !isSameOrInside(root, resolved) ||
+                path.relative(root, resolved).split(path.sep).includes(".git")
+              ) {
+                return undefined;
+              }
+              const stat = await NodeFSP.stat(resolved).catch(() => undefined);
+              if (stat?.isFile()) return "file";
+              if (!stat?.isDirectory()) return undefined;
+              const folders = await loadVisitedFolders();
+              return folders.some((folder) => isSameOrInside(resolved, folder))
+                ? undefined
+                : "directory";
+            };
+            // Bound filesystem work for directories such as pnpm node_modules.
+            const kinds: Array<ProjectEntry["kind"] | undefined> = [];
+            for (let offset = 0; offset < children.length; offset += SYMLINK_RESOLVE_BATCH_SIZE) {
+              kinds.push(
+                ...(await Promise.all(
+                  children
+                    .slice(offset, offset + SYMLINK_RESOLVE_BATCH_SIZE)
+                    .map(async (child): Promise<ProjectEntry["kind"] | undefined> => {
+                      if (child.name === ".git") return undefined;
+                      if (child.isDirectory()) return "directory";
+                      if (child.isFile()) return "file";
+                      return child.isSymbolicLink() ? resolveSymlinkKind(child.name) : undefined;
+                    }),
+                )),
+              );
+            }
             return {
-              entries: children.flatMap((child): ProjectEntry[] => {
-                if (child.name === ".git" || (!child.isDirectory() && !child.isFile())) return [];
+              entries: children.flatMap((child, index): ProjectEntry[] => {
+                const kind = kinds[index];
+                if (kind === undefined) return [];
                 return [
                   {
                     path: target.relativePath ? `${target.relativePath}/${child.name}` : child.name,
-                    kind: child.isDirectory() ? "directory" : "file",
+                    kind,
                   },
                 ];
               }),
@@ -445,7 +529,15 @@ export const make = Effect.gen(function* () {
     };
   });
 
-  return WorkspaceEntries.of({ browse, list, listIgnoredFiles, refresh, search, searchContents });
+  return WorkspaceEntries.of({
+    browse,
+    list,
+    listIgnoredFiles,
+    refresh,
+    refreshContentAfterWrite,
+    search,
+    searchContents,
+  });
 });
 
 export const layer = Layer.effect(WorkspaceEntries, make).pipe(

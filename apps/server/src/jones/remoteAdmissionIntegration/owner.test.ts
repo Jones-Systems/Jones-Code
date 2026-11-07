@@ -1,3 +1,5 @@
+import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { AuthAdministrativeScopes } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -20,11 +22,12 @@ const config = Layer.effect(
   }),
 ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "remote-admission-owner-" })));
 const authLayer = EnvironmentAuth.layer.pipe(
+  Layer.provide(ManagedPolicy.layer),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(ServerSecretStore.layer),
   Layer.provide(ServerEnvironment.layerIdentity),
   Layer.provide(config),
-  Layer.provide(NodeServices.layer),
+  Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
 it.effect(

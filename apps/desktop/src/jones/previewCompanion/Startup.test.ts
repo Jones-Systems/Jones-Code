@@ -55,7 +55,9 @@ function fixture(companion = config, localEnabled = true) {
     label: Effect.succeed("fixture"),
     start: count("backend"),
     stop: () => Effect.die("Unexpected backend stop"),
-    currentConfig: Effect.die("Unexpected backend configuration read"),
+    currentConfig: companion.browserOnly
+      ? Effect.die("Unexpected backend configuration read")
+      : Effect.succeedNone,
     snapshot: Effect.die("Unexpected backend snapshot read"),
     waitForReady: () => Effect.die("Unexpected backend readiness wait"),
   };

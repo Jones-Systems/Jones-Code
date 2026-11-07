@@ -1,11 +1,12 @@
 import { resolveServerParallelismProfile } from "../jones/serverParallelism/config.ts";
 import * as Schema from "effect/Schema";
 import * as PlatformError from "effect/PlatformError";
+import { vi } from "vite-plus/test";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
-import { vi } from "vite-plus/test";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -23,6 +24,17 @@ import {
 } from "../cloud/config.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "./ServerEnvironment.ts";
+
+const layerIsolatedServerConfig = (baseDir: string) =>
+  Layer.effect(
+    ServerConfig.ServerConfig,
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const config = yield* makeServerConfig(baseDir);
+      yield* fileSystem.makeDirectory(config.stateDir, { recursive: true });
+      return config;
+    }),
+  );
 
 const buildMetadata = vi.hoisted(
   () => ({ version: "0.0.45-preview.20261020.42.1" }) as Record<string, unknown>,
@@ -83,50 +95,7 @@ const makeServerConfig = Effect.fn(function* (baseDir: string) {
   } satisfies ServerConfig.ServerConfig["Service"];
 });
 
-// Descriptor fixtures need isolated state, not native database startup admission,
-// which also inspects the desktop profile inherited from the launching process.
-const layerIsolatedServerConfig = (baseDir: string) =>
-  Layer.effect(
-    ServerConfig.ServerConfig,
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const config = yield* makeServerConfig(baseDir);
-      yield* fileSystem.makeDirectory(config.stateDir, { recursive: true });
-      return config;
-    }),
-  );
-
-// Descriptor tests do not inherit the launching service's managed-child context.
-const layerDescriptorHost = Layer.merge(
-  NodeServices.layer,
-  Layer.succeed(HostProcess.Environment, {}),
-);
-
-it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
-  it.effect.each(["2026-10-20T21:13:43Z", undefined, "invalid"])(
-    "forwards only valid embedded build time %s with the descriptor version",
-    (startedAt) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const baseDir = yield* fs.makeTempDirectoryScoped();
-        if (startedAt === undefined) delete buildMetadata.jonesBuildStartedAt;
-        else buildMetadata.jonesBuildStartedAt = startedAt;
-        const descriptor = yield* Effect.gen(function* () {
-          return yield* (yield* ServerEnvironment.ServerEnvironment).getDescriptor;
-        }).pipe(
-          Effect.provide(layerServerEnvironment(baseDir)),
-          Effect.ensuring(
-            Effect.sync(() => {
-              delete buildMetadata.jonesBuildStartedAt;
-            }),
-          ),
-        );
-        expect(descriptor.serverVersion).toBe(buildMetadata.version);
-        expect(descriptor.jonesBuildStartedAt).toBe(
-          startedAt === "invalid" ? undefined : startedAt,
-        );
-      }),
-  );
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmentLive", (it) => {
   it.effect("publishes proven install ownership only for manually updated servers", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -183,7 +152,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
   ])("concurrent initializers recover a $name environment id file", ({ content }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const crypto = yield* Crypto.Crypto;
+      const random = yield* SecureRandom.SecureRandom;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-server-environment-concurrent-test-",
       });
@@ -223,17 +192,17 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
               ),
             ),
         }),
-        Effect.provideService(Crypto.Crypto, {
-          ...crypto,
-          randomUUIDv4: (() =>
+        Effect.provideService(SecureRandom.SecureRandom, {
+          ...random,
+          uuidV4: (() =>
             Effect.gen(function* () {
-              const id = yield* crypto.randomUUIDv4();
+              const id = yield* random.uuidV4();
               if (--remaining === 0) {
                 yield* Deferred.succeed(bothGenerated, undefined);
               }
               yield* Deferred.await(bothGenerated);
               return id;
-            })) as Crypto.Crypto["randomUUIDv4"],
+            })) as SecureRandom.SecureRandom["Service"]["uuidV4"],
         }),
       );
 
@@ -430,7 +399,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
   ])("concurrent initializers recover a $name environment id file", ({ content }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const crypto = yield* Crypto.Crypto;
+      const crypto = yield* SecureRandom.SecureRandom;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-server-environment-concurrent-test-",
       });
@@ -471,17 +440,17 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
               ),
             ),
         }),
-        Effect.provideService(Crypto.Crypto, {
+        Effect.provideService(SecureRandom.SecureRandom, {
           ...crypto,
-          randomUUIDv4: (() =>
+          uuidV4: (() =>
             Effect.gen(function* () {
-              const id = yield* crypto.randomUUIDv4();
+              const id = yield* crypto.uuidV4();
               if (--remaining === 0) {
                 yield* Deferred.succeed(bothGenerated, undefined);
               }
               yield* Deferred.await(bothGenerated);
               return id;
-            })) as Crypto.Crypto["randomUUIDv4"],
+            })) as SecureRandom.SecureRandom["Service"]["uuidV4"],
         }),
       );
 
@@ -697,6 +666,31 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
         expect(writeAttempts).toEqual(operation === "write" ? [tempPath] : []);
       }
     }),
+  );
+
+  it.effect.each(["2026-10-20T21:13:43Z", undefined, "invalid"])(
+    "forwards only valid embedded build time %s with the descriptor version",
+    (startedAt) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        if (startedAt === undefined) delete buildMetadata.jonesBuildStartedAt;
+        else buildMetadata.jonesBuildStartedAt = startedAt;
+        const descriptor = yield* Effect.gen(function* () {
+          return yield* (yield* ServerEnvironment.ServerEnvironment).getDescriptor;
+        }).pipe(
+          Effect.provide(layerServerEnvironment(baseDir)),
+          Effect.ensuring(
+            Effect.sync(() => {
+              delete buildMetadata.jonesBuildStartedAt;
+            }),
+          ),
+        );
+        expect(descriptor.serverVersion).toBe(buildMetadata.version);
+        expect(descriptor.jonesBuildStartedAt).toBe(
+          startedAt === "invalid" ? undefined : startedAt,
+        );
+      }),
   );
 });
 

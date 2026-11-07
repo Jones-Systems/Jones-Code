@@ -1,3 +1,12 @@
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
+import * as QueueCompatibility from "./QueueCompatibility.ts";
+import * as ScratchThreadPromotion from "../project/ScratchThreadPromotion.ts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import * as SourceControlSignIn from "../sourceControl/SourceControlSignIn.ts";
+import * as TriageService from "../triage/TriageService.ts";
+import * as NativeChildWorkQuery from "./NativeChildWorkQuery.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as WsProviderMaintenanceRunner from "../provider/providerMaintenanceRunner.ts";
@@ -195,6 +204,16 @@ const decodeSocketRpcResponse = Schema.decodeUnknownEffect(
   ),
 );
 
+const decodeEffectLegacyDeletionProvenance = Schema.decodeEffect(LegacyDeletionProvenance);
+const decodeEffectLegacyReleaseDecision = Schema.decodeEffect(LegacyReleaseDecision);
+const encodeEffectFromJsonStringRecordedRunJson = Schema.encodeEffect(
+  Schema.fromJsonString(RecordedRunJson),
+);
+const decodeEffectLegacyPreparationFailureDecision = Schema.decodeEffect(
+  LegacyPreparationFailureDecision,
+);
+const isRecordedThreadBoundedSnapshot = Schema.is(RecordedThreadBoundedSnapshot);
+
 it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQL without private correlation", async () => {
   const threadId = ThreadId.make("recorded-http:T");
   const runId = RunId.make("recorded-http:R");
@@ -302,7 +321,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
         workspacePath: "/private-http-workspace",
         projectWorkspaceRoot: "/private-http-workspace",
       };
-      const deletion = yield* Schema.decodeEffect(LegacyDeletionProvenance)({
+      const deletion = yield* decodeEffectLegacyDeletionProvenance({
         ...correlation,
         version: 1,
         type: "no_control",
@@ -310,7 +329,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
         evidenceEventId: EventId.make("recorded-http:D:event"),
         control: { ...correlation, version: 1, type: "no_control" },
       });
-      const decision = yield* Schema.decodeEffect(LegacyReleaseDecision)({
+      const decision = yield* decodeEffectLegacyReleaseDecision({
         version: 1,
         status: "rejected",
         policy,
@@ -334,7 +353,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
         deletion,
       });
       // This direct recorded DTO fixture tests authenticated serving, not D authority or a V1 trace.
-      const payload = yield* Schema.encodeEffect(Schema.fromJsonString(RecordedRunJson))({
+      const payload = yield* encodeEffectFromJsonStringRecordedRunJson({
         ...run,
         legacyReleaseDecision: decision,
       });
@@ -342,7 +361,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
       yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = ${payload} WHERE run_id = ${runId}`;
       const failureCommandId = CommandId.make("recorded-http:B:fail");
       const failureEvidenceEventId = EventId.make("recorded-http:failure:event");
-      const failure = yield* Schema.decodeEffect(LegacyPreparationFailureDecision)({
+      const failure = yield* decodeEffectLegacyPreparationFailureDecision({
         version: 1,
         status: "known_workspace_failure",
         policy,
@@ -373,7 +392,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
         },
       });
       // Sequential private DTO fixtures prove serving omission, not command authority or receipt authenticity.
-      const failurePayload = yield* Schema.encodeEffect(Schema.fromJsonString(RecordedRunJson))({
+      const failurePayload = yield* encodeEffectFromJsonStringRecordedRunJson({
         ...run,
         status: "failed",
         legacyPreparationFailureDecision: failure,
@@ -393,7 +412,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
         hasMoreHistory: false,
         latestLocalTurnOrdinal: null,
       };
-      const isRecordedBoundedSnapshot = Schema.is(RecordedThreadBoundedSnapshot);
+      const isRecordedBoundedSnapshot = isRecordedThreadBoundedSnapshot;
       expect(isRecordedBoundedSnapshot(boundedSnapshot)).toBe(true);
       expect(
         isRecordedBoundedSnapshot({
@@ -459,11 +478,12 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
   ).pipe(Layer.provideMerge(persistence));
   const config = WsServerConfig.layerTest(process.cwd(), { prefix: "legacy-wire-http-auth-" });
   const authOwners = WsEnvironmentAuth.layer.pipe(
+    Layer.provide(ManagedPolicy.layerTest()),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provideMerge(ServerSecretStore.layer),
     Layer.provideMerge(WsServerEnvironment.layerIdentity),
     Layer.provide(config),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   const auth = Layer.unwrap(
     Effect.gen(function* () {
@@ -557,11 +577,12 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     }).pipe(Effect.andThen(Effect.die("Unauthenticated request reached an RPC owner.")));
   const config = WsServerConfig.layerTest(process.cwd(), { prefix: "legacy-wire-ws-gate-" });
   const auth = WsEnvironmentAuth.layer.pipe(
+    Layer.provide(ManagedPolicy.layerTest()),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provideMerge(ServerSecretStore.layer),
     Layer.provideMerge(WsServerEnvironment.layerIdentity),
     Layer.provide(config),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   // Unrelated owners are deliberately unavailable; rejection must precede any RPC layer construction.
   const deniedRpcOwners = Layer.mergeAll(
@@ -572,7 +593,9 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsPeerLinks.PeerLinks)({}),
     Layer.mock(WsMcpAppRequests.McpAppRequests)({}),
     Layer.mock(WsSecretRequests.SecretRequests)({}),
-    Layer.mock(WsServerBrowser.ServerBrowser)({}),
+    Layer.mock(WsServerBrowser.ServerBrowser)({
+      profileReporter: Effect.succeed(() => Effect.void),
+    }),
     WsTokenAccountingService.layer,
     Layer.mock(Threads.ThreadManagementService)({ getThreadSnapshot: denyRpcWork }),
     Layer.mock(WsApplicationEventStore.OrchestrationEventStore)({}),
@@ -625,7 +648,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsVcsStatusBroadcaster.VcsStatusBroadcaster)({}),
     Layer.mock(WsTerminalManager.TerminalManager)({}),
     Layer.mock(WsPreviewManager.PreviewManager)({}),
-    Layer.mock(WsPortScanner.PortDiscovery)({}),
+    Layer.mock(WsPortScanner.PortDiscovery)({ trackAgent: () => () => {} }),
     Layer.mock(WsProviderRegistry.ProviderRegistry)({}),
     Layer.mock(WsModelManifest.ModelManifest)({}),
     ProviderLatestVersions.layer,
@@ -671,6 +694,14 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
       WsHttpClient.make(() => Effect.die("Auth gate must not call HTTP client.")),
     ),
     Layer.mock(WsTraceDiagnostics.TraceDiagnostics)({}),
+    Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+    Layer.mock(QueueCompatibility.QueueCompatibility)({}),
+    Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+    Layer.mock(SecretResolver.SecretResolver)({}),
+    Layer.mock(SourceControlSignIn.SourceControlSignIn)({}),
+    Layer.mock(TriageService.TriageService)({}),
+    Layer.mock(NativeChildWorkQuery.NativeChildWorkQuery)({}),
+    ManagedPolicy.layerTest(),
     Layer.mock(WsProjectFaviconResolver.ProjectFaviconResolver)({}),
     Layer.mock(EventSink.EventSinkV2)({}),
     Layer.mock(WsEffectOutbox.EffectOutboxV2)({}),
@@ -680,7 +711,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
   );
   const dependencies = Layer.mergeAll(auth, deniedRpcOwners).pipe(
     Layer.provideMerge(config),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   const routes = WebSocketRpc.layer.pipe(Layer.provideMerge(dependencies));
   const http = HttpRouter.toWebHandler(routes, { disableLogger: true });
@@ -717,7 +748,73 @@ class LegacyCancellationFixtureError extends Schema.TaggedError<LegacyCancellati
   { message: Schema.String, cause: Schema.optional(Schema.Defect()) },
 ) {}
 
-effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
+const decodeEffectOrchestrationV2ThreadProjectionJson = Schema.decodeEffect(
+  OrchestrationV2ThreadProjectionJson,
+);
+const decodeUnknownEffectArrayTaggedStructFailErrorOrchestrationDispatchComm =
+  Schema.decodeUnknownEffect(
+    Schema.Array(
+      Schema.TaggedStruct("Fail", {
+        error: OrchestrationDispatchCommandError,
+      }),
+    ),
+  );
+const decodeEffectFromJsonStringStructTagStringRequestIdStringValuesOptional = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      _tag: Schema.String,
+      requestId: Schema.String,
+      values: Schema.optional(Schema.Array(WorktreeSetupStreamEvent)),
+      exit: Schema.optional(
+        Schema.Struct({
+          _tag: Schema.String,
+          value: Schema.optional(Schema.Struct({ sequence: Schema.Number })),
+        }),
+      ),
+    }),
+  ),
+);
+const decodeEffectFromJsonStringStructTagStringRequestIdStringValuesOptional2 = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      _tag: Schema.String,
+      requestId: Schema.String,
+      values: Schema.optional(Schema.Array(WorktreeSetupStreamEvent)),
+      exit: Schema.optional(
+        Schema.Struct({
+          _tag: Schema.String,
+          value: Schema.optional(Schema.Unknown),
+          cause: Schema.optional(Schema.Unknown),
+        }),
+      ),
+    }),
+  ),
+);
+const decodeUnknownEffectArrayTaggedStructFailErrorOrchestrationDispatchComm2 =
+  Schema.decodeUnknownEffect(
+    Schema.Array(
+      Schema.TaggedStruct("Fail", {
+        error: OrchestrationDispatchCommandError,
+      }),
+    ),
+  );
+const decodeEffectFromJsonStringStructTagStringRequestIdStringValuesOptional3 = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      _tag: Schema.String,
+      requestId: Schema.String,
+      values: Schema.optional(Schema.Array(WorktreeSetupStreamEvent)),
+      exit: Schema.optional(
+        Schema.Struct({
+          _tag: Schema.String,
+          value: Schema.optional(Schema.Unknown),
+        }),
+      ),
+    }),
+  ),
+);
+
+effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTestServices: true })(
   "Authenticated legacy WS serialized forwarding",
   (it) => {
     it.effect.each([
@@ -757,16 +854,17 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         const cwd = yield* fs.realPath(temporaryRoot);
         const receivingDatabase = scenario.startsWith("actual_input_")
           ? SqlitePersistence.layerFromPath(`${cwd}/lexical.sqlite`).pipe(
-              Layer.provide(NodeServices.layer),
+              Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
             )
           : SqlitePersistence.layerMemory;
         const config = WsServerConfig.layerTest(cwd, `${cwd}/state`);
         const auth = WsEnvironmentAuth.layer.pipe(
+          Layer.provide(ManagedPolicy.layerTest()),
           Layer.provideMerge(receivingDatabase),
           Layer.provideMerge(ServerSecretStore.layer),
           Layer.provideMerge(WsServerEnvironment.layerIdentity),
           Layer.provide(config),
-          Layer.provide(NodeServices.layer),
+          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         );
         const timestamp = "2026-10-05T00:00:00.000Z";
         const threadId = ThreadId.make("wire-forward:T");
@@ -782,7 +880,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           expectedLatestTurnId: null,
           requireIdle: true,
         };
-        const projection = yield* Schema.decodeEffect(OrchestrationV2ThreadProjectionJson)({
+        const projection = yield* decodeEffectOrchestrationV2ThreadProjectionJson({
           thread: {
             id: threadId,
             projectId,
@@ -1376,7 +1474,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsPeerLinks.PeerLinks)({}),
           Layer.mock(WsMcpAppRequests.McpAppRequests)({}),
           Layer.mock(WsSecretRequests.SecretRequests)({}),
-          Layer.mock(WsServerBrowser.ServerBrowser)({}),
+          Layer.mock(WsServerBrowser.ServerBrowser)({
+            profileReporter: Effect.succeed(() => Effect.void),
+          }),
           WsTokenAccountingService.layer,
           Layer.mock(Threads.ThreadManagementService)({
             getThreadShell: () => Effect.succeed(null),
@@ -1499,7 +1599,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsVcsStatusBroadcaster.VcsStatusBroadcaster)({}),
           Layer.mock(WsTerminalManager.TerminalManager)({}),
           Layer.mock(WsPreviewManager.PreviewManager)({}),
-          Layer.mock(WsPortScanner.PortDiscovery)({}),
+          Layer.mock(WsPortScanner.PortDiscovery)({ trackAgent: () => () => {} }),
           Layer.mock(WsProviderRegistry.ProviderRegistry)({}),
           Layer.mock(WsModelManifest.ModelManifest)({}),
           ProviderLatestVersions.layer,
@@ -1550,6 +1650,14 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             WsHttpClient.make(() => Effect.die("Auth gate must not call HTTP client.")),
           ),
           Layer.mock(WsTraceDiagnostics.TraceDiagnostics)({}),
+          Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+          Layer.mock(QueueCompatibility.QueueCompatibility)({}),
+          Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+          Layer.mock(SecretResolver.SecretResolver)({}),
+          Layer.mock(SourceControlSignIn.SourceControlSignIn)({}),
+          Layer.mock(TriageService.TriageService)({}),
+          Layer.mock(NativeChildWorkQuery.NativeChildWorkQuery)({}),
+          ManagedPolicy.layerTest(),
           Layer.mock(WsProjectFaviconResolver.ProjectFaviconResolver)({}),
           Layer.mock(EventSink.EventSinkV2)({}),
           Layer.mock(WsEffectOutbox.EffectOutboxV2)({
@@ -1561,9 +1669,13 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.succeed(HostProcess.Platform, "linux"),
         );
 
-        const dependencies = Layer.mergeAll(auth, rpcOwners, receivingOwners).pipe(
+        const baseDependencies = Layer.mergeAll(auth, rpcOwners, receivingOwners).pipe(
           Layer.provideMerge(config),
-          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        );
+        const dependencies = Layer.merge(
+          baseDependencies,
+          QueueCompatibility.layer.pipe(Layer.provide(baseDependencies)),
         );
         yield* Effect.gen(function* () {
           const owner = yield* WsEnvironmentAuth.EnvironmentAuth;
@@ -1766,13 +1878,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             expect(frame.exit._tag).toBe("Failure");
             if (frame.exit._tag !== "Failure")
               return yield* Effect.die("Preflight failure required");
-            const failures = yield* Schema.decodeUnknownEffect(
-              Schema.Array(
-                Schema.TaggedStruct("Fail", {
-                  error: OrchestrationDispatchCommandError,
-                }),
-              ),
-            )(frame.exit.cause);
+            const failures =
+              yield* decodeUnknownEffectArrayTaggedStructFailErrorOrchestrationDispatchComm(
+                frame.exit.cause,
+              );
             expect(failures).toHaveLength(1);
             expect(failures[0]?.error.bootstrapThreadDisposition).toBe(
               scenario === "actual_required_fetch_unknown" ? undefined : "not-created",
@@ -1889,21 +1998,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             const readSetupFrame = () =>
               WsQueue.take(setupOutgoing).pipe(
                 Effect.flatMap((raw) =>
-                  Schema.decodeEffect(
-                    Schema.fromJsonString(
-                      Schema.Struct({
-                        _tag: Schema.String,
-                        requestId: Schema.String,
-                        values: Schema.optional(Schema.Array(WorktreeSetupStreamEvent)),
-                        exit: Schema.optional(
-                          Schema.Struct({
-                            _tag: Schema.String,
-                            value: Schema.optional(Schema.Struct({ sequence: Schema.Number })),
-                          }),
-                        ),
-                      }),
-                    ),
-                  )(typeof raw === "string" ? raw : new TextDecoder().decode(raw)),
+                  decodeEffectFromJsonStringStructTagStringRequestIdStringValuesOptional(
+                    typeof raw === "string" ? raw : new TextDecoder().decode(raw),
+                  ),
                 ),
                 Effect.timeout("5 seconds"),
               );
@@ -1919,19 +2016,24 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             );
             let responseSequence: unknown;
             let runningCard: WorktreeSetupStreamEvent | undefined;
-            for (
-              let count = 0;
-              count < 8 &&
-              (runningCard === undefined || (asyncWorktree && responseSequence === undefined));
-              count++
-            ) {
+            for (let count = 0; count < 8; count++) {
+              if (runningCard !== undefined && (!asyncWorktree || responseSequence !== undefined))
+                break;
               const frame = yield* readSetupFrame();
               if (frame.requestId === "1") {
                 expect(frame.exit?._tag).toBe("Success");
                 responseSequence = frame.exit?.value?.sequence;
               }
               if (frame.requestId === "2" && frame.values !== undefined) {
-                runningCard = frame.values.find((card) => card?.phase === "running");
+                // A request receipt and an earlier running frame do not prove
+                // that the async agent stage has finished. Consume its real
+                // later frame under the existing ACK/iteration/time bounds.
+                runningCard = frame.values.find(
+                  (card) =>
+                    card?.phase === "running" &&
+                    (!asyncWorktree ||
+                      card.stages.find((stage) => stage.id === "agent")?.status === "done"),
+                );
                 yield* WsQueue.offer(
                   incoming,
                   yield* encodeSocketRpcRequest({ _tag: "Ack", requestId: "2" }),
@@ -2020,22 +2122,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               const readCancellationFrame = () =>
                 WsQueue.take(outgoing).pipe(
                   Effect.flatMap((raw) =>
-                    Schema.decodeEffect(
-                      Schema.fromJsonString(
-                        Schema.Struct({
-                          _tag: Schema.String,
-                          requestId: Schema.String,
-                          values: Schema.optional(Schema.Array(WorktreeSetupStreamEvent)),
-                          exit: Schema.optional(
-                            Schema.Struct({
-                              _tag: Schema.String,
-                              value: Schema.optional(Schema.Unknown),
-                              cause: Schema.optional(Schema.Unknown),
-                            }),
-                          ),
-                        }),
-                      ),
-                    )(typeof raw === "string" ? raw : new TextDecoder().decode(raw)),
+                    decodeEffectFromJsonStringStructTagStringRequestIdStringValuesOptional2(
+                      typeof raw === "string" ? raw : new TextDecoder().decode(raw),
+                    ),
                   ),
                   Effect.timeout("5 seconds"),
                   Effect.mapError(
@@ -2080,13 +2169,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                     expect(encodeLegacyCancellationDiagnostic(frame.exit?.cause ?? null)).toContain(
                       "Worktree setup cancelled.",
                     );
-                    const failures = yield* Schema.decodeUnknownEffect(
-                      Schema.Array(
-                        Schema.TaggedStruct("Fail", {
-                          error: OrchestrationDispatchCommandError,
-                        }),
-                      ),
-                    )(frame.exit?.cause);
+                    const failures =
+                      yield* decodeUnknownEffectArrayTaggedStructFailErrorOrchestrationDispatchComm2(
+                        frame.exit?.cause,
+                      );
                     expect(failures).toHaveLength(1);
                     expect(failures[0]?.error.message).toBe("Worktree setup cancelled.");
                   }
@@ -2269,12 +2355,12 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             }
             yield* completeSetup;
             let doneCard: WorktreeSetupStreamEvent | undefined;
-            for (
-              let count = 0;
-              count < 20 &&
-              (doneCard === undefined || (!disconnectedWorktree && responseSequence === undefined));
-              count++
-            ) {
+            for (let count = 0; count < 20; count++) {
+              if (
+                doneCard !== undefined &&
+                (disconnectedWorktree || responseSequence !== undefined)
+              )
+                break;
               const frame = yield* readSetupFrame();
               if (frame.requestId === "1") {
                 expect(frame.exit?._tag).toBe("Success");
@@ -2399,21 +2485,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             const readCardFrame = () =>
               WsQueue.take(outgoing).pipe(
                 Effect.flatMap((raw) =>
-                  Schema.decodeEffect(
-                    Schema.fromJsonString(
-                      Schema.Struct({
-                        _tag: Schema.String,
-                        requestId: Schema.String,
-                        values: Schema.optional(Schema.Array(WorktreeSetupStreamEvent)),
-                        exit: Schema.optional(
-                          Schema.Struct({
-                            _tag: Schema.String,
-                            value: Schema.optional(Schema.Unknown),
-                          }),
-                        ),
-                      }),
-                    ),
-                  )(typeof raw === "string" ? raw : new TextDecoder().decode(raw)),
+                  decodeEffectFromJsonStringStructTagStringRequestIdStringValuesOptional3(
+                    typeof raw === "string" ? raw : new TextDecoder().decode(raw),
+                  ),
                 ),
                 Effect.timeout("5 seconds"),
               );

@@ -26,4 +26,8 @@ export const screensRemoteOperation = (
   !readOnly &&
   !observations.has(operation) &&
   !cancellations.has(operation) &&
+  !(operation === "t3_queue" && ["list", "read", "cancel"].includes(String(params.action))) &&
+  !(operation === "t3_pending_request" && params.action !== "respond") &&
+  !(operation === "t3_thread_configure" && params.modelSelection === undefined) &&
+  !(operation === "t3_thread_transfer" && params.action === "status") &&
   !(operation === "t3_thread_goal" && ["stop", "pause", "cancel"].includes(String(params.action)));

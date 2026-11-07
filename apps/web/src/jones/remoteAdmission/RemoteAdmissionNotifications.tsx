@@ -38,7 +38,7 @@ function EnvironmentNotifications({
   const osSeen = useRef(new Map<string, string>());
   const native = useRef(new Map<string, Notification>());
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Close all owned browser notifications and toasts when the admission notification owner unmounts.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Close all owned browser notifications and toasts when the admission notification owner unmounts.
   useEffect(() => {
     const currentToasts = toasts.current;
     const currentNative = native.current;
@@ -50,7 +50,7 @@ function EnvironmentNotifications({
     };
   }, []);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile external toast and native-notification instances with committed actionable admission groups.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile external toast and native-notification instances with committed actionable admission groups.
   useEffect(() => {
     if (!snapshot) return;
     const groups = groupAdmissions(loadFailed ? [] : actionableAdmissions(state));

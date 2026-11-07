@@ -65,6 +65,14 @@ const LegacyHostWithoutUpdate = Schema.Struct({
   follower: Schema.optionalKey(LegacyFollowerStatus),
 });
 
+const compiledDecodeSync1 = Schema.decodeSync(FleetPlanDirective);
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(FleetPlanDirective);
+const compiledDecodeUnknownSync3 = Schema.decodeUnknownSync(FleetHostStatus);
+const compiledDecodeUnknownSync4 = Schema.decodeUnknownSync(LegacyHostWithoutUpdate);
+const compiledDecodeUnknownSync5 = Schema.decodeUnknownSync(LegacyFollowerStatus);
+const compiledDecodeUnknownSync6 = Schema.decodeUnknownSync(FleetFollowerStatus);
+const compiledIs7 = Schema.is(FleetHostError);
+
 describe("fleet manual-review plan directives", () => {
   it("requires exact target, environment, enrollment and prior-directive CAS binding", () => {
     const input = {
@@ -95,10 +103,8 @@ describe("fleet manual-review plan directives", () => {
       { expectedDirectiveId: "invalid" },
     ])
       expect(() => decode({ ...input, ...patch })).toThrow();
-    expect(Schema.decodeSync(FleetPlanDirective)(directive)).toEqual(directive);
-    expect(() =>
-      Schema.decodeUnknownSync(FleetPlanDirective)({ ...directive, mode: "automatic" }),
-    ).toThrow();
+    expect(compiledDecodeSync1(directive)).toEqual(directive);
+    expect(() => compiledDecodeUnknownSync2({ ...directive, mode: "automatic" })).toThrow();
   });
 
   it("decodes old and new follower/host payloads in both directions without new states", () => {
@@ -116,11 +122,11 @@ describe("fleet manual-review plan directives", () => {
       planDirectiveProtocol: 1,
       follower: { ...follower, planDirective: directive },
     };
-    expect(Schema.decodeUnknownSync(FleetHostStatus)(old)).toEqual(old);
-    expect(Schema.decodeUnknownSync(FleetHostStatus)(modern)).toEqual(modern);
-    expect(Schema.decodeUnknownSync(LegacyHostWithoutUpdate)(modern)).toEqual(old);
-    expect(Schema.decodeUnknownSync(LegacyFollowerStatus)(modern.follower)).toEqual(follower);
-    expect(Schema.decodeUnknownSync(FleetHostStatus)(old).planDirectiveProtocol).toBeUndefined();
+    expect(compiledDecodeUnknownSync3(old)).toEqual(old);
+    expect(compiledDecodeUnknownSync3(modern)).toEqual(modern);
+    expect(compiledDecodeUnknownSync4(modern)).toEqual(old);
+    expect(compiledDecodeUnknownSync5(modern.follower)).toEqual(follower);
+    expect(compiledDecodeUnknownSync3(old).planDirectiveProtocol).toBeUndefined();
     for (const state of [
       "unavailable",
       "waiting-for-leader",
@@ -132,15 +138,11 @@ describe("fleet manual-review plan directives", () => {
       "reconciling",
     ]) {
       const value = { ...modern.follower, state };
-      expect(Schema.decodeUnknownSync(FleetFollowerStatus)(value)).toEqual(value);
-      expect(Schema.decodeUnknownSync(LegacyFollowerStatus)(value)).toEqual({ ...follower, state });
+      expect(compiledDecodeUnknownSync6(value)).toEqual(value);
+      expect(compiledDecodeUnknownSync5(value)).toEqual({ ...follower, state });
     }
-    expect(() =>
-      Schema.decodeUnknownSync(FleetHostStatus)({ ...modern, planDirectiveProtocol: 2 }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(FleetFollowerStatus)({ ...follower, state: "manual-review" }),
-    ).toThrow();
+    expect(() => compiledDecodeUnknownSync3({ ...modern, planDirectiveProtocol: 2 })).toThrow();
+    expect(() => compiledDecodeUnknownSync6({ ...follower, state: "manual-review" })).toThrow();
   });
 
   it("decodes existing host error reasons into tagged instances and rejects new reasons", () => {
@@ -155,10 +157,10 @@ describe("fleet manual-review plan directives", () => {
     ] as const) {
       const wire = { _tag: "FleetHostError", reason, message: "Synthetic refusal" };
       const error = new FleetHostError({ reason, message: wire.message });
-      expect(Schema.is(FleetHostError)(error)).toBe(true);
+      expect(compiledIs7(error)).toBe(true);
       const decoded = decode(wire);
       expect(decoded).toBeInstanceOf(FleetHostError);
-      expect(Schema.is(FleetHostError)(decoded)).toBe(true);
+      expect(compiledIs7(decoded)).toBe(true);
       expect(encode(decoded)).toEqual(wire);
     }
     for (const reason of ["plan-managed", "", "unknown"])

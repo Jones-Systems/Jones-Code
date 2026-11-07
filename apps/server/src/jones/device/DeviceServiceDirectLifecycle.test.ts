@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import { afterEach, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -139,5 +140,5 @@ it.effect(
       expect((yield* instances[0]!.currentEndpoint)?.target).toBe("laptop-mini-b");
       expect((yield* instances[1]!.currentEndpoint)?.target).toBe("laptop-mini-b");
       expect(ensureCalls).toBe(0);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

@@ -1,6 +1,7 @@
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
+import { ownsProviderReorderKey } from "~/jones/settings/providerReorderKeyboard";
 
 import { useCloseAppModal } from "./sidebar/mainAppLocation";
 import { Button } from "./ui/button";
@@ -26,8 +27,22 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
       open={open}
       // Portaled layers outside this tree (toasts, Clerk, confirm dialogs) are not backdrop presses.
       disablePointerDismissal
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) setOpen(false);
+      onOpenChange={(nextOpen, details) => {
+        if (nextOpen) return;
+        if (
+          details.reason === "escape-key" &&
+          ownsProviderReorderKey("Escape", details.event.target)
+        ) {
+          // Let the document-owned drag sensor cancel before a later Esc dismisses Settings.
+          details.cancel();
+          details.allowPropagation();
+          return;
+        }
+        // Closing unmounts a focused field without a blur, so commit-on-blur rows would
+        // drop what was typed. Blur first so they commit.
+        const focused = document.activeElement;
+        if (focused instanceof HTMLElement && popupRef.current?.contains(focused)) focused.blur();
+        setOpen(false);
       }}
       onOpenChangeComplete={(nextOpen) => {
         if (!nextOpen) void closeAppModal();
@@ -46,6 +61,10 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
           }}
         >
           <DialogPrimitive.Popup
+            onKeyDown={(event) => {
+              // Base UI consumes composite keys here; the active drag sensor owns them.
+              if (ownsProviderReorderKey(event.key, event.target)) event.preventBaseUIHandler();
+            }}
             ref={popupRef}
             initialFocus={popupRef}
             finalFocus={false}

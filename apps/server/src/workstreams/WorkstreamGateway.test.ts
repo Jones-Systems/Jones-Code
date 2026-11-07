@@ -396,6 +396,9 @@ it.effect("rejects a receipt attributed to another principal", () =>
   }),
 );
 
+const compiledDecodeEffect1 = Schema.decodeEffect(WorkstreamDetail);
+const compiledDecodeEffect2 = Schema.decodeEffect(WorkstreamReferenceDetail);
+
 it.effect("returns schema-valid typed detail and reference fixtures", () =>
   Effect.gen(function* () {
     const transport = makeSyntheticWorkstreamTransport();
@@ -408,8 +411,8 @@ it.effect("returns schema-valid typed detail and reference fixtures", () =>
       ...contract,
       nativeReferenceId: "reference-fixture",
     });
-    yield* Schema.decodeEffect(WorkstreamDetail)(rawDetail);
-    yield* Schema.decodeEffect(WorkstreamReferenceDetail)(rawReference);
+    yield* compiledDecodeEffect1(rawDetail);
+    yield* compiledDecodeEffect2(rawReference);
 
     const gateway = yield* make(transport, { binding });
     const detail = yield* gateway.readDetail("ws-core-v1");

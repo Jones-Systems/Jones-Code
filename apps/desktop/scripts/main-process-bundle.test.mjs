@@ -122,6 +122,7 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
     const entries = [
       "src/boot.ts",
       "src/compileCache.ts",
+      "src/serverCompileCache.ts",
       "src/main.ts",
       "src/jones/updates/jonesColdBackendCustody.ts",
     ];
@@ -135,6 +136,11 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
       "src/jones/updates/jonesPairedStateSource.ts",
       "src/jones/updates/jonesColdDarwinLayout.ts",
     ];
+    await NodeFSP.mkdir(NodePath.join(directory, "scripts/lib"), { recursive: true });
+    await NodeFSP.copyFile(
+      new URL("../../../scripts/lib/server-compile-cache.ts", import.meta.url),
+      NodePath.join(directory, "scripts/lib/server-compile-cache.ts"),
+    );
     const sharedPackageDirectory = NodePath.join(directory, "node_modules/@t3tools/shared");
     const electronPackageDirectory = NodePath.join(directory, "node_modules/electron");
     await Promise.all([
@@ -216,6 +222,17 @@ export const startBackend = startJonesColdBackend;
       if (!packEntries.some((entry) => entries.includes(entry))) continue;
       await build({
         ...packConfig,
+        outDir: NodePath.join(directory, "dist-electron"),
+        plugins: [
+          ...(packConfig.plugins ?? []),
+          {
+            name: "owned-server-cache-fixture-layout",
+            resolveId(id) {
+              if (id === "../../../scripts/lib/server-compile-cache.ts")
+                return NodePath.join(directory, "scripts/lib/server-compile-cache.ts");
+            },
+          },
+        ],
         config: false,
         cwd: directory,
         tsconfig: false,
@@ -239,9 +256,20 @@ export const startBackend = startJonesColdBackend;
       /^rolldown-runtime-[A-Za-z0-9_-]+\.cjs$/.test(name),
     );
     assert.equal(runtimeChunks.length, 1);
+    const serverCacheChunks = [...emittedSources.keys()].filter((name) =>
+      /^server-compile-cache-[A-Za-z0-9_-]+\.cjs$/.test(name),
+    );
+    assert.equal(serverCacheChunks.length, 1);
     assert.deepEqual(
       [...emittedSources.keys()].filter((name) => !runtimeChunks.includes(name)).sort(),
-      ["boot.cjs", "compileCache.cjs", "jones-cold-backend-custody.cjs", "main.cjs"],
+      [
+        "boot.cjs",
+        "compileCache.cjs",
+        "jones-cold-backend-custody.cjs",
+        "main.cjs",
+        serverCacheChunks[0],
+        "serverCompileCache.cjs",
+      ],
     );
     const custodyArtifact = emittedSources.get("jones-cold-backend-custody.cjs");
     assert.match(custodyArtifact, /["']ffi-rs["']/);

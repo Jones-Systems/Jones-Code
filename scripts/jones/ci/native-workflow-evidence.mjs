@@ -5,10 +5,7 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as NodeChildProcess from "node:child_process";
 import { sha256 } from "../../../apps/desktop/scripts/ui-evidence/provenance.mjs";
-import {
-  readNativeEvidence,
-  validateNativeBoundaryFiles,
-} from "../../../apps/desktop/scripts/ui-evidence/native-workflow-boundary.mjs";
+import { readNativeEvidence, validateNativeBoundaryFiles } from "./native-workflow-boundary.mjs";
 
 export const nativeVariants = [
   { id: "positive", group: "sidebar", scenario: "sidebar-pin-restart.mjs", expectedCode: 0 },

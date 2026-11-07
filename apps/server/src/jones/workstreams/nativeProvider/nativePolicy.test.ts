@@ -151,6 +151,8 @@ const fixture = Effect.gen(function* () {
   };
 });
 
+const compiledDecodeEffect1 = Schema.decodeEffect(WorkstreamsNativeSettlementResponse);
+
 it.effect(
   "native policy denial retains pins, snooze and history and produces only a rejected receipt",
   () =>
@@ -196,7 +198,7 @@ it.effect(
       const before = yield* f.projections.getThreadProjection(f.threadId);
       const provider = makeWorkstreamsNativeProvider(f.ports);
       const result = yield* provider.settle(binding, request, requestBytesSha256);
-      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result);
+      yield* compiledDecodeEffect1(result);
       assert.strictEqual(result.state, "terminal");
       if (result.state === "terminal") assert.strictEqual(result.result.native_outcome, "denied");
       assert.deepEqual(yield* f.projections.getThreadProjection(f.threadId), before);
@@ -219,6 +221,10 @@ it.effect(
     }).pipe(Effect.provide(testLayer)),
 );
 
+const compiledEncodeEffect2 = Schema.encodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeSettlementRequest),
+);
+
 it.effect(
   "real Orchestrator settles and unsettles with exact V2 receipt and event associations",
   () =>
@@ -231,13 +237,9 @@ it.effect(
           command_id: `registry-synthetic-${action}`,
           native_action: action,
         };
-        const digest = sha256Bytes(
-          yield* Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
-            input,
-          ),
-        );
+        const digest = sha256Bytes(yield* compiledEncodeEffect2(input));
         const result = yield* provider.settle(binding, input, digest);
-        yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result);
+        yield* compiledDecodeEffect1(result);
         assert.strictEqual(result.state, "terminal");
         if (result.state !== "terminal") throw new Error("Expected durable terminal evidence.");
         assert.strictEqual(result.result.native_outcome, "committed");
@@ -329,7 +331,7 @@ it.effect(
       yield* Fiber.interrupt(pending);
       const before = yield* f.sql`SELECT sequence FROM orchestration_events ORDER BY sequence`;
       const recovered = yield* provider.lookup(binding, request, requestBytesSha256);
-      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(recovered);
+      yield* compiledDecodeEffect1(recovered);
       assert.strictEqual(recovered.state, "terminal");
       if (recovered.state === "terminal")
         assert.strictEqual(recovered.result.native_outcome, "committed");
@@ -369,14 +371,10 @@ it.effect(
         command_id: "registry-colon-thread-settle",
         identity: { ...request.identity, native_id: threadId },
       };
-      const digest = sha256Bytes(
-        yield* Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
-          input,
-        ),
-      );
+      const digest = sha256Bytes(yield* compiledEncodeEffect2(input));
       const provider = makeWorkstreamsNativeProvider(f.ports);
       const result = yield* provider.settle(binding, input, digest);
-      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result);
+      yield* compiledDecodeEffect1(result);
       assert.strictEqual(result.state, "terminal");
       if (result.state !== "terminal") throw new Error("Expected durable terminal evidence.");
       assert.strictEqual(result.result.native_outcome, "committed");
@@ -485,11 +483,7 @@ it.effect.each(
         });
       }
       const input: WorkstreamsNativeSettlementRequest = { ...request, native_action: action };
-      const digest = sha256Bytes(
-        yield* Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
-          input,
-        ),
-      );
+      const digest = sha256Bytes(yield* compiledEncodeEffect2(input));
       const committed = yield* Deferred.make<void>();
       let dispatches = 0;
       const ports: NativeProviderPorts = {

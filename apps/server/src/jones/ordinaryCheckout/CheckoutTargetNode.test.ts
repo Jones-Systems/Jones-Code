@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -36,7 +37,7 @@ it.effect.skipIf(!scratch)(
         yield* fs.symlink(repo, alias);
         const gitLayer = Git.layer.pipe(
           Layer.provide(ServerConfig.layerTest(root, path.join(root, "state"))),
-          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         );
         const testLayer = CheckoutSource.layer.pipe(
           Layer.provideMerge(Target.layer),
@@ -128,5 +129,5 @@ it.effect.skipIf(!scratch)(
           assert.isTrue(Exit.isFailure(yield* Effect.exit(targets.revalidate(throughAlias))));
         }).pipe(Effect.provide(testLayer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

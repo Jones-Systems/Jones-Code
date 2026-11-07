@@ -29,6 +29,7 @@ it.effect("signs the same encoded endpoint and pagination URL that the mobile cl
         }),
     });
     const authorization = RemoteEnvironmentAuthorization.of({
+      renewDpopBeforeExpiry: () => Effect.die("unexpected renewDpopBeforeExpiry"),
       authorizeBearer: () => Effect.die("unexpected"),
       authorizeDpop: () => Effect.die("unexpected"),
       authorizeDpopHttp: () =>

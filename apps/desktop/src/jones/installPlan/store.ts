@@ -42,8 +42,10 @@ const Dispositions = Schema.Struct({
   ).check(Schema.isMaxLength(64)),
 });
 export type PlanDocument = typeof Document.Type;
+const compiledIs1 = Schema.is(Document);
+
 const validDocument = (value: unknown): value is PlanDocument =>
-  Schema.is(Document)(value) &&
+  compiledIs1(value) &&
   new Set(value.commands?.map((entry) => entry.receipt.command.commandId)).size ===
     (value.commands?.length ?? 0) &&
   (value.commands ?? []).every(
@@ -81,6 +83,8 @@ const newer = (value: unknown) =>
   "schema" in value &&
   typeof value.schema === "number" &&
   value.schema > 1;
+
+const compiledIs2 = Schema.is(Dispositions);
 
 export function createInstallPlanStore(options: {
   readonly home: string;
@@ -124,7 +128,7 @@ export function createInstallPlanStore(options: {
             else if (
               (document !== null && dispositions === null) ||
               (document !== null && !validDocument(document)) ||
-              (dispositions !== null && !Schema.is(Dispositions)(dispositions))
+              (dispositions !== null && !compiledIs2(dispositions))
             )
               snapshot = {
                 ...snapshot,
@@ -157,7 +161,7 @@ export function createInstallPlanStore(options: {
             throw new PlanStorageError("storage", "Read-only plan evidence cannot be replaced.");
           if (
             !validDocument(next.document) ||
-            !Schema.is(Dispositions)(next.dispositions) ||
+            !compiledIs2(next.dispositions) ||
             Buffer.byteLength(JSON.stringify(next.document)) + 1 > PLAN_BYTES ||
             Buffer.byteLength(JSON.stringify(next.dispositions)) + 1 > PLAN_BYTES
           )

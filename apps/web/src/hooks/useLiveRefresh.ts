@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useId } from "react";
 
-const LIVE_REFRESH_MIN_INTERVAL_MS = 10_000;
+export const LIVE_REFRESH_MIN_INTERVAL_MS = 10_000;
 
 const LIVE_REFRESH_INTERVAL_MS = 5 * 60_000;
 
@@ -80,19 +80,25 @@ export function useLiveRefresh(
   refresh: (() => void) | null,
   options: {
     readonly enabled?: boolean;
-    readonly key?: string;
     readonly minimumIntervalMs?: number;
-    readonly intervalMs?: number;
+    readonly key?: string;
+    /** `null` turns off the periodic refresh, for a read too costly to repeat unasked. */
+    readonly intervalMs?: number | null;
+    /**
+     * Refresh every time the view is enabled unless it read within the floor, skipping the
+     * first-read rule: for a view that stays mounted while hidden, so its mount-time read can be
+     * long stale when shown.
+     */
+    readonly refreshOnShow?: boolean;
   } = {},
 ): void {
   const {
     enabled = true,
-    key,
     minimumIntervalMs = LIVE_REFRESH_MIN_INTERVAL_MS,
+    key,
     intervalMs = LIVE_REFRESH_INTERVAL_MS,
+    refreshOnShow = false,
   } = options;
-  // An effect event so a caller can pass a fresh closure every render without re-arming the
-  // listeners, which would otherwise refresh on every render that changed anything at all.
   const runRefresh = useEffectEvent((viewId: string, now: number) => {
     if (refresh === null) return;
     lastRefreshedAtByView.set(viewId, now);
@@ -101,6 +107,7 @@ export function useLiveRefresh(
   const fallbackViewId = useId();
   const viewId = key ?? fallbackViewId;
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refresh interval tied to page visibility and user interaction listeners
   useEffect(() => {
     if (!enabled) return;
     const read = (now: number) => runRefresh(viewId, now);
@@ -136,7 +143,7 @@ export function useLiveRefresh(
     let timer: ReturnType<typeof setInterval> | undefined;
     const syncTimer = () => {
       clearInterval(timer);
-      timer = visible() ? setInterval(onInterval, intervalMs) : undefined;
+      timer = visible() && intervalMs !== null ? setInterval(onInterval, intervalMs) : undefined;
     };
     const onVisibilityChange = () => {
       onArrival();
@@ -147,7 +154,13 @@ export function useLiveRefresh(
       onArrival();
       syncTimer();
     });
-    onArrival();
+    if (refreshOnShow) {
+      const now = Date.now();
+      const lastRefreshedAt = lastRefreshedAtByView.get(viewId);
+      if (lastRefreshedAt === undefined || now - lastRefreshedAt >= minimumIntervalMs) {
+        read(now);
+      }
+    } else onArrival();
     syncTimer();
     window.addEventListener("focus", onArrival);
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -157,5 +170,5 @@ export function useLiveRefresh(
       document.removeEventListener("visibilitychange", onVisibilityChange);
       stopWatchingInteraction();
     };
-  }, [enabled, viewId, minimumIntervalMs, intervalMs]);
+  }, [enabled, viewId, intervalMs, refreshOnShow, minimumIntervalMs]);
 }

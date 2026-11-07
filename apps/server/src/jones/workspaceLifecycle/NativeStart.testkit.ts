@@ -197,8 +197,8 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
         request: { type: "provider-turn.start", runId: command.runId },
         nativeCreationExecutionReference: reference,
       });
-      yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,lease_expires_at,created_at,updated_at)
-      VALUES(${reference.effectId},${command.commandId},${command.threadId},'provider-turn.start',${payload},'running',1,${now},'sql-worker',${deadline},${now},${now})`;
+      yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,created_at,updated_at)
+      VALUES(${reference.effectId},${command.commandId},${command.threadId},'provider-turn.start',${payload},'running',1,${now},'sql-worker',${now},${now})`;
     });
     const session = yield* decodeSession({
       sessionId: actor,
@@ -252,7 +252,6 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
             revoke: () => Effect.succeed(false),
             revokeAllExcept: () => Effect.succeed([]),
             setLastConnectedAt: () => Effect.void,
-            setClientConnection: () => Effect.void,
           }),
         ),
       ),
@@ -274,7 +273,21 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
     );
     const issue = Effect.gen(function* () {
       const authority = yield* Authority.NativeCreationAuthority;
-      return yield* authority.issueExecution!({ reference, timestamp: now });
+      return yield* authority.issueExecution!({
+        reference,
+        timestamp: now,
+        expectedClaim: {
+          workerId: "sql-worker",
+          expectedAttempt: 1,
+          claimedAt: now,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          runId: command.runId,
+          requestDigest: nativeCreationSha256(
+            nativeCreationCanonicalJson({ type: "provider-turn.start", runId: command.runId }),
+          ),
+        },
+      });
     }).pipe(Effect.provide(authorityLayer));
     yield* accept();
     yield* enqueue;

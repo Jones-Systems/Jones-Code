@@ -213,9 +213,36 @@ it.effect("Jones migrations leave upstream schema and ledger unchanged", () =>
         !upstreamObjects.some(({ type, name }) => type === object.type && name === object.name),
     );
     assert.isNotEmpty(added);
-    for (const { type, name, tbl_name } of added) {
-      assert.include(["table", "index", "trigger"], type, name);
-      assert.isTrue(isJonesTable(tbl_name), `${type} ${name} on ${tbl_name}`);
+    const expectedViews = {
+      jones_ordinary_checkout_all_events:
+        "CREATE VIEW jones_ordinary_checkout_all_events AS SELECT 'legacy' AS store,* FROM jones_ordinary_checkout_lifecycle_events UNION ALL SELECT 'process_v2' AS store,* FROM jones_ordinary_checkout_process_events",
+      jones_ordinary_checkout_all_uses:
+        "CREATE VIEW jones_ordinary_checkout_all_uses AS SELECT 'legacy' AS store,operation_id,admission_id,checkout_key,lease_id,owner_epoch,source_kind,effect_id,worker_id,attempt_count,claim_expires_at,producer_id,state,revision,last_event_ordinal,started_at,settled_at,NULL AS command_id,NULL AS thread_id,NULL AS run_id,NULL AS claimed_at,NULL AS request_digest FROM jones_ordinary_checkout_uses UNION ALL SELECT 'process_v2' AS store,operation_id,admission_id,checkout_key,lease_id,owner_epoch,source_kind,effect_id,worker_id,attempt_count,NULL AS claim_expires_at,NULL AS producer_id,state,revision,last_event_ordinal,started_at,settled_at,command_id,thread_id,run_id,claimed_at,request_digest FROM jones_ordinary_checkout_process_uses",
+    };
+    assert.deepStrictEqual(
+      added
+        .filter(({ type }) => type === "view")
+        .map(({ name }) => name)
+        .sort(),
+      Object.keys(expectedViews).sort(),
+    );
+    for (const { type, name, tbl_name, sql: definition } of added) {
+      if (type === "view") {
+        assert.isTrue(
+          name === "jones_ordinary_checkout_all_events" ||
+            name === "jones_ordinary_checkout_all_uses",
+        );
+        if (
+          name === "jones_ordinary_checkout_all_events" ||
+          name === "jones_ordinary_checkout_all_uses"
+        ) {
+          assert.equal(definition?.replace(/\s+/g, " ").trim(), expectedViews[name]);
+        }
+        assert.equal(tbl_name, name);
+      } else {
+        assert.include(["table", "index", "trigger"], type, name);
+        assert.isTrue(isJonesTable(tbl_name), `${type} ${name} on ${tbl_name}`);
+      }
     }
     for (const { name } of added.filter(({ type }) => type === "table")) {
       for (const reference of (yield* readShape(name)).foreignKeys)
@@ -338,6 +365,10 @@ it.effect(
         [137, "NativeCreationLeaseRenewal"],
         [138, "WorkspaceRetirement"],
         [139, "ConversationWorkspace"],
+        [140, "NativeExecutionProcessCustody"],
+        [141, "OrdinaryCheckoutProcessCustody"],
+        [142, "AuthSessionClientMetadata"],
+        [143, "WorkspaceRuntimeUses"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

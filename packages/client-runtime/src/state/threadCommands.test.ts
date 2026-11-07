@@ -4,16 +4,16 @@ import {
   RuntimeRequestId,
   EnvironmentId,
   MessageId,
+  RunId,
   ORCHESTRATION_V2_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
-  RunId,
   ThreadId,
   type OrchestrationV2Command,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -88,6 +88,7 @@ const SNAPSHOT: OrchestrationV2ShellSnapshot = {
 };
 
 const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (options?: {
+  readonly loadEarlier?: () => Effect.Effect<ThreadHistoryController.ThreadHistoryLoadEarlierResult>;
   readonly reconcilePendingWork?: (threadId: ThreadId) => Effect.Effect<void>;
 }) {
   const requests = yield* Queue.unbounded<{
@@ -117,6 +118,11 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
   const historyController = yield* Effect.service(
     ThreadHistoryController.ThreadHistoryController,
   ).pipe(Effect.provide(ThreadHistoryController.layer));
+  yield* historyController.register(ENVIRONMENT_ID, THREAD_ID, {
+    loadEarlier: () => options?.loadEarlier?.() ?? Effect.die("unused"),
+    reconcilePendingWork: () =>
+      options?.reconcilePendingWork?.(THREAD_ID) ?? Queue.offer(reconciled, THREAD_ID),
+  });
   const runtime = Atom.runtime(
     Layer.mergeAll(
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, {
@@ -124,20 +130,10 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
           Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
       } as EnvironmentRegistry.EnvironmentRegistry["Service"]),
       Layer.succeed(
-        Crypto.Crypto,
-        Crypto.make({
-          randomBytes: (size) => new Uint8Array(size),
-          digest: (_algorithm, data) => Effect.succeed(data),
-        }),
+        SecureRandom.SecureRandom,
+        SecureRandom.make((size) => new Uint8Array(size)),
       ),
-      Layer.succeed(
-        ThreadHistoryController.ThreadHistoryController,
-        ThreadHistoryController.ThreadHistoryController.of({
-          ...historyController,
-          reconcilePendingWork: (_environmentId, threadId) =>
-            options?.reconcilePendingWork?.(threadId) ?? Queue.offer(reconciled, threadId),
-        }),
-      ),
+      Layer.succeed(ThreadHistoryController.ThreadHistoryController, historyController),
     ),
   );
   const snapshotAtom = Atom.family((_environmentId: EnvironmentId) => Atom.make(SNAPSHOT));
@@ -205,6 +201,59 @@ describe("prepared turn commands", () => {
         yield* Deferred.succeed(second.reply, { sequence: 3 });
         expect((yield* Effect.promise(() => retry))._tag).toBe("Success");
       }),
+  );
+});
+
+describe("history loading", () => {
+  it.effect("sends a message on the thread while earlier history is loading", () =>
+    Effect.gen(function* () {
+      const historyStarted = yield* Deferred.make<void>();
+      const historyReply =
+        yield* Deferred.make<ThreadHistoryController.ThreadHistoryLoadEarlierResult>();
+      const h = yield* makeHarness({
+        loadEarlier: () =>
+          Deferred.succeed(historyStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(historyReply)),
+          ),
+      });
+      yield* Effect.addFinalizer(() => Deferred.succeed(historyReply, { _tag: "loaded" }));
+      const history = h.commands.loadEarlierHistory.run(h.registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: { threadId: THREAD_ID },
+      });
+      yield* Deferred.await(historyStarted);
+      const send = h.commands.startTurn.run(h.registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: {
+          threadId: THREAD_ID,
+          message: {
+            messageId: MessageId.make("message"),
+            role: "user",
+            text: "Send while history loads",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          dispatchMode: "start",
+        },
+      });
+      // Dispatched after Send on another thread, so it arrives first only if Send is queued.
+      const controlThreadId = ThreadId.make("control-thread");
+      const control = h.commands.interruptTurn.run(h.registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: { threadId: controlThreadId, runId: RunId.make("control-run") },
+      });
+      const first = yield* Queue.take(h.requests);
+      yield* Deferred.succeed(first.reply, { sequence: 1 });
+      yield* Deferred.succeed(historyReply, { _tag: "loaded" });
+      const second = yield* Queue.take(h.requests);
+      yield* Deferred.succeed(second.reply, { sequence: 2 });
+      const results = yield* Effect.promise(() => Promise.all([history, send, control]));
+
+      expect(first.command).toMatchObject({ type: "message.dispatch", threadId: THREAD_ID });
+      expect(second.command).toMatchObject({ type: "run.interrupt", threadId: controlThreadId });
+      expect(results.map((value) => value._tag)).toEqual(["Success", "Success", "Success"]);
+    }),
   );
 });
 

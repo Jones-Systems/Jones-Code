@@ -235,8 +235,6 @@ export const layer: Layer.Layer<
                             projection.thread.worktreePath,
                             currentSession,
                           ),
-                          capabilities:
-                            negotiatedCapabilities ?? currentInstance.value.capabilities,
                         },
                   target: {
                     driver: targetInstance.value.driver,
@@ -251,7 +249,6 @@ export const layer: Layer.Layer<
                       projection.thread.worktreePath ??
                       currentSession?.cwd ??
                       "<unresolved-workspace>",
-                    capabilities: targetInstance.value.capabilities,
                     available: targetInstance.value.enabled,
                   },
                   ...(selectionTransition === undefined ? {} : { selectionTransition }),

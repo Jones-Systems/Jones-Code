@@ -314,6 +314,13 @@ function pageInput(input: { readonly limit?: number; readonly cursor?: string } 
   }
   return { limit, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) };
 }
+const decodeT3PlacementLoadRequest = Schema.decodeEffect(T3PlacementLoadRequest);
+const decodeT3PlacementPage = Schema.decodeEffect(T3PlacementPage);
+const decodeT3PlacementResult = Schema.decodeEffect(T3PlacementResult);
+const decodeWorkstreamReceipt = Schema.decodeEffect(WorkstreamReceipt);
+const decodeWorkstreamCommandJson = Schema.decodeEffect(Schema.fromJsonString(WorkstreamCommand));
+const decodeWorkstreamCountsCapabilities = Schema.decodeEffect(WorkstreamCountsCapabilities);
+const decodeWorkstreamRegistryCounts = Schema.decodeEffect(WorkstreamRegistryCounts);
 
 export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayOptions) =>
   Effect.sync(() => {
@@ -471,7 +478,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
     ) {
       const invalid = (detail: string) =>
         new WorkstreamGatewayError({ reason: "invalid-response", detail });
-      const request = yield* Schema.decodeEffect(T3PlacementLoadRequest)(input, {
+      const request = yield* decodeT3PlacementLoadRequest(input, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => invalid("Invalid placement inventory.")));
       const authorized = yield* authorize("workstreams:read");
@@ -500,7 +507,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
             ...(cursor === undefined ? {} : { cursor }),
           })
           .pipe(Effect.mapError(transportFailure));
-        const page = yield* Schema.decodeEffect(T3PlacementPage)(raw, {
+        const page = yield* decodeT3PlacementPage(raw, {
           onExcessProperty: "error",
         }).pipe(
           Effect.mapError(
@@ -604,7 +611,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       };
       if (Buffer.byteLength(canonicalJson(result)) > WORKSTREAM_MAX_RESPONSE_BYTES)
         return yield* invalid("Placement response workload exceeded.");
-      return yield* Schema.decodeEffect(T3PlacementResult)(result, {
+      return yield* decodeT3PlacementResult(result, {
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(
@@ -750,7 +757,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         if (!transport.readCommandReceipt) return yield* recoveryFailure(undefined);
         const result = yield* transport.readCommandReceipt({ commandId, ...contractInput });
         if (result.kind === "receipt") {
-          const receipt = yield* Schema.decodeEffect(WorkstreamReceipt)(result.receipt, {
+          const receipt = yield* decodeWorkstreamReceipt(result.receipt, {
             onExcessProperty: "error",
           });
           yield* validateReceipt(receipt, commandId, undefined, undefined, authorized.binding);
@@ -764,10 +771,9 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
     ): Effect.fn.Return<WorkstreamRecoverySubmitResult, WorkstreamGatewayError> {
       return yield* Effect.gen(function* () {
         const authorized = yield* authorize("workstreams:write");
-        const command = yield* Schema.decodeEffect(Schema.fromJsonString(WorkstreamCommand))(
-          retainedBody,
-          { onExcessProperty: "error" },
-        );
+        const command = yield* decodeWorkstreamCommandJson(retainedBody, {
+          onExcessProperty: "error",
+        });
         if (command.command_id !== commandId || !transport.resubmitCommand)
           return yield* recoveryFailure(undefined);
         // CP atomically checks retained bytes before deciding a fresh command. Local revision,
@@ -779,7 +785,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
           ...contractInput,
         });
         if (result.kind === "receipt") {
-          const receipt = yield* Schema.decodeEffect(WorkstreamReceipt)(result.receipt, {
+          const receipt = yield* decodeWorkstreamReceipt(result.receipt, {
             onExcessProperty: "error",
           });
           yield* validateReceipt(
@@ -866,7 +872,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       const capabilities = yield* transport.getCountsCapabilities().pipe(
         Effect.mapError(transportFailure),
         Effect.flatMap((value) =>
-          Schema.decodeEffect(WorkstreamCountsCapabilities)(value, {
+          decodeWorkstreamCountsCapabilities(value, {
             onExcessProperty: "error",
           }).pipe(
             Effect.mapError(
@@ -896,7 +902,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       const counts = yield* transport.getRegistryCounts().pipe(
         Effect.mapError(transportFailure),
         Effect.flatMap((value) =>
-          Schema.decodeEffect(WorkstreamRegistryCounts)(value, {
+          decodeWorkstreamRegistryCounts(value, {
             onExcessProperty: "error",
           }).pipe(
             Effect.mapError(
@@ -978,18 +984,25 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       readThreadPlacements,
       readSession,
       readMetadata,
-      readDetail: (id) =>
+      readDetail: Effect.fn("WorkstreamGateway.readDetail")((id) =>
         boundDetail(() => transport.getWorkstream({ workstreamId: id, ...contractInput })),
-      readReferences: (input) => boundRead((request) => transport.listReferences(request), input),
-      readReference: (id) =>
+      ),
+      readReferences: Effect.fn("WorkstreamGateway.readReferences")((input) =>
+        boundRead((request) => transport.listReferences(request), input),
+      ),
+      readReference: Effect.fn("WorkstreamGateway.readReference")((id) =>
         boundDetail(() => transport.getReference({ nativeReferenceId: id, ...contractInput })),
-      readMemberships: (id, input) =>
+      ),
+      readMemberships: Effect.fn("WorkstreamGateway.readMemberships")((id, input) =>
         boundRead((request) => transport.listMemberships({ workstreamId: id, ...request }), input),
-      readDeclarations: (id, input) =>
+      ),
+      readDeclarations: Effect.fn("WorkstreamGateway.readDeclarations")((id, input) =>
         boundRead((request) => transport.listDeclarations({ workstreamId: id, ...request }), input),
-      readEdges: (id, input) =>
+      ),
+      readEdges: Effect.fn("WorkstreamGateway.readEdges")((id, input) =>
         boundRead((request) => transport.listEdges({ workstreamId: id, ...request }), input),
-      readHistory: (id, input) =>
+      ),
+      readHistory: Effect.fn("WorkstreamGateway.readHistory")((id, input) =>
         boundRead(
           (request) =>
             transport.listHistory({
@@ -998,6 +1011,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
             }),
           input,
         ),
+      ),
       pollCommand,
       readReceipt,
       resubmit,

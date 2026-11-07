@@ -70,6 +70,8 @@ const validateLocation = async (location: CredentialLocation) => {
       return fail("invalid_location");
   }
 };
+const compiledDecodeSync1 = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
+
 const readCredential = async (location: CredentialLocation): Promise<CredentialFileObservation> => {
   await validateLocation(location);
   let handle;
@@ -94,9 +96,7 @@ const readCredential = async (location: CredentialLocation): Promise<CredentialF
       return fail("unsafe_credential");
     const bytes = await handle.readFile();
     if (bytes.byteLength > 4096) return fail("unsafe_credential");
-    const parsed = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown))(
-      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-    );
+    const parsed = compiledDecodeSync1(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     if (
       typeof parsed !== "object" ||
       parsed === null ||
@@ -112,10 +112,10 @@ const readCredential = async (location: CredentialLocation): Promise<CredentialF
     await handle.close();
   }
 };
+const compiledIs2 = Schema.is(NativeCredentialFileError);
+
 const mapFileError = (error: unknown) =>
-  Schema.is(NativeCredentialFileError)(error)
-    ? error
-    : new NativeCredentialFileError({ code: "file_unavailable" });
+  compiledIs2(error) ? error : new NativeCredentialFileError({ code: "file_unavailable" });
 
 // Existing different bytes are preserved; replacing or restoring them requires a separate exact recovery operation.
 export const makeNativeCredentialWriter = (

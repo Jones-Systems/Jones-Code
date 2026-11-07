@@ -9,6 +9,8 @@ const threadIdentity = Schema.fromJsonString(
   Schema.Struct({ id: ThreadId, projectId: ProjectId, createdAt: Schema.String }),
 );
 
+const compiledIs1 = Schema.is(ImportedApplicationAttachmentBirthV1);
+
 export const readApplicationBirthRecord = Effect.fnUntraced(function* (threadId: ThreadId) {
   const sql = yield* SqlClient.SqlClient;
   const births = yield* sql<{
@@ -41,5 +43,5 @@ export const readApplicationBirthRecord = Effect.fnUntraced(function* (threadId:
     eventId: EventId.make(births[0]!.event_id),
     sequence: births[0]!.sequence,
   };
-  return Schema.is(ImportedApplicationAttachmentBirthV1)(result) ? result : null;
+  return compiledIs1(result) ? result : null;
 });

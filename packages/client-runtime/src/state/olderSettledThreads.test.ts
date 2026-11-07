@@ -302,6 +302,7 @@ const makeAtoms = Effect.fn(function* () {
     initialConfig: Effect.succeed({} as never),
     ready: Effect.void,
     probe: Effect.void,
+    inboundFrames: Effect.succeed(0),
     closed: Effect.never,
   } as unknown as RpcSession.RpcSession;
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
@@ -520,7 +521,7 @@ describe("createOlderSettledThreadAtoms", () => {
       yield* Queue.offer(replies, Effect.succeed({ ...found, snapshotSequence: 8 }));
       yield* until(
         search,
-        (result) => Option.getOrNull(AsyncResult.value(result))?.snapshotSequence === 8,
+        (result) => AsyncResult.getOrElse(result, () => null)?.snapshotSequence === 8,
       );
       expect(requests).toEqual([input, input]);
     }),

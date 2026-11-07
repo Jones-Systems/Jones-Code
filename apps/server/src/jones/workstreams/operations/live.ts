@@ -20,17 +20,22 @@ const portsLayer = Layer.effect(
     const activation = yield* Activation;
     return Ports.of({
       environmentId: yield* environment.getEnvironmentId,
-      activation: activation.status,
-      registryId: activation.registryId,
+      get activation() {
+        return activation.status;
+      },
+      get registryId() {
+        return activation.registryId;
+      },
       gateway,
       registration,
-      threadExists: (id) =>
+      threadExists: Effect.fn("Ports.threadExists")((id) =>
         store.getThreadShell(ThreadId.make(id)).pipe(
           Effect.map((thread) => thread !== null),
           Effect.mapError(() => "unavailable" as const),
         ),
+      ),
       now: Clock.currentTimeMillis,
-      sleep: (milliseconds) => Effect.sleep(milliseconds),
+      sleep: Effect.fn("Ports.sleep")((milliseconds) => Effect.sleep(milliseconds)),
       jitter: Random.next,
     });
   }),

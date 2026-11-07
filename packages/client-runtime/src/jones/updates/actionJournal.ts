@@ -270,6 +270,9 @@ function validDuty(duty: JonesActionDuty) {
 }
 
 /** A failed persistence operation holds admission; unresolved entries are never evicted. */
+const compiledIs1 = Schema.is(Document);
+const compiledIs2 = Schema.is(JonesOperationReceipt);
+
 export function createJonesActionJournal(storage: JonesActionStorage) {
   let snapshot: {
     readonly ready: boolean;
@@ -301,7 +304,7 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
       const raw = await storage.getItem(JONES_ACTION_JOURNAL_KEY);
       if (raw !== null && byteLength(raw) > JONES_ACTION_JOURNAL_BYTES) return fail();
       const document = raw === null ? { schema: 1 as const, duties: [] } : JSON.parse(raw);
-      if (!Schema.is(Document)(document)) return fail();
+      if (!compiledIs1(document)) return fail();
       const duties: readonly JonesActionDuty[] = document.duties;
       const history: readonly JonesActionDuty[] = document.history ?? [];
       const all = [...duties, ...history];
@@ -384,7 +387,7 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
       const document = { schema: 1 as const, duties, history };
       const json = JSON.stringify(document);
       if (
-        !Schema.is(Document)(document) ||
+        !compiledIs1(document) ||
         !duties.every(validDuty) ||
         byteLength(json) > JONES_ACTION_JOURNAL_BYTES
       )
@@ -458,7 +461,7 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
         false,
       ),
     async reconcileReceipt(receipt: JonesOperationReceipt) {
-      if (!Schema.is(JonesOperationReceipt)(receipt)) return false;
+      if (!compiledIs2(receipt)) return false;
       receipt = correlationReceipt(receipt);
       let settled = false;
       await mutate((duties) => {
@@ -469,7 +472,7 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
           const original = d.request ?? d.receipt;
           if (
             original === undefined ||
-            !(d.kind === "stop" && Schema.is(JonesOperationReceipt)(original)
+            !(d.kind === "stop" && compiledIs2(original)
               ? validateJonesStopReceipt(original, receipt)
               : validateReceipt(original, receipt)) ||
             (d.receipt !== undefined &&

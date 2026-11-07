@@ -18,6 +18,10 @@ const Association = Schema.fromJsonString(
   }),
 );
 
+const compiledDecodeOption1 = Schema.decodeOption(Association);
+const compiledDecodeUnknownOption2 = Schema.decodeUnknownOption(NativeProviderMetadataSnapshot);
+const compiledEncodeEffect3 = Schema.encodeEffect(SettlementProofJson);
+
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE jones_workstreams_settlement_proofs (
@@ -47,12 +51,12 @@ export default Effect.gen(function* () {
   }>`
     SELECT native_command_id, request_json, dispatch_started_at FROM workstreams_native_attempts`;
   for (const attempt of attempts) {
-    const association = Schema.decodeOption(Association)(attempt.request_json);
+    const association = compiledDecodeOption1(attempt.request_json);
     if (Option.isNone(association)) continue;
     const { identity, native_action } = association.value;
     let proofJson: string | null = null;
     if (attempt.dispatch_started_at !== null) {
-      const snapshot = Schema.decodeUnknownOption(NativeProviderMetadataSnapshot)(
+      const snapshot = compiledDecodeUnknownOption2(
         yield* readNativeProviderCommandMetadata(attempt.native_command_id),
       );
       if (Option.isSome(snapshot) && snapshot.value.receipts.length === 1) {
@@ -65,7 +69,7 @@ export default Effect.gen(function* () {
             native_action,
           )
         )
-          proofJson = yield* Schema.encodeEffect(SettlementProofJson)(proof).pipe(
+          proofJson = yield* compiledEncodeEffect3(proof).pipe(
             Effect.mapError(
               (cause) =>
                 new SqlError({

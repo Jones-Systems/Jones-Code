@@ -1,3 +1,4 @@
+import * as ServerSettings from "../../serverSettings.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -36,13 +37,14 @@ export const serveLinkedMcpProbe = <E, R>(
   Effect.gen(function* () {
     const node = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
     const nodeLayer = Layer.succeedContext(node);
-    const routes = McpHttpServer.toolkitRegistration(
+    const registration = McpHttpServer.toolkitRegistration(
       ProbeToolkit,
       McpToolAccess.toLayer(ProbeToolkit, {
         [LINKED_MCP_PROBE_TOOL]: McpToolAccess.reads(() => Effect.succeed({ ok: true })),
       }),
-    ).pipe(
-      Layer.provideMerge(McpHttpServer.layerMcpTransport),
+    );
+    const routes = McpHttpServer.layerMcpTransport(registration).pipe(
+      Layer.provide(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
       Layer.provide(intakeLayer),
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({

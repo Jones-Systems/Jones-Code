@@ -17,6 +17,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(MetadataSchema);
+const compiledDecodeSync2 = Schema.decodeSync(MetadataSchema);
+
 describe("submitted work metadata", () => {
   let root: Screen;
   let renderDisposables: AsyncDisposableStack;
@@ -107,7 +110,7 @@ describe("submitted work metadata", () => {
   });
   it("shows all ten assignment states, reasons and distinct destinations without write controls", async () => {
     await using _fixture = await setupFixture1();
-    const snapshot = Schema.decodeUnknownSync(MetadataSchema)(JSON.parse(producerV4Raw));
+    const snapshot = compiledDecodeUnknownSync1(JSON.parse(producerV4Raw));
     const release = publishWorkQueueLocalNames("env", [
       { workstreamId: "assigned-work", name: "Desired project" },
       { workstreamId: "other-work", name: "<img src=x onerror=alert(1)>" },
@@ -154,7 +157,7 @@ describe("submitted work metadata", () => {
     "keeps %s display free of invented assignment claims",
     async (version) => {
       await using _fixture = await setupFixture1();
-      const snapshot = Schema.decodeSync(MetadataSchema)({
+      const snapshot = compiledDecodeSync2({
         ...sample(),
         schema: `codex.t3-work-queue-metadata/${version}`,
         items: sample().items.map((item) => ({

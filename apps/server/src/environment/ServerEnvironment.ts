@@ -18,7 +18,7 @@ import {
   readJonesBuildStartedAt,
 } from "@t3tools/contracts/jones/fleet-updates";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -32,6 +32,7 @@ import { readAgentActivityPublishingActive } from "../cloud/config.ts";
 import { resolveServerSelfUpdateCapability } from "../cloud/selfUpdate.ts";
 import { resolveServiceLauncherMode } from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
+import { databaseMigrationHead } from "../persistence/databaseMigrationHead.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
 import { detectServerEnvironmentMachineKind } from "./ServerEnvironmentMachine.ts";
@@ -96,7 +97,7 @@ function platformArch(
 const makeIdentity = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const serverConfig = yield* ServerConfig.ServerConfig;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
 
   const readPersistedEnvironmentId = Effect.gen(function* () {
     const exists = yield* fileSystem.exists(serverConfig.environmentIdPath).pipe(
@@ -170,7 +171,7 @@ const makeIdentity = Effect.gen(function* () {
       return persisted;
     }
 
-    const generated = yield* crypto.randomUUIDv4();
+    const generated = yield* random.uuidV4();
     yield* persistEnvironmentId(generated, "create");
     let winner = yield* readPersistedEnvironmentId;
     if (winner === null) {
@@ -217,6 +218,7 @@ export const make = Effect.gen(function* () {
 
   const jonesSource = readJonesBuildSource(packageJson);
   const jonesBuildStartedAt = readJonesBuildStartedAt(packageJson);
+  const databaseMigration = databaseMigrationHead(serverConfig.dbPath);
   const descriptor: ExecutionEnvironmentDescriptor = {
     environmentId,
     label,
@@ -229,6 +231,7 @@ export const make = Effect.gen(function* () {
     ...(jonesSource === undefined ? {} : { jonesSource }),
     ...(jonesBuildStartedAt === undefined ? {} : { jonesBuildStartedAt }),
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
+    ...(databaseMigration === undefined ? {} : { databaseMigration }),
     capabilities: {
       queuedSteerBatch: QUEUED_STEER_BATCH_LIMITS,
       queueDispatch: QUEUE_DISPATCH_CAPABILITY,
@@ -253,6 +256,7 @@ export const make = Effect.gen(function* () {
       fileAttachments: { maxUploadBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES },
       pullRequests: true,
       pullRequestChecks: true,
+      sideChats: true,
       inlineMessageContext: true,
       requiredWorktreeBootstrap: true,
       conversationWorkspace: true,
@@ -273,6 +277,7 @@ export const make = Effect.gen(function* () {
       projectSettingsOverrides: true,
       projectProviderInstanceOverrides: true,
       threadSnooze: true,
+      threadForceStop: true,
       environmentThemes: true,
       usageLimitSources: true,
       providerWorkspaceSnapshotsOnDemand: true,
@@ -283,6 +288,7 @@ export const make = Effect.gen(function* () {
       threadActiveReorder: true,
       workMode: true,
       threadAutoSettleOptOut: true,
+      threadProjectFromScratch: true,
       threadTitleRegeneration: true,
       commandOutputStreaming: true,
       threadVisitedTracking: true,
@@ -293,15 +299,21 @@ export const make = Effect.gen(function* () {
       serverResolvedCommandContext: true,
       queuedToolBoundaryDelivery: true,
       queuedRunStart: true,
+      threadStop: true,
+      ...(hostPlatform === "win32" ? {} : { localServerStop: true }),
       environmentIcon: true,
       projectCloneTracking: true,
+      projectOrganization: true,
       ignoredFileListing: true,
+      triage: true,
+      oneTimeSchedules: true,
+      npmReleaseLookup: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
       ...(serverInstallation === null ? {} : { serverInstallation }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
         ? { serverSelfUpdateProgress: true }
         : {}),
-      ...(desktopAppUpdate ? { desktopAppUpdate: true } : {}),
+      ...(desktopAppUpdate ? { desktopAppUpdate: true, desktopAppChannelSwitch: true } : {}),
       serverBrowser: true,
       peerLinks: true,
       mcpModeLimitHeader: true,

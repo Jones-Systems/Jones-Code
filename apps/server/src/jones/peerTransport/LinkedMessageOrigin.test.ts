@@ -1,3 +1,4 @@
+import * as ServerSettings from "../../serverSettings.ts";
 import {
   EnvironmentId,
   OrchestratorMcpFailure,
@@ -196,7 +197,7 @@ it.effect(
             providerInstanceId: ProviderInstanceId.make("codex"),
           },
         };
-        const server = McpHttpServer.toolkitRegistration(
+        const registration = McpHttpServer.toolkitRegistration(
           probe,
           McpToolAccess.toLayer(probe, {
             origin_probe: McpToolAccess.reads(() =>
@@ -206,8 +207,9 @@ it.effect(
               ),
             ),
           }),
-        ).pipe(
-          Layer.provideMerge(McpHttpServer.layerMcpTransport),
+        );
+        const server = McpHttpServer.layerMcpTransport(registration).pipe(
+          Layer.provide(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
           Layer.provide(
             Layer.mock(McpSessionRegistry.McpSessionRegistry)({
               resolve: (token) => Effect.succeed(token === "provider" ? providerScope : undefined),

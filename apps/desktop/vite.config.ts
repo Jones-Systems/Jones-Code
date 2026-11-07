@@ -117,6 +117,7 @@ export default defineConfig({
       entry: {
         boot: "src/boot.ts",
         compileCache: "src/compileCache.ts",
+        serverCompileCache: "src/serverCompileCache.ts",
         "jones-cold-backend-custody": "src/jones/updates/jonesColdBackendCustody.ts",
       },
       plugins: [coldCustodyExternal],

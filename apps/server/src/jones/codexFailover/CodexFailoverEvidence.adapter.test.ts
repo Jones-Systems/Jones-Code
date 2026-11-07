@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -19,7 +20,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as CodexReplay from "effect-codex-app-server/replay";
 import type { ServerNotification__CodexErrorInfo } from "effect-codex-app-server/schema";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -359,7 +360,7 @@ const openHarness = Effect.fn("CodexFailoverEvidence.adapter.openHarness")(funct
     settings: DEFAULT_CODEX_SETTINGS,
     environment: {},
     clientFactory: makeCodexReplayClientFactory({ transcript }),
-    crypto: yield* Crypto.Crypto,
+    digest: yield* Digest.Digest,
     fileSystem,
     idAllocator: yield* IdAllocator.IdAllocatorV2,
     serverConfig,
@@ -581,7 +582,7 @@ it.effect.each(scenarios)("records $name before the terminal is observable", (sc
     if (scenario.localFailure) assert.equal(event.evidenceKind, "local_failure");
     if (scenario.absentService || scenario.localFailure || scenario.status !== undefined)
       assert.lengthOf(harness.recorded, 0);
-  }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  }).pipe(Effect.scoped, Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
 it.effect(
@@ -656,7 +657,7 @@ it.effect(
       assert.isTrue(harness.recorded[0]!.capacityExhausted);
       assert.equal(harness.recorded[0]!.rawErrorInfo, "other");
       assert.equal(harness.recorded[0]!.attemptId, harness.turnInput.attemptId);
-    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+    }).pipe(Effect.scoped, Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
 it.effect("the recorder blocks contrary HTTP info even when passed capacityExhausted", () =>
@@ -685,5 +686,5 @@ it.effect("the recorder blocks contrary HTTP info even when passed capacityExhau
       }
     }
     assert.deepEqual(yield* sql`SELECT * FROM jones_codex_failover_evidence`, []);
-  }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  }).pipe(Effect.scoped, Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );

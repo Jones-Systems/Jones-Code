@@ -58,6 +58,9 @@ export class CurrentRuntimeStop extends Context.Service<
     readonly execute: (commandId: CommandId) => Effect.Effect<void, StopStore.RuntimeStopError>;
   }
 >()("t3/jones/runtime/RuntimeStop/CurrentRuntimeStop") {}
+const compiledIs1 = Schema.is(StopStore.RuntimeStopError);
+const compiledDecodeEffect2 = Schema.decodeEffect(StopCurrentThreadRuntimeInput);
+
 const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const restartPreparation = yield* RestartPreparation.RestartPreparation;
@@ -121,15 +124,13 @@ const make = Effect.gen(function* () {
       };
     },
     Effect.mapError((cause) =>
-      Schema.is(StopStore.RuntimeStopError)(cause)
-        ? cause
-        : error("runtime_stop_target_unavailable"),
+      compiledIs1(cause) ? cause : error("runtime_stop_target_unavailable"),
     ),
   );
   const observe = Effect.fn("CurrentRuntimeStop.observe")(
     function* (candidate: StopCurrentThreadRuntimeInput) {
       const principal = yield* EnvironmentAuthenticatedPrincipal;
-      const input = yield* Schema.decodeEffect(StopCurrentThreadRuntimeInput)(candidate, {
+      const input = yield* compiledDecodeEffect2(candidate, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => error("invalid_stop_observation")));
       if (input.target.binding.threadId !== input.threadId)
@@ -173,15 +174,13 @@ const make = Effect.gen(function* () {
       };
     },
     Effect.mapError((cause) =>
-      Schema.is(StopStore.RuntimeStopError)(cause)
-        ? cause
-        : error("runtime_stop_observation_unavailable", cause),
+      compiledIs1(cause) ? cause : error("runtime_stop_observation_unavailable", cause),
     ),
   );
   const stop = Effect.fn("CurrentRuntimeStop.stop")(
     function* (candidate: StopCurrentThreadRuntimeInput) {
       const principal = yield* EnvironmentAuthenticatedPrincipal;
-      const input = yield* Schema.decodeEffect(StopCurrentThreadRuntimeInput)(candidate, {
+      const input = yield* compiledDecodeEffect2(candidate, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => error("invalid_stop_request")));
       if (input.target.binding.threadId !== input.threadId)
@@ -317,9 +316,7 @@ const make = Effect.gen(function* () {
       };
     },
     Effect.mapError((cause) =>
-      Schema.is(StopStore.RuntimeStopError)(cause)
-        ? cause
-        : error("runtime_stop_acceptance_unavailable", cause),
+      compiledIs1(cause) ? cause : error("runtime_stop_acceptance_unavailable", cause),
     ),
   );
   const execute = Effect.fn("CurrentRuntimeStop.execute")(
@@ -402,9 +399,7 @@ const make = Effect.gen(function* () {
               captures.delete(commandId);
             }).pipe(
               Effect.mapError((cause) =>
-                Schema.is(StopStore.RuntimeStopError)(cause)
-                  ? cause
-                  : error("runtime_stop_execution_unavailable", cause),
+                compiledIs1(cause) ? cause : error("runtime_stop_execution_unavailable", cause),
               ),
               Effect.onExit((exit) =>
                 Effect.sync(() => {
@@ -445,9 +440,7 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.mapError((cause) =>
-      Schema.is(StopStore.RuntimeStopError)(cause)
-        ? cause
-        : error("runtime_stop_execution_unavailable"),
+      compiledIs1(cause) ? cause : error("runtime_stop_execution_unavailable"),
     ),
   );
   return CurrentRuntimeStop.of({ stop, execute, readTarget, observe });
