@@ -266,6 +266,20 @@ async function available(
 }
 
 describe("Jones Actions qualification", () => {
+  it("lists only packages that pass the existing artifact qualification", async () => {
+    const input = { installedSource: OLD, platform: "linux", architecture: "x64" } as const;
+    const current = fixture();
+    await expect(current.client.listQualifiedBuilds(input)).resolves.toMatchObject({
+      builds: [{ candidate: { artifactId: 301, source: CURRENT } }],
+      unavailable: false,
+    });
+    const expired = fixture({ artifact: { expired: true } });
+    await expect(expired.client.listQualifiedBuilds(input)).resolves.toEqual({
+      builds: [],
+      unavailable: false,
+    });
+  });
+
   it.each([undefined, "2026-10-02T10:00:00Z", "invalid", "2026-02-30T10:00:00Z"])(
     "keeps build time %s outside the candidate and its handle",
     async (run_started_at) => {

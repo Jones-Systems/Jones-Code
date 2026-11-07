@@ -38,6 +38,7 @@ export const JonesInstallPlanTarget = Schema.Struct({
   sourceTree: JonesSourceSha,
   version: TrimmedNonEmptyString,
   buildStartedAt: Schema.optionalKey(JonesBuildStartedAt),
+  laptopArtifactId: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 export type JonesInstallPlanTarget = typeof JonesInstallPlanTarget.Type;
 

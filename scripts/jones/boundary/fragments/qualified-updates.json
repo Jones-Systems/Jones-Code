@@ -273,6 +273,10 @@
     },
     {
       "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
       "to": "apps/desktop/src/jones/updates/jonesMacStaging.ts"
     },
     {
@@ -386,6 +390,14 @@
     {
       "from": "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
       "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/useUpdateEverything.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
     },
     {
       "from": "apps/web/src/components/settings/SettingsPanels.tsx",

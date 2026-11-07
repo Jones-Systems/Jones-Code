@@ -9,7 +9,13 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-const SCENARIOS = ["available", "staged", "bootstrap-required", "initial-race"] as const;
+const SCENARIOS = [
+  "available",
+  "staged",
+  "bootstrap-required",
+  "initial-race",
+  "build-review",
+] as const;
 const OUTCOMES = ["accept", "reject", "refuse"] as const;
 export type FixtureOutcome = (typeof OUTCOMES)[number];
 const SOURCE = "a".repeat(40);
@@ -205,9 +211,41 @@ export function installPreviewBridge(
     },
   });
   const plan = planFixture;
+  const latest = initialState(false).jones!.provenance!;
+  const alternative = {
+    ...latest,
+    sourceSha: "6".repeat(40),
+    sourceTree: "7".repeat(40),
+    artifactId: 9002,
+    artifactDigest: "8".repeat(64),
+    runId: 3,
+    version: "0.0.45-preview.20261011.3.1",
+  };
+  const builds = [latest, alternative];
   const bridge = {
     ...(installPlansSupported
       ? { installPlan: plan.request, onInstallPlan: plan.onInstallPlan }
+      : {}),
+    ...(selectedScenario === "build-review" && installPlansSupported
+      ? {
+          listJonesUpdateBuilds: async () => ({ builds, unavailable: false }),
+          selectJonesUpdateBuild: async (reviewed: typeof latest) => {
+            record("selectJonesUpdateBuild", reviewed);
+            const qualified = builds.find(
+              (candidate) =>
+                candidate.artifactId === reviewed.artifactId &&
+                candidate.artifactDigest === reviewed.artifactDigest &&
+                candidate.sourceSha === reviewed.sourceSha,
+            );
+            if (qualified === undefined) return false;
+            publish({
+              ...initialState(false),
+              availableVersion: qualified.version ?? null,
+              jones: { ...initialState(false).jones!, provenance: qualified },
+            });
+            return true;
+          },
+        }
       : {}),
     getAppBranding: () => ({
       baseName: "Jones Code",
@@ -215,6 +253,8 @@ export function installPreviewBridge(
       displayName: "Jones Code Fixture",
     }),
     getClientPlatform: () => "darwin",
+    getRelayTelemetryEnabled: () => false,
+    getSystemLocale: () => "en-US",
     getLocalEnvironmentEnabled: () => false,
     getLocalEnvironmentBootstraps: () => [],
     getLocalEnvironmentBearerToken: async (): Promise<string> => {
@@ -325,6 +365,8 @@ export function installPreviewBridge(
     | "onInstallPlan"
     | "getAppBranding"
     | "getClientPlatform"
+    | "getRelayTelemetryEnabled"
+    | "getSystemLocale"
     | "getLocalEnvironmentEnabled"
     | "getLocalEnvironmentBootstraps"
     | "getLocalEnvironmentBearerToken"
@@ -338,6 +380,8 @@ export function installPreviewBridge(
     | "onUpdateState"
     | "setUpdateChannel"
     | "checkForUpdate"
+    | "listJonesUpdateBuilds"
+    | "selectJonesUpdateBuild"
     | "downloadUpdate"
     | "installUpdate"
     | "discardUpdate"

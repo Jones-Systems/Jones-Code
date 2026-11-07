@@ -1558,6 +1558,9 @@ NodeTest.test("failure page state retains only bounded counts, enum and fixed UI
       bodyTextLength: secret,
       dialogs: 10_000_001,
       onConnectionsRoute: secret,
+      onFixtureRoute: true,
+      fixtureStartupPhase: secret,
+      fixtureStartupError: "type",
       ui: { loading: secret, rootError: true, secret },
       url: secret,
       text: secret,
@@ -1570,9 +1573,28 @@ NodeTest.test("failure page state retains only bounded counts, enum and fixed UI
     NodeAssert.equal(result.bodyTextLength, null);
     NodeAssert.equal(result.dialogs, null);
     NodeAssert.equal(result.onConnectionsRoute, false);
+    NodeAssert.equal(result.fixtureStartup, undefined);
     NodeAssert.equal(result.ui.loading, false);
     NodeAssert.equal(JSON.stringify(result).includes(secret), false);
   }
+  NodeAssert.deepEqual(
+    sanitizeFailurePageState({
+      onFixtureRoute: true,
+      fixtureStartupPhase: "renderer-import",
+      fixtureStartupError: "type",
+      fixtureStartupPosition: "assets/InstallPreview-A12.js:1:99",
+    }).fixtureStartup,
+    { phase: "renderer-import", error: "type", position: "assets/InstallPreview-A12.js:1:99" },
+  );
+  NodeAssert.equal(
+    sanitizeFailurePageState({
+      onFixtureRoute: true,
+      fixtureStartupPhase: "renderer-import",
+      fixtureStartupError: "type",
+      fixtureStartupPosition: `https://fixture.invalid/assets/owned.js:1:2?pairing=${secret}`,
+    }).fixtureStartup?.position,
+    undefined,
+  );
 });
 
 NodeTest.test(
@@ -2479,15 +2501,20 @@ NodeTest.test("renderer qualification explicitly covers legacy and plan-capable 
   const plan = pages.filter((page) => page.searchParams.get("run").endsWith("-install-plan"));
   NodeAssert.equal(plan.length, 1);
   NodeAssert.equal(plan[0].searchParams.get("installPlans"), null);
+  const review = pages.filter((page) => page.searchParams.get("run").endsWith("-build-review"));
+  NodeAssert.equal(review.length, 1);
+  NodeAssert.equal(review[0].searchParams.get("installPlans"), null);
   NodeAssert.ok(
     pages
-      .filter((page) => page !== plan[0])
+      .filter((page) => page !== plan[0] && page !== review[0])
       .every((page) => page.searchParams.get("installPlans") === "legacy"),
   );
   const labels = steps
     .filter((step) => step.action === "assert-evaluate")
     .map((step) => step.label);
   for (const label of [
+    "The qualified build review has two choices and opening it sends no update",
+    "The reviewed artifact reaches the Laptop plan before any install",
     "Plan download records one Laptop operation and no host dispatch",
     "Plan review cancellation never dispatches installation or opens the gate",
     "Accepted plan installation still holds followers until native commit verification",

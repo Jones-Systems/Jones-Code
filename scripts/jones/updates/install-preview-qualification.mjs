@@ -2,6 +2,7 @@ import * as NodeAssert from "node:assert/strict";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
+import * as NodeModule from "node:module";
 import * as NodeNet from "node:net";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -1313,6 +1314,50 @@ export function rendererSteps(origin, sourceSha, runId) {
   const panel = "[data-install-status]";
   const panelButton = (name) => click(`${panel} >> role=button[name="${name}"]`);
   const planCheck = (label, expression) => check(label, expression);
+  begin("build-review", "build-review", true);
+  wait("available");
+  sidebar();
+  steps.push({ action: "wait", text: "Recent qualified builds." });
+  steps.push({
+    action: "assert-evaluate",
+    label: "The build review popup and backdrop finish opening before capture",
+    expression: `new Promise(resolve => {
+      const deadline = performance.now() + 2000;
+      const settled = (element) => element !== null &&
+        !element.matches('[data-starting-style], [data-ending-style]') &&
+        getComputedStyle(element).opacity === '1' &&
+        element.getAnimations().every(animation => animation.playState === 'finished');
+      const checkFrame = () => {
+        const popup = document.querySelector('[role="alertdialog"][data-slot="alert-dialog-popup"]');
+        const backdrop = document.querySelector('[data-slot="alert-dialog-backdrop"]');
+        if (settled(popup) && settled(backdrop)) resolve(true);
+        else if (performance.now() >= deadline) resolve(false);
+        else requestAnimationFrame(checkFrame);
+      };
+      requestAnimationFrame(checkFrame);
+    })`,
+    expected: true,
+  });
+  capture("desktop-qualified-build-review", [
+    "Review updates",
+    "Jones Code build",
+    "Download selected build",
+  ]);
+  planCheck(
+    "The qualified build review has two choices and opening it sends no update",
+    `document.querySelector('[role=alertdialog] select')?.options.length === 2 && s.installPlan.current === null && s.calls.every(c => c.action !== 'selectJonesUpdateBuild' && c.action !== 'fixture-laptop-download')`,
+  );
+  steps.push({
+    action: "select",
+    locator: 'role=combobox[name="Jones Code build"]',
+    values: ["9002"],
+  });
+  click('role=alertdialog >> role=button[name="Download selected build"]');
+  wait("downloading");
+  planCheck(
+    "The reviewed artifact reaches the Laptop plan before any install",
+    `s.calls.filter(c => c.action === 'selectJonesUpdateBuild').length === 1 && s.installPlan.current.target.laptopArtifactId === 9002 && s.installPlan.current.target.sourceSha === '6'.repeat(40) && s.calls.every(c => c.action !== 'fixture-laptop-install')`,
+  );
   begin("available", "install-plan", true);
   wait("available");
   planCheck(
@@ -1392,6 +1437,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   control("show-client-notices");
   const noticeCount = (count) => steps.push({ action: "wait", text: `Client notices: ${count}` });
   const noticeText = `document.querySelector('[data-testid="notice-banners"]').textContent`;
+  const noticeCards = `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [data-slot="composer-banner"]'))`;
   const noticeBuild = (sha, version = "0.0.44-preview.20261009.1.1") => `(() => {
     const labels = [...document.querySelectorAll('[data-testid="notice-banners"] [aria-label]')]
       .filter(node => {
@@ -1404,13 +1450,13 @@ export function rendererSteps(origin, sourceSha, runId) {
   const noticeTitles = (label, titles) =>
     check(
       label,
-      `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [role="alert"]')).map(e => e.querySelector('.font-medium').textContent).sort()`,
+      `${noticeCards}.map(e => e.querySelector('.font-medium').textContent).sort()`,
       [...titles].sort(),
     );
-  const details = () =>
+  const details = (title) =>
     steps.push({
       action: "hover",
-      locator: '[data-testid="notice-banners"] >> role=button[name="Show notice details"]',
+      locator: `[data-testid="notice-banners"] >> role=button[name="Show details: ${title}"]`,
     });
   const syntheticSource = (sourceSha.startsWith("a") ? "b" : "a").repeat(39) + "b";
   noticeCount(1);
@@ -1419,7 +1465,7 @@ export function rendererSteps(origin, sourceSha, runId) {
     `document.querySelector('[data-testid="notice-branding"]').textContent === ${JSON.stringify(`Synthetic client 0.0.45-preview.20261011.1.1; exact source ${sourceSha}`)}`,
   );
   noticeTitles("Manual selection shows only Laptop", ["Laptop: Server update available"]);
-  details();
+  details("Laptop: Server update available");
   steps.push({ action: "wait", text: "Update this server to catch up." });
   capture(
     "client-notice-active-laptop",
@@ -1444,14 +1490,15 @@ export function rendererSteps(origin, sourceSha, runId) {
     "Laptop: Server update available",
     "Remote: Server update available",
   ]);
-  steps.push({
-    action: "hover",
-    locator: '[data-testid="notice-banners"] >> role=button[name="Show other notices"]',
-  });
   steps.push({ action: "wait", text: "Remote: Server update available" });
   check(
-    "Both automatic notices are visibly expanded",
-    `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [role="alert"]')).every(e => getComputedStyle(e).visibility === 'visible' && e.getBoundingClientRect().height > 0)`,
+    "Both automatic notice cards are visible",
+    `(() => {
+      const cards = ${noticeCards};
+      return cards.length === 2 && cards.every(card =>
+        getComputedStyle(card).visibility === 'visible' && card.getBoundingClientRect().height > 0
+      );
+    })()`,
   );
   capture(
     "client-notice-automatic-eligible",
@@ -1517,7 +1564,7 @@ export function rendererSteps(origin, sourceSha, runId) {
     "Stable guidance retains full version details and update-or-reload instructions",
     `${noticeBuild(syntheticSource, "9.0.0")} && ${noticeText}.includes('Update this app or reload an updated web client.')`,
   );
-  details();
+  details("Laptop: Client update available");
   steps.push({ action: "wait", text: "Update this app or reload an updated web client." });
   capture(
     "client-notice-stable-server",
@@ -1958,6 +2005,30 @@ export async function readBuildReceipt(source, buildReceipt, rendererDir) {
   return expected;
 }
 
+async function locateFixtureStartupFailure(rendererDir, startup) {
+  const position = /^((?:assets\/)[a-zA-Z0-9_.-]{1,96}\.js):([1-9]\d{0,6}):([1-9]\d{0,6})$/.exec(
+    startup?.position ?? "",
+  );
+  if (!rendererDir || !position) return;
+  try {
+    const payload = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(rendererDir, `${position[1]}.map`), "utf8"),
+    );
+    const entry = new NodeModule.SourceMap(payload).findEntry(
+      Number(position[2]) - 1,
+      Number(position[3]) - 1,
+    );
+    const source =
+      /(?:^|\/)((?:apps\/web|packages\/[a-z0-9-]+)\/src\/[a-zA-Z0-9_./-]+\.(?:ts|tsx|js|mjs))$/.exec(
+        entry.originalSource ?? "",
+      )?.[1];
+    if (source && !source.includes(".."))
+      startup.source = `${source}:${entry.originalLine + 1}:${entry.originalColumn + 1}`;
+  } catch {
+    // Preserve the generated position when the source map is unavailable.
+  }
+}
+
 export async function qualify({ source, buildReceipt, out, scratchParent, rendererDir, signal }) {
   NodeAssert.equal(nativePlatform, "linux", "This qualification runs on an isolated Linux CI host");
   await NodeFSP.mkdir(out, { recursive: false });
@@ -2179,6 +2250,7 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
               if (error.code !== "ENOENT") throw error;
               result = JSON.parse(await NodeFSP.readFile(job.reportFile, "utf8"));
             }
+            await locateFixtureStartupFailure(rendererDir, result.failurePageState?.fixtureStartup);
             evidence.scenarios.push({
               threadId: job.threadId,
               nativeInactiveReadback: job.nativeInactiveReadback === true,

@@ -718,6 +718,9 @@ export function createInstallPlanCoordinator(options: {
             if (
               native?.provenance?.sourceSha !== current.target.sourceSha ||
               native.provenance.sourceTree !== current.target.sourceTree ||
+              (current.target.laptopArtifactId !== undefined &&
+                (native.provenance.artifactId !== current.target.laptopArtifactId ||
+                  native.provenance.version !== current.target.version)) ||
               !native.capability.download ||
               native.stagedHandle !== undefined
             )
@@ -905,7 +908,10 @@ export function createInstallPlanCoordinator(options: {
             !evidence.activationBlocked &&
             evidence.activeSource === req.target.sourceSha &&
             evidence.activeTree === req.target.sourceTree;
-          if (plan !== null && (!canSupersede(plan) || pendingLaptop()))
+          if (
+            plan !== null &&
+            (req.target.laptopArtifactId !== undefined || !canSupersede(plan) || pendingLaptop())
+          )
             refuse("plan-active", "Finish the current plan before starting another.");
           else if (environmentId === undefined || evidence.activeVersion === undefined)
             refuse("unsupported", "The native Laptop identity is unavailable.");

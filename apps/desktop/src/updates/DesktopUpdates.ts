@@ -3,6 +3,10 @@ import type {
   JonesInstallPlanRequest,
   JonesInstallPlanResult,
 } from "@t3tools/contracts/jones/installPlan";
+import type {
+  JonesUpdateBuildList,
+  JonesUpdateProvenance,
+} from "@t3tools/contracts/jones/jonesUpdates";
 import { createInstallPlanStore } from "../jones/installPlan/store.ts";
 import { createInstallPlanCoordinator } from "../jones/installPlan/coordinator.ts";
 import * as NodeCrypto from "node:crypto";
@@ -237,6 +241,8 @@ export class DesktopUpdates extends Context.Service<
       options?: { readonly allowDowngrade?: boolean },
     ) => Effect.Effect<DesktopUpdateCheckResult>;
     readonly download: Effect.Effect<DesktopUpdateActionResult>;
+    readonly listJonesBuilds?: Effect.Effect<JonesUpdateBuildList>;
+    readonly selectJonesBuild?: (build: JonesUpdateProvenance) => Effect.Effect<boolean>;
     readonly downloadSelected?: (
       selection: JonesDesktopDownloadSelection,
     ) => Effect.Effect<JonesDesktopDownloadResult & { readonly state: DesktopUpdateState }>;
@@ -679,6 +685,10 @@ export const make = Effect.gen(function* () {
       }),
       download: Effect.promise(() => background.track(() => controller.download())).pipe(
         Effect.map((result) => ({ ...result, state: controller.state })),
+      ),
+      listJonesBuilds: Effect.promise(() => controller.listBuilds()),
+      selectJonesBuild: Effect.fn("DesktopUpdates.selectJonesBuild")(
+        (build: JonesUpdateProvenance) => Effect.promise(() => controller.selectBuild(build)),
       ),
       downloadSelected: Effect.fn("DesktopUpdates.downloadSelected")(function (selection) {
         return Effect.promise(() => background.track(() => controller.download(selection))).pipe(
