@@ -401,7 +401,7 @@ Every other check is advisory:
   and installed SEA measurements; failed or unknown evidence is not qualification);
 - `Native enrollment candidate`;
 - `Linux CLI artifacts`;
-- `Mac Desktop Artifact`;
+- `Mac Desktop Artifact`, including the opt-in #873 original-worker reproduction job;
 - `Mac CLI artifact`;
 - any native E2E workflow.
 
