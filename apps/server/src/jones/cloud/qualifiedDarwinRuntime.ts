@@ -438,7 +438,8 @@ export async function extractQualifiedDarwinRuntime(input: {
       )
         throw new Error("The candidate DMG does not have one uniquely owned device.");
       ownedDevices = devices;
-      return image.entities.some((entity) => entity.mount === mount) ? mount : whole[0]!;
+      // The whole device still identifies the image if a detach unmounts its volume but leaves it attached.
+      return whole[0]!;
     };
     let cleanupRound = "before-detach";
     let cleanupStep = "inventory";
