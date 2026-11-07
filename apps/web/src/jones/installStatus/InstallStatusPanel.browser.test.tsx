@@ -58,7 +58,13 @@ function initialDesktop(): DesktopUpdateState {
 }
 const fixtureRecoveryToken = "22222222-2222-4222-8222-222222222222";
 
-async function setup(options: { refuseFirstDownload?: boolean; loseCleanupReply?: boolean } = {}) {
+async function setup(
+  options: {
+    refuseFirstDownload?: boolean;
+    loseCleanupReply?: boolean;
+    refuseCleanupReport?: boolean;
+  } = {},
+) {
   let desktop = initialDesktop();
   const updates = new Set<(value: DesktopUpdateState) => void>();
   const calls: { action: string; input?: unknown }[] = [];
