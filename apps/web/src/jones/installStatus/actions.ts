@@ -285,7 +285,17 @@ export async function performPanelAction(
       } else if (operation?.request.kind === "operation-start") {
         const result = await services.operation(environmentId, {
           action: "operationRead",
-          input: { environmentId, operationIds: [operation.operationId] },
+          input: {
+            environmentId,
+            operationIds: [operation.operationId],
+            ...(operation.request.input.action.kind === "install" &&
+            observed.canOperate &&
+            observed.observation.freshness === "fresh" &&
+            observed.observation.state?.environmentId === environmentId &&
+            observed.observation.state.capability.operations === 1
+              ? { refreshInstallOutcome: operation.operationId }
+              : {}),
+          },
         });
         if ("receipts" in result) {
           const receipt = result.receipts.find(

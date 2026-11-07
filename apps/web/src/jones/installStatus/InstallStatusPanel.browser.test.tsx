@@ -657,6 +657,30 @@ describe("Install status receipt fixture", () => {
         )
         .map(({ action }) => action),
     ).toEqual(["fixture-review", "fixture-host-operationStart"]);
+    const beforeCheck = calls.length;
+    await click(screen, "Check again");
+    await expect
+      .poll(
+        () =>
+          calls
+            .slice(beforeCheck)
+            .find(
+              ({ action, input }) =>
+                action === "fixture-host-operationRead" &&
+                JSON.stringify(input).includes("refreshInstallOutcome"),
+            )?.input,
+      )
+      .toEqual({
+        environmentId: retry.receipt!.environmentId,
+        input: {
+          environmentId: retry.receipt!.environmentId,
+          operationIds: [retry.operationId],
+          refreshInstallOutcome: retry.operationId,
+        },
+      });
+    expect(calls.filter(({ action }) => action === "fixture-host-operationStart")).toHaveLength(
+      startCount + 1,
+    );
   });
 
   it("keeps unsupported devices out and uses a neutral dashed separator before and after Laptop verification", async () => {

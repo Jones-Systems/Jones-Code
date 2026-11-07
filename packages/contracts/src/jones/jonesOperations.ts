@@ -66,6 +66,7 @@ export const JonesOperationReadInput = Schema.Struct({
   environmentId: EnvironmentId,
   operationIds: Schema.Array(JonesOperationId).check(Schema.isMaxLength(32)),
   inspectCleanup: Schema.optionalKey(JonesOperationId),
+  refreshInstallOutcome: Schema.optionalKey(JonesOperationId),
 });
 export type JonesOperationReadInput = typeof JonesOperationReadInput.Type;
 
