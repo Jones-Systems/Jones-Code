@@ -142,40 +142,61 @@ export async function preparePackagedDesktopHelperFault({
   helper,
   manifest,
   intent,
+  selection,
   point,
   observeRelaunch = false,
 }) {
   NodeAssert.ok(packagedDesktopFaultPoints.includes(point));
+  const deferred = selection !== undefined;
+  NodeAssert.ok(deferred ? intent === undefined : typeof intent === "string");
+  NodeAssert.ok(
+    !deferred || observeRelaunch === false,
+    "Install-time state observation needs a separately bound quiet-state oracle.",
+  );
   await privatePath(fixtureRoot, fixtureRoot, true);
   const rootInfo = await NodeFSP.lstat(fixtureRoot, { bigint: true });
   const helperBytes = await readPrivate(fixtureRoot, helper, 2 * 1024 * 1024);
   const helperSha256 = sha(helperBytes);
   NodeAssert.equal(NodePath.basename(helper), "activate-v1-" + helperSha256 + ".py");
   const manifestBytes = await readPrivate(fixtureRoot, manifest, 65536);
-  const intentBytes = await readPrivate(fixtureRoot, intent, 65536);
+  const intentBytes = deferred ? null : await readPrivate(fixtureRoot, intent, 65536);
   const active = JSON.parse(manifestBytes);
-  const activation = JSON.parse(intentBytes);
+  const activation = deferred ? null : JSON.parse(intentBytes);
   NodeAssert.equal(active.protocol, 1);
   NodeAssert.equal(active.owner, "desktop");
-  NodeAssert.equal(activation.protocol, 1);
-  NodeAssert.match(activation.transactionId, /^[a-f0-9]{64}$/);
-  NodeAssert.deepEqual(activation.expected, active);
+  if (!deferred) {
+    NodeAssert.equal(activation.protocol, 1);
+    NodeAssert.match(activation.transactionId, /^[a-f0-9]{64}$/);
+    NodeAssert.deepEqual(activation.expected, active);
+  }
   await privatePath(fixtureRoot, active.home, true);
   NodeAssert.equal(manifest, NodePath.join(active.home, "runtime/jones-active-install.json"));
-  NodeAssert.equal(
-    intent,
-    NodePath.join(
-      active.home,
-      "runtime/jones-updates/transactions",
-      activation.transactionId,
-      "intent.json",
-    ),
-  );
+  if (!deferred)
+    NodeAssert.equal(
+      intent,
+      NodePath.join(
+        active.home,
+        "runtime/jones-updates/transactions",
+        activation.transactionId,
+        "intent.json",
+      ),
+    );
+  let selectionBytes;
+  if (deferred) {
+    selectionBytes = await readPrivate(fixtureRoot, selection, 131072);
+    const selected = JSON.parse(selectionBytes);
+    NodeAssert.deepEqual(selected.active, active);
+    NodeAssert.match(selected.app.handle, /^[a-f0-9]{64}$/);
+    NodeAssert.equal(
+      NodePath.dirname(selection),
+      NodePath.join(active.home, "runtime/jones-updates/staging"),
+    );
+  }
   NodeAssert.equal(NodePath.dirname(helper), NodePath.join(active.home, "runtime/jones-updates"));
   NodeAssert.equal(typeof observeRelaunch, "boolean");
   const stateBefore = observeRelaunch ? await snapshotRecoveryState(fixtureRoot, active) : null;
   const plan = {
-    protocol: 1,
+    protocol: deferred ? 2 : 1,
     fixtureRoot,
     rootDevice: String(rootInfo.dev),
     rootInode: String(rootInfo.ino),
@@ -183,9 +204,13 @@ export async function preparePackagedDesktopHelperFault({
     helperSha256,
     manifest,
     manifestSha256: sha(manifestBytes),
-    intent,
-    intentSha256: sha(intentBytes),
-    transactionId: activation.transactionId,
+    ...(deferred
+      ? { selection, selectionSha256: sha(selectionBytes) }
+      : {
+          intent,
+          intentSha256: sha(intentBytes),
+          transactionId: activation.transactionId,
+        }),
     point,
     observeRelaunch,
   };
@@ -208,12 +233,14 @@ export async function preparePackagedDesktopHelperFault({
     await directory.close();
   }
   return Object.freeze({
-    argv: Object.freeze([helper, "--manifest", manifest, "--activate", intent]),
+    // Install creates its transaction later; only its exact activate child binds that intent.
+    argv: deferred ? null : Object.freeze([helper, "--manifest", manifest, "--activate", intent]),
     environment: Object.freeze({
       PYTHONPATH: preload,
       PYTHONNOUSERSITE: "1",
       PYTHONDONTWRITEBYTECODE: "1",
       JONES_PACKAGED_DESKTOP_FAULT_PLAN: planPath,
+      ...(deferred ? { JONES_PACKAGED_DESKTOP_INSTALL_FAULT: "1" } : {}),
       T3CODE_HOME: active.home,
     }),
     planPath,
@@ -227,6 +254,28 @@ export async function preparePackagedDesktopHelperFault({
       NodeAssert.equal(receipt.protocol, 1);
       NodeAssert.equal(receipt.kind, "packaged-desktop-helper-fault");
       NodeAssert.equal(receipt.planSha256, sha(planBytes));
+      let resolved = plan;
+      if (deferred) {
+        NodeAssert.match(receipt.transactionId, /^[a-f0-9]{64}$/);
+        const intentPath = NodePath.join(
+          active.home,
+          "runtime/jones-updates/transactions",
+          receipt.transactionId,
+          "intent.json",
+        );
+        const bytes = await readPrivate(fixtureRoot, intentPath, 65536);
+        const actual = JSON.parse(bytes);
+        NodeAssert.equal(actual.protocol, 1);
+        NodeAssert.equal(actual.transactionId, receipt.transactionId);
+        NodeAssert.deepEqual(actual.expected, active);
+        NodeAssert.equal(sha(await readPrivate(fixtureRoot, manifest, 65536)), plan.manifestSha256);
+        NodeAssert.equal(
+          sha(await readPrivate(fixtureRoot, selection, 131072)),
+          plan.selectionSha256,
+        );
+        NodeAssert.deepEqual(actual.staged, JSON.parse(selectionBytes).app);
+        resolved = { ...plan, transactionId: actual.transactionId, intentSha256: sha(bytes) };
+      }
       for (const key of [
         "helperSha256",
         "manifestSha256",
@@ -234,7 +283,7 @@ export async function preparePackagedDesktopHelperFault({
         "transactionId",
         "point",
       ])
-        NodeAssert.equal(receipt[key], plan[key]);
+        NodeAssert.equal(receipt[key], resolved[key]);
       NodeAssert.ok(Number.isSafeInteger(receipt.pid) && receipt.pid > 0);
       NodeAssert.match(receipt.journalSha256, /^[a-f0-9]{64}$/);
       const boundaries = {

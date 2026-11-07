@@ -13,6 +13,9 @@ def _install():
     plan_name = os.environ.get("JONES_PACKAGED_DESKTOP_FAULT_PLAN")
     if not plan_name or not re.fullmatch(r"activate-v1-[0-9a-f]{64}\.py", pathlib.Path(sys.argv[0]).name):
         return
+    deferred = os.environ.get("JONES_PACKAGED_DESKTOP_INSTALL_FAULT") == "1"
+    if deferred and not (len(sys.argv) == 5 and sys.argv[1] == "--manifest" and sys.argv[3] == "--activate"):
+        return
     try:
         plan_path = pathlib.Path(plan_name)
         root = plan_path.parent.parent
@@ -46,9 +49,42 @@ def _install():
                 return raw
 
         plan = json.loads(read_file(plan_path, 16384))
-        assert set(plan) == {"protocol", "fixtureRoot", "rootDevice", "rootInode", "helper", "helperSha256",
-                             "manifest", "manifestSha256", "intent", "intentSha256", "transactionId", "point", "observeRelaunch"}
-        assert type(plan["protocol"]) is int and plan["protocol"] == 1
+        common = {"protocol", "fixtureRoot", "rootDevice", "rootInode", "helper", "helperSha256",
+                  "manifest", "manifestSha256", "point", "observeRelaunch"}
+        assert set(plan) == common | ({"selection", "selectionSha256"} if deferred else {"intent", "intentSha256", "transactionId"})
+        assert type(plan["protocol"]) is int and plan["protocol"] == (2 if deferred else 1)
+        if deferred:
+            assert plan["observeRelaunch"] is False
+            assert sys.argv[2] == plan["manifest"]
+            raw = read_file(sys.argv[4], 65536)
+            actual = json.loads(raw)
+            assert type(actual["protocol"]) is int and actual["protocol"] == 1
+            txid = actual["transactionId"]
+            assert re.fullmatch("[0-9a-f]{64}", txid)
+            active = json.loads(read_file(plan["manifest"], 65536))
+            transaction = confined(active["home"]) / "runtime/jones-updates/transactions" / txid
+            assert str(transaction / "intent.json") == sys.argv[4]
+            selected_raw = read_file(plan["selection"], 131072)
+            assert hashlib.sha256(selected_raw).hexdigest() == plan["selectionSha256"]
+            assert pathlib.Path(plan["selection"]).parent == pathlib.Path(active["home"]) / "runtime/jones-updates/staging"
+            selected = json.loads(selected_raw)
+            assert selected["active"] == active == actual["expected"]
+            assert selected["app"] == actual["staged"]
+            assert re.fullmatch("[0-9a-f]{64}", selected["app"]["handle"])
+            continuation_path = confined(actual["continuationReceipt"])
+            assert continuation_path.parent == transaction
+            continuation = json.loads(read_file(continuation_path, 65536))
+            assert continuation["protocol"] == 1 and continuation["preparationClaimProtocol"] == 3
+            assert continuation["prepared"] is True and continuation["transactionId"] == txid
+            assert continuation["stagedHandle"] == selected["app"]["handle"]
+            for key in ("home", "profile", "databasePath", "environmentId"):
+                assert continuation[key] == active[key]
+            assert continuation["selectionPath"] == plan["selection"]
+            assert continuation["selectionSha256"] == plan["selectionSha256"]
+            claim = {key: value for key, value in continuation.items() if key != "prepared"}
+            for name in ("prepare-intent.json", "prepare-dispatched.json"):
+                assert json.loads(read_file(transaction / name, 65536)) == claim
+            plan = dict(plan, intent=sys.argv[4], intentSha256=hashlib.sha256(raw).hexdigest(), transactionId=txid)
         assert type(plan["observeRelaunch"]) is bool
         assert plan["fixtureRoot"] == str(root)
         assert (plan["rootDevice"], plan["rootInode"]) == (str(root_info.st_dev), str(root_info.st_ino))
