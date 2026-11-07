@@ -9,7 +9,10 @@ import {
   type JonesReviewedInstall,
   isNativeJonesInstallReview,
 } from "@t3tools/client-runtime/jones/updates/executor";
-import { validateReceipt } from "@t3tools/client-runtime/jones/install-plan";
+import {
+  validateDirectiveEvidence,
+  validateReceipt,
+} from "@t3tools/client-runtime/jones/install-plan";
 import { claimantId, routeLaptopDownload, routeLaptopInstall } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
 
@@ -106,7 +109,28 @@ export async function performPanelAction(
       const operation = plan.devices
         .find((d) => d.environmentId === environmentId)
         ?.operations.at(-1);
-      if (operation?.request.kind === "operation-start") {
+      if (operation?.request.kind === "plan-directive") {
+        const { observation, fleetStatus } = observed;
+        if (
+          operation.directive === undefined &&
+          observed.canOperate &&
+          observation.freshness === "fresh" &&
+          observation.state?.environmentId === environmentId &&
+          observation.state.capability.operations === 1 &&
+          fleetStatus != null &&
+          validateDirectiveEvidence(operation.request.input, fleetStatus)
+        )
+          await requestInstallPlan(
+            {
+              type: "report",
+              planId: plan.planId,
+              environmentId,
+              operationId: operation.operationId,
+              evidence: { kind: "directive", status: fleetStatus },
+            },
+            binding,
+          );
+      } else if (operation?.request.kind === "operation-start") {
         const result = await services.operation(environmentId, {
           action: "operationRead",
           input: { environmentId, operationIds: [operation.operationId] },
