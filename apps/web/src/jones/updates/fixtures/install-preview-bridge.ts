@@ -253,6 +253,7 @@ export function installPreviewBridge(
       displayName: "Jones Code Fixture",
     }),
     getClientPlatform: () => "darwin",
+    getSystemLocale: () => "en-US",
     getLocalEnvironmentEnabled: () => false,
     getLocalEnvironmentBootstraps: () => [],
     getLocalEnvironmentBearerToken: async (): Promise<string> => {
@@ -363,6 +364,7 @@ export function installPreviewBridge(
     | "onInstallPlan"
     | "getAppBranding"
     | "getClientPlatform"
+    | "getSystemLocale"
     | "getLocalEnvironmentEnabled"
     | "getLocalEnvironmentBootstraps"
     | "getLocalEnvironmentBearerToken"
