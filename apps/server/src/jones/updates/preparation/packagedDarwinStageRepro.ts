@@ -254,7 +254,7 @@ async function main() {
         observed.pid !== undefined &&
         observed.pid !== process.pid &&
         isLowestWorkerPriority(observed.priority, "darwin");
-      console.log(
+      process.stdout.write(
         JSON.stringify({
           mode,
           workerSource,
@@ -282,7 +282,7 @@ async function main() {
             "error" in result && result.error instanceof PreparationWorkerError
               ? result.error.reason
               : undefined,
-        }),
+        }) + "\n",
       );
       if (!releaseProved)
         throw new ReproError("Native or worker release is unconfirmed. Scratch was retained.");
@@ -312,6 +312,8 @@ async function main() {
 }
 
 await main().catch((error: unknown) => {
-  console.error(error instanceof ReproError ? error.message : "Hosted reproduction failed.");
+  process.stderr.write(
+    (error instanceof ReproError ? error.message : "Hosted reproduction failed.") + "\n",
+  );
   process.exitCode = 1;
 });
