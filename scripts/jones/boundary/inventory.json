@@ -2817,7 +2817,9 @@
     "apps/server/src/jones/workspaceRecreation/Runtime.test.ts": "jones-owned",
     "packages/contracts/src/jones/workspaceRecreation.ts": "jones-owned",
     "packages/contracts/src/jones/workspaceRecreation.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/workspace-recreation.json": "jones-owned"
+    "scripts/jones/boundary/fragments/workspace-recreation.json": "jones-owned",
+    "apps/server/src/jones/orchestration/shellDelivery.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/shellDelivery.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

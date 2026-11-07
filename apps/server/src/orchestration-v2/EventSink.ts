@@ -286,6 +286,7 @@ export interface EventSinkV2Shape {
   >;
 
   readonly write: (input: {
+    readonly skipUnchangedProviderNodes?: boolean;
     readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
@@ -346,6 +347,7 @@ export interface EventSinkV2Shape {
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeIfRunCurrent: (input: {
+    readonly skipUnchangedProviderNodes?: boolean;
     readonly checkoutRecreation?: ExpectedCheckout;
     readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
@@ -382,6 +384,7 @@ export interface EventSinkV2Shape {
   >;
   /** Commits only if the expected attempt and ordinal still own the provider thread, protecting newer attempts. */
   readonly writeIfProviderThreadOwner: (input: {
+    readonly skipUnchangedProviderNodes?: boolean;
     readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
@@ -895,6 +898,24 @@ const layerBase: Layer.Layer<
       );
     });
 
+    // Adapters repeat unchanged nodes with text deltas; compare with stored state because
+    // server writers also change nodes. Call only inside the guarded writer transaction
+    // so this optional deduplication never waits for a pooled reader.
+    const filterUnchangedProviderNodes = Effect.fnUntraced(function* (
+      events: ReadonlyArray<OrchestrationV2DomainEvent>,
+    ) {
+      const changed: Array<OrchestrationV2DomainEvent> = [];
+      for (const event of events) {
+        if (
+          event.type !== "node.updated" ||
+          !(yield* projectionStore.isNodeStored(event.payload))
+        ) {
+          changed.push(event);
+        }
+      }
+      return changed;
+    });
+
     const normalizeEvents = (events: ReadonlyArray<OrchestrationV2DomainEvent>) => {
       const runOrdinals = new Map(
         events.flatMap((event) =>
@@ -1005,6 +1026,7 @@ const layerBase: Layer.Layer<
     const writeEffect = Effect.fn("orchestrationV2.EventSink.write")(function* (
       input: Parameters<EventSinkV2Shape["writeWithEffects"]>[0] & {
         readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
+        readonly skipUnchangedProviderNodes?: boolean;
       },
     ) {
       yield* Effect.annotateCurrentSpan({
@@ -1052,7 +1074,10 @@ const layerBase: Layer.Layer<
           const committed = yield* eventStore
             .append({
               ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-              events: normalized,
+              events:
+                input.skipUnchangedProviderNodes === true
+                  ? yield* filterUnchangedProviderNodes(normalized)
+                  : normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           const outcomes = yield* applyStoredEvents(committed);
@@ -1134,7 +1159,10 @@ const layerBase: Layer.Layer<
             const storedEvents = yield* eventStore
               .append({
                 ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-                events: normalized,
+                events:
+                  input.skipUnchangedProviderNodes === true
+                    ? yield* filterUnchangedProviderNodes(normalized)
+                    : normalized,
               })
               .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
             const outcomes = yield* applyStoredEvents(storedEvents);
@@ -1215,7 +1243,10 @@ const layerBase: Layer.Layer<
           const storedEvents = yield* eventStore
             .append({
               ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-              events: normalized,
+              events:
+                input.skipUnchangedProviderNodes === true
+                  ? yield* filterUnchangedProviderNodes(normalized)
+                  : normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           const outcomes = yield* applyStoredEvents(storedEvents);

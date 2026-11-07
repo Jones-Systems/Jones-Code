@@ -43,6 +43,28 @@ export class ShellMaterialization extends Context.Service<
       readonly getMany: (
         requests: ReadonlyArray<{ readonly threadId: ThreadId; readonly sequence: number }>,
       ) => Effect.Effect<ReadonlyMap<ThreadId, OrchestrationV2ThreadShell | null>, ReadError>;
+      readonly getVersioned: (
+        threadId: ThreadId,
+        sequence: number,
+      ) => Effect.Effect<
+        {
+          readonly shell: OrchestrationV2ThreadShell | null;
+          readonly version: number | undefined;
+        },
+        ReadError
+      >;
+      readonly getManyVersioned: (
+        requests: ReadonlyArray<{ readonly threadId: ThreadId; readonly sequence: number }>,
+      ) => Effect.Effect<
+        ReadonlyMap<
+          ThreadId,
+          {
+            readonly shell: OrchestrationV2ThreadShell | null;
+            readonly version: number | undefined;
+          }
+        >,
+        ReadError
+      >;
       readonly get: (
         threadId: ThreadId,
         sequence: number,
@@ -241,7 +263,7 @@ const make = Effect.gen(function* () {
   const forSubscription = Effect.sync(() => {
     const floors = new Map<ThreadId, number>();
     const unversioned = new Set<ThreadId>();
-    const getMany = Effect.fnUntraced(function* (
+    const getManyVersioned = Effect.fnUntraced(function* (
       requests: ReadonlyArray<{ readonly threadId: ThreadId; readonly sequence: number }>,
     ) {
       const requested = new Map<ThreadId, number>();
@@ -344,12 +366,34 @@ const make = Effect.gen(function* () {
             results.delete(threadId);
         }
       }
-      return results;
+      // These versions are the same accepted proofs as the batched rows, not replay cursors.
+      return new Map(
+        [...results].map(([threadId, shell]) => [
+          threadId,
+          {
+            shell,
+            version: unversioned.has(threadId) ? undefined : accepted.get(threadId)?.version,
+          },
+        ]),
+      );
     });
-    const get = Effect.fnUntraced(function* (threadId: ThreadId, sequence: number) {
-      return (yield* getMany([{ threadId, sequence }])).get(threadId) ?? null;
+    const getMany = (
+      requests: ReadonlyArray<{ readonly threadId: ThreadId; readonly sequence: number }>,
+    ) =>
+      getManyVersioned(requests).pipe(
+        Effect.map((results) => new Map([...results].map(([id, result]) => [id, result.shell]))),
+      );
+    const getVersioned = Effect.fnUntraced(function* (threadId: ThreadId, sequence: number) {
+      return (
+        (yield* getManyVersioned([{ threadId, sequence }])).get(threadId) ?? {
+          shell: null,
+          version: undefined,
+        }
+      );
     });
-    return { get, getMany };
+    const get = (threadId: ThreadId, sequence: number) =>
+      getVersioned(threadId, sequence).pipe(Effect.map((result) => result.shell));
+    return { get, getMany, getVersioned, getManyVersioned };
   });
 
   return ShellMaterialization.of({ forSubscription });

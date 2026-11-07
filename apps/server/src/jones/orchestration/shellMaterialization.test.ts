@@ -110,6 +110,9 @@ it.effect("late subscribers reuse the committed version across different event s
     yield* Effect.gen(function* () {
       const service = yield* ShellMaterialization.ShellMaterialization;
       const first = yield* service.forSubscription;
+      const materialized = yield* first.getVersioned(threadId, 3);
+      assert.strictEqual(materialized.version, 20);
+      assert.strictEqual(materialized.shell?.title, "version:20");
       assert.strictEqual((yield* first.get(threadId, 3))?.title, "version:20");
       const late = yield* service.forSubscription;
       assert.strictEqual((yield* late.get(threadId, 17))?.title, "version:20");
@@ -845,4 +848,48 @@ it.effect("batch results preserve archived shells and successful absence indepen
       }),
     ),
   ),
+);
+
+it.effect(
+  "versioned batches retain committed row watermarks and share the legacy point/batch cache",
+  () =>
+    Effect.gen(function* () {
+      let batchReads = 0;
+      let scalarReads = 0;
+      yield* Effect.gen(function* () {
+        const reader = yield* (yield* ShellMaterialization.ShellMaterialization).forSubscription;
+        const rows = yield* reader.getManyVersioned([request(threadId, 3), request(batchOther, 7)]);
+        assert.equal(rows.size, 2);
+        assert.equal(rows.get(threadId)?.version, 20);
+        assert.equal(rows.get(batchOther)?.version, 20);
+        assert.equal(rows.get(threadId)?.shell?.title, `batch:${threadId}`);
+        assert.equal(rows.get(batchOther)?.shell?.title, `batch:${batchOther}`);
+        const point = yield* reader.getVersioned(threadId, 8);
+        assert.equal(point.version, 20);
+        assert.strictEqual(point.shell, rows.get(threadId)?.shell);
+        assert.strictEqual(
+          (yield* reader.getMany([request(batchOther, 9)])).get(batchOther),
+          rows.get(batchOther)?.shell,
+        );
+        assert.strictEqual(yield* reader.get(threadId, 10), rows.get(threadId)?.shell);
+        assert.equal(batchReads, 1);
+        assert.equal(scalarReads, 0);
+      }).pipe(
+        Effect.provide(
+          testLayer({
+            latest: Effect.succeed(20),
+            read: () =>
+              Effect.sync(() => {
+                scalarReads++;
+                return shell("unexpected scalar");
+              }),
+            batch: (options) =>
+              Effect.sync(() => {
+                batchReads++;
+                return Effect.succeed(batchSnapshot(options?.threadIds ?? []));
+              }),
+          }),
+        ),
+      );
+    }),
 );
