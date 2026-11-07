@@ -189,7 +189,7 @@ async function dispatchGrant(
           evidence: { kind: "directive", status },
         });
     } catch (error) {
-      // Only a typed target refusal can end the directive. Transport/auth failures stay unknown.
+      // A storage error can follow a durable write. Keep it unknown for exact readback.
       if (
         !driver.cancelled() &&
         typeof error === "object" &&
@@ -200,9 +200,7 @@ async function dispatchGrant(
         "message" in error &&
         typeof error.reason === "string" &&
         typeof error.message === "string" &&
-        ["binding", "not-enrolled", "bootstrap-required", "conflict", "storage"].includes(
-          error.reason,
-        )
+        ["binding", "not-enrolled", "bootstrap-required", "conflict"].includes(error.reason)
       )
         await driver.desktop({
           type: "report",
@@ -211,12 +209,7 @@ async function dispatchGrant(
           operationId: grant.operationId,
           evidence: {
             kind: "directive-refused",
-            reason: error.reason as
-              | "binding"
-              | "not-enrolled"
-              | "bootstrap-required"
-              | "conflict"
-              | "storage",
+            reason: error.reason as "binding" | "not-enrolled" | "bootstrap-required" | "conflict",
             message: error.message.slice(0, 1024),
           },
         });
