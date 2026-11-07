@@ -1318,6 +1318,26 @@ export function rendererSteps(origin, sourceSha, runId) {
   wait("available");
   sidebar();
   steps.push({ action: "wait", text: "Recent qualified builds." });
+  steps.push({
+    action: "assert-evaluate",
+    label: "The build review popup and backdrop finish opening before capture",
+    expression: `new Promise(resolve => {
+      const deadline = performance.now() + 2000;
+      const settled = (element) => element !== null &&
+        !element.matches('[data-starting-style], [data-ending-style]') &&
+        getComputedStyle(element).opacity === '1' &&
+        element.getAnimations().every(animation => animation.playState === 'finished');
+      const checkFrame = () => {
+        const popup = document.querySelector('[role="alertdialog"][data-slot="alert-dialog-popup"]');
+        const backdrop = document.querySelector('[data-slot="alert-dialog-backdrop"]');
+        if (settled(popup) && settled(backdrop)) resolve(true);
+        else if (performance.now() >= deadline) resolve(false);
+        else requestAnimationFrame(checkFrame);
+      };
+      requestAnimationFrame(checkFrame);
+    })`,
+    expected: true,
+  });
   capture("desktop-qualified-build-review", [
     "Review updates",
     "Jones Code build",
@@ -1417,6 +1437,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   control("show-client-notices");
   const noticeCount = (count) => steps.push({ action: "wait", text: `Client notices: ${count}` });
   const noticeText = `document.querySelector('[data-testid="notice-banners"]').textContent`;
+  const noticeCards = `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [data-slot="composer-banner"]'))`;
   const noticeBuild = (sha, version = "0.0.44-preview.20261009.1.1") => `(() => {
     const labels = [...document.querySelectorAll('[data-testid="notice-banners"] [aria-label]')]
       .filter(node => {
@@ -1429,13 +1450,13 @@ export function rendererSteps(origin, sourceSha, runId) {
   const noticeTitles = (label, titles) =>
     check(
       label,
-      `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [role="alert"]')).map(e => e.querySelector('.font-medium').textContent).sort()`,
+      `${noticeCards}.map(e => e.querySelector('.font-medium').textContent).sort()`,
       [...titles].sort(),
     );
-  const details = () =>
+  const details = (title) =>
     steps.push({
       action: "hover",
-      locator: '[data-testid="notice-banners"] >> role=button[name="Show notice details"]',
+      locator: `[data-testid="notice-banners"] >> role=button[name="Show details: ${title}"]`,
     });
   const syntheticSource = (sourceSha.startsWith("a") ? "b" : "a").repeat(39) + "b";
   noticeCount(1);
@@ -1444,7 +1465,7 @@ export function rendererSteps(origin, sourceSha, runId) {
     `document.querySelector('[data-testid="notice-branding"]').textContent === ${JSON.stringify(`Synthetic client 0.0.45-preview.20261011.1.1; exact source ${sourceSha}`)}`,
   );
   noticeTitles("Manual selection shows only Laptop", ["Laptop: Server update available"]);
-  details();
+  details("Laptop: Server update available");
   steps.push({ action: "wait", text: "Update this server to catch up." });
   capture(
     "client-notice-active-laptop",
@@ -1469,14 +1490,15 @@ export function rendererSteps(origin, sourceSha, runId) {
     "Laptop: Server update available",
     "Remote: Server update available",
   ]);
-  steps.push({
-    action: "hover",
-    locator: '[data-testid="notice-banners"] >> role=button[name="Show other notices"]',
-  });
   steps.push({ action: "wait", text: "Remote: Server update available" });
   check(
-    "Both automatic notices are visibly expanded",
-    `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [role="alert"]')).every(e => getComputedStyle(e).visibility === 'visible' && e.getBoundingClientRect().height > 0)`,
+    "Both automatic notice cards are visible",
+    `(() => {
+      const cards = ${noticeCards};
+      return cards.length === 2 && cards.every(card =>
+        getComputedStyle(card).visibility === 'visible' && card.getBoundingClientRect().height > 0
+      );
+    })()`,
   );
   capture(
     "client-notice-automatic-eligible",
@@ -1542,7 +1564,7 @@ export function rendererSteps(origin, sourceSha, runId) {
     "Stable guidance retains full version details and update-or-reload instructions",
     `${noticeBuild(syntheticSource, "9.0.0")} && ${noticeText}.includes('Update this app or reload an updated web client.')`,
   );
-  details();
+  details("Laptop: Client update available");
   steps.push({ action: "wait", text: "Update this app or reload an updated web client." });
   capture(
     "client-notice-stable-server",
