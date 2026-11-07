@@ -480,6 +480,11 @@ export function InstallStatusPanel({
                       </TooltipPopup>
                     </Tooltip>
                   </div>
+                  {!editing && row?.targetBuildRunning ? (
+                    <p className="px-3 pb-1 text-2xs text-muted-foreground">
+                      Target build is running
+                    </p>
+                  ) : null}
                   {editing && choice.reason !== undefined ? (
                     <p
                       id={`${descriptionId}-${environmentId}`}
@@ -494,6 +499,9 @@ export function InstallStatusPanel({
                       aria-label={`${label} update status`}
                     >
                       <p>{text}</p>
+                      {row?.targetBuildRunning ? (
+                        <p>This plan has no confirmed install receipt for this host.</p>
+                      ) : null}
                       {device?.observation.freshness !== "fresh" ? (
                         <p>
                           {device?.observation.message ?? "Fresh status unavailable."}{" "}

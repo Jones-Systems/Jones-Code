@@ -93,6 +93,21 @@ export function installPlanPresentation(
       latest?.step === "install" && (receipt?.phase === "failed" || receipt?.phase === "refused");
     const stage = lastDownload?.receipt?.staged;
     const hostState = observed?.observation.state;
+    const installed = hostState?.installedSource;
+    const confirmedInstall = device.operations.some(
+      ({ step, operationId, receipt }) =>
+        step === "install" &&
+        receipt?.phase === "completed" &&
+        receipt.updateId === operationId &&
+        receipt.outcome?.status === "committed",
+    );
+    const targetBuildRunning =
+      !confirmedInstall &&
+      observed?.observation.freshness === "fresh" &&
+      hostState?.environmentId === device.environmentId &&
+      installed?.repository === plan.target.repository &&
+      installed.sha === plan.target.sourceSha &&
+      installed.tree === plan.target.sourceTree;
     const matchingRetryStage =
       lastDownload?.receipt?.phase === "completed" &&
       stage !== undefined &&
@@ -120,6 +135,7 @@ export function installPlanPresentation(
       phase,
       copyKey: `device.${phase}`,
       text,
+      targetBuildRunning,
       downloadLabel: retryDownload ? "Retry download" : `Download on ${device.label}`,
       installLabel: retryInstall ? "Retry install" : `Install on ${device.label}`,
       settled: deviceSettled(plan, device),
