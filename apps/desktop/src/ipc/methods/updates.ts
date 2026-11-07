@@ -3,7 +3,11 @@ import {
   FleetDesktopState,
   FleetOperationId,
 } from "@t3tools/contracts/jones/fleet-updates";
-import { JonesUpdateDownloadInput } from "@t3tools/contracts/jones/jonesUpdates";
+import {
+  JonesUpdateBuildList,
+  JonesUpdateDownloadInput,
+  JonesUpdateProvenance,
+} from "@t3tools/contracts/jones/jonesUpdates";
 import {
   DesktopUpdateActionResultSchema,
   DesktopUpdateChannelSchema,
@@ -53,6 +57,26 @@ export const downloadUpdate = DesktopIpc.makeIpcMethod({
     const state = yield* updates.getState;
     if (state.jones !== undefined) return { accepted: false, completed: false, state };
     return yield* updates.download;
+  }),
+});
+
+export const listJonesUpdateBuilds = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.JONES_UPDATE_LIST_BUILDS_CHANNEL,
+  payload: Schema.Void,
+  result: JonesUpdateBuildList,
+  handler: Effect.fn("desktop.ipc.updates.listJonesBuilds")(function* () {
+    const updates = yield* DesktopUpdates.DesktopUpdates;
+    return yield* updates.listJonesBuilds ?? Effect.succeed({ builds: [], unavailable: true });
+  }),
+});
+
+export const selectJonesUpdateBuild = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.JONES_UPDATE_SELECT_BUILD_CHANNEL,
+  payload: JonesUpdateProvenance,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.updates.selectJonesBuild")(function* (build) {
+    const updates = yield* DesktopUpdates.DesktopUpdates;
+    return yield* updates.selectJonesBuild?.(build) ?? Effect.succeed(false);
   }),
 });
 

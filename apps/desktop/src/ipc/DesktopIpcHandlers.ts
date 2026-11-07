@@ -42,6 +42,8 @@ import {
   fleetUpdates,
   getUpdateState,
   installUpdate,
+  listJonesUpdateBuilds,
+  selectJonesUpdateBuild,
   setUpdateChannel,
 } from "./methods/updates.ts";
 import {
@@ -173,6 +175,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getUpdateState);
   yield* ipc.handle(setUpdateChannel);
   yield* ipc.handle(downloadUpdate);
+  yield* ipc.handle(listJonesUpdateBuilds);
+  yield* ipc.handle(selectJonesUpdateBuild);
   yield* ipc.handle(discardUpdate);
   yield* ipc.handle(JonesUpdatesIpc.setBackgroundPreparation);
   yield* ipc.handle(InstallPlanIpc.installPlan);

@@ -26,7 +26,10 @@ import {
 } from "@t3tools/shared/jones/jonesActions";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import { readJonesBuildStartedAt } from "@t3tools/contracts/jones/fleet-updates";
-import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
+import type {
+  JonesUpdateProvenance,
+  JonesUpdateState,
+} from "@t3tools/contracts/jones/jonesUpdates";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
@@ -469,7 +472,8 @@ export interface JonesDesktopUpdateOptions {
       }
     | undefined
   >;
-  readonly client?: Pick<JonesActionsClient, "check" | "stage">;
+  readonly client?: Pick<JonesActionsClient, "check" | "stage"> &
+    Partial<Pick<JonesActionsClient, "listQualifiedBuilds">>;
   /** Test adapter; production reads the installed bundle through the native plist boundary. */
   readonly readInstalledBundleIdentity?: typeof readMacBundleIdentity;
   readonly stageApp?: typeof stageJonesMacApp;
@@ -562,7 +566,7 @@ export class JonesDesktopUpdateController {
   #heldDownload: { readonly pid: number; readonly processGroup: number } | undefined;
   #heldCopy = false;
   readonly #options: JonesDesktopUpdateOptions;
-  readonly #client: Pick<JonesActionsClient, "check" | "stage">;
+  readonly #client: NonNullable<JonesDesktopUpdateOptions["client"]>;
 
   constructor(options: JonesDesktopUpdateOptions) {
     this.#options = options;
@@ -1803,36 +1807,106 @@ export class JonesDesktopUpdateController {
     );
   }
 
+  async #discoveryInput(installedSource: string) {
+    const installedBundle = await (
+      this.#options.readInstalledBundleIdentity ?? readMacBundleIdentity
+    )(this.#options.appPath);
+    if (
+      !installedBundle.bundleIdentifier?.trim() ||
+      (this.#bootstrap?.bundleIdentifier !== undefined &&
+        this.#bootstrap.bundleIdentifier !== installedBundle.bundleIdentifier) ||
+      (installedBundle.bundleIdentifier === "com.jonessystems.jonescode" &&
+        this.#bootstrap?.bundleIdentifier !== installedBundle.bundleIdentifier)
+    ) {
+      throw new Error("Installed desktop identity is not admitted; update discovery held.");
+    }
+    return {
+      desktopBundleIdentifier: installedBundle.bundleIdentifier,
+      installedSource,
+      platform: "darwin" as const,
+      architecture: this.#options.architecture,
+    };
+  }
+
+  async listBuilds(): Promise<{
+    readonly builds: readonly JonesUpdateProvenance[];
+    readonly unavailable: boolean;
+  }> {
+    if (
+      this.#source === undefined ||
+      this.#options.disabledByEnv ||
+      this.#client.listQualifiedBuilds === undefined
+    )
+      return { builds: [], unavailable: true };
+    try {
+      const result = await this.#client.listQualifiedBuilds(
+        await this.#discoveryInput(this.#source),
+      );
+      return {
+        unavailable: result.unavailable,
+        builds: result.builds.map(({ candidate, buildStartedAt }) =>
+          provenance(candidate, buildStartedAt),
+        ),
+      };
+    } catch {
+      return { builds: [], unavailable: true };
+    }
+  }
+
+  async selectBuild(reviewed: JonesUpdateProvenance): Promise<boolean> {
+    if (
+      this.#busy !== null ||
+      this.#source === undefined ||
+      this.#staged !== undefined ||
+      this.#heldDownload !== undefined ||
+      this.#activationBlocked ||
+      this.#options.disabledByEnv
+    )
+      return false;
+    this.#busy = "check";
+    try {
+      const input = await this.#discoveryInput(this.#source);
+      const result = await this.#client.check({ ...input, targetSource: reviewed.sourceSha });
+      if (result.state !== "available") return false;
+      const qualified = provenance(result.candidate, result.buildStartedAt);
+      if (
+        qualified.artifactId !== reviewed.artifactId ||
+        qualified.artifactDigest !== reviewed.artifactDigest ||
+        qualified.sourceSha !== reviewed.sourceSha ||
+        qualified.sourceTree !== reviewed.sourceTree ||
+        qualified.version !== reviewed.version ||
+        qualified.runId !== reviewed.runId ||
+        qualified.runAttempt !== reviewed.runAttempt ||
+        qualified.workflow !== reviewed.workflow ||
+        qualified.platform !== reviewed.platform ||
+        qualified.architecture !== reviewed.architecture
+      )
+        return false;
+      this.#candidate = result.candidate;
+      this.#candidateBuildStartedAt = result.buildStartedAt;
+      await this.#publish("available", "available");
+      return true;
+    } catch {
+      return false;
+    } finally {
+      this.#busy = null;
+    }
+  }
+
   async check(): Promise<boolean> {
     if (this.#busy !== null || this.#source === undefined || this.#options.disabledByEnv)
       return false;
     // Reload a missing stable-path binding after an independently completed native transaction.
     // The production startup owner holds readiness until its exact commit grant.
     if (this.#bootstrap === undefined) await this.configure();
+    if (this.#busy !== null) return false;
     this.#busy = "check";
     try {
       await this.#publish(
         this.#staged === undefined ? "checking" : "staged",
         this.#staged === undefined ? "checking" : "downloaded",
       );
-      const installedBundle = await (
-        this.#options.readInstalledBundleIdentity ?? readMacBundleIdentity
-      )(this.#options.appPath);
-      if (
-        !installedBundle.bundleIdentifier?.trim() ||
-        (this.#bootstrap?.bundleIdentifier !== undefined &&
-          this.#bootstrap.bundleIdentifier !== installedBundle.bundleIdentifier) ||
-        (installedBundle.bundleIdentifier === "com.jonessystems.jonescode" &&
-          this.#bootstrap?.bundleIdentifier !== installedBundle.bundleIdentifier)
-      ) {
-        throw new Error("Installed desktop identity is not admitted; update discovery held.");
-      }
-      const result = await this.#client.check({
-        desktopBundleIdentifier: installedBundle.bundleIdentifier,
-        installedSource: this.#source,
-        platform: "darwin",
-        architecture: this.#options.architecture,
-      });
+      const result = await this.#client.check(await this.#discoveryInput(this.#source));
       this.#checkClassification = result.classification;
       if (result.state === "available") {
         this.#latest = result.candidate;

@@ -25,12 +25,53 @@ vi.mock("@tanstack/react-router", async (original) => ({
 }));
 import { ProviderUpdateEnvironmentRows, ProviderUpdateNotice } from "./ProviderUpdateNotice";
 import { UpdateEverythingDialog } from "~/components/sidebar/UpdateEverythingDialog";
+import { JonesBuildReview } from "~/components/sidebar/SidebarUpdatePill";
 import { describeUpdateEverything } from "~/components/sidebar/updateEverything.logic";
 
 const wsl = EnvironmentId.make("ui-update-wsl");
 const laptop = EnvironmentId.make("ui-update-laptop");
 
 describe("Jones install handoff in the composed update dialog", () => {
+  it("passes the exact chosen artifact from the build picker", async () => {
+    const choose = vi.fn();
+    const build = {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: "1".repeat(40),
+      sourceTree: "a".repeat(40),
+      workflow: "artifact-desktop-mac.yml",
+      runId: 101,
+      runAttempt: 1,
+      artifactId: 201,
+      artifactDigest: "sha256:" + "a".repeat(64),
+      platform: "darwin",
+      architecture: "arm64",
+      version: "0.1.2-preview.20261106.101.1",
+    } as const;
+    const other = {
+      ...build,
+      sourceSha: "2".repeat(40),
+      sourceTree: "b".repeat(40),
+      runId: 100,
+      artifactId: 200,
+      version: "0.1.2-preview.20261106.100.1",
+    };
+    await using _screen = await render(
+      <JonesBuildReview
+        build={build}
+        list={{ builds: [build, other], unavailable: false }}
+        onSelect={choose}
+      />,
+    );
+    const picker = page.getByRole("combobox", { name: "Jones Code build" });
+    await expect.element(picker).toHaveValue("201");
+    const select = picker.element() as HTMLSelectElement;
+    await act(async () => {
+      select.value = "200";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(choose).toHaveBeenCalledExactlyOnceWith(other);
+  });
+
   it.each([
     { mixed: false, label: "Jones-only" },
     { mixed: true, label: "mixed provider and Jones" },

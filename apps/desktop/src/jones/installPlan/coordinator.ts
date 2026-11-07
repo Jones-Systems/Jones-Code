@@ -706,6 +706,7 @@ export function createInstallPlanCoordinator(options: {
         const recordLaptop = async (
           action: "download" | "stop" | "install",
           review?: JonesInstallPlanReview,
+          expectedArtifactId?: number,
         ) => {
           const current = plan!;
           if (current.laptop.operations.length >= MAX_OPERATIONS)
@@ -718,6 +719,9 @@ export function createInstallPlanCoordinator(options: {
             if (
               native?.provenance?.sourceSha !== current.target.sourceSha ||
               native.provenance.sourceTree !== current.target.sourceTree ||
+              (expectedArtifactId !== undefined &&
+                (native.provenance.artifactId !== expectedArtifactId ||
+                  native.provenance.version !== current.target.version)) ||
               !native.capability.download ||
               native.stagedHandle !== undefined
             )
@@ -905,7 +909,10 @@ export function createInstallPlanCoordinator(options: {
             !evidence.activationBlocked &&
             evidence.activeSource === req.target.sourceSha &&
             evidence.activeTree === req.target.sourceTree;
-          if (plan !== null && (!canSupersede(plan) || pendingLaptop()))
+          if (
+            plan !== null &&
+            (req.laptop?.expectedArtifactId !== undefined || !canSupersede(plan) || pendingLaptop())
+          )
             refuse("plan-active", "Finish the current plan before starting another.");
           else if (environmentId === undefined || evidence.activeVersion === undefined)
             refuse("unsupported", "The native Laptop identity is unavailable.");
@@ -967,7 +974,11 @@ export function createInstallPlanCoordinator(options: {
               };
               plan = document.current;
               if (req.laptop !== undefined)
-                await recordLaptop(req.laptop.action, req.laptop.review);
+                await recordLaptop(
+                  req.laptop.action,
+                  req.laptop.review,
+                  req.laptop.expectedArtifactId,
+                );
               // A refused first action must not leave a newly created plan or disposition behind.
               if (extras.refused !== undefined) {
                 document = snapshot.document;

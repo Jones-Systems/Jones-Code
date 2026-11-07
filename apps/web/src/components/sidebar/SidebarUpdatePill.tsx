@@ -9,6 +9,10 @@ import {
   type DesktopUpdateState,
   managedUpdatesDenial,
 } from "@t3tools/contracts";
+import type {
+  JonesUpdateBuildList,
+  JonesUpdateProvenance,
+} from "@t3tools/contracts/jones/jonesUpdates";
 import { TriangleAlertIcon } from "lucide-react";
 import { type ComponentProps, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -285,6 +289,54 @@ export function SidebarUpdatePill() {
   return <SidebarUpdateControl />;
 }
 
+export function JonesBuildReview({
+  build,
+  list,
+  onSelect,
+}: {
+  readonly build: JonesUpdateProvenance;
+  readonly list: JonesUpdateBuildList | undefined;
+  readonly onSelect: (build: JonesUpdateProvenance) => void;
+}) {
+  const selectId = useId();
+  const available = list?.builds ?? [];
+  const choices = available.some((item) => item.artifactId === build.artifactId)
+    ? available
+    : [build, ...available];
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border p-3">
+      <label className="text-sm font-medium" htmlFor={selectId}>
+        Jones Code build
+      </label>
+      <select
+        id={selectId}
+        className="min-w-0 rounded-md border bg-background px-2 py-1.5 text-sm"
+        value={build.artifactId}
+        onChange={(event) => {
+          const choice = choices.find((item) => item.artifactId === Number(event.target.value));
+          if (choice !== undefined) onSelect(choice);
+        }}
+      >
+        {choices.map((item) => (
+          <option key={item.artifactId} value={item.artifactId}>
+            {item.version ?? item.sourceSha} · {item.sourceSha.slice(0, 8)}
+          </option>
+        ))}
+      </select>
+      <p className="text-muted-foreground text-xs">
+        {list === undefined
+          ? "Checking for other qualified builds…"
+          : list.unavailable
+            ? "The build list could not be fully checked."
+            : choices.length === 1
+              ? "No other qualified builds found."
+              : "Recent qualified builds."}
+        {" Download prepares the Laptop. Installation is reviewed separately."}
+      </p>
+    </div>
+  );
+}
+
 function SidebarUpdateControl() {
   const state = useDesktopUpdateState();
   const installPlan = useInstallPlan();
@@ -292,6 +344,9 @@ function SidebarUpdateControl() {
   const updatesDenial = managedUpdatesDenial(usePrimaryManagedPolicy());
   const [isActionPending, setIsActionPending] = useState(false);
   const [isConfirmingEverything, setIsConfirmingEverything] = useState(false);
+  const [reviewedBuild, setReviewedBuild] = useState<JonesUpdateProvenance>();
+  const [buildList, setBuildList] = useState<JonesUpdateBuildList>();
+  const reviewGeneration = useRef(0);
   const confirmationInFlight = useRef(false);
   const [checkAnimationKey, setCheckAnimationKey] = useState(0);
   const [releaseNotesPopoverHandle] = useState(() => PopoverCreateHandle());
@@ -322,7 +377,17 @@ function SidebarUpdateControl() {
   const localUpdateVersion =
     state && action !== "none" ? getDesktopUpdateDownloadedVersion(state) : null;
   const everything = useUpdateEverything(localUpdateVersion);
-  const runsEverything = everything.hasUpdates && !isDownloading;
+  const bridge = typeof window === "undefined" ? undefined : window.desktopBridge;
+  const offeredBuild =
+    action === "download" &&
+    state?.jones?.provenance?.version !== undefined &&
+    bridge?.installPlan !== undefined &&
+    bridge.listJonesUpdateBuilds !== undefined &&
+    bridge.selectJonesUpdateBuild !== undefined
+      ? state.jones.provenance
+      : undefined;
+  const hasUpdates = everything.hasUpdates || offeredBuild !== undefined;
+  const runsEverything = hasUpdates && !isDownloading;
   const run = useUpdateEverythingRun();
   const isRunningEverything = run !== null;
   const showCheckIcon = shouldShowDesktopUpdateCheckIcon({
@@ -339,15 +404,13 @@ function SidebarUpdateControl() {
   });
   const idleTooltip =
     !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state, updatesDenial) : null;
-  const opensInstallStatus = canOpenInstallStatusPill(
-    installPlan.native,
-    state,
-    everything.hasUpdates,
-  );
+  const opensInstallStatus = canOpenInstallStatusPill(installPlan.native, state, hasUpdates);
   const tooltip = opensInstallStatus
     ? "Open Install status"
     : runsEverything
-      ? everything.summary
+      ? offeredBuild === undefined
+        ? everything.summary
+        : `Review Jones Code ${offeredBuild.version} · ${offeredBuild.sourceSha.slice(0, 8)}`
       : showUpdateDetails
         ? state
           ? getDesktopUpdateButtonTooltip(state)
@@ -380,7 +443,7 @@ function SidebarUpdateControl() {
   const handleAction = async () => {
     const bridge = window.desktopBridge;
     if (bridge?.installPlan) {
-      const route = await routeInstallStatusPill(bridge, state, everything.hasUpdates).catch(() => {
+      const route = await routeInstallStatusPill(bridge, state, hasUpdates).catch(() => {
         toastUpdateError(
           "Install status unavailable",
           "The native plan could not be read. No update was started.",
@@ -396,7 +459,18 @@ function SidebarUpdateControl() {
     if (isInteractionDisabled) return;
 
     if (runsEverything) {
+      const generation = ++reviewGeneration.current;
+      setReviewedBuild(offeredBuild);
+      setBuildList(undefined);
       setIsConfirmingEverything(true);
+      if (offeredBuild !== undefined && bridge?.listJonesUpdateBuilds !== undefined) {
+        void bridge
+          .listJonesUpdateBuilds()
+          .catch(() => ({ builds: [], unavailable: true }))
+          .then((list) => {
+            if (reviewGeneration.current === generation) setBuildList(list);
+          });
+      }
       return;
     }
 
@@ -467,8 +541,16 @@ function SidebarUpdateControl() {
   const runEverything = async (providersOnly: boolean) => {
     if (confirmationInFlight.current) return;
     const bridge = window.desktopBridge;
-    const runCombined = () =>
-      everything.run({
+    const runCombined = async () => {
+      if (reviewedBuild !== undefined) {
+        if ((await bridge?.selectJonesUpdateBuild?.(reviewedBuild)) !== true)
+          throw new Error(
+            "The reviewed build could not be reverified. Open Updates and review again.",
+          );
+        await everything.run({ reviewedBuild });
+        return;
+      }
+      await everything.run({
         ...(bridge && action === "download"
           ? {
               downloadLocal: (reportError) =>
@@ -479,6 +561,7 @@ function SidebarUpdateControl() {
           ? { installLocal: (reportError) => installLocalUpdate(bridge, reportError) }
           : {}),
       });
+    };
     const update = providersOnly ? everything.updateProvidersOnly : runCombined;
     if (update === undefined) return;
     confirmationInFlight.current = true;
@@ -521,12 +604,28 @@ function SidebarUpdateControl() {
   const confirmDialog = (
     <UpdateEverythingDialog
       open={isConfirmingEverything}
-      onOpenChange={setIsConfirmingEverything}
+      onOpenChange={(open) => {
+        if (!open) reviewGeneration.current++;
+        setIsConfirmingEverything(open);
+      }}
       version={everything.version}
       providerCount={everything.providerCount}
       rows={everything.rows}
       restarts={everything.restarts}
       onConfirm={() => void runEverything(false)}
+      {...(reviewedBuild === undefined
+        ? {}
+        : {
+            title: "Review updates",
+            confirmLabel: "Download selected build",
+            buildReview: (
+              <JonesBuildReview
+                build={reviewedBuild}
+                list={buildList}
+                onSelect={setReviewedBuild}
+              />
+            ),
+          })}
       {...(everything.updateProvidersOnly === undefined
         ? {}
         : { onProvidersOnly: () => void runEverything(true) })}

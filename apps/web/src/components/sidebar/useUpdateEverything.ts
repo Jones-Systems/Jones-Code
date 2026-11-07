@@ -2,6 +2,7 @@ import { supportsServerUpdateThreadContinuation } from "~/versionSkew";
 import { useJonesBulkUpdates } from "../../jones/installStatus/bulkUpdates";
 import { useAtomValue } from "@effect/atom-react";
 import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
+import type { JonesUpdateProvenance } from "@t3tools/contracts/jones/jonesUpdates";
 
 import { APP_VERSION } from "~/branding";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
@@ -118,10 +119,14 @@ export function useUpdateEverything(
     run: async ({
       downloadLocal,
       installLocal,
+      reviewedBuild,
     }: {
       downloadLocal?: (reportError: ReportLocalUpdateError) => Promise<boolean>;
       installLocal?: (reportError: ReportLocalUpdateError) => Promise<boolean>;
+      reviewedBuild?: JonesUpdateProvenance;
     }) => {
+      const reviewedHandoff =
+        reviewedBuild === undefined ? undefined : await jones.handOff(reviewedBuild);
       const localFailures: Array<string> = [];
       const reportLocalError: ReportLocalUpdateError = (title, description) => {
         localFailures.push(`${title}: ${description}`);
@@ -156,7 +161,7 @@ export function useUpdateEverything(
         });
       }
       const localVersion = !jones.managesLocal && installLocal ? localUpdateVersion : null;
-      const jonesResultsPromise = jones.handOff();
+      const jonesResultsPromise = reviewedHandoff ?? jones.handOff();
       setUpdateEverythingRun(() => ({
         ...(channelSwitch ? { trackSwitch: true } : {}),
         localVersion,

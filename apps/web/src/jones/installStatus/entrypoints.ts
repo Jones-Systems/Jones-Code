@@ -12,6 +12,7 @@ import type {
   JonesInstallPlanTarget,
 } from "@t3tools/contracts/jones/installPlan";
 import type { JonesOperationAction } from "@t3tools/contracts/jones/jonesOperations";
+import type { JonesUpdateProvenance } from "@t3tools/contracts/jones/jonesUpdates";
 import type {
   JonesExecutorHost,
   JonesPlanGateResult,
@@ -267,17 +268,31 @@ export function partitionUpdateEverything<T extends { readonly environmentId: En
 export async function handOffJonesTargets(
   targets: readonly JonesHandoffTarget[],
   dispatch?: NativeJonesDispatch,
+  reviewedBuild?: JonesUpdateProvenance,
 ): Promise<readonly JonesHandoffResult[]> {
   const binding = installPlanServices();
-  if (binding?.services.bridge.installPlan === undefined)
+  if (binding?.services.bridge.installPlan === undefined) {
+    if (reviewedBuild !== undefined) throw new Error("The native install plan is unavailable.");
     return targets.map((target) => ({
       ...target,
       handedOff: false,
       message: "Update from Connections after Laptop is verified: this client has no native plan.",
     }));
+  }
   const read = await requestInstallPlan({ type: "read" }, binding);
   const desktop = await binding.services.bridge.getUpdateState();
   const target = read.state.current?.target ?? targetForDesktop(desktop);
+  if (
+    reviewedBuild !== undefined &&
+    (read.state.current !== null ||
+      target?.sourceSha !== reviewedBuild.sourceSha ||
+      target.sourceTree !== reviewedBuild.sourceTree ||
+      target.version !== reviewedBuild.version ||
+      desktop.jones?.provenance?.artifactId !== reviewedBuild.artifactId ||
+      desktop.jones.phase !== "available" ||
+      !desktop.jones.capability.download)
+  )
+    throw new Error("The reviewed build or install plan changed. Open Updates and review again.");
   if (target === undefined)
     return targets.map((t) => ({
       ...t,
@@ -322,7 +337,7 @@ export async function handOffJonesTargets(
     }
   }
   const current = read.state.current;
-  if (selections.length === 0) return results;
+  if (selections.length === 0 && reviewedBuild === undefined) return results;
   const request =
     current !== null
       ? {
@@ -338,12 +353,21 @@ export async function handOffJonesTargets(
           target,
           select: selections,
           ...(desktop.jones?.phase === "available" && desktop.jones.capability.download
-            ? { laptop: { action: "download" as const } }
+            ? {
+                laptop: {
+                  action: "download" as const,
+                  ...(reviewedBuild === undefined
+                    ? {}
+                    : { expectedArtifactId: reviewedBuild.artifactId }),
+                },
+              }
             : {}),
         };
   const result = await (dispatch === undefined
     ? requestInstallPlan(request, binding)
     : dispatch(request, read.state));
+  if (reviewedBuild !== undefined && result.refused !== undefined)
+    throw new Error(result.refused.message);
   binding.store.open();
   return results.map((entry) => {
     const applied = result.applied?.find((a) => a.environmentId === entry.environmentId);

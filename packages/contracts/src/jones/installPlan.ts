@@ -288,6 +288,9 @@ export const JonesInstallPlanRequest = Schema.Union([
     laptop: Schema.optionalKey(
       Schema.Struct({
         action: Schema.Literals(["download", "install"]),
+        expectedArtifactId: Schema.optionalKey(
+          Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
+        ),
         review: Schema.optionalKey(JonesInstallPlanReview),
       }),
     ),

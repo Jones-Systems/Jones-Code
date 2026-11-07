@@ -42,6 +42,12 @@ export const JonesUpdateProvenance = Schema.Struct({
 });
 export type JonesUpdateProvenance = typeof JonesUpdateProvenance.Type;
 
+export const JonesUpdateBuildList = Schema.Struct({
+  builds: Schema.Array(JonesUpdateProvenance).check(Schema.isMaxLength(5)),
+  unavailable: Schema.Boolean,
+});
+export type JonesUpdateBuildList = typeof JonesUpdateBuildList.Type;
+
 /** Discovery metadata only; it carries neither a staged handle nor a migration plan. */
 export const JonesUpdateAlternative = Schema.Struct({
   provenance: JonesUpdateProvenance,

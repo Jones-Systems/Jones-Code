@@ -74,6 +74,7 @@ function fixture() {
           sourceSha: source,
           sourceTree: tree,
           artifactId: 1,
+          version: target.version,
         },
       },
     } as DesktopUpdateState,
@@ -613,6 +614,20 @@ describe("native client command reservations", () => {
   });
 });
 describe("native install plan coordinator", () => {
+  it("leaves no plan or download when the reviewed artifact changed", async () => {
+    const f = fixture();
+    const result = await f.coordinator.request({
+      type: "start",
+      origin: "update-everything",
+      target,
+      select: [],
+      laptop: { action: "download", expectedArtifactId: 2 },
+    });
+    expect(result.refused?.code).toBe("not-selectable");
+    expect(f.snapshot().document.current).toBeNull();
+    expect(f.controller.download).not.toHaveBeenCalled();
+  });
+
   it("requires native committed evidence; renderer reports and source equality cannot open the Laptop gate", async () => {
     const f = fixture();
     f.setEvidence({ committedTransactionId: undefined });

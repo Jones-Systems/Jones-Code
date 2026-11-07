@@ -125,6 +125,11 @@ interface JonesActionsCheckInput {
   readonly architecture: JonesActionsArchitecture;
 }
 
+type QualifiedBuild = Pick<
+  Extract<JonesActionsCheckResult, { state: "available" }>,
+  "candidate" | "buildStartedAt"
+>;
+
 type CheckOperation =
   | "input"
   | "main"
@@ -653,6 +658,27 @@ export class JonesActionsClient {
   }
 
   async observeCheck(input: JonesActionsCheckInput): Promise<JonesActionsCheckObservation> {
+    return this.observe(input);
+  }
+
+  async listQualifiedBuilds(
+    input: Omit<JonesActionsCheckInput, "targetSource">,
+  ): Promise<{ readonly builds: readonly QualifiedBuild[]; readonly unavailable: boolean }> {
+    const builds = new Map<string, QualifiedBuild>();
+    const observation = await this.observe(input, (build) => {
+      if (!builds.has(build.candidate.source)) builds.set(build.candidate.source, build);
+      return builds.size >= 5;
+    });
+    return {
+      builds: [...builds.values()],
+      unavailable: observation.kind === "failure",
+    };
+  }
+
+  private async observe(
+    input: JonesActionsCheckInput,
+    collect?: (build: QualifiedBuild) => boolean,
+  ): Promise<JonesActionsCheckObservation> {
     const scope: CheckEvidence["scope"] = {
       platform: input.platform,
       architecture: input.architecture,
@@ -743,6 +769,7 @@ export class JonesActionsClient {
         return { ...completedEvidence(), kind: "target-already-running" };
       }
       const ciObservations = new Map<string, Array<Record<string, unknown>>>();
+      let catalogBudget = 24;
       for await (const listed of discoverArtifactRuns(
         this.transport,
         approved,
@@ -750,6 +777,7 @@ export class JonesActionsClient {
         { discovery, rejections },
         context,
       )) {
+        if (collect !== undefined && catalogBudget-- === 0) break;
         if (listed.status !== "completed") {
           addWitness(pending["producer-not-completed"], {
             ...checkWitness(listed, "listed-main-only"),
@@ -893,12 +921,16 @@ export class JonesActionsClient {
             platform: input.platform,
             architecture: input.architecture,
           };
+          const build = {
+            candidate,
+            ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
+          };
+          if (collect !== undefined && !collect(build)) break;
           discovery.termination = "candidate-selected";
           return {
             ...completedEvidence(),
             kind: "available",
-            candidate,
-            ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
+            ...build,
           };
         }
         if (artifacts.length === 100) addLimit(discovery, "artifact-page");
