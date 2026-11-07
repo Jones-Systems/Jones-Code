@@ -89,6 +89,55 @@ async function sendStopGrant(grant: JonesInstallPlanGrant) {
   if (result.refused !== undefined) throw new Error(result.refused.message);
 }
 
+export async function inspectPanelCleanup(
+  environmentId: EnvironmentId,
+  operationId: string,
+): Promise<"eligible" | "unproved"> {
+  const binding = installPlanServices();
+  if (binding === undefined) return "unproved";
+  const { services } = binding;
+  try {
+    const { state } = await requestInstallPlan({ type: "read" }, binding);
+    const operation = state.current?.devices
+      .find((d) => d.environmentId === environmentId)
+      ?.operations.at(-1);
+    const receipt = operation?.receipt;
+    if (
+      state.readOnly !== undefined ||
+      operation?.operationId !== operationId ||
+      receipt?.phase !== "held" ||
+      receipt.code !== "cleanup-unconfirmed"
+    )
+      return "unproved";
+    const observed = await services.observe(environmentId);
+    if (
+      !observed.canOperate ||
+      observed.observation.freshness !== "fresh" ||
+      observed.observation.state?.environmentId !== environmentId ||
+      observed.observation.state.capability.operations !== 1
+    )
+      return "unproved";
+    const result = await services.operation(environmentId, {
+      action: "operationRead",
+      input: { environmentId, operationIds: [operationId], inspectCleanup: operationId },
+    });
+    if (!("receipts" in result) || result.cleanupInspection?.operationId !== operationId)
+      return "unproved";
+    const held = result.receipts[0];
+    return result.receipts.length === 1 &&
+      held?.operationId === operationId &&
+      held.receipt !== null &&
+      held.receipt.phase === "held" &&
+      held.receipt.code === "cleanup-unconfirmed" &&
+      held.receipt.jobId === receipt.jobId &&
+      validateReceipt(receipt, held.receipt)
+      ? result.cleanupInspection.status
+      : "unproved";
+  } catch {
+    return "unproved";
+  }
+}
+
 /** Owner clicks claim once; lost replies keep the native reservation for receipt reconciliation. */
 export async function performPanelAction(
   environmentId: EnvironmentId | "laptop",

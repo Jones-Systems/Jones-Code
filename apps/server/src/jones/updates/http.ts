@@ -49,6 +49,8 @@ export const jonesUpdatesHttpApiLayer = HttpApiBuilder.group(
           Effect.gen(function* () {
             yield* requireEnvironmentScope(AuthOrchestrationReadScope);
             yield* noStore;
+            if (payload.inspectCleanup !== undefined)
+              yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
             return yield* updates.operationRead(payload);
           }),
         )

@@ -18,7 +18,7 @@ import { installStatusStore, type InstallStatusStore } from "./panelUi";
 import { panelPresentation } from "./presentation";
 import { selectionFor } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
-import { performPanelAction, type PanelAction } from "./actions";
+import { inspectPanelCleanup, performPanelAction, type PanelAction } from "./actions";
 import {
   INSTALL_PLAN_GO,
   INSTALL_PLAN_INFO,
@@ -42,6 +42,10 @@ export function InstallStatusPanel({
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [detail, setDetail] = useState<EnvironmentId | "laptop" | null>(null);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
+  const [cleanupInspection, setCleanupInspection] = useState<{
+    readonly key: string;
+    readonly status: "eligible" | "unproved";
+  } | null>(null);
   const descriptionId = useId();
   const view = panelPresentation(snapshot, snapshot.updatedAt);
   if (!snapshot.open || snapshot.native === null) return null;
@@ -406,6 +410,13 @@ export function InstallStatusPanel({
               const receipt = plan.devices
                 .find((d) => d.environmentId === environmentId)
                 ?.operations.at(-1)?.receipt;
+              const inspectKey =
+                receipt?.phase === "held" &&
+                receipt.code === "cleanup-unconfirmed" &&
+                receipt.jobId !== undefined &&
+                receipt.action.kind !== "install"
+                  ? `${plan.planId}:${environmentId}:${receipt.operationId}:${receipt.updatedAt}:cleanup`
+                  : null;
               return (
                 <li key={environmentId}>
                   <div className="flex min-w-0 items-center gap-1">
@@ -499,8 +510,34 @@ export function InstallStatusPanel({
                           this host.
                         </p>
                       ) : null}
+                      {inspectKey !== null && cleanupInspection?.key === inspectKey ? (
+                        <p role="status">
+                          {cleanupInspection.status === "eligible"
+                            ? "Inspection confirmed the prior disk image is absent. The update remains on hold."
+                            : "Inspection could not confirm cleanup. The update remains on hold."}
+                        </p>
+                      ) : null}
                       {!view.readOnly ? (
                         <div className="flex flex-wrap gap-1">
+                          {inspectKey !== null && receipt !== undefined && device?.canOperate ? (
+                            <Button
+                              variant="outline"
+                              size="micro"
+                              disabled={pending.has(inspectKey)}
+                              onClick={() =>
+                                void perform(inspectKey, async () => {
+                                  setCleanupInspection(null);
+                                  const status = await inspectPanelCleanup(
+                                    environmentId,
+                                    receipt.operationId,
+                                  );
+                                  setCleanupInspection({ key: inspectKey, status });
+                                })
+                              }
+                            >
+                              {pending.has(inspectKey) ? "Inspecting cleanup…" : "Inspect cleanup"}
+                            </Button>
+                          ) : null}
                           {row?.actions.remove ? (
                             <Button
                               variant="outline"
