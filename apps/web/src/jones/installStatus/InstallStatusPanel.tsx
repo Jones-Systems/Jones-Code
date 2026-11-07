@@ -294,17 +294,22 @@ export function InstallStatusPanel({
               ) : null}
               {view.laptop?.phase === "held" ? (
                 <p>
-                  The download process has not proved exit. Existing app and data are preserved; no
-                  new work starts. Check again for an exact outcome.
+                  Laptop update is on hold while the previous attempt is being verified. Check the
+                  outcome before starting another attempt.
                 </p>
               ) : null}
               {!view.readOnly ? (
                 <Button
                   variant="ghost-muted"
                   size="micro"
+                  disabled={pending.has("laptop:check")}
                   onClick={() => action("laptop", "check")}
                 >
-                  Check again
+                  {pending.has("laptop:check")
+                    ? "Checking outcome…"
+                    : view.laptop?.phase === "held"
+                      ? "Check update outcome"
+                      : "Check again"}
                 </Button>
               ) : null}
             </div>
@@ -487,8 +492,11 @@ export function InstallStatusPanel({
                       ) : null}
                       {held ? (
                         <p>
-                          Existing app and data are preserved. No retry is sent. Check again for the
-                          exact operation receipt; use Connections for host reconciliation.
+                          {receipt?.code === "cleanup-unconfirmed"
+                            ? "The host has yet to confirm cleanup from this attempt."
+                            : "The host has yet to confirm the outcome of this attempt."}{" "}
+                          Check the operation receipt. If the hold remains, open Connections for
+                          this host.
                         </p>
                       ) : null}
                       {!view.readOnly ? (
@@ -543,9 +551,14 @@ export function InstallStatusPanel({
                           <Button
                             variant="ghost-muted"
                             size="micro"
+                            disabled={pending.has(`${environmentId}:check`)}
                             onClick={() => action(environmentId, "check")}
                           >
-                            Check again
+                            {pending.has(`${environmentId}:check`)
+                              ? "Checking outcome…"
+                              : held
+                                ? "Check update outcome"
+                                : "Check again"}
                           </Button>
                         </div>
                       ) : null}
