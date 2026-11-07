@@ -440,7 +440,8 @@ describe("Install status receipt fixture", () => {
     expect(screen.container.textContent).not.toContain("Retry");
     expect(visibleDone(screen)).toHaveLength(0);
     const sent = calls.filter((c) => c.action === "fixture-host-operationStart").length;
-    await click(screen, "Check again");
+    expect(screen.container.textContent).toContain("The host has yet to confirm the outcome");
+    await click(screen, "Check update outcome");
     expect(calls.filter((c) => c.action === "fixture-host-operationStart")).toHaveLength(sent);
     await act(() => fixture.settleHost("VPS", "stopped"));
     expect(screen.container.textContent).toContain("Stopped · nothing installed");
