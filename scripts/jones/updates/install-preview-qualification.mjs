@@ -1313,6 +1313,25 @@ export function rendererSteps(origin, sourceSha, runId) {
   const panel = "[data-install-status]";
   const panelButton = (name) => click(`${panel} >> role=button[name="${name}"]`);
   const planCheck = (label, expression) => check(label, expression);
+  begin("build-review", "build-review", true);
+  wait("available");
+  sidebar();
+  steps.push({ action: "wait", text: "Recent qualified builds." });
+  capture("desktop-qualified-build-review", [
+    "Review updates",
+    "Jones Code build",
+    "Download selected build",
+  ]);
+  planCheck(
+    "The qualified build review has two choices and opening it sends no update",
+    `document.querySelector('[role=alertdialog] select')?.options.length === 2 && s.installPlan.current === null && s.calls.every(c => c.action !== 'selectJonesUpdateBuild' && c.action !== 'fixture-laptop-download')`,
+  );
+  click('role=alertdialog >> role=button[name="Download selected build"]');
+  wait("downloading");
+  planCheck(
+    "The reviewed artifact reaches the Laptop plan before any install",
+    `s.calls.filter(c => c.action === 'selectJonesUpdateBuild').length === 1 && s.installPlan.current.target.laptopArtifactId === 9001 && s.installPlan.current.target.sourceSha === 'a'.repeat(40) && s.calls.every(c => c.action !== 'fixture-laptop-install')`,
+  );
   begin("available", "install-plan", true);
   wait("available");
   planCheck(

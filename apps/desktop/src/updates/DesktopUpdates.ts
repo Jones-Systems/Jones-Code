@@ -687,7 +687,9 @@ export const make = Effect.gen(function* () {
         Effect.map((result) => ({ ...result, state: controller.state })),
       ),
       listJonesBuilds: Effect.promise(() => controller.listBuilds()),
-      selectJonesBuild: (build) => Effect.promise(() => controller.selectBuild(build)),
+      selectJonesBuild: Effect.fn("DesktopUpdates.selectJonesBuild")(
+        (build: JonesUpdateProvenance) => Effect.promise(() => controller.selectBuild(build)),
+      ),
       downloadSelected: Effect.fn("DesktopUpdates.downloadSelected")(function (selection) {
         return Effect.promise(() => background.track(() => controller.download(selection))).pipe(
           Effect.map((result) => ({ ...result, state: controller.state })),
