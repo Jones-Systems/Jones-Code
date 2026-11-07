@@ -1326,11 +1326,16 @@ export function rendererSteps(origin, sourceSha, runId) {
     "The qualified build review has two choices and opening it sends no update",
     `document.querySelector('[role=alertdialog] select')?.options.length === 2 && s.installPlan.current === null && s.calls.every(c => c.action !== 'selectJonesUpdateBuild' && c.action !== 'fixture-laptop-download')`,
   );
+  steps.push({
+    action: "select",
+    locator: 'role=combobox[name="Jones Code build"]',
+    values: ["9002"],
+  });
   click('role=alertdialog >> role=button[name="Download selected build"]');
   wait("downloading");
   planCheck(
     "The reviewed artifact reaches the Laptop plan before any install",
-    `s.calls.filter(c => c.action === 'selectJonesUpdateBuild').length === 1 && s.installPlan.current.target.laptopArtifactId === 9001 && s.installPlan.current.target.sourceSha === 'a'.repeat(40) && s.calls.every(c => c.action !== 'fixture-laptop-install')`,
+    `s.calls.filter(c => c.action === 'selectJonesUpdateBuild').length === 1 && s.installPlan.current.target.laptopArtifactId === 9002 && s.installPlan.current.target.sourceSha === '6'.repeat(40) && s.calls.every(c => c.action !== 'fixture-laptop-install')`,
   );
   begin("available", "install-plan", true);
   wait("available");
