@@ -162,7 +162,7 @@ export async function recoverPanelCleanup(
   environmentId: EnvironmentId,
   reviewed: JonesOperationReceipt,
   recoveryToken: string,
-): Promise<"released" | "unproved" | "cancelled"> {
+): Promise<"released" | "released-plan-unconfirmed" | "unproved" | "cancelled"> {
   const binding = installPlanServices();
   if (binding === undefined) return "unproved";
   const { services } = binding;
@@ -220,7 +220,7 @@ export async function recoverPanelCleanup(
         : null;
   }
   if (receipt === null || !recovered(receipt)) return "unproved";
-  await requestInstallPlan(
+  const report = await requestInstallPlan(
     {
       type: "report",
       planId: held.planId,
@@ -229,8 +229,16 @@ export async function recoverPanelCleanup(
       evidence: { kind: "receipt", receipt },
     },
     binding,
-  );
-  return "released";
+  ).catch(() => undefined);
+  const recorded =
+    report?.state.current?.planId === held.planId
+      ? report.state.current.devices
+          .find((d) => d.environmentId === environmentId)
+          ?.operations.find((o) => o.operationId === operationId)?.receipt
+      : undefined;
+  return report?.refused === undefined && recovered(recorded)
+    ? "released"
+    : "released-plan-unconfirmed";
 }
 
 /** Owner clicks claim once; lost replies keep the native reservation for receipt reconciliation. */

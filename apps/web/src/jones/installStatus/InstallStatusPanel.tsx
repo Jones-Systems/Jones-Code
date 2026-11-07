@@ -51,7 +51,7 @@ export function InstallStatusPanel({
   const [cleanupInspection, setCleanupInspection] = useState<{
     readonly key: string;
     readonly inspection: CleanupInspection;
-    readonly recovery?: "released" | "unproved";
+    readonly recovery?: "released" | "released-plan-unconfirmed" | "unproved";
   } | null>(null);
   const descriptionId = useId();
   const view = panelPresentation(snapshot, snapshot.updatedAt);
@@ -524,9 +524,11 @@ export function InstallStatusPanel({
                             ? "Cleanup release is unconfirmed. Check the update outcome before trying again."
                             : cleanup.recovery === "released"
                               ? "The cleanup hold was released."
-                              : cleanup.inspection.status === "eligible"
-                                ? "Inspection confirmed the prior disk image is absent. The update remains on hold."
-                                : "Inspection could not confirm cleanup. The update remains on hold."}
+                              : cleanup.recovery === "released-plan-unconfirmed"
+                                ? "The host released the cleanup hold. Check the update outcome to refresh this plan."
+                                : cleanup.inspection.status === "eligible"
+                                  ? "Inspection confirmed the prior disk image is absent. The update remains on hold."
+                                  : "Inspection could not confirm cleanup. The update remains on hold."}
                         </p>
                       ) : null}
                       {!view.readOnly ? (
