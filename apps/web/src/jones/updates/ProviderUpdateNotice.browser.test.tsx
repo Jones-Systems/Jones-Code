@@ -36,6 +36,7 @@ describe("Jones install handoff in the composed update dialog", () => {
     { mixed: true, label: "mixed provider and Jones" },
   ])("keeps $label rows visible without starting an install", async ({ mixed }) => {
     const confirm = vi.fn();
+    const updateProviders = vi.fn();
     const description = describeUpdateEverything({
       localVersion: null,
       localMachines: [],
@@ -53,6 +54,7 @@ describe("Jones install handoff in the composed update dialog", () => {
         {...description}
         restarts={[]}
         onConfirm={confirm}
+        {...(mixed ? { onProvidersOnly: updateProviders } : {})}
       />,
     );
     const dialog = page.getByRole("alertdialog");
@@ -67,9 +69,14 @@ describe("Jones install handoff in the composed update dialog", () => {
     if (mixed) {
       await expect.element(dialog.getByText("Codex · personal", { exact: true })).toBeVisible();
       await expect.element(dialog.getByText("1 provider update", { exact: true })).toBeVisible();
+      await dialog.getByRole("button", { name: "Update providers only" }).click();
+      expect(updateProviders).toHaveBeenCalledOnce();
     } else {
       await expect
         .element(dialog.getByText("Codex · personal", { exact: true }))
+        .not.toBeInTheDocument();
+      await expect
+        .element(dialog.getByRole("button", { name: "Update providers only" }))
         .not.toBeInTheDocument();
     }
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();

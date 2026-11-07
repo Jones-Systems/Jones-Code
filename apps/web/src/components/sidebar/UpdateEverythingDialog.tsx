@@ -51,6 +51,7 @@ interface UpdateEverythingDialogProps {
   readonly rows: ReadonlyArray<UpdateEverythingRow>;
   readonly restarts: ReadonlyArray<RestartingMachine>;
   readonly onConfirm: () => void;
+  readonly onProvidersOnly?: () => void;
   /** Overrides the "Update N machines?" title, for an update-track switch. */
   readonly title?: string;
   readonly confirmLabel?: string;
@@ -100,6 +101,7 @@ function UpdateEverythingDialogContent({
   rows,
   restarts,
   onConfirm,
+  onProvidersOnly,
   cancelRef,
   title,
   confirmLabel = "Update",
@@ -243,6 +245,11 @@ function UpdateEverythingDialogContent({
         <AlertDialogClose ref={cancelRef} render={<Button variant="outline" disabled={busy} />}>
           Cancel
         </AlertDialogClose>
+        {onProvidersOnly !== undefined ? (
+          <Button variant="outline" disabled={busy} onClick={onProvidersOnly}>
+            Update providers only
+          </Button>
+        ) : null}
         <Button disabled={disabledReason !== null || busy} onClick={onConfirm}>
           {confirmLabel}
         </Button>

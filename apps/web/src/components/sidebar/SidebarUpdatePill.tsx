@@ -292,6 +292,7 @@ function SidebarUpdateControl() {
   const updatesDenial = managedUpdatesDenial(usePrimaryManagedPolicy());
   const [isActionPending, setIsActionPending] = useState(false);
   const [isConfirmingEverything, setIsConfirmingEverything] = useState(false);
+  const confirmationInFlight = useRef(false);
   const [checkAnimationKey, setCheckAnimationKey] = useState(0);
   const [releaseNotesPopoverHandle] = useState(() => PopoverCreateHandle());
   const suppressReleaseNotesFocusOpen = useRef(false);
@@ -463,11 +464,10 @@ function SidebarUpdateControl() {
     void checkForSidebarUpdate(bridge).finally(() => setIsActionPending(false));
   };
 
-  const runEverything = async () => {
+  const runEverything = async (providersOnly: boolean) => {
+    if (confirmationInFlight.current) return;
     const bridge = window.desktopBridge;
-    setIsConfirmingEverything(false);
-    setIsActionPending(true);
-    const result = await settlePromise(() =>
+    const runCombined = () =>
       everything.run({
         ...(bridge && action === "download"
           ? {
@@ -478,19 +478,24 @@ function SidebarUpdateControl() {
         ...(bridge && action !== "none"
           ? { installLocal: (reportError) => installLocalUpdate(bridge, reportError) }
           : {}),
-      }),
-    );
+      });
+    const update = providersOnly ? everything.updateProvidersOnly : runCombined;
+    if (update === undefined) return;
+    confirmationInFlight.current = true;
+    setIsConfirmingEverything(false);
+    setIsActionPending(true);
+    const result = await settlePromise(async () => {
+      await update();
+    });
+    confirmationInFlight.current = false;
+    setIsActionPending(false);
     if (result._tag === "Failure") {
       const error = squashAtomCommandFailure(result);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not update everything",
-          description: error instanceof Error ? error.message : "An unexpected error occurred.",
-        }),
+      toastUpdateError(
+        providersOnly ? "Could not update providers" : "Could not update everything",
+        error instanceof Error ? error.message : "An unexpected error occurred.",
       );
     }
-    setIsActionPending(false);
   };
 
   const handleCheckAnimationIteration = () => {
@@ -521,7 +526,10 @@ function SidebarUpdateControl() {
       providerCount={everything.providerCount}
       rows={everything.rows}
       restarts={everything.restarts}
-      onConfirm={() => void runEverything()}
+      onConfirm={() => void runEverything(false)}
+      {...(everything.updateProvidersOnly === undefined
+        ? {}
+        : { onProvidersOnly: () => void runEverything(true) })}
     />
   );
 

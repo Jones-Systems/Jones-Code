@@ -114,6 +114,7 @@ export function useUpdateEverything(
     skipped,
     ...view,
     restarts,
+    updateProvidersOnly: providers.machines.length > 0 ? () => providers.updateAll() : undefined,
     run: async ({
       downloadLocal,
       installLocal,
