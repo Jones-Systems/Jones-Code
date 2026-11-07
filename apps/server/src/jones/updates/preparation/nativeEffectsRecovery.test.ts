@@ -247,35 +247,38 @@ it.each([
 ])(
   "releases producer %s only after durable proof, preserving native effects and identity",
   async (installedSource) =>
-    fixture(async (f) => {
-      expect(await preparationLifecycle(f.base, jobId).release(() => true)).toBe(
-        "cleanup-unconfirmed",
-      );
-      await NodeFSP.link(
-        NodePath.join(f.cache, "completed", `${f.handle}.json`),
-        NodePath.join(f.base, "index-link"),
-      );
-      const inspected = await f.inspect();
-      expect(inspected).toMatchObject({
-        state: "eligible",
-        evidence: { producerContract: { source: installedSource } },
-      });
-      expect(f.passes()).toBe(2);
-      expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
-      const proof = String(inspected.proofSha256);
-      expect((await f.apply(proof)).state).toBe("released");
-      expect(await preparationLifecycle(f.base, jobId).release(() => false)).toBe("released");
-      expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8"))).toEqual({
-        schema: 1,
-        jobId,
-        kind: "stage",
-        state: "released",
-        worker,
-      });
-      expect(JSON.parse(await NodeFSP.readFile(f.effects, "utf8")).phase).toBe("native-effects");
-      expect((await f.apply(proof)).state).toBe("released");
-      expect(await NodeFSP.readFile(f.payload, "utf8")).toBe("payload");
-    }, installedSource),
+    fixture(
+      async (f) => {
+        expect(await preparationLifecycle(f.base, jobId).release(() => true)).toBe(
+          "cleanup-unconfirmed",
+        );
+        await NodeFSP.link(
+          NodePath.join(f.cache, "completed", `${f.handle}.json`),
+          NodePath.join(f.base, "index-link"),
+        );
+        const inspected = await f.inspect();
+        expect(inspected).toMatchObject({
+          state: "eligible",
+          evidence: { producerContract: { source: installedSource } },
+        });
+        expect(f.passes()).toBe(2);
+        expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+        const proof = String(inspected.proofSha256);
+        expect((await f.apply(proof)).state).toBe("released");
+        expect(await preparationLifecycle(f.base, jobId).release(() => false)).toBe("released");
+        expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8"))).toEqual({
+          schema: 1,
+          jobId,
+          kind: "stage",
+          state: "released",
+          worker,
+        });
+        expect(JSON.parse(await NodeFSP.readFile(f.effects, "utf8")).phase).toBe("native-effects");
+        expect((await f.apply(proof)).state).toBe("released");
+        expect(await NodeFSP.readFile(f.payload, "utf8")).toBe("payload");
+      },
+      installedSource,
+    ),
 );
 
 it.each(["proof-durable", "release-prepared", "release-durable"] as const)(
