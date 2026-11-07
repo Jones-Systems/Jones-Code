@@ -81,8 +81,26 @@ export function installPlanPresentation(
       observed.observation.state?.capability.operations === 1;
     const latest = device.operations.at(-1);
     const lastDownload = device.operations.filter((o) => o.step === "download").at(-1);
+    const receipt = latest?.receipt;
+    const recoveredDownload =
+      receipt?.code === "cleanup-recovered" &&
+      receipt.jobId !== undefined &&
+      (receipt.phase === "interrupted" || receipt.phase === "stopped");
     const retryDownload =
-      latest?.step === "download" && ["failed", "refused"].includes(latest.receipt?.phase ?? "");
+      latest?.step === "download" &&
+      (recoveredDownload || receipt?.phase === "failed" || receipt?.phase === "refused");
+    const retryInstall =
+      latest?.step === "install" && (receipt?.phase === "failed" || receipt?.phase === "refused");
+    const stage = lastDownload?.receipt?.staged;
+    const hostState = observed?.observation.state;
+    const matchingRetryStage =
+      lastDownload?.receipt?.phase === "completed" &&
+      stage !== undefined &&
+      stage.stagedHandle === hostState?.stagedHandle &&
+      stage.sourceSha === plan.target.sourceSha &&
+      stage.sourceTree === plan.target.sourceTree &&
+      hostState.provenance?.sourceSha === stage.sourceSha &&
+      hostState.provenance.sourceTree === stage.sourceTree;
     let text = copy[phase];
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";
@@ -103,6 +121,7 @@ export function installPlanPresentation(
       copyKey: `device.${phase}`,
       text,
       downloadLabel: retryDownload ? "Retry download" : `Download on ${device.label}`,
+      installLabel: retryInstall ? "Retry install" : `Install on ${device.label}`,
       settled: deviceSettled(plan, device),
       status,
       ...(latest === undefined ? {} : { operationId: latest.operationId }),
@@ -112,7 +131,11 @@ export function installPlanPresentation(
           mutable &&
           ["stopped", "not-updated"].includes(phase) &&
           status?.actions.download === true,
-        install: mutable && phase === "staged" && status?.actions.install === true,
+        install:
+          mutable &&
+          phase === "staged" &&
+          status?.actions.install === true &&
+          (!retryInstall || matchingRetryStage),
         stop:
           mutable &&
           phase === "downloading" &&

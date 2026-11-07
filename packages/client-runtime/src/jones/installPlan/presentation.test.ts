@@ -97,7 +97,7 @@ it("offers a fresh reviewed retry for settled install failures without releasing
   }
 });
 
-it.each(["refused", "failed"] as const)(
+it.each(["refused", "failed", "interrupted", "stopped"] as const)(
   "offers an explicit Retry download for a %s receipt only with fresh permission",
   (phase) => {
     const host = EnvironmentId.make("mini");
@@ -108,8 +108,9 @@ it.each(["refused", "failed"] as const)(
       expectedInstalledSource: "c".repeat(40),
       action: { kind: "download-exact", targetSource: source },
       phase,
-      code: phase === "refused" ? "busy" : "download-failed",
-      ...(phase === "failed" ? { acceptedAt: now } : {}),
+      code:
+        phase === "refused" ? "busy" : phase === "failed" ? "download-failed" : "cleanup-recovered",
+      ...(phase === "refused" ? {} : { acceptedAt: now, jobId: planId }),
       updatedAt: now,
     };
     const base = startPlan({
@@ -179,7 +180,7 @@ it.each(["refused", "failed"] as const)(
         devices: new Map([[host, { observation: { state: value, freshness }, canOperate }]]),
       }).rows[0]!;
     expect(observe()).toMatchObject({
-      phase: "not-updated",
+      phase: phase === "stopped" ? "stopped" : "not-updated",
       downloadLabel: "Retry download",
       actions: { download: true, install: false, checkAgain: true },
     });
@@ -192,6 +193,7 @@ it.each(["refused", "failed"] as const)(
     ])
       expect(observe({ ...live, operation }).actions.download).toBe(false);
     expect(state.current?.devices[0]?.operations).toHaveLength(1);
+    if (phase === "interrupted" || phase === "stopped") return;
     const laptop = installPlanPresentation(
       {
         ...state,

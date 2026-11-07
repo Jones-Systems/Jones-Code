@@ -61,6 +61,7 @@ const fixtureRecoveryToken = "22222222-2222-4222-8222-222222222222";
 async function setup(
   options: {
     refuseFirstDownload?: boolean;
+    refuseFirstInstall?: boolean;
     loseCleanupReply?: boolean;
     refuseCleanupReport?: boolean;
   } = {},
@@ -113,10 +114,11 @@ async function setup(
       ...services,
       operation: async (id, command) => {
         if (
-          options.refuseFirstDownload &&
           refused === undefined &&
           command.action === "operationStart" &&
-          command.input.action.kind !== "install"
+          (command.input.action.kind === "install"
+            ? options.refuseFirstInstall
+            : options.refuseFirstDownload)
         ) {
           calls.push({
             action: "fixture-host-operationStart",
@@ -206,6 +208,7 @@ async function setup(
   };
   return {
     fixture,
+    releaseReadback: () => released,
     bridge,
     screen,
     calls,
@@ -588,8 +591,73 @@ describe("Install status receipt fixture", () => {
         environmentId: held.environmentId,
         input: { environmentId: held.environmentId, operationIds: [held.operationId] },
       });
+      if (!refuseCleanupReport) {
+        const released = world.releaseReadback();
+        expect(released).toBeDefined();
+        await act(() => fixture.publishHostReceipt(released!));
+        const hostStarts = () =>
+          calls.filter(({ action }) => action === "fixture-host-operationStart");
+        expect(hostStarts()).toHaveLength(1);
+        await click(screen, "Retry download");
+        await expect.poll(() => hostStarts().length).toBe(2);
+        const operations = fixture.snapshot().current!.devices[0]!.operations;
+        expect(operations).toHaveLength(2);
+        expect(operations[0]?.receipt).toEqual(released);
+        expect(operations[1]?.operationId).not.toBe(held.operationId);
+      }
     },
   );
+
+  it("offers Retry install for a refused VPS install and reviews the same stage with a fresh ID", async () => {
+    await using world = await setup({ refuseFirstInstall: true });
+    const { screen, fixture, controller, calls } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include VPS" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    controller.wake();
+    const operations = () => fixture.snapshot().current?.devices[0]?.operations;
+    await expect.poll(() => operations()?.at(-1)?.receipt?.phase).toBe("running");
+    await act(() => fixture.settleHost("VPS", "staged"));
+    await click(screen, "VPS update details");
+    await click(screen, "Install on VPS");
+    await expect.poll(() => operations()?.at(-1)?.receipt?.phase).toBe("refused");
+    const refused = operations()!.at(-1)!;
+    const staged = operations()![0]!.receipt!;
+    expect(staged.staged).toBeDefined();
+    await act(() =>
+      fixture.publishHostReceipt({
+        ...staged,
+        staged: { ...staged.staged!, stagedHandle: "different-stage" },
+      }),
+    );
+    expect(screen.container.textContent).not.toContain("Retry install");
+    await act(() => fixture.publishHostReceipt(staged));
+    const startCount = calls.filter(
+      ({ action }) => action === "fixture-host-operationStart",
+    ).length;
+    expect(startCount).toBe(2);
+    const beforeRetry = calls.length;
+    await click(screen, "Retry install");
+    await expect.poll(() => operations()?.at(-1)?.receipt?.phase).toBe("running");
+    const retry = operations()!.at(-1)!;
+    expect(retry.operationId).not.toBe(refused.operationId);
+    expect(retry.receipt?.action).toEqual(refused.receipt?.action);
+    expect(calls.filter(({ action }) => action === "fixture-host-operationStart")).toHaveLength(
+      startCount + 1,
+    );
+    expect(
+      calls
+        .slice(beforeRetry)
+        .filter(
+          ({ action }) => action === "fixture-review" || action === "fixture-host-operationStart",
+        )
+        .map(({ action }) => action),
+    ).toEqual(["fixture-review", "fixture-host-operationStart"]);
+  });
 
   it("keeps unsupported devices out and uses a neutral dashed separator before and after Laptop verification", async () => {
     const oldClass = document.documentElement.className;

@@ -606,7 +606,7 @@ export function InstallStatusPanel({
                               disabled={pending.has(`${environmentId}:install`)}
                               onClick={() => action(environmentId, "install")}
                             >
-                              Install on {label}
+                              {row.installLabel}
                             </Button>
                           ) : null}
                           {row?.actions.stop ? (

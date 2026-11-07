@@ -675,6 +675,7 @@ export function createScriptedInstallPlan(input: {
     services,
     store,
     laptopChanged,
+    publishHostReceipt: publishReceipt,
     settleHost,
     settleLaptopStop,
     setSupported,
