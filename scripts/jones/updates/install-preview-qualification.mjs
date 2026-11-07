@@ -2,7 +2,7 @@ import * as NodeAssert from "node:assert/strict";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
-import { SourceMap } from "node:module";
+import * as NodeModule from "node:module";
 import * as NodeNet from "node:net";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -1992,7 +1992,7 @@ async function locateFixtureStartupFailure(rendererDir, startup) {
     const payload = JSON.parse(
       await NodeFSP.readFile(NodePath.join(rendererDir, `${position[1]}.map`), "utf8"),
     );
-    const entry = new SourceMap(payload).findEntry(
+    const entry = new NodeModule.SourceMap(payload).findEntry(
       Number(position[2]) - 1,
       Number(position[3]) - 1,
     );

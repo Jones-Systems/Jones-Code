@@ -253,6 +253,7 @@ export function installPreviewBridge(
       displayName: "Jones Code Fixture",
     }),
     getClientPlatform: () => "darwin",
+    getRelayTelemetryEnabled: () => false,
     getSystemLocale: () => "en-US",
     getLocalEnvironmentEnabled: () => false,
     getLocalEnvironmentBootstraps: () => [],
@@ -364,6 +365,7 @@ export function installPreviewBridge(
     | "onInstallPlan"
     | "getAppBranding"
     | "getClientPlatform"
+    | "getRelayTelemetryEnabled"
     | "getSystemLocale"
     | "getLocalEnvironmentEnabled"
     | "getLocalEnvironmentBootstraps"
