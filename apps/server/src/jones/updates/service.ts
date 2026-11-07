@@ -23,6 +23,8 @@ import type {
   JonesOperationReadInput,
   JonesOperationReadResult,
   JonesOperationReceipt,
+  JonesRecoverCleanupInput,
+  JonesRecoverCleanupResult,
   JonesRecoveryPreflightInput,
   JonesRecoveryPreflight,
   JonesRecoveryPolicy,
@@ -103,6 +105,9 @@ export class JonesUpdates extends Context.Service<
     readonly operationRead: (
       input: JonesOperationReadInput,
     ) => Effect.Effect<JonesOperationReadResult, EnvironmentInternalError>;
+    readonly recoverCleanup: (
+      input: JonesRecoverCleanupInput,
+    ) => Effect.Effect<JonesRecoverCleanupResult, EnvironmentInternalError>;
     readonly recoveryPreflight: (
       input: JonesRecoveryPreflightInput,
     ) => Effect.Effect<JonesRecoveryPreflight, EnvironmentInternalError>;
@@ -286,7 +291,7 @@ export const layer = Layer.effect(
     const operationMethods = (
       operations: Pick<
         ReturnType<typeof createTargetOperations>,
-        "start" | "stop" | "fence" | "read"
+        "start" | "stop" | "fence" | "read" | "recoverCleanup"
       >,
     ) => ({
       operationStart: Effect.fn("JonesUpdates.operationStart")((input: JonesOperationStartInput) =>
@@ -300,6 +305,9 @@ export const layer = Layer.effect(
       ),
       operationRead: Effect.fn("JonesUpdates.operationRead")((input: JonesOperationReadInput) =>
         operationCall(() => operations.read(input)),
+      ),
+      recoverCleanup: Effect.fn("JonesUpdates.recoverCleanup")((input: JonesRecoverCleanupInput) =>
+        operationCall(() => operations.recoverCleanup(input)),
       ),
       recoveryPreflight,
     });

@@ -48,7 +48,8 @@ export function startInstallPlanController(
     },
     operation: async (id, request) => {
       const result = await services.operation(id, request);
-      if ("binding" in result) throw new Error("Unexpected recovery result for an operation.");
+      if ("binding" in result || "recoveredCleanup" in result)
+        throw new Error("Unexpected recovery result for an operation.");
       return result;
     },
     host: services.host,
