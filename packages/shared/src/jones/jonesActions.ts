@@ -671,7 +671,7 @@ export class JonesActionsClient {
     });
     return {
       builds: [...builds.values()],
-      unavailable: observation.kind === "failure",
+      unavailable: observation.kind === "failure" || observation.kind === "incomplete-discovery",
     };
   }
 
@@ -777,7 +777,10 @@ export class JonesActionsClient {
         { discovery, rejections },
         context,
       )) {
-        if (collect !== undefined && catalogBudget-- === 0) break;
+        if (collect !== undefined && catalogBudget-- === 0) {
+          discovery.termination = "window-ended";
+          return { ...completedEvidence(), kind: "incomplete-discovery" };
+        }
         if (listed.status !== "completed") {
           addWitness(pending["producer-not-completed"], {
             ...checkWitness(listed, "listed-main-only"),

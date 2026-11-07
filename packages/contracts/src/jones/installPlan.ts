@@ -38,6 +38,7 @@ export const JonesInstallPlanTarget = Schema.Struct({
   sourceTree: JonesSourceSha,
   version: TrimmedNonEmptyString,
   buildStartedAt: Schema.optionalKey(JonesBuildStartedAt),
+  laptopArtifactId: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 export type JonesInstallPlanTarget = typeof JonesInstallPlanTarget.Type;
 
@@ -288,9 +289,6 @@ export const JonesInstallPlanRequest = Schema.Union([
     laptop: Schema.optionalKey(
       Schema.Struct({
         action: Schema.Literals(["download", "install"]),
-        expectedArtifactId: Schema.optionalKey(
-          Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
-        ),
         review: Schema.optionalKey(JonesInstallPlanReview),
       }),
     ),

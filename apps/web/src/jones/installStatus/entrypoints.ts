@@ -350,17 +350,13 @@ export async function handOffJonesTargets(
       : {
           type: "start" as const,
           origin: "update-everything" as const,
-          target,
+          target:
+            reviewedBuild === undefined
+              ? target
+              : { ...target, laptopArtifactId: reviewedBuild.artifactId },
           select: selections,
           ...(desktop.jones?.phase === "available" && desktop.jones.capability.download
-            ? {
-                laptop: {
-                  action: "download" as const,
-                  ...(reviewedBuild === undefined
-                    ? {}
-                    : { expectedArtifactId: reviewedBuild.artifactId }),
-                },
-              }
+            ? { laptop: { action: "download" as const } }
             : {}),
         };
   const result = await (dispatch === undefined
