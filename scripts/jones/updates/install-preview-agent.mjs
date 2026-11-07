@@ -39,6 +39,11 @@ export function sanitizeFailurePageState(value) {
     bodyTextLength: count("bodyTextLength"),
     dialogs: count("dialogs"),
     onConnectionsRoute: raw.onConnectionsRoute === true,
+    ...(raw.onFixtureRoute === true &&
+    ["guard", "bridge", "renderer-import", "mount"].includes(raw.fixtureStartupPhase) &&
+    ["type", "reference", "other"].includes(raw.fixtureStartupError)
+      ? { fixtureStartup: { phase: raw.fixtureStartupPhase, error: raw.fixtureStartupError } }
+      : {}),
     ui: Object.fromEntries(
       [
         "sourceMatches",
@@ -493,6 +498,9 @@ export async function runScenario(client, scenario, report) {
             bodyTextLength: text.length,
             dialogs: document.querySelectorAll('[role="dialog"]').length,
             onConnectionsRoute: window.location.pathname === '/settings/connections',
+            onFixtureRoute: window.location.pathname === '/jones-install-fixture.html',
+            fixtureStartupPhase: root?.dataset.fixtureStartupPhase,
+            fixtureStartupError: root?.dataset.fixtureStartupError,
             ui: Object.fromEntries(Object.entries({
               sourceMatches: 'Source matches this app.', remoteListed: 'Synthetic incompatible Jones host',
               addFailed: 'Could not add backend', rootError: 'Something went wrong.',

@@ -1,5 +1,6 @@
 import { installPreviewBridge } from "./install-preview-bridge";
 
+let startupPhase = "guard";
 async function start() {
   if (
     import.meta.env.MODE !== "jones-install-fixture" ||
@@ -14,6 +15,7 @@ async function start() {
     );
   }
   const parameters = new URLSearchParams(window.location.search);
+  startupPhase = "bridge";
   const fixture = installPreviewBridge(
     parameters.get("run") ?? "",
     parameters.get("scenario") ?? "available",
@@ -21,11 +23,16 @@ async function start() {
     parameters.get("installPlans") !== "legacy",
   );
   // env.ts captures bridge presence at module evaluation, before any component renders.
+  startupPhase = "renderer-import";
   const { mountInstallPreview } = await import("./InstallPreview");
+  startupPhase = "mount";
   await mountInstallPreview(fixture);
 }
 
 void start().catch((error: unknown) => {
-  document.getElementById("root")!.textContent =
-    `Fixture startup failed: ${error instanceof Error ? error.message : String(error)}`;
+  const root = document.getElementById("root")!;
+  root.dataset.fixtureStartupPhase = startupPhase;
+  root.dataset.fixtureStartupError =
+    error instanceof TypeError ? "type" : error instanceof ReferenceError ? "reference" : "other";
+  root.textContent = `Fixture startup failed: ${error instanceof Error ? error.message : String(error)}`;
 });

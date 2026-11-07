@@ -1558,6 +1558,9 @@ NodeTest.test("failure page state retains only bounded counts, enum and fixed UI
       bodyTextLength: secret,
       dialogs: 10_000_001,
       onConnectionsRoute: secret,
+      onFixtureRoute: true,
+      fixtureStartupPhase: secret,
+      fixtureStartupError: "type",
       ui: { loading: secret, rootError: true, secret },
       url: secret,
       text: secret,
@@ -1570,9 +1573,18 @@ NodeTest.test("failure page state retains only bounded counts, enum and fixed UI
     NodeAssert.equal(result.bodyTextLength, null);
     NodeAssert.equal(result.dialogs, null);
     NodeAssert.equal(result.onConnectionsRoute, false);
+    NodeAssert.equal(result.fixtureStartup, undefined);
     NodeAssert.equal(result.ui.loading, false);
     NodeAssert.equal(JSON.stringify(result).includes(secret), false);
   }
+  NodeAssert.deepEqual(
+    sanitizeFailurePageState({
+      onFixtureRoute: true,
+      fixtureStartupPhase: "renderer-import",
+      fixtureStartupError: "type",
+    }).fixtureStartup,
+    { phase: "renderer-import", error: "type" },
+  );
 });
 
 NodeTest.test(
