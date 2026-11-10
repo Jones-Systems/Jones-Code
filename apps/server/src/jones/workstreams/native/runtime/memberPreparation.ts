@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Mac from "effect/crypto/Mac";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -36,6 +37,7 @@ const make = Effect.gen(function* () {
   const application = Context.make(SqlClient.SqlClient, sql).pipe(
     Context.add(Sessions.AuthSessionRepository, yield* Sessions.AuthSessionRepository),
     Context.add(Secrets.ServerSecretStore, yield* Secrets.ServerSecretStore),
+    Context.add(Mac.Mac, yield* Mac.Mac),
     Context.add(Links.PeerLinks, yield* Links.PeerLinks),
     Context.add(Bindings.BindingStore, yield* Bindings.BindingStore),
     Context.add(Pins.PeerSessionPinStore, yield* Pins.PeerSessionPinStore),
@@ -105,16 +107,34 @@ const make = Effect.gen(function* () {
             });
             const qualified = Members.MemberEnrollments.of({
               ownerCurrent: guarded(members.ownerCurrent),
-              validateSource: (record, exact) => guarded(members.validateSource(record, exact)),
-              inspectSession: (record) => guarded(members.inspectSession(record)),
-              validateLocal: (record) => guarded(members.validateLocal(record)),
-              readProof: (selector) => guarded(members.readProof(selector)),
-              getValidatedBySessionId: (id) => guarded(members.getValidatedBySessionId(id)),
-              getValidatedByEnrollmentId: (id) => guarded(members.getValidatedByEnrollmentId(id)),
-              getBySessionId: (id) => guarded(members.getBySessionId(id)),
+              validateSource: Effect.fn("Members.MemberEnrollments.validateSource")(
+                (record, exact) => guarded(members.validateSource(record, exact)),
+              ),
+              inspectSession: Effect.fn("Members.MemberEnrollments.inspectSession")((record) =>
+                guarded(members.inspectSession(record)),
+              ),
+              validateLocal: Effect.fn("Members.MemberEnrollments.validateLocal")((record) =>
+                guarded(members.validateLocal(record)),
+              ),
+              readProof: Effect.fn("Members.MemberEnrollments.readProof")((selector) =>
+                guarded(members.readProof(selector)),
+              ),
+              getValidatedBySessionId: Effect.fn(
+                "Members.MemberEnrollments.getValidatedBySessionId",
+              )((id) => guarded(members.getValidatedBySessionId(id))),
+              getValidatedByEnrollmentId: Effect.fn(
+                "Members.MemberEnrollments.getValidatedByEnrollmentId",
+              )((id) => guarded(members.getValidatedByEnrollmentId(id))),
+              getBySessionId: Effect.fn("Members.MemberEnrollments.getBySessionId")((id) =>
+                guarded(members.getBySessionId(id)),
+              ),
               // Runtime qualification never grants setup mutation or credential materialization.
-              reserveSession: () => Effect.fail(refused()),
-              materialize: () => Effect.fail(refused()),
+              reserveSession: Effect.fn("Members.MemberEnrollments.reserveSession")(() =>
+                Effect.fail(refused()),
+              ),
+              materialize: Effect.fn("Members.MemberEnrollments.materialize")(() =>
+                Effect.fail(refused()),
+              ),
             });
             return yield* Effect.gen(function* () {
               const current = check.pipe(

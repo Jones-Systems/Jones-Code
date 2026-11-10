@@ -79,12 +79,13 @@ const makeNativeWorkstreamsRuntimeLayer = (
         selection.mode === "legacy" || (selection.mode === "disabled" && selection.config === null)
           ? legacy
           : NativeProviderEnrollment.of({
-              getBySessionId: (id) =>
+              getBySessionId: Effect.fn("NativeProviderEnrollment.getBySessionId")((id) =>
                 selection.mode === "native-home" && Option.isSome(native)
                   ? native.value
                       .getBySessionId(id)
                       .pipe(Effect.mapError(() => new NativeProviderEnrollmentError()))
                   : Effect.fail(new NativeProviderEnrollmentError()),
+              ),
             });
       return NativeWorkstreamsRuntime.of({
         enrollments,

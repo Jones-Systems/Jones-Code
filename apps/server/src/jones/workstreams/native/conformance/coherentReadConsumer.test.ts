@@ -714,6 +714,7 @@ it.effect(
       const f = yield* fixture;
       yield* f.create();
       yield* f.create();
+      // @effect-diagnostics-next-line abortControllerInEffect:off - The test aborts at a chosen read; an Effect-managed signal would abort only at scope close.
       const abort = new AbortController();
       const { client, bound, seen } = yield* f.reader(() => Effect.sync(() => abort.abort()));
       yield* Effect.promise(() =>

@@ -27,7 +27,7 @@ const layerServerSessions = SessionStore.layer.pipe(
     }),
   ),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-native-bearer-test-" })),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 const expected = deriveNativeEnrollmentSession(enrollmentRequest);
 const atIssuance = TestClock.setTime(expected.issuedAt.epochMilliseconds);
@@ -108,5 +108,6 @@ it.effect(
       expect(generated).toBe(0);
     }).pipe(
       Effect.provide(AuthSessions.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory))),
+      Effect.provide(NodeCrypto.layer),
     ),
 );

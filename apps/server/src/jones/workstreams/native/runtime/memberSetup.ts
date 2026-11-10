@@ -3,6 +3,7 @@ import { decodeWorkstreamsHomeBindBody } from "@t3tools/contracts/jones/workstre
 import { canonicalWorkstreamsSnapshotJson as canonical } from "@t3tools/contracts/jones/workstreamsSnapshot";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Mac from "effect/crypto/Mac";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -66,6 +67,7 @@ const make = Effect.gen(function* () {
     keys = yield* Keys.WorkstreamsKeyProvider,
     sessions = yield* AuthSessions.AuthSessionRepository,
     secrets = yield* Secrets.ServerSecretStore,
+    mac = yield* Mac.Mac,
     links = yield* Links.PeerLinks,
     client = yield* Client.PeerMcpClient,
     qualification = yield* Qualification.MemberPeerPinQualification;
@@ -75,6 +77,7 @@ const make = Effect.gen(function* () {
     Layer.succeed(SqlClient.SqlClient, sql),
     Layer.succeed(AuthSessions.AuthSessionRepository, sessions),
     Layer.succeed(Secrets.ServerSecretStore, secrets),
+    Layer.succeed(Mac.Mac, mac),
     Layer.succeed(Links.PeerLinks, links),
     Option.isSome(issuer) ? Layer.succeed(Source.SourceIssuer, issuer.value) : Layer.empty,
     Option.isSome(owner) ? Layer.succeed(Source.SourceSetupOwner, owner.value) : Layer.empty,
@@ -128,24 +131,26 @@ const make = Effect.gen(function* () {
     for (const id of ids) cache.set(id, Uint8Array.from(yield* keys.get(id)));
     const unavailable = () => new Keys.KeyUnavailable({ reason: "active_key_missing" });
     const cached = Layer.succeed(Keys.WorkstreamsKeyProvider, {
-      activeKeyId: (s) =>
+      activeKeyId: Effect.fn("Keys.WorkstreamsKeyProvider.activeKeyId")((s) =>
         keys
           .activeKeyId(s)
           .pipe(
-            Effect.flatMap((id) =>
-              s.key_scope === "local" &&
-              s.registry_instance_id === scope.registry_instance_id &&
-              s.owner_id === scope.owner_id &&
-              id === active
-                ? Effect.succeed(id)
-                : Effect.fail(unavailable()),
+            Effect.filterOrFail(
+              (id) =>
+                s.key_scope === "local" &&
+                s.registry_instance_id === scope.registry_instance_id &&
+                s.owner_id === scope.owner_id &&
+                id === active,
+              unavailable,
             ),
           ),
-      get: (id) =>
-        cache.has(id)
-          ? Effect.succeed(Uint8Array.from(cache.get(id)!))
-          : Effect.fail(unavailable()),
-      indexKey: () => Effect.fail(unavailable()),
+      ),
+      get: Effect.fn("Keys.WorkstreamsKeyProvider.get")(function* (id) {
+        const bytes = cache.get(id);
+        if (bytes === undefined) return yield* unavailable();
+        return Uint8Array.from(bytes);
+      }),
+      indexKey: Effect.fn("Keys.WorkstreamsKeyProvider.indexKey")(() => Effect.fail(unavailable())),
     });
     const db = Database.layer.pipe(
       Layer.provideMerge(Envelope.layer.pipe(Layer.provideMerge(cached))),
@@ -251,6 +256,7 @@ const make = Effect.gen(function* () {
       yield* makeReservedBearerSessionMaterializer.pipe(
         Effect.provideService(AuthSessions.AuthSessionRepository, sessions),
         Effect.provideService(Secrets.ServerSecretStore, secrets),
+        Effect.provideService(Mac.Mac, mac),
         Effect.mapError(() => refuse("key_unavailable")),
       );
     }

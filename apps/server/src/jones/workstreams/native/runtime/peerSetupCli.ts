@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 import * as NodeHttp from "node:http";
 import * as NodeSqlite from "@t3tools/shared/nodeSqliteClient";
 import * as NodeCrypto from "node:crypto";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as DateTime from "effect/DateTime";
 import * as AuthRows from "../../../../persistence/AuthSessions.ts";
 import {
@@ -481,7 +482,8 @@ const runLive = Effect.fn("PeerSetupCli.live")(
         endpoint.run(home, input),
       ).pipe(Effect.provideService(PeerSetupCliSessions, sessions)),
     ).pipe(
-      Effect.provide(FetchHttpClient.layer),
+      // The existing-key session signer needs only the Mac family; this standalone CLI has no server layer.
+      Effect.provide(Layer.mergeAll(FetchHttpClient.layer, EffectNodeCrypto.layerMac)),
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
       Effect.scoped,
       Effect.mapError(unavailable),

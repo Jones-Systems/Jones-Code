@@ -6,6 +6,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Envelope from "../crypto/envelope.ts";
 import * as Keys from "../crypto/keyProvider.ts";
@@ -552,19 +553,17 @@ const makePrepared = Effect.gen(function* () {
   const advance: OperationStore["Service"]["advance"] = (...args) =>
     advanceAny(args[0], args[1], args[2], args[3], args[4], args[5]).pipe(
       Effect.flatMap(homeOnly),
-      Effect.flatMap((value) =>
-        value
-          ? Effect.succeed(value)
-          : Effect.fail(new NativeSql.StoreError({ reason: "not_found" })),
+      Effect.filterOrFail(
+        Predicate.isNotNull,
+        () => new NativeSql.StoreError({ reason: "not_found" }),
       ),
     );
   const advanceMemberForward: OperationStore["Service"]["advanceMemberForward"] = (...args) =>
     advanceAny(args[0], args[1], args[2], args[3], args[4], args[5], true).pipe(
       Effect.flatMap(memberOnly),
-      Effect.flatMap((value) =>
-        value
-          ? Effect.succeed(value)
-          : Effect.fail(new NativeSql.StoreError({ reason: "not_found" })),
+      Effect.filterOrFail(
+        Predicate.isNotNull,
+        () => new NativeSql.StoreError({ reason: "not_found" }),
       ),
     );
   return {
@@ -671,7 +670,7 @@ const make = Effect.gen(function* () {
         if (current !== expected.success) return yield* unavailable();
         return current;
       }),
-      get: (id) =>
+      get: Effect.fn("Keys.WorkstreamsKeyProvider.get")((id) =>
         Effect.suspend(() => {
           const result = live ? material.get(id) : undefined;
           if (!result) return Effect.fail(unavailable());
@@ -679,7 +678,8 @@ const make = Effect.gen(function* () {
             ? Effect.fail(result.failure)
             : Effect.succeed(Uint8Array.from(result.success));
         }),
-      indexKey: () => Effect.fail(unavailable()),
+      ),
+      indexKey: Effect.fn("Keys.WorkstreamsKeyProvider.indexKey")(() => Effect.fail(unavailable())),
     });
     const graph = Layer.fresh(BindingStore.layer).pipe(
       Layer.provideMerge(
@@ -704,31 +704,42 @@ const make = Effect.gen(function* () {
   });
   return OperationStore.of({
     withPrepared,
-    read: (id) => withPrepared([{ kind: "read", id }], (ops) => ops.read(id)),
-    readMemberForward: (id) =>
+    read: Effect.fn("OperationStore.read")((id) =>
+      withPrepared([{ kind: "read", id }], (ops) => ops.read(id)),
+    ),
+    readMemberForward: Effect.fn("OperationStore.readMemberForward")((id) =>
       withPrepared([{ kind: "read", id }], (ops) => ops.readMemberForward(id)),
-    open: () => withPrepared([{ kind: "open" }], (ops) => ops.open()),
-    openMemberForwards: () => withPrepared([{ kind: "open" }], (ops) => ops.openMemberForwards()),
-    accept: (input) =>
+    ),
+    open: Effect.fn("OperationStore.open")(() =>
+      withPrepared([{ kind: "open" }], (ops) => ops.open()),
+    ),
+    openMemberForwards: Effect.fn("OperationStore.openMemberForwards")(() =>
+      withPrepared([{ kind: "open" }], (ops) => ops.openMemberForwards()),
+    ),
+    accept: Effect.fn("OperationStore.accept")((input) =>
       withPrepared(
         [{ kind: "accept", id: input.operation_id, destination: input.destination }],
         (ops) => ops.accept(input),
       ),
-    acceptMemberForward: (input) =>
+    ),
+    acceptMemberForward: Effect.fn("OperationStore.acceptMemberForward")((input) =>
       withPrepared(
         [{ kind: "accept", id: input.operation_id, destination: input.destination }],
         (ops) => ops.acceptMemberForward(input),
       ),
-    advance: (...args) =>
+    ),
+    advance: Effect.fn("OperationStore.advance")((...args) =>
       withPrepared(
         [{ kind: "advance", id: args[0], resultBodySupplied: args[5] !== undefined }],
         (ops) => ops.advance(...args),
       ),
-    advanceMemberForward: (...args) =>
+    ),
+    advanceMemberForward: Effect.fn("OperationStore.advanceMemberForward")((...args) =>
       withPrepared(
         [{ kind: "advance", id: args[0], resultBodySupplied: args[5] !== undefined }],
         (ops) => ops.advanceMemberForward(...args),
       ),
+    ),
   });
 });
 /** @public Canonical service layer; open operations have no expiry and never retarget. */

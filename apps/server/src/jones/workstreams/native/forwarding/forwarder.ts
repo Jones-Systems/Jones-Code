@@ -57,7 +57,7 @@ export const locksLayer = Layer.effect(
   Effect.sync(() => {
     const locks = new Map<string, { semaphore: Semaphore.Semaphore; users: number }>();
     return MemberForwardLocks.of({
-      run: (id, effect) =>
+      run: Effect.fn("MemberForwardLocks.run")((id, effect) =>
         Effect.suspend(() => {
           let lock = locks.get(id);
           if (!lock) {
@@ -77,6 +77,7 @@ export const locksLayer = Layer.effect(
               ),
             );
         }),
+      ),
     });
   }),
 );

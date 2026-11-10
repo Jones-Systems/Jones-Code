@@ -176,5 +176,7 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(ReferenceResolver, make);
 export const unconfiguredLayer = Layer.succeed(ReferenceResolver, {
-  resolve: () => Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
+  resolve: Effect.fn("ReferenceResolver.resolve")(() =>
+    Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
+  ),
 });

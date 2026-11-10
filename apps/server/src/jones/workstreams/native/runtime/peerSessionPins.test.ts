@@ -7,6 +7,7 @@ import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
 import * as AuthRows from "../../../../persistence/AuthSessions.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
 import * as Config from "../../../../config.ts";
@@ -42,7 +43,9 @@ const signing = Layer.succeed(
   }),
 );
 const services = Layer.mergeAll(Records.layer, Pins.nativeLayer).pipe(
-  Layer.provideMerge(Auth.layer.pipe(Layer.provide(signing))),
+  Layer.provideMerge(
+    Auth.layer.pipe(Layer.provide(ManagedPolicy.layerTest()), Layer.provide(signing)),
+  ),
   Layer.provideMerge(Test.testLayer()),
   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "nw-j3a-synthetic-" })),
   Layer.provideMerge(

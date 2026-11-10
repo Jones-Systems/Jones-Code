@@ -20,6 +20,7 @@ import * as Environment from "../../../../environment/ServerEnvironment.ts";
 import * as Authority from "../../../../environment/NativeStoreAuthority.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
 import * as Sessions from "../../../../persistence/AuthSessions.ts";
 import { runMigrations } from "../../../../persistence/Migrations.ts";
 import { ServiceLauncherHostProcess } from "../../../../cloud/serviceLauncherClient.ts";
@@ -602,6 +603,9 @@ export const withFixture = <A, E, R>(
         // The file is created by the actual selected SqlClient before owner qualification.
         const sql = yield* SqlClient.SqlClient;
         yield* sql`CREATE TABLE writer_probe(value TEXT)`;
+        // Ownership acquisition forks a lock watcher that wakes every 5 seconds. Move the test
+        // clock to the seed time first; jumping it later replays decades of wake-ups.
+        yield* TestClock.setTime(Date.parse(Test.now));
         const current = yield* CurrentFixture.prepare({
           home: baseDir,
           database,
@@ -636,7 +640,11 @@ export const withFixture = <A, E, R>(
         const service = Layer.mergeAll(Origins.layer, Retained.layer).pipe(
           Layer.provideMerge(PinsStore.layer),
           Layer.provideMerge(
-            Pins.nativeLayer.pipe(Layer.provideMerge(Auth.layer.pipe(Layer.provide(signing)))),
+            Pins.nativeLayer.pipe(
+              Layer.provideMerge(
+                Auth.layer.pipe(Layer.provide(ManagedPolicy.layerTest()), Layer.provide(signing)),
+              ),
+            ),
           ),
           Layer.provideMerge(current),
           Layer.provideMerge(Authority.layer),

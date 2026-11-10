@@ -90,16 +90,18 @@ const make = Effect.gen(function* () {
           return yield* new Keys.KeyUnavailable({ reason: "active_key_missing" });
         return activeHome;
       }),
-      get: (id) =>
+      get: Effect.fn("Keys.WorkstreamsKeyProvider.get")((id) =>
         Effect.suspend(() =>
           content.has(id)
             ? Effect.succeed(Uint8Array.from(content.get(id)!))
             : Effect.fail(new Keys.KeyUnavailable({ reason: "missing" })),
         ),
-      indexKey: (id) =>
-        id === home.registry_instance_id
-          ? Effect.succeed(Uint8Array.from(index))
-          : Effect.fail(new Keys.KeyUnavailable({ reason: "missing" })),
+      ),
+      indexKey: Effect.fn("Keys.WorkstreamsKeyProvider.indexKey")(function* (id) {
+        if (id !== home.registry_instance_id)
+          return yield* new Keys.KeyUnavailable({ reason: "missing" });
+        return Uint8Array.from(index);
+      }),
     });
     const db = Db.layer.pipe(
       Layer.provideMerge(
@@ -117,7 +119,9 @@ const make = Effect.gen(function* () {
     const denyInvocation = Layer.succeed(
       Session.Session,
       Session.Session.of({
-        authorize: () => Effect.fail(new Session.RegistryError({ code: "home_route_required" })),
+        authorize: Effect.fn("Session.Session.authorize")(() =>
+          Effect.fail(new Session.RegistryError({ code: "home_route_required" })),
+        ),
       }),
     );
     const graph = Completion.layer.pipe(
@@ -261,9 +265,11 @@ const make = Effect.gen(function* () {
       ),
   );
   return PeerEffectRecovery.of({
-    recoverOne: (id) => execute(id),
-    runInitial: (ticket) => execute(ticket.command_id, ticket),
-    active: () =>
+    recoverOne: Effect.fn("PeerEffectRecovery.recoverOne")((id) => execute(id)),
+    runInitial: Effect.fn("PeerEffectRecovery.runInitial")((ticket) =>
+      execute(ticket.command_id, ticket),
+    ),
+    active: Effect.fn("PeerEffectRecovery.active")(() =>
       withStores((effects) => effects.active(scope)).pipe(
         Effect.mapError((cause) =>
           isRegistryError(cause)
@@ -271,6 +277,7 @@ const make = Effect.gen(function* () {
             : new Session.RegistryError({ code: "unavailable", cause }),
         ),
       ),
+    ),
   });
 });
 export const layer = Layer.effect(PeerEffectRecovery, make);

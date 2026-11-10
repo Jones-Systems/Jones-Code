@@ -41,7 +41,7 @@ export const nativeClientLayer = Layer.effect(
   Effect.gen(function* () {
     const native = yield* LocalTransport.LocalTransport;
     return {
-      forCaller: (caller) =>
+      forCaller: Effect.fn("DashboardClient.forCaller")((caller) =>
         native.forCaller(caller).pipe(
           Effect.map((a) => a.transport),
           Effect.mapError(
@@ -54,6 +54,7 @@ export const nativeClientLayer = Layer.effect(
               }),
           ),
         ),
+      ),
     };
   }),
 );

@@ -9,6 +9,7 @@ import * as Wire from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -316,7 +317,13 @@ const withFixture = <A, E, R>(
         Effect.provideService(HostProcess.Environment, env),
       );
     }),
-  ).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))));
+  ).pipe(
+    Effect.provide(
+      ProcessRunner.layer.pipe(
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, EffectNodeCrypto.layer)),
+      ),
+    ),
+  );
 
 it.effect(
   "genuine scoped owner and fresh enrollment/caller graph capture inside the selected writer",
