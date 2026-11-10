@@ -318,8 +318,7 @@ it.effect("settlement records exact native output duties with retirement disable
               if (input.operation === "WorkspaceRetirement.remove") nativeRemovals++;
             }).pipe(Effect.andThen(f.git.execute(input))),
         }),
-        Effect.provide(f.layer),
-        Effect.provide(f.configured),
+        Effect.provide(f.layer.pipe(Layer.provideMerge(f.configured))),
       );
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
