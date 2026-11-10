@@ -41,11 +41,10 @@ const fields = {
 const rank = { "approval-required": 0, "auto-accept-edits": 1, auto: 2, "full-access": 3 };
 
 /**
- * Echoes the complete request. forward_request_sha256 hashes the entire retained
- * serialized forwarding envelope, including supplied evidence, independently of
- * accepted_forward.request_sha256 (the raw inner body). The consumer must compare
- * the echo and retained bytes; decoding alone proves neither authenticity nor
- * digest equality. Authorization is a fresh observation, not a remote revocation lock.
+ * Echoes the complete request. forward_request_sha256 hashes the whole retained
+ * forwarding envelope, separately from accepted_forward.request_sha256 (inner body).
+ * Consumers must compare echo and retained bytes; decoding proves neither
+ * authenticity nor digest equality, and authorization is not a revocation lock.
  */
 export const WorkstreamsSourceParentReadmissionResponseV3 = Schema.Union([
   closed(
