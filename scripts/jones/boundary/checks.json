@@ -5460,6 +5460,27 @@
         "node scripts/jones/check-boundary.ts --strict",
         "git diff --check"
       ]
+    },
+    {
+      "id": "jones-held-queue-expiry",
+      "tests": [
+        "apps/server/src/jones/orchestration/QueueHoldReasons.test.ts",
+        "apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts",
+        "packages/contracts/src/jones/queueHold.test.ts",
+        "apps/server/src/jones/orchestration/QueueHold.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/QueueHoldReasons.test.ts apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts apps/server/src/jones/orchestration/QueueHold.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/contracts/src/jones/queueHold.test.ts",
+        "vp lint apps/server/src/jones/orchestration/QueueHold.ts apps/server/src/jones/orchestration/HeldQueueExpiry.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts apps/server/src/server.ts packages/contracts/src/jones/queueHold.ts packages/contracts/src/orchestrationV2.ts",
+        "vp run --filter @t3tools/contracts --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

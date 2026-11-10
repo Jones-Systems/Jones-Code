@@ -173,6 +173,14 @@ import {
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { transientSteerTarget } from "../jones/orchestration/TransientSteer.ts";
+import {
+  holdQueuedRun,
+  inheritedQueueHold,
+  isCompletedRestartContinuation,
+  releaseQueuedRunHold,
+  restartHoldsEndedBy,
+  stopQueuedRun,
+} from "../jones/orchestration/QueueHold.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
   derivePendingBackgroundWork,
@@ -1750,6 +1758,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
   });
 
+  const releaseRestartHolds = Effect.fn("Orchestrator.releaseRestartHolds")(function* (
+    threadId: ThreadId,
+    continuation: OrchestrationV2Run,
+  ) {
+    // A planned update's continuity owns its thread's queue release and Stop handling.
+    if (
+      Option.isSome(plannedContinuity) &&
+      (yield* plannedContinuity.value.queueThreadIds).includes(threadId)
+    )
+      return;
+    const { runs } = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
+    const released = restartHoldsEndedBy(continuation, runs);
+    if (released.length === 0) return;
+    const now = yield* DateTime.now;
+    yield* writeSystemEvents(
+      released.map((run) => ({
+        type: "run.updated" as const,
+        threadId,
+        runId: run.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: releaseQueuedRunHold(run),
+      })),
+    );
+  });
+
   const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(
     function* (
       threadId: ThreadId,
@@ -1764,8 +1798,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
         };
         readonly queuedRunId?: RunId;
+        /** A completed restart continuation ends the restart holds recorded before it finished. */
+        readonly completedRestartContinuation?: OrchestrationV2Run;
       },
     ) {
+      if (options?.completedRestartContinuation !== undefined) {
+        yield* releaseRestartHolds(threadId, options.completedRestartContinuation);
+      }
       if (options?.reviewed === undefined && !(yield* projectionStore.canStartQueuedRun(threadId)))
         return;
       const projection = yield* readCommandProjection(threadId);
@@ -1858,7 +1897,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               runId: run.id,
               providerInstanceId: run.providerInstanceId,
               occurredAt: now,
-              payload: { ...run, queueHeld: true },
+              payload: holdQueuedRun(run, "provider_failure", now),
             })),
         );
         return;
@@ -6212,7 +6251,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             candidate.queueHeld === true &&
             candidate.ordinal > queueBehindRun.ordinal,
         )
-          ? { queueHeld: true }
+          ? inheritedQueueHold(now)
           : {}),
         queuePosition:
           Math.max(
@@ -10989,7 +11028,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: run.id,
         providerInstanceId: run.providerInstanceId,
         occurredAt: now,
-        payload: { ...run, queueHeld: false },
+        payload: releaseQueuedRunHold(run),
       });
     }
   });
@@ -11548,14 +11587,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         continue;
       }
-      if (run.queueHeld === true) continue;
+      // Stop replaces a restart hold so the continuation's completion leaves this work held.
+      if (run.queueHeld === true && run.queueHeldReason !== "restart") continue;
       yield* emitEvent({
         type: "run.updated",
         threadId: thread.id,
         runId: run.id,
         providerInstanceId: run.providerInstanceId,
         occurredAt: input.now,
-        payload: { ...run, queueHeld: true },
+        payload: stopQueuedRun(run, input.now),
       });
     }
     const pullRequests = thread.pullRequests ?? [];
@@ -14210,7 +14250,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             runId: run.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: now,
-            payload: { ...run, queueHeld: false },
+            payload: releaseQueuedRunHold(run),
           });
         }
         if (queued.length === 0) {
@@ -15590,6 +15630,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 startNextQueuedRun(threadId, {
                   endedRunId: run.id,
                   ...(run.status === "failed" ? { failedRunId: run.id } : {}),
+                  ...(isCompletedRestartContinuation(run)
+                    ? { completedRestartContinuation: run }
+                    : {}),
                 }),
               ),
             ),

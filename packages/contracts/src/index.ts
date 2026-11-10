@@ -114,6 +114,7 @@ export * from "./clientRpcPermissions.ts";
 export * from "./jones/workstreamsNativeOwner.ts";
 
 export * from "./jones/queuedSteerBatch.ts";
+export * from "./jones/queueHold.ts";
 
 export * from "./jones/threadGoal.ts";
 export * from "./jones/goalContinuity.ts";

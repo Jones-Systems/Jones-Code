@@ -3517,6 +3517,21 @@
         "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts"
       ],
       "scope": "Startup recovery closes provider turns, nodes and their open turn items still pending or running under runs that already ended, or under a provider-native subagent's ended runless root turn, as interrupted. A Jones service selects candidates with Jones-owned read queries over upstream projection tables (live-node partial index, item node/provider-turn/run indexes) and commits one receipt per thread through EventSink.commitCommand with the command:runtime-reconcile:orphaned-records identity, so existing reactors ignore the closures and planned update continuity exempts the exact receipt. Anything under a run that has not ended stays open, including queued and held runs; async questions with pending message requests, todo lists, proposed plans, active subagent rows and background-capable items stay with their owners; deleted threads are skipped. The accepted-shared ProviderRuntimeRecoveryService gains one optional serviceOption hook after its startup loop; the runtimeLayer hook provides the service. Best effort, idempotent, no schema, index, payload or wire change."
+    },
+    {
+      "id": "held-queue-expiry",
+      "tests": [
+        "apps/server/src/jones/orchestration/QueueHoldReasons.test.ts",
+        "apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts",
+        "packages/contracts/src/jones/queueHold.test.ts",
+        "apps/server/src/jones/orchestration/QueueHold.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "scope": "Held queued runs record when and why they were held (stop, restart, provider_failure, inherited) as optional run payload fields; holds recorded earlier decode without them. Releasing a hold drops the time and reason. A completed restart continuation releases the restart holds recorded before it completed and the queue drains in order; Stop holds and failed or interrupted continuations release nothing, and a new message still never releases a hold. After startup recovery and then hourly, held automatic messages older than T3CODE_HELD_QUEUE_EXPIRY_HOURS (default 24, age from the hold time or else the request time) are cancelled through queued-run.cancel, which disposes delegated-completion cohorts as a person's cancel does; client-typed user messages and unclassifiable messages never expire. Small Orchestrator.ts, ProviderRuntimeRecoveryService.ts, server.ts and contract hooks keep their upstream owners. Synthetic in-memory projection fixtures; no live-database or installed-runtime claim."
     }
   ]
 }

@@ -5501,10 +5501,14 @@ it.layer(layerTest)("RuntimeLayer.layer lifecycle", (it) => {
           ["cancelled", "queued", "queued"],
         );
         for (const run of queued) {
-          assert.deepEqual(
-            held.runs.find((row) => row.id === run.id),
-            { ...run, queueHeld: true },
-          );
+          const heldRun = held.runs.find((row) => row.id === run.id);
+          assert.isDefined(heldRun?.queueHeldAt);
+          assert.deepEqual(heldRun, {
+            ...run,
+            queueHeld: true,
+            queueHeldAt: heldRun!.queueHeldAt!,
+            queueHeldReason: "restart",
+          });
           assert.deepEqual(
             held.messages.find((row) => row.id === run.userMessageId),
             before.messages.find((row) => row.id === run.userMessageId),
