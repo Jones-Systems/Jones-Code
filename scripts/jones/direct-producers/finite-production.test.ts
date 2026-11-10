@@ -108,8 +108,9 @@ it.each([
           if (executable) {
             expect(command.options.env?.T3CODE_PACK_EXE).toBe(call === 1 ? "bundle" : "1");
             expect(command.options.env?.T3CODE_PACK_EXE_TARGET).toBe("darwin-arm64");
-            const assetDir = command.options.env?.T3CODE_CLI_ASSET_DIR ?? "";
-            expect(assetDir).not.toBe("");
+            const assetDir = command.options.env?.T3CODE_CLI_ASSET_DIR;
+            if (typeof assetDir !== "string" || assetDir === "")
+              throw new Error("expected a plain non-empty CLI asset directory");
             if (call === 1) cliAssetDir = assetDir;
             else expect(assetDir).toBe(cliAssetDir);
           }
