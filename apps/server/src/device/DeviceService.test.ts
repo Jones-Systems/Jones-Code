@@ -623,6 +623,10 @@ it.effect.each([1, 9009])(
       const { host } = yield* fixture();
       const service = yield* DeviceService.make.pipe(
         Effect.provideService(DeviceHost.DeviceHost, host),
+        Effect.provideService(DeviceDirectGrants.DeviceDirectGrants, {
+          issue: () => Effect.die("Testing SSH issues no direct grant"),
+          admit: () => Effect.die("Testing SSH admits no direct connection"),
+        }),
         Effect.provideService(ProcessRunner.ProcessRunner, {
           run: () => Effect.die("Testing SSH does not install local tools"),
         }),
@@ -2236,7 +2240,7 @@ it.effect.each(["shutdown", "close"] as const)(
           origin: "http://device.test",
           http,
           run,
-          androidAvailable: Effect.succeed(true),
+          platformAvailable: () => Effect.succeed(true),
         }),
         helpers: { serveSimAxSettings: null, serveSimCli: null },
         run,

@@ -5,14 +5,10 @@ const observations = new Set([
   "t3_thread_read",
   "t3_thread_wait",
   "t3_thread_launch_lookup",
-  "t3_thread_configuration",
-  "t3_pending_request_list",
-  "t3_pending_request_read",
 ]);
 const cancellations = new Set([
   "task_cancel",
   "t3_workflow_stop",
-  "t3_queue_cancel",
   "t3_thread_interrupt",
   "t3_remote_admission_cancel",
   "t3_thread_launch_fence",

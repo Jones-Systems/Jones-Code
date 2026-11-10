@@ -2081,7 +2081,6 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__t3_thread_list",
   "mcp__t3-code__t3_thread_links",
   "mcp__t3-code__t3_thread_launch_lookup",
-  "mcp__t3-code__t3_thread_configuration",
   "mcp__t3-code__t3_thread_request_observe",
   "mcp__t3-code__t3_thread_wait",
   "mcp__t3-code__t3_worktree_status",

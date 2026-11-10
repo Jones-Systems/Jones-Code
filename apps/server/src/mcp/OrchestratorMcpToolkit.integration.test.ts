@@ -1383,12 +1383,13 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provideMerge(
               SecretRequests.layer.pipe(
                 Layer.provide(layerMemorySecretStore),
+                Layer.provide(Layer.mock(SecretResolver.SecretResolver)({})),
                 Layer.provide(layerOrchestration),
               ),
             ),
             Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
             Layer.provide(SqlitePersistence.layerMemory),
-            Layer.provide(NodeServices.layer),
+            Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
           );
 
           yield* Effect.gen(function* () {

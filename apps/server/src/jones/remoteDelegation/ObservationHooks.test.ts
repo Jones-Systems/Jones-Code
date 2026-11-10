@@ -163,7 +163,7 @@ it.effect(
         expect(commands[0].text).toContain(
           `environmentId ${observation.environmentId}, threadId ${observation.threadId}, requestId request:remote`,
         );
-        expect(commands[0].text).toContain("t3_pending_request_respond");
+        expect(commands[0].text).toContain("t3_pending_request action respond");
         expect(commands[0].senderThreadId).toBeUndefined();
         expect(yield* Ref.get(f.signals)).toBe(1);
         expect(

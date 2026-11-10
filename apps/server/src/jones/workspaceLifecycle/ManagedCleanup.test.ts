@@ -145,7 +145,10 @@ it.effect("settlement records exact native output duties with retirement disable
               Layer.mock(PullRequests.PullRequestService)({
                 subscribeMerges: Effect.succeed(Stream.empty),
               }),
-              Layer.mock(Terminals.TerminalManager)({ closeIdle: () => Effect.void }),
+              Layer.mock(Terminals.TerminalManager)({
+                closeIdle: () => Effect.void,
+                closeOnSettle: () => Effect.void,
+              }),
               Layer.mock(ProjectScripts.ProjectSetupScriptRunner)({
                 runForThread: (input) =>
                   Effect.sync(() => {
@@ -322,7 +325,7 @@ it.effect("settlement records exact native output duties with retirement disable
         Effect.provide(f.layer.pipe(Layer.provideMerge(f.configured))),
       );
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each([
@@ -403,7 +406,10 @@ it.effect.each([
                 Layer.mock(PullRequests.PullRequestService)({
                   subscribeMerges: Effect.succeed(Stream.empty),
                 }),
-                Layer.mock(Terminals.TerminalManager)({ closeIdle: () => Effect.void }),
+                Layer.mock(Terminals.TerminalManager)({
+                  closeIdle: () => Effect.void,
+                  closeOnSettle: () => Effect.void,
+                }),
                 Layer.mock(ProjectScripts.ProjectSetupScriptRunner)({
                   runForThread: (input) =>
                     Effect.sync(() => {

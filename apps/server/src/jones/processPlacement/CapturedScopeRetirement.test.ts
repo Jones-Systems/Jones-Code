@@ -17,6 +17,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { verifyCodexProcessExit } from "../orchestration/LateSteer.ts";
 import * as ProcessAttribution from "../resourceTelemetry/ProcessAttribution.ts";
+import * as PortScanner from "../../preview/PortScanner.ts";
 import * as CodexAdapter from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CodexLifetime from "../provider/codex/CodexCapturedLifetime.ts";
 import * as PlacementSpawner from "./processPlacementSpawner.ts";
@@ -120,6 +121,7 @@ describe("original scoped launch retirement receipt", () => {
                   ),
                 ),
                 Layer.provide(Layer.succeed(AgentScope, owner)),
+                Layer.provide(PortScanner.layerTest),
               ),
             ),
           );

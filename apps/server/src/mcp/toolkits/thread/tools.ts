@@ -91,7 +91,7 @@ const QUEUE_READ_ACTIONS = ["list", "read"] as const;
 const QueueTool = Tool.make("t3_queue", {
   ...commandTool,
   description:
-    "Manage a thread's queued messages. Omit `threadId` for this thread. list: send order, paged by `cursor` and `limit`. read: up to 16,000 chars of one. edit: replace its `text`; attachments stay. cancel. reorder: before `beforeRunId`, or to the end with null. promote_to_steer: send it now as steering to active `targetRunId`. Writes fail once the run is no longer queued.",
+    "Manage a thread's queued messages. Omit `threadId` for this thread. list: send order, paged by `cursor` and `limit`. read: up to 16,000 chars of one. edit: replace its `text`; attachments stay. cancel. reorder: before `beforeRunId`, or to the end with null. promote_to_steer: send it now as steering to active `targetRunId`; with `queuedRunIds`, send one bounded combined batch of the leading queue in order, `queuedRunId` being its first item, and read promotedCount and remainingCount (remaining originals stay queued). Writes fail once the run is no longer queued.",
   parameters: Schema.Struct({
     action: Schema.Literals([
       ...QUEUE_READ_ACTIONS,
@@ -106,12 +106,21 @@ const QueueTool = Tool.make("t3_queue", {
     text: Schema.optional(Schema.String.check(Schema.isMaxLength(100000))),
     beforeRunId: Schema.optional(Schema.NullOr(RunId)),
     targetRunId: Schema.optional(RunId),
+    queuedRunIds: Schema.optional(
+      Schema.Array(RunId).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+    ),
     cursor: Schema.optional(NonNegativeInt),
     limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
   }),
   success: Schema.Union([
     Schema.Struct({ items: Schema.Array(queueEntry), nextCursor: Schema.NullOr(NonNegativeInt) }),
     queueEntry,
+    // Jones batch steering. First, so encoding a batch result keeps its counts.
+    Schema.Struct({
+      ...OrchestrationV2DispatchCommandResult.fields,
+      promotedCount: NonNegativeInt,
+      remainingCount: NonNegativeInt,
+    }),
     OrchestrationV2DispatchCommandResult,
   ]),
 }).annotate(Tool.Destructive, true);
@@ -157,37 +166,17 @@ const threadConfiguration = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  // Jones: what `t3_thread_self_configure` needs back from the read.
+  threadMessagesBlocked: Schema.Boolean,
+  configurationRevision: Schema.optional(ThreadConfigurationEvidence.fields.configurationRevision),
+  savedSelection: Schema.optional(ThreadConfigurationEvidence.fields.savedSelection),
+  executionPrecondition: Schema.optional(ThreadConfigurationEvidence.fields.executionPrecondition),
+  currentExecution: Schema.optional(ThreadConfigurationEvidence.fields.currentExecution),
 });
-const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
-  ...commandTool,
-  description:
-    "Read a thread's provider/model selection and modes. Omit threadId for this thread. orchestrator_capabilities lists available providers and models.",
-  parameters: Schema.Struct({
-    environmentId: OrchestratorMcpEnvironmentTarget,
-    threadId: Schema.optional(ThreadId),
-  }),
-  success: Schema.Struct({
-    threadId: ThreadId,
-    modelSelection: ModelSelection,
-    runtimeMode: RuntimeMode,
-    interactionMode: ProviderInteractionMode,
-    threadMessagesBlocked: Schema.Boolean,
-    configurationRevision: Schema.optional(
-      ThreadConfigurationEvidence.fields.configurationRevision,
-    ),
-    savedSelection: Schema.optional(ThreadConfigurationEvidence.fields.savedSelection),
-    executionPrecondition: Schema.optional(
-      ThreadConfigurationEvidence.fields.executionPrecondition,
-    ),
-    currentExecution: Schema.optional(ThreadConfigurationEvidence.fields.currentExecution),
-  }),
-})
-  .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
-    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
+    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`. A read of this thread also returns the configuration revision and execution precondition that `t3_thread_self_configure` needs.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
@@ -274,7 +263,6 @@ const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
 export const ThreadToolkit = Toolkit.make(
   ScheduledTaskRunTool,
   ThreadSearchTool,
-  ThreadConfigurationTool,
   ThreadConfigureTool,
   ThreadTransferTool,
   ThreadOrganizeTool,

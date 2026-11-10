@@ -332,6 +332,7 @@ describe("MCP task read selection", () => {
                 "contextTransfers",
                 "subagents",
                 "providerThreads",
+                "providerTurns",
                 "runtimeRequests",
                 "nodes",
               ]);
@@ -427,6 +428,7 @@ describe("MCP task read selection", () => {
           "contextTransfers",
           "subagents",
           "providerThreads",
+          "providerTurns",
           "runtimeRequests",
           "nodes",
         ],
@@ -524,6 +526,7 @@ describe("MCP task read selection", () => {
               "contextTransfers",
               "subagents",
               "providerThreads",
+              "providerTurns",
               "runtimeRequests",
               "nodes",
             ],

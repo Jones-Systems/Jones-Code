@@ -516,7 +516,7 @@ const clientLaunchHarness = Effect.fn("test.clientLaunchHarness")(function* (inp
                   }),
                 )
               : input.acceptedCommandIds?.has(commandId) === true
-                ? Effect.succeed(Option.some({} as CommandReceipts.CommandReceiptV2))
+                ? Effect.succeedSome({} as CommandReceipts.CommandReceiptV2)
                 : storedReceipts.getByCommandId(commandId),
         }),
   );

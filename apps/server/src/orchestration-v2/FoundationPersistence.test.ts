@@ -93,7 +93,7 @@ const layerCommandReceiptStoreProvided = CommandReceiptStore.layer.pipe(
 );
 const layerIsolatedOutbox = Layer.fresh(EffectOutbox.layer.pipe(Layer.provideMerge(layerDatabase)));
 const layerProjectionMaintenanceProvided = ProjectionMaintenance.layer.pipe(
-  Layer.provide(layerDatabase),
+  Layer.provide(layerStoresProvided),
 );
 const layerProjectionReplayProvided = ProjectionReplay.layer.pipe(
   Layer.provide(layerStoresProvided),
@@ -237,6 +237,7 @@ it.effect("discovers on the reader worker and deletes on the writer", () =>
     }).pipe(
       Effect.provide(
         ProjectionMaintenance.layer.pipe(
+          Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
           Layer.provideMerge(SqlitePersistence.layerFromPath(filename)),
         ),
       ),
@@ -567,6 +568,7 @@ it.effect.each(
 
 it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail) => {
   let commits = 0;
+  let commitsBeforeOutboxReconcile: number | undefined;
   const tracer = Tracer.make({
     span(options) {
       const span = new Tracer.NativeSpan(options);
@@ -659,6 +661,12 @@ it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail)
             eventlessNotifications += ids.length;
             yield* outbox.signalCancellations(ids);
           }),
+        // Jones runs the outbox's three process-loss statements under the deletion writer
+        // fence, one transaction each. They follow the grouped recovery commits this test counts.
+        reconcileAfterProcessLoss: Effect.suspend(() => {
+          commitsBeforeOutboxReconcile = commits;
+          return outbox.reconcileAfterProcessLoss;
+        }),
       }),
       Effect.provideService(
         EffectWorker.OrchestrationEffectWorkerV2,
@@ -666,7 +674,11 @@ it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail)
           awaitWork: Effect.void,
           runRecoveryOnce: Effect.succeed(false),
           runOnce: Effect.succeed(false),
+          runActionOnce: Effect.succeed(false),
+          runUrgentOnce: Effect.succeed(false),
           nextClaimableAt: Effect.succeedNone,
+          nextActionClaimableAt: Effect.succeedNone,
+          nextUrgentClaimableAt: Effect.succeedNone,
           drain: () => Effect.succeed(0),
         }),
       ),
@@ -681,7 +693,7 @@ it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail)
     commits = 0;
     const result = yield* recovery.reconcile("shutdown").pipe(Effect.exit);
     assert.equal(Exit.isFailure(result), fail);
-    assert.equal(commits, fail ? 1 : 3);
+    assert.equal(commitsBeforeOutboxReconcile ?? commits, fail ? 1 : 3);
     const receipts =
       yield* sql`SELECT aggregate_id FROM orchestration_command_receipts WHERE command_type = 'provider-runtime.reconcile' ORDER BY aggregate_id`;
     assert.deepEqual(
@@ -4293,7 +4305,10 @@ it.effect.each(["events", "receipts"] as const)(
       const path = yield* Path.Path;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "compaction-reader-" });
       const database = SqlitePersistence.layerFromPath(path.join(directory, "statev2.sqlite"));
-      const maintenanceLayer = ProjectionMaintenance.layer.pipe(Layer.provideMerge(database));
+      const maintenanceLayer = ProjectionMaintenance.layer.pipe(
+        Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
+        Layer.provideMerge(database),
+      );
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;

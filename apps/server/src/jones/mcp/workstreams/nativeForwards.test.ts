@@ -453,7 +453,7 @@ it.effect.each([
                 : Layer.empty,
             ),
           ),
-          Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provideMerge(Server.layerInProcessMcpServer),
           Layer.provide(threads),
         ),
       ),

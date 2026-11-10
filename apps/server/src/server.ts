@@ -925,8 +925,8 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(OrchestrationHttp.layer),
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(ProjectHttp.layer),
-      Layer.provide(speechHttpApiLayer),
-      Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
+      // Pipe accepts at most 20 arguments; these two route groups share one provide.
+      Layer.provide(Layer.merge(speechHttpApiLayer, ServerHttp.layerServerEnvironmentHttpApi)),
       Layer.provide(WebhookRoute.layer.pipe(Layer.provide(RelayDeliveryProof.layer))),
       Layer.provide(AuthHttp.layerAuthenticatedAuth),
     ),
@@ -1005,8 +1005,6 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
     Layer.provide(layerServerSettings),
     Layer.provide(PreviewAutomationBroker.layer),
-  )
-  .pipe(
     Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
     Layer.provide(layerJonesUpdates),
     Layer.provide(layerServerSelfUpdate),

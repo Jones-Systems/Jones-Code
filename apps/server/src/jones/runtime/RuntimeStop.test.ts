@@ -236,6 +236,7 @@ const fixture = Effect.fnUntraced(function* (retained = false) {
     isMcpCallerAttached: () => Effect.succeed(false),
     releaseUnlessBusy: () => Effect.die("Unexpected releaseUnlessBusy"),
     otherWorkingThreads: () => Effect.die("Unexpected otherWorkingThreads"),
+    subscribePromptSuggestion: () => Stream.empty,
     isLive: () => Effect.die("Runtime stop must use the captured runtime binding"),
     shutdown: Effect.void,
     open: () => Effect.die("unexpected_open"),
