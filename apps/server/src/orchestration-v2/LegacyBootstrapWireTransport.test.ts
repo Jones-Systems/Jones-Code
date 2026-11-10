@@ -73,6 +73,9 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as WsHttpClient from "effect/http/HttpClient";
 import * as WsWorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as WsVcsProcess from "../vcs/VcsProcess.ts";
+import * as WsAssetSigner from "../assets/AssetSigner.ts";
+import * as WsProviderInstallation from "../provider/providerInstallation.ts";
+import * as WsTextGenerators from "../textGeneration/TextGenerators.ts";
 import * as WsCodexInstallation from "../provider/CodexInstallation.ts";
 import * as WsAntigravityInstallation from "../provider/AntigravityInstallation.ts";
 import * as WsApplicationEventStore from "../persistence/OrchestrationEventStore.ts";
@@ -688,6 +691,9 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
       managedDirectory: "/synthetic-unused-codex",
     }),
     Layer.mock(WsVcsProcess.VcsProcess)({}),
+    Layer.mock(WsAssetSigner.AssetSigner)({}),
+    Layer.mock(WsProviderInstallation.ProviderInstallation)({}),
+    Layer.mock(WsTextGenerators.TextGenerators)({}),
     Layer.mock(WsWorkspacePaths.WorkspacePaths)({}),
     Layer.succeed(
       WsHttpClient.HttpClient,
@@ -1644,6 +1650,9 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             managedDirectory: "/synthetic-unused-codex",
           }),
           Layer.mock(WsVcsProcess.VcsProcess)({}),
+          Layer.mock(WsAssetSigner.AssetSigner)({}),
+          Layer.mock(WsProviderInstallation.ProviderInstallation)({}),
+          Layer.mock(WsTextGenerators.TextGenerators)({}),
           Layer.mock(WsWorkspacePaths.WorkspacePaths)({}),
           Layer.succeed(
             WsHttpClient.HttpClient,

@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import { resolveRemoteEvaluationModel } from "./remoteEvaluationModel.ts";
 import * as TextGeneration from "../TextGeneration.ts";
+import * as TextGenerators from "../TextGenerators.ts";
 import * as SourceControlProviderRegistry from "../../sourceControl/SourceControlProviderRegistry.ts";
 
 const instanceId = ProviderInstanceId.make("second-account");
@@ -91,6 +92,9 @@ it.effect(
       } as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"];
       const generation = yield* TextGeneration.make.pipe(
         Effect.provide(ServerSettings.layerTest()),
+        Effect.provide(
+          Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.succeed(undefined) }),
+        ),
         Effect.provideService(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
         Effect.provideService(
           SourceControlProviderRegistry.SourceControlProviderRegistry,

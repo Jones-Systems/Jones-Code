@@ -729,6 +729,7 @@ it.effect(
                 listInstances: Effect.succeed(instances),
                 getInstance: (id) =>
                   Effect.succeed(instances.find((candidate) => candidate.instanceId === id)),
+                getCatalogSource: () => undefined,
               }),
               ServerSettings.layerTest({}),
               Layer.mock(TextGenerators.TextGenerators)({
