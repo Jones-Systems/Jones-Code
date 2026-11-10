@@ -445,9 +445,19 @@ export const layer: Layer.Layer<
             .pipe(
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  const current = yield* projections.getProviderControlContext(
+                    input.threadId,
+                    input,
+                  );
+                  // A plain rejection from a turn the projection shows completed took nothing in.
+                  // Typed outcomes and every other notification failure stay unknown.
+                  const rejectedByCompletedTurn =
+                    findSteerFailure(cause) === undefined &&
+                    current.providerTurn?.status === "completed";
                   if (
                     message.notification !== undefined &&
-                    !isGoalNotificationNotDelivered(cause)
+                    !isGoalNotificationNotDelivered(cause) &&
+                    !rejectedByCompletedTurn
                   ) {
                     return yield* new ProviderTurnControlError({
                       threadId: input.threadId,
@@ -456,19 +466,11 @@ export const layer: Layer.Layer<
                       cause: new GoalNotificationDeliveryUnknown({ cause }),
                     });
                   }
-                  const current = yield* projections.getProviderControlContext(
-                    input.threadId,
-                    input,
-                  );
                   return yield* new ProviderTurnControlError({
                     threadId: input.threadId,
                     operation: "steer",
                     providerTurnId: input.providerTurnId,
-                    turnCompleted:
-                      isGoalNotificationNotDelivered(cause) ||
-                      (message.notification === undefined &&
-                        findSteerFailure(cause) === undefined &&
-                        current.providerTurn?.status === "completed"),
+                    turnCompleted: isGoalNotificationNotDelivered(cause) || rejectedByCompletedTurn,
                     cause,
                   });
                 }),
