@@ -5650,8 +5650,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               };
             }
           }
+          // Prompt suggestions are unpersisted hints that no evidence guard reads.
           const queuedEvent: ProviderAdapter.ProviderAdapterV2Event =
-            binding === undefined || event.type === "runtime_identity.observed"
+            binding === undefined ||
+            event.type === "runtime_identity.observed" ||
+            event.type === "prompt_suggestion.updated"
               ? event
               : {
                   ...event,

@@ -6834,12 +6834,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         dispatchMode = { type: "start_immediately" };
       }
     }
+    // Codex and Claude own /goal; elsewhere it is ordinary text that cannot steer.
+    const parsedGoalCommand = parseGoalCommand(command);
+    const goalCommand =
+      parsedGoalCommand === null ||
+      (yield* goalDriverFor(command, modelSelection.instanceId)) === undefined
+        ? null
+        : parsedGoalCommand;
     const deferredSteer = transientSteerTarget(
       projection,
       command,
       dispatchMode,
       modelSelection,
-      isGoalCommand(command) || isNativeMaintenanceCommand(command),
+      goalCommand !== null || isNativeMaintenanceCommand(command),
     );
     if (
       deferredSteer !== undefined &&
@@ -6873,13 +6880,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       dispatchMode = { type: "queue_after_active" };
     }
-    // Codex and Claude own /goal; elsewhere it is ordinary text that cannot steer.
-    const parsedGoalCommand = parseGoalCommand(command);
-    const goalCommand =
-      parsedGoalCommand === null ||
-      (yield* goalDriverFor(command, modelSelection.instanceId)) === undefined
-        ? null
-        : parsedGoalCommand;
     let goalStopRunId: RunId | undefined;
     if (goalCommand !== null) {
       // A goal command never joins a running turn. One that starts or ends goal

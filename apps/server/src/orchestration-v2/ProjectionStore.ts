@@ -6733,24 +6733,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             const visible = index.visible.map((row, position) => ({ ...row, position }));
             const sourceThreadIds = [...new Set(index.visible.map((row) => row.sourceThreadId))];
             // A selection that names an attachment keeps only the user messages that carry it.
-            const attachmentOwnersBySelection = yield* Effect.forEach(selections, (options) =>
-              options.attachmentId === undefined
-                ? Effect.succeed(undefined)
-                : sourceThreadIds.length === 0
-                  ? Effect.succeed(new Set<string>())
-                  : sql<{ thread_id: string; turn_item_id: string }>`
+            const attachmentOwnersBySelection: Array<Set<string> | undefined> = [];
+            for (const options of selections) {
+              if (options.attachmentId === undefined) {
+                attachmentOwnersBySelection.push(undefined);
+              } else if (sourceThreadIds.length === 0) {
+                attachmentOwnersBySelection.push(new Set<string>());
+              } else {
+                const rows = yield* sql<{ thread_id: string; turn_item_id: string }>`
           SELECT item.thread_id, item.turn_item_id
           FROM orchestration_v2_projection_turn_items AS item,
             json_each(item.payload_json, '$.attachments') AS attachment
           WHERE item.thread_id IN ${sql.in(sourceThreadIds)}
             AND item.type = 'user_message'
-            AND json_extract(attachment.value, '$.id') = ${options.attachmentId}`.pipe(
-                      Effect.map(
-                        (rows) =>
-                          new Set(rows.map((row) => `${row.thread_id}:${row.turn_item_id}`)),
-                      ),
-                    ),
-            );
+            AND json_extract(attachment.value, '$.id') = ${options.attachmentId}`;
+                attachmentOwnersBySelection.push(
+                  new Set(rows.map((row) => `${row.thread_id}:${row.turn_item_id}`)),
+                );
+              }
+            }
             const pages = selections.map((options, selectionIndex) => {
               const attachmentOwners = attachmentOwnersBySelection[selectionIndex];
               const matching = visible
@@ -8004,39 +8005,54 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
 
     const getAgentAwarenessSnapshot = Effect.fn("ProjectionStore.getAgentAwarenessSnapshot")(
       function* (threadId?: ThreadId) {
-        const { threadRows, providerThreadRows, pendingTurnItemRows, sequenceRows } =
-          yield* sql.withTransaction(
-            Effect.gen(function* () {
-              const threadRows = yield* selectShellThreadRows(
-                threadId,
-                threadId === undefined ? { location: "active", listedOnly: true } : {},
-              );
-              const ids = threadRows.map((row) => ThreadId.make(row.thread_id));
-              const providerThreadRows =
-                ids.length === 0 ? [] : yield* selectShellProviderThreadRows(ids);
-              const pendingTurnItemRows =
-                ids.length === 0
-                  ? []
-                  : yield* selectShellPendingTurnItemRows(
-                      ids,
-                      threadRows.flatMap((row) =>
-                        row.active_run_id !== null && row.active_run_status === "running"
-                          ? [row.active_run_id]
-                          : [],
-                      ),
-                    );
-              const sequenceRows = yield* sql<{ readonly snapshot_sequence: number | null }>`
+        const {
+          threadRows,
+          providerThreadRows,
+          pendingTurnItemRows,
+          dependencyRows,
+          sequenceRows,
+        } = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const threadRows = yield* selectShellThreadRows(
+              threadId,
+              threadId === undefined ? { location: "active", listedOnly: true } : {},
+            );
+            const ids = threadRows.map((row) => ThreadId.make(row.thread_id));
+            const providerThreadRows =
+              ids.length === 0 ? [] : yield* selectShellProviderThreadRows(ids);
+            const pendingTurnItemRows =
+              ids.length === 0
+                ? []
+                : yield* selectShellPendingTurnItemRows(
+                    ids,
+                    threadRows.flatMap((row) =>
+                      row.active_run_id !== null && row.active_run_status === "running"
+                        ? [row.active_run_id]
+                        : [],
+                    ),
+                  );
+            // Awareness reads pending background work, which includes thread dependencies.
+            const dependencyRows = yield* resultDependencies.dependencies();
+            const sequenceRows = yield* sql<{ readonly snapshot_sequence: number | null }>`
               SELECT MAX(sequence) AS snapshot_sequence FROM orchestration_events
               WHERE application_event_version = 2 AND aggregate_kind = 'thread'
             `;
-              return { threadRows, providerThreadRows, pendingTurnItemRows, sequenceRows };
-            }),
-          );
+            return {
+              threadRows,
+              providerThreadRows,
+              pendingTurnItemRows,
+              dependencyRows,
+              sequenceRows,
+            };
+          }),
+        );
         const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
           yield* pendingBackgroundDataByThreadId({ providerThreadRows, pendingTurnItemRows });
+        const dependenciesByThreadId = dependencyRosterByThread(dependencyRows);
         const threads = yield* Effect.forEach(threadRows, (row) =>
           shellThreadStateFromRow({
             row,
+            dependenciesByThreadId,
             // Awareness never consumes timeline counts or inherited fork history.
             runOrdinalsByThreadId: new Map(),
             itemCountsByThreadId: new Map(),

@@ -218,6 +218,11 @@ export const CodexDriver: ProviderDriver<
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         compatibility: installation.compatibility,
+        // The picker shows each model's catalog default effort; dispatch reads the same
+        // catalog so a turn without an explicit effort sends the effort that was shown.
+        getModelCatalog: Effect.suspend(() =>
+          snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+        ),
       },
     ).pipe(
       Effect.mapError(

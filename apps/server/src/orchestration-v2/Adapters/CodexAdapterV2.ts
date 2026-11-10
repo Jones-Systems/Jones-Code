@@ -1830,7 +1830,10 @@ export type CodexAdapterV2DriverEnv =
 
 export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapterV2")(function* (
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
-  hooks: Pick<CodexAdapterV2Options, "onUsageLimits" | "resolveRuntime" | "compatibility"> = {},
+  hooks: Pick<
+    CodexAdapterV2Options,
+    "onUsageLimits" | "resolveRuntime" | "compatibility" | "getModelCatalog"
+  > = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
   const processAttribution = yield* Effect.serviceOption(ProcessAttribution.ProcessAttribution);
@@ -3225,8 +3228,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 thread === undefined || producer === undefined
                   ? undefined
                   : runtimeBinding(thread, producer.generation);
+              // Prompt suggestions are unpersisted hints that no evidence guard reads.
               const queuedEvent: ProviderAdapterV2Event =
-                binding === undefined || event.type === "runtime_identity.observed"
+                binding === undefined ||
+                event.type === "runtime_identity.observed" ||
+                event.type === "prompt_suggestion.updated"
                   ? event
                   : {
                       ...event,
@@ -8026,7 +8032,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (
                 input.status === "completed" &&
                 input.context.subagent === null &&
-                !input.continueRun &&
+                input.continuingCapacity !== true &&
                 !holdsForGoal &&
                 nativeThreadId != null
               ) {
