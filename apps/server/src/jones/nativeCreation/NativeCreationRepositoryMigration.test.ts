@@ -227,15 +227,11 @@ const nativeUpgradeFixture = Effect.gen(function* () {
     beforeUpgrade,
   );
   const legacyBefore = yield* sql`SELECT * FROM jones_native_creation_execution_starts`;
-  assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-    [137, "NativeCreationLeaseRenewal"],
-    [138, "WorkspaceRetirement"],
-    [139, "ConversationWorkspace"],
-    [140, "NativeExecutionProcessCustody"],
-    [141, "OrdinaryCheckoutProcessCustody"],
-    [142, "AuthSessionClientMetadata"],
-    [143, "WorkspaceRuntimeUses"],
-  ]);
+  // Every Jones migration after the released 136, in ledger order.
+  assert.deepStrictEqual(
+    yield* runJonesMigrations(jonesMigrationEntries),
+    jonesMigrationEntries.filter(([id]) => id >= 137).map(([id, name]) => [id, name]),
+  );
   assert.deepStrictEqual(
     yield* sql`SELECT * FROM jones_native_creation_execution_starts`,
     legacyBefore,
