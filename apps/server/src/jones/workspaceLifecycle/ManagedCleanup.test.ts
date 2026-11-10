@@ -319,6 +319,7 @@ it.effect("settlement records exact native output duties with retirement disable
             }).pipe(Effect.andThen(f.git.execute(input))),
         }),
         Effect.provide(f.layer),
+        Effect.provide(f.configured),
       );
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
