@@ -47,7 +47,7 @@ const layerLaunchDependencies = Layer.mergeAll(
   Layer.mock(EventSink.EventSinkV2)({}),
   // A keyed launch first looks for a receipt under the id earlier builds derived; none exists here.
   Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
-    getByCommandId: () => Effect.succeed(Option.none()),
+    getByCommandId: () => Effect.succeedNone,
   }),
 );
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
