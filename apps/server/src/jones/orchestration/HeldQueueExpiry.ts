@@ -9,9 +9,9 @@ import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { RESTART_CONTINUATION_MESSAGE_PREFIX } from "./QueueHold.ts";
 
 /** Hours a held automatic message waits before the sweep cancels it. */
-export const HELD_QUEUE_EXPIRY_HOURS_ENV = "T3CODE_HELD_QUEUE_EXPIRY_HOURS";
+const HELD_QUEUE_EXPIRY_HOURS_ENV = "T3CODE_HELD_QUEUE_EXPIRY_HOURS";
 export const DEFAULT_HELD_QUEUE_EXPIRY_HOURS = 24;
-export const HELD_QUEUE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+const HELD_QUEUE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -59,11 +59,11 @@ export function isHumanTypedHeldMessage(row: HeldQueuedRunRow): boolean {
 }
 
 /** Held age starts at the recorded hold, or at the request for holds recorded without a time. */
-export function heldSinceMs(row: HeldQueuedRunRow): number {
+function heldSinceMs(row: HeldQueuedRunRow): number {
   return Date.parse(row.held_at ?? row.requested_at);
 }
 
-export function expiredHeldRuns(
+function expiredHeldRuns(
   rows: ReadonlyArray<HeldQueuedRunRow>,
   nowMs: number,
   expiryMs: number,
@@ -74,7 +74,7 @@ export function expiredHeldRuns(
   });
 }
 
-export const heldQueueExpiryCommandId = (runId: string) =>
+const heldQueueExpiryCommandId = (runId: string) =>
   CommandId.make(`command:held-queue-expiry:${runId}`);
 
 // The partial recovery index on (status, thread_id) bounds this to queued runs; each message is
