@@ -393,9 +393,17 @@ describe("real monitor renderer interactions", () => {
     const { store, intents, container } = setup();
     await using _screen = await render(<MonitorUI store={store} />, { container, router: false });
     await expand(container);
-    await act(() =>
-      container.querySelector<HTMLButtonElement>('[data-monitor-thread-id="done"]')!.focus(),
+    // The notch click leaves the pointer over the "thread" row, and about 150 ms later that
+    // row's hover timer moves the composer to it unless the editor holds focus. Hover the
+    // intended row so its timer replaces that one, and wait until the composer is on it.
+    await userEvent.hover(
+      container.querySelector<HTMLButtonElement>('[data-monitor-thread-id="done"]')!,
     );
+    await expect
+      .poll(() =>
+        container.querySelector("[data-monitor-reply] textarea")?.getAttribute("aria-label"),
+      )
+      .toBe("Reply to Done thread");
     const editor = container.querySelector<HTMLTextAreaElement>("[data-monitor-reply] textarea")!;
     await userEvent.fill(editor, "composed reply");
     await act(() => {
