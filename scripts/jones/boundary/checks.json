@@ -1134,6 +1134,7 @@
       "id": "jones-settlement-restore",
       "tests": [
         "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+        "apps/server/src/jones/settlementRestore/plan.test.ts",
         "packages/contracts/src/jones/settlementRestore.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
@@ -2518,6 +2519,7 @@
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
         "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
+        "apps/server/src/jones/persistence/Migrations/146_JonesSettlementOriginRetention.test.ts",
         "apps/server/scripts/jones/currentFixtures.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
         "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
@@ -2540,7 +2542,7 @@
         "vp test run packages/contracts/src/jones/settlementOrigins.test.ts apps/server/src/jones/settlementOrigins/ apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/updates/migrationPlan.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter t3 typecheck",
-        "vp test run packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts --maxWorkers=1",
+        "vp test run packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts apps/server/src/jones/persistence/Migrations/146_JonesSettlementOriginRetention.test.ts --maxWorkers=1",
         "vp test run apps/server/scripts/jones/currentFixtures.test.ts --maxWorkers=1",
         "vp test run packages/contracts/src/orchestratorMcp.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run packages/client-runtime/src/jones/providerSettlementCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -5433,6 +5435,24 @@
         "vp test run apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts -t \"emits the awaited-task roster under the bound query\" --maxWorkers=1",
         "vp lint apps/server/src/jones/orchestration/RuntimeEvidenceGuard.ts apps/server/src/jones/orchestration/IdleTurnSettlement.ts apps/server/src/orchestration-v2/EventSink.ts apps/server/src/orchestration-v2/RunExecutionService.ts apps/server/src/orchestration-v2/EffectWorker.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
         "vp run --filter @t3tools/contracts --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-event-log-pruning",
+      "tests": [
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts",
+        "apps/server/src/jones/settlementOrigins/SettlementOrigins.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailoverStore.test.ts",
+        "apps/server/src/jones/persistence/Migrations/146_JonesSettlementOriginRetention.test.ts",
+        "apps/server/src/jones/settlementRestore/plan.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/persistence/EventLogPruning.test.ts apps/server/src/jones/cleanup/DeletionAdmission.test.ts apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts apps/server/src/jones/settlementOrigins/ apps/server/src/jones/codexFailover/CodexFailoverStore.test.ts apps/server/src/jones/persistence/Migrations/146_JonesSettlementOriginRetention.test.ts apps/server/src/jones/settlementRestore/ apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts --maxWorkers=1",
+        "vp run --filter t3 typecheck",
+        "vp lint apps/server/src/jones/persistence apps/server/src/jones/settlementOrigins apps/server/src/jones/settlementRestore apps/server/src/jones/threadConfiguration/selectionRevision.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }
