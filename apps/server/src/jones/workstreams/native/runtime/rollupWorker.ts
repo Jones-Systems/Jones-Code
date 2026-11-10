@@ -1,9 +1,9 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Application from "../rollups/application.ts";
 import type * as Evidence from "../rollups/evidence.ts";
+import { makeSingleFlight, superviseLoop } from "./supervision.ts";
 
 export class NativeRollupWorker extends Context.Service<
   NativeRollupWorker,
@@ -14,36 +14,20 @@ export class NativeRollupWorker extends Context.Service<
 
 const make = Effect.gen(function* () {
   const application = yield* Application.RollupApplication;
-  const scope = yield* Effect.scope;
-  let sweeping = false;
   let stopped = false;
+  // Manual and background work share the owner's scope; caller cancellation also interrupts its sweep.
+  const flight = yield* makeSingleFlight<Application.RunOutcome | null, Evidence.RollupError>({
+    whenBusy: { skip: null },
+    starterCancels: true,
+  });
   const sweep = Effect.fn("NativeRollupWorker.sweep")(() =>
-    Effect.uninterruptibleMask((restore) =>
-      Effect.suspend(() => {
-        if (stopped || sweeping) return Effect.succeed(null);
-        sweeping = true;
-        return Effect.gen(function* () {
-          // Manual and background work share the owner's scope; caller cancellation also interrupts its sweep.
-          const fiber = yield* restore(application.processOnce()).pipe(Effect.forkIn(scope));
-          return yield* restore(Fiber.join(fiber)).pipe(
-            Effect.onInterrupt(() => Fiber.interrupt(fiber)),
-          );
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              sweeping = false;
-            }),
-          ),
-        );
-      }),
-    ),
+    Effect.suspend(() => (stopped ? Effect.succeed(null) : flight.run(application.processOnce()))),
   );
-  yield* Effect.gen(function* () {
-    for (;;) {
-      yield* sweep().pipe(Effect.catchTags({ WorkstreamsRollupError: () => Effect.void }));
-      // Completion-based cadence never queues missed ticks or retries an application attempt.
-      yield* Effect.sleep(30_000);
-    }
+  // Completion-based cadence never queues missed ticks or retries an application attempt.
+  yield* superviseLoop({
+    loop: "rollup",
+    iteration: sweep(),
+    code: (error) => error.code,
   }).pipe(Effect.forkScoped);
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {

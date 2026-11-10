@@ -7,6 +7,7 @@ import * as Application from "../rollups/application.ts";
 import * as Evidence from "../rollups/evidence.ts";
 import * as TestClock from "effect/testing/TestClock";
 import * as Worker from "./rollupWorker.ts";
+import { captureLogs } from "./supervision.testkit.ts";
 
 const outcome = (status: Application.RunOutcome["status"]): Application.RunOutcome => ({
   status,
@@ -296,4 +297,70 @@ it.effect(
         expect(calls).toBe(2);
       }),
     ),
+);
+
+it.effect(
+  "a failing or defecting sweep is logged with its failure class and the loop keeps sweeping",
+  () => {
+    const capture = captureLogs();
+    let calls = 0;
+    const tail = () => capture.logs.slice(-1)[0]!;
+    return Effect.scoped(
+      Effect.gen(function* () {
+        yield* Worker.NativeRollupWorker;
+        // Let the forked loop run its first sweep before observing it.
+        yield* TestClock.adjust(0);
+        expect(calls).toBe(1);
+        // Control: the capture reaches the loop fiber, so a missing warning means none was logged.
+        expect(capture.at("Info").map((entry) => entry.message)).toEqual([
+          ["synthetic sweep marker"],
+        ]);
+        expect(capture.at("Warn")).toHaveLength(1);
+        expect(capture.at("Warn")[0]!.annotations).toEqual({
+          loop: "rollup",
+          failure: "typed",
+          code: "content_unavailable",
+          consecutiveFailures: 1,
+          retryInMs: 30_000,
+        });
+        expect(capture.at("Warn")[0]!.cause.reasons.length).toBeGreaterThan(0);
+        // A defect used to end the loop silently; it is logged and the next cadence still runs.
+        yield* TestClock.adjust(30_000);
+        expect(calls).toBe(2);
+        expect(capture.at("Warn")).toHaveLength(2);
+        expect(capture.at("Warn")[1]!.annotations).toEqual({
+          loop: "rollup",
+          failure: "defect",
+          consecutiveFailures: 2,
+          retryInMs: 60_000,
+        });
+        // Repeated failure backs off; the next attempt is not due at the base cadence.
+        yield* TestClock.adjust(59_999);
+        expect(calls).toBe(2);
+        yield* TestClock.adjust(1);
+        expect(calls).toBe(3);
+        expect(capture.at("Warn")).toHaveLength(2);
+        expect(tail().level).toBe("Info");
+        expect(tail().annotations).toEqual({ loop: "rollup", afterFailures: 2 });
+        // Success restores the base cadence.
+        yield* TestClock.adjust(29_999);
+        expect(calls).toBe(3);
+        yield* TestClock.adjust(1);
+        expect(calls).toBe(4);
+      }).pipe(
+        Effect.provide(
+          worker(() =>
+            Effect.gen(function* () {
+              calls++;
+              yield* Effect.logInfo("synthetic sweep marker");
+              if (calls === 1)
+                return yield* new Evidence.RollupError({ code: "content_unavailable" });
+              if (calls === 2) return yield* Effect.die(new Error("synthetic rollup defect"));
+              return outcome("idle");
+            }),
+          ).pipe(Layer.provide(capture.layer)),
+        ),
+      ),
+    );
+  },
 );
