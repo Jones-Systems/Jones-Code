@@ -1516,10 +1516,19 @@ describe("environment shell synchronization", () => {
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.provideService(Persistence.EnvironmentCacheStore, cache),
         Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, {
-          load: () => Effect.succeed(Option.none()),
+          load: () => Effect.succeedNone,
         }),
       );
 
+      // Let the first stream's items land first; the resume cursor comes from them.
+      yield* SubscriptionRef.changes(shellState).pipe(
+        Stream.filter(
+          (value) =>
+            value.status === "live" &&
+            Option.exists(value.snapshot, (snapshot) => snapshot.snapshotSequence === 5),
+        ),
+        Stream.runHead,
+      );
       for (let attempt = 0; attempt < 30; attempt += 1) {
         if ((yield* Ref.get(subscribeInputs)).length >= 2) break;
         yield* TestClock.adjust("1 second");

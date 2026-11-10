@@ -2086,6 +2086,7 @@
         "packages/client-runtime/src/state/shell-sync.test.ts",
         "packages/client-runtime/src/state/threads-sync.test.ts",
         "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
+        "packages/client-runtime/src/jones/sync/sessionResubscribe.test.ts",
         "packages/client-runtime/src/state/commandPermissions.test.ts",
         "packages/client-runtime/src/state/runtime.test.ts",
         "packages/client-runtime/src/state/shellReducer.test.ts",
@@ -2114,8 +2115,8 @@
         "vp lint apps/server/src/ws.ts apps/server/src/ws.test.ts",
         "vp test run packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts packages/client-runtime/src/connection/resolver.test.ts packages/client-runtime/src/connection/routes.test.ts packages/client-runtime/src/connection/registry.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp lint packages/client-runtime/src/connection/driver.ts packages/client-runtime/src/connection/registry.ts packages/client-runtime/src/connection/supervisor.ts packages/client-runtime/src/jones/connection/betterRouteRecovery.ts packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts",
-        "vp test run packages/client-runtime/src/rpc/client.test.ts packages/client-runtime/src/state/shell-sync.test.ts packages/client-runtime/src/state/threads-sync.test.ts packages/client-runtime/src/jones/sync/commandIsolation.test.ts packages/client-runtime/src/state/commandPermissions.test.ts packages/client-runtime/src/state/runtime.test.ts packages/client-runtime/src/state/shellReducer.test.ts packages/client-runtime/src/state/threads-atoms.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp lint packages/client-runtime/src/rpc/client.ts packages/client-runtime/src/rpc/client.test.ts packages/client-runtime/src/state/shell.ts packages/client-runtime/src/state/shell-sync.test.ts packages/client-runtime/src/state/threads-sync.test.ts packages/client-runtime/src/jones/sync/producerGuard.ts packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
+        "vp test run packages/client-runtime/src/rpc/client.test.ts packages/client-runtime/src/state/shell-sync.test.ts packages/client-runtime/src/state/threads-sync.test.ts packages/client-runtime/src/jones/sync/commandIsolation.test.ts packages/client-runtime/src/jones/sync/sessionResubscribe.test.ts packages/client-runtime/src/state/commandPermissions.test.ts packages/client-runtime/src/state/runtime.test.ts packages/client-runtime/src/state/shellReducer.test.ts packages/client-runtime/src/state/threads-atoms.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint packages/client-runtime/src/rpc/client.ts packages/client-runtime/src/rpc/client.test.ts packages/client-runtime/src/state/shell.ts packages/client-runtime/src/state/shell-sync.test.ts packages/client-runtime/src/state/threads-sync.test.ts packages/client-runtime/src/state/threads.ts packages/client-runtime/src/jones/sync/producerGuard.ts packages/client-runtime/src/jones/sync/sessionResubscribe.ts packages/client-runtime/src/jones/sync/sessionResubscribe.test.ts packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
         "knip --workspace packages/client-runtime --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
         "vp test run packages/client-runtime/src/state/serverTokenAccounting.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp lint packages/client-runtime/src/state/serverTokenAccounting.test.ts"

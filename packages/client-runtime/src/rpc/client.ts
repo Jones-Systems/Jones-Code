@@ -21,6 +21,10 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import type { SubscriptionProducer } from "../jones/sync/producerGuard.ts";
+import {
+  failedSessionStreamEnd,
+  makeSessionResubscriber,
+} from "../jones/sync/sessionResubscribe.ts";
 
 export class EnvironmentRpcUnavailableError extends Schema.TaggedError<EnvironmentRpcUnavailableError>()(
   "EnvironmentRpcUnavailableError",
@@ -108,7 +112,6 @@ export const isRpcClientError = Schema.is(RpcClientError.RpcClientError);
 const isEnvironmentAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
 const MAX_EXPECTED_FAILURE_RETRY_DELAY_MS = 30_000;
-const MAX_SESSION_RESUBSCRIBE_DELAY_MS = 30_000;
 
 export type EnvironmentRpcInput<TTag extends EnvironmentRpcTag> = Parameters<RpcMethod<TTag>>[0];
 
@@ -281,16 +284,15 @@ interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
   readonly retryExpectedFailureAfter?: Duration.Input;
   readonly resubscribe?: Stream.Stream<unknown, never, never>;
   /**
-   * Opt-in for streams that must stay live for the whole session. When the stream
-   * ends, or loses its transport, while its session is still current, subscribe
-   * again on that session after this delay (doubling up to 30 seconds). Without
-   * it, such a stream stays dormant until a replacement session or a `resubscribe`
+   * Opt-in for streams that must stay live for the whole session. If the stream
+   * completes, loses its transport, is interrupted by the server or dies while its
+   * session is still current, subscribe again on that session after this delay
+   * (doubling up to 30 seconds; see `jones/sync/sessionResubscribe.ts`). Without it,
+   * such a stream stays dormant until a replacement session or a `resubscribe`
    * signal arrives, even though the connection is otherwise healthy.
    */
   readonly resubscribeWhileSessionCurrent?: Duration.Input;
 }
-
-type SubscriptionEndReason = "completed" | "transport-lost";
 
 function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
   tag: TTag,
@@ -340,51 +342,16 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                 EnvironmentRpcStreamFailure<TTag>
               >;
               let expectedFailureRetries = 0;
-              let sessionResubscribeAttempts = 0;
-              const resubscribeAfter = options?.resubscribeWhileSessionCurrent;
-              // Re-subscribes on this same session; a session replacement still goes
-              // through `switchMap`, which interrupts any pending wait here.
-              const resubscribeOnSameSession = (
-                reason: SubscriptionEndReason,
-                delay: Duration.Input,
-                cause?: Cause.Cause<unknown>,
-              ): Stream.Stream<A, EnvironmentRpcStreamFailure<TTag>> =>
-                Stream.fromEffect(
-                  Effect.gen(function* () {
-                    const delayMs = Math.min(
-                      Duration.toMillis(delay) * 2 ** sessionResubscribeAttempts,
-                      MAX_SESSION_RESUBSCRIBE_DELAY_MS,
-                    );
-                    sessionResubscribeAttempts += 1;
-                    yield* Effect.logWarning(
-                      "Durable RPC subscription ended on a live session; resubscribing.",
-                      {
-                        method: tag,
-                        environmentId: supervisor.target.environmentId,
-                        reason,
-                        retryDelayMs: delayMs,
-                        ...(cause === undefined ? {} : { cause: Cause.pretty(cause) }),
-                      },
-                    ).pipe(
-                      Effect.withSpan("EnvironmentRpc.subscriptionEnded", {
-                        attributes: {
-                          "rpc.method": tag,
-                          "environment.id": supervisor.target.environmentId,
-                          "subscription.end_reason": reason,
-                          "subscription.retry_delay_ms": delayMs,
-                          "subscription.retry_attempt": sessionResubscribeAttempts,
-                        },
-                      }),
-                    );
-                    yield* Effect.sleep(Duration.millis(delayMs));
-                    const current = SubscriptionRef.getUnsafe(supervisor.session);
-                    return Option.getOrNull(current) === session;
-                  }),
-                ).pipe(
-                  Stream.flatMap((sessionIsCurrent) =>
-                    sessionIsCurrent ? subscribeToSession() : Stream.empty,
-                  ),
-                );
+              const resubscriber =
+                options?.resubscribeWhileSessionCurrent === undefined
+                  ? undefined
+                  : makeSessionResubscriber({
+                      method: tag,
+                      environmentId: supervisor.target.environmentId,
+                      delay: options.resubscribeWhileSessionCurrent,
+                      isSessionCurrent: () =>
+                        Option.getOrNull(SubscriptionRef.getUnsafe(supervisor.session)) === session,
+                    });
               const subscribeToSession = (): Stream.Stream<A, EnvironmentRpcStreamFailure<TTag>> =>
                 Stream.suspend(() => {
                   const producer = { session, subscriptionEpoch: ++subscriptionEpoch };
@@ -393,6 +360,7 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                   return Stream.unwrap(
                     Effect.gen(function* () {
                       const input = yield* makeInput(session, producer);
+                      if (resubscriber !== undefined) yield* resubscriber.opened;
                       const completeObservation = yield* observer.observe({
                         environmentId: supervisor.target.environmentId,
                         method: tag,
@@ -402,7 +370,6 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                         Stream.onFirst(() =>
                           Effect.sync(() => {
                             expectedFailureRetries = 0;
-                            sessionResubscribeAttempts = 0;
                           }),
                         ),
                         Stream.concat(
@@ -437,10 +404,13 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                         cause.reasons.every(
                           (reason) => reason._tag === "Fail" && isRpcClientError(reason.error),
                         );
-                      if (isTransportFailure) {
-                        if (resubscribeAfter !== undefined) {
-                          return resubscribeOnSameSession("transport-lost", resubscribeAfter, cause);
+                      if (resubscriber !== undefined) {
+                        const end = failedSessionStreamEnd(cause, isTransportFailure);
+                        if (end !== undefined) {
+                          return resubscriber.after(end, subscribeToSession, cause);
                         }
+                      }
+                      if (isTransportFailure) {
                         return Stream.fromEffect(
                           Effect.logWarning(
                             "Durable RPC subscription lost its transport; waiting for the next session.",
@@ -485,8 +455,8 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                     }),
                     Stream.concat(
                       Stream.suspend(() =>
-                        completed && resubscribeAfter !== undefined
-                          ? resubscribeOnSameSession("completed", resubscribeAfter)
+                        completed && resubscriber !== undefined
+                          ? resubscriber.after("completed", subscribeToSession)
                           : Stream.empty,
                       ),
                     ),
