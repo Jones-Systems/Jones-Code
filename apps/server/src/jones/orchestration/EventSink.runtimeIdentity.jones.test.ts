@@ -516,6 +516,8 @@ it.effect.each([
 it.effect.each([
   { title: "a rollback reset that advances the revision", reset: "revision" },
   { title: "a different generation", reset: "generation" },
+  // Not stale: the snapshot names the stored generation and revision, so its request applies.
+  { title: "the stored generation and revision with another request", reset: "request" },
   { title: "a different provider session", reset: "session" },
 ] as const)("applies an update without evidence that carries $title", ({ reset }) =>
   Effect.gen(function* () {
@@ -533,10 +535,18 @@ it.effect.each([
           }
         : reset === "generation"
           ? { ...owner, runtimeIdentity: { ...identity, runtimeGeneration: "producer-2" } }
-          : {
-              ...decodeProviderThread({ ...owner, providerSessionId: "replacement-session" }),
-              runtimeIdentity: undefined,
-            };
+          : reset === "request"
+            ? {
+                ...owner,
+                runtimeIdentity: {
+                  ...identity,
+                  requested: { ...identity.requested, model: "changed-request" },
+                },
+              }
+            : {
+                ...decodeProviderThread({ ...owner, providerSessionId: "replacement-session" }),
+                runtimeIdentity: undefined,
+              };
     const stored = yield* sink.write({
       events: [
         {

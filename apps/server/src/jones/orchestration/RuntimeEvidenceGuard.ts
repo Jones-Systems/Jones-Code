@@ -72,9 +72,9 @@ const isLostRuntimeEvidence = (reason: RuntimeEvidenceRejection): boolean =>
 
 /**
  * Only a boundary write may change the stored generation. An update without producer evidence
- * that names the same binding and no newer state keeps the stored identity; a stale snapshot
- * would otherwise strip the generation and every later capture from that producer would fail.
- * Returns undefined when the incoming update applies as written.
+ * that names the same binding but predates the stored identity keeps the stored identity; a
+ * stale snapshot would otherwise strip the generation or regress the revision, and every later
+ * capture from that producer would fail. Returns undefined when the update applies as written.
  */
 function retainedRuntimeIdentity(
   stored: OrchestrationV2ProviderThread,
@@ -94,8 +94,11 @@ function retainedRuntimeIdentity(
   const next = incoming.runtimeIdentity;
   if (next?.runtimeGeneration !== undefined && next.runtimeGeneration !== current.runtimeGeneration)
     return undefined;
+  const ahead = (next?.evidenceRevision ?? 0) - (current.evidenceRevision ?? 0);
   // Rollback resets the identity without evidence by advancing the revision.
-  if ((next?.evidenceRevision ?? 0) > (current.evidenceRevision ?? 0)) return undefined;
+  if (ahead > 0) return undefined;
+  // A snapshot of the stored generation and revision is current, so its other fields apply.
+  if (next?.runtimeGeneration !== undefined && ahead === 0) return undefined;
   return current;
 }
 
