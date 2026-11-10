@@ -202,11 +202,10 @@ export const makeRuntimeEvidenceGuard = (sql: SqlClient.SqlClient) => {
         return null;
       }
       yield* reportRejection({ ...report, settled: true });
-      return input.events.map(
-        (event): RecordedLifecycleEvent =>
-          event.type === "provider-thread.updated" && event.payload.id === current.id
-            ? { ...event, payload: { ...event.payload, runtimeIdentity: current.runtimeIdentity } }
-            : event,
+      return input.events.map((event): RecordedLifecycleEvent =>
+        event.type === "provider-thread.updated" && event.payload.id === current.id
+          ? { ...event, payload: { ...event.payload, runtimeIdentity: current.runtimeIdentity } }
+          : event,
       );
     }),
   };
