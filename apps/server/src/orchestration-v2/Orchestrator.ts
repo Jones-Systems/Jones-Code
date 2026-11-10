@@ -27,7 +27,10 @@ import {
   monitorSettlementBlockerMessage,
 } from "../jones/threadMonitor/guardedSettle.ts";
 import { hasRetainedGoalStopTarget } from "../jones/goals/stopTarget.ts";
-import { executionProjection } from "../jones/threadConfiguration/executionSelection.ts";
+import {
+  executionProjection,
+  selectionAheadOfQueuedPicks,
+} from "../jones/threadConfiguration/executionSelection.ts";
 import * as CodexFailover from "../jones/codexFailover/CodexFailover.ts";
 import * as ChildResultHolds from "../jones/orchestration/childResultHolds.ts";
 import * as RemoteObservationHooks from "../jones/remoteDelegation/ObservationHooks.ts";
@@ -7184,6 +7187,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       !isBufferedProviderNotification(incomingMessage)
     ) {
       modelSelection = queueTailModelSelection(projection);
+    } else if (
+      shouldQueue &&
+      command.modelSelection === undefined &&
+      (goalStopRunId !== undefined || isBufferedProviderNotification(incomingMessage))
+    ) {
+      modelSelection = selectionAheadOfQueuedPicks(
+        projection.thread,
+        executionProjection(projection).thread.modelSelection,
+        queuedPicks(projection),
+      );
     }
     yield* ensureGoalCommandSupported(command, command, modelSelection.instanceId);
     // A plain send starts or joins its admitted cohort. It never grants authority
