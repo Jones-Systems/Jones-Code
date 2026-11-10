@@ -187,6 +187,21 @@ import {
   RecordedThreadBoundedSnapshot,
 } from "./RecordedTypes.ts";
 
+// Building the GitHub source-control layer reads gh's Unix socket setting; none is configured here.
+// Any other VCS process from these transport scenarios is still a defect.
+const wsVcsProcessMock = Layer.mock(WsVcsProcess.VcsProcess)({
+  run: (input) =>
+    input.operation === "GitHubHttpClient.config"
+      ? Effect.succeed({
+          exitCode: ChildProcessSpawner.ExitCode(1),
+          stdout: "",
+          stderr: "",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        })
+      : Effect.die(`Unexpected VCS process ${input.operation}`),
+});
+
 const decodeThread = Schema.decodeUnknownSync(RecordedAppThreadJson);
 const decodeRun = Schema.decodeUnknownSync(RecordedRunJson);
 const decodeLegacyRpcFailureCause = Schema.decodeUnknownEffect(
@@ -690,7 +705,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsCodexInstallation.CodexInstallation)({
       managedDirectory: "/synthetic-unused-codex",
     }),
-    Layer.mock(WsVcsProcess.VcsProcess)({}),
+    wsVcsProcessMock,
     Layer.mock(WsAssetSigner.AssetSigner)({}),
     Layer.mock(WsProviderInstallation.ProviderInstallation)({}),
     Layer.mock(WsTextGenerators.TextGenerators)({}),
@@ -1649,7 +1664,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
           Layer.mock(WsCodexInstallation.CodexInstallation)({
             managedDirectory: "/synthetic-unused-codex",
           }),
-          Layer.mock(WsVcsProcess.VcsProcess)({}),
+          wsVcsProcessMock,
           Layer.mock(WsAssetSigner.AssetSigner)({}),
           Layer.mock(WsProviderInstallation.ProviderInstallation)({}),
           Layer.mock(WsTextGenerators.TextGenerators)({}),
