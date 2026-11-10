@@ -49,9 +49,6 @@ export function PresentationOrderSettings() {
   const showEnvironments = projectGroupsSpanEnvironments(groups);
   return (
     <SettingsSection title="Project and environment order">
-      <p className="px-3 py-2 text-xs text-muted-foreground sm:px-4">
-        Saved on this device across all connected environments. Other devices keep their own order.
-      </p>
       <SettingsRow
         {...searchableSetting("project-order")}
         description="Order of projects in the sidebar, new-thread palette and draft picker. Choose Manual to reorder."
@@ -133,7 +130,7 @@ export function PresentationOrderSettings() {
       </SettingsRow>
       <SettingsRow
         {...searchableSetting("environment-order")}
-        description="Order of environments in Run on and project host pickers. This does not change the default environment."
+        description="Order of environments in Run on and host pickers. Doesn’t change the default."
         resetAction={
           environmentOrder.length > 0 ? (
             <SettingResetButton

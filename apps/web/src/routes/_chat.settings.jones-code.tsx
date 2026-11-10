@@ -1,14 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { SettingsPageContainer } from "../components/settings/settingsLayout";
 import { PromptsSettings } from "../jones/workQueue/PromptsSettings";
 
 import { WorkstreamsSetupStatus } from "../jones/workstreams/WorkstreamsSetupStatus";
 
 function JonesCodeSettings() {
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <SettingsPageContainer>
       <PromptsSettings />
       <WorkstreamsSetupStatus />
-    </div>
+    </SettingsPageContainer>
   );
 }
 
