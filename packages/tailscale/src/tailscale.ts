@@ -448,12 +448,14 @@ export const readTailscaleServeConfigJson: Effect.Effect<
   const executable = tailscaleCommandForPlatform(hostPlatform);
   const commandContext = { executable, subcommand: "serve" as const, argumentCount: args.length };
   return yield* Effect.gen(function* () {
-    const child = yield* spawner.spawn(ChildProcess.make(executable, args)).pipe(
-      Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
-      Effect.catchDefect((cause) =>
-        Effect.fail(new TailscaleCommandSpawnError({ ...commandContext, cause })),
-      ),
-    );
+    const child = yield* spawner
+      .spawn(ChildProcess.make(executable, args, { forceKillAfter: TAILSCALE_KILL_GRACE }))
+      .pipe(
+        Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
+        Effect.catchDefect((cause) =>
+          Effect.fail(new TailscaleCommandSpawnError({ ...commandContext, cause })),
+        ),
+      );
     const [stdout, stderr, exitCode] = yield* Effect.all(
       [
         collectStdout(child.stdout),
