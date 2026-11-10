@@ -123,7 +123,7 @@ const closeTurnItem = (item: OrchestrationV2TurnItem, now: DateTime.Utc): Orches
     ...("streaming" in item ? { streaming: false } : {}),
   }) as OrchestrationV2TurnItem;
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
