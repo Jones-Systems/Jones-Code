@@ -15,6 +15,7 @@ import {
   loadCompleteWorkstreamReferences,
   mergeLivePlacements,
   nativePlacementBatches,
+  planNativePlacementBatches,
   reconcileWorkstreamCommands,
   reuseNativePlacementIdentitySnapshot,
   workstreamListErrorMessage,
@@ -199,6 +200,18 @@ describe("proof request batching", () => {
     expect(first).not.toContain("old-1004");
     expect(batches.flat()).toHaveLength(threads.length);
     expect(nativePlacementBatches(threads.toReversed(), { preferred })).toEqual(batches);
+  });
+
+  it("counts an identity too large for any request as skipped instead of dropping it", () => {
+    const oversized = { environmentId: "env", id: "x".repeat(T3_PLACEMENT_MAX_REQUEST_BYTES) };
+    const normal = { environmentId: "env", id: "ok" };
+    const plan = planNativePlacementBatches([oversized, normal]);
+    expect(plan.skippedIdentities).toBe(1);
+    expect(plan.batches.flat()).toEqual([{ source_instance_id: "env", native_thread_id: "ok" }]);
+    expect(nativePlacementBatches([oversized, normal])).toEqual(plan.batches);
+    expect(planNativePlacementBatches([normal]).skippedIdentities).toBe(0);
+    expect(planNativePlacementBatches([oversized]).batches).toEqual([]);
+    expect(planNativePlacementBatches([oversized]).skippedIdentities).toBe(1);
   });
 
   it("merges proof batches only when their contexts and trust snapshots agree", () => {

@@ -179,6 +179,9 @@ jobs:
       - name: Check Jones migration order
         run: node scripts/jones/ci/jones-migration-order.cjs
 
+      - name: Check Jones migration ledger
+        run: node scripts/jones/ci/jones-migration-ledger.cjs
+
       # electron's install.js (run by ensure:electron) reads this cache before it
       # downloads from GitHub. The key changes only with the Electron version.
       - name: Cache Electron download

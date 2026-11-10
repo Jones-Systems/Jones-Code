@@ -289,6 +289,7 @@
       "id": "migration-order",
       "tests": [
         "scripts/jones/ci/jones-migration-order.node-test.cjs",
+        "scripts/jones/ci/jones-migration-ledger.node-test.cjs",
         "apps/server/src/jones/persistence/Migrations.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts"
       ],
