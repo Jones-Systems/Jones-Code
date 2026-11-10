@@ -1458,4 +1458,90 @@ describe("environment shell synchronization", () => {
       expect(filled).toEqual([link(2)]);
     }),
   );
+
+  it.effect("resumes the shell on the same session after the server ends its stream", () =>
+    Effect.gen(function* () {
+      // Regression: a shell stream that ended while its connection stayed up left the
+      // sidebar frozen, so a newly created thread never appeared until a reload.
+      const subscribeInputs = yield* Ref.make<ReadonlyArray<number | undefined>>([]);
+      const liveEvents = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
+      const created = {
+        ...v2ThreadShell,
+        id: ThreadId.make("thread-created-after-stream-end"),
+        title: "Created after the stream ended",
+      };
+      const endedSnapshot = { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 5 };
+      const currentSession: RpcSession.RpcSession = {
+        ...session({} as WsRpcProtocolClient),
+        client: {
+          [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input: { afterSequence?: number }) =>
+            Stream.unwrap(
+              Ref.updateAndGet(subscribeInputs, (inputs) => [...inputs, input.afterSequence]).pipe(
+                Effect.map((inputs) =>
+                  inputs.length === 1
+                    ? Stream.fromIterable<OrchestrationV2ShellStreamItem>([
+                        { kind: "snapshot", snapshot: endedSnapshot },
+                        { kind: "synchronized" },
+                      ])
+                    : Stream.fromQueue(liveEvents),
+                ),
+              ),
+            ),
+        } as unknown as WsRpcProtocolClient,
+      };
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make(Option.some(currentSession)),
+        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      });
+      const cache = Persistence.EnvironmentCacheStore.of({
+        loadShell: () => Effect.succeedNone,
+        saveShell: () => Effect.void,
+        loadThread: () => Effect.succeedNone,
+        saveThread: () => Effect.void,
+        removeThread: () => Effect.void,
+        loadServerConfig: () => Effect.succeedNone,
+        saveServerConfig: () => Effect.void,
+        loadVcsRefs: () => Effect.succeedNone,
+        saveVcsRefs: () => Effect.void,
+        removeVcsRefs: () => Effect.void,
+        clearVcsRefs: () => Effect.void,
+        clear: () => Effect.void,
+      });
+      const shellState = yield* makeEnvironmentShellState().pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+        Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, {
+          load: () => Effect.succeed(Option.none()),
+        }),
+      );
+
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if ((yield* Ref.get(subscribeInputs)).length >= 2) break;
+        yield* TestClock.adjust("1 second");
+      }
+      expect(yield* Ref.get(subscribeInputs)).toEqual([undefined, 5]);
+
+      yield* Queue.offer(liveEvents, {
+        kind: "thread.updated",
+        sequence: 6,
+        location: "active",
+        thread: created,
+      });
+      const recovered = yield* SubscriptionRef.changes(shellState).pipe(
+        Stream.filter((value) =>
+          Option.match(value.snapshot, {
+            onNone: () => false,
+            onSome: (snapshot) => snapshot.threads.some((thread) => thread.id === created.id),
+          }),
+        ),
+        Stream.runHead,
+      );
+      expect(Option.isSome(recovered)).toBe(true);
+    }),
+  );
 });

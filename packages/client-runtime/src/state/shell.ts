@@ -484,6 +484,9 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         onExpectedFailure: (cause, producer) => setStreamError(Cause.squash(cause), producer),
         retryExpectedFailureAfter: "250 millis",
         resubscribe: foregroundResubscriptions,
+        // The sidebar and new-thread promotion depend on this stream for the whole
+        // session; never leave it dormant on a connection that is still up.
+        resubscribeWhileSessionCurrent: "1 second",
       },
     ).pipe(
       Stream.runForEachArray((items) =>
