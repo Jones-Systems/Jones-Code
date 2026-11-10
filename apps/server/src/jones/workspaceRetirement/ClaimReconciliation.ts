@@ -45,6 +45,8 @@ export const reconcile = Effect.fn("WorkspaceRetirement.reconcileClaims")(functi
     return { retained: claims.length, released: 0, status: "bounded" as const };
   let released = 0;
   for (const claim of claims) {
+    // Settlement recovery atomically couples this guard's release to its durable script state.
+    if (claim.kind === "settlement-intent") continue;
     if (claim.kind === "queued-turn") {
       // The durable run owner, rather than a vanished server, owns queued intent.
       const runs = yield* sql<{

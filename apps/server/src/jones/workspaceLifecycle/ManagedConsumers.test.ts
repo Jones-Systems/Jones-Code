@@ -201,6 +201,9 @@ it.effect(
             });
           yield* settle("settle-present");
           yield* unsettle("unsettle-present");
+          expect(yield* f.fs.exists(f.linked)).toBe(true);
+          expect(f.calls).not.toContain("git-create");
+          expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
           const original = f.state.view().binding!;
           expect(original).not.toBeNull();
           yield* settle("settle-restore-present");
@@ -212,6 +215,8 @@ it.effect(
           yield* settle("settle-removed");
           yield* f.runGit(["worktree", "remove", f.linked]);
           yield* unsettle("unsettle-removed");
+          expect(yield* f.fs.exists(f.linked)).toBe(false);
+          expect(f.calls).not.toContain("git-create");
           expect(f.state.view().binding!.incarnation_id).toBe(original.incarnation_id);
           const rows = yield* sql<{
             source_json: string;
@@ -554,6 +559,15 @@ it.effect(
             `worktree ${f.linked}\nHEAD ${prior.head}\nbranch refs/heads/work\n`,
           );
           expect(yield* f.fs.exists(f.linked)).toBe(false);
+          yield* f.dispatch({
+            type: "thread.unsettle",
+            commandId: CommandId.make("plain-unsettle-before-turn"),
+            threadId,
+            reason: "user",
+          });
+          expect(yield* f.fs.exists(f.linked)).toBe(false);
+          expect(f.calls).not.toContain("git-create");
+          expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
           let sourceInvalidated = false;
           f.state.beforeRegistryRead = Effect.gen(function* () {
             if (!f.calls.includes("git-created") || sourceInvalidated) return;
