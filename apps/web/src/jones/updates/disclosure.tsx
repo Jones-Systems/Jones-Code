@@ -61,11 +61,6 @@ export function DetailItem({
 export const DETAIL_PANEL_CLASSNAME =
   "space-y-2 rounded-md bg-muted/40 px-2.5 py-2 text-muted-foreground";
 
-/**
- * The two button slots that end each update line in an environment row. Stacked lines put
- * their secondary action (Check, Turn on/off) in the first slot, so their buttons share
- * edges whatever the labels; a longer label widens only its own line. Kept right-aligned
- * when the line wraps.
- */
+/** The buttons that end an update line in an environment row, kept right-aligned when it wraps. */
 export const INLINE_ACTIONS_CLASSNAME =
-  "ml-auto grid shrink-0 grid-cols-[minmax(4.5rem,auto)_minmax(5.25rem,auto)] items-center gap-1.5 sm:grid-cols-[minmax(4rem,auto)_minmax(4.75rem,auto)]";
+  "ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5";

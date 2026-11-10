@@ -162,7 +162,10 @@ describe("Jones build status", () => {
     await using screen = await renderStatus({ state: failed });
     const { container, onRequest } = screen;
     expect(container.textContent).toContain("Previous attempt needs reconciliation");
-    expect(container.querySelector('[aria-label*="attempt ID"]')).not.toBeNull();
+    // The attempt's ID is detail, not status.
+    expect(container.querySelector('[aria-label*="update ID"]')).toBeNull();
+    await act(async () => buttonNamed(container, "Details").click());
+    expect(container.querySelector('[aria-label*="update ID"]')).not.toBeNull();
     await act(async () => buttonNamed(container, "Reconcile").click());
     expect(onRequest).toHaveBeenCalledTimes(1);
     expect(onRequest).toHaveBeenCalledWith({
@@ -178,6 +181,9 @@ describe("Jones build status", () => {
     });
     const { container, onRequest } = screen;
     expect(buttonNamed(container, "Reconcile")).toBeUndefined();
+    // The unreconciled attempt outranks the launcher refresh, which stays in Details.
+    expect(container.textContent).not.toContain("Launcher refresh recommended");
+    await act(async () => buttonNamed(container, "Details").click());
     expect(container.textContent).toContain("Launcher refresh recommended");
     await screen.rerender(statusUi({ state: available }, onRequest));
     expect(buttonNamed(container, "Reconcile")).toBeUndefined();
@@ -197,7 +203,10 @@ describe("Jones build status", () => {
       "Update did not start: backup refused. Nothing changed.",
     );
     expect(buttonNamed(container, "Reconcile")).toBeUndefined();
-    expect(container.textContent).toContain("No changes:");
+    // The settlement already says nothing changed; the outcome is not repeated beside it.
+    expect(container.textContent).not.toContain("No changes:");
+    await act(async () => buttonNamed(container, "Details").click());
+    expect(container.textContent).toContain("Last update");
     await screen.rerender(statusUi({ state: { ...failed, settlementRefusal: "restore-pending" } }));
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
       "Recovery is still pending.",
@@ -378,7 +387,7 @@ describe("Jones build status", () => {
     expect(buttonNamed(container, "Install").disabled).toBe(true);
   });
 
-  it("keeps a failed install outcome and stale status visible without opening details", async () => {
+  it("keeps a failed install outcome visible and stale status one disclosure away", async () => {
     await using screen = await renderStatus({
       state: {
         ...available,
@@ -392,7 +401,9 @@ describe("Jones build status", () => {
     expect(text).toContain(
       "Rolled back: 0.0.45-preview.20261011.38178738344.1 → 0.0.45-preview.20261013.38343490676.1 · health check failed",
     );
-    expect(text).toContain("Update status is temporarily unavailable; retrying.");
+    expect(text).not.toContain("Update status is temporarily unavailable; retrying.");
+    await act(async () => buttonNamed(container, "Details").click());
+    expect(container.textContent).toContain("Update status is temporarily unavailable; retrying.");
     expect(buttonNamed(container, "Download").getAttribute("aria-disabled")).toBe("true");
     expect(buttonNamed(container, "Check").disabled).toBe(true);
   });
@@ -577,6 +588,53 @@ describe("Jones build status", () => {
   });
 });
 
+describe("one status line", () => {
+  const operation = {
+    headline: "A newer main build is available.",
+    operationId: "297432ad-1111-4111-8111-111111111111",
+    held: false,
+    unknown: false,
+    planCorrelated: true,
+  };
+
+  it("shows the most actionable message once and keeps the rest, the operation and plan in Details", async () => {
+    await using screen = await renderStatus({
+      state: { ...available, launcherRefresh: "recommended" },
+      check: { kind: "available", text: "A qualified package is available." },
+      operation,
+    });
+    const { container } = screen;
+    const line = container.textContent!;
+    expect(line).toContain("Launcher refresh recommended");
+    expect(line).not.toContain("A newer main build is available.");
+    expect(line).not.toContain("A qualified package is available.");
+    expect(line).not.toContain(operation.operationId);
+    expect(line).not.toContain("update plan");
+
+    await act(async () => buttonNamed(container, "Details").click());
+    const opened = container.textContent!;
+    expect(opened.split("A newer main build is available.")).toHaveLength(2);
+    expect(opened).toContain("A qualified package is available.");
+    expect(opened).toContain(operation.operationId);
+    expect(opened).toContain("Part of this laptop's update plan");
+  });
+
+  it("puts a failed check ahead of a launcher refresh", async () => {
+    await using screen = await renderStatus({
+      state: { ...available, launcherRefresh: "recommended" },
+      check: {
+        kind: "failure",
+        text: "The update check failed. Check the connection or authentication.",
+      },
+    });
+    const { container } = screen;
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      "The update check failed. Check the connection or authentication.",
+    );
+    expect(container.textContent).not.toContain("Launcher refresh recommended");
+  });
+});
+
 describe("a host that follows its laptop", () => {
   const staged = (sourceSha: string, leaderSource: string | null) =>
     ({
@@ -591,6 +649,8 @@ describe("a host that follows its laptop", () => {
     await using screen = await renderStatus({ state: staged(offeredSha, offeredSha) });
     const { container } = screen;
     expect(buttonNamed(container, "Install").disabled).toBe(false);
+    expect(container.textContent).not.toContain("Follows its laptop");
+    await act(async () => buttonNamed(container, "Details").click());
     expect(container.textContent).toContain("Follows its laptop · takes only source 0368cbb");
 
     await screen.rerender(statusUi({ state: staged(offeredSha, installedSha) }));
@@ -601,6 +661,6 @@ describe("a host that follows its laptop", () => {
 
     await screen.rerender(statusUi({ state: staged(offeredSha, null) }));
     expect(buttonNamed(container, "Install").disabled).toBe(true);
-    expect(container.textContent).toContain("waiting for the laptop's installed build");
+    expect(container.textContent).toContain("Waiting for the laptop's installed build");
   });
 });
