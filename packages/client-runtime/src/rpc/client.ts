@@ -210,6 +210,9 @@ const requestInSession = Effect.fn("EnvironmentRpc.request")(function* <
   options?: {
     readonly validateSession: (session: RpcSession) => Effect.Effect<void, E, R>;
   },
+  // "current" fences the request: a session replaced before issue fails closed. "captured" is only
+  // for a request whose capability was already read on this exact session; it runs on that session.
+  sessionBinding: "current" | "captured" = "current",
 ) {
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
   yield* Effect.annotateCurrentSpan({
@@ -217,6 +220,7 @@ const requestInSession = Effect.fn("EnvironmentRpc.request")(function* <
     "rpc.method": tag,
   });
   const isCurrentSession = () =>
+    sessionBinding === "captured" ||
     Option.getOrNull(SubscriptionRef.getUnsafe(supervisor.session)) === session;
   const staleSessionError = () =>
     new EnvironmentRpcUnavailableError({
@@ -606,7 +610,14 @@ export const refreshVcsBranch = Effect.fn("EnvironmentRpc.refreshVcsBranch")(fun
     ),
   );
   if (config.environment.capabilities.vcsBranchStatus === true) {
-    return yield* requestInSession(session, WS_METHODS.vcsRefreshBranch, input);
+    // Read-only wake whose capability came from this session: bind selection and issue to it.
+    return yield* requestInSession(
+      session,
+      WS_METHODS.vcsRefreshBranch,
+      input,
+      undefined,
+      "captured",
+    );
   }
   // Older hosts retain their existing status stream without adding per-row wake scans.
 });
