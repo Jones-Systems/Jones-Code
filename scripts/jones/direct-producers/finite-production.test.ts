@@ -61,17 +61,18 @@ vi.mock("./completion.ts", () => ({
 }));
 await import("../../../apps/server/scripts/cli.ts");
 
-for (const [name, run] of Object.entries(finiteProductionCases)) it(name, run);
+it.each(Object.entries(finiteProductionCases))("%s", (_name, run) => run());
 
-for (const scenario of [
+it.each([
   "build",
   "build-exe",
   "partial-copy",
   "icon-failure",
   "validation-failure",
   "leader-failure",
-]) {
-  it(`actual server CLI ${scenario} encloses writes and native scope without changing its result`, () =>
+])(
+  "actual server CLI %s encloses writes and native scope without changing its result",
+  (scenario) =>
     finiteFixture(async ({ worktree, root: dist, records }) => {
       const executable = scenario === "build-exe" || scenario === "validation-failure";
       const root = executable ? NodePath.join(worktree, "apps/server/dist-exe") : dist;
@@ -140,6 +141,7 @@ for (const scenario of [
           });
         }),
       );
+      // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- The actual CLI handler must run inside the promise-owned private scratch fixture (shared with the node:test runner), whose ownership-proved cleanup it.effect cannot own.
       const result = await Effect.runPromise(
         Effect.gen(function* () {
           const path = yield* Path.Path;
@@ -200,8 +202,8 @@ for (const scenario of [
         if (scenario === "validation-failure")
           expect(failure).toMatchObject({ specifiers: ["fixture-external"] });
       }
-    }));
-}
+    }),
+);
 
 it("configured Effect interruption during admission cannot expose allocation before release is attached", () =>
   finiteFixture(async ({ worktree, root, records }) => {
@@ -214,6 +216,7 @@ it("configured Effect interruption during admission cannot expose allocation bef
       allowAdmission = resolve;
     });
     let allocations = 0;
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- Same promise-owned private scratch fixture; the interruption race runs inside its lifetime.
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
