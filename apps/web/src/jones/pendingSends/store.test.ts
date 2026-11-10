@@ -235,4 +235,27 @@ describe("pending sends", () => {
     store.reconcile(env, thread, projection({ run: true, status: "cancelled" }));
     expect(store.getSnapshot()).toEqual([]);
   });
+  it.each([undefined, "steer", "queued_turn"] as const)(
+    "hands a server-queued %s send to the queue without retaining a duplicate bubble",
+    (inputIntent) => {
+      const store = createPendingSendStore();
+      store.admit(env, thread, { ...message, ...(inputIntent && { inputIntent }) });
+      const accepted = vi.fn();
+      store.whenAccepted(env, thread, message.id, accepted);
+      store.reconcile(env, thread, projection({ run: true, status: "queued" }));
+      expect(store.getSnapshot()).toMatchObject([{ delivery: "accepted" }]);
+      store.reconcile(env, thread, projection({ run: true, status: "queued", message: true }));
+      expect(store.getSnapshot()).toEqual([]);
+      expect(accepted).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each([undefined, "steer", "queued_turn"] as const)(
+    "removes a %s placeholder cancelled after server acceptance without a timeline item",
+    (inputIntent) => {
+      const store = createPendingSendStore();
+      store.admit(env, thread, { ...message, ...(inputIntent && { inputIntent }) });
+      store.reconcile(env, thread, projection({ run: true, status: "cancelled" }));
+      expect(store.getSnapshot()).toEqual([]);
+    },
+  );
 });
