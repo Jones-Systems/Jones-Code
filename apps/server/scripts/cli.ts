@@ -133,7 +133,11 @@ const buildExeCmd = Command.make(
       const serverDir = path.join(repoRoot, "apps/server");
 
       return yield* withFiniteProduction(
-        { producer: "jones-server-build-exe", worktree: repoRoot, root: path.join(serverDir, "dist-exe") },
+        {
+          producer: "jones-server-build-exe",
+          worktree: repoRoot,
+          root: path.join(serverDir, "dist-exe"),
+        },
         (evidence) =>
           Effect.gen(function* () {
             yield* Effect.log("[cli] Building single-executable...");
@@ -165,7 +169,9 @@ const buildExeCmd = Command.make(
 
             // Executables reject non-builtin imports even when bundling succeeds; inspect the emitted graph.
             const bundlePath = path.join(serverDir, "dist-exe/bin.mjs");
-            const specifiers = findEsmImportsOfExternalPackages(yield* fs.readFileString(bundlePath));
+            const specifiers = findEsmImportsOfExternalPackages(
+              yield* fs.readFileString(bundlePath),
+            );
             if (specifiers.length > 0) {
               return yield* new ServerCliExecutableImportError({ bundlePath, specifiers });
             }

@@ -153,7 +153,10 @@ for (const scenario of [
               : fs;
           return yield* Effect.exit(
             handler({ verbose: false, target: Option.some("darwin-arm64") }).pipe(
-              Effect.provideService(Path.Path, { ...path, fromFileUrl: () => Effect.succeed(worktree) }),
+              Effect.provideService(Path.Path, {
+                ...path,
+                fromFileUrl: () => Effect.succeed(worktree),
+              }),
               Effect.provideService(FileSystem.FileSystem, fixtureFs),
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
               Effect.scoped,
@@ -197,8 +200,7 @@ for (const scenario of [
         if (scenario === "validation-failure")
           expect(failure).toMatchObject({ specifiers: ["fixture-external"] });
       }
-    }),
-  );
+    }));
 }
 
 it("configured Effect interruption during admission cannot expose allocation before release is attached", () =>
@@ -242,8 +244,7 @@ it("configured Effect interruption during admission cannot expose allocation bef
     expect(allocations).toBe(0);
     expect((await records())[0]?.status).toBe("active");
     expect((await records())[0]?.outcome).toBe("unresolved");
-  }),
-);
+  }));
 
 afterAll(() => {
   expect(finiteScratchReceipts.every((receipt) => receipt.cleaned)).toBe(true);

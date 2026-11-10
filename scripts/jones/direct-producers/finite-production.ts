@@ -18,7 +18,11 @@ class FiniteProductionAdmissionError extends Schema.TaggedError<FiniteProduction
   }
 }
 
-export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")(function* <A, E, R>(
+export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")(function* <
+  A,
+  E,
+  R,
+>(
   input: {
     producer: "jones-server-build" | "jones-server-build-exe";
     worktree: string;
@@ -49,7 +53,8 @@ export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")
   // The inner scope releases the existing child handles before our finalizer.
   return yield* Effect.acquireUseRelease(
     Effect.tryPromise({
-      try: () => (dependencies.begin ?? beginProduction)(input.worktree, input.producer, [input.root]),
+      try: () =>
+        (dependencies.begin ?? beginProduction)(input.worktree, input.producer, [input.root]),
       catch: (cause) => new FiniteProductionAdmissionError({ ...input, cause }),
     }),
     () =>
@@ -85,7 +90,9 @@ export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")
           await (dependencies.finish ?? finishProduction)(session, status, [
             "writer_completion_not_observed",
           ]);
-          report(`[${input.producer}] writer_completion_not_observed; unresolved duty ${reference}`);
+          report(
+            `[${input.producer}] writer_completion_not_observed; unresolved duty ${reference}`,
+          );
         } catch {
           // finishProduction may mutate memory or publish before rejecting.
           // Retain the same exact durable duty; do not retry or claim its stored status.

@@ -13,7 +13,10 @@ const modules = {
 NodeModule.registerHooks({
   resolve(specifier, context, next) {
     return modules[specifier]
-      ? { url: "data:text/javascript," + encodeURIComponent(modules[specifier]), shortCircuit: true }
+      ? {
+          url: "data:text/javascript," + encodeURIComponent(modules[specifier]),
+          shortCircuit: true,
+        }
       : next(specifier, context);
   },
   load(url, context, next) {
@@ -47,7 +50,8 @@ export const acquireUseRelease = (acquire, use, release) => effect(async context
     };
   },
 });
-const { finiteProductionCases, finiteScratchReceipts } = await import("./finite-production.testkit.ts");
+const { finiteProductionCases, finiteScratchReceipts } =
+  await import("./finite-production.testkit.ts");
 for (const [name, run] of Object.entries(finiteProductionCases)) NodeTest.test(name, run);
 NodeTest.after(() => {
   NodeAssert.ok(finiteScratchReceipts.every((receipt) => receipt.cleaned));
