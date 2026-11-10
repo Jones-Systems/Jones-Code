@@ -21,6 +21,7 @@ import * as CodexFailoverStore from "../jones/codexFailover/CodexFailoverStore.t
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import type { TaskContinuationCommitContext } from "../jones/taskContinuation/commitContext.ts";
 import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
+import * as RuntimeEvidenceGuard from "../jones/orchestration/RuntimeEvidenceGuard.ts";
 import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
 import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
@@ -143,35 +144,7 @@ function runtimeEvidenceMatches(
   current: OrchestrationV2ProviderThread | null,
   capture: ProviderRuntimeEvidenceCapture,
 ): boolean {
-  if (
-    current === null ||
-    current.appThreadId !== capture.threadId ||
-    current.id !== capture.providerThreadId ||
-    current.providerSessionId !== capture.providerSessionId ||
-    current.providerInstanceId !== capture.providerInstanceId ||
-    current.driver !== capture.driver ||
-    current.nativeThreadRef?.driver !== capture.driver ||
-    current.nativeThreadRef.nativeId !== capture.nativeThreadId ||
-    current.runtimeIdentity === undefined
-  )
-    return false;
-  const identity = current.runtimeIdentity;
-  if (
-    capture.runtimeGeneration !== undefined &&
-    identity.runtimeGeneration !== capture.runtimeGeneration
-  )
-    return false;
-  if (capture.evidenceRevision !== undefined) {
-    const revision = identity.evidenceRevision;
-    if (
-      revision === undefined ||
-      (capture.runtimeGeneration === undefined
-        ? revision !== capture.evidenceRevision
-        : revision < capture.evidenceRevision)
-    )
-      return false;
-  }
-  return true;
+  return RuntimeEvidenceGuard.runtimeEvidenceMismatch(current, capture) === undefined;
 }
 
 /**
@@ -363,6 +336,11 @@ export interface EventSinkV2Shape {
         | "nativeThreadRef"
       >;
     };
+    /**
+     * Commits a current-run settlement whose capture names a provider thread that no longer
+     * records any producer. A replaced generation or a different binding still rejects.
+     */
+    readonly settleRunOnLostRuntimeEvidence?: boolean;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly threadId: ThreadId;
@@ -593,6 +571,7 @@ const layerBase: Layer.Layer<
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
     const historicalTerminals = yield* HistoricalTerminalHistory.make;
+    const runtimeEvidenceGuard = RuntimeEvidenceGuard.makeRuntimeEvidenceGuard(sql);
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const projectStore = yield* ProjectStore.ProjectStoreV2;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
@@ -750,7 +729,10 @@ const layerBase: Layer.Layer<
         | "runtimeIdentityBoundary"
         | "runtimeIdentityRequest"
         | "runtimeIdentityPreviousRequest"
-      > & { readonly effects?: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2> },
+      > & {
+        readonly effects?: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
+        readonly settleRunOnLostRuntimeEvidence?: boolean;
+      },
     ) {
       if (input.historicalTerminal !== undefined) {
         if (
@@ -825,12 +807,24 @@ const layerBase: Layer.Layer<
             : event,
         );
       }
-      if (capture === undefined) return input.events;
+      if (capture === undefined)
+        return yield* runtimeEvidenceGuard.retainStoredIdentity(input.events);
       const current =
         (yield* projectionStore.getThreadRecords(capture.threadId, [
           "providerThreads",
         ])).providerThreads.find((thread) => thread.id === capture.providerThreadId) ?? null;
-      if (!runtimeEvidenceMatches(current, capture) || current === null) return null;
+      const mismatch = RuntimeEvidenceGuard.runtimeEvidenceMismatch(current, capture);
+      if (mismatch !== undefined || current === null)
+        return yield* runtimeEvidenceGuard.rejected({
+          capture,
+          current,
+          reason: mismatch ?? "provider_thread_missing",
+          events: input.events,
+          settleRunOnLostEvidence:
+            input.settleRunOnLostRuntimeEvidence === true &&
+            input.runtimeIdentityRequest === undefined &&
+            input.runtimeIdentityObservation === undefined,
+        });
       const identity = current.runtimeIdentity!;
       if (
         input.runtimeIdentityRequest !== undefined &&
@@ -843,8 +837,14 @@ const layerBase: Layer.Layer<
           identity.requested.providerDriver !== previous.providerDriver ||
           identity.requested.model !== previous.model ||
           identity.requested.serviceTier !== previous.serviceTier
-        )
+        ) {
+          yield* runtimeEvidenceGuard.reportRejection({
+            capture,
+            reason: "requested_identity_changed",
+            events: input.events,
+          });
           return null;
+        }
       }
       if (input.runtimeIdentityObservation !== undefined) {
         const requested = input.runtimeIdentityObservation;
@@ -854,8 +854,14 @@ const layerBase: Layer.Layer<
           identity.requested.model !== requested.model ||
           identity.requested.serviceTier !== requested.serviceTier ||
           identity.evidenceRevision !== capture.evidenceRevision
-        )
+        ) {
+          yield* runtimeEvidenceGuard.reportRejection({
+            capture,
+            reason: "observation_stale",
+            events: input.events,
+          });
           return null;
+        }
       }
       return input.events.map((event) =>
         event.type === "provider-thread.updated" && event.payload.id === current.id

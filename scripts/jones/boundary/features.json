@@ -3490,6 +3490,17 @@
         "apps/mobile/src/features/workstreams/Controls.operations.test.tsx"
       ],
       "scope": "Shared authenticated closed native read/export and application-owned read lifetimes. Web detail/reference and mobile appearance use the original prepared connection/session/generation and independently authenticated public-list binding; replacement/disposal cancels pending work and withholds late results. Negotiated placement-v2 consumers retain native evidence and home observations, validate complete snapshots and inventory, and independently capture the original live source descriptors; replaced source connections invalidate memory-only proof witnesses used by grouping and action planning. Explicit placement-v1 loading remains separate, with no v2 failure fallback. Snapshot-scoped exports are callable from both application controllers. Existing cookie/Bearer/DPoP renewal remains the sole owner. Web download and mobile save/share actions consume only complete controller bytes and cancel on authenticated scope replacement. Capability advertisement and physical platform acceptance remain separate."
+    },
+    {
+      "id": "stalled-run-projection",
+      "tests": [
+        "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts"
+      ],
+      "scope": "A provider thread update emitted outside the SDK reader names its bound producer, and an update without producer evidence that predates the stored runtime identity (no generation, or the same generation at an older evidence revision) keeps the stored identity. Another binding, another generation, a newer revision, or the stored generation and revision apply as written. A rejected capture is reported by thread, provider thread, reason and event type without payload content. A root terminal whose provider thread lost every producer record settles its run through the current-run write, and a failed interrupt settles only the run when the runtime reports the turn idle; background work is never settled on an unknown outcome. Shared sink, run execution, effect worker, adapter and contract hooks keep their upstream owners. Synthetic adapter, sink and projection fixtures; no installed-runtime or live-thread recovery claim."
     }
   ]
 }

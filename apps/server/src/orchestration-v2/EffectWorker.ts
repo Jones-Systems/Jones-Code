@@ -49,6 +49,7 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
+import { settleRunOfIdleTurn } from "../jones/orchestration/IdleTurnSettlement.ts";
 import {
   actionWorkerLane,
   makeActionWorkerAdmission,
@@ -269,6 +270,26 @@ export const layerExecutor: Layer.Layer<
               );
           case "provider-turn.interrupt": {
             const request = effect.request;
+            // Jones: a failed interrupt of an idle adapter's turn still settles that turn's run.
+            const settleIdleRun =
+              request.subagent !== undefined
+                ? Effect.void
+                : settleRunOfIdleTurn({
+                    session: providerSessions.get(request.providerSessionId, {
+                      touchActivity: false,
+                    }),
+                    providerTurnId: request.providerTurnId,
+                    settleRun: Effect.suspend(() =>
+                      threads.dispatch({
+                        type: "thread.background-work.settle",
+                        commandId: CommandId.make(`${effect.id}:idle-run-settled`),
+                        threadId: effect.threadId,
+                        providerThreadId: request.providerThreadId,
+                        providerTurnId: request.providerTurnId,
+                        runOnly: true,
+                      }),
+                    ),
+                  }).pipe(Effect.ignore);
             return providerTurnControl
               .interrupt({
                 threadId: effect.threadId,
@@ -301,7 +322,7 @@ export const layerExecutor: Layer.Layer<
                     Cause.pretty(Cause.fail(cause)),
                   )
                     ? Effect.void
-                    : Effect.fail(cause),
+                    : settleIdleRun.pipe(Effect.andThen(Effect.fail(cause))),
                 ),
                 Effect.andThen((outcome) =>
                   request.subagent !== undefined && outcome === undefined
