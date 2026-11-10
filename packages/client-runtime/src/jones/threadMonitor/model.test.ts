@@ -246,6 +246,52 @@ describe("source-grounded monitor cohorts", () => {
       buildMonitorCohort([environment([older, completed])], now).rows.map((row) => row.threadId),
     ).toEqual([completed.id, older.id]);
   });
+  it("classifies a failed thread with only an unfinished goal as failed, not waiting", () => {
+    const goal = { objective: "Finish", status: "active" as const };
+    const failed = shell({ id: ThreadId.make("failed-goal"), status: "failed", goal });
+    expect(buildMonitorCohort([environment([failed])], now).rows[0]).toMatchObject({
+      group: "needsYou",
+      status: "failed",
+      statusLabel: "Failed",
+      actions: { settle: { available: false, reason: "Thread has an unfinished goal" } },
+    });
+    const limited = { ...failed, lastErrorClass: "usage_limit" as const };
+    expect(buildMonitorCohort([environment([limited])], now).rows[0]).toMatchObject({
+      group: "needsYou",
+      status: "limited",
+    });
+    const recovering = {
+      ...limited,
+      limitRecovery: { runId: RunId.make("r"), resetAt: "2026-10-26T08:00:00Z", autoResume: true },
+    };
+    expect(buildMonitorCohort([environment([recovering])], now).rows[0]).toMatchObject({
+      group: "waiting",
+      status: "limited",
+    });
+  });
+  it("keeps a failed thread held by awaited background work, or a non-failed goal, waiting", () => {
+    const goal = { objective: "Finish", status: "active" as const };
+    const awaitedMonitor = {
+      kind: "monitor" as const,
+      taskId: "watch",
+      awaited: true as const,
+    };
+    const failedBackground = shell({
+      id: ThreadId.make("failed-background"),
+      status: "failed",
+      goal,
+      pendingBackgroundTasks: [awaitedMonitor],
+    });
+    expect(buildMonitorCohort([environment([failedBackground])], now).rows[0]).toMatchObject({
+      group: "waiting",
+      status: "waiting",
+    });
+    const idleGoal = shell({ id: ThreadId.make("idle-goal"), status: "idle", goal });
+    expect(buildMonitorCohort([environment([idleGoal])], now).rows[0]).toMatchObject({
+      group: "waiting",
+      status: "waiting",
+    });
+  });
 });
 
 describe("completed child guest monitor regression", () => {

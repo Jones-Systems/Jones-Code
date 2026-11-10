@@ -1,5 +1,9 @@
+import { EnvironmentNativeWorkstreamsLifetime } from "@t3tools/client-runtime/jones/workstreams/native-lifetime";
+import { nativeReadRequest, NativeReadError } from "@t3tools/client-runtime/state/workstreams";
+import { workstreamsHttpResponseHeaders } from "@t3tools/contracts/jones/workstreamsHttp";
 import {
   WorkstreamOperationsClient,
+  memoryWorkstreamOperationStorage,
   supportsWorkstreamOperations,
   operationSucceeded,
   operationRegistryIdentity,
@@ -11,9 +15,15 @@ import {
   type WorkstreamOperationRequest,
 } from "@t3tools/contracts/jones/workstreamOperations";
 import type { MobileOperationActions } from "./actions";
-import { useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {
+  nativeWorkstreamsCapability,
+  nativeWorkstreamsBlock,
+  nativeWorkstreamsMessage,
+  isNativeWorkstreams,
+  assertNativeWorkstreamBinding,
+  nativeWorkstreamGroupKey,
   validateAppearanceBinding,
   appendWorkstreamDtoPage,
   nativeWorkstreamThreadKey,
@@ -41,6 +51,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { AppState, Pressable, Text } from "react-native";
 import {
   useCallback,
+  useContext,
   useEffect,
   useEffectEvent,
   useLayoutEffect,
@@ -92,6 +103,7 @@ const refreshMountedWorkstreams = () => {
 };
 
 export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
+  const registry = useContext(RegistryContext);
   const { environments } = useEnvironments();
   const idsKey = JSON.stringify(environments.map((entry) => entry.environmentId).sort());
   const connectionsAtom = useMemo(
@@ -162,22 +174,48 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
   const pendingCommands = useRef(new Map<PreparedConnection, WorkstreamCommand>());
   const pendingConnections = useRef(connections);
   const controllers = useRef(new Set<AbortController>());
+  const nativeReaders = useRef(
+    new Map<
+      EnvironmentId,
+      {
+        reader: EnvironmentNativeWorkstreamsLifetime;
+        prepared: PreparedConnection;
+        generation: number;
+        bindingKey: string;
+      }
+    >(),
+  );
+
   const current = useRef(connections);
   const inventory = JSON.stringify(mobilePlacementInventory(threads));
   const snapshots = useMemo(
     () =>
       [...loaded]
         .filter(([environmentId]) => retained(environmentId))
-        .map(([, snapshot]) =>
-          snapshot.stale ||
-          connections.some(
-            (entry) =>
-              entry.prepared === snapshot.prepared && entry.generation === snapshot.generation,
+        .map(([, original]) => {
+          const capability = nativeWorkstreamsCapability(
+            liveEnvironments.find(
+              (entry) => entry.environmentId === original.prepared.environmentId,
+            )?.config?.environment.capabilities,
+          );
+          const snapshot = capability ? { ...original, nativeCapability: capability } : original;
+          if (
+            snapshot.nativeCapability?.mode === "transition-fenced" ||
+            snapshot.nativeCapability?.mode === "disabled"
           )
-            ? snapshot
-            : { ...snapshot, stale: true },
-        ),
-    [loaded, connections, retained],
+            return null;
+          return snapshot.stale || nativeWorkstreamsBlock(snapshot.nativeCapability) !== null
+            ? { ...snapshot, stale: true }
+            : connections.some(
+                  (entry) =>
+                    entry.prepared === snapshot.prepared &&
+                    entry.generation === snapshot.generation,
+                )
+              ? snapshot
+              : { ...snapshot, stale: true };
+        })
+        .filter((snapshot): snapshot is MobileWorkstreamSnapshot => snapshot !== null),
+    [loaded, connections, retained, liveEnvironments],
   );
   const snapshotsRef = useRef(snapshots);
   // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed connection and snapshot identities to pending mobile workstream callbacks.
@@ -218,6 +256,13 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       snapshot.data.binding.registryId,
       snapshot.data.binding.ownerId,
       snapshot.data.binding.principalId,
+      ...(snapshot.nativeCapability && snapshot.nativeCapability.mode !== "legacy"
+        ? [
+            nativeWorkstreamGroupKey(snapshot.nativeCapability),
+            snapshot.nativeCapability.registry?.home_environment_id,
+            snapshot.data.binding.authorizationRevision,
+          ]
+        : []),
     ]);
     const connectionKey = `${key}:${snapshot.generation}`;
     let client = mobileOperationClients.get(connectionKey);
@@ -255,16 +300,20 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               signal ?? new AbortController().signal,
             ),
         },
-        {
-          load: () =>
-            runtime.runPromise(
-              MobileSecureStorage.pipe(Effect.flatMap((store) => store.getItem(storageKey))),
-            ),
-          save: (value) =>
-            runtime.runPromise(
-              MobileSecureStorage.pipe(Effect.flatMap((store) => store.setItem(storageKey, value))),
-            ),
-        },
+        snapshot.nativeCapability && snapshot.nativeCapability.mode !== "legacy"
+          ? memoryWorkstreamOperationStorage()
+          : {
+              load: () =>
+                runtime.runPromise(
+                  MobileSecureStorage.pipe(Effect.flatMap((store) => store.getItem(storageKey))),
+                ),
+              save: (value) =>
+                runtime.runPromise(
+                  MobileSecureStorage.pipe(
+                    Effect.flatMap((store) => store.setItem(storageKey, value)),
+                  ),
+                ),
+            },
         () =>
           runtime.runPromise(Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4()))),
       );
@@ -303,7 +352,16 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     return await (async () => {
       const status = await operationClient(snapshot).transport.setup(abort.signal);
       assertCurrent(snapshot);
-      return operationRegistryIdentity(status, snapshot.data.binding.ownerId);
+      const block = nativeWorkstreamsBlock(snapshot.nativeCapability);
+      if (block) throw new Error(block);
+      assertNativeWorkstreamBinding(snapshot.nativeCapability, snapshot.data.binding);
+      const registry = operationRegistryIdentity(status, snapshot.data.binding.ownerId);
+      if (
+        isNativeWorkstreams(snapshot.nativeCapability) &&
+        registry.registry_id !== snapshot.nativeCapability?.registry?.registry_instance_id
+      )
+        throw new Error("Workstream change rejected: registry_mismatch. Refresh native setup.");
+      return registry;
     })().finally(() => {
       controllers.current.delete(abort);
     });
@@ -482,6 +540,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
   // oxlint-disable-next-line t3code/react-effect-budget -- Load registry snapshots for the current connections and abort requests when their owner retires.
   useEffect(() => {
     const controller = new AbortController();
+    const ownedReaders = new Map<EnvironmentId, EnvironmentNativeWorkstreamsLifetime>();
     controllers.current.add(controller);
     setSelection(null);
     setError(null);
@@ -502,25 +561,119 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
         > => {
           const environmentId = connection.prepared.environmentId;
           return await (async () => {
+            const initialConfig = liveEnvironments.find(
+              (entry) => entry.environmentId === environmentId,
+            )?.config;
+            const initialSession = registry.get(environmentSession.sessionStateAtom(environmentId));
+            const capability = nativeWorkstreamsCapability(initialConfig?.environment.capabilities);
+            const block = nativeWorkstreamsBlock(capability);
+            if (block) throw new Error(block);
             const previous = loadedRef.current.get(environmentId);
             const { data, index } = await loadMobileWorkstreamRegistry(
               registryFetchers(connection.prepared),
               { signal: controller.signal, listOnlyFallback: !previous?.index },
             );
+            assertNativeWorkstreamBinding(capability, data.binding);
+            let nativeReader: EnvironmentNativeWorkstreamsLifetime | null = null;
+            if (
+              isNativeWorkstreams(capability) &&
+              capability?.reads.includes("workstreams-read/1.0.0")
+            ) {
+              if (
+                initialConfig?.environment.environmentId !== environmentId ||
+                !AsyncResult.isSuccess(initialSession) ||
+                !initialSession.value.authenticated
+              ) {
+                throw new NativeReadError("scope_changed", "Refresh native Workstreams access.");
+              }
+              nativeReader = new EnvironmentNativeWorkstreamsLifetime({
+                prepared: connection.prepared,
+                scope: { capability, binding: data.binding },
+                signal: controller.signal,
+                sha256: async (bytes) => {
+                  const digest = await runtime.runPromise(
+                    Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.digest("SHA-256", bytes))),
+                  );
+                  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+                },
+                run: (effect, signal) =>
+                  runtime.runPromise(effect.pipe(Effect.provide(context.value)), { signal }),
+                placementConnection: (sourceEnvironmentId) => {
+                  const id = EnvironmentId.make(sourceEnvironmentId);
+                  const prepared = registry.get(environmentSession.preparedConnectionValueAtom(id));
+                  const state = registry.get(environmentCatalog.stateAtom(id));
+                  const session = registry.get(environmentSession.sessionStateAtom(id));
+                  const config = registry.get(environmentSession.initialConfigValueAtom(id));
+                  if (
+                    Option.isNone(prepared) ||
+                    !config ||
+                    !AsyncResult.isSuccess(state) ||
+                    state.value.phase !== "connected" ||
+                    !AsyncResult.isSuccess(session) ||
+                    !session.value.authenticated
+                  )
+                    return null;
+                  return {
+                    prepared: prepared.value,
+                    generation: state.value.generation,
+                    session: session.value,
+                    config,
+                  };
+                },
+                isCurrent: () => {
+                  const prepared = registry.get(
+                    environmentSession.preparedConnectionValueAtom(environmentId),
+                  );
+                  const state = registry.get(environmentCatalog.stateAtom(environmentId));
+                  const session = registry.get(environmentSession.sessionStateAtom(environmentId));
+                  return (
+                    retainedRef.current(environmentId) &&
+                    Option.isSome(prepared) &&
+                    prepared.value === connection.prepared &&
+                    AsyncResult.isSuccess(state) &&
+                    state.value.phase === "connected" &&
+                    state.value.generation === connection.generation &&
+                    AsyncResult.isSuccess(session) &&
+                    session.value === initialSession.value &&
+                    session.value.authenticated &&
+                    registry.get(environmentSession.initialConfigValueAtom(environmentId)) ===
+                      initialConfig
+                  );
+                },
+              });
+              ownedReaders.set(environmentId, nativeReader);
+            }
             let appearance: WorkstreamAppearancePage | null = null;
             await (async () => {
               const items: WorkstreamAppearancePage["items"][number][] = [];
               const ids = data.items.map((item) => item.workstreamId);
               for (let start = 0; start < Math.max(1, ids.length); start += 100) {
                 const batch = ids.slice(start, start + 100);
-                const result = await request(
-                  connection.prepared,
-                  "POST",
-                  (urls) => urls.appearanceRead(),
-                  (client, headers) =>
-                    client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
-                  controller.signal,
-                );
+                const result = nativeReader
+                  ? await nativeReader
+                      .read(
+                        nativeReadRequest({
+                          route: "appearance",
+                          params: { workstream_ids: batch },
+                        }),
+                        controller.signal,
+                      )
+                      .then((read) => {
+                        if (read.route !== "appearance")
+                          throw new NativeReadError(
+                            "invalid_response",
+                            "Native appearance route changed.",
+                          );
+                        return read.value;
+                      })
+                  : await request(
+                      connection.prepared,
+                      "POST",
+                      (urls) => urls.appearanceRead(),
+                      (client, headers) =>
+                        client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
+                      controller.signal,
+                    );
                 if (!result.supported) {
                   appearance = null;
                   break;
@@ -536,6 +689,27 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
             });
             let placements: LiveT3Placements | null = null;
             await (async () => {
+              if (
+                isNativeWorkstreams(capability) &&
+                capability?.reads.includes("workstreams-read/1.0.0") &&
+                capability.placement_proofs.includes("workstreams-t3-placement/2.0.0")
+              ) {
+                if (!nativeReader)
+                  throw new NativeReadError(
+                    "incomplete",
+                    "Native placement access is unavailable.",
+                  );
+                placements = await nativeReader.placements(data, identities, controller.signal);
+                return;
+              }
+              if (
+                isNativeWorkstreams(capability) &&
+                !capability?.placement_proofs.includes("workstreams-t3-placement/1.0.0")
+              )
+                throw new NativeReadError(
+                  "incomplete",
+                  "No native placement contract was negotiated.",
+                );
               placements = await loadLiveT3Placements(
                 data,
                 identities,
@@ -564,11 +738,12 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 kind: "loaded",
                 snapshot: {
                   ...connection,
+                  nativeCapability: capability,
                   appearance,
                   data,
                   placements,
                   index,
-                  stale: false,
+                  stale: data.stale || data.source === "cache",
                   identityKeys: new Set(
                     identities.map((identity) =>
                       nativeWorkstreamThreadKey(
@@ -587,16 +762,51 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       ),
     ).then((outcomes) => {
       // One coherent swap per refresh round; an aborted or superseded round changes nothing.
-      if (!controller.signal.aborted && current.current === connections)
+      if (!controller.signal.aborted && current.current === connections) {
+        for (const [id, outcome] of outcomes) {
+          const reader = ownedReaders.get(id);
+          if (outcome.kind === "loaded" && reader) {
+            nativeReaders.current.set(id, {
+              reader,
+              prepared: outcome.snapshot.prepared,
+              generation: outcome.snapshot.generation,
+              bindingKey: workstreamBindingKey(outcome.snapshot.data.binding),
+            });
+          } else {
+            reader?.dispose();
+          }
+        }
         setLoaded((previous) =>
           settleMobileWorkstreamSnapshots(previous, new Map(outcomes), retainedRef.current),
         );
+        const failure = outcomes.find(([, outcome]) => outcome.kind === "failed")?.[1];
+        if (failure?.kind === "failed")
+          setError(
+            nativeWorkstreamsMessage(failure.cause) ??
+              (failure.cause instanceof Error
+                ? failure.cause.message
+                : "Workstreams unavailable. Restore the home connection and refresh."),
+          );
+      }
     });
     return () => {
+      for (const [id, reader] of ownedReaders) {
+        reader.dispose();
+        if (nativeReaders.current.get(id)?.reader === reader) nativeReaders.current.delete(id);
+      }
       for (const pending of controllers.current) pending.abort();
       controllers.current.clear();
     };
-  }, [connections, context, inventory, revision, request, registryFetchers]);
+  }, [
+    registry,
+    connections,
+    context,
+    inventory,
+    revision,
+    request,
+    registryFetchers,
+    liveEnvironments,
+  ]);
   const bindingRevision = snapshots
     .map((snapshot) =>
       JSON.stringify([
@@ -623,14 +833,41 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
           const items: WorkstreamAppearancePage["items"][number][] = [];
           for (let start = 0; start < Math.max(1, ids.length); start += 100) {
             const batch = ids.slice(start, start + 100);
-            const result = await request(
-              snapshot.prepared,
-              "POST",
-              (urls) => urls.appearanceRead(),
-              (client, headers) =>
-                client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
-              abort.signal,
-            );
+            const native =
+              isNativeWorkstreams(snapshot.nativeCapability) &&
+              snapshot.nativeCapability?.reads.includes("workstreams-read/1.0.0");
+            const entry = nativeReaders.current.get(snapshot.prepared.environmentId);
+            if (
+              native &&
+              (!entry ||
+                entry.prepared !== snapshot.prepared ||
+                entry.generation !== snapshot.generation ||
+                entry.bindingKey !== workstreamBindingKey(snapshot.data.binding))
+            )
+              throw new NativeReadError("scope_changed", "Refresh native appearance access.");
+            const result =
+              native && entry
+                ? await entry.reader
+                    .read(
+                      nativeReadRequest({ route: "appearance", params: { workstream_ids: batch } }),
+                      abort.signal,
+                    )
+                    .then((read) => {
+                      if (read.route !== "appearance")
+                        throw new NativeReadError(
+                          "invalid_response",
+                          "Native appearance route changed.",
+                        );
+                      return read.value;
+                    })
+                : await request(
+                    snapshot.prepared,
+                    "POST",
+                    (urls) => urls.appearanceRead(),
+                    (client, headers) =>
+                      client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
+                    abort.signal,
+                  );
             if (!result.supported) throw new Error("Appearance unavailable.");
             validateAppearanceBinding(result.page, snapshot.data.binding, batch);
             items.push(...result.page.items);
@@ -694,6 +931,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
         snapshot.data.binding.ownerId,
         snapshot.data.binding.principalId,
         supportsOperations(snapshot.prepared.environmentId),
+        snapshot.nativeCapability,
       ]),
     )
     .join("|");
@@ -830,7 +1068,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
           read(
             snapshot,
             (urls) => urls.command({ params: { commandId } }),
-            (client, headers) => client.command({ headers, params: { commandId } }),
+            (client, headers) =>
+              client.command({
+                headers: { ...headers, ...workstreamsHttpResponseHeaders },
+                params: { commandId },
+              }),
           ),
         assertCurrent: () => assertCurrent(snapshot),
         wait: async () => {},
@@ -867,7 +1109,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               snapshot.prepared,
               "POST",
               (urls) => urls.submit(),
-              (client, headers) => client.submit({ headers, payload: { command } }),
+              (client, headers) =>
+                client.submit({
+                  headers: { ...headers, ...workstreamsHttpResponseHeaders },
+                  payload: { command },
+                }),
               controller.signal,
             ),
           poll: (commandId) =>
@@ -875,7 +1121,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               snapshot.prepared,
               "GET",
               (urls) => urls.command({ params: { commandId } }),
-              (client, headers) => client.command({ headers, params: { commandId } }),
+              (client, headers) =>
+                client.command({
+                  headers: { ...headers, ...workstreamsHttpResponseHeaders },
+                  params: { commandId },
+                }),
               controller.signal,
             ),
           assertCurrent: () => {
@@ -952,6 +1202,22 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     });
   };
   const api: MobileWorkstreams & MobileOperationActions = {
+    exportNative: async (snapshot, options = {}) => {
+      assertCurrent(snapshot);
+      const entry = nativeReaders.current.get(snapshot.prepared.environmentId);
+      if (
+        !entry ||
+        entry.prepared !== snapshot.prepared ||
+        entry.generation !== snapshot.generation ||
+        entry.bindingKey !== workstreamBindingKey(snapshot.data.binding)
+      ) {
+        throw new NativeReadError(
+          "scope_changed",
+          "Refresh native Workstreams access before exporting.",
+        );
+      }
+      return entry.reader.export(options.signal, options.pageSize);
+    },
     supportsOperations,
     operationStatus,
     assignOperation,

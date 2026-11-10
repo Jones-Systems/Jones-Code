@@ -275,6 +275,7 @@ export async function shareGeneratedAttachment(input: {
   readonly bytes: Uint8Array;
   readonly attachment: AttachmentFileMetadata;
   readonly signal: AbortSignal;
+  readonly sourceIdentifier?: string;
 }): Promise<boolean> {
   const sharing = await availableSharing(input.signal).catch(() => null);
   if (sharing === null) return false;
@@ -282,7 +283,7 @@ export async function shareGeneratedAttachment(input: {
   try {
     if (input.signal.aborted) return false;
     cached.file.write(input.bytes);
-    await cached.preview.share(input.signal);
+    await cached.preview.share(input.signal, input.sourceIdentifier);
     return true;
   } finally {
     cached.preview.dispose();

@@ -34,7 +34,8 @@ JSON.stringify({
 });
 `;
 
-export function validatePackagedDesktopGuiSession(receipt, { uid }) {
+export function validatePackagedDesktopGuiSession(receipt, { uid, lock = "unlocked" }) {
+  NodeAssert.ok(["unlocked", "any"].includes(lock), "Unknown GUI lock requirement.");
   NodeAssert.equal(receipt.schema, "jones-packaged-desktop-gui-session/v1");
   NodeAssert.ok(Number.isSafeInteger(uid) && uid >= 0);
   NodeAssert.equal(receipt.sessionAvailable, true, "Packaged desktop GUI session is unavailable.");
@@ -46,16 +47,16 @@ export function validatePackagedDesktopGuiSession(receipt, { uid }) {
   NodeAssert.equal(receipt.onConsole, true, "Packaged desktop GUI session is not on console.");
   NodeAssert.equal(receipt.loginDone, true, "Packaged desktop GUI login is incomplete.");
   NodeAssert.equal(
-    receipt.screenLocked,
-    false,
-    receipt.screenLocked === true
-      ? "Packaged desktop GUI screen is locked."
-      : "Packaged desktop GUI screen-lock state is unknown.",
+    typeof receipt.screenLocked,
+    "boolean",
+    "Packaged desktop GUI screen-lock state is unknown.",
   );
+  if (lock === "unlocked")
+    NodeAssert.equal(receipt.screenLocked, false, "Packaged desktop GUI screen is locked.");
   return Object.freeze({ ...receipt });
 }
 
-export async function assertPackagedDesktopGuiSession({ fixtureRoot, signal }) {
+export async function assertPackagedDesktopGuiSession({ fixtureRoot, signal, lock = "unlocked" }) {
   assertDarwin();
   const result = await runOwnedChild(
     "/usr/bin/osascript",
@@ -70,7 +71,10 @@ export async function assertPackagedDesktopGuiSession({ fixtureRoot, signal }) {
   NodeAssert.equal(result.signal, null, result.stderr);
   NodeAssert.equal(result.code, 0, result.stderr || result.stdout);
   NodeAssert.ok(result.stdout.length <= 4096);
-  return validatePackagedDesktopGuiSession(JSON.parse(result.stdout), { uid: process.getuid() });
+  return validatePackagedDesktopGuiSession(JSON.parse(result.stdout), {
+    uid: process.getuid(),
+    lock,
+  });
 }
 
 const shaPattern = /^[0-9a-f]{64}$/;
@@ -332,7 +336,10 @@ export async function exercisePackagedDesktopStartupRefusal({
     T3CODE_DESKTOP_USER_DATA_DIR: profile,
     NODE_DISABLE_COMPILE_CACHE: "1",
   };
-  await assertPackagedDesktopGuiSession({ fixtureRoot: pair.fixtureRoot, signal });
+  const sessionBefore = await assertPackagedDesktopGuiSession({
+    fixtureRoot: pair.fixtureRoot,
+    signal,
+  });
   const observer = await startObserver(mutationObserver.executable, [home, profile], signal);
   let result;
   let dialog;
@@ -391,6 +398,11 @@ export async function exercisePackagedDesktopStartupRefusal({
   return Object.freeze({
     protocol: 1,
     case: "packaged-desktop-startup-refusal",
+    guiSession: Object.freeze({
+      lockRequirement: "unlocked",
+      before: sessionBefore,
+      after: await assertPackagedDesktopGuiSession({ fixtureRoot: pair.fixtureRoot, signal }),
+    }),
     pid: capturedPid,
     dialog,
     result,
@@ -614,7 +626,11 @@ export async function exercisePackagedDesktopPreparationRefusal({
   NodeAssert.ok(["started", "skipped"].includes(expectedRelaunch));
   await confined(pair.fixtureRoot, temporary, true);
   const binding = await bindPackagedDesktopPreparedIntent({ pair, helper, manifest, intent });
-  await assertPackagedDesktopGuiSession({ fixtureRoot: pair.fixtureRoot, signal });
+  const sessionBefore = await assertPackagedDesktopGuiSession({
+    fixtureRoot: pair.fixtureRoot,
+    signal,
+    lock: "any",
+  });
   const fault = await preparePackagedDesktopHelperFault({
     fixtureRoot: pair.fixtureRoot,
     helper,
@@ -668,6 +684,15 @@ export async function exercisePackagedDesktopPreparationRefusal({
   const beforeRelaunch = expectedRelaunch === "started" ? await fault.readRelaunchReceipt() : null;
   if (expectedRelaunch === "skipped") await fault.assertNoRelaunch();
   return Object.freeze({
+    guiSession: Object.freeze({
+      lockRequirement: "any",
+      before: sessionBefore,
+      after: await assertPackagedDesktopGuiSession({
+        fixtureRoot: pair.fixtureRoot,
+        signal,
+        lock: "any",
+      }),
+    }),
     beforeRelaunch,
     point,
     transactionId: binding.activation.transactionId,
@@ -750,6 +775,7 @@ export async function exercisePackagedDesktopInterruptedStartup({
   interruptedPhase,
   windowObserver,
   signal,
+  lock = "unlocked",
 }) {
   assertDarwin();
   NodeAssert.ok(["intent-only", "intent", "preparing", "quiescent"].includes(interruptedPhase));
@@ -769,7 +795,11 @@ export async function exercisePackagedDesktopInterruptedStartup({
   let settlement;
   let journalSha256;
   let stopRequested = false;
-  await assertPackagedDesktopGuiSession({ fixtureRoot: pair.fixtureRoot, signal });
+  const sessionBefore = await assertPackagedDesktopGuiSession({
+    fixtureRoot: pair.fixtureRoot,
+    signal,
+    lock,
+  });
   const execution = await runOwnedChild(pair.active.executablePath, [], {
     cwd: pair.fixtureRoot,
     env: {
@@ -845,6 +875,11 @@ export async function exercisePackagedDesktopInterruptedStartup({
   );
   NodeAssert.equal(sha(finalJournal), journalSha256);
   return Object.freeze({
+    guiSession: Object.freeze({
+      lockRequirement: lock,
+      before: sessionBefore,
+      after: await assertPackagedDesktopGuiSession({ fixtureRoot: pair.fixtureRoot, signal, lock }),
+    }),
     interruptedPhase,
     transactionId: binding.activation.transactionId,
     capturedPid,

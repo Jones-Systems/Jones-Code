@@ -818,7 +818,8 @@
         "packages/contracts/src/device.test.ts",
         "packages/client-runtime/src/jones/deviceMediaCompatibility.test.ts",
         "apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx",
-        "apps/web/src/jones/device/deviceStreamSession.test.ts"
+        "apps/web/src/jones/device/deviceStreamSession.test.ts",
+        "apps/server/src/jones/device/directGatewayRetirement.test.ts"
       ],
       "scope": "Adapted rebuild #80 direct device admission, generation-bound grants, server gateway lifecycle, desktop media tunnel IPC, shared media routing and proxy fallback. Existing device schemas, SSH host lifecycle, stream view and connection checks retain exact shared seams."
     },
@@ -2196,7 +2197,9 @@
         "apps/server/src/jones/mcp/workstreams/handlers.test.ts",
         "apps/server/src/jones/workstreams/operations/cli.test.ts",
         "apps/server/src/jones/mcp/workstreams/registration.test.ts",
-        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeReads.test.ts",
+        "apps/server/src/jones/workstreams/operations/cliSession.test.ts"
       ],
       "scope": "Local-environment MCP and executable CLI workstream list, create, assign, unassign and status use the application-owned operation service or its authenticated typed HTTP boundary. Production MCP registration consumes that service as a required dependency, sharing its retained results with HTTP. Requests obtain the signed registry UUID from setup status, not the legacy gateway origin. Tests cover production MCP registration, parsed CLI commands against real loopback HTTP handlers, operation replay, conflicts, owning-environment checks, and all CONFIG/open retry advice. Synthetic CP and authentication seams do not qualify installed sessions or live Control Plane state."
     },
@@ -3108,6 +3111,384 @@
         "apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx"
       ],
       "scope": "C9 broker-only conversation allocation with per-turn Git object snapshots, exact empty-directory identity and lifecycle, durable compare-and-swap handoff, shared delegation, terminal/setup admission and additive project allocation settings. Synthetic Codex and Claude transport fixtures exercise shipped adapter seams; configured passing evidence is required before counting adapter coverage. Shared provider/session/checkpoint/MCP/UI hooks retain their existing owners; no OS barrier, runtime adoption or provider automatic instructions claim."
+    },
+    {
+      "id": "workstreams-native-member-admission",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberHomeReadRouting.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberSourceReadAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Original local caller/run/credential ceilings, validated source-owned member association, request-local coherent home read permission and exact-own-thread private placement proof. MemberApplication retains application resources and forward locks, with separate fresh-request, lookup-only source and retained-recovery graphs. Authenticated two-environment synthetic composition qualifies create, replay, lost reply, preflight refusal and original-session revocation. Selected member startup and actual application endpoint mounts remain integration gates. No home registry/grants or general forwarding exceptions are created on members."
+    },
+    {
+      "id": "workstreams-member-binding-foundation",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsHomeBind.test.ts",
+        "packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts",
+        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberEnrollment.test.ts",
+        "apps/server/src/jones/workstreams/native/store/memberEnrollmentStore.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberSetup.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/homeBind.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/homePeerPinQualification.test.ts",
+        "apps/server/src/jones/workstreams/native/store/homeBindReceiptStore.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeBinds.test.ts"
+      ],
+      "scope": "Separately versioned home-bind/2 wire, encrypted prepared/bound member enrollment, fixed home-bind/readback transport and local issuance acceptance; migration 129 owns the ledgers. Genuine root setup authentication, home composition, current caller admission and member routing remain separate integration gates. Home producer retains encrypted exact request/result, validates genuine invocation and atomically binds source/receipt/home pin. Genuine root qualification and fixed tool mounts remain required."
+    },
+    {
+      "id": "workstreams-native-source-setup",
+      "tests": [
+        "apps/server/src/jones/persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/sourceEnrollment.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts",
+        "apps/server/src/jones/workstreams/native/store/sourceEnrollmentStore.test.ts"
+      ],
+      "scope": "Explicit source-owned encrypted native enrollment and append-only source binding under exact CAS; no released enrollment writes or automatic setup."
+    },
+    {
+      "id": "workstreams-legacy-reconciliation",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/store/legacyReconciliationStore.test.ts",
+        "apps/server/src/jones/workstreams/native/transition/reconcileLegacyOpen.test.ts",
+        "packages/contracts/src/jones/workstreamsLegacyReconciliation.test.ts"
+      ],
+      "scope": "Versioned legacy-only reconciliation under the import fence, authenticated lookup-only or retained terminal evidence, immutable baseline plus encrypted append-only deltas, coverage-bound activation and truthful reverse results. Fresh v1 admission remains strict; actual authenticated mounting and source-port composition require parent qualification."
+    },
+    {
+      "id": "workstreams-legacy-receipts",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsLegacyReceipts.test.ts",
+        "apps/server/src/jones/workstreams/native/transition/legacyReceipts.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/state.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts",
+        "apps/server/src/jones/workstreams/native/store/archiveStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/receiptStore.test.ts"
+      ],
+      "scope": "Additive legacy receipt evidence and principal-bound lookup over retained encrypted archive version 1; preserve strict command admission, closed native v1 lookup, exact payloads, imported ID reservation and activation fences."
+    },
+    {
+      "id": "workstreams-native-authority",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/compat/http.test.ts",
+        "packages/contracts/src/jones/workstreamsHttp.test.ts",
+        "apps/mobile/src/features/workstreams/summary.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/application.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/bindings.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/store.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/dashboard.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/evidence.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/generation.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/routes.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/summaryRead.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/synthetic.test.ts",
+        "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.browser.test.tsx",
+        "apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/gatewayParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/operationsParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/mcpParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/cpDenied.test.ts",
+        "apps/server/src/jones/workstreams/native/transition/apply.test.ts",
+        "apps/server/src/jones/workstreams/native/transition/snapshotReader.test.ts",
+        "apps/server/src/jones/persistence/Migrations/125_JonesWorkstreamsNative.test.ts",
+        "apps/server/src/jones/workstreams/native/crypto/envelope.test.ts",
+        "apps/server/src/jones/workstreams/native/crypto/identityIndex.test.ts",
+        "apps/server/src/jones/workstreams/native/crypto/keyProvider.test.ts",
+        "apps/server/src/jones/workstreams/native/store/archiveStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/bindingStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/effectStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/historyStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/receiptStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/registryStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/sql.test.ts",
+        "packages/contracts/src/jones/workstreamsNative.test.ts",
+        "packages/contracts/src/jones/workstreamsNativeRead.test.ts",
+        "packages/contracts/src/jones/workstreamsNativePlacement.test.ts",
+        "packages/contracts/src/jones/workstreamsSnapshot.test.ts",
+        "packages/contracts/src/jones/workstreamsRollups.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/collections.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/cursor.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/decider.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/negativeCases.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/semanticCases.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/githubPrObserver.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/localAttestation.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/localSettlement.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/referenceResolver.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/synthetic.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts",
+        "packages/client-runtime/src/state/workstreams/native.test.ts",
+        "apps/web/src/jones/workstreams/SetupStatusContent.browser.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamOperations.browser.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
+        "apps/mobile/src/features/workstreams/projection.test.ts",
+        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
+        "apps/server/src/jones/workstreams/native/runtime/admission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/cli.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
+        "apps/server/src/jones/persistence/Migrations/127_JonesWorkstreamsRollupAttempts.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/manifestSource.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/rollupWorker.test.ts",
+        "packages/contracts/src/jones/workstreamsPeerAuthority.test.ts",
+        "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
+        "packages/contracts/src/jones/workstreamsHomeReadResult.test.ts",
+        "apps/server/src/jones/persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.test.ts",
+        "apps/server/src/jones/workstreams/native/store/peerSessionPinStore.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/peerSessionPins.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts",
+        "packages/shared/src/atomicWrite.test.ts",
+        "apps/server/src/serverRuntimeState.test.ts",
+        "apps/server/src/jones/workstreams/native/compat/legacyAuthorityFence.test.ts"
+      ],
+      "scope": "Native registry-home contracts, encrypted persistence and all31 native tables, pure v1 CAS/receipt/history domain and source-admitted provider ports. Source identity remains source-owned; authority stays home-owned. Native command/forwarding registration, end-to-end qualification and fleet adoption remain subsequent integration. Includes encrypted durable operation intent/recovery, fixed home destination and restart replay; runtime admission and home transport remain composition dependencies. Client integration adds native mode/home awareness, generation-isolated grouping, memory-only protected projections and honest unavailable provenance. Native envelope transport, forwarding, summary mounts and physical captures remain incomplete."
+    },
+    {
+      "id": "workstreams-native-recorded-recovery",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts",
+        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/admission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/gatewayParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/operationsParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/mcpParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/cpDenied.test.ts",
+        "apps/server/src/mcp/McpSessionRegistry.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts"
+      ],
+      "scope": "Encrypted recorded caller admission, lookup-first exact-byte restart recovery and scoped sweeps; live grants and source bindings are revalidated before effects."
+    },
+    {
+      "id": "workstreams-native-read-projection",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/read/coherentSnapshot.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/coherentReadConsumer.test.ts",
+        "apps/server/src/jones/workstreams/native/read/projection.test.ts",
+        "apps/server/src/jones/workstreams/native/read/routes.test.ts",
+        "apps/server/src/jones/workstreams/native/read/memberRead.test.ts",
+        "apps/server/src/jones/workstreams/native/read/export.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/voiceReview/nativePlacements.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/homeReadProtocol.test.ts",
+        "apps/server/src/jones/workstreams/native/registry/localTransport.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
+        "packages/contracts/src/jones/workstreamsNativeExport.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/workstreams/native/read/exportCli.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/homeExportProtocol.test.ts",
+        "apps/server/src/jones/workstreams/native/read/memberExport.test.ts"
+      ],
+      "scope": "Complete single-home encrypted projection and authenticated public home/member read envelopes. Native home and selected-member export preserve original live-home JSONL and validate complete bytes against current original-caller/home permission; selected-runtime CLI validates completion before stdout with existing-key read-only sessions. Existing v1 adapters, counts, voice placement and decision snapshot consumers remain shared. Client loaders, capability advertisement and platform acceptance remain separate."
+    },
+    {
+      "id": "workstreams-native-write-foundation",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsForwardQualification.test.ts",
+        "packages/contracts/src/jones/workstreamsRetainedSourceEffect.test.ts",
+        "packages/contracts/src/jones/workstreamsForwarding.test.ts",
+        "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts"
+      ],
+      "scope": "Separately versioned negotiated native forwarding/readmission codecs, original member write caller capture/readmission, genuine source-owned M association and encrypted exact member intent. Historical home/read codecs remain unchanged. No mounted forwarding, current home grant, absence-based redispatch, external dispatch, linked-write home transaction proof or composed runtime qualification is claimed."
+    },
+    {
+      "id": "workstreams-native-home-forwarding",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/peerWriteAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/suppliedEvidence.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/forwardedHomeOperation.test.ts",
+        "apps/server/src/jones/workstreams/native/store/forwardReceiptStore.test.ts",
+        "apps/server/src/jones/persistence/Migrations/130_JonesWorkstreamsForwardReceipts.test.ts"
+      ],
+      "scope": "Private receiving-session admission, atomic deterministic home command/operation/appearance execution, exact encrypted parent replay and migration130; genuine receiving/source authority, raw PEER recovery and endpoint mounting remain separate gates."
+    },
+    {
+      "id": "workstreams-native-source-forwarding",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/homeClient.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts"
+      ],
+      "scope": "Source-owned durable forwarding of commands, operations and appearance with exact retained bytes/original caller/pinned destination and conservative lookup-only uncertainty. Genuine targets/evidence, shared locks, preloaded keys, accepted-crash treatment, receiving/source authority and mounting remain separate gates."
+    },
+    {
+      "id": "workstreams-native-peer-setup",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/runtime/setupOwner.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/peerSetup.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/peerSetupRequestFile.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/peerSetupCli.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeSetups.test.ts",
+        "packages/contracts/src/jones/workstreamsPeerSetup.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Authenticated owner-qualified peer setup with exact retained bytes, genuine home/member bind producers, guarded separate HTTP owner endpoint, CLI and fixed MCP setup tools. Synthetic packaged owner fixtures remain distinct from physical runtime adoption."
+    },
+    {
+      "id": "workstreams-native-forwarding-mcp",
+      "tests": ["apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts"],
+      "scope": "Conditional fixed home forward/readback and closed V2|V3 source readmission MCP adapters. Domain producers retain genuine authentication/currentness and ledger authority; absent producers register no tools. These transport fixtures do not qualify mounted member startup or physical peers."
+    },
+    {
+      "id": "workstreams-native-retained-source-effects",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/readmissionV2.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/dispatchAdmission.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Closed fixed provider carrier authenticated by exact incoming home invocation and original encrypted raw source intent. Genuine member readmission and source enrollment bind target, command bytes and bind-pair pins; native provider rechecks the original caller after dispatch claiming, lookup remains observation-only. Provider external ports are disclosed synthetic fixtures. Home retained PEER reservations/recovery and selected application startup remain integration gates. A registered-tool application case uses isolated encrypted home/member databases, genuine peer authentication and original HTTP caller revocation; packaged owner metadata and external provider ports remain synthetic."
+    },
+    {
+      "id": "workstreams-native-peer-effect-origin",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/runtime/peerEffectEnvelope.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/peerEffectOrigin.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/retainedPeerSession.test.ts",
+        "apps/server/src/jones/workstreams/native/store/effectStore.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts"
+      ],
+      "scope": "Separately tagged encrypted PEER intent, authoritative command/parent association and invocation-scoped real owner/original native-session checks. Historical HOME wrapper and recovery remain intact; no fabricated MCP invocation, replacement-session selection or stored-grant authority. Initial PEER dispatch, provider lookup/completion, selected runtime mounting and physical acceptance remain separate gates."
+    },
+    {
+      "id": "workstreams-native-peer-effect-source",
+      "tests": ["apps/server/src/jones/workstreams/native/forwarding/peerEffectSource.test.ts"],
+      "scope": "Private authoritative origin/original receiving-session proof with fresh exact V3 source readmission, opaque captured home-to-source generation and fixed retained-source attest/settle_lookup. Real peer transport and bounded SQL links exercise synthetic remote replies; no dispatch, generic relay, fallback or absence-to-retry authority. Raw completion/acceptance and mounted application remain separate gates."
+    },
+    {
+      "id": "workstreams-native-peer-effect-completion",
+      "tests": ["apps/server/src/jones/workstreams/native/forwarding/peerEffectRecovery.test.ts"],
+      "scope": "Owner-fenced encrypted retention of successful authenticated PEER results, separate fresh source readmission, and one command/parent completion transaction. Original receiver/current SQL authority and captured directional generation remain mandatory; unknown never dispatches. Actual SQL, encryption, owner/session and peer transport with synthetic remote/provider replies; initial acceptance, dispatch ticket and mounted worker remain separate gates."
+    },
+    {
+      "id": "workstreams-native-peer-effect-initial",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/peerEffectAcceptance.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts"
+      ],
+      "scope": "New raw PEER acceptance retains parent, pending receipt and reservation atomically; private callback-scoped post-commit ticket selects one initial dispatch through the existing runner semaphore. Replay and worker recovery remain lookup-only, with original authenticator registration and fresh source/receiver checks. Optional application resources must be genuine; unsupported raw PR/supplied/linked writes remain fenced. Synthetic remote providers and isolated SQLite fixtures qualify source composition only; selected member startup and product/physical acceptance remain separate."
+    },
+    {
+      "id": "workstreams-native-selected-member-startup",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberStartup.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
+        "apps/server/src/environment/ServerEnvironment.test.ts"
+      ],
+      "scope": "Explicit member selection consumes the genuine invocation-scoped member preparation and selected original SQL/keys. Qualified members mount application-owned locks/resources, request-authenticated native reads and fixed source readmission/effect producers. Unsupported public legacy adapters still refuse; no home registry/grant copy or global caller is introduced. Native protocol metadata is published only after selected authorized reads are constructed; member link readiness is revalidated locally per descriptor without conferring home permission."
+    },
+    {
+      "id": "workstreams-native-member-recovery",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/runtime/memberRecovery.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "One application-scoped selected-member worker starts at startup, coalesces active sweeps and waits thirty seconds after completion. It selects due retained intents under shared original-ID locks, uses current original-caller admission and original-home lookup only, and cancels with the application. Revocation and unknown absence retain the accepted intent and never authorize redispatch; no member home grants are created."
+    },
+    {
+      "id": "workstreams-native-member-access",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsHomeAccess.test.ts",
+        "apps/server/src/jones/workstreams/native/read/memberAccess.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Fixed authenticated home access observes current home grant and receiving peer ceiling within prepared owner/key scope. Fresh member caller/write admission narrows the returned view; no enrollment receipt grants home permission. This is an additive access prerequisite, not public member Gateway enablement or runtime adoption."
+    },
+    {
+      "id": "workstreams-native-member-gateway-reads",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/read/memberGateway.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Selected-member public Gateway reads use the original request caller, fresh home access before and after each read, coherent closed result validation and purge fencing. Public session and appearance permissions are read-only. Frozen placement v1 never strips native v2 proofs; command recovery and writes remain unavailable. Runtime adoption, capability advertisement and client acceptance remain separate."
+    },
+    {
+      "id": "workstreams-native-member-public-operations",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/operations/memberPublicOperations.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Selected-member public-v1 operation submit/read/open/setup use current request authentication, fresh home observations, exact original request digests, the frozen bound native registry UUID and conservative pending projection. Request bytes and historical codecs remain unchanged. Public command receipt recovery, Gateway write advertising, native placement consumers and installed/runtime acceptance remain separate."
+    },
+    {
+      "id": "workstreams-native-member-registration",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsHomeRegistration.test.ts",
+        "apps/server/src/jones/workstreams/native/read/memberRegistration.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Selected-member public registration uses a separately negotiated current-home grant observation and genuine source enrollment/provider-v2 context. Original caller, owner, source authority, opaque generation and current grant are rechecked; the member holds no home authority rows. Historical enrollment/build and unknown support cannot mint permission or select a fallback. Isolated application composition only; installed and physical acceptance remain separate."
+    },
+    {
+      "id": "workstreams-native-member-gateway-writes",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/read/memberGateway.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberCommandReceipts.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Selected-member public Gateway commands and appearance mutations use exact durable source intent, original caller and immutable home; fresh effective permissions and post-call fences preserve ambiguity. Public receipt/resubmit is original-intent lookup only, including when local/home absence is unknown. No new dispatch, fallback or absence authority from recovery. Isolated application qualification only; physical/client/installed acceptance separate."
+    },
+    {
+      "id": "workstreams-native-member-placements",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/read/memberPlacements.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
+        "apps/server/src/workstreams/http.test.ts"
+      ],
+      "scope": "Explicit existing placement-v2 HTTP negotiation over genuine selected-member request admission, bounded coherent pages and independent local authority trust. Preserve complete native proof, original home/principal/grant context, v1 behavior and no-write reader semantics. Isolated synthetic authenticated H/M HTTP proof does not establish physical/runtime/client acceptance."
+    },
+    {
+      "id": "workstreams-native-client-http",
+      "tests": [
+        "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
+        "packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts",
+        "apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx",
+        "apps/mobile/src/features/workstreams/nativeLifetime.test.tsx",
+        "packages/client-runtime/src/jones/workstreams/nativePlacements.test.ts",
+        "apps/web/src/jones/workstreams/WorkstreamExportButton.browser.test.tsx",
+        "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.test.tsx",
+        "apps/mobile/src/lib/attachmentDownload.test.ts",
+        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx"
+      ],
+      "scope": "Shared authenticated closed native read/export and application-owned read lifetimes. Web detail/reference and mobile appearance use the original prepared connection/session/generation and independently authenticated public-list binding; replacement/disposal cancels pending work and withholds late results. Negotiated placement-v2 consumers retain native evidence and home observations, validate complete snapshots and inventory, and independently capture the original live source descriptors; replaced source connections invalidate memory-only proof witnesses used by grouping and action planning. Explicit placement-v1 loading remains separate, with no v2 failure fallback. Snapshot-scoped exports are callable from both application controllers. Existing cookie/Bearer/DPoP renewal remains the sole owner. Web download and mobile save/share actions consume only complete controller bytes and cancel on authenticated scope replacement. Capability advertisement and physical platform acceptance remain separate."
     },
     {
       "id": "stalled-run-projection",

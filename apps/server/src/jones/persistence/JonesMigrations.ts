@@ -64,6 +64,15 @@ import JonesMigration0137 from "./Migrations/137_JonesNativeCreationLeaseRenewal
 import JonesMigration0138 from "./Migrations/138_JonesWorkspaceRetirement.ts";
 import JonesMigration0139 from "./Migrations/139_JonesConversationWorkspace.ts";
 
+// These unpublished allocations follow canonical main. Keep the original
+// effect-module paths and bytes so the native transition fixtures stay pinned.
+import JonesMigration0140 from "./Migrations/125_JonesWorkstreamsNative.ts";
+import JonesMigration0141 from "./Migrations/126_JonesWorkstreamsSourceEnrollments.ts";
+import JonesMigration0142 from "./Migrations/127_JonesWorkstreamsRollupAttempts.ts";
+import JonesMigration0143 from "./Migrations/128_JonesWorkstreamsPeerSessionPins.ts";
+import JonesMigration0144 from "./Migrations/129_JonesWorkstreamsMemberBindings.ts";
+import JonesMigration0145 from "./Migrations/130_JonesWorkstreamsForwardReceipts.ts";
+
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
   [2, "ProjectionThreadRuntimeIdentity", JonesMigration0002],
@@ -105,6 +114,12 @@ export const jonesMigrationEntries = [
   [137, "NativeCreationLeaseRenewal", JonesMigration0137],
   [138, "WorkspaceRetirement", JonesMigration0138],
   [139, "ConversationWorkspace", JonesMigration0139],
+  [140, "WorkstreamsNative", JonesMigration0140],
+  [141, "WorkstreamsSourceEnrollments", JonesMigration0141],
+  [142, "WorkstreamsRollupAttempts", JonesMigration0142],
+  [143, "WorkstreamsPeerSessionPins", JonesMigration0143],
+  [144, "WorkstreamsMemberBindings", JonesMigration0144],
+  [145, "WorkstreamsForwardReceipts", JonesMigration0145],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {
