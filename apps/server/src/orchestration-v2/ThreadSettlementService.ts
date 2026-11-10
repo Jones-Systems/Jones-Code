@@ -816,28 +816,26 @@ export const make = Effect.gen(function* () {
               threadId: ThreadId.make(intent.thread_id),
               expected: intent,
             }).pipe(
-              Effect.mapError(
-                (cause) =>
-                  Schema.is(RetirementReceipts.RetirementError)(cause)
-                    ? cause
-                    : new RetirementReceipts.RetirementError({
-                        reason: "settlement_resume_unavailable",
-                        target: intent.worktree,
-                        cause,
-                      }),
+              Effect.mapError((cause) =>
+                Schema.is(RetirementReceipts.RetirementError)(cause)
+                  ? cause
+                  : new RetirementReceipts.RetirementError({
+                      reason: "settlement_resume_unavailable",
+                      target: intent.worktree,
+                      cause,
+                    }),
               ),
             ),
           (thread, worktree) =>
             recordRetirementProposal(thread, worktree).pipe(
-              Effect.mapError(
-                (cause) =>
-                  Schema.is(RetirementReceipts.RetirementError)(cause)
-                    ? cause
-                    : new RetirementReceipts.RetirementError({
-                        reason: "settlement_proposal_unavailable",
-                        target: worktree,
-                        cause,
-                      }),
+              Effect.mapError((cause) =>
+                Schema.is(RetirementReceipts.RetirementError)(cause)
+                  ? cause
+                  : new RetirementReceipts.RetirementError({
+                      reason: "settlement_proposal_unavailable",
+                      target: worktree,
+                      cause,
+                    }),
               ),
             ),
         ).pipe(
