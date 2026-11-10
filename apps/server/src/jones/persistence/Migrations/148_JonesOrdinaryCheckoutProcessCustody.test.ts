@@ -9,7 +9,7 @@ import { jonesMigrationEntries } from "../JonesMigrations.ts";
 import upgrade, {
   releasedOwnerTrigger,
   processOwnerTrigger,
-} from "./141_JonesOrdinaryCheckoutProcessCustody.ts";
+} from "./148_JonesOrdinaryCheckoutProcessCustody.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const beforeUpgrade = jonesMigrationEntries.filter(([id]) => id < 148);

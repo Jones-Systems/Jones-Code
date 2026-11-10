@@ -676,8 +676,8 @@
     "apps/server/src/jones/persistence/Migrations/134_JonesGoalContinuity.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.ts": "jones-owned",
-    "apps/server/src/jones/persistence/Migrations/143_JonesWorkspaceRuntimeUses.test.ts": "jones-owned",
-    "apps/server/src/jones/persistence/Migrations/143_JonesWorkspaceRuntimeUses.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/150_JonesWorkspaceRuntimeUses.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/150_JonesWorkspaceRuntimeUses.ts": "jones-owned",
     "apps/server/src/jones/persistence/UpstreamIsolation.test.ts": "jones-owned",
     "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts": "jones-owned",
     "apps/server/src/jones/platformCompatibility/mcp/ThreadMetadataMcpService.test.ts": "jones-owned",
@@ -3050,7 +3050,12 @@
     "apps/server/src/jones/device/directGatewayRetirement.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/RuntimeEvidenceGuard.ts": "jones-owned",
     "apps/server/src/jones/orchestration/IdleTurnSettlement.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/stalled-run-projection.json": "jones-owned"
+    "scripts/jones/boundary/fragments/stalled-run-projection.json": "jones-owned",
+    ".github/workflows/mobile-dev-client.yml": "upstream-deleted",
+    "apps/mobile/src/features/settings/ThreadSettingsSections.tsx": "accepted-shared",
+    "apps/web/src/proposedPlan.ts": "accepted-shared",
+    "apps/web/src/session-logic.ts": "accepted-shared",
+    "apps/server/src/binMain.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -3075,7 +3080,6 @@
     "apps/server/src/mcp/ThreadMetadataMcpService.test.ts",
     "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
     "apps/server/src/observability/RpcInstrumentation.test.ts",
-    "apps/server/src/preview/DesktopBrowserChannel.test.ts",
     "apps/server/src/preview/testing/DesktopPipeLifecycle.fixture.ts",
     "apps/server/src/testUtils/weightedShardSequencer.test.ts",
     "apps/server/src/testkit/RpcInitialMemory.fixture.mjs",
@@ -4092,6 +4096,22 @@
     {
       "from": "apps/server/src/environment/ServerEnvironment.test.ts",
       "to": "packages/contracts/src/jones/workstreamsNative.ts"
+    },
+    {
+      "from": "apps/server/src/binMain.ts",
+      "to": "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts"
+    },
+    {
+      "from": "apps/server/src/binMain.ts",
+      "to": "apps/server/src/jones/serverCompute/worker.ts"
+    },
+    {
+      "from": "apps/server/src/binMain.ts",
+      "to": "apps/server/src/jones/updates/preparation/worker.ts"
+    },
+    {
+      "from": "apps/server/src/binMain.ts",
+      "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
     }
   ]
 }

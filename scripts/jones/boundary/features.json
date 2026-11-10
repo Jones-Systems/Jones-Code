@@ -942,7 +942,7 @@
         "apps/server/src/jones/cleanup/RuntimeUseStore.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseInvocation.test.ts",
         "apps/server/src/jones/cleanup/WorkspaceLeaseProof.test.ts",
-        "apps/server/src/jones/persistence/Migrations/143_JonesWorkspaceRuntimeUses.test.ts",
+        "apps/server/src/jones/persistence/Migrations/150_JonesWorkspaceRuntimeUses.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseClaim.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseManager.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseLifetime.test.ts",

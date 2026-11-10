@@ -7,7 +7,7 @@ import { SqlError, UnknownError } from "effect/sql/SqlError";
 import { migrationManifest, runMigrations } from "../../../persistence/Migrations.ts";
 import { runJonesMigrations } from "../JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../JonesMigrations.ts";
-import upgrade from "./143_JonesWorkspaceRuntimeUses.ts";
+import upgrade from "./150_JonesWorkspaceRuntimeUses.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const prior = jonesMigrationEntries.filter(([id]) => id < 150);

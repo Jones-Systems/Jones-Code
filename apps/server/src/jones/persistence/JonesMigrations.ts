@@ -60,10 +60,10 @@ import JonesMigration0134 from "./Migrations/134_JonesGoalContinuity.ts";
 import JonesMigration0135 from "./Migrations/135_JonesIdleWorktreeAdmission.ts";
 import JonesMigration0136 from "./Migrations/136_JonesWorkspaceProvenance.ts";
 import JonesMigration0137 from "./Migrations/137_JonesNativeCreationLeaseRenewal.ts";
-import JonesMigration0147 from "./Migrations/140_JonesNativeExecutionProcessCustody.ts";
-import JonesMigration0148 from "./Migrations/141_JonesOrdinaryCheckoutProcessCustody.ts";
-import JonesMigration0149 from "./Migrations/142_JonesAuthSessionClientMetadata.ts";
-import JonesMigration0150 from "./Migrations/143_JonesWorkspaceRuntimeUses.ts";
+import JonesMigration0147 from "./Migrations/147_JonesNativeExecutionProcessCustody.ts";
+import JonesMigration0148 from "./Migrations/148_JonesOrdinaryCheckoutProcessCustody.ts";
+import JonesMigration0149 from "./Migrations/149_JonesAuthSessionClientMetadata.ts";
+import JonesMigration0150 from "./Migrations/150_JonesWorkspaceRuntimeUses.ts";
 
 import JonesMigration0138 from "./Migrations/138_JonesWorkspaceRetirement.ts";
 import JonesMigration0139 from "./Migrations/139_JonesConversationWorkspace.ts";

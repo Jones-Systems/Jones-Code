@@ -262,26 +262,30 @@ describe("Jones boundary", () => {
     inv.allowedImports = [{ from, to: target }];
     expect(checkBoundary(inv, [], tree, new Set([from]), [target]).violations).toEqual([]);
   });
-  it.each(["?url", "?raw", "?inline", "?url&no-inline"])(
-    "resolves Vite asset queries without exempting Jones targets: %s",
-    (query) => {
-      const target = "apps/web/src/jones/usage/asset.wasm";
-      const result = checkBoundary(
-        inventory(),
-        [fragment()],
-        new Map([
-          [hook, `import data from "./jones/usage/asset.wasm${query}";`],
-          [target, ""],
-        ]),
-        new Set([hook]),
-        [target],
-      );
-      expect(result.violations.map((entry) => entry.code)).toEqual(["unlisted-upstream-import"]);
-      expect(check('import data from "./missing.wasm?unknown";').violations[0]?.code).toBe(
-        "unresolved-import",
-      );
-    },
-  );
+  it.each([
+    ["./jones/usage/asset.wasm", "?url"],
+    ["./jones/usage/asset.wasm", "?raw"],
+    ["./jones/usage/asset.wasm", "?inline"],
+    ["./jones/usage/asset.wasm", "?url&no-inline"],
+    ["./jones/usage/asset.wasm", "?worker&url"],
+    ["~/jones/usage/asset.wasm", "?inline"],
+  ])("resolves Vite asset queries without exempting Jones targets: %s%s", (path, query) => {
+    const target = "apps/web/src/jones/usage/asset.wasm";
+    const result = checkBoundary(
+      inventory(),
+      [fragment()],
+      new Map([
+        [hook, `import data from "${path}${query}";`],
+        [target, ""],
+      ]),
+      new Set([hook]),
+      [target],
+    );
+    expect(result.violations.map((entry) => entry.code)).toEqual(["unlisted-upstream-import"]);
+    expect(check('import data from "./missing.wasm?unknown";').violations[0]?.code).toBe(
+      "unresolved-import",
+    );
+  });
   it("binds explicit unsupported loaders to exact source and anchor bytes", () => {
     const text = "const value = import(destination);";
     const hash = (value: string) => NodeCrypto.createHash("sha256").update(value).digest("hex");
