@@ -99,6 +99,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 148, name: "OrdinaryCheckoutProcessCustody" },
         { migration_id: 149, name: "AuthSessionClientMetadata" },
         { migration_id: 150, name: "WorkspaceRuntimeUses" },
+        { migration_id: 151, name: "PeerLinksAdoption" },
       ],
     );
     assert.deepEqual(
@@ -231,10 +232,18 @@ const nativeUpgradeFixture = Effect.gen(function* () {
     [137, "NativeCreationLeaseRenewal"],
     [138, "WorkspaceRetirement"],
     [139, "ConversationWorkspace"],
-    [140, "NativeExecutionProcessCustody"],
-    [141, "OrdinaryCheckoutProcessCustody"],
-    [142, "AuthSessionClientMetadata"],
-    [143, "WorkspaceRuntimeUses"],
+    [140, "WorkstreamsNative"],
+    [141, "WorkstreamsSourceEnrollments"],
+    [142, "WorkstreamsRollupAttempts"],
+    [143, "WorkstreamsPeerSessionPins"],
+    [144, "WorkstreamsMemberBindings"],
+    [145, "WorkstreamsForwardReceipts"],
+    [146, "SettlementOriginRetention"],
+    [147, "NativeExecutionProcessCustody"],
+    [148, "OrdinaryCheckoutProcessCustody"],
+    [149, "AuthSessionClientMetadata"],
+    [150, "WorkspaceRuntimeUses"],
+    [151, "PeerLinksAdoption"],
   ]);
   assert.deepStrictEqual(
     yield* sql`SELECT * FROM jones_native_creation_execution_starts`,

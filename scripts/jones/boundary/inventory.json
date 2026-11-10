@@ -640,7 +640,6 @@
     "apps/server/src/jones/orchestration/threadReferenceTail.test.ts": "jones-owned",
     "apps/server/src/jones/ordinaryCheckout/CheckoutPermitAdapter.ts": "jones-owned",
     "apps/server/src/jones/peerPersistence/PeerPersistence.test.ts": "jones-owned",
-    "apps/server/src/jones/peerPersistence/table.ts": "jones-owned",
     "apps/server/src/jones/peerTransport/InFlight.ts": "jones-owned",
     "apps/server/src/jones/peerTransport/LinkedMcpProbe.testkit.ts": "jones-owned",
     "apps/server/src/jones/peerTransport/LinkedMessageOrigin.test.ts": "jones-owned",
@@ -4030,10 +4029,6 @@
     {
       "from": "apps/web/src/components/chat/MarkdownTable.tsx",
       "to": "apps/web/src/jones/markdownTables/useMarkdownTableExpansion.tsx"
-    },
-    {
-      "from": "apps/server/src/peer/PeerLinkRequests.test.ts",
-      "to": "apps/server/src/jones/peerPersistence/table.ts"
     },
     {
       "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",

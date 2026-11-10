@@ -35,10 +35,6 @@
       "to": "apps/server/src/jones/remoteAdmissionIntegration/mcp.ts"
     },
     {
-      "from": "apps/server/src/peer/PeerLinks.ts",
-      "to": "apps/server/src/jones/peerPersistence/table.ts"
-    },
-    {
       "from": "apps/server/src/peer/PeerMcpClient.ts",
       "to": "apps/server/src/jones/peerTransport/PeerMcpTransport.ts"
     },
