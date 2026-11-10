@@ -93,6 +93,7 @@ import {
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 const isAppThread = Schema.is(OrchestrationV2AppThread);
+const isThreadInUseError = Schema.is(ProviderAdapter.ProviderAdapterThreadInUseError);
 
 const managedWorktreesDir = "/tmp/provider-turn-start-worktrees";
 // fs.realpath applies `..` and `.` before following symlinks.
@@ -1145,7 +1146,7 @@ function makeLocalCommandHarness(input: {
               cause: unknownResumeFailure,
             })
           : // A thread another client holds fails as itself; other failures arrive as stream causes.
-            input.resumeFailure instanceof ProviderAdapter.ProviderAdapterThreadInUseError
+            isThreadInUseError(input.resumeFailure)
             ? input.resumeFailure
             : new ProviderAdapter.ProviderAdapterEventStreamError({
                 driver: providerThread.driver,
@@ -2632,7 +2633,9 @@ effectIt.effect("fails the run instead of replacing a native thread another clie
     expect(projection.turnItems).toMatchObject([
       {
         type: "error",
-        title: "Provider turn failed to start",
+        // The harness thread is an established Codex conversation, so Jones'
+        // preservation title applies to the load failure.
+        title: "Existing provider conversation was preserved; continuation failed",
         failure: { class: "provider_error", message: detail },
       },
     ]);

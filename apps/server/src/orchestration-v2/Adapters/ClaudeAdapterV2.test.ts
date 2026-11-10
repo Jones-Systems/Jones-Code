@@ -2500,10 +2500,13 @@ describe("ClaudeAdapterV2 native fork", () => {
           queryRunner: {
             allocateSessionId: Effect.succeed("source-native-session"),
             open: (input) =>
-              Effect.sync(() => {
+              Effect.gen(function* () {
                 openedQueries.push(input);
+                // Closing the query ends its message stream, as the SDK does; session
+                // retirement waits for that drain.
+                const sdkMessages = yield* Queue.unbounded<SDKMessage>();
                 return {
-                  messages: Stream.never,
+                  messages: Stream.fromQueue(sdkMessages),
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   applyFlagSettings: () => Effect.void,
@@ -2516,7 +2519,7 @@ describe("ClaudeAdapterV2 native fork", () => {
                   stopTask: () => Effect.void,
                   termination: Effect.void,
                   interrupt: Effect.void,
-                  close: Effect.void,
+                  close: Queue.shutdown(sdkMessages),
                 };
               }),
             forkSession: (input) =>
@@ -2843,10 +2846,13 @@ describe("ClaudeAdapterV2 native session identity", () => {
           queryRunner: {
             allocateSessionId: Effect.succeed("native-session-identity"),
             open: (input) =>
-              Effect.sync(() => {
+              Effect.gen(function* () {
                 openedQueries.push(input);
+                // Closing the query ends its message stream, as the SDK does; session
+                // retirement waits for that drain.
+                const sdkMessages = yield* Queue.unbounded<SDKMessage>();
                 return {
-                  messages: Stream.never,
+                  messages: Stream.fromQueue(sdkMessages),
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   applyFlagSettings: () => Effect.void,
@@ -2859,7 +2865,7 @@ describe("ClaudeAdapterV2 native session identity", () => {
                   stopTask: () => Effect.void,
                   termination: Effect.void,
                   interrupt: Effect.void,
-                  close: Effect.void,
+                  close: Queue.shutdown(sdkMessages),
                 };
               }),
             forkSession: () => Effect.die("unused forkSession"),
@@ -11222,7 +11228,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(terminal.runtimeEvidence?.runtimeGeneration, generation);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
     ),
@@ -12001,6 +12012,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               callMcpTool: () => Effect.die("unexpected MCP tool call"),
               listPermissionRules: Effect.die("unexpected permission rules read"),
               stopTask: () => Effect.void,
+              termination: Effect.void,
               interrupt: Effect.void,
               close: Queue.shutdown(sdkMessages),
             };
@@ -17943,6 +17955,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     applyFlagSettings: () => Effect.void,
                     setPermissionMode: () => Effect.void,
                     backgroundTasks: () => Effect.succeed(false),
+                    mcpServerStatus: Effect.succeed([]),
+                    readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                    callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                    listPermissionRules: Effect.die("unexpected permission rules read"),
                     stopTask: () => Effect.void,
                     termination: Effect.void,
                     interrupt: Effect.void,
@@ -18682,6 +18698,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     applyFlagSettings: () => Effect.void,
                     setPermissionMode: () => Effect.void,
                     backgroundTasks: () => Effect.succeed(false),
+                    mcpServerStatus: Effect.succeed([]),
+                    readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                    callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                    listPermissionRules: Effect.die("unexpected permission rules read"),
                     stopTask: () => Effect.void,
                     termination: Effect.void,
                     interrupt: Effect.void,
@@ -19068,6 +19088,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   applyFlagSettings: () => Effect.void,
                   stopTask: () => Effect.void,
                   backgroundTasks: () => Effect.succeed(false),
+                  mcpServerStatus: Effect.succeed([]),
+                  readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                  callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                  listPermissionRules: Effect.die("unexpected permission rules read"),
                   setPermissionMode: () => Effect.void,
                   termination: Effect.void,
                   interrupt: Effect.void,
@@ -20245,6 +20269,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   applyFlagSettings: () => Effect.void,
                   stopTask: () => Effect.void,
                   backgroundTasks: () => Effect.succeed(false),
+                  mcpServerStatus: Effect.succeed([]),
+                  readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                  callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                  listPermissionRules: Effect.die("unexpected permission rules read"),
                   setPermissionMode: () => Effect.void,
                   termination: Effect.void,
                   interrupt: Effect.void,

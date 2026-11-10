@@ -396,7 +396,7 @@ describe("Codex pre-ACK item reader progress", () => {
       // Only filesystem dependencies are inert. The adapter, RPC correlation,
       // notification dispatch and serialized protocol reader are all real.
       const fileSystem = FileSystem.makeNoop({
-        makeTempDirectory: () => Effect.succeed("/synthetic/pre-ack-reader"),
+        makeTempDirectoryScoped: () => Effect.succeed("/synthetic/pre-ack-reader"),
         makeDirectory: () => Effect.void,
         exists: () => Effect.succeed(false),
       });
