@@ -17,15 +17,20 @@ export async function buildPlacement({
   compilerArgs = [],
   signal,
   removeScratch = NodeFS.rmSync,
+  complete = async (input) => {
+    const { completeProducer } = await import("../../scripts/jones/direct-producers/completion.ts");
+    completeProducer(input);
+  },
 } = {}) {
   if (platform !== "linux") return;
   const sourceBytes = NodeFS.readFileSync(source);
   NodeFS.mkdirSync(outputDir, { recursive: true });
   const staging = NodeFS.mkdtempSync(NodePath.join(outputDir, ".placement-build-"));
+  const name = `process-placement-linux-${architecture}`;
   let primaryFailure;
+  let outcome = "failed";
   try {
     const sourceCopy = NodePath.join(staging, "placement.c");
-    const name = `process-placement-linux-${architecture}`;
     const candidate = NodePath.join(staging, name);
     NodeFS.writeFileSync(sourceCopy, sourceBytes);
     const status = await new Promise((accept, reject) => {
@@ -50,9 +55,17 @@ export async function buildPlacement({
       const abort = () => child.kill("SIGTERM");
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
-      child.once("error", reject);
+      let spawnError;
+      child.once("error", (cause) => {
+        spawnError = cause;
+      });
       child.once("close", (code, terminated) => {
         signal?.removeEventListener("abort", abort);
+        if (signal?.aborted) outcome = "cancelled";
+        if (spawnError) {
+          reject(spawnError);
+          return;
+        }
         accept(signal?.aborted ? 143 : (code ?? (terminated ? 143 : 1)));
       });
     });
@@ -72,6 +85,7 @@ export async function buildPlacement({
     NodeFS.writeFileSync(`${candidate}.json`, manifest);
     NodeFS.renameSync(candidate, NodePath.join(outputDir, name));
     NodeFS.renameSync(`${candidate}.json`, NodePath.join(outputDir, `${name}.json`));
+    outcome = "succeeded";
   } catch (cause) {
     primaryFailure = cause;
     throw cause;
@@ -79,9 +93,25 @@ export async function buildPlacement({
     try {
       removeScratch(staging, { recursive: true, force: true });
     } catch (cleanupError) {
+      outcome = primaryFailure === undefined ? "failed" : outcome;
       if (primaryFailure === undefined) throw cleanupError;
       primaryFailure.cleanupError = cleanupError;
       console.error(`Placement scratch cleanup failed: ${cleanupError.message}`);
+    } finally {
+      try {
+        await complete({
+          producer: "jones-process-placement",
+          worktree: NodeURL.fileURLToPath(new URL("../../", import.meta.url)),
+          status: outcome,
+          roots: [
+            NodePath.resolve(outputDir, name),
+            NodePath.resolve(outputDir, `${name}.json`),
+            NodePath.resolve(staging),
+          ],
+        });
+      } catch {
+        console.error(`[jones-process-placement] completion metadata unavailable; outcome=${outcome}.`);
+      }
     }
   }
 }

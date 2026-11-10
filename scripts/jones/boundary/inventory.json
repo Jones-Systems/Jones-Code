@@ -7,6 +7,9 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "scripts/jones/boundary/fragments/direct-producer-completion.json": "jones-owned",
+    "scripts/jones/direct-producers/completion.node-test.mjs": "jones-owned",
+    "scripts/jones/direct-producers/completion.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/138_JonesWorkspaceRetirement.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/138_JonesWorkspaceRetirement.ts": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/ClaimReconciliation.ts": "jones-owned",

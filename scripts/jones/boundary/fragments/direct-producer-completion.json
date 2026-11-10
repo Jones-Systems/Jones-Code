@@ -1,0 +1,11 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "direct-producer-completion",
+  "jonesOwnedPaths": [
+    "scripts/jones/direct-producers/completion.node-test.mjs",
+    "scripts/jones/direct-producers/completion.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}
