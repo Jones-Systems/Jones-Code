@@ -5,11 +5,16 @@
       "id": "jones-direct-producer-completion",
       "tests": [
         "scripts/jones/direct-producers/completion.node-test.mjs",
-        "native/process-placement/build.test.mjs"
+        "native/process-placement/build.test.mjs",
+        "scripts/jones/direct-producers/finite-production.test.ts",
+        "scripts/jones/direct-producers/finite-production.node-test.mjs"
       ],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/direct-producers/completion.node-test.mjs native/process-placement/build.test.mjs",
         "vp lint scripts/jones/direct-producers/completion.ts native/process-placement/build.mjs native/process-placement/build.test.mjs scripts/jones/direct-producers/completion.node-test.mjs",
+        "node --test --test-concurrency=1 scripts/jones/direct-producers/finite-production.node-test.mjs",
+        "vp test run scripts/jones/direct-producers/finite-production.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/scripts/cli.ts scripts/jones/direct-producers/finite-production.ts scripts/jones/direct-producers/finite-production.test.ts scripts/jones/direct-producers/finite-production.testkit.ts scripts/jones/direct-producers/finite-production.node-test.mjs",
         "vp run --filter @t3tools/scripts typecheck",
         "node scripts/jones/check-boundary.ts --strict",
         "git diff --check"
