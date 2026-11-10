@@ -244,14 +244,22 @@ source-derived and have not been run against a live host.
 
 ### Members
 
-A member has no registry or keys copy of the home. Before peer setup it needs:
+A member has no registry or home keys copy. Before peer setup it needs:
 
 - `t3 workstream authority enroll` on the member;
 - current peer links both ways: `t3 environment link <url> --pairing-code
   <code> --access full-access`, using a code from `t3 pair` on the other side;
-- an active `local` key row and key file for the home registry in the member's
-  own store. No shipped command creates that row on a member yet, so member
-  setup stops with `key_unavailable` until such a route exists.
+- its own local key for the home registry. Run `t3 workstream registry keys
+  member-init --home <member-home> --key-provider server-secret-store --request
+  '{"registry": <home registry>, "local_key_id": "<id>"}'` once, with the same
+  registry object the member's `workstreams-native.json` will name. It needs the
+  member's existing `userdata/statev2.sqlite`, creates
+  `userdata/secrets/workstreams-content-key-<id>.bin` from random bytes and the
+  active `local` key row, and prints only the key name. It refuses if that
+  database already holds the registry or any key row for it, or the key file
+  exists; a failed run removes only the file it created. Without this key,
+  member setup and startup stop with `key_unavailable`. Back the file up: the
+  row cannot be deleted, so a lost file is not replaced by rerunning.
 
 Run peer setup on the member, against the member's own running server.
 `--source-environment-id` is the member and `--home-environment-id` is the home.

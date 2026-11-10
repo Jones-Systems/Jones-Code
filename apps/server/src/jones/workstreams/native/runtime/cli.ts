@@ -164,9 +164,38 @@ const keyBootstrap = (selection: Admin.InitSelection) =>
     }),
   );
 
+/** Member key provisioning opens only an existing selected database (normal migrations run) and its secret store. */
+const memberKeyBootstrap = (selection: Admin.InitSelection) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const path = yield* Path.Path,
+        fs = yield* FileSystem.FileSystem;
+      if (
+        selection.keyProvider !== "server-secret-store" ||
+        !path.isAbsolute(selection.home) ||
+        !(yield* fs.exists(selection.home))
+      )
+        return yield* new StartupError({ code: "explicit_selection_required" });
+      const config = yield* resolveCliAuthConfig(
+        { baseDir: Option.some(path.resolve(selection.home)) },
+        Option.none(),
+      );
+      if (path.resolve(config.baseDir) !== path.resolve(selection.home))
+        return yield* new StartupError({ code: "database_mismatch" });
+      if (!(yield* fs.exists(config.dbPath)))
+        return yield* new StartupError({ code: "home_unavailable" });
+      const selectedConfig = ServerConfig.layer(config);
+      return Admin.memberKeyLayer.pipe(
+        Layer.provide(SecretStore.layer.pipe(Layer.provide(selectedConfig))),
+        Layer.provide(Persistence.layerFromPath(config.dbPath)),
+      );
+    }),
+  );
+
 export const registryCommand = Admin.registryCommand(
   bootstrap,
   sourceBootstrap,
   transitionBootstrap,
   keyBootstrap,
+  memberKeyBootstrap,
 );
