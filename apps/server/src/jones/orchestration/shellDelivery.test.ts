@@ -99,7 +99,13 @@ it.effect.each(["live-first", "refresh-first", "refresh-last"] as const)(
       };
       let watermarks: ReadonlyMap<ThreadId, number> = new Map();
       for (const item of output) {
-        if (item.kind === "snapshot" || item.kind === "synchronized") continue;
+        // The reducer applies row events only; resume markers carry no row state.
+        if (
+          item.kind === "snapshot" ||
+          item.kind === "synchronized" ||
+          item.kind === "snapshot-required"
+        )
+          continue;
         const next = applyShellStreamEvent(snapshot, item, new Map(), watermarks);
         watermarks = advanceThreadRefreshWatermarks(watermarks, snapshot, item, new Map());
         snapshot = next;

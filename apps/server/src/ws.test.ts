@@ -1297,6 +1297,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
         refreshWorkspaceSnapshot: () => Effect.succeed([provider]),
       }),
       Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+        getCatalogSource: () => undefined,
         listInstances: Effect.sync(() => [
           (scansCwd
             ? { instanceId, snapshotForCwd: () => Effect.die("unused") }
@@ -1813,6 +1814,7 @@ it.effect.each([
         return items;
       });
       const exit = yield* subscription.pipe(
+        Effect.provide(ShellMaterialization.layer),
         Effect.provideService(ThreadManagement.ThreadManagementService, {
           ensureLegacyTranscript: () => Effect.void,
           getThreadSnapshot: () => Effect.die("snapshot"),
@@ -1883,6 +1885,7 @@ it.effect.each(["thread", "shell"] as const)(
             : yield* subscribeOrchestrationV2Shell({ afterSequence: first!.sequence });
         return stream;
       }).pipe(
+        Effect.provide(ShellMaterialization.layer),
         Effect.provideService(Statement.CurrentTransformer, gateReplayRead),
         Effect.provideService(ThreadManagement.ThreadManagementService, {
           ensureLegacyTranscript: () => Effect.void,
@@ -2422,8 +2425,8 @@ it.effect(
         key: "mod+alt+z",
         command: "terminal.split",
       });
-      const expectedSettings = [duringDiscovery, latestSettings].map(
-        ServerSettings.redactServerSettingsForClient,
+      const expectedSettings = [duringDiscovery, latestSettings].map((value) =>
+        ServerSettings.redactServerSettingsForClient(value, { secretReferences: true }),
       );
       const expectedKeybindings = [duringAck.keybindings, latestKeybindings.keybindings];
       // The two sources can interleave, but each must retain its own publication order.
