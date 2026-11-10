@@ -1,0 +1,2380 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "workstreams-snapshot/1.0.0",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "workstreams-snapshot/1.0.0"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "producer": {
+          "type": "object",
+          "properties": {
+            "system": {
+              "enum": [
+                "control-plane",
+                "jones-native"
+              ]
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "schema_version": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "system",
+            "revision",
+            "schema_version"
+          ],
+          "additionalProperties": false
+        },
+        "registry": {
+          "type": "object",
+          "properties": {
+            "registry_instance_id": {
+              "type": "string",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "canonical_origin": {
+              "type": "string",
+              "pattern": "^https://[^/@?#\\s]+$"
+            }
+          },
+          "required": [
+            "registry_instance_id",
+            "canonical_origin"
+          ],
+          "additionalProperties": false
+        },
+        "owners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "owner_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "server_generation": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "registry_version": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "audit_high_water": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "owner_id",
+              "server_generation",
+              "registry_version",
+              "audit_high_water"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 100000
+        },
+        "fence": {
+          "type": "object",
+          "properties": {
+            "epoch": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "fenced_at": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|\\+00:00)$"
+            }
+          },
+          "required": [
+            "epoch",
+            "fenced_at"
+          ],
+          "additionalProperties": false
+        },
+        "exported_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|\\+00:00)$"
+        },
+        "open_effects": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "encryption": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "enum": [
+                "stream",
+                "file"
+              ]
+            },
+            "key_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "mode",
+            "key_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "contract",
+        "snapshot_id",
+        "producer",
+        "registry",
+        "owners",
+        "fence",
+        "exported_at",
+        "open_effects",
+        "encryption"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_registry_context"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "server_generation": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "registry_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "owner_id",
+                "server_generation",
+                "registry_version"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_owner_grants"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "principal_id": {
+                  "type": "string"
+                },
+                "grant_id": {
+                  "type": "string"
+                },
+                "grant_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "permissions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "state": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "owner_id",
+                "principal_id",
+                "grant_id",
+                "grant_version",
+                "permissions",
+                "state"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_source_bindings"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "source_instance_id": {
+                  "type": "string"
+                },
+                "authority_namespace": {
+                  "type": "string"
+                },
+                "binding_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "store_generation": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "state": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "owner_id",
+                "provider",
+                "source_instance_id",
+                "authority_namespace",
+                "binding_version",
+                "store_generation",
+                "state"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstreams"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "workstream_id": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "sort_order": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "cipher_revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "owner_id",
+                "workstream_id",
+                "version",
+                "sort_order",
+                "cipher_revision",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_native_references"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "native_reference_id": {
+                  "type": "string"
+                },
+                "identity_sha256": {
+                  "type": "string"
+                },
+                "attestation_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "cipher_revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "registration_state": {
+                  "type": "string"
+                },
+                "created_by": {
+                  "type": "string"
+                },
+                "routing_provider": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "routing_resource_kind": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "routing_id_kind": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "routing_account_kind": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "routing_source_instance_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "routing_native_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "routing_authority_namespace": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "routing_store_generation": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "routing_attested_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "routing_expires_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "routing_evidence_sha256": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "owner_id",
+                "native_reference_id",
+                "identity_sha256",
+                "attestation_version",
+                "cipher_revision",
+                "registration_state",
+                "created_by",
+                "routing_provider",
+                "routing_resource_kind",
+                "routing_id_kind",
+                "routing_account_kind",
+                "routing_source_instance_id",
+                "routing_native_id",
+                "routing_authority_namespace",
+                "routing_store_generation",
+                "routing_attested_at",
+                "routing_expires_at",
+                "routing_evidence_sha256",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_memberships"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "membership_id": {
+                  "type": "string"
+                },
+                "workstream_id": {
+                  "type": "string"
+                },
+                "native_reference_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "closed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "value": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "owner_id",
+                "membership_id",
+                "workstream_id",
+                "native_reference_id",
+                "kind",
+                "closed_at",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_declarations"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "declaration_id": {
+                  "type": "string"
+                },
+                "workstream_id": {
+                  "type": "string"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "cipher_revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "registry_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "owner_id",
+                "declaration_id",
+                "workstream_id",
+                "revision",
+                "cipher_revision",
+                "registry_version",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_lifecycle_declarations"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "lifecycle_declaration_id": {
+                  "type": "string"
+                },
+                "workstream_id": {
+                  "type": "string"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "recorded_at": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "owner_id",
+                "lifecycle_declaration_id",
+                "workstream_id",
+                "revision",
+                "recorded_at",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_edges"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "edge_id": {
+                  "type": "string"
+                },
+                "from_workstream_id": {
+                  "type": "string"
+                },
+                "to_workstream_id": {
+                  "type": "string"
+                },
+                "relation": {
+                  "type": "string"
+                },
+                "closed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "value": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "owner_id",
+                "edge_id",
+                "from_workstream_id",
+                "to_workstream_id",
+                "relation",
+                "closed_at",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_pr_observations"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "native_reference_id": {
+                  "type": "string"
+                },
+                "observation_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "attempted_at": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "owner_id",
+                "native_reference_id",
+                "observation_version",
+                "attempted_at",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_command_receipts"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "command_id": {
+                  "type": "string"
+                },
+                "principal_id": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "cipher_revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "owner_id",
+                "command_id",
+                "principal_id",
+                "state",
+                "cipher_revision",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_external_reservations"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "command_id": {
+                  "type": "string"
+                },
+                "principal_id": {
+                  "type": "string"
+                },
+                "native_reference_id": {
+                  "type": "string"
+                },
+                "effect": {
+                  "type": "string"
+                },
+                "server_generation": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "admitted_registry_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "state": {
+                  "type": "string"
+                },
+                "cipher_revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "owner_id",
+                "command_id",
+                "principal_id",
+                "native_reference_id",
+                "effect",
+                "server_generation",
+                "admitted_registry_version",
+                "state",
+                "cipher_revision",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_external_results"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "command_id": {
+                  "type": "string"
+                },
+                "cipher_revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "owner_id",
+                "command_id",
+                "cipher_revision",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_audit_events"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "event_sequence": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": -1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "owner_id": {
+                  "type": "string"
+                },
+                "event_id": {
+                  "type": "string"
+                },
+                "command_id": {
+                  "type": "string"
+                },
+                "workstream_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "registry_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "occurred_at": {
+                  "type": "string"
+                },
+                "cipher_revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "event_sequence",
+                "owner_id",
+                "event_id",
+                "command_id",
+                "workstream_ids",
+                "registry_version",
+                "occurred_at",
+                "cipher_revision",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_rollup_manifests"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "workstream_id": {
+                  "type": "string"
+                },
+                "manifest_sha256": {
+                  "type": "string"
+                },
+                "workstream_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "registry_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "cipher_revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "owner_id",
+                "workstream_id",
+                "manifest_sha256",
+                "workstream_version",
+                "registry_version",
+                "cipher_revision",
+                "created_at",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_rollup_manifest_accounts"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "workstream_id": {
+                  "type": "string"
+                },
+                "manifest_sha256": {
+                  "type": "string"
+                },
+                "account_id": {
+                  "type": "string"
+                },
+                "authorization_policy_sha256": {
+                  "type": "string"
+                },
+                "authorization_principal_id": {
+                  "type": "string"
+                },
+                "authorization_grant_id": {
+                  "type": "string"
+                },
+                "authorization_decision_id": {
+                  "type": "string"
+                },
+                "authorization_account_generation": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "authorization_revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "owner_id",
+                "workstream_id",
+                "manifest_sha256",
+                "account_id",
+                "authorization_policy_sha256",
+                "authorization_principal_id",
+                "authorization_grant_id",
+                "authorization_decision_id",
+                "authorization_account_generation",
+                "authorization_revision"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_rollup_queue"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "workstream_id": {
+                  "type": "string"
+                },
+                "manifest_sha256": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "attempt_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "fence": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "lease_expires_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "failure_code": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "failed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "owner_id",
+                "workstream_id",
+                "manifest_sha256",
+                "state",
+                "attempt_id",
+                "fence",
+                "lease_expires_at",
+                "failure_code",
+                "failed_at",
+                "updated_at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_rollup_discovery_cursors"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "cursor_id": {
+                  "type": "string"
+                },
+                "last_group_key": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "cursor_id",
+                "last_group_key",
+                "updated_at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_rollup_summaries"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "workstream_id": {
+                  "type": "string"
+                },
+                "rollup_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "manifest_sha256": {
+                  "type": "string"
+                },
+                "output_sha256": {
+                  "type": "string"
+                },
+                "coverage": {
+                  "type": "string"
+                },
+                "freshness": {
+                  "type": "string"
+                },
+                "generated_at": {
+                  "type": "string"
+                },
+                "cipher_revision": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "owner_id",
+                "workstream_id",
+                "rollup_version",
+                "manifest_sha256",
+                "output_sha256",
+                "coverage",
+                "freshness",
+                "generated_at",
+                "cipher_revision",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_collection_projections"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 7,
+              "maxItems": 7,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "collection": {
+                  "type": "string"
+                },
+                "scope_key": {
+                  "type": "string"
+                },
+                "record_id": {
+                  "type": "string"
+                },
+                "sort_number_1": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "sort_text_1": {
+                  "type": "string"
+                },
+                "sort_number_2": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "event_sequence": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": -1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "owner_id",
+                "collection",
+                "scope_key",
+                "record_id",
+                "sort_number_1",
+                "sort_text_1",
+                "sort_number_2",
+                "event_sequence"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_history_links"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 5,
+              "maxItems": 5,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "scope_key": {
+                  "type": "string"
+                },
+                "predecessor_registry_version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "predecessor_event_id": {
+                  "type": "string"
+                },
+                "valid_from_event_sequence": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "successor_registry_version": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": -1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "successor_event_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "owner_id",
+                "scope_key",
+                "predecessor_registry_version",
+                "predecessor_event_id",
+                "valid_from_event_sequence",
+                "successor_registry_version",
+                "successor_event_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_appearance"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "workstream_id": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "maximum": 9007199254740991
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "owner_id",
+                "workstream_id",
+                "version",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_appearance_receipts"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "owner_id": {
+                  "type": "string"
+                },
+                "command_id": {
+                  "type": "string"
+                },
+                "principal_id": {
+                  "type": "string"
+                },
+                "request_sha256": {
+                  "type": "string"
+                },
+                "payload": {
+                  "type": "string"
+                },
+                "cipher": {
+                  "type": "object",
+                  "properties": {
+                    "key_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "key_id",
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                "ciphertext_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "owner_id",
+                "command_id",
+                "principal_id",
+                "request_sha256",
+                "payload",
+                "cipher",
+                "ciphertext_sha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_registry_identity"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "singleton": {
+                  "type": "boolean"
+                },
+                "registry_instance_id": {
+                  "type": "string"
+                },
+                "canonical_origin": {
+                  "type": "string"
+                },
+                "provisioning_id": {
+                  "type": "string"
+                },
+                "request_sha256": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "singleton",
+                "registry_instance_id",
+                "canonical_origin",
+                "provisioning_id",
+                "request_sha256",
+                "created_at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_registry_binding_principals"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "principal_id": {
+                  "type": "string"
+                },
+                "registry_instance_id": {
+                  "type": "string"
+                },
+                "owner_id": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "provisioning_id": {
+                  "type": "string"
+                },
+                "request_sha256": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "principal_id",
+                "registry_instance_id",
+                "owner_id",
+                "mode",
+                "provisioning_id",
+                "request_sha256",
+                "created_at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "class": {
+              "const": "workstream_registry_binding_requests"
+            },
+            "key": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "type": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            },
+            "row": {
+              "type": "object",
+              "properties": {
+                "provisioning_id": {
+                  "type": "string"
+                },
+                "request_sha256": {
+                  "type": "string"
+                },
+                "registry_instance_id": {
+                  "type": "string"
+                },
+                "principal_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "provisioning_id",
+                "request_sha256",
+                "registry_instance_id",
+                "principal_id",
+                "created_at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "class",
+            "key",
+            "row"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "class": {
+          "enum": [
+            "workstream_registry_context",
+            "workstream_owner_grants",
+            "workstream_source_bindings",
+            "workstreams",
+            "workstream_native_references",
+            "workstream_memberships",
+            "workstream_declarations",
+            "workstream_lifecycle_declarations",
+            "workstream_edges",
+            "workstream_pr_observations",
+            "workstream_command_receipts",
+            "workstream_external_reservations",
+            "workstream_external_results",
+            "workstream_audit_events",
+            "workstream_rollup_manifests",
+            "workstream_rollup_manifest_accounts",
+            "workstream_rollup_queue",
+            "workstream_rollup_discovery_cursors",
+            "workstream_rollup_summaries",
+            "workstream_collection_projections",
+            "workstream_history_links",
+            "workstream_appearance",
+            "workstream_appearance_receipts",
+            "workstream_registry_identity",
+            "workstream_registry_binding_principals",
+            "workstream_registry_binding_requests"
+          ]
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "class",
+        "count",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "snapshot_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "complete": {
+          "const": true
+        }
+      },
+      "required": [
+        "snapshot_sha256",
+        "complete"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

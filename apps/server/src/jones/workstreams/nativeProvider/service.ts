@@ -18,6 +18,7 @@ import {
   type WorkstreamsNativeSettlementEvent,
 } from "@t3tools/contracts";
 import { CommandId, ThreadId } from "@t3tools/contracts";
+import { NativeProviderDispatchAdmission } from "./dispatchAdmission.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -111,6 +112,17 @@ type SettlementResponse =
   | WorkstreamsNativeSettlementResponseV2;
 type Rejection = Extract<SettlementResponse, { state: "rejected" }>;
 
+const encodeEnrollmentContext = Schema.encodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeContext),
+);
+const encodeAttestationRequest = Schema.encodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeAttestationRequest),
+);
+const encodeSettlementRequest = Schema.encodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeSettlementRequest),
+);
+const isNativeBuild = Schema.is(WorkstreamsNativeBuild);
+
 const enrollmentContext = (binding: NativeProviderEnrollmentBinding): WorkstreamsNativeContext => ({
   owner_id: binding.owner_id,
   principal_id: binding.principal_id,
@@ -121,10 +133,8 @@ const enrollmentContext = (binding: NativeProviderEnrollmentBinding): Workstream
   protocol: binding.protocol,
   build: binding.build,
 });
-const compiledEncodeEffect1 = Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeContext));
-
 const enrollmentDigest = (binding: NativeProviderEnrollmentBinding) =>
-  compiledEncodeEffect1(enrollmentContext(binding)).pipe(
+  encodeEnrollmentContext(enrollmentContext(binding)).pipe(
     Effect.map((json) => sha256Bytes(`${binding.registry_origin}\n${binding.session_id}\n${json}`)),
   );
 const nativeCommandId = (digest: string, requestJson: string) =>
@@ -163,15 +173,15 @@ const CanonicalResultDigest = Schema.fromJsonString(
   }),
 );
 
-// All association values are scalars; sorted schema fields match the registry's canonical JSON.
-const compiledEncodeEffect2 = Schema.encodeEffect(CanonicalResultDigest);
+const encodeResultDigest = Schema.encodeEffect(CanonicalResultDigest);
 
+// All association values are scalars; sorted schema fields match the registry's canonical JSON.
 export const nativeProviderResultEvidence = Effect.fn("NativeProvider.resultEvidence")(function* (
   request: WorkstreamsNativeSettlementRequest,
   outcome: "committed" | "denied",
 ) {
   const value = association(request);
-  const encoded = yield* compiledEncodeEffect2({
+  const encoded = yield* encodeResultDigest({
     command_id: value.command_id,
     native_action: value.native_action,
     native_outcome: outcome,
@@ -183,14 +193,6 @@ export const nativeProviderResultEvidence = Effect.fn("NativeProvider.resultEvid
   });
   return { ...value, result_sha256: sha256Bytes(encoded) };
 }, Effect.orDie);
-
-const compiledIs3 = Schema.is(WorkstreamsNativeBuild);
-const compiledEncodeEffect4 = Schema.encodeEffect(
-  Schema.fromJsonString(WorkstreamsNativeAttestationRequest),
-);
-const compiledEncodeEffect5 = Schema.encodeEffect(
-  Schema.fromJsonString(WorkstreamsNativeSettlementRequest),
-);
 
 export function makeWorkstreamsNativeProvider(
   ports: NativeProviderPorts,
@@ -228,7 +230,7 @@ export function makeWorkstreamsNativeProvider(
   ) {
     if (!binding.scopes.includes(scope)) return reject("forbidden");
     const actualBuild = yield* build;
-    if (Option.isNone(actualBuild) || !compiledIs3(actualBuild.value))
+    if (Option.isNone(actualBuild) || !isNativeBuild(actualBuild.value))
       return "build_unavailable" as const;
     if (
       binding.protocol !== WORKSTREAMS_T3_PROVIDER_PROTOCOL ||
@@ -291,7 +293,7 @@ export function makeWorkstreamsNativeProvider(
     const contextValue = enrollmentContext(binding);
     if (profile === "v2") {
       const observed = yield* build;
-      if (Option.isNone(observed) || !compiledIs3(observed.value))
+      if (Option.isNone(observed) || !isNativeBuild(observed.value))
         return { protocol, state: "unavailable", reason: "build_unavailable" };
       return {
         protocol: WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL,
@@ -352,7 +354,7 @@ export function makeWorkstreamsNativeProvider(
     const expiresAt = DateTime.formatIso(
       DateTime.addDuration(now, WORKSTREAMS_T3_PROVIDER_ATTESTATION_TTL_MS),
     );
-    const requestJson = yield* compiledEncodeEffect4(request).pipe(Effect.option);
+    const requestJson = yield* encodeAttestationRequest(request).pipe(Effect.option);
     if (Option.isNone(requestJson)) return reject("invalid_request");
     return {
       protocol,
@@ -490,7 +492,7 @@ export function makeWorkstreamsNativeProvider(
       const wrongRequest = validateRequest(binding, request);
       if (wrongRequest !== null) return wrongRequest;
       const digest = yield* enrollmentDigest(binding).pipe(Effect.option);
-      const requestJson = yield* compiledEncodeEffect5(request).pipe(Effect.option);
+      const requestJson = yield* encodeSettlementRequest(request).pipe(Effect.option);
       if (
         Option.isNone(digest) ||
         Option.isNone(requestJson) ||
@@ -538,7 +540,7 @@ export function makeWorkstreamsNativeProvider(
         if (Option.isNone(reserved)) return unknownSettlement(request, "provider_unavailable");
         attempt = reserved.value;
       }
-      const persistedJson = yield* compiledEncodeEffect5(attempt.request).pipe(Effect.option);
+      const persistedJson = yield* encodeSettlementRequest(attempt.request).pipe(Effect.option);
       if (
         attempt.enrollmentSha256 !== enrollmentSha256 ||
         Option.isNone(persistedJson) ||
@@ -560,6 +562,17 @@ export function makeWorkstreamsNativeProvider(
       if (current.state === "failed") return unknownSettlement(request, "authority_unavailable");
       if (!sameAuthority(binding, current.tuple))
         return unknownSettlement(request, "authority_changed");
+      // A retained-source call checks its original caller at the actual dispatch boundary,
+      // after asynchronous authority/attempt preparation. A refusal never reopens dispatch.
+      const dispatchAdmission = yield* NativeProviderDispatchAdmission;
+      if (
+        dispatchAdmission !== undefined &&
+        !(yield* dispatchAdmission(binding, request).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        ))
+      )
+        return reject("forbidden");
       const commandId = CommandId.make(attempt.nativeCommandId);
       const threadId = ThreadId.make(request.identity.native_id);
       // Persisted dispatch-start survives timeout and lost replies; a started attempt is observation-only.

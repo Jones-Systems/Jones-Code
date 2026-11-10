@@ -57,18 +57,6 @@
       "to": "apps/web/src/jones/pendingSends/newThread.ts"
     },
     {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "apps/web/src/jones/pendingSends/store.ts"
-    },
-    {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
-    },
-    {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "apps/web/src/jones/pendingSends/newThread.ts"
-    },
-    {
       "from": "apps/web/src/components/chat/useThreadLifecycle.tsx",
       "to": "apps/web/src/jones/pendingSends/store.ts"
     },
@@ -103,14 +91,6 @@
     {
       "from": "apps/web/src/components/chat/useComposerResume.ts",
       "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
-    },
-    {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "apps/web/src/jones/pendingSends/planCreation.ts"
-    },
-    {
-      "from": "apps/web/src/components/ChatView.tsx",
-      "to": "apps/web/src/jones/pendingSends/PlanCreationStatus.tsx"
     },
     {
       "from": "apps/web/src/connection/platform.ts",

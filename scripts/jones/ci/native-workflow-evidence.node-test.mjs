@@ -811,3 +811,30 @@ NodeTest.test(
     }
   },
 );
+
+NodeTest.test(
+  "workflow status functions appear only in if conditions and cancellation is read from job.status",
+  async () => {
+    // GitHub rejects the whole workflow file ("workflow file issue") when a status function is
+    // used in a step env or with value, so every push fails before any job starts.
+    const directory = NodePath.join(repo, ".github/workflows");
+    const offenders = [];
+    for (const name of (await NodeFSP.readdir(directory)).filter((file) => /\.ya?ml$/.test(file))) {
+      const lines = (await NodeFSP.readFile(NodePath.join(directory, name), "utf8")).split("\n");
+      lines.forEach((line, index) => {
+        const entry = /^\s*(?:-\s+)?([A-Za-z_][\w-]*):\s*(.*)$/.exec(line);
+        if (
+          entry &&
+          entry[1] !== "if" &&
+          /\$\{\{[^}]*\b(?:always|cancelled|failure|success)\(\)/.test(entry[2])
+        )
+          offenders.push(`${name}:${index + 1}`);
+      });
+    }
+    NodeAssert.strict.deepEqual(offenders, []);
+    NodeAssert.strict.match(
+      await workflow(),
+      /JCUE_CANCELLED: \$\{\{ job\.status == 'cancelled' \}\}/,
+    );
+  },
+);

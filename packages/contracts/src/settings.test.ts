@@ -546,6 +546,11 @@ describe("voice settings", () => {
     expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain("speechProjectCustomWords");
   });
 
+  it("keeps Jones defaults for linked environments and auto-settle", () => {
+    expect(decodeServerSettings({}).linkedEnvironmentsEnabled).toBe(true);
+    expect(DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays).toBe(3);
+  });
+
   it("stores the transcription model and resources on the environment", () => {
     expect(DEFAULT_SERVER_SETTINGS).toMatchObject({
       speechModelId: "handy-computer/parakeet-unified-en-0.6b-gguf",

@@ -896,6 +896,11 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly interruptTurn: (
     input: ProviderAdapterV2InterruptInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Whether this runtime is executing the turn now. False is positive evidence that the turn
+   * ended here or never started; a runtime without the probe leaves the question unknown.
+   */
+  readonly isTurnActive?: (providerTurnId: ProviderTurnId) => Effect.Effect<boolean>;
   readonly stopSubagent?: (input: {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly nativeTaskId: string;

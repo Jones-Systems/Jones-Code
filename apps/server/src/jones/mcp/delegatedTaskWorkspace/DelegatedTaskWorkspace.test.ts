@@ -68,7 +68,6 @@ describe("explicit delegated task workspace", () => {
       for (const isolation of [undefined, "shared", "worktree"] as const) {
         const resolved = yield* resolveExplicitDelegatedTaskWorkspace({
           request: isolation === undefined ? {} : { isolation },
-          isRetryOfAcceptedDelegation: false,
           project: Effect.die("project is not needed"),
           git: unusedGit,
           launches: unusedLaunches,
@@ -78,35 +77,32 @@ describe("explicit delegated task workspace", () => {
     }),
   );
 
-  it.effect("refuses isolation with workspaceStrategy, including on a replayed request", () =>
+  it.effect("refuses isolation with workspaceStrategy", () =>
     Effect.gen(function* () {
-      for (const isRetryOfAcceptedDelegation of [false, true]) {
-        const error = yield* resolveExplicitDelegatedTaskWorkspace({
-          request: {
-            isolation: "worktree",
-            workspaceStrategy: { type: "worktree", baseRef: "main" },
-          },
-          isRetryOfAcceptedDelegation,
-          project: Effect.die("project is not needed"),
-          git: unusedGit,
-          launches: unusedLaunches,
-        }).pipe(Effect.flip);
-        assert.equal(error.code, "invalid_request");
-        assert.include(error.message, "not both");
-      }
-    }),
-  );
-
-  it.effect("replays an accepted delegation without validating its workspace again", () =>
-    Effect.gen(function* () {
-      const resolved = yield* resolveExplicitDelegatedTaskWorkspace({
-        request: { workspaceStrategy: { type: "existing_worktree", worktreePath: "/gone" } },
-        isRetryOfAcceptedDelegation: true,
+      const error = yield* resolveExplicitDelegatedTaskWorkspace({
+        request: {
+          isolation: "worktree",
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+        },
         project: Effect.die("project is not needed"),
         git: unusedGit,
         launches: unusedLaunches,
-      });
-      assert.isUndefined(resolved);
+      }).pipe(Effect.flip);
+      assert.equal(error.code, "invalid_request");
+      assert.include(error.message, "not both");
+    }),
+  );
+
+  it.effect("refuses an existing worktree that the project does not list", () =>
+    Effect.gen(function* () {
+      const refused = yield* resolveExplicitDelegatedTaskWorkspace({
+        request: { workspaceStrategy: { type: "existing_worktree", worktreePath: "/gone" } },
+        project: Effect.succeed(project),
+        git: { listWorktreePaths: () => Effect.succeed(["/repo"]) },
+        launches: unusedLaunches,
+      }).pipe(Effect.flip);
+      assert.equal(refused.code, "invalid_request");
+      assert.include(refused.message, "must be one of the git worktrees");
     }),
   );
 
@@ -125,7 +121,6 @@ describe("explicit delegated task workspace", () => {
             branch: "work/lane",
           },
         },
-        isRetryOfAcceptedDelegation: false,
         project: Effect.succeed(project),
         git: { listWorktreePaths },
         launches: unusedLaunches,
@@ -137,7 +132,6 @@ describe("explicit delegated task workspace", () => {
       });
       const foreign = yield* resolveExplicitDelegatedTaskWorkspace({
         request: { workspaceStrategy: { type: "existing_worktree", worktreePath: "/other/repo" } },
-        isRetryOfAcceptedDelegation: false,
         project: Effect.succeed(project),
         git: { listWorktreePaths },
         launches: unusedLaunches,
@@ -148,7 +142,6 @@ describe("explicit delegated task workspace", () => {
         request: {
           workspaceStrategy: { type: "existing_worktree", worktreePath: "/repo-worktrees/lane" },
         },
-        isRetryOfAcceptedDelegation: false,
         project: Effect.succeed(project),
         git: {
           listWorktreePaths: () =>
@@ -163,7 +156,12 @@ describe("explicit delegated task workspace", () => {
         },
         launches: unusedLaunches,
       }).pipe(Effect.flip);
-      assert.equal(unlisted.code, "invalid_request");
+      // The git failure is named; it is not misreported as a path that is not a worktree.
+      assert.equal(unlisted.code, "orchestration_error");
+      assert.include(unlisted.message, "Could not list the git worktrees");
+      assert.include(unlisted.message, "not a repository");
+      assert.include(unlisted.message, "No task was created");
+      assert.notInclude(unlisted.message, "must be one of the git worktrees");
     }),
   );
 
@@ -187,7 +185,6 @@ describe("explicit delegated task workspace", () => {
         request: {
           workspaceStrategy: { type: "worktree", baseRef: "feature/base", branch: "feature/lane" },
         },
-        isRetryOfAcceptedDelegation: false,
         project: Effect.succeed(project),
         git: unusedGit,
         launches: { checkWorktreeBase },
@@ -200,7 +197,6 @@ describe("explicit delegated task workspace", () => {
       assert.equal(checkWorktreeBase.mock.calls[0]?.[0].projectId, projectId);
       const missing = yield* resolveExplicitDelegatedTaskWorkspace({
         request: { workspaceStrategy: { type: "worktree", baseRef: "missing" } },
-        isRetryOfAcceptedDelegation: false,
         project: Effect.succeed(project),
         git: unusedGit,
         launches: { checkWorktreeBase },
@@ -224,7 +220,6 @@ describe("delegated task project", () => {
         const resolved = yield* resolveDelegatedTaskProject({
           request,
           parentProjectId: projectId,
-          isRetryOfAcceptedDelegation: false,
           loadProject: unusedLoad,
         });
         assert.deepEqual(resolved, { projectId, commandProjectId: undefined });
@@ -232,27 +227,23 @@ describe("delegated task project", () => {
     }),
   );
 
-  it.effect("requires an explicit workspace for another project, even on replay", () =>
+  it.effect("requires an explicit workspace for another project", () =>
     Effect.gen(function* () {
-      for (const isRetryOfAcceptedDelegation of [false, true]) {
-        const error = yield* resolveDelegatedTaskProject({
-          request: { projectId: otherProjectId },
-          parentProjectId: projectId,
-          isRetryOfAcceptedDelegation,
-          loadProject: unusedLoad,
-        }).pipe(Effect.flip);
-        assert.equal(error.code, "invalid_request");
-        assert.include(error.message, "workspaceStrategy");
-      }
+      const error = yield* resolveDelegatedTaskProject({
+        request: { projectId: otherProjectId },
+        parentProjectId: projectId,
+        loadProject: unusedLoad,
+      }).pipe(Effect.flip);
+      assert.equal(error.code, "invalid_request");
+      assert.include(error.message, "workspaceStrategy");
     }),
   );
 
-  it.effect("rejects missing and deleted projects but replays an accepted one unread", () =>
+  it.effect("rejects missing and deleted projects and resolves an existing one", () =>
     Effect.gen(function* () {
       const missing = yield* resolveDelegatedTaskProject({
         request: { projectId: otherProjectId, workspaceStrategy: strategy },
         parentProjectId: projectId,
-        isRetryOfAcceptedDelegation: false,
         loadProject: (id) =>
           Effect.fail(
             new OrchestratorMcpFailure({
@@ -265,24 +256,15 @@ describe("delegated task project", () => {
       const deleted = yield* resolveDelegatedTaskProject({
         request: { projectId: otherProjectId, workspaceStrategy: strategy },
         parentProjectId: projectId,
-        isRetryOfAcceptedDelegation: false,
         loadProject: () => Effect.succeed({ deletedAt: "2026-10-20T00:00:00.000Z" }),
       }).pipe(Effect.flip);
       assert.include(deleted.message, "was deleted");
       const accepted = yield* resolveDelegatedTaskProject({
         request: { projectId: otherProjectId, workspaceStrategy: strategy },
         parentProjectId: projectId,
-        isRetryOfAcceptedDelegation: false,
         loadProject: () => Effect.succeed({ deletedAt: null }),
       });
       assert.deepEqual(accepted, { projectId: otherProjectId, commandProjectId: otherProjectId });
-      const replayed = yield* resolveDelegatedTaskProject({
-        request: { projectId: otherProjectId, workspaceStrategy: strategy },
-        parentProjectId: projectId,
-        isRetryOfAcceptedDelegation: true,
-        loadProject: unusedLoad,
-      });
-      assert.deepEqual(replayed, accepted);
     }),
   );
 });

@@ -11,6 +11,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
+import * as UpdateAdmission from "../jones/updates/UpdateAdmissionFence.ts";
+
 import packageJson from "../../package.json" with { type: "json" };
 import {
   assertQualifiedTrialBinding,
@@ -82,6 +84,9 @@ export class ServiceLauncherRejectedError extends Schema.TaggedError<ServiceLaun
     return this.reason;
   }
 }
+
+const isServiceLauncherRejected = Schema.is(ServiceLauncherRejectedError);
+const isUpdateAdmissionBusy = Schema.is(UpdateAdmission.UpdateAdmissionBusy);
 
 interface ServiceLauncherProcess {
   readonly connected: boolean;
@@ -265,6 +270,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
 }) {
   const { host, context, managed } = yield* resolveStartup(options);
   const qualifiedOperations = yield* QualifiedTrialOperations;
+  const updateAdmission = yield* UpdateAdmission.UpdateAdmissionFence;
 
   const exchange = (
     message: ServiceLauncherChildMessage,
@@ -379,7 +385,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
           recoveryPolicies.delete(operationId);
         }),
     );
-  const requestUpdate = (input: {
+  const requestUpdateUnfenced = (input: {
     readonly targetVersion: string;
     readonly dbPath: string;
     readonly stagedHandle?: string;
@@ -479,6 +485,17 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
                   ),
                 );
     });
+
+  const requestUpdate: ServiceLauncherClient["Service"]["requestUpdate"] = (input) =>
+    updateAdmission
+      .withLauncherHandoff(requestUpdateUnfenced(input), isServiceLauncherRejected)
+      .pipe(
+        Effect.mapError((error) =>
+          isUpdateAdmissionBusy(error)
+            ? new ServiceLauncherClientError({ operation: "unmanaged", cause: error })
+            : error,
+        ),
+      );
 
   const pending = context?.update?.status === "pending" ? context.update : undefined;
   let outcome: ServerSelfUpdateOutcome | undefined =

@@ -45,6 +45,88 @@ function snapshot(
   };
 }
 describe("mobile registry projection", () => {
+  it("separates native home generations while merging members of one registry", () => {
+    const native = (server_generation: number) => ({
+      contract: "workstreams-native/1.0.0" as const,
+      mode: "native-member" as const,
+      home_link: "ok" as const,
+      reads: ["workstreams-read/1.0.0" as const],
+      placement_proofs: ["workstreams-t3-placement/1.0.0" as const],
+      registry: {
+        registry_instance_id: "8cdd84b6-81c5-4c88-9d13-5d324abaf662",
+        owner_id: data.binding.ownerId,
+        canonical_origin: data.binding.registryId,
+        home_environment_id: "env:home",
+        server_generation,
+      },
+    });
+    const a = snapshot("env:a", { nativeCapability: native(data.binding.serverGeneration) });
+    const b = snapshot("env:b", { nativeCapability: native(data.binding.serverGeneration) });
+    const same = projectMobileWorkstreams(
+      [a, b],
+      [thread, { ...thread, environmentId: "env:b" }],
+      now,
+    );
+    expect(same.groups).toHaveLength(data.items.length);
+    const restored = snapshot("env:b", {
+      nativeCapability: native(data.binding.serverGeneration + 1),
+      data: {
+        ...data,
+        binding: { ...data.binding, serverGeneration: data.binding.serverGeneration + 1 },
+      },
+      placements: {
+        ...b.placements!,
+        context: { ...b.placements!.context, server_generation: data.binding.serverGeneration + 1 },
+      },
+    });
+    const different = projectMobileWorkstreams(
+      [a, restored],
+      [thread, { ...thread, environmentId: "env:b" }],
+      now,
+    );
+    expect(different.groups).toHaveLength(data.items.length * 2);
+    expect(new Set(different.groups.map((group) => group.key)).size).toBe(data.items.length * 2);
+    expect(
+      projectMobileWorkstreams(
+        [{ ...a, nativeCapability: native(data.binding.serverGeneration + 1) }],
+        [thread],
+        now,
+      ).groups,
+    ).toEqual([]);
+  });
+  it("hides transition-fenced projections and keeps offline member data stale", () => {
+    const a = snapshot("env:a");
+    const registry = {
+      registry_instance_id: "8cdd84b6-81c5-4c88-9d13-5d324abaf662",
+      owner_id: data.binding.ownerId,
+      canonical_origin: data.binding.registryId,
+      home_environment_id: "env:home",
+      server_generation: data.binding.serverGeneration,
+    };
+    const capability = {
+      contract: "workstreams-native/1.0.0" as const,
+      mode: "transition-fenced" as const,
+      registry,
+      reads: ["workstreams-read/1.0.0" as const],
+      placement_proofs: ["workstreams-t3-placement/1.0.0" as const],
+    };
+    expect(
+      projectMobileWorkstreams([{ ...a, nativeCapability: capability }], [thread], now).groups,
+    ).toEqual([]);
+    expect(
+      projectMobileWorkstreams(
+        [
+          {
+            ...a,
+            nativeCapability: { ...capability, mode: "native-member", home_link: "expired" },
+          },
+        ],
+        [thread],
+        now,
+      ).stale,
+    ).toBe(true);
+  });
+
   it("keeps in-flight authority valid across appearance-only refreshes and rejects replaced core state", () => {
     const original = snapshot("env:a");
     const appearanceOnly = {

@@ -43,6 +43,12 @@ export function providerUpdatePresentationAttempt(
   return candidates.some((candidate) => !captured.has(basis(candidate))) ? undefined : attempt;
 }
 
+// The server bounds one provider update at 30 minutes (5 minutes before the upstream
+// import). This client bound only recovers from a lost response, so it must stay above
+// the server bound: otherwise a still-running update is declared failed and its real
+// result discarded as stale. It is a recovery bound, not a progress estimate.
+export const PROVIDER_UPDATE_CLIENT_TIMEOUT_MS = 35 * 60_000;
+
 type Update = (input: {
   environmentId: EnvironmentId;
   input: { provider: ServerProvider["driver"]; instanceId: ServerProvider["instanceId"] };
@@ -130,25 +136,22 @@ export function createProviderUpdateController(deps: {
       publish(machine.environmentId, { ...attempt, phase, runs, message });
       resolve(runs);
     };
-    const timeout = setTimeout(
-      () => {
-        if (!isCurrent()) return;
-        const completed = snapshot.get(machine.environmentId)?.runs ?? [];
-        const done = new Set(completed.map((run) => run.instanceId));
-        finish(
-          [
-            ...completed,
-            ...machine.candidates
-              .filter((candidate) => !done.has(candidate.instanceId))
-              .map((candidate) =>
-                failed(machine, candidate, "Provider update timed out; its result is unknown."),
-              ),
-          ],
-          true,
-        );
-      },
-      deps.timeoutMs ?? 6 * 60_000,
-    );
+    const timeout = setTimeout(() => {
+      if (!isCurrent()) return;
+      const completed = snapshot.get(machine.environmentId)?.runs ?? [];
+      const done = new Set(completed.map((run) => run.instanceId));
+      finish(
+        [
+          ...completed,
+          ...machine.candidates
+            .filter((candidate) => !done.has(candidate.instanceId))
+            .map((candidate) =>
+              failed(machine, candidate, "Provider update timed out; its result is unknown."),
+            ),
+        ],
+        true,
+      );
+    }, deps.timeoutMs ?? PROVIDER_UPDATE_CLIENT_TIMEOUT_MS);
     void Promise.all(
       machine.candidates.map(async (candidate): Promise<ProviderUpdateRun> => {
         let run: ProviderUpdateRun;

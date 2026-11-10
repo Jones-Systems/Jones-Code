@@ -9,6 +9,7 @@ import * as Path from "effect/Path";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { withFiniteProduction } from "../../../scripts/jones/direct-producers/finite-production.ts";
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
 import { injectLinuxArm64Sea } from "../../../scripts/lib/linux-arm64-sea.ts";
@@ -79,26 +80,40 @@ const buildCmd = Command.make(
       const repoRoot = yield* RepoRoot;
       const serverDir = path.join(repoRoot, "apps/server");
 
-      yield* Effect.log("[cli] Running tsdown...");
-      yield* runCommand(
-        ChildProcess.make(process.execPath, ["--run", "build:bundle"], {
-          cwd: serverDir,
-          stdout: config.verbose ? "inherit" : "ignore",
-          stderr: "inherit",
-          shell: false,
-        }),
+      return yield* withFiniteProduction(
+        { producer: "jones-server-build", worktree: repoRoot, root: path.join(serverDir, "dist") },
+        (evidence) =>
+          Effect.gen(function* () {
+            yield* Effect.log("[cli] Running tsdown...");
+            yield* Effect.sync(evidence.commandStarted);
+            yield* runCommand(
+              ChildProcess.make(process.execPath, ["--run", "build:bundle"], {
+                cwd: serverDir,
+                stdout: config.verbose ? "inherit" : "ignore",
+                stderr: "inherit",
+                shell: false,
+              }),
+            ).pipe(
+              Effect.tap(() => Effect.sync(evidence.leaderExited)),
+              Effect.tapError((error) =>
+                error._tag === "ServerCliCommandExitError"
+                  ? Effect.sync(evidence.leaderExited)
+                  : Effect.void,
+              ),
+            );
+
+            const webDist = path.join(repoRoot, "apps/web/dist");
+            const clientTarget = path.join(serverDir, "dist/client");
+
+            if (yield* fs.exists(webDist)) {
+              yield* fs.copy(webDist, clientTarget);
+              yield* applyDevelopmentIconOverrides(repoRoot, serverDir);
+              yield* Effect.log("[cli] Bundled web app into dist/client");
+            } else {
+              yield* Effect.logWarning("[cli] Web dist not found. Skipping client bundle.");
+            }
+          }),
       );
-
-      const webDist = path.join(repoRoot, "apps/web/dist");
-      const clientTarget = path.join(serverDir, "dist/client");
-
-      if (yield* fs.exists(webDist)) {
-        yield* fs.copy(webDist, clientTarget);
-        yield* applyDevelopmentIconOverrides(repoRoot, serverDir);
-        yield* Effect.log("[cli] Bundled web app into dist/client");
-      } else {
-        yield* Effect.logWarning("[cli] Web dist not found. Skipping client bundle.");
-      }
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
 
@@ -120,63 +135,85 @@ const buildExeCmd = Command.make(
       const repoRoot = yield* RepoRoot;
       const serverDir = path.join(repoRoot, "apps/server");
 
-      yield* Effect.log("[cli] Building single-executable...");
-      const target = Option.getOrUndefined(config.target);
-      // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
-      const linuxArm64 =
-        !target &&
-        (yield* HostProcess.Platform) === "linux" &&
-        (yield* HostProcess.Architecture) === "arm64";
-      const spawnCommand = yield* resolveSpawnCommand("vp", ["pack"]);
-      const cliAssetDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-asset-" });
-      const pack = (packMode: "bundle" | "bootstrap" | "1") =>
-        runCommand(
-          ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-            cwd: serverDir,
-            env: {
-              ...process.env,
-              T3CODE_PACK_EXE: packMode,
-              T3CODE_CLI_ASSET_DIR: cliAssetDir,
-              T3CODE_PACK_EXE_TARGET: target ?? "",
-            },
-            stdout: config.verbose ? "inherit" : "ignore",
-            stderr: "inherit",
-            shell: spawnCommand.shell,
+      return yield* withFiniteProduction(
+        {
+          producer: "jones-server-build-exe",
+          worktree: repoRoot,
+          root: path.join(serverDir, "dist-exe"),
+        },
+        (evidence) =>
+          Effect.gen(function* () {
+            yield* Effect.log("[cli] Building single-executable...");
+            const target = Option.getOrUndefined(config.target);
+            // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
+            const linuxArm64 =
+              !target &&
+              (yield* HostProcess.Platform) === "linux" &&
+              (yield* HostProcess.Architecture) === "arm64";
+            const spawnCommand = yield* resolveSpawnCommand("vp", ["pack"]);
+            const cliAssetDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-asset-" });
+            // The finite-production evidence tracks the leader: it exited only after the last pack
+            // (or after a failed one, which stops the sequence), never between the two packs.
+            const pack = (packMode: "bundle" | "bootstrap" | "1", last: boolean) =>
+              runCommand(
+                ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+                  cwd: serverDir,
+                  env: {
+                    ...process.env,
+                    T3CODE_PACK_EXE: packMode,
+                    T3CODE_CLI_ASSET_DIR: cliAssetDir,
+                    T3CODE_PACK_EXE_TARGET: target ?? "",
+                  },
+                  stdout: config.verbose ? "inherit" : "ignore",
+                  stderr: "inherit",
+                  shell: spawnCommand.shell,
+                }),
+              ).pipe(
+                Effect.tap(() => (last ? Effect.sync(evidence.leaderExited) : Effect.void)),
+                Effect.tapError((error) =>
+                  error._tag === "ServerCliCommandExitError"
+                    ? Effect.sync(evidence.leaderExited)
+                    : Effect.void,
+                ),
+              );
+
+            yield* Effect.sync(evidence.commandStarted);
+            yield* pack("bundle", false);
+            const cliMainPath = path.join(cliAssetDir, "binMain.mjs");
+            yield* pack(linuxArm64 ? "bootstrap" : "1", true);
+
+            // Executables reject non-builtin imports even when bundling succeeds; inspect the emitted graph.
+            const bootstrapPath = path.join(serverDir, "dist-exe/bin.mjs");
+            for (const bundlePath of [bootstrapPath, cliMainPath]) {
+              const specifiers = findEsmImportsOfExternalPackages(
+                yield* fs.readFileString(bundlePath),
+              );
+              if (specifiers.length > 0) {
+                return yield* new ServerCliExecutableImportError({ bundlePath, specifiers });
+              }
+            }
+            // The service launcher's memory win depends on the CLI staying out of the bootstrap.
+            const bootstrapBytes = (yield* fs.stat(bootstrapPath)).size;
+            if (bootstrapBytes > 1024 * 1024) {
+              return yield* new ServerCliBootstrapTooLargeError({
+                bootstrapPath,
+                bytes: Number(bootstrapBytes),
+              });
+            }
+            // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
+            if (linuxArm64) {
+              yield* injectLinuxArm64Sea({
+                bundlePath: bootstrapPath,
+                cliAssetPath: cliMainPath,
+                outputPath: path.join(serverDir, "dist-exe/t3"),
+                nodeVersion: rootPackageJson.engines.node,
+                verbose: config.verbose,
+              });
+            }
+            yield* Effect.log(
+              "[cli] Built dist-exe/t3 (expects client/, resource-monitor/, and the runtime-external node_modules beside it; scripts/build-cli-archive.ts assembles that tree)",
+            );
           }),
-        );
-
-      yield* pack("bundle");
-      const cliMainPath = path.join(cliAssetDir, "binMain.mjs");
-      yield* pack(linuxArm64 ? "bootstrap" : "1");
-
-      // Executables reject non-builtin imports even when bundling succeeds; inspect the emitted graph.
-      const bootstrapPath = path.join(serverDir, "dist-exe/bin.mjs");
-      for (const bundlePath of [bootstrapPath, cliMainPath]) {
-        const specifiers = findEsmImportsOfExternalPackages(yield* fs.readFileString(bundlePath));
-        if (specifiers.length > 0) {
-          return yield* new ServerCliExecutableImportError({ bundlePath, specifiers });
-        }
-      }
-      // The service launcher's memory win depends on the CLI staying out of the bootstrap.
-      const bootstrapBytes = (yield* fs.stat(bootstrapPath)).size;
-      if (bootstrapBytes > 1024 * 1024) {
-        return yield* new ServerCliBootstrapTooLargeError({
-          bootstrapPath,
-          bytes: Number(bootstrapBytes),
-        });
-      }
-      // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
-      if (linuxArm64) {
-        yield* injectLinuxArm64Sea({
-          bundlePath: bootstrapPath,
-          cliAssetPath: cliMainPath,
-          outputPath: path.join(serverDir, "dist-exe/t3"),
-          nodeVersion: rootPackageJson.engines.node,
-          verbose: config.verbose,
-        });
-      }
-      yield* Effect.log(
-        "[cli] Built dist-exe/t3 (expects client/, resource-monitor/, and the runtime-external node_modules beside it; scripts/build-cli-archive.ts assembles that tree)",
       );
     }),
 ).pipe(

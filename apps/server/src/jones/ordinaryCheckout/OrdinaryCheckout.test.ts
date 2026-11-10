@@ -26,6 +26,10 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import { runMigrations } from "../../persistence/Migrations.ts";
 import {
+  insertTestEvent,
+  pruneEventLogLikeUpstream,
+} from "../persistence/prunedEventLog.testkit.ts";
+import {
   associationId,
   canonical,
   CheckoutError,
@@ -578,6 +582,47 @@ it.effect("pruned effects are absent to consumers but retain ordinary exclusion 
       yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE effect_id='effect'`;
       assert.deepEqual(yield* checkout.readEffect("effect"), []);
       assert.strictEqual((yield* checkout.readConflict("/repo"))[0]!.checkoutKey, "/repo");
+    }),
+  ),
+);
+it.effect(
+  "an admission whose basis event was pruned from the event log is unavailable, not executable",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const { checkout, use } = yield* started;
+        // A later event becomes the thread's stream head, so upstream's pruner may drop the basis.
+        yield* insertTestEvent({
+          sequence: 3,
+          eventId: "later",
+          streamId: "thread",
+          type: "thread.test",
+        });
+        assert.deepEqual(yield* pruneEventLogLikeUpstream(2), [2]);
+        assert.strictEqual(yield* checkout.readAdmission("admission"), null);
+        assert.deepEqual(yield* checkout.readEffect("effect"), []);
+        const renewal = yield* checkout
+          .renew({
+            target,
+            binding,
+            evidence: evidence("active", later),
+            expectedRevision: use.revision,
+            expectedOwnerRevision: 0,
+            expiresAt: later,
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(renewal.reason, "unavailable");
+        // The ownership row is Jones's own capture, so exclusion history survives the pruning.
+        assert.strictEqual((yield* checkout.readConflict("/repo"))[0]!.checkoutKey, "/repo");
+      }),
+    ),
+);
+it.effect("an admission whose basis event is the retained stream head stays executable", () =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* reserved;
+      assert.deepEqual(yield* pruneEventLogLikeUpstream(2), []);
+      assert.strictEqual((yield* checkout.readAdmission("admission"))?.basis_sequence, 2);
     }),
   ),
 );

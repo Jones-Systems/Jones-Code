@@ -976,7 +976,39 @@ export const layer: Layer.Layer<
             effects: finalization.effects,
           });
           if (!result.committed) {
-            return;
+            // Jones: a terminal whose provider thread lost its producer evidence still settles
+            // its own current run. The same run check makes a second settlement impossible, and
+            // the turn is written here because its own guarded update was rejected the same way.
+            if (input.terminal.runtimeEvidence === undefined) return;
+            const settled = yield* eventSink.writeIfRunCurrent({
+              runtimeEvidence: input.terminal.runtimeEvidence,
+              settleRunOnLostRuntimeEvidence: true,
+              threadId: input.run.threadId,
+              runId: input.run.id,
+              activeAttemptId: input.writeIfRunCurrent.activeAttemptId,
+              expectedStatus: input.writeIfRunCurrent.expectedStatus,
+              events:
+                input.persistProviderTurn !== false ||
+                providerSettlement === null ||
+                input.terminal.providerTurn === undefined
+                  ? finalization.events
+                  : [
+                      {
+                        id: yield* allocateEventId(),
+                        type: "provider-turn.updated" as const,
+                        threadId: input.run.threadId,
+                        runId: input.run.id,
+                        nodeId: input.rootNode.id,
+                        providerInstanceId: input.run.providerInstanceId,
+                        driver: input.terminal.driver,
+                        occurredAt: completedAt,
+                        payload: input.terminal.providerTurn,
+                      },
+                      ...finalization.events,
+                    ],
+              effects: finalization.effects,
+            });
+            if (!settled.committed) return;
           }
         } else {
           yield* eventSink.writeWithEffects(finalization);

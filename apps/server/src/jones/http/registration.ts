@@ -23,6 +23,7 @@ export const provideConversationAndVoiceReview = <A, E, R>(api: Layer.Layer<A, E
   api.pipe(
     Layer.provide(voiceReviewResponseHeadersLayer),
     Layer.provide(settlementOriginsHttpApiLayer.pipe(Layer.provide(SettlementOrigins.layer))),
+    Layer.provide(SettlementOrigins.retentionLayer),
     Layer.provide(
       settlementRestoreHttpApiLayer.pipe(
         Layer.provide(SettlementRestore.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),

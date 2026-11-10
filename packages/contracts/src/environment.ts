@@ -1,6 +1,10 @@
+import { LegacyReconciliationCapability } from "./jones/workstreamsLegacyReconciliation.ts";
+import { WorkstreamsLegacyReceiptCapability } from "./jones/workstreamsLegacyReceipts.ts";
+import { WorkstreamsNativeCapability } from "./jones/workstreamsNative.ts";
 import { ThreadMonitorGuardedSettleCapability } from "./jones/guardedThreadSettlement.ts";
 import { LinkedThreadsCapability } from "./jones/linkedThreadsCapability.ts";
 import { WORKSTREAM_OPERATIONS_CONTRACT } from "./jones/workstreamOperations.ts";
+import { WORKSTREAMS_PEER_SETUP_CONTRACT } from "./jones/workstreamsPeerSetup.ts";
 import { QueuedSteerBatchCapability } from "./jones/queuedSteerBatch.ts";
 import { ThreadAttentionCapability } from "./jones/threadAttention.ts";
 import { SettlementOriginsCapability } from "./jones/settlementOrigins.ts";
@@ -108,6 +112,12 @@ export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct
 export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  workstreamsLegacyReconciliation: Schema.optionalKey(LegacyReconciliationCapability),
+  workstreamsLegacyReceipts: Schema.optionalKey(WorkstreamsLegacyReceiptCapability),
+  workstreamsNative: Schema.optionalKey(WorkstreamsNativeCapability),
+  workstreamsPeerSetup: Schema.optionalKey(
+    Schema.Struct({ contract: Schema.Literal(WORKSTREAMS_PEER_SETUP_CONTRACT) }),
+  ),
   workstreamOperations: Schema.optionalKey(
     Schema.Struct({ contract: Schema.Literal(WORKSTREAM_OPERATIONS_CONTRACT) }),
   ),

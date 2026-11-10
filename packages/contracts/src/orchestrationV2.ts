@@ -3733,6 +3733,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
     providerTurnId: ProviderTurnId,
     /** Replaces the Stop's own reason on the result, as Force stop does. */
     reason: Schema.optional(Schema.String),
+    /** Settles only the stopped turn's still-running run; background work is left as recorded. */
+    runOnly: Schema.optional(Schema.Boolean),
     subagent: Schema.optional(
       Schema.Struct({
         id: NodeId,

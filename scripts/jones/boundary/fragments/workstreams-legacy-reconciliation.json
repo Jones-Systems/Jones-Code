@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workstreams-legacy-reconciliation",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/workstreamsLegacyReconciliation.ts"
+    }
+  ]
+}

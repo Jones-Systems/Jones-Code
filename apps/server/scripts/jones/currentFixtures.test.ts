@@ -198,10 +198,17 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 137, name: "NativeCreationLeaseRenewal" },
           { id: 138, name: "WorkspaceRetirement" },
           { id: 139, name: "ConversationWorkspace" },
-          { id: 140, name: "NativeExecutionProcessCustody" },
-          { id: 141, name: "OrdinaryCheckoutProcessCustody" },
-          { id: 142, name: "AuthSessionClientMetadata" },
-          { id: 143, name: "WorkspaceRuntimeUses" },
+          { id: 140, name: "WorkstreamsNative" },
+          { id: 141, name: "WorkstreamsSourceEnrollments" },
+          { id: 142, name: "WorkstreamsRollupAttempts" },
+          { id: 143, name: "WorkstreamsPeerSessionPins" },
+          { id: 144, name: "WorkstreamsMemberBindings" },
+          { id: 145, name: "WorkstreamsForwardReceipts" },
+          { id: 146, name: "SettlementOriginRetention" },
+          { id: 147, name: "NativeExecutionProcessCustody" },
+          { id: 148, name: "OrdinaryCheckoutProcessCustody" },
+          { id: 149, name: "AuthSessionClientMetadata" },
+          { id: 150, name: "WorkspaceRuntimeUses" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

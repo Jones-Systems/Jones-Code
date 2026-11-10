@@ -442,7 +442,7 @@ describe("jones-sqlite-health — closed fixture integration", () => {
     });
   });
 
-  it("uses the receiving V2 offline DELETE producer with separate custody and release pins and refuses a raw report", async () => {
+  it("uses the receiving V2 offline DELETE producer with bounded metadata, separate pins and raw-report refusal", async () => {
     const databaseSource = currentDatabaseSource(worktreePath);
     const binding: PerformanceBinding = {
       repository: "Jones-Systems/Jones-Code",

@@ -22,6 +22,7 @@ export const layer = Layer.merge(
           },
         }),
       resolve: () => Effect.undefined,
+      lookupByCredentialId: () => Effect.undefined,
       touch: () => Effect.void,
       revokeProviderSession: () => Effect.void,
       revokeThread: () => Effect.void,

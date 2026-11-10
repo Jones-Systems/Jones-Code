@@ -2607,7 +2607,6 @@ const make = Effect.gen(function* () {
         const childProject = yield* DelegatedTaskWorkspace.resolveDelegatedTaskProject({
           request: input,
           parentProjectId: parent.thread.projectId,
-          isRetryOfAcceptedDelegation: false,
           loadProject: requireProject,
         });
         const target = yield* resolveTargetRechecking({
@@ -2628,7 +2627,6 @@ const make = Effect.gen(function* () {
         let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined =
           yield* DelegatedTaskWorkspace.resolveExplicitDelegatedTaskWorkspace({
             request: input,
-            isRetryOfAcceptedDelegation: false,
             project: requireProject(childProject.projectId),
             git: gitDriver,
             launches: threadLaunch,

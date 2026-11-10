@@ -120,6 +120,7 @@ describe("browser API CORS", () => {
             "access-control-request-method": "GET",
             "access-control-request-headers": [
               ORCHESTRATION_PROTOCOL_HEADER,
+              "x-t3-workstreams-response-contract",
               "authorization",
               "dpop",
             ].join(", "),
@@ -135,6 +136,7 @@ describe("browser API CORS", () => {
           .map((header) => header.trim().toLowerCase()),
       );
       expect(allowedHeaders.has(ORCHESTRATION_PROTOCOL_HEADER)).toBe(true);
+      expect(allowedHeaders.has("x-t3-workstreams-response-contract")).toBe(true);
       expect(allowedHeaders.has("authorization")).toBe(true);
       expect(allowedHeaders.has("dpop")).toBe(true);
       const readResponse = await handler(

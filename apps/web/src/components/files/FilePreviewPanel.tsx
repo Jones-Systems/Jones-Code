@@ -169,7 +169,7 @@ type FilePostRender = <LAnnotation>(
   phase: PostRenderPhase,
 ) => void;
 
-export function WorkspaceImagePreview(props: {
+function WorkspaceImagePreview(props: {
   readonly environmentId: EnvironmentId;
   readonly threadRef: ScopedThreadRef;
   readonly draft: boolean;

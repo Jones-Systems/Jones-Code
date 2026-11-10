@@ -141,7 +141,7 @@ export function buildMonitorCohort(
             : thread.status === "waiting"
               ? "checkpoint"
               : "working";
-      } else if (background || goal) {
+      } else if (background || (goal && thread.status !== "failed")) {
         group = "waiting";
         status = "waiting";
       } else if (thread.status === "failed") {

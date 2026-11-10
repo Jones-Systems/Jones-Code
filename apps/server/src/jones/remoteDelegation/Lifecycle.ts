@@ -8,12 +8,9 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
-import * as Semaphore from "effect/Semaphore";
 import type { McpThreadInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -22,14 +19,9 @@ import * as PeerLinks from "../../peer/PeerLinks.ts";
 import { LinkedRequestSentAtOverride } from "../peerTransport/LinkedRequestContext.ts";
 import * as IntentStore from "./IntentStore.ts";
 import * as ObservationSupport from "./ObservationSupport.ts";
+import { backoffSchedule, makeKeyedLock, terminalRetentionCutoff } from "./shared.ts";
 import { CancelRemoteAdmissionTool } from "../remoteAdmissionIntegration/tools.ts";
 
-const retry = Schedule.exponential(Duration.seconds(2)).pipe(
-  Schedule.modifyDelay(({ duration }) =>
-    Effect.succeed(Duration.min(duration, Duration.minutes(5))),
-  ),
-  Schedule.jittered,
-);
 // The synchronous submit attempt is excluded. Held approval polls never spend
 // this per-activation budget, and successful holds do not reset spent failures.
 const recoveryFailureBudget = 8;
@@ -68,17 +60,9 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
   const links = yield* PeerLinks.PeerLinks;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const scope = yield* Scope.Scope;
-  const locks = new Map<CommandId, Semaphore.Semaphore>();
   const recovering = new Set<CommandId>();
-  const locked = <A>(id: CommandId, effect: Effect.Effect<A, OrchestratorMcpFailure>) =>
-    Effect.suspend(() => {
-      let lock = locks.get(id);
-      if (lock === undefined) {
-        lock = Semaphore.makeUnsafe(1);
-        locks.set(id, lock);
-      }
-      return lock.withPermits(1)(effect);
-    });
+  // A command's lock is dropped once nobody holds or awaits it.
+  const { locked } = makeKeyedLock<CommandId>();
   const taskFor = (intent: IntentStore.Intent) =>
     threads.getThreadRecords(intent.envelope.request.parentThreadId, ["subagents"]).pipe(
       Effect.map(({ subagents }) => subagents.find((task) => task.id === intent.taskId)),
@@ -296,7 +280,7 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
             let failures = 0;
             return attempt(id).pipe(
               Effect.retry({
-                schedule: retry,
+                schedule: backoffSchedule,
                 while: (error) => heldAdmission(error) || ++failures < recoveryFailureBudget,
               }),
               Effect.catchTags({ OrchestratorMcpFailure: () => park(id) }),
@@ -384,7 +368,15 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
     submit,
     replay,
     cancelPending,
-    start: store.pending.pipe(
+    // Startup first drops long-finished intents, then resumes only the pending ones.
+    // A failed prune never blocks recovery.
+    start: terminalRetentionCutoff.pipe(
+      Effect.flatMap(store.pruneFinished),
+      Effect.catchTags({
+        OrchestratorMcpFailure: () =>
+          Effect.logWarning("Unable to prune finished remote delegation intents."),
+      }),
+      Effect.andThen(store.pending),
       Effect.flatMap((pending) =>
         Effect.forEach(pending, (intent) => activate(intent.commandId), { discard: true }),
       ),

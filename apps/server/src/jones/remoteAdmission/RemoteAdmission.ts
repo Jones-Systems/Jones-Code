@@ -3,6 +3,7 @@ import { admissionOperation } from "../threadResultDependencies/RemoteRequestPro
 import { makeDependencyStore } from "../threadResultDependencies/DependencyStore.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import * as DependencyChanges from "../threadResultDependencies/DependencyChanges.ts";
+import { canonicalJsonStrict as canonicalJson } from "../remoteDelegation/shared.ts";
 import * as Option from "effect/Option";
 import * as NodeCrypto from "node:crypto";
 import {
@@ -118,21 +119,7 @@ export class RemoteAdmission extends Context.Service<
   }
 >()("t3/jones/remoteAdmission/RemoteAdmission") {}
 
-const canonicalJson = (value: unknown): string => {
-  if (value === null || typeof value === "string" || typeof value === "boolean")
-    return JSON.stringify(value);
-  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    return `{${Object.keys(value)
-      .sort()
-      .map(
-        (key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`,
-      )
-      .join(",")}}`;
-  }
-  throw new Error("Admission input must be JSON");
-};
+// Digests use the strict canonical form: input JSON cannot represent is rejected, not dropped.
 const digest = (value: unknown) =>
   NodeCrypto.createHash("sha256").update(canonicalJson(value)).digest("hex");
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));

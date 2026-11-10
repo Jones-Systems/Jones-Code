@@ -95,7 +95,7 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
       assert.deepEqual(
-        yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=138 ORDER BY migration_id`,
+        yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id BETWEEN 138 AND 139 ORDER BY migration_id`,
         [
           { migration_id: 138, name: "WorkspaceRetirement" },
           { migration_id: 139, name: "ConversationWorkspace" },

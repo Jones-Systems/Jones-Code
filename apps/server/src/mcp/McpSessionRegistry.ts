@@ -31,6 +31,10 @@ export interface McpSessionRegistryShape {
   readonly resolve: (
     rawToken: string,
   ) => Effect.Effect<McpInvocationContext.McpThreadInvocationScope | undefined>;
+  /** Non-secret validity lookup. It neither renews liveness nor returns token hashes. */
+  readonly lookupByCredentialId: (
+    credentialId: string,
+  ) => Effect.Effect<McpInvocationContext.McpThreadInvocationScope | undefined>;
   readonly touch: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeProviderSession: (providerSessionId: string) => Effect.Effect<void>;
   readonly revokeThread: (threadId: ThreadId) => Effect.Effect<void>;
@@ -156,6 +160,19 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     },
   );
 
+  const lookupByCredentialId = Effect.fn("McpSessionRegistry.lookupByCredentialId")(function* (
+    id: string,
+  ) {
+    const timestamp = yield* currentTimeMillis;
+    const snapshot = yield* SynchronizedRef.get(state);
+    const found = [...snapshot.records.values()].filter(
+      (record) =>
+        record.scope.thread.providerSessionId === id &&
+        timestamp >= record.lastAliveAt &&
+        timestamp - record.lastAliveAt <= livenessWindowMs,
+    );
+    return found.length === 1 ? found[0]!.scope : undefined;
+  });
   const touch: McpSessionRegistryShape["touch"] = Effect.fn("McpSessionRegistry.touch")(
     function* (threadId) {
       const timestamp = yield* currentTimeMillis;
@@ -179,6 +196,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   return McpSessionRegistry.of({
     issue,
     resolve,
+    lookupByCredentialId,
     touch,
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {

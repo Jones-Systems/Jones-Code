@@ -24,6 +24,7 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import { vi } from "vite-plus/test";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
@@ -44,6 +45,17 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderCredentialStore from "../ProviderCredentialStore.ts";
 import * as ProviderHostLive from "../ProviderHostLive.ts";
+
+// Record the hooks each driver hands the orchestration adapter; the real adapter is still built.
+const adapterHooks = vi.hoisted((): Array<Record<string, unknown>> => []);
+vi.mock("../../orchestration-v2/Adapters/CodexAdapterV2.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof CodexAdapterV2>();
+  const createCodexAdapterV2: typeof actual.createCodexAdapterV2 = (input, hooks) => {
+    adapterHooks.push({ ...hooks });
+    return actual.createCodexAdapterV2(input, hooks);
+  };
+  return { ...actual, createCodexAdapterV2 };
+});
 
 const layerDeps = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-codex-driver-maintenance-",
@@ -395,6 +407,112 @@ it.layer(layerTest)("CodexDriver", (it) => {
   it.effect.each(["unchanged", "during-probe"] as const)(
     "managed catalog keeps its account label and token together: %s",
     checkManagedAccount,
+  );
+
+  // regression: managed Codex showed the catalog's default effort but, without a catalog hook,
+  // dispatched none. The adapter reads the hook at turn start, so it must see the live snapshot.
+  it.effect("managed Codex gives turn dispatch its live model catalog", () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("managed-dispatch-catalog");
+      const credentials = new Map<string, Uint8Array>();
+      const secrets = ServerSecretStore.ServerSecretStore.of({
+        get: (key) => Effect.sync(() => Option.fromUndefinedOr(credentials.get(key))),
+        set: (key, value) =>
+          Effect.sync(() => {
+            credentials.set(key, value);
+          }),
+        remove: (key) =>
+          Effect.sync(() => {
+            credentials.delete(key);
+          }),
+        create: () => Effect.die("unused"),
+        getOrCreateRandom: () => Effect.die("unused"),
+      });
+      yield* Effect.gen(function* () {
+        const store = yield* ProviderCredentialStore.make("codex-chatgpt", instanceId);
+        const json = yield* encodeCredentials({
+          clientId: "oaiapp_test",
+          accessToken: "dummy-owned-access",
+          refreshToken: "dummy-refresh",
+          expiresAt: Number.MAX_SAFE_INTEGER,
+          earliestRefreshAt: null,
+          scopes: ["chatgpt.tokens.use.direct"],
+          subject: "test-user",
+          email: "account@example.test",
+        });
+        yield* store.set(new TextEncoder().encode(json));
+        const executable = {
+          executablePath: "/user/bin/codex",
+          managedVersionDirectory: null,
+          source: "local" as const,
+          version: "0.156.1",
+        };
+        const installation = yield* CodexInstallation.CodexInstallation;
+        const sharedHome = NodePath.join(
+          (yield* ServerConfig.ServerConfig).stateDir,
+          "shared-codex-home",
+        );
+        const hooksBefore = adapterHooks.length;
+        const instance = yield* CodexDriver.create({
+          instanceId,
+          displayName: "Managed catalog",
+          enabled: true,
+          environment: [],
+          config: { ...CodexDriver.defaultConfig(), setupMode: "managed", homePath: sharedHome },
+        }).pipe(
+          Effect.provideService(
+            CodexInstallation.CodexInstallation,
+            CodexInstallation.CodexInstallation.of({
+              ...installation,
+              managedDirectory: "unused-managed-installation",
+              resolve: () => Effect.succeed(executable),
+              acquire: () => Effect.succeed(executable),
+            }),
+          ),
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              PlatformError.badArgument({
+                module: "ChildProcessSpawner",
+                method: "spawn",
+                description: "The fixture app-server is unavailable",
+              }),
+            ),
+          ),
+        );
+        expect(adapterHooks).toHaveLength(hooksBefore + 1);
+        const { getModelCatalog } = adapterHooks[hooksBefore] as {
+          readonly getModelCatalog?: Effect.Effect<ReadonlyArray<{ readonly slug: string }>>;
+        };
+        expect(getModelCatalog).toBeDefined();
+        const refreshed = yield* instance.snapshot.refresh;
+        expect(refreshed.models.map((model) => model.slug)).toEqual(["gpt-5.4"]);
+        expect(yield* getModelCatalog!).toEqual(refreshed.models);
+      }).pipe(
+        Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.sync(() =>
+              HttpClientResponse.fromWeb(
+                request,
+                request.url.endsWith("/models")
+                  ? Response.json({
+                      models: [{ slug: "gpt-5.4", display_name: "GPT-5.4", visibility: "list" }],
+                    })
+                  : Response.json({
+                      issuer: "https://auth.openai.com",
+                      authorization_endpoint: "https://auth.openai.com/api/accounts/authorize",
+                      token_endpoint: "https://auth.openai.com/api/accounts/oauth/token",
+                      jwks_uri: "https://auth.openai.com/jwks",
+                      revocation_endpoint: "https://auth.openai.com/revoke",
+                    }),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped),
   );
 
   it.effect.skipIf(windowsHost)(

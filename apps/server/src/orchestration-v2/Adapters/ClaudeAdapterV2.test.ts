@@ -11158,6 +11158,76 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("emits the awaited-task roster under the bound query and its runtime identity", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const awaitBackgroundTasks = harness.runtime.awaitBackgroundTasks;
+        if (awaitBackgroundTasks === undefined) {
+          throw new Error("Claude adapter runtime must expose awaitBackgroundTasks.");
+        }
+        const nextRosterUpdate = Effect.fn("nextRosterUpdate")(function* (
+          matches: (tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>) => boolean,
+        ) {
+          while (true) {
+            const update = yield* Queue.take(harness.providerThreadReceipts);
+            if (matches(update.providerThread.pendingBackgroundTasks ?? [])) return update;
+          }
+        });
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-awaited-roster-evidence"),
+            text: "Run the tests in the background.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "background_tasks_changed",
+            tasks: [{ task_id: WAKE_TASK_ID, task_type: "local_bash", description: "tests" }],
+            uuid: "00000000-0000-4000-8000-000000000401",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        const fromReader = yield* nextRosterUpdate((tasks) => tasks.length === 1);
+        const generation = fromReader.runtimeEvidence?.runtimeGeneration;
+        assert.isDefined(generation, "the SDK reader emits under its bound query");
+        assert.isUndefined(
+          harness.providerThread.runtimeIdentity?.runtimeGeneration,
+          "the turn-start snapshot predates the query binding",
+        );
+
+        // The MCP tool runs outside the SDK reader. Its update must not strip the generation,
+        // or the sink rejects every later event from this query, including the terminal.
+        yield* awaitBackgroundTasks({
+          providerThread: harness.providerThread,
+          taskIds: [WAKE_TASK_ID],
+          awaited: true,
+        });
+        const fromTool = yield* nextRosterUpdate((tasks) =>
+          tasks.some((task) => task.awaited === true),
+        );
+        assert.equal(fromTool.runtimeEvidence?.runtimeGeneration, generation);
+        assert.equal(fromTool.providerThread.runtimeIdentity?.runtimeGeneration, generation);
+
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.runtimeEvidence?.runtimeGeneration, generation);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("keeps a running Claude monitor typed after many newer monitors end", () =>
     Effect.scoped(
       Effect.gen(function* () {

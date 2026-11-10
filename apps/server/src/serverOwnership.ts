@@ -5,6 +5,7 @@ import * as NodeSqlite from "node:sqlite";
 
 import { SERVER_EXIT_CODE_STATE_DIR_OWNED } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -178,6 +179,11 @@ const olderBootServiceHome = Effect.fn("olderBootServiceHome")(
   Effect.orElseSucceed(() => undefined),
 );
 
+/** Original live server-owner lock; absent outside the acquired server scope. */
+export const ServerOwnershipLifetime = Context.Reference<
+  { readonly assertCurrent: () => void } | undefined
+>("t3/serverOwnership/Lifetime", { defaultValue: () => undefined });
+
 /**
  * Hold an exclusive lock on the state directory until the scope closes. The
  * lock is an exclusive transaction on `server-owner.sqlite`, which never holds
@@ -193,6 +199,7 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
     .uuidV4()
     .pipe(Effect.mapError((cause) => new ServerOwnershipError({ stateDir, cause })));
   const lockPath = NodePath.join(stateDir, "server-owner.sqlite");
+  let active = true;
   const lock = yield* Effect.acquireRelease(
     Effect.try({
       try: () => {
@@ -223,7 +230,10 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
           : new ServerOwnershipError({ stateDir, cause }),
     }),
     ({ db, heldRuntimeOwner }) =>
-      Effect.sync(() => invalidateCheckedServerOwnership(heldRuntimeOwner)).pipe(
+      Effect.sync(() => {
+        active = false;
+        invalidateCheckedServerOwnership(heldRuntimeOwner);
+      }).pipe(
         Effect.andThen(readPersistedServerRuntimeState(statePath)),
         Effect.flatMap((state) =>
           Option.isSome(state) && state.value.ownerId === ownerId
@@ -283,8 +293,16 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
     );
   }).pipe(Effect.forkScoped);
 
+  const lifetime = Object.freeze({
+    assertCurrent(this: { readonly assertCurrent: () => void }) {
+      if (this !== lifetime || !active || !lock.db.isOpen || !lock.db.isTransaction) {
+        throw new ServerOwnershipError({ stateDir, cause: "Original server ownership has ended." });
+      }
+    },
+  });
   return {
     heldRuntimeOwner: lock.heldRuntimeOwner,
+    lifetime,
     publish: (state: PersistedServerRuntimeState) =>
       persistServerRuntimeState({ path: statePath, state: { ...state, ownerId } }),
   };

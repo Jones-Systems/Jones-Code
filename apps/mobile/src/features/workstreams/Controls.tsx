@@ -1,3 +1,9 @@
+import { MobileWorkstreamExport } from "../../jones/workstreams/MobileWorkstreamExport";
+import {
+  nativeWorkstreamsLabel,
+  nativeWorkstreamReadLabel,
+  isNativeWorkstreams,
+} from "@t3tools/client-runtime/state/workstreams";
 import { workstreamPageUrl } from "./gateway";
 import { WorkstreamColorPicker } from "../../jones/workstreamAppearance/WorkstreamColorPicker";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -297,11 +303,21 @@ function MobileWorkstreamControlsSession({
               run={() => membership(lastDestination)}
             />
           ) : null}
+          {nativeWorkstreamsLabel(snapshot?.nativeCapability) ? (
+            <Text accessibilityRole="summary">
+              {nativeWorkstreamsLabel(snapshot?.nativeCapability)}
+              {isNativeWorkstreams(snapshot?.nativeCapability)
+                ? ` · ${nativeWorkstreamReadLabel(snapshot?.nativeRead)}`
+                : ""}
+            </Text>
+          ) : null}
           {api.error ? <Text>{api.error}</Text> : null}
           {!snapshot ? (
-            <Text>Workstreams are unavailable. Connect to an enrolled environment.</Text>
+            <Text>Workstreams are unavailable. Connect to a Workstream environment.</Text>
           ) : null}
-          {api.stale ? <Text>Showing the last loaded Workstreams. Refresh to update.</Text> : null}
+          {api.stale ? (
+            <Text>Showing cached Workstreams · Stale · Read-only. Refresh to update.</Text>
+          ) : null}
           {snapshot && !editable ? <Text>Workstreams are read-only.</Text> : null}
           {threadKey !== null && api.conflictingThreadKeys.has(threadKey) ? (
             <Text accessibilityRole="alert">
@@ -310,8 +326,13 @@ function MobileWorkstreamControlsSession({
             </Text>
           ) : null}
           {!capable && snapshot?.placements?.readiness !== "ready" ? (
-            <Text>Thread assignment requires current verified enrollment.</Text>
+            <Text>
+              {isNativeWorkstreams(snapshot?.nativeCapability)
+                ? "Thread assignment requires current source authority. Refresh native setup."
+                : "Thread assignment requires current verified enrollment."}
+            </Text>
           ) : null}
+          <MobileWorkstreamExport api={api} snapshot={snapshot} />
           <Pressable accessibilityRole="button" onPress={api.toggleEnabled}>
             <Text>{api.enabled ? "Use native order" : "Group by Workstream"}</Text>
           </Pressable>

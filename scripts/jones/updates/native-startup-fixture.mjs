@@ -165,7 +165,7 @@ export function cleanLaunchEnvironment(environment, temporary) {
 export function runOwnedChild(
   command,
   args,
-  { signal, timeout = 15000, onSpawn, ...options } = {},
+  { signal, timeout = 15000, onSpawn, onStdout, onStderr, ...options } = {},
 ) {
   return new Promise((resolve, reject) => {
     const child = NodeChildProcess.spawn(command, args, {
@@ -211,10 +211,24 @@ export function runOwnedChild(
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
       if (stdout.length > 1024 * 1024) stop(new Error("Native startup stdout exceeded its bound."));
+      else {
+        try {
+          onStdout?.(chunk.toString(), child.pid);
+        } catch (cause) {
+          stop(cause);
+        }
+      }
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
       if (stderr.length > 1024 * 1024) stop(new Error("Native startup stderr exceeded its bound."));
+      else {
+        try {
+          onStderr?.(chunk.toString(), child.pid);
+        } catch (cause) {
+          stop(cause);
+        }
+      }
     });
     child.once("close", (code, exitSignal) => {
       childClosed = true;
@@ -222,8 +236,14 @@ export function runOwnedChild(
       signal?.removeEventListener("abort", abort);
       const drained = child.pid === undefined ? Promise.resolve() : drainGroup(child.pid);
       void Promise.all([spawnWork, drained]).then(() => {
-        if (failure) reject(failure);
-        else resolve({ code, signal: exitSignal, stdout, stderr });
+        if (failure) {
+          if (Object.isExtensible(failure))
+            Reflect.defineProperty(failure, "nativeChildResult", {
+              value: { code, signal: exitSignal, stdout, stderr },
+              configurable: true,
+            });
+          reject(failure);
+        } else resolve({ code, signal: exitSignal, stdout, stderr });
       }, reject);
     });
   });

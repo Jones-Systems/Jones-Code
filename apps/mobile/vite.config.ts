@@ -8,6 +8,7 @@ import "vite-plus/test/config";
 const reactTests = [
   "src/features/workstreams/Controls.operations.test.tsx",
   "src/jones/updates/actionJournal.test.ts",
+  "src/jones/workstreams/MobileWorkstreamExport.test.tsx",
   "src/jones/updates/JonesUpdateControls.test.tsx",
   "src/features/workstreams/useWorkstreams.authorization.test.tsx",
   "src/jones/descendantApproval/DescendantApprovalCard.test.tsx",
@@ -42,6 +43,7 @@ const reactTests = [
   "src/native/NativeHeaderToolbar.test.tsx",
   "src/components/ComposerEditor.ios.test.tsx",
   "src/native/V5StackHeader.ios.test.tsx",
+  "src/features/workstreams/nativeLifetime.test.tsx",
   "src/native/useRetryingImageSource.test.tsx",
   "src/state/queries.debounce.test.tsx",
   "src/state/use-selected-thread-git-state.test.tsx",

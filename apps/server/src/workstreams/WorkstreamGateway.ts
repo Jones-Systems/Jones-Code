@@ -291,16 +291,18 @@ const canonicalJson = (value: unknown): string => {
   return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
 };
 
-const transportFailure = (error: WorkstreamTransportError) =>
+const gatewayTransportFailure = (error: WorkstreamTransportError) =>
   new WorkstreamGatewayError({
     reason:
       error.detail === "cursor_stale"
         ? "cursor-stale"
         : error.effect === "unknown-effect"
           ? "unknown-effect"
-          : error.detail === WORKSTREAM_ACTIVATION_DISABLED_DETAIL
-            ? "not-configured"
-            : "offline",
+          : error.detail === "authority_fenced"
+            ? "authorization-not-current"
+            : error.detail === WORKSTREAM_ACTIVATION_DISABLED_DETAIL
+              ? "not-configured"
+              : "offline",
     detail: error.detail,
   });
 
@@ -314,13 +316,13 @@ function pageInput(input: { readonly limit?: number; readonly cursor?: string } 
   }
   return { limit, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) };
 }
-const decodeT3PlacementLoadRequest = Schema.decodeEffect(T3PlacementLoadRequest);
-const decodeT3PlacementPage = Schema.decodeEffect(T3PlacementPage);
-const decodeT3PlacementResult = Schema.decodeEffect(T3PlacementResult);
-const decodeWorkstreamReceipt = Schema.decodeEffect(WorkstreamReceipt);
-const decodeWorkstreamCommandJson = Schema.decodeEffect(Schema.fromJsonString(WorkstreamCommand));
-const decodeWorkstreamCountsCapabilities = Schema.decodeEffect(WorkstreamCountsCapabilities);
-const decodeWorkstreamRegistryCounts = Schema.decodeEffect(WorkstreamRegistryCounts);
+const decodePlacementLoadRequest = Schema.decodeUnknownEffect(T3PlacementLoadRequest);
+const decodePlacementPage = Schema.decodeUnknownEffect(T3PlacementPage);
+const decodePlacementResult = Schema.decodeUnknownEffect(T3PlacementResult);
+const decodeReceipt = Schema.decodeUnknownEffect(WorkstreamReceipt);
+const decodeCommandJson = Schema.decodeUnknownEffect(Schema.fromJsonString(WorkstreamCommand));
+const decodeCountsCapabilities = Schema.decodeUnknownEffect(WorkstreamCountsCapabilities);
+const decodeRegistryCounts = Schema.decodeUnknownEffect(WorkstreamRegistryCounts);
 
 export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayOptions) =>
   Effect.sync(() => {
@@ -340,6 +342,10 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       terminalReceipts.clear();
       commandDigests.clear();
       lastBindingKey = null;
+    };
+    const transportFailure = (error: WorkstreamTransportError) => {
+      if (error.detail === "authority_fenced") purgeAuthorization();
+      return gatewayTransportFailure(error);
     };
     const remember = <V>(map: Map<string, V>, key: string, value: V) => {
       map.delete(key);
@@ -478,7 +484,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
     ) {
       const invalid = (detail: string) =>
         new WorkstreamGatewayError({ reason: "invalid-response", detail });
-      const request = yield* decodeT3PlacementLoadRequest(input, {
+      const request = yield* decodePlacementLoadRequest(input, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => invalid("Invalid placement inventory.")));
       const authorized = yield* authorize("workstreams:read");
@@ -507,7 +513,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
             ...(cursor === undefined ? {} : { cursor }),
           })
           .pipe(Effect.mapError(transportFailure));
-        const page = yield* decodeT3PlacementPage(raw, {
+        const page = yield* decodePlacementPage(raw, {
           onExcessProperty: "error",
         }).pipe(
           Effect.mapError(
@@ -611,7 +617,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       };
       if (Buffer.byteLength(canonicalJson(result)) > WORKSTREAM_MAX_RESPONSE_BYTES)
         return yield* invalid("Placement response workload exceeded.");
-      return yield* decodeT3PlacementResult(result, {
+      return yield* decodePlacementResult(result, {
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(
@@ -755,9 +761,11 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         // These reads are separate CP snapshots: the witness must come first.
         const authorized = yield* authorize("workstreams:read");
         if (!transport.readCommandReceipt) return yield* recoveryFailure(undefined);
-        const result = yield* transport.readCommandReceipt({ commandId, ...contractInput });
+        const result = yield* transport
+          .readCommandReceipt({ commandId, ...contractInput })
+          .pipe(Effect.mapError(transportFailure));
         if (result.kind === "receipt") {
-          const receipt = yield* decodeWorkstreamReceipt(result.receipt, {
+          const receipt = yield* decodeReceipt(result.receipt, {
             onExcessProperty: "error",
           });
           yield* validateReceipt(receipt, commandId, undefined, undefined, authorized.binding);
@@ -771,21 +779,21 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
     ): Effect.fn.Return<WorkstreamRecoverySubmitResult, WorkstreamGatewayError> {
       return yield* Effect.gen(function* () {
         const authorized = yield* authorize("workstreams:write");
-        const command = yield* decodeWorkstreamCommandJson(retainedBody, {
-          onExcessProperty: "error",
-        });
+        const command = yield* decodeCommandJson(retainedBody, { onExcessProperty: "error" });
         if (command.command_id !== commandId || !transport.resubmitCommand)
           return yield* recoveryFailure(undefined);
         // CP atomically checks retained bytes before deciding a fresh command. Local revision,
         // generation and digest guards cannot resolve an earlier dispatch or an absent index.
-        const result = yield* transport.resubmitCommand({
-          body: retainedBody,
-          command,
-          idempotencyKey: commandId,
-          ...contractInput,
-        });
+        const result = yield* transport
+          .resubmitCommand({
+            body: retainedBody,
+            command,
+            idempotencyKey: commandId,
+            ...contractInput,
+          })
+          .pipe(Effect.mapError(transportFailure));
         if (result.kind === "receipt") {
-          const receipt = yield* decodeWorkstreamReceipt(result.receipt, {
+          const receipt = yield* decodeReceipt(result.receipt, {
             onExcessProperty: "error",
           });
           yield* validateReceipt(
@@ -800,8 +808,8 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         return result;
       }).pipe(Effect.mapError(recoveryFailure));
     });
-    const submit = Effect.fn("WorkstreamGateway.submit")(function* (command: WorkstreamCommand) {
-      const authorized = yield* authorize("workstreams:write").pipe(
+    const authorizeSubmit = () =>
+      authorize("workstreams:write").pipe(
         Effect.mapError((error) =>
           error.reason === "permission-denied" ||
           error.reason === "contract-mismatch" ||
@@ -814,16 +822,45 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
             : error,
         ),
       );
-      if (
-        command.expected_server_generation !== authorized.binding.serverGeneration ||
-        command.expected_registry_version !== authorized.binding.registryVersion
-      )
+    const submit = Effect.fn("WorkstreamGateway.submit")(function* (command: WorkstreamCommand) {
+      const authorized = yield* authorizeSubmit();
+      if (command.expected_server_generation !== authorized.binding.serverGeneration)
         return yield* new WorkstreamGatewayError({
           reason: "version-conflict",
-          detail: "Command generation or registry revision is not current.",
+          detail: "Command generation is not current.",
         });
       const body = canonicalJson(command);
       const bodySha256 = NodeCrypto.createHash("sha256").update(body).digest("hex");
+      if (command.expected_registry_version !== authorized.binding.registryVersion) {
+        // A stale command can only adopt retained bytes. Neither absence nor an unknown
+        // lookup authorizes dispatch; readReceipt keeps its capabilities-before-lookup witness.
+        const recovered = yield* readReceipt(command.command_id);
+        const current = yield* authorizeSubmit();
+        if (!current.binding.permissions.includes("workstreams:read"))
+          return yield* recoveryFailure(undefined);
+        if (recovered.kind === "receipt") {
+          yield* validateReceipt(
+            recovered.receipt,
+            command.command_id,
+            undefined,
+            undefined,
+            current.binding,
+          );
+          if (
+            recovered.receipt.request_sha256 !== bodySha256 ||
+            recovered.receipt.operation !== command.action.operation
+          )
+            return yield* new WorkstreamGatewayError({
+              reason: "idempotency-conflict",
+              detail: "This command ID was already used with different business bytes.",
+            });
+          return recovered.receipt;
+        }
+        return yield* new WorkstreamGatewayError({
+          reason: "version-conflict",
+          detail: "Command registry revision is not current.",
+        });
+      }
       const commandKey = [authorized.key, command.command_id].join("\u0000");
       const seenDigest = commandDigests.get(commandKey);
       if (seenDigest !== undefined && seenDigest !== bodySha256)
@@ -872,7 +909,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       const capabilities = yield* transport.getCountsCapabilities().pipe(
         Effect.mapError(transportFailure),
         Effect.flatMap((value) =>
-          decodeWorkstreamCountsCapabilities(value, {
+          decodeCountsCapabilities(value, {
             onExcessProperty: "error",
           }).pipe(
             Effect.mapError(
@@ -902,7 +939,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       const counts = yield* transport.getRegistryCounts().pipe(
         Effect.mapError(transportFailure),
         Effect.flatMap((value) =>
-          decodeWorkstreamRegistryCounts(value, {
+          decodeRegistryCounts(value, {
             onExcessProperty: "error",
           }).pipe(
             Effect.mapError(
