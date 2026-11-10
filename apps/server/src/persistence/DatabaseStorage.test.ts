@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 
 import * as ServerConfig from "../config.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
@@ -126,7 +127,7 @@ it.effect("remembers completion only after the paced pass finishes", () =>
 // the database back where an install from before the settlement proofs would be.
 const provenCompactionLayer = (
   pruneEventStore: ProjectionMaintenance.ProjectionMaintenanceV2["Service"]["pruneEventStore"],
-  rewind: Effect.Effect<void, unknown, SqlClient.SqlClient>,
+  rewind: Effect.Effect<void, SqlError, SqlClient.SqlClient>,
 ) =>
   DatabaseStorage.layer.pipe(
     Layer.provide(Layer.mock(ProjectionMaintenance.ProjectionMaintenanceV2)({ pruneEventStore })),
@@ -139,7 +140,7 @@ const beforeSettlementProofs = Effect.gen(function* () {
   yield* sql`DELETE FROM jones_sql_migrations WHERE migration_id = 107`;
 });
 
-const onlineCompactionWith = (rewind: Effect.Effect<void, unknown, SqlClient.SqlClient>) =>
+const onlineCompactionWith = (rewind: Effect.Effect<void, SqlError, SqlClient.SqlClient>) =>
   Effect.gen(function* () {
     // The clock is set before the layer starts the passes, so its wake-ups stay near the epoch.
     yield* TestClock.setTime(startupTime);
