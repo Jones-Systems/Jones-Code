@@ -3,6 +3,7 @@ import { expect, it } from "@effect/vitest";
 import { afterEach, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DEFAULT_SERVER_SETTINGS, DeviceHostId, type ServerSettings } from "@t3tools/contracts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Net from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -107,6 +108,11 @@ it.effect(
         Effect.provideService(DeviceDirectGrants, {
           issue: () => Effect.succeed(null),
           admit: () => Effect.succeed({ _tag: "Denied" as const }),
+        }),
+        Effect.provideService(SecretResolver.SecretResolver, {
+          label: (provider) => Effect.succeed(provider),
+          read: (references) => Effect.succeed(references.map(() => undefined)),
+          invalidate: () => Effect.void,
         }),
         Effect.provideService(ServerSettingsService, {
           getSettings: Effect.sync(() => settings),

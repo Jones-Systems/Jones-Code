@@ -1,4 +1,5 @@
 import * as TitleStore from "./store.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { vi } from "@effect/vitest";
 import {
   CommandId,
@@ -93,6 +94,7 @@ export function makeHarness(
         layerProjectedProjects,
         Layer.mock(TextGeneration.TextGeneration)({ generateThreadTitle }),
         layerServerSettings,
+        NodeServices.layer,
       ),
     ),
   );

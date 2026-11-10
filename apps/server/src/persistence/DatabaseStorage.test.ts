@@ -11,7 +11,9 @@ import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
+import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
 import * as DatabaseStorage from "./DatabaseStorage.ts";
 import * as Sqlite from "./Sqlite.ts";
@@ -24,11 +26,17 @@ const freePages = Effect.map(
   (rows) => rows[0]?.freelist_count ?? 0,
 );
 
+// ProjectionMaintenance reads and prunes the event and projection stores, so tests that use the real
+// maintenance service also provide the real stores over the same database.
+const projectionMaintenanceLayer = ProjectionMaintenance.layer.pipe(
+  Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
+);
+
 const storageLayer = <E>(
   config: Layer.Layer<ServerConfig.ServerConfig, E, FileSystem.FileSystem | Path.Path>,
 ) =>
   DatabaseStorage.layer.pipe(
-    Layer.provide(ProjectionMaintenance.layer),
+    Layer.provide(projectionMaintenanceLayer),
     Layer.provideMerge(Sqlite.layerMemory),
     Layer.provideMerge(config),
     Layer.provide(NodeServices.layer),
@@ -58,7 +66,7 @@ const compactionLayer = (
 ) =>
   DatabaseStorage.layer.pipe(
     Layer.provide(
-      Layer.succeed(ProjectionMaintenance.ProjectionMaintenanceV2, {
+      Layer.mock(ProjectionMaintenance.ProjectionMaintenanceV2)({
         pruneEventStore,
       }),
     ),
@@ -119,7 +127,7 @@ const reclaimLayer = (
   autoVacuum: "NONE" | "FULL" | "INCREMENTAL" = "NONE",
 ) =>
   DatabaseStorage.layer.pipe(
-    Layer.provide(ProjectionMaintenance.layer),
+    Layer.provide(projectionMaintenanceLayer),
     Layer.provide(Layer.succeed(DatabaseStorage.ServerRestart, restart)),
     Layer.provide(
       Layer.effectDiscard(

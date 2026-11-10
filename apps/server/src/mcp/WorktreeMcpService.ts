@@ -526,7 +526,7 @@ export const make = Effect.gen(function* () {
         if (baseRef === undefined)
           return yield* failure("invalid_request", "Select a base ref for the handoff.");
         let revision = baseRef;
-        if (input.startFromOrigin ?? (yield* readDefaultStartFromOrigin)) {
+        if (input.startFromOrigin ?? (yield* readDefaultStartFromOrigin(project.id))) {
           const remote = yield* gitWorkflow
             .fetchWorktreeBaseCommit({ cwd: project.workspaceRoot, refName: baseRef })
             .pipe(asOperationFailed("Unable to fetch handoff base"));

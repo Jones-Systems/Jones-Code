@@ -155,7 +155,7 @@ it.effect("does not advertise the native peer tool without an application protoc
   }).pipe(
     Effect.provide(
       McpHttpServer.layerNativeHomeReadToolkit.pipe(
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(threads),
       ),
     ),
@@ -167,7 +167,7 @@ it.effect(
   () => {
     let calls = 0;
     const registration = McpHttpServer.layerNativeHomeReadToolkit.pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provide(
         Layer.succeed(Protocol.HomeReadProtocol, {
           read: (input) =>
@@ -251,7 +251,7 @@ it.effect(
   () => {
     let calls = 0;
     const registration = McpHttpServer.layerNativeHomeReadToolkit.pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provide(
         Layer.succeed(ExportProtocol.HomeExportProtocol, {
           read: (input) =>

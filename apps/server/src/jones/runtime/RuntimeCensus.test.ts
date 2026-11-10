@@ -13,6 +13,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
@@ -99,6 +100,7 @@ const ports = (input: {
     isMcpCallerAttached: () => Effect.succeed(false),
     releaseUnlessBusy: () => Effect.die("Unexpected releaseUnlessBusy"),
     otherWorkingThreads: () => Effect.die("Unexpected otherWorkingThreads"),
+    subscribePromptSuggestion: () => Stream.empty,
     isLive: () => Effect.die("A census must use captured runtime attachment evidence"),
     shutdown: Effect.void,
     open: () => Effect.die("A census must never open a provider"),

@@ -1202,6 +1202,7 @@
     "apps/server/src/persistence/AuthPairingLinks.test.ts": "jones-tests-in-upstream",
     "apps/server/src/persistence/AuthPairingLinks.ts": "accepted-shared",
     "apps/server/src/persistence/DatabaseMaintenance.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/persistence/DatabaseStorage.test.ts": "jones-tests-in-upstream",
     "apps/server/src/persistence/JonesMigrationGuard.ts": "jones-owned",
     "apps/server/src/persistence/Migrations.ts": "accepted-shared",
     "apps/server/src/persistence/Migrations/001_JonesWorktreeOwnershipLeases.ts": "jones-owned",

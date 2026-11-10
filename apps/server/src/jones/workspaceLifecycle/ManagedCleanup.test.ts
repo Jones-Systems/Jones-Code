@@ -322,7 +322,7 @@ it.effect("settlement records exact native output duties with retirement disable
         Effect.provide(f.layer.pipe(Layer.provideMerge(f.configured))),
       );
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each([

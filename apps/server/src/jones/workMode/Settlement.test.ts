@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -183,6 +184,7 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
       SecureRandom.make((size) => new Uint8Array(size).fill(1)),
     ),
     FileSystem.layerNoop({ exists: () => Effect.succeed(false) }),
+    Path.layer,
   );
 
   // Runs the first periodic sweep to completion and returns what it dispatched.

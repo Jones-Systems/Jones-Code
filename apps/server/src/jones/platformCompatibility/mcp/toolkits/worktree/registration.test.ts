@@ -38,6 +38,7 @@ import * as RemoteAdmissionIntake from "../../../../remoteAdmissionIntegration/R
 import * as ServerSettings from "../../../../../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../../../../../vcs/VcsStatusBroadcaster.ts";
 import * as ServerSecretStore from "../../../../../auth/ServerSecretStore.ts";
+import * as AssetSigner from "../../../../../assets/AssetSigner.ts";
 import * as ManagedProjectFolders from "../../../../../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../../../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadSearch from "../../../../../orchestration-v2/ThreadSearch.ts";
@@ -94,6 +95,7 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
     Layer.mock(PreviewManager.PreviewManager)({}),
     Layer.mock(ServerSecretStore.ServerSecretStore)({}),
+    Layer.mock(AssetSigner.AssetSigner)({}),
     Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
     Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
     Layer.mock(ThreadSearch.ThreadSearch)({}),
