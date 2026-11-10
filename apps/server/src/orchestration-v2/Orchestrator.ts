@@ -1083,18 +1083,29 @@ function queuedRunModelSelection(
     : run.modelSelection;
 }
 
+/** Queued runs that carry their own selection rather than following the current conversation. */
+function queuedPicks(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
+): Array<OrchestrationV2Run> {
+  return queuedRunsInDeliveryOrder(projection).filter(
+    (run) =>
+      !followsCurrentConversation(
+        projection.messages.find((message) => message.id === run.userMessageId),
+      ),
+  );
+}
+
 /** The selection the thread will be on once every queued run has started. */
 function queueTailModelSelection(
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "messages">,
 ): ModelSelection {
-  return (
-    queuedRunsInDeliveryOrder(projection).findLast(
-      (run) =>
-        !followsCurrentConversation(
-          projection.messages.find((message) => message.id === run.userMessageId),
-        ),
-    )?.modelSelection ?? projection.thread.modelSelection
-  );
+  const tail = queuedPicks(projection).at(-1);
+  // Jones: a save made after the tail was queued is newer than the selection that run captured.
+  return tail === undefined ||
+    (!modelSelectionsEqual(projection.thread.modelSelection, tail.modelSelection) &&
+      DateTime.isGreaterThan(projection.thread.updatedAt, tail.requestedAt))
+    ? projection.thread.modelSelection
+    : tail.modelSelection;
 }
 
 function usageLimitHoldsQueue(
