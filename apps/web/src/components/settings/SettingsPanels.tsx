@@ -354,7 +354,7 @@ export function AboutVersionSection() {
       window.desktopBridge?.discardUpdate ? (
         <SettingsRow
           title="Downloaded build"
-          description="Discard this selection to check for another build. The active app keeps running."
+          description="Discard it to check for another build. The running app is unaffected."
           control={
             <Button
               size="sm"
@@ -998,15 +998,15 @@ export function GeneralSettingsPanel() {
         />
         <SettingsRow
           title="Project and environment order"
-          description="Arrange projects and environments in Jones Code settings."
+          description="Arrange projects and environments in the sidebar."
           control={
-            <Link
-              to="/settings/jones-code"
-              hash="project-order"
-              className="text-sm text-primary hover:underline"
+            <Button
+              render={<Link to="/settings/jones-code" hash="project-order" />}
+              size="sm"
+              variant="outline"
             >
               Manage order
-            </Link>
+            </Button>
           }
         />
 
