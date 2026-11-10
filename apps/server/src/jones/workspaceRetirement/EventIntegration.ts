@@ -1,11 +1,17 @@
 import * as Schema from "effect/Schema";
-import { DutyIdentityJson, QueuedHolderJson } from "./DurableCodecs.ts";
+import {
+  DutyIdentityJson,
+  NativeDutyOwnerJson,
+  QueuedHolderJson,
+  SettlementHolderJson,
+} from "./DurableCodecs.ts";
 import type { RecordedEvent } from "../../orchestration-v2/RecordedTypes.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/sql/SqlClient";
-import { RetirementError } from "./Receipts.ts";
+import { RetirementError, settlementClaimId } from "./Receipts.ts";
 import { dutyIdentity } from "./DutyIdentity.ts";
+import { unresolvedOwner } from "./NativeDutyOwner.ts";
 
 // Called within EventSink's transaction, before projections change. Read-only native
 // binding performs no optional enrichment and acquires no common-store writer lock.
@@ -47,13 +53,32 @@ export const events = Effect.fn("WorkspaceRetirement.admitRecordedEvents")(funct
     }
     if (event.type === "thread.created" || Object.hasOwn(payload, "worktreePath"))
       batchPaths.set(event.threadId, nextPath ?? null);
+    if (event.type === "thread.unsettled" || event.type === "thread.settled") {
+      // Only never-issued work is cancelled here. Issued scripts keep their actual claims.
+      yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(event.occurredAt)} WHERE released_at IS NULL AND claim_id IN
+        (SELECT 'settlement-intent:'||event_id FROM jones_workspace_retirement_intents WHERE thread_id=${event.threadId} AND event_id!=${event.id} AND script_state='pending')`;
+      yield* sql`UPDATE jones_workspace_retirement_intents SET script_state='cancelled',script_completed_at=${DateTime.formatIso(event.occurredAt)} WHERE thread_id=${event.threadId} AND event_id!=${event.id} AND script_state='pending'`;
+    }
     if (event.type === "thread.settled" && prior?.worktreePath) {
       if (event.payload.settledAt === null)
         return yield* new RetirementError({
           reason: "settlement_time_missing",
           target: prior.worktreePath,
         });
-      yield* sql`INSERT INTO jones_workspace_retirement_intents (event_id,thread_id,worktree,settled_at) VALUES (${event.id},${event.threadId},${prior.worktreePath},${DateTime.formatIso(event.payload.settledAt)}) ON CONFLICT(event_id) DO NOTHING`;
+      const inserted =
+        yield* sql`INSERT INTO jones_workspace_retirement_intents (event_id,thread_id,worktree,settled_at) VALUES (${event.id},${event.threadId},${prior.worktreePath},${DateTime.formatIso(event.payload.settledAt)}) ON CONFLICT(event_id) DO NOTHING RETURNING event_id`;
+      if (inserted.length) {
+        // A real preservation duty binds restart recovery to this event's native incarnation.
+        const identity = yield* Effect.promise(() => dutyIdentity(prior.worktreePath!));
+        const claim = settlementClaimId(event.id);
+        const holder = yield* Schema.encodeEffect(SettlementHolderJson)({
+          eventId: event.id,
+          projectId: event.payload.projectId,
+          branch: event.payload.branch,
+        });
+        yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${claim},${prior.worktreePath},${identity.status === "bound" ? identity.incarnation : null},'settlement-intent',${event.threadId},${holder},${DateTime.formatIso(event.occurredAt)},NULL)`;
+        yield* sql`INSERT INTO jones_workspace_duty_identity VALUES (${claim},${yield* Schema.encodeEffect(DutyIdentityJson)(identity)},${yield* Schema.encodeEffect(NativeDutyOwnerJson)(unresolvedOwner("settlement_not_issued"))})`;
+      }
     }
     if (event.type === "run.created" && prior?.worktreePath) {
       const worktree = prior.worktreePath;

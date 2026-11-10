@@ -81,6 +81,13 @@ export const DutyHolderJson = Schema.fromJsonString(
 export const QueuedHolderJson = Schema.fromJsonString(
   Schema.Struct({ runId: Schema.String, threadId: Schema.String }),
 );
+export const SettlementHolderJson = Schema.fromJsonString(
+  Schema.Struct({
+    eventId: Schema.String,
+    projectId: Schema.String,
+    branch: Schema.NullOr(Schema.String),
+  }),
+);
 const detail = Schema.Struct({
   reason: Schema.String,
   target: Schema.String,
