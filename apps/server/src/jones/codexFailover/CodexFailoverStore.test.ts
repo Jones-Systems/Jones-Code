@@ -1,5 +1,3 @@
-import * as NodeURL from "node:url";
-import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -14,11 +12,10 @@ import {
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as FileSystem from "effect/FileSystem";
-import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import migration from "../persistence/Migrations/129_JonesCodexFailover.ts";
+import { readSelectionEventRevision } from "../threadConfiguration/selectionRevision.ts";
 import * as Evidence from "./CodexFailoverEvidence.ts";
 import * as Store from "./CodexFailoverStore.ts";
 
@@ -274,22 +271,14 @@ it.effect("missing optional tables fail closed and a later migration is observed
 );
 
 it.effect(
-  "selection revision matches the actual ThreadSelfConfiguration SQL for every event filter",
+  "selection revision matches ThreadSelfConfiguration's event query for every event filter",
   () =>
     Effect.gen(function* () {
       yield* upstream;
       const sql = yield* SqlClient.SqlClient;
       const store = yield* Store.make;
-      // Execute the real sibling query rather than a second hand-maintained SQL copy.
-      const fs = yield* FileSystem.FileSystem;
-      const sourceText = yield* fs.readFileString(
-        NodeURL.fileURLToPath(
-          new URL("../threadConfiguration/ThreadSelfConfiguration.ts", import.meta.url),
-        ),
-      );
-      const match = sourceText.match(/const revision = [\s\S]*?`([\s\S]*?)`/);
-      assert.isNotNull(match);
-      const revisionSql = match![1]!.replace("${threadId}", "?");
+      // Run the real shared reader rather than a second hand-maintained SQL copy. Nothing is
+      // pruned here, so the reader's pruned-through clamp is 0 and both revisions must agree.
       assert.equal(yield* store.selectionRevision(threadId), 0);
       const cases = [
         ["thread.created", threadId, "thread", 2],
@@ -304,9 +293,9 @@ it.effect(
         yield* sql`INSERT INTO orchestration_events
         (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, command_id, payload_json, application_event_version, actor_kind, metadata_json)
         VALUES (${`event:${index}`}, ${aggregateKind}, ${streamId}, ${index + 1}, ${eventType}, ${now}, ${`command:${index}`}, '{}', ${version}, 'system', '{}')`;
-        const expected = yield* sql.unsafe<{ revision: number }>(revisionSql, [threadId]);
-        assert.equal(yield* store.selectionRevision(threadId), expected[0]!.revision);
+        const expected = yield* readSelectionEventRevision(sql, threadId);
+        assert.equal(yield* store.selectionRevision(threadId), expected);
         assert.equal(yield* store.selectionRevision(threadId), Math.min(index + 1, 3));
       }
-    }).pipe(Effect.provide(Layer.merge(memory, NodeFileSystem.layer))),
+    }).pipe(Effect.provide(memory)),
 );

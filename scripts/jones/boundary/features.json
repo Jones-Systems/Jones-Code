@@ -761,6 +761,7 @@
       "id": "settlement-restore",
       "tests": [
         "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+        "apps/server/src/jones/settlementRestore/plan.test.ts",
         "packages/contracts/src/jones/settlementRestore.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "packages/client-runtime/src/jones/settlementRestore/controller.test.ts",
@@ -1548,6 +1549,7 @@
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
         "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
+        "apps/server/src/jones/persistence/Migrations/146_JonesSettlementOriginRetention.test.ts",
         "apps/server/scripts/jones/currentFixtures.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
         "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
@@ -3504,6 +3506,19 @@
         "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts"
       ],
       "scope": "A provider thread update emitted outside the SDK reader names its bound producer, and an update without producer evidence that predates the stored runtime identity (no generation, or the same generation at an older evidence revision) keeps the stored identity. Another binding, another generation, a newer revision, or the stored generation and revision apply as written. A rejected capture is reported by thread, provider thread, reason and event type without payload content. A root terminal whose provider thread lost every producer record settles its run through the current-run write, and a failed interrupt settles only the run when the runtime reports the turn idle; background work is never settled on an unknown outcome. Shared sink, run execution, effect worker, adapter and contract hooks keep their upstream owners. Synthetic adapter, sink and projection fixtures; no installed-runtime or live-thread recovery claim."
+    },
+    {
+      "id": "event-log-pruning",
+      "tests": [
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts",
+        "apps/server/src/jones/settlementOrigins/SettlementOrigins.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailoverStore.test.ts",
+        "apps/server/src/jones/persistence/Migrations/146_JonesSettlementOriginRetention.test.ts",
+        "apps/server/src/jones/settlementRestore/plan.test.ts"
+      ],
+      "scope": "Every Jones reader of orchestration_events is classified as capture, tolerate or unaffected against upstream's event-log pruning rule (v1 events, thread.created, running run.updated and each stream's newest event stay; the rest older than a day goes; the pruned-through boundary is published first; receipts stay), and a source scan fails when a new reader is unclassified. Readers that would have read a missing event as absence fail closed: deletion admission, ordinary-checkout admission, settlement origins (unknown, never other, past the marker window) and the self-configuration selection revision, which never falls below the pruned-through sequence. Settlement origin rows older than 30 days are pruned by an indexed, batched sweep (Jones migration 146) started once for the server lifetime, and an interrupted origin recording now propagates instead of being absorbed. A rejected settlement restore travels as a typed error whose message keeps the client-visible wording. Fixtures prune synthetic history with the upstream keep rule; the upstream pruner, its maintenance preflight and the maintenance hooks are not part of this feature."
     }
   ]
 }

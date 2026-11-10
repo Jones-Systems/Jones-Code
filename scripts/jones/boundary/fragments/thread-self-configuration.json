@@ -10,6 +10,7 @@
     "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
     "apps/server/src/jones/threadConfiguration/tools.ts",
     "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.ts",
+    "apps/server/src/jones/threadConfiguration/selectionRevision.ts",
     "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.ts",
     "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts",
     "apps/web/src/jones/threadConfiguration/composerSelection.ts",
