@@ -4,6 +4,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -119,6 +120,83 @@ it.effect("remembers completion only after the paced pass finishes", () =>
       }),
     );
   }).pipe(Effect.provide(testConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
+
+// Sqlite.layerMemory applies every migration, so the preflight reads real state; `rewind` then puts
+// the database back where an install from before the settlement proofs would be.
+const provenCompactionLayer = (
+  pruneEventStore: ProjectionMaintenance.ProjectionMaintenanceV2["Service"]["pruneEventStore"],
+  rewind: Effect.Effect<void, unknown, SqlClient.SqlClient>,
+) =>
+  DatabaseStorage.layer.pipe(
+    Layer.provide(Layer.mock(ProjectionMaintenance.ProjectionMaintenanceV2)({ pruneEventStore })),
+    Layer.provide(Layer.effectDiscard(rewind).pipe(Layer.provideMerge(Sqlite.layerMemory))),
+  );
+
+const beforeSettlementProofs = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DROP TABLE jones_workstreams_settlement_proofs`;
+  yield* sql`DELETE FROM jones_sql_migrations WHERE migration_id = 107`;
+});
+
+const onlineCompactionWith = (rewind: Effect.Effect<void, unknown, SqlClient.SqlClient>) =>
+  Effect.gen(function* () {
+    // The clock is set before the layer starts the passes, so its wake-ups stay near the epoch.
+    yield* TestClock.setTime(startupTime);
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const timestampPath = path.join(path.dirname(config.dbPath), "compacted-at");
+    const settled = yield* Deferred.make<void>();
+    const warnings: Array<string> = [];
+    let prunes = 0;
+    const pruneEventStore = () =>
+      Effect.sync(() => {
+        prunes += 1;
+        return emptyCompaction;
+      });
+    const logger = Logger.make(({ message, logLevel }) => {
+      if (logLevel === "Warn") warnings.push(String(message));
+      if (String(message).includes("compaction skipped before pruning")) {
+        Deferred.doneUnsafe(settled, Effect.void);
+      }
+    });
+    yield* Effect.gen(function* () {
+      yield* TestClock.adjust(minute);
+      yield* Deferred.await(settled);
+    }).pipe(
+      Effect.provide(provenCompactionLayer(pruneEventStore, rewind)),
+      Effect.provideService(FileSystem.FileSystem, {
+        ...fs,
+        writeFileString: (file, content, options) =>
+          fs
+            .writeFileString(file, content, options)
+            .pipe(Effect.ensuring(Deferred.succeed(settled, undefined))),
+      }),
+      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+    );
+    return { prunes, warnings, timestampWritten: yield* fs.exists(timestampPath) };
+  }).pipe(Effect.provide(testConfig.pipe(Layer.provideMerge(NodeServices.layer))));
+
+it.effect("online compaction refuses to prune until settlement proofs are preserved", () =>
+  Effect.gen(function* () {
+    // A database from before settlement proofs (Jones migration 107), as an old install leaves it.
+    const result = yield* onlineCompactionWith(beforeSettlementProofs);
+    assert.equal(result.prunes, 0);
+    assert.isFalse(result.timestampWritten, "a skipped pass is not remembered as completed");
+    assert.isTrue(
+      result.warnings.some((warning) => warning.includes("compaction skipped before pruning")),
+    );
+  }),
+);
+
+it.effect("online compaction prunes once settlement proofs are preserved", () =>
+  Effect.gen(function* () {
+    const result = yield* onlineCompactionWith(Effect.void);
+    assert.equal(result.prunes, 1);
+    assert.isTrue(result.timestampWritten);
+    assert.deepEqual(result.warnings, []);
+  }),
 );
 
 // NONE is a database from before automatic shrinking, which the repair converts.
