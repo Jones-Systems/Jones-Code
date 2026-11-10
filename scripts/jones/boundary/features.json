@@ -57,7 +57,9 @@
         "apps/server/src/jones/threadResultDependencies/DependencyReactor.test.ts",
         "apps/server/src/jones/threadResultDependencies/Orchestrator.integration.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "apps/server/src/jones/workMode/Settlement.test.ts",
         "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/ManagedConsumers.test.ts",
         "apps/server/src/jones/workspaceLifecycle/NativeSource.test.ts",
         "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
         "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.test.ts",
@@ -65,6 +67,7 @@
         "apps/server/src/jones/workspaceRetirement/ClaimReconciliation.test.ts",
         "apps/server/src/jones/workspaceRetirement/ProjectScriptObservation.test.ts",
         "apps/server/src/jones/workspaceRetirement/Retirement.test.ts",
+        "apps/server/src/jones/workspaceRetirement/SettlementRecovery.test.ts",
         "apps/server/src/mcp/WorktreeMcpService.test.ts",
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
@@ -85,7 +88,7 @@
         "packages/shared/src/projectSettings.test.ts",
         "packages/shared/src/serverSettings.test.ts"
       ],
-      "scope": "C7 durable settlement intents and script completion, live-duty exclusion, common-store reservation, shared unforced retirement with a durable per-path disposal journal, additive settings, target proposals, exact-path owner action and sparse outcomes. Existing native deletion admission remains the authorization owner; readiness grants no deletion authority. Source and sequential Node fixture evidence are separate from configured Effect, browser, typecheck, lint and platform qualification."
+      "scope": "C7 durable settlement intents and script completion, live-duty exclusion, common-store reservation, shared unforced retirement with a durable per-path disposal journal, additive settings, target proposals, exact-path owner action and sparse outcomes. Existing native deletion admission remains the authorization owner; readiness grants no deletion authority. Source and sequential Node fixture evidence are separate from configured Effect, browser, typecheck, lint and platform qualification. Bounded restart recovery re-drives only never-issued intents bound to their original native incarnation; running scripts retain duty until exact holder absence or actual completion. Manual unsettle and next-turn recreation retain their existing owners."
     },
     {
       "id": "workspace-retirement-qualification",

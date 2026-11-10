@@ -1,5 +1,6 @@
 import * as RetirementReceipts from "../jones/workspaceRetirement/Receipts.ts";
 import * as RetirementRuntime from "../jones/workspaceRetirement/Runtime.ts";
+import * as SettlementRecovery from "../jones/workspaceRetirement/SettlementRecovery.ts";
 import * as RetirementConfig from "../config.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Scope from "effect/Scope";
@@ -17,7 +18,7 @@ import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   CommandId,
   isOrchestrationV2WorkActive,
-  type ThreadId,
+  ThreadId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
@@ -585,7 +586,9 @@ export const make = Effect.gen(function* () {
     );
   // A thread that just stopped must not wait behind a full sweep or another thread's host
   // reads: clients hold it in Working only briefly, so a late settle makes it appear and then vanish.
-  const fullSweeps = yield* makeDrainableWorker(() => runSweep(null));
+  const fullSweeps = yield* makeDrainableWorker(() =>
+    runSweep(null).pipe(Effect.andThen(recoverSettlements)),
+  );
   const threadSweeps = yield* FiberSet.make<void>();
   const threadSweepSlots = yield* Semaphore.make(8);
   // One sweep per thread at a time; events during a running sweep coalesce into one more pass.
@@ -615,9 +618,16 @@ export const make = Effect.gen(function* () {
 
   // Skip settle scripts in shared checkouts where other threads may still work.
   const cleanUpSettledThread = Effect.fn("ThreadSettlementServiceV2.cleanUpSettledThread")(
-    function* (threadId: ThreadId) {
+    function* (threadId: ThreadId, expected?: RetirementReceipts.SettlementIntent) {
       const settled = yield* projections.getThread(threadId);
       if (settled.settledOverride !== "settled") return;
+      if (
+        expected &&
+        (settled.worktreePath !== expected.worktree ||
+          settled.settledAt === null ||
+          DateTime.formatIso(settled.settledAt) !== expected.settled_at)
+      )
+        return;
       yield* terminals.closeIdle({ threadId });
       const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
       const afterClose = yield* projections.getThread(threadId);
@@ -632,7 +642,14 @@ export const make = Effect.gen(function* () {
       if (worktreePath === null || !(yield* fileSystem.exists(worktreePath))) return;
       // Recheck after closing and worktree I/O; re-engaged threads must not be cleaned up.
       const thread = yield* projections.getThread(threadId);
-      if (thread.settledOverride !== "settled") return;
+      if (
+        thread.settledOverride !== "settled" ||
+        thread.worktreePath !== worktreePath ||
+        thread.projectId !== settled.projectId ||
+        thread.branch !== settled.branch ||
+        toMillis(thread.settledAt) !== toMillis(settled.settledAt)
+      )
+        return;
       const settledAtMs = toMillis(thread.settledAt);
       if (
         settledAtMs === null ||
@@ -648,6 +665,7 @@ export const make = Effect.gen(function* () {
               DateTime.formatIso(thread.settledAt!),
             );
       if (retirement !== null && retirementIntent === null) return;
+      if (expected && retirementIntent?.event_id !== expected.event_id) return;
       if (retirementIntent !== null && retirementIntent.script_state !== "pending") return;
       yield* withOperation(
         {
@@ -678,7 +696,7 @@ export const make = Effect.gen(function* () {
       if (
         retirement !== null &&
         retirementIntent !== null &&
-        !(yield* retirement.startScript(retirementIntent.event_id))
+        !(yield* retirement.startScript(retirementIntent.event_id, expected !== undefined))
       )
         return;
       if (retirement !== null && retirementIntent !== null)
@@ -701,7 +719,11 @@ export const make = Effect.gen(function* () {
             },
           ],
           outputObligations: [],
-        });
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Settle-script observation unavailable", { threadId, cause }),
+          ),
+        );
       const run = yield* projectScripts
         .runForThread({
           threadId,
@@ -713,25 +735,48 @@ export const make = Effect.gen(function* () {
         .pipe(
           Effect.tapError(() =>
             retirement !== null && retirementIntent !== null
-              ? retirement.finishScript(retirementIntent.event_id, "failed", null)
+              ? retirement
+                  .outcome(
+                    retirementIntent.event_id,
+                    SettlementRecovery.held(
+                      retirementIntent,
+                      "settle_script_holder_unverified",
+                      "Script launch failed after durable issuance; its effects are unknown.",
+                      "Verify actual script completion or exact holder absence; do not replay this intent.",
+                    ),
+                  )
+                  .pipe(Effect.catch(() => Effect.void))
               : Effect.void,
           ),
         );
       settleActionRunAt.set(threadId, settledAtMs);
-      const complete = (exitCode: number | null) =>
+      const complete = (exitCode: number) =>
         retirement !== null && retirementIntent !== null
           ? retirement
               .finishScript(
                 retirementIntent.event_id,
-                exitCode === 0 ? "completed" : exitCode === null ? "cancelled" : "failed",
+                exitCode === 0 ? "completed" : "failed",
                 exitCode,
               )
               .pipe(Effect.andThen(recordRetirementProposal(thread, worktreePath)))
           : Effect.void;
       if (run.status === "started" && run.completion) {
         yield* run.completion.pipe(
-          Effect.tap((result) => complete(result.exitCode)),
-          Effect.catch(() => complete(null)),
+          Effect.catch(() => Effect.succeed({ exitCode: null })),
+          Effect.flatMap((result) => {
+            if (result.exitCode !== null) return complete(result.exitCode);
+            return retirement !== null && retirementIntent !== null
+              ? retirement.outcome(
+                  retirementIntent.event_id,
+                  SettlementRecovery.held(
+                    retirementIntent,
+                    "settle_script_holder_unverified",
+                    "The script completion observer ended without a command exit result.",
+                    "Observe actual command completion or verify the exact native holder and descendants absent; do not replay this intent.",
+                  ),
+                )
+              : Effect.void;
+          }),
           Effect.catch((cause) =>
             Effect.logWarning("Durable settle-script completion held", { threadId, cause }),
           ),
@@ -751,6 +796,18 @@ export const make = Effect.gen(function* () {
         ),
       ),
   );
+
+  const recoverSettlements =
+    retirement === null
+      ? Effect.void
+      : yield* SettlementRecovery.make(
+          retirement,
+          (intent) => cleanUpSettledThread(ThreadId.make(intent.thread_id), intent),
+          recordRetirementProposal,
+        ).pipe(
+          Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
+          Effect.map((recover) => recover()),
+        );
 
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
@@ -815,7 +872,14 @@ export const make = Effect.gen(function* () {
     }
     const settingsChanges = yield* settingsService.subscribeChanges;
     const mergedPullRequests = yield* pullRequests.subscribeMerges;
-    const events = orchestrator.streamDomainEvents;
+    // Capture the replay baseline before admitting sweep side effects or delayed subscription.
+    const events = yield* orchestrator.acquireDomainEvents.pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Settlement event baseline unavailable; durable sweeps retain recovery", {
+          cause,
+        }).pipe(Effect.as(Stream.empty)),
+      ),
+    );
     const initialSettings = yield* settingsService.getSettings.pipe(Effect.orDie);
     let lastSettlementSettings = autoSettlementSettingsKey(initialSettings);
     yield* forkParked(

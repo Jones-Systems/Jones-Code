@@ -679,6 +679,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
       },
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
+      acquireDomainEvents: PubSub.subscribe(domainEvents).pipe(Effect.map(Stream.fromSubscription)),
       streamDomainEvents: Stream.fromPubSub(domainEvents),
       dispatch,
     }),
