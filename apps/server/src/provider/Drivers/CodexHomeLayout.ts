@@ -34,6 +34,7 @@ const SHADOW_LOCAL_ENTRY_NAMES = new Set([
   ".sqlite-maintenance.lock",
   "log",
   "memories",
+  "memories.lock",
   "tmp",
   ".DS_Store",
 ]);
