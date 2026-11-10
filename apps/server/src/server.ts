@@ -995,6 +995,7 @@ const layerMakeRoutes = Layer.mergeAll(
         Layer.provideMerge(PeerLinks.layer),
       ),
     ),
+    Layer.provide(LinkedThreads.layer),
     // Dictation: local models or the cloud, with the settings that choose between them.
     Layer.provide(
       SpeechService.layer.pipe(
