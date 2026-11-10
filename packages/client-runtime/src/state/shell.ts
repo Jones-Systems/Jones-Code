@@ -481,9 +481,13 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         };
       }),
       {
+        onDefect: (cause, producer) => setStreamError(Cause.squash(cause), producer),
         onExpectedFailure: (cause, producer) => setStreamError(Cause.squash(cause), producer),
         retryExpectedFailureAfter: "250 millis",
         resubscribe: foregroundResubscriptions,
+        // Sidebar updates and new-thread promotion depend on this stream, so resume it
+        // on the same session if it ends while the connection is still current.
+        resubscribeWhileSessionCurrent: "1 second",
       },
     ).pipe(
       Stream.runForEachArray((items) =>

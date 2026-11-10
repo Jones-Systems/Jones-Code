@@ -975,6 +975,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         onExpectedFailure: (cause) => setStreamError(formatThreadError(cause)),
         retryExpectedFailureAfter: "250 millis",
         resubscribe: foregroundResubscriptions,
+        // Resume an open conversation on the same session if its stream ends early.
+        resubscribeWhileSessionCurrent: "1 second",
       },
     ).pipe(Stream.runForEachArray(applyItems)),
   );

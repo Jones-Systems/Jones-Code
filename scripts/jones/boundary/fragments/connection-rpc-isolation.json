@@ -9,7 +9,9 @@
     "packages/client-runtime/src/jones/connection/betterRouteRecovery.ts",
     "packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts",
     "packages/client-runtime/src/jones/sync/producerGuard.ts",
-    "packages/client-runtime/src/jones/sync/commandIsolation.test.ts"
+    "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
+    "packages/client-runtime/src/jones/sync/sessionResubscribe.ts",
+    "packages/client-runtime/src/jones/sync/sessionResubscribe.test.ts"
   ],
   "hookPaths": [
     "packages/client-runtime/src/connection/driver.ts",
@@ -18,7 +20,8 @@
     "packages/client-runtime/src/connection/supervisor.ts",
     "packages/client-runtime/src/connection/registry.ts",
     "packages/client-runtime/src/rpc/client.ts",
-    "packages/client-runtime/src/state/shell.ts"
+    "packages/client-runtime/src/state/shell.ts",
+    "packages/client-runtime/src/state/threads.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -49,6 +52,10 @@
     {
       "from": "packages/client-runtime/src/state/shell.ts",
       "to": "packages/client-runtime/src/jones/sync/producerGuard.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/rpc/client.ts",
+      "to": "packages/client-runtime/src/jones/sync/sessionResubscribe.ts"
     }
   ]
 }
