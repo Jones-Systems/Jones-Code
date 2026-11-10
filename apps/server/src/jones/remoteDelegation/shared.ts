@@ -33,7 +33,7 @@ export const terminalRetentionCutoff = Effect.map(terminalRetentionCutoffMillis,
 export const PRUNE_BATCH_SIZE = 200;
 
 /** Statuses after which a run or task never moves again. */
-export const TERMINAL_STATUSES = [
+const TERMINAL_STATUSES = [
   "completed",
   "failed",
   "cancelled",
