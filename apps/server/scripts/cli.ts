@@ -9,6 +9,7 @@ import * as Path from "effect/Path";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { withFiniteProduction } from "../../../scripts/jones/direct-producers/finite-production.ts";
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
 import rootPackageJson from "../../../package.json" with { type: "json" };
@@ -76,26 +77,40 @@ const buildCmd = Command.make(
       const repoRoot = yield* RepoRoot;
       const serverDir = path.join(repoRoot, "apps/server");
 
-      yield* Effect.log("[cli] Running tsdown...");
-      yield* runCommand(
-        ChildProcess.make(process.execPath, ["--run", "build:bundle"], {
-          cwd: serverDir,
-          stdout: config.verbose ? "inherit" : "ignore",
-          stderr: "inherit",
-          shell: false,
-        }),
+      return yield* withFiniteProduction(
+        { producer: "jones-server-build", worktree: repoRoot, root: path.join(serverDir, "dist") },
+        (evidence) =>
+          Effect.gen(function* () {
+            yield* Effect.log("[cli] Running tsdown...");
+            yield* Effect.sync(evidence.commandStarted);
+            yield* runCommand(
+              ChildProcess.make(process.execPath, ["--run", "build:bundle"], {
+                cwd: serverDir,
+                stdout: config.verbose ? "inherit" : "ignore",
+                stderr: "inherit",
+                shell: false,
+              }),
+            ).pipe(
+              Effect.tap(() => Effect.sync(evidence.leaderExited)),
+              Effect.tapError((error) =>
+                error._tag === "ServerCliCommandExitError"
+                  ? Effect.sync(evidence.leaderExited)
+                  : Effect.void,
+              ),
+            );
+
+            const webDist = path.join(repoRoot, "apps/web/dist");
+            const clientTarget = path.join(serverDir, "dist/client");
+
+            if (yield* fs.exists(webDist)) {
+              yield* fs.copy(webDist, clientTarget);
+              yield* applyDevelopmentIconOverrides(repoRoot, serverDir);
+              yield* Effect.log("[cli] Bundled web app into dist/client");
+            } else {
+              yield* Effect.logWarning("[cli] Web dist not found. Skipping client bundle.");
+            }
+          }),
       );
-
-      const webDist = path.join(repoRoot, "apps/web/dist");
-      const clientTarget = path.join(serverDir, "dist/client");
-
-      if (yield* fs.exists(webDist)) {
-        yield* fs.copy(webDist, clientTarget);
-        yield* applyDevelopmentIconOverrides(repoRoot, serverDir);
-        yield* Effect.log("[cli] Bundled web app into dist/client");
-      } else {
-        yield* Effect.logWarning("[cli] Web dist not found. Skipping client bundle.");
-      }
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
 
@@ -117,33 +132,53 @@ const buildExeCmd = Command.make(
       const repoRoot = yield* RepoRoot;
       const serverDir = path.join(repoRoot, "apps/server");
 
-      yield* Effect.log("[cli] Building single-executable...");
-      const spawnCommand = yield* resolveSpawnCommand("vp", ["pack"]);
-      yield* runCommand(
-        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-          cwd: serverDir,
-          env: {
-            ...process.env,
-            T3CODE_PACK_EXE: "1",
-            ...Option.match(config.target, {
-              onNone: () => ({}),
-              onSome: (target) => ({ T3CODE_PACK_EXE_TARGET: target }),
-            }),
-          },
-          stdout: config.verbose ? "inherit" : "ignore",
-          stderr: "inherit",
-          shell: spawnCommand.shell,
-        }),
-      );
+      return yield* withFiniteProduction(
+        {
+          producer: "jones-server-build-exe",
+          worktree: repoRoot,
+          root: path.join(serverDir, "dist-exe"),
+        },
+        (evidence) =>
+          Effect.gen(function* () {
+            yield* Effect.log("[cli] Building single-executable...");
+            const spawnCommand = yield* resolveSpawnCommand("vp", ["pack"]);
+            yield* Effect.sync(evidence.commandStarted);
+            yield* runCommand(
+              ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+                cwd: serverDir,
+                env: {
+                  ...process.env,
+                  T3CODE_PACK_EXE: "1",
+                  ...Option.match(config.target, {
+                    onNone: () => ({}),
+                    onSome: (target) => ({ T3CODE_PACK_EXE_TARGET: target }),
+                  }),
+                },
+                stdout: config.verbose ? "inherit" : "ignore",
+                stderr: "inherit",
+                shell: spawnCommand.shell,
+              }),
+            ).pipe(
+              Effect.tap(() => Effect.sync(evidence.leaderExited)),
+              Effect.tapError((error) =>
+                error._tag === "ServerCliCommandExitError"
+                  ? Effect.sync(evidence.leaderExited)
+                  : Effect.void,
+              ),
+            );
 
-      // Executables reject non-builtin imports even when bundling succeeds; inspect the emitted graph.
-      const bundlePath = path.join(serverDir, "dist-exe/bin.mjs");
-      const specifiers = findEsmImportsOfExternalPackages(yield* fs.readFileString(bundlePath));
-      if (specifiers.length > 0) {
-        return yield* new ServerCliExecutableImportError({ bundlePath, specifiers });
-      }
-      yield* Effect.log(
-        "[cli] Built dist-exe/t3 (expects client/, resource-monitor/, and the runtime-external node_modules beside it; scripts/build-cli-archive.ts assembles that tree)",
+            // Executables reject non-builtin imports even when bundling succeeds; inspect the emitted graph.
+            const bundlePath = path.join(serverDir, "dist-exe/bin.mjs");
+            const specifiers = findEsmImportsOfExternalPackages(
+              yield* fs.readFileString(bundlePath),
+            );
+            if (specifiers.length > 0) {
+              return yield* new ServerCliExecutableImportError({ bundlePath, specifiers });
+            }
+            yield* Effect.log(
+              "[cli] Built dist-exe/t3 (expects client/, resource-monitor/, and the runtime-external node_modules beside it; scripts/build-cli-archive.ts assembles that tree)",
+            );
+          }),
       );
     }),
 ).pipe(
