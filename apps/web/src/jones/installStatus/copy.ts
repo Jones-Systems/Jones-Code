@@ -22,6 +22,26 @@ export function lastHeardLabel(at: number | undefined, now: number) {
   return at === undefined ? "not heard yet" : `last heard ${relativeAge(at, now)}`;
 }
 
+/** A step timer: m:ss, or h:mm:ss from one hour. */
+export function formatElapsed(ms: number) {
+  const total = Math.floor(Math.max(0, ms) / 1000);
+  const seconds = String(total % 60).padStart(2, "0");
+  const minutes = Math.floor(total / 60) % 60;
+  const hours = Math.floor(total / 3600);
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`
+    : `${minutes}:${seconds}`;
+}
+
+/** Detail footer text such as "Last heard 12s ago", in seconds for the first minute. */
+export function heardAgoLabel(at: number | undefined, now: number) {
+  if (at === undefined) return "Not heard yet";
+  const age = Math.max(0, now - at);
+  return age < 60_000
+    ? `Last heard ${Math.floor(age / 1000)}s ago`
+    : `Last heard ${relativeAge(at, now)}`;
+}
+
 export function updateCheckFailedLabel(checkedAt: string | undefined, now: number) {
   const at = checkedAt === undefined ? Number.NaN : Date.parse(checkedAt);
   return Number.isFinite(at)
