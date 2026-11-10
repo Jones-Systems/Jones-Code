@@ -130,6 +130,8 @@ function harness(
       RemoteEnvironmentAuthorization.of({
         authorizeBearer: () => Effect.die("No WebSocket preparation."),
         authorizeDpop: () => Effect.die("No WebSocket preparation."),
+        rememberCheckedDescriptor: () => Effect.void,
+        renewDpopBeforeExpiry: () => Effect.die("No socket renewal in HTTP fixture."),
         authorizeDpopHttp: (p) =>
           Effect.sync(() => {
             authorizations.push(p);

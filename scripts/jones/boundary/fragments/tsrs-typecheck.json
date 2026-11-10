@@ -8,6 +8,8 @@
     "apps/server/package.json",
     "apps/server/vite.config.ts",
     "apps/web/tsconfig.json",
+    "evals/package.json",
+    "evals/vite.config.ts",
     "infra/relay/package.json",
     "infra/relay/vite.config.ts",
     "infra/task-cache/package.json",
@@ -28,8 +30,12 @@
     "packages/provider-core/vite.config.ts",
     "packages/provider-cursor/package.json",
     "packages/provider-cursor/vite.config.ts",
+    "packages/provider-fx/package.json",
+    "packages/provider-fx/vite.config.ts",
     "packages/provider-grok/package.json",
     "packages/provider-grok/vite.config.ts",
+    "packages/provider-kiro/package.json",
+    "packages/provider-kiro/vite.config.ts",
     "packages/provider-muse/package.json",
     "packages/provider-muse/vite.config.ts",
     "packages/provider-opencode/package.json",
@@ -38,6 +44,11 @@
     "packages/provider-pi/vite.config.ts",
     "packages/provider-testing/package.json",
     "packages/provider-testing/vite.config.ts",
+    "packages/secret-provider-core/package.json",
+    "packages/secret-provider-core/vite.config.ts",
+    "packages/secret-provider-definitions/package.json",
+    "packages/secret-provider-onepassword/package.json",
+    "packages/secret-provider-onepassword/vite.config.ts",
     "packages/shared/vite.config.ts",
     "packages/source-control-azure-devops/package.json",
     "packages/source-control-azure-devops/vite.config.ts",
@@ -45,6 +56,8 @@
     "packages/source-control-bitbucket/vite.config.ts",
     "packages/source-control-core/package.json",
     "packages/source-control-core/vite.config.ts",
+    "packages/source-control-cursor-origin/package.json",
+    "packages/source-control-cursor-origin/vite.config.ts",
     "packages/source-control-definitions/package.json",
     "packages/source-control-definitions/vite.config.ts",
     "packages/source-control-forgejo/package.json",
@@ -80,6 +93,10 @@
     },
     {
       "from": "apps/web/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "evals/vite.config.ts",
       "to": "scripts/jones/tsrs/task-cache.ts"
     },
     {
@@ -127,7 +144,15 @@
       "to": "scripts/jones/tsrs/task-cache.ts"
     },
     {
+      "from": "packages/provider-fx/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
       "from": "packages/provider-grok/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/provider-kiro/vite.config.ts",
       "to": "scripts/jones/tsrs/task-cache.ts"
     },
     {
@@ -147,6 +172,14 @@
       "to": "scripts/jones/tsrs/task-cache.ts"
     },
     {
+      "from": "packages/secret-provider-core/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/secret-provider-onepassword/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
       "from": "packages/shared/vite.config.ts",
       "to": "scripts/jones/tsrs/task-cache.ts"
     },
@@ -160,6 +193,10 @@
     },
     {
       "from": "packages/source-control-core/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-cursor-origin/vite.config.ts",
       "to": "scripts/jones/tsrs/task-cache.ts"
     },
     {

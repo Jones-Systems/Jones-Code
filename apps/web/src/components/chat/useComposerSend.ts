@@ -108,6 +108,7 @@ import { useMultipleModelSend } from "./useMultipleModelSend";
 import { type ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import {
   awaitAttachmentUploads,
+  getUploadedAttachments,
   readAttachmentUpload,
   releaseDraftAttachments,
   retryAttachmentUpload,

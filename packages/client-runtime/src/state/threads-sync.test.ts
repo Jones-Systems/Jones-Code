@@ -84,6 +84,9 @@ const TEST_DEFECT = { defect: "Malformed snapshot" } as const;
 
 type TestThreadInput = OrchestrationV2ThreadStreamItem | Error | typeof TEST_DEFECT;
 
+// `===` against an object constant does not narrow the union, so the guard does.
+const isTestDefect = (input: TestThreadInput): input is typeof TEST_DEFECT => input === TEST_DEFECT;
+
 function testSession(
   client: WsRpcProtocolClient,
   initialConfig: Effect.Effect<object> = Effect.succeed({}),
@@ -153,7 +156,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const streamFrom = (queue: Queue.Queue<TestThreadInput>) =>
     Stream.fromQueue(queue).pipe(
       Stream.mapEffect((input) =>
-        input === TEST_DEFECT
+        isTestDefect(input)
           ? Effect.die(input)
           : input instanceof Error
             ? Effect.fail(input)

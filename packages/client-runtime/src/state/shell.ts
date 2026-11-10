@@ -421,7 +421,9 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           next.snapshot.value.threads.filter((thread) => pendingLinkIds.has(thread.id)),
         );
       }
-      if (Option.isSome(next.snapshot)) latestLive = liveShellFor(next.snapshot.value, origin);
+      if (Option.isSome(next.snapshot)) {
+        latestLive = Option.some(liveShellFor(next.snapshot.value, origin));
+      }
       if (next.snapshot !== initial.snapshot && Option.isSome(next.snapshot)) {
         changed = next.snapshot.value;
       }

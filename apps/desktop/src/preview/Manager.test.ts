@@ -630,6 +630,11 @@ describe("PreviewManager", () => {
                 setShown: () => {},
                 humanStartedDownload: () => true,
                 placeDownload: () => true,
+                replaceCompanionAssignments: () => {},
+                isCompanionAssigned: () => false,
+                isCompanionOwned: () => false,
+                registerCompanionGuest: () => {},
+                isCompanionGuest: () => false,
               }),
               Layer.mock(PreviewPasskeys.PreviewPasskeys)({
                 bridgeEnabled: false,
