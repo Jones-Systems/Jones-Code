@@ -6,6 +6,7 @@ import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
 import { DependencyWakeCommit } from "./DependencyCommit.ts";
@@ -345,5 +346,184 @@ it.effect("the acquired domain consumer drains when its owning startup scope clo
       ),
     );
     assert.isTrue(drained);
+  }).pipe(Effect.provide(Fixture.layer)),
+);
+
+// Let ready fibers and in-memory SQL settle without advancing the virtual clock.
+const settle = Effect.forEach(Array.from({ length: 300 }), () => Effect.yieldNow, {
+  discard: true,
+});
+const answered = {
+  token: "done",
+  state: "answered",
+  request: null,
+  admissionId: null,
+  observation: "receiver_working",
+  outcome: "fulfilled",
+  result: "Done",
+} as never;
+
+it.effect("paces a peer failure that carries no delay of its own with local backoff", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    yield* prepare(f);
+    let calls = 0;
+    const peer = Layer.mock(Forwarding.PeerForwarding)({
+      call: () =>
+        Effect.suspend(() => {
+          calls++;
+          return Effect.fail(
+            new OrchestratorMcpFailure({ code: "provider_unavailable", message: "Down" }),
+          );
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const reactor = yield* Reactor.DependencyReactor;
+      yield* reactor.start();
+      yield* settle;
+      assert.equal(calls, 1);
+      yield* TestClock.adjust(999);
+      yield* settle;
+      assert.equal(calls, 1);
+      yield* TestClock.adjust(1);
+      yield* settle;
+      assert.equal(calls, 2);
+      yield* TestClock.adjust(1_999);
+      yield* settle;
+      assert.equal(calls, 2);
+      yield* TestClock.adjust(1);
+      yield* settle;
+      assert.equal(calls, 3);
+    }).pipe(
+      Effect.provide(
+        Reactor.layer.pipe(
+          Layer.provide(Watch.layer),
+          Layer.provide(ports(f)),
+          Layer.provide(peer),
+          Layer.provide(NodeCrypto.layer),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect("a follower that fails unexpectedly retries instead of waiting for another change", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const changes = yield* Changes.DependencyChanges;
+    yield* prepare(f);
+    const subscription = yield* changes.subscribe;
+    let calls = 0;
+    const peer = Layer.mock(Forwarding.PeerForwarding)({
+      call: () =>
+        Effect.suspend(() => {
+          calls++;
+          return calls === 1 ? Effect.die("Synthetic follower defect") : Effect.succeed(answered);
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const reactor = yield* Reactor.DependencyReactor;
+      yield* reactor.start();
+      yield* settle;
+      assert.equal(calls, 1);
+      yield* TestClock.adjust(1_000);
+      const delivered = yield* Stream.fromSubscription(subscription).pipe(
+        Stream.mapEffect(() => f.store.get("recovered-remote")),
+        Stream.filter((dependency) => dependency?.state === "delivered"),
+        Stream.runHead,
+      );
+      assert.isTrue(Option.isSome(delivered));
+      assert.equal(calls, 2);
+    }).pipe(
+      Effect.provide(
+        Reactor.layer.pipe(
+          Layer.provide(Watch.layer),
+          Layer.provide(ports(f)),
+          Layer.provide(peer),
+          Layer.provide(NodeCrypto.layer),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect("a domain-event subscriber that stops is reacquired after a delay", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const reacquired = yield* Deferred.make<void>();
+    let acquisitions = 0;
+    const acquisition: Orchestrator.OrchestratorV2Shape["acquireDomainEvents"] = Effect.suspend(
+      () => {
+        acquisitions++;
+        if (acquisitions === 1)
+          return Effect.succeed(
+            Stream.fail(
+              new Orchestrator.OrchestratorDomainEventStreamError({
+                cause: "synthetic stream loss",
+              }),
+            ),
+          );
+        return Deferred.succeed(reacquired, undefined).pipe(Effect.as(Stream.never));
+      },
+    );
+    yield* Effect.gen(function* () {
+      const reactor = yield* Reactor.DependencyReactor;
+      yield* reactor.start();
+      yield* settle;
+      assert.equal(acquisitions, 1);
+      yield* TestClock.adjust(999);
+      yield* settle;
+      assert.equal(acquisitions, 1);
+      yield* TestClock.adjust(1);
+      yield* Deferred.await(reacquired);
+      assert.equal(acquisitions, 2);
+    }).pipe(
+      Effect.provide(
+        Reactor.layer.pipe(
+          Layer.provide(Watch.layer),
+          Layer.provide(ports(f, acquisition)),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(
+            Layer.mock(Forwarding.PeerForwarding)({
+              call: () => Effect.die("No dependency is open in this test"),
+            }),
+          ),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect("retention runs again while the reactor stays started", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    yield* Effect.gen(function* () {
+      const reactor = yield* Reactor.DependencyReactor;
+      yield* reactor.start(); // The startup pass finds nothing to retire.
+      yield* prepare(f);
+      yield* f.sql.withTransaction(f.store.release(f.waiter.id, "recovered-remote"));
+      // Older than the replay window, so the next pass may retire it.
+      yield* f.sql`UPDATE jones_thread_result_dependencies SET changed_sequence = -5000
+        WHERE dependency_id = 'recovered-remote'`;
+      yield* TestClock.adjust(60 * 60 * 1_000 - 1);
+      yield* settle;
+      assert.equal((yield* f.store.get("recovered-remote"))?.state, "released");
+      yield* TestClock.adjust(1);
+      yield* settle;
+      assert.isUndefined(yield* f.store.get("recovered-remote"));
+    }).pipe(
+      Effect.provide(
+        Reactor.layer.pipe(
+          Layer.provide(Watch.layer),
+          Layer.provide(ports(f)),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(
+            Layer.mock(Forwarding.PeerForwarding)({
+              call: () => Effect.die("A released dependency must not call a peer"),
+            }),
+          ),
+        ),
+      ),
+    );
   }).pipe(Effect.provide(Fixture.layer)),
 );
