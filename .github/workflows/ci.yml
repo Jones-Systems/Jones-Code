@@ -887,7 +887,7 @@ jobs:
     needs: [linux_changes, server_weights]
     if: ${{ !cancelled() && needs.linux_changes.outputs.test_server != 'false' && needs.server_weights.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

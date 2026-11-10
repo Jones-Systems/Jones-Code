@@ -2,7 +2,12 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "direct-producer-completion",
   "jonesOwnedPaths": [],
-  "hookPaths": [],
+  "hookPaths": ["apps/server/scripts/cli.ts"],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/server/scripts/cli.ts",
+      "to": "scripts/jones/direct-producers/finite-production.ts"
+    }
+  ]
 }

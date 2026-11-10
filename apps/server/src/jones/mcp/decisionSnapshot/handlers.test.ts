@@ -28,6 +28,9 @@ import * as WorkstreamGateway from "../../../workstreams/WorkstreamGateway.ts";
 import { makeSyntheticWorkstreamTransport } from "../../../workstreams/SyntheticWorkstreamTransport.ts";
 import { DecisionSnapshot, DecisionSnapshotToolkit } from "./tools.ts";
 
+const decodeUnknownJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+const encodeSnapshotJson = Schema.encodeEffect(Schema.fromJsonString(DecisionSnapshot));
+const decodeSnapshotJson = Schema.decodeEffect(Schema.fromJsonString(DecisionSnapshot));
 const harness = Effect.fnUntraced(function* (
   invalidOutput = false,
   backgroundUnknown = 0,
@@ -132,9 +135,10 @@ it.effect("retains native thread facts when registry and bound runtime are unava
         host: { status: "unavailable", reason: "runtime_unavailable" },
       },
     });
-    expect(
-      yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(h.state().envelope),
-    ).toMatchObject({ schema: "codex.decision-snapshot-native/v1", provenance: "native_observed" });
+    expect(yield* decodeUnknownJson(h.state().envelope)).toMatchObject({
+      schema: "codex.decision-snapshot-native/v1",
+      provenance: "native_observed",
+    });
     expect(h.state().reads).toBe(1);
     expect(h.state().registryReads).toBe(1);
     expect(h.state().launches).toBe(1);
@@ -170,9 +174,7 @@ it.effect("preserves incomplete V2 native background coverage as partial counts"
         },
       },
     });
-    expect(
-      yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(h.state().envelope),
-    ).toMatchObject({
+    expect(yield* decodeUnknownJson(h.state().envelope)).toMatchObject({
       sources: {
         threads: { status: "partial", reason: "native_background_coverage_incomplete" },
       },
@@ -301,9 +303,7 @@ it.effect(
       );
       const h = yield* harness(false, 0, nativePorts);
       assertApplicationScope(yield* h.call(["decision-snapshot"]));
-      expect(
-        yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(h.state().envelope),
-      ).toMatchObject({
+      expect(yield* decodeUnknownJson(h.state().envelope)).toMatchObject({
         sources: {
           threads: {
             status: "partial",
@@ -422,11 +422,42 @@ it.effect(
     }),
 );
 
-it.effect(
-  "round-trips adapter counts and a v1 thread entry through the unchanged real collector",
-  () =>
+it.effect.each(["legacy", "native"] as const)(
+  "round-trips %s adapter counts and a v1 thread entry through the unchanged real collector",
+  (mode) =>
     Effect.gen(function* () {
-      const live = yield* liveCounts();
+      const legacy = yield* liveCounts();
+      const live: DecisionSnapshotNativeCounts["Service"] =
+        mode === "legacy"
+          ? legacy
+          : {
+              ...legacy,
+              readRegistryCounts: () =>
+                legacy.readRegistryCounts!().pipe(
+                  Effect.map((observation) => ({
+                    ...observation,
+                    envelope: {
+                      contract: "workstreams-read/1.0.0",
+                      registry: {
+                        registry_instance_id: "11111111-1111-4111-8111-111111111111",
+                        owner_id: observation.binding.ownerId,
+                        canonical_origin: observation.binding.registryId,
+                        server_generation: observation.binding.serverGeneration,
+                        registry_version: observation.binding.registryVersion,
+                      },
+                      provenance: {
+                        authority: "native-home",
+                        home_environment_id: "native:home",
+                        served_by_environment_id: "native:home",
+                        source: "live",
+                        stale: false,
+                        observed_at: observation.counts.observed_at,
+                      },
+                      coverage: { registry: "complete", sources: [] },
+                    },
+                  })),
+                ),
+            };
       let launches = 0;
       // Only native sources are bound. compose never invokes a host/account collector in this fixture.
       const collector: DecisionSnapshotCollector["Service"] = {
@@ -513,9 +544,176 @@ print(json.dumps(asyncio.run(module.compose({}, purpose=sys.argv[2], native=json
         values: { total: 4, operating: 2 },
       });
       expect(result.sources.host.reason).toBe("source_not_bound");
-      const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(DecisionSnapshot))(result);
-      expect(yield* Schema.decodeEffect(Schema.fromJsonString(DecisionSnapshot))(encoded)).toEqual(
-        result,
+      if (mode === "native")
+        expect(result.sources.workstreams.scope.native_read).toMatchObject({
+          contract: "workstreams-read/1.0.0",
+          coverage: { registry: "complete" },
+          registry: { registry_version: 11, server_generation: 7 },
+        });
+      const encoded = yield* encodeSnapshotJson(result);
+      expect(yield* decodeSnapshotJson(encoded)).toEqual(result);
+    }),
+);
+
+import type { WorkstreamsNativeReadEnvelope } from "@t3tools/contracts/jones/workstreamsNativeRead";
+import * as NativeReadRoutes from "../../workstreams/native/read/routes.ts";
+const nativeEnvelope: WorkstreamsNativeReadEnvelope = {
+  contract: "workstreams-read/1.0.0",
+  registry: {
+    registry_instance_id: "11111111-1111-4111-8111-111111111111",
+    owner_id: "native:owner",
+    canonical_origin: "https://native.workstreams.invalid",
+    server_generation: 2,
+    registry_version: 8,
+  },
+  provenance: {
+    authority: "native-home",
+    home_environment_id: "native:home",
+    served_by_environment_id: "native:home",
+    source: "live",
+    stale: false,
+    observed_at: "2026-10-02T00:00:00Z",
+  },
+  coverage: {
+    registry: "complete",
+    sources: [
+      {
+        source_instance_id: "orphan:source",
+        mapping: "unmapped",
+        attestation: "unknown",
+        observed_at: null,
+      },
+    ],
+  },
+};
+const nativeObservation = (envelope = nativeEnvelope) => ({
+  envelope,
+  complete: true,
+  counts: {
+    context: {
+      owner_id: envelope.registry.owner_id,
+      server_generation: envelope.registry.server_generation,
+      registry_version: envelope.registry.registry_version,
+    },
+    principal_id: "native:principal",
+    observed_at: envelope.provenance.observed_at,
+    active: 2,
+    total: 3,
+    unknown_lifecycle: 1,
+  },
+  binding: {
+    registryId: envelope.registry.canonical_origin,
+    ownerId: envelope.registry.owner_id,
+    principalId: "native:principal",
+    serverGeneration: envelope.registry.server_generation,
+    registryVersion: envelope.registry.registry_version,
+    authorizationRevision: 4,
+  },
+});
+it.effect.each(["live", "cache"] as const)(
+  "retains native %s coverage in decision counts without promoting cache to complete",
+  (source) =>
+    Effect.gen(function* () {
+      const envelope: WorkstreamsNativeReadEnvelope =
+        source === "live"
+          ? nativeEnvelope
+          : {
+              ...nativeEnvelope,
+              provenance: { ...nativeEnvelope.provenance, source: "cache", stale: true },
+              coverage: { ...nativeEnvelope.coverage, registry: "stale" },
+            };
+      const h = yield* harness(false, 0, {
+        readRegistryCounts: () => Effect.succeed(nativeObservation(envelope)),
+      });
+      const result = yield* h.call(["decision-snapshot"]);
+      expect(result.sources.workstreams).toMatchObject({
+        status: source === "live" ? "observed" : "stale",
+        scope: { native_read: envelope, registry_version: 8, authorization_revision: 4 },
+        values: { active: 2, total: 3, unknown_lifecycle: 1 },
+      });
+      expect(JSON.parse(h.state().envelope).sources.workstreams.scope).not.toHaveProperty(
+        "native_read",
       );
     }),
 );
+it.effect("rejects incoherent native versions and retains old result decoding", () =>
+  Effect.gen(function* () {
+    const observation = nativeObservation();
+    const h = yield* harness(false, 0, {
+      readRegistryCounts: () =>
+        Effect.succeed({
+          ...observation,
+          envelope: {
+            ...observation.envelope,
+            registry: { ...observation.envelope.registry, registry_version: 9 },
+          },
+        }),
+    });
+    expect((yield* h.call(["decision-snapshot"])).sources.workstreams).toMatchObject({
+      status: "unavailable",
+      values: {},
+    });
+    const unsupported = yield* harness(false, 0, {
+      readRegistryCounts: () =>
+        Effect.succeed({
+          ...observation,
+          envelope: {
+            ...observation.envelope,
+            contract: "workstreams-read/9.0.0",
+          } as unknown as WorkstreamsNativeReadEnvelope,
+        }),
+    });
+    expect((yield* unsupported.call(["decision-snapshot"])).sources.workstreams.status).toBe(
+      "unavailable",
+    );
+  }),
+);
+it.effect(
+  "uses admitted native counts in the Live adapter and never calls the legacy gateway on native failure",
+  () =>
+    Effect.gen(function* () {
+      let legacyReads = 0,
+        nativeReads = 0,
+        unavailable = false;
+      const dependencies = Layer.mergeAll(
+        ProjectionStore.layerMemory,
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+        Layer.mock(WorkstreamGateway.WorkstreamGateway)({
+          purgeAuthorization: () => {},
+          readRegistryCounts: () => {
+            legacyReads++;
+            return Effect.die("Legacy transport must not be called");
+          },
+        }),
+        Layer.succeed(NativeReadRoutes.AuthorizedReads, {
+          read: (request) => {
+            nativeReads++;
+            expect(request).toEqual({ route: "counts", params: {} });
+            return unavailable
+              ? Effect.fail(new NativeRegistryError({ code: "unavailable" }))
+              : Effect.succeed({
+                  route: "counts",
+                  envelope: nativeEnvelope,
+                  authorization_revision: 4,
+                  value: { ...nativeObservation().counts, authority_effect: "none" },
+                });
+          },
+        }),
+      );
+      const live = yield* DecisionSnapshotNativeCounts.pipe(
+        Effect.provide(DecisionSnapshotNativeCountsLive.pipe(Layer.provide(dependencies))),
+      );
+      expect(yield* live.readRegistryCounts!()).toMatchObject({
+        envelope: nativeEnvelope,
+        binding: { authorizationRevision: 4 },
+        counts: { active: 2, total: 3 },
+      });
+      unavailable = true;
+      expect(yield* live.readRegistryCounts!().pipe(Effect.flip)).toMatchObject({
+        source: "workstreams",
+      });
+      expect(nativeReads).toBe(2);
+      expect(legacyReads).toBe(0);
+    }),
+);
+import { RegistryError as NativeRegistryError } from "../../workstreams/native/registry/session.ts";

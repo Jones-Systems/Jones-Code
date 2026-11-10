@@ -1,3 +1,4 @@
+import type { NativeWorkstreamsRequestError } from "@t3tools/client-runtime/jones/workstreams/native-lifetime";
 import type { WorkstreamOperationsTransport } from "@t3tools/client-runtime/jones/workstreams/operations";
 import {
   executeAuthenticatedEnvironmentHttpRequest,
@@ -54,7 +55,13 @@ interface RequestInput {
     prepared: PreparedConnection,
     signer: DpopSigner,
     remoteAuthorization: Authorization,
-  ) => Effect.Effect<unknown, RemoteEnvironmentRequestError, HttpClient.HttpClient>;
+  ) => Effect.Effect<
+    unknown,
+    | RemoteEnvironmentRequestError
+    | NativeWorkstreamsRequestError
+    | EnvironmentWorkstreamsUnavailableError,
+    HttpClient.HttpClient
+  >;
   readonly signal: AbortSignal | undefined;
 }
 
@@ -140,6 +147,37 @@ export const requestEnvironmentWorkstreams: EnvironmentWorkstreamsRequest = asyn
   if (result._tag === "Failure") throw Cause.squash(result.cause);
   return result.value as A;
 };
+
+/** Runs against the original prepared connection; a replacement cannot adopt an old reader. */
+export async function runEnvironmentWorkstreamsEffect<A, E extends NativeWorkstreamsRequestError>(
+  prepared: PreparedConnection,
+  effect: Effect.Effect<A, E, HttpClient.HttpClient>,
+  signal: AbortSignal,
+): Promise<A> {
+  signal.throwIfAborted();
+  const result = await runAtomCommand(
+    appAtomRegistry,
+    await environmentCommand(),
+    {
+      environmentId: prepared.environmentId,
+      input: {
+        signal,
+        execute: (current) =>
+          current === prepared
+            ? effect
+            : Effect.fail(
+                new EnvironmentWorkstreamsUnavailableError({
+                  message: "The native Workstreams connection was replaced.",
+                }),
+              ),
+      },
+    },
+    { reportFailure: false, reportDefect: false },
+  );
+  signal.throwIfAborted();
+  if (result._tag === "Failure") throw Cause.squash(result.cause);
+  return result.value as A;
+}
 
 export function environmentOperationsTransport(
   environmentId: string,

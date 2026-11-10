@@ -39,6 +39,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -5152,13 +5153,15 @@ const runtimeTerminalTestLayer = Layer.mergeAll(
 );
 
 it.effect.each([
-  { mode: "terminal", replaced: false },
-  { mode: "terminal", replaced: true },
-  { mode: "superseded hard Stop", replaced: false },
-  { mode: "superseded hard Stop", replaced: true },
+  { mode: "terminal", replaced: false, lost: false },
+  { mode: "terminal", replaced: true, lost: false },
+  { mode: "superseded hard Stop", replaced: false, lost: false },
+  { mode: "superseded hard Stop", replaced: true, lost: false },
+  // The stored row no longer names any producer; the terminal must still settle its own run.
+  { mode: "terminal", replaced: false, lost: true },
 ] as const)(
-  "guards $mode against a generation replaced before commit: $replaced",
-  ({ mode, replaced }) =>
+  "guards $mode against a generation replaced before commit: $replaced, lost evidence: $lost",
+  ({ mode, replaced, lost }) =>
     Effect.gen(function* () {
       const sink = yield* EventSink.EventSinkV2;
       const projection = yield* ProjectionStore.ProjectionStoreV2;
@@ -5359,6 +5362,8 @@ it.effect.each([
       >();
       const commit = yield* Deferred.make<void>();
       const finished = yield* Deferred.make<void>();
+      const runWrites: Array<Parameters<EventSink.EventSinkV2Shape["writeIfRunCurrent"]>[0]> = [];
+      const lostEvidenceSettled = yield* Deferred.make<void>();
       const observedSink = EventSink.EventSinkV2.of({
         ...sink,
         writeWithEffects: (input) =>
@@ -5369,10 +5374,17 @@ it.effect.each([
           }).pipe(Effect.ensuring(Deferred.succeed(finished, undefined))),
         writeIfRunCurrent: (input) =>
           Effect.gen(function* () {
+            runWrites.push(input);
             yield* Deferred.succeed(commitReady, input);
             yield* Deferred.await(commit);
             return yield* sink.writeIfRunCurrent(input);
-          }).pipe(Effect.ensuring(Deferred.succeed(finished, undefined))),
+          }).pipe(
+            Effect.ensuring(
+              input.settleRunOnLostRuntimeEvidence === true
+                ? Deferred.succeed(lostEvidenceSettled, undefined)
+                : Deferred.succeed(finished, undefined),
+            ),
+          ),
       });
       const executionLayer = RunExecutionService.layer.pipe(
         Layer.provide(
@@ -5484,10 +5496,35 @@ it.effect.each([
               },
             ],
           });
+        if (lost)
+          yield* sink.write({
+            runtimeIdentityBoundary: { expectedGeneration: "native-producer" },
+            events: [
+              {
+                id: EventId.make("terminal-evidence-lost-before-commit"),
+                type: "provider-thread.updated",
+                threadId,
+                occurredAt: now,
+                payload: { ...before, runtimeIdentity: { requested, observed } },
+              },
+            ],
+          });
         const currentIdentity = (yield* projection.getThreadProjection(threadId)).providerThreads[0]
           ?.runtimeIdentity;
+        if (lost) assert.isUndefined(currentIdentity?.runtimeGeneration);
         yield* Deferred.succeed(commit, undefined);
         yield* Deferred.await(finished);
+        if (lost) {
+          const settled = yield* Deferred.await(lostEvidenceSettled).pipe(
+            Effect.timeoutOption("10 seconds"),
+            Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
+          );
+          assert.isTrue(
+            Option.isSome(settled),
+            "a terminal that lost its producer evidence must settle its run in a second write",
+          );
+          assert.lengthOf(runWrites, 2, "the lost-evidence settlement is attempted exactly once");
+        }
         const after = yield* projection.getThreadProjection(threadId);
         assert.deepEqual(after.providerThreads[0]?.runtimeIdentity, currentIdentity);
         assert.equal(

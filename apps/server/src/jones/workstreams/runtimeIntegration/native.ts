@@ -6,6 +6,11 @@ import {
   type WorkstreamsNativeOwnerResponse,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as PeerSetup from "../native/runtime/peerSetup.ts";
+import { createPeerSetupOwnerHandler } from "../native/runtime/peerSetupCli.ts";
+import * as SourceEnrollments from "../native/runtime/sourceEnrollment.ts";
+import * as NativeStartup from "../native/runtime/startup.ts";
+import { NativeProviderEnrollmentError } from "../nativeProvider/enrollment.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -67,7 +72,20 @@ const makeNativeWorkstreamsRuntimeLayer = (
       const sql = yield* SqlClient.SqlClient;
       const engine = yield* Orchestrator.OrchestratorV2;
       const attempts = yield* NativeProviderAttempts;
-      const enrollments = yield* NativeProviderEnrollment;
+      const selection = yield* NativeStartup.Startup;
+      const native = yield* Effect.serviceOption(SourceEnrollments.NativeSourceEnrollments);
+      const legacy = yield* NativeProviderEnrollment;
+      const enrollments =
+        selection.mode === "legacy" || (selection.mode === "disabled" && selection.config === null)
+          ? legacy
+          : NativeProviderEnrollment.of({
+              getBySessionId: (id) =>
+                selection.mode === "native-home" && Option.isSome(native)
+                  ? native.value
+                      .getBySessionId(id)
+                      .pipe(Effect.mapError(() => new NativeProviderEnrollmentError()))
+                  : Effect.fail(new NativeProviderEnrollmentError()),
+            });
       return NativeWorkstreamsRuntime.of({
         enrollments,
         ownerOperations: Effect.fn("NativeWorkstreamIntegration.ownerOperations")(
@@ -185,7 +203,12 @@ export const nativeWorkstreamsHttpApiLayer = HttpApiBuilder.group(
   "workstreamsNative",
   Effect.fnUntraced(function* (handlers) {
     const runtime = yield* NativeWorkstreamsRuntime;
+    const setup = yield* Effect.serviceOption(PeerSetup.PeerSetup);
     return handlers
+      .handleRaw(
+        "peerSetupOwnerOperations",
+        createPeerSetupOwnerHandler(Option.getOrUndefined(setup)),
+      )
       .handleRaw(
         "ownerOperations",
         Effect.fnUntraced(function* () {

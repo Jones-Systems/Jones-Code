@@ -1,3 +1,7 @@
+import * as WorkstreamPeerPins from "./jones/workstreams/native/runtime/peerSessionPins.ts";
+import * as WorkstreamPeerSetup from "./jones/workstreams/native/runtime/peerSetup.ts";
+import * as WorkstreamHomeBind from "./jones/workstreams/native/runtime/homeBind.ts";
+import * as WorkstreamPeerMcpAuthentication from "./jones/workstreams/native/runtime/peerMcpAuthentication.ts";
 import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
 import * as DependencyReactor from "./jones/threadResultDependencies/DependencyReactor.ts";
 import * as ThreadResultMcpDependencies from "./jones/threadResultDependencies/McpDependencies.ts";
@@ -61,13 +65,14 @@ import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import {
-  workstreamOperationsLayerLive,
-  workstreamGatewayLayerLive,
+  workstreamSelectedServicesLayer,
+  workstreamStartupLayer,
   workstreamHttpApiLayer,
   workstreamNativeAuthorityLayerLive,
-  workstreamRegistrationContextLayerLive,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
+import * as WorkstreamRecordedAdmission from "./jones/workstreams/native/runtime/admission.ts";
+import * as WorkstreamCurrentAuthority from "./jones/workstreams/native/runtime/currentAuthority.ts";
 import * as NativeWorkstreams from "./jones/workstreams/runtimeIntegration/native.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
@@ -118,6 +123,8 @@ import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
+import * as NativeSourceStartup from "./jones/workstreams/native/runtime/startup.ts";
+import * as NativeSourceIntegration from "./jones/workstreams/native/integration.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -575,7 +582,28 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
   }),
 );
 
+const layerNativeSourceLookup = Layer.unwrap(
+  Effect.map(NativeSourceStartup.Startup, (selection) =>
+    selection.mode === "native-home"
+      ? NativeSourceIntegration.nativeSourceEnrollmentLayer
+      : Layer.empty,
+  ),
+).pipe(
+  // Selection is memoized across the graph: the first consumer must qualify members too.
+  Layer.provideMerge(workstreamStartupLayer),
+  Layer.provideMerge(NativeSourceIntegration.nativePersistenceLayer),
+  Layer.provide(WorkstreamCurrentAuthority.layer),
+  Layer.provide(workstreamNativeAuthorityLayerLive),
+  Layer.provide(
+    PeerLinks.layer.pipe(
+      Layer.provide(layerServerEnvironment),
+      Layer.provide(ServerSecretStore.layer),
+    ),
+  ),
+);
+
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
+  Layer.provide(layerNativeSourceLookup),
   Layer.provide(layerScheduledTaskWebhookOrigin),
   Layer.provide(workstreamNativeAuthorityLayerLive),
   Layer.provide(ProviderEventIngestor.layerAnalytics),
@@ -761,7 +789,10 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
+const layerRuntimeDependencies = NativeWorkstreams.nativeWorkstreamsRuntimeLayer.pipe(
+  Layer.provideMerge(layerNativeSourceLookup),
+  Layer.provide(workstreamNativeAuthorityLayerLive),
+  Layer.provideMerge(layerRuntimeCoreDependencies),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(JonesHttp.tokenAccountingLayer),
   Layer.provideMerge(layerBackground),
@@ -773,8 +804,7 @@ const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   Layer.provideMerge(RemoteOpenTargets.layer),
   Layer.provideMerge(DirectEndpoints.layer),
   Layer.provideMerge(ServerLifecycleEvents.layer),
-  // Jones: one fence shared by the event sink and the update installer.
-  Layer.provideMerge(UpdateAdmissionFence.layer),
+  // Jones: the acquired application supplies one fence to all consumers.
   Layer.provide(NetService.layer),
 );
 
@@ -784,6 +814,21 @@ const layerCommandReadiness = HttpRouter.middleware(
       startup.awaitCommandReady.pipe(Effect.orDie, Effect.andThen(httpEffect)),
     ),
   { global: true },
+);
+
+// Share the native authentication object registry with selected Workstreams reads.
+const layerWorkstreamPeerAuthentication = WorkstreamPeerMcpAuthentication.layer.pipe(
+  Layer.provideMerge(WorkstreamPeerPins.nativeLayer),
+);
+
+// Setup readiness is independent of ordinary home/member selection. This captures existing
+// selected SQL/auth/key resources, and qualification occurs only for an explicit setup call.
+const layerWorkstreamPeerSetup = Layer.effect(
+  WorkstreamHomeBind.HomeBind,
+  Effect.map(WorkstreamPeerSetup.PeerSetup, (setup) => setup.homeBind),
+).pipe(
+  Layer.provideMerge(WorkstreamPeerSetup.runtimeLayer),
+  Layer.provideMerge(NativeSourceIntegration.nativePersistenceLayer),
 );
 
 const layerMakeRoutes = Layer.mergeAll(
@@ -852,11 +897,13 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(DesktopBrowserChannel.layer),
     Layer.provide(PreviewAgentActivity.layer),
     Layer.provide(PreviewBrowser.layer),
-    Layer.provide(workstreamOperationsLayerLive),
+    Layer.provide(workstreamSelectedServicesLayer),
+    Layer.provide(layerWorkstreamPeerSetup),
+    Layer.provide(layerWorkstreamPeerAuthentication),
   )
   .pipe(
-    Layer.provide(workstreamGatewayLayerLive),
-    Layer.provide(workstreamRegistrationContextLayerLive),
+    Layer.provideMerge(WorkstreamRecordedAdmission.recordedThreadLookupLayer),
+    Layer.provideMerge(WorkstreamCurrentAuthority.layer),
     // Same layer identity as the gateway's, so the config descriptor reads the same authority.
     Layer.provide(workstreamNativeAuthorityLayerLive),
     Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),
@@ -893,7 +940,12 @@ const layerMakeServer = Layer.unwrap(
     const tailscaleParked = yield* Deferred.make<void>();
     const cloudLinkParked = yield* Deferred.make<void>();
     const routesReady = yield* Deferred.make<void>();
-    const layerLauncher = ServiceLauncherClient.layer;
+    const updateAdmission = yield* UpdateAdmissionFence.make;
+    const layerUpdateAdmission = Layer.succeed(
+      UpdateAdmissionFence.UpdateAdmissionFence,
+      updateAdmission,
+    );
+    const layerLauncher = ServiceLauncherClient.layer.pipe(Layer.provide(layerUpdateAdmission));
 
     yield* fixPath({ shellEnvironmentPrepared: config.shellEnvironmentPrepared });
 
@@ -1207,6 +1259,8 @@ const layerMakeServer = Layer.unwrap(
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
       Layer.provideMerge(layerRuntimeServices),
+      Layer.provide(layerUpdateAdmission),
+      Layer.provide(Layer.succeed(ServerOwnership.ServerOwnershipLifetime, ownership.lifetime)),
       Layer.provide(DependencyChanges.layer),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(

@@ -1,3 +1,7 @@
+import * as NativeReadExport from "../jones/workstreams/native/read/export.ts";
+import { RegistryError } from "../jones/workstreams/native/registry/session.ts";
+import * as Stream from "effect/Stream";
+import { workstreamsHttpResponseHeaders } from "@t3tools/contracts/jones/workstreamsHttp";
 // @effect-diagnostics nodeBuiltinImport:off -- Tests exercise real POSIX filesystem custody and exact scratch cleanup.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -63,6 +67,9 @@ describe("Workstream HTTP response containment", () => {
         const limit = (method: string, originalUrl: string) =>
           withWorkstreamBodyLimit(HttpIncomingMessage.MaxBodySize, { method, originalUrl });
         expect(yield* limit("POST", "/api/workstreams/thread-placements")).toBe(262_144n);
+        expect(yield* limit("POST", "/api/workstreams/native/v1/read")).toBe(262_144n);
+        expect(yield* limit("POST", "/api/workstreams/native/v1/read?extra=x")).toBe(262_144n);
+        expect(yield* limit("GET", "/api/workstreams/native/v1/read")).toBeUndefined();
         expect(yield* limit("POST", "/api/workstreams/thread-placements?extra=x")).toBe(262_144n);
         expect(
           yield* limit("POST", "http://fixture/api/workstreams/thread-placements?extra=x"),
@@ -106,6 +113,11 @@ class WorkstreamTestApi extends HttpApi.make("environment").add(
   EnvironmentHttpApi.groups.workstreams,
 ) {}
 
+const decodeListResult = Schema.decodeUnknownSync(T3WorkstreamListResult);
+const decodeScopeRequiredError = Schema.decodeUnknownSync(EnvironmentScopeRequiredError);
+const decodeReceipt = Schema.decodeUnknownSync(WorkstreamReceipt);
+const decodeAuthInvalidError = Schema.decodeUnknownSync(EnvironmentAuthInvalidError);
+
 const command: WorkstreamCommand = {
   command_id: "command-http-fixture-0001",
   expected_server_generation: 7,
@@ -130,6 +142,7 @@ const withHttpFixture = Effect.fn(function* (
   }) => Promise<void>,
   failure?: "offline" | "cursor-stale" | "not-configured",
   customizeTransport?: (transport: WorkstreamTransport) => WorkstreamTransport,
+  nativeExport?: NativeReadExport.ReadExport["Service"],
 ) {
   const calls = { reads: 0, writes: 0 };
   const submissions = { count: 0 };
@@ -180,6 +193,11 @@ const withHttpFixture = Effect.fn(function* (
   ) as EnvironmentAuth.EnvironmentAuth["Service"];
   const routes = HttpApiBuilder.layer(WorkstreamTestApi).pipe(
     Layer.provide(workstreamHttpApiLayer),
+    Layer.provide(
+      nativeExport === undefined
+        ? Layer.empty
+        : Layer.succeed(NativeReadExport.ReadExport, nativeExport),
+    ),
     Layer.provide(Layer.succeed(WorkstreamsRegistrationContext, makeRegistrationFixture().service)),
     Layer.provide(layerAuthenticatedAuth),
     Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, auth)),
@@ -217,6 +235,177 @@ const withHttpFixture = Effect.fn(function* (
   );
 });
 
+it.effect(
+  "refuses native reads without a selected reader instead of using the legacy Gateway",
+  () =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
+      const request = (headers: Record<string, string>) =>
+        new Request("http://fixture/api/workstreams/native/v1/read", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify({
+            contract: "workstreams-native-home-read-result/1.0.0",
+            request: { route: "counts", params: {} },
+          }),
+        });
+      const unauthenticated = await handler(request({}));
+      expect(unauthenticated.status).toBe(401);
+      const unavailable = await handler(request({ authorization: "Bearer synthetic-token" }));
+      expect(unavailable.status).toBe(409);
+      expect(await unavailable.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+      expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
+    }),
+);
+
+it.effect(
+  "refuses native exports without a selected producer instead of using the legacy Gateway",
+  () =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
+      const request = (headers: Record<string, string>, query = "") =>
+        new Request("http://fixture/api/workstreams/native/v1/export" + query, { headers });
+      expect((await handler(request({}))).status).toBe(401);
+      const unavailable = await handler(request({ authorization: "Bearer synthetic-token" }));
+      expect(unavailable.status).toBe(409);
+      expect(await unavailable.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+      expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+      expect(unavailable.headers.get("x-content-type-options")).toBe("nosniff");
+      for (const query of [
+        "?page_size=0",
+        "?page_size=101",
+        "?caller=forged",
+        "?page_size=1&page_size=2",
+      ])
+        expect(
+          (await handler(request({ authorization: "Bearer synthetic-token" }, query))).status,
+        ).toBe(400);
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
+    }),
+);
+
+it.effect("requires read scope before opening a native export producer", () => {
+  let opened = 0;
+  return withHttpFixture(
+    [],
+    async ({ handler, calls }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(opened).toBe(0);
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+    },
+    undefined,
+    undefined,
+    {
+      stream: () => {
+        opened += 1;
+        return Stream.empty;
+      },
+    },
+  );
+});
+
+it.effect("contains initial native export refusal before committing stream headers", () =>
+  withHttpFixture(
+    [AuthOrchestrationReadScope],
+    async ({ handler, calls }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export?page_size=1", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+    },
+    undefined,
+    undefined,
+    { stream: () => Stream.fail(new RegistryError({ code: "forbidden" })) },
+  ),
+);
+
+it.effect("preserves streamed UTF-8 bytes and aborts a failed export without a trailer", () => {
+  const page = '{"private_name":"α and β"}\n';
+  const ready = Promise.withResolvers<void>();
+  return withHttpFixture(
+    [AuthOrchestrationReadScope],
+    async ({ handler }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      if (!response.body) throw new Error("Missing native export stream.");
+      const reader = response.body.getReader();
+      const first = await reader.read();
+      ready.resolve();
+      expect(first).toEqual({ done: false, value: new TextEncoder().encode(page) });
+      await expect(reader.read()).rejects.toBeDefined();
+    },
+    undefined,
+    undefined,
+    {
+      stream: () =>
+        Stream.concat(
+          Stream.succeed(page),
+          Stream.fromEffect(Effect.promise(() => ready.promise)).pipe(
+            Stream.flatMap(() => Stream.fail(new RegistryError({ code: "forbidden" }))),
+          ),
+        ),
+    },
+  );
+});
+
+it.effect("client cancellation closes the request-owned native export producer", () => {
+  let released = 0;
+  return withHttpFixture(
+    [AuthOrchestrationReadScope],
+    async ({ handler }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(200);
+      if (!response.body) throw new Error("Missing native export stream.");
+      const reader = response.body.getReader();
+      expect((await reader.read()).done).toBe(false);
+      await reader.cancel();
+      expect(released).toBe(1);
+    },
+    undefined,
+    undefined,
+    {
+      stream: () =>
+        Stream.concat(Stream.succeed("page\n"), Stream.never).pipe(
+          Stream.ensuring(
+            Effect.sync(() => {
+              released += 1;
+            }),
+          ),
+        ),
+    },
+  );
+});
+
 const credentials: readonly {
   readonly kind: string;
   readonly headers: Record<string, string>;
@@ -233,7 +422,7 @@ it.effect.each(credentials)(
         new Request("http://fixture/api/workstreams?limit=50", { headers }),
       );
       expect(response.status).toBe(200);
-      const body = Schema.decodeUnknownSync(T3WorkstreamListResult)(await response.json());
+      const body = decodeListResult(await response.json());
       expect(body.source).toBe("live");
       expect(body.binding.registryId).toBe("https://workstream-registry.invalid");
       expect(response.headers.get("cache-control")).toBe("private, no-store");
@@ -256,10 +445,9 @@ it.effect.each(credentials)(
       expect(response.status).toBe(403);
       expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
-      expect(
-        Schema.decodeUnknownSync(EnvironmentScopeRequiredError)(await response.json())
-          .requiredScope,
-      ).toBe(AuthOrchestrationOperateScope);
+      expect(decodeScopeRequiredError(await response.json()).requiredScope).toBe(
+        AuthOrchestrationOperateScope,
+      );
       expect(calls).toEqual({ reads: 0, writes: 0 });
       expect(submissions.count).toBe(0);
     }),
@@ -277,9 +465,7 @@ it.effect.each(credentials)(
         }),
       );
       expect(response.status).toBe(200);
-      expect(Schema.decodeUnknownSync(WorkstreamReceipt)(await response.json()).state).toBe(
-        "committed",
-      );
+      expect(decodeReceipt(await response.json()).state).toBe("committed");
       expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
       expect(calls).toEqual({ reads: 0, writes: 1 });
@@ -292,9 +478,7 @@ it.effect("rejects missing HTTP credentials before registry reads", () =>
     expect(response.status).toBe(401);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(
-      Schema.decodeUnknownSync(EnvironmentAuthInvalidError)(await response.json()).reason,
-    ).toBe("missing_credential");
+    expect(decodeAuthInvalidError(await response.json()).reason).toBe("missing_credential");
     expect(calls).toEqual({ reads: 0, writes: 0 });
   }),
 );
@@ -319,14 +503,8 @@ it.effect.each([
         expect(response.headers.get("x-content-type-options")).toBe("nosniff");
         expect(calls).toEqual({ reads: 1, writes: 0 });
         const body = await response.json();
-        if (conflict !== undefined)
-          expect(Schema.decodeUnknownSync(EnvironmentHttpConflictError)(body).message).toBe(
-            conflict,
-          );
-        else
-          expect(Schema.decodeUnknownSync(EnvironmentInternalError)(body).reason).toBe(
-            "internal_error",
-          );
+        if (conflict !== undefined) expect(decodeConflictError(body).message).toBe(conflict);
+        else expect(decodeInternalError(body).reason).toBe("internal_error");
       },
       reason,
     ),
@@ -335,10 +513,14 @@ it.effect.each([
 const decodeInternalError = Schema.decodeUnknownSync(EnvironmentInternalError);
 const decodeConflictError = Schema.decodeUnknownSync(EnvironmentHttpConflictError);
 
-const submitRequest = (value: unknown = command) =>
+const submitRequest = (value: unknown = command, modern = false) =>
   new Request("http://fixture/api/workstreams/commands", {
     method: "POST",
-    headers: { authorization: "Bearer synthetic-token", "content-type": "application/json" },
+    headers: {
+      authorization: "Bearer synthetic-token",
+      "content-type": "application/json",
+      ...(modern ? workstreamsHttpResponseHeaders : {}),
+    },
     body: JSON.stringify({ command: value }),
   });
 
@@ -355,22 +537,33 @@ it.effect("rejects malformed commands before transport submission", () =>
 it.effect.each(["server", "registry"] as const)(
   "returns a definitive conflict for a changed %s version before transport submission",
   (version) =>
-    withHttpFixture([AuthOrchestrationOperateScope], async ({ handler, submissions }) => {
-      const result = await handler(
-        submitRequest({
-          ...command,
-          ...(version === "server"
-            ? { expected_server_generation: 6 }
-            : { expected_registry_version: 10 }),
-        }),
-      );
-      expect(submissions.count).toBe(0);
-      expect(result.status).toBe(409);
-      expect(await result.json()).toEqual({
-        _tag: "EnvironmentHttpConflictError",
-        message: "workstream_command_not_current",
-      });
-    }),
+    withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const result = await handler(
+          submitRequest(
+            {
+              ...command,
+              ...(version === "server"
+                ? { expected_server_generation: 6 }
+                : { expected_registry_version: 10 }),
+            },
+            true,
+          ),
+        );
+        expect(submissions.count).toBe(0);
+        expect(result.status).toBe(409);
+        expect(await result.json()).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "version_conflict",
+        });
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        readCommandReceipt: () => Effect.succeed({ kind: "absent" as const }),
+      }),
+    ),
 );
 
 it.effect.each(["permission", "owner", "contract", "page-bound"] as const)(
@@ -560,7 +753,8 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
           vi.restoreAllMocks();
           vi.unstubAllGlobals();
           vi.unstubAllEnvs();
-          NodeFS.rmSync(path, { recursive: true, force: true });
+          if (process.env.NW_MEMBER_PLACEMENTS_EVIDENCE_DIR === undefined)
+            NodeFS.rmSync(path, { recursive: true, force: true });
         }),
     );
     const environment = {
@@ -653,3 +847,149 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
 vi.mock("node:fs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:fs")>()),
 }));
+
+it.effect.each([
+  { contract: "workstreams-t3-placement/2.0.0", status: 409 },
+  { contract: "workstreams-t3-placement/9.0.0", status: 400 },
+])("refuses placement negotiation $contract without native service", ({ contract, status }) =>
+  withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls }) => {
+    const response = await handler(
+      new Request("http://fixture/api/workstreams/thread-placements", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer synthetic-token",
+          "content-type": "application/json",
+          "x-t3-workstreams-placement-contract": contract,
+        },
+        body: JSON.stringify({ identities: [] }),
+      }),
+    );
+    expect(response.status).toBe(status);
+    if (status === 409)
+      expect(await response.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(calls).toEqual({ reads: 0, writes: 0 });
+  }),
+);
+
+it.effect(
+  "legacy proof lookup fails closed without an admitted native entry and keeps authentication and contract fences",
+  () =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
+      const payload = {
+        contract: "workstreams-legacy-receipts/1.0.0",
+        command_id: "command:0",
+        expected_server_generation: 1,
+      };
+      const request = (body: unknown, authenticated = true) =>
+        handler(
+          new Request("http://fixture/api/workstreams/legacy-receipts/v1/lookup", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(authenticated ? credentials[0]!.headers : {}),
+            },
+            body: JSON.stringify(body),
+          }),
+        );
+      expect((await request(payload, false)).status).toBe(401);
+      const unavailable = await request(payload);
+      expect(unavailable.status).toBe(409);
+      expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+      expect(
+        (await request({ ...payload, contract: "workstreams-legacy-receipts/2.0.0" })).status,
+      ).toBe(400);
+      expect((await request({ ...payload, principal_id: "forged" })).status).toBe(400);
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
+    }),
+);
+
+it.effect("invalid response negotiation never reaches command lookup or submission", () => {
+  let lookups = 0;
+  return withHttpFixture(
+    [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+    async ({ handler, calls, submissions }) => {
+      const headers = {
+        authorization: "Bearer synthetic-token",
+        "content-type": "application/json",
+        "x-t3-workstreams-response-contract": "workstreams-http-response/9.0.0",
+      };
+      for (const request of [
+        new Request("http://fixture/api/workstreams/commands", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ command }),
+        }),
+        new Request("http://fixture/api/workstreams/commands/" + command.command_id, { headers }),
+      ]) {
+        const response = await handler(request);
+        expect(response.status).toBe(400);
+        expect(await response.text()).toBe("");
+      }
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(lookups).toBe(0);
+      expect(submissions.count).toBe(0);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      readCommandReceipt: () => {
+        lookups += 1;
+        return Effect.die("Invalid response negotiation reached lookup");
+      },
+    }),
+  );
+});
+
+it.effect.each([false, true])(
+  "changed authorization keeps its legacy refusal discriminator with modern=%s",
+  (modern) =>
+    withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const response = await handler(submitRequest(command, modern));
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "workstream_command_not_current",
+        });
+        expect(submissions.count).toBe(0);
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        getCapabilities: (input) =>
+          transport
+            .getCapabilities(input)
+            .pipe(Effect.map((value) => ({ ...value, permissions: [] }))),
+      }),
+    ),
+);
+
+it.effect("modern negotiation keeps unverified post-submit failures unknown", () =>
+  withHttpFixture(
+    [AuthOrchestrationOperateScope],
+    async ({ handler, submissions }) => {
+      const response = await handler(submitRequest(command, true));
+      expect(response.status).toBe(500);
+      expect(decodeInternalError(await response.json()).reason).toBe("internal_error");
+      expect(submissions.count).toBe(1);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      submitCommand: () =>
+        Effect.fail(
+          new WorkstreamTransportError({
+            operation: "submit",
+            effect: "no-effect",
+            detail: "workstream_command_not_current",
+          }),
+        ),
+    }),
+  ),
+);

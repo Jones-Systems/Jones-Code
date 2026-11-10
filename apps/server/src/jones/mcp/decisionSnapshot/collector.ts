@@ -3,6 +3,37 @@ import * as NodeChildProcess from "node:child_process";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import { WorkstreamsNativeReadEnvelope } from "@t3tools/contracts/jones/workstreamsNativeRead";
+
+const decodeNativeEnvelope = Schema.decodeUnknownSync(WorkstreamsNativeReadEnvelope);
+
+/** Reject incoherent native counts before handing protected observations to a composer. */
+export function validateNativeRegistryRead(input: {
+  readonly envelope: WorkstreamsNativeReadEnvelope;
+  readonly counts: {
+    readonly context: {
+      readonly owner_id: string;
+      readonly server_generation: number;
+      readonly registry_version: number;
+    };
+    readonly observed_at: string;
+  };
+  readonly canonicalOrigin: string;
+}): WorkstreamsNativeReadEnvelope {
+  const envelope = decodeNativeEnvelope(input.envelope, {
+    onExcessProperty: "error",
+  });
+  if (
+    envelope.registry.canonical_origin !== input.canonicalOrigin ||
+    envelope.registry.owner_id !== input.counts.context.owner_id ||
+    envelope.registry.server_generation !== input.counts.context.server_generation ||
+    envelope.registry.registry_version !== input.counts.context.registry_version ||
+    envelope.provenance.observed_at !== input.counts.observed_at
+  )
+    throw new CollectorFailure("collector_failed");
+  return envelope;
+}
 
 const MAX_DECISION_SNAPSHOT_BYTES = 65_536;
 export const monotonicSeconds = () => Number(process.hrtime.bigint()) / 1e9;
