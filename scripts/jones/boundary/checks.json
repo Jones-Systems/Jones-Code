@@ -2855,11 +2855,13 @@
         "apps/server/src/jones/remoteDelegation/ChildProgress.test.ts",
         "apps/server/src/jones/remoteDelegation/BlockingQuestions.test.ts",
         "apps/server/src/jones/remoteDelegation/ObservationHooks.test.ts",
+        "apps/server/src/jones/remoteDelegation/PeerMonitor.test.ts",
+        "apps/server/src/jones/remoteDelegation/shared.test.ts",
         "packages/contracts/src/jones/remoteTaskObservation.test.ts",
         "apps/server/src/mcp/OrchestratorMcpService.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/peer/RemoteDelegation.test.ts apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts apps/server/src/jones/remoteDelegation/IntentStore.test.ts apps/server/src/jones/remoteDelegation/Lifecycle.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/peer/PeerForwarding.test.ts apps/server/src/jones/remoteDelegation/FinalText.test.ts apps/server/src/jones/remoteDelegation/ChildProgress.test.ts apps/server/src/jones/remoteDelegation/BlockingQuestions.test.ts apps/server/src/jones/remoteDelegation/ObservationHooks.test.ts packages/contracts/src/jones/remoteTaskObservation.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/server/src/peer/RemoteDelegation.test.ts apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts apps/server/src/jones/remoteDelegation/IntentStore.test.ts apps/server/src/jones/remoteDelegation/Lifecycle.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/peer/PeerForwarding.test.ts apps/server/src/jones/remoteDelegation/FinalText.test.ts apps/server/src/jones/remoteDelegation/ChildProgress.test.ts apps/server/src/jones/remoteDelegation/BlockingQuestions.test.ts apps/server/src/jones/remoteDelegation/ObservationHooks.test.ts apps/server/src/jones/remoteDelegation/PeerMonitor.test.ts apps/server/src/jones/remoteDelegation/shared.test.ts packages/contracts/src/jones/remoteTaskObservation.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
