@@ -3,9 +3,9 @@
   "upstream": {
     "repository": "pingdotgg/t3code",
     "ref": "refs/heads/main",
-    "commit": "07a1e799d6dd819e825321842e54c644b9844a7c"
+    "commit": "4c924ff4e6d0828e0a5810336ec7d7827d752645"
   },
-  "baseline": "07a1e799d6dd819e825321842e54c644b9844a7c",
+  "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "paths": {
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
     ".agents/skills/capture-ui-evidence/references/native-self-configuration.md": "policy",

@@ -26,6 +26,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -118,13 +120,6 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           }),
           Layer.mock(Orchestrator.OrchestratorV2)({
             streamDomainEvents: Stream.fromQueue(domainEvents),
-            getShellSnapshot: () =>
-              Effect.succeed({
-                schemaVersion: 2,
-                snapshotSequence: 1,
-                threads: [thread],
-                archivedThreads: [],
-              }),
             getThreadEventSequence: () => Effect.succeed(1),
             getThreadShell: () => Effect.succeed(thread),
           }),
@@ -167,6 +162,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
             SecureRandom.make((size) => new Uint8Array(size).fill(1)),
           ),
           FileSystem.layerNoop({}),
+          Path.layer,
         );
         yield* Effect.gen(function* () {
           const service = yield* ThreadPullRequestService.make;
@@ -189,6 +185,261 @@ describe("ThreadPullRequestServiceV2 reads", () => {
         }).pipe(Effect.provide(dependencies));
       }),
     ),
+  );
+
+  it.effect("looks up a finished turn's branch once for all its turn-end events", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = { ...threadShell("turn-end-thread"), branch: "t3/turn-end" };
+        const otherThread = {
+          ...threadShell("other-turn-end-thread"),
+          branch: "t3/other-turn-end",
+        };
+        const project: OrchestrationProjectShell = {
+          id: thread.projectId,
+          title: "Project",
+          workspaceRoot: "/workspace/project",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-08-01T00:00:00.000Z",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+        };
+        // A turn end commits its checkpoints and the run's end together. The queued
+        // non-refresh request ahead of them must still become a refresh when they join it.
+        const turnEnd = [
+          { type: "thread.metadata-updated", threadId: thread.id },
+          { type: "checkpoint.captured", threadId: thread.id },
+          { type: "checkpoint.captured", threadId: thread.id },
+          { type: "run.updated", threadId: thread.id, payload: { status: "completed" } },
+          { type: "checkpoint.captured", threadId: otherThread.id },
+          { type: "run.updated", threadId: otherThread.id, payload: { status: "completed" } },
+        ] as Array<OrchestrationV2DomainEvent>;
+        // Arrives during the thread's own lookup, which may already have read the old host state.
+        const duringLookup = [
+          { type: "checkpoint.captured", threadId: thread.id },
+          { type: "thread.metadata-updated", threadId: thread.id },
+        ] as Array<OrchestrationV2DomainEvent>;
+        const activation = yield* Deferred.make<void>();
+        const sweepStarted = yield* Deferred.make<void>();
+        const turnEndQueued = yield* Deferred.make<void>();
+        const lookupStarted = yield* Deferred.make<void>();
+        const followUpQueued = yield* Deferred.make<void>();
+        const lookups: Array<{ readonly branch: string; readonly refresh: boolean }> = [];
+        const dependencies = Layer.mergeAll(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            // The batch arrives while the worker is busy with the startup sweep.
+            streamDomainEvents: Stream.fromEffect(Deferred.await(sweepStarted)).pipe(
+              Stream.drain,
+              Stream.concat(Stream.fromIterable(turnEnd)),
+              Stream.concat(
+                Stream.fromEffect(Deferred.succeed(turnEndQueued, undefined)).pipe(Stream.drain),
+              ),
+              Stream.concat(Stream.fromEffect(Deferred.await(lookupStarted)).pipe(Stream.drain)),
+              Stream.concat(Stream.fromIterable(duringLookup)),
+              Stream.concat(
+                Stream.fromEffect(Deferred.succeed(followUpQueued, undefined)).pipe(Stream.drain),
+              ),
+              Stream.concat(Stream.never),
+            ),
+            getThreadEventSequence: () => Effect.succeed(1),
+          }),
+          Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+            list: (query) =>
+              Effect.succeed({
+                snapshotSequence: 1,
+                threads: [thread, otherThread].filter(
+                  (candidate) =>
+                    query?.threadIds === undefined || query.threadIds.includes(candidate.id),
+                ),
+              }),
+          }),
+          Layer.mock(ProjectStore.ProjectStoreV2)({
+            listShells: () => Effect.succeed([project]),
+            getShell: () => Effect.succeedSome(project),
+          }),
+          Layer.mock(GitManager.GitManager)({
+            branchPullRequest: (input, options) =>
+              Effect.gen(function* () {
+                lookups.push({ branch: input.branch, refresh: options?.refresh ?? false });
+                if (!(yield* Deferred.isDone(turnEndQueued))) {
+                  yield* Deferred.succeed(sweepStarted, undefined);
+                  yield* Deferred.await(turnEndQueued);
+                } else if (
+                  input.branch === thread.branch &&
+                  !(yield* Deferred.isDone(followUpQueued))
+                ) {
+                  yield* Deferred.succeed(lookupStarted, undefined);
+                  yield* Deferred.await(followUpQueued);
+                }
+                return null;
+              }),
+          }),
+          Layer.mock(PullRequestService.PullRequestService)({}),
+          Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+            resolve: () =>
+              Effect.succeed({
+                canonicalKey: "github.com/acme/project",
+                locator: {
+                  source: "git-remote" as const,
+                  remoteName: "origin",
+                  remoteUrl: "git@github.com:acme/project.git",
+                },
+                provider: SourceControlProviderKind.make("github"),
+                owner: "acme",
+                name: "project",
+              }),
+          }),
+          Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+            shouldRunScopeWork: () => Effect.succeed(false),
+            shouldRunOpportunisticWork: Effect.succeed(false),
+          }),
+          Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
+          Layer.succeed(
+            SecureRandom.SecureRandom,
+            SecureRandom.make((size) => new Uint8Array(size).fill(1)),
+          ),
+          FileSystem.layerNoop({}),
+          Path.layer,
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadPullRequestService.make;
+          yield* service.start();
+          yield* Deferred.succeed(activation, undefined);
+          yield* Deferred.await(followUpQueued);
+          yield* service.drain;
+        }).pipe(Effect.provide(dependencies));
+
+        // The startup sweep, one refresh lookup per thread for its turn-end batch, then one
+        // follow-up refresh for the events that arrived during the thread's lookup.
+        expect(lookups).toEqual([
+          { branch: thread.branch, refresh: false },
+          { branch: otherThread.branch, refresh: false },
+          { branch: thread.branch, refresh: true },
+          { branch: otherThread.branch, refresh: true },
+          { branch: thread.branch, refresh: true },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect.each([
+    {
+      worktree: "a linked worktree",
+      existingPaths: ["/workspace/worktree", "/workspace/worktree/.git"],
+      unreadablePaths: [],
+      cwd: "/workspace/worktree",
+    },
+    // A folder that outlived its .git makes git fail with not_a_repository.
+    {
+      worktree: "a folder without .git",
+      existingPaths: ["/workspace/worktree"],
+      unreadablePaths: [],
+      cwd: "/workspace/project",
+    },
+    {
+      worktree: "a folder whose .git cannot be checked",
+      existingPaths: ["/workspace/worktree"],
+      unreadablePaths: ["/workspace/worktree/.git"],
+      cwd: "/workspace/worktree",
+    },
+    {
+      worktree: "a missing folder",
+      existingPaths: [],
+      unreadablePaths: [],
+      cwd: "/workspace/project",
+    },
+  ] as const)(
+    "looks up a branch whose worktree is $worktree in $cwd",
+    ({ existingPaths, unreadablePaths, cwd }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const thread = {
+            ...threadShell("worktree-thread"),
+            settledOverride: "settled" as const,
+            settledAt: NOW,
+            branch: "feature/worktree",
+            worktreePath: "/workspace/worktree",
+          };
+          const project: OrchestrationProjectShell = {
+            id: thread.projectId,
+            title: "Project",
+            workspaceRoot: "/workspace/project",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-08-01T00:00:00.000Z",
+            updatedAt: "2026-08-01T00:00:00.000Z",
+          };
+          const activation = yield* Deferred.make<void>();
+          const sweepStarted = yield* Deferred.make<void>();
+          const lookupCwds: Array<string> = [];
+          const dependencies = Layer.mergeAll(
+            Layer.mock(Orchestrator.OrchestratorV2)({
+              streamDomainEvents: Stream.never,
+            }),
+            Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+              list: () =>
+                Deferred.succeed(sweepStarted, undefined).pipe(
+                  Effect.as({ snapshotSequence: 1, threads: [thread] }),
+                ),
+            }),
+            Layer.mock(ProjectStore.ProjectStoreV2)({
+              listShells: () => Effect.succeed([project]),
+              getShell: () => Effect.succeedSome(project),
+            }),
+            Layer.mock(GitManager.GitManager)({
+              branchPullRequest: (input) =>
+                Effect.sync(() => {
+                  lookupCwds.push(input.cwd);
+                  return null;
+                }),
+            }),
+            Layer.mock(PullRequestService.PullRequestService)({}),
+            Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+              resolve: () =>
+                Effect.succeed({
+                  canonicalKey: "github.com/acme/project",
+                  locator: {
+                    source: "git-remote" as const,
+                    remoteName: "origin",
+                    remoteUrl: "git@github.com:acme/project.git",
+                  },
+                  provider: SourceControlProviderKind.make("github"),
+                  owner: "acme",
+                  name: "project",
+                }),
+            }),
+            Layer.mock(BackgroundPolicy.BackgroundPolicy)({}),
+            Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
+            Layer.succeed(
+              SecureRandom.SecureRandom,
+              SecureRandom.make((size) => new Uint8Array(size).fill(1)),
+            ),
+            FileSystem.layerNoop({
+              exists: (path) =>
+                unreadablePaths.some((entry) => entry === path)
+                  ? Effect.fail(
+                      PlatformError.systemError({
+                        _tag: "PermissionDenied",
+                        module: "FileSystem",
+                        method: "exists",
+                        pathOrDescriptor: path,
+                      }),
+                    )
+                  : Effect.succeed(existingPaths.some((entry) => entry === path)),
+            }),
+            Path.layer,
+          );
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadPullRequestService.make;
+            yield* service.start();
+            yield* Deferred.succeed(activation, undefined);
+            yield* Deferred.await(sweepStarted);
+            yield* service.drain;
+          }).pipe(Effect.provide(dependencies));
+
+          expect(lookupCwds).toEqual([cwd]);
+        }),
+      ),
   );
 
   it.effect("leaves delegated child threads to their own refresh instead of the sweep", () =>
@@ -284,6 +535,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
             SecureRandom.make((size) => new Uint8Array(size).fill(1)),
           ),
           FileSystem.layerNoop({}),
+          Path.layer,
         );
         yield* Effect.gen(function* () {
           const service = yield* ThreadPullRequestService.make;
@@ -407,6 +659,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
               SecureRandom.make((size) => new Uint8Array(size).fill(1)),
             ),
             FileSystem.layerNoop({}),
+            Path.layer,
           );
           yield* Effect.gen(function* () {
             const service = yield* ThreadPullRequestService.make;
@@ -423,6 +676,14 @@ describe("ThreadPullRequestServiceV2 reads", () => {
             expect(commands[0]).toMatchObject({
               type: "thread.pull-request.sync",
               threadId: thread.id,
+              snapshotSequence: 1,
+              expected: {
+                workspaceRoot: project.workspaceRoot,
+                branch: thread.branch,
+                worktreePath: thread.worktreePath,
+                linkedPullRequest: savedReference,
+                branchPullRequest: savedReference,
+              },
               branchPullRequest: null,
             });
             expect(commands[0]).not.toHaveProperty("linkedPullRequest");

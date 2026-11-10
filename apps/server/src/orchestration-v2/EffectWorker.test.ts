@@ -183,6 +183,7 @@ function layerExecutorFor(input: {
         detach: input.detach ?? (() => record("detach")),
         otherWorkingThreads: () => Effect.succeed([]),
         releaseUnlessBusy: () => Effect.succeed(true),
+        subscribePromptSuggestion: () => Stream.empty,
       }),
     ),
     Layer.succeed(

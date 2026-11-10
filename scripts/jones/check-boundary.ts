@@ -610,13 +610,15 @@ export function runCli(args: string[]): number {
   const tree = new Map<string, string>();
   for (const name of new Set(files)) {
     if (!/^(?:apps|packages|scripts)\//.test(name) && !requiredSnapshots.has(name)) continue;
-    safePath(name);
+    // Non-source files (such as Astro `[...locale]` routes) are never read, so only scanned names
+    // need the safe-path check.
     if (
       !sourcePattern.test(name) &&
       !/^(?:(?:apps|packages)\/[^/]+|apps\/mobile\/modules\/[^/]+)\/package\.json$/.test(name) &&
       !requiredSnapshots.has(name)
     )
       continue;
+    safePath(name);
     const full = NodePath.join(root, name);
     let stat;
     try {

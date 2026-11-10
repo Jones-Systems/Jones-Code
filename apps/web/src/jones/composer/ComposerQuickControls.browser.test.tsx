@@ -61,7 +61,6 @@ function Fixture({
           },
         ]}
         modelOptions={selection?.options}
-        planModeEnabled
         {...overrides}
       />
     </div>

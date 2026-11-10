@@ -20,9 +20,18 @@ vi.mock(import("pdfjs-dist"), async (original) => {
   };
 });
 
-const { refresh, assetUrlState } = vi.hoisted(() => ({
-  refresh: vi.fn<() => Promise<string | null>>(),
-  assetUrlState: vi.fn<() => import("~/assets/assetUrls").AssetUrlState>(),
+// Prepare the real worker before tests; Vite's worker transform adds a large inline source map.
+const { refresh, assetUrlState, pdfWorkerUrl } = await vi.hoisted(async () => {
+  const { default: source } = await import("pdfjs-dist/build/pdf.worker.min.mjs?raw");
+  return {
+    refresh: vi.fn<() => Promise<string | null>>(),
+    assetUrlState: vi.fn<() => import("~/assets/assetUrls").AssetUrlState>(),
+    pdfWorkerUrl: URL.createObjectURL(new Blob([source], { type: "text/javascript" })),
+  };
+});
+
+vi.mock(import("pdfjs-dist/build/pdf.worker.min.mjs?url"), () => ({
+  default: pdfWorkerUrl,
 }));
 
 vi.mock(import("~/assets/assetUrls"), async (original) => ({

@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpBody from "effect/http/HttpBody";
@@ -444,12 +445,15 @@ export const make = Effect.gen(function* () {
           const refused = hasStructured
             ? decodeFailure(result.structuredContent)
             : decodeTextFailure(text);
-          return yield* refused._tag === "Some"
-            ? new OrchestratorMcpFailure(refused.value)
-            : new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: text || "The linked environment refused the call.",
-              });
+          // A refusal is still an answer: it fails only this call, not the link.
+          return Result.fail(
+            refused._tag === "Some"
+              ? new OrchestratorMcpFailure(refused.value)
+              : new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: text || "The linked environment refused the call.",
+                }),
+          );
         }
         return yield* (
           hasStructured
@@ -458,6 +462,7 @@ export const make = Effect.gen(function* () {
             : // oxlint-disable-next-line t3code/no-inline-schema-compile -- The caller supplies its result schema per invocation.
               Schema.decodeEffect(Schema.fromJsonString(input.success))(text)
         ).pipe(
+          Effect.map(Result.succeed),
           Effect.mapError(
             () =>
               new OrchestratorMcpFailure({
@@ -488,6 +493,7 @@ export const make = Effect.gen(function* () {
               }),
             ),
         }),
+        Effect.flatMap(Effect.fromResult),
       );
     },
   );

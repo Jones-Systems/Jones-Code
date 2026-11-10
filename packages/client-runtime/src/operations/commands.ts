@@ -198,6 +198,8 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
   readonly dispatchMode?: "auto" | "queue" | "steer" | "restart" | "start";
   /** False prevents automatic tool-boundary steering of queued replies. */
   readonly allowQueuedToolBoundaryDelivery?: boolean;
+  /** Start a new provider session; needs the server's `freshContext` capability. */
+  readonly freshContext?: boolean;
 }
 
 export interface InterruptThreadTurnInput extends ThreadCommandInput {
@@ -812,6 +814,7 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
         ...(input.sourceProposedPlan === undefined
           ? {}
           : { sourcePlanRef: input.sourceProposedPlan }),
+        ...(input.freshContext ? { freshContext: true } : {}),
         dispatchMode: { type: "start_immediately" },
       },
     });
@@ -890,6 +893,7 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
       ...(input.sourceProposedPlan === undefined
         ? {}
         : { sourcePlanRef: input.sourceProposedPlan }),
+      ...(input.freshContext ? { freshContext: true } : {}),
       ...(serverResolvesCommandContext && requestedMode !== "queue"
         ? { deliveryIntent: requestedMode }
         : {}),

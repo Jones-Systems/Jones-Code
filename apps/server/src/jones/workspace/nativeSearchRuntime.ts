@@ -8,6 +8,7 @@ import type {
   DirSearchResult,
   FileItem,
   FileFinder as FileFinderType,
+  GrepCursor,
   MixedItem,
   MixedSearchResult,
   Result,
@@ -438,23 +439,42 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   const searchContents: WorkspaceSearchIndex["Service"]["searchContents"] = Effect.fn(
     "WorkspaceSearchIndex.searchContents",
   )(function* (input) {
-    const { searchQuery, regexMode } = buildContentSearchQuery(input);
+    let { searchQuery, regexMode } = buildContentSearchQuery(input);
     // Grep cursors advance by file, so whole-word post-filtering needs enough
     // raw candidates from the current file before moving to the next one.
     const rawPageSize = input.wholeWord
       ? Math.max(input.limit, CONTENT_SEARCH_MAX_MATCHES_PER_FILE)
       : input.limit;
+    const grepPage = (
+      cursor: GrepCursor | null,
+      budget: { readonly timeBudgetMs: number; readonly enforceTimeBudget: true },
+    ) =>
+      runSearch(input.query, input.limit, "grep", () =>
+        finder.grep(searchQuery, {
+          mode: regexMode ? "regex" : "plain",
+          smartCase: !input.caseSensitive && !regexMode,
+          maxMatchesPerFile: Math.min(CONTENT_SEARCH_MAX_MATCHES_PER_FILE, rawPageSize),
+          pageSize: rawPageSize,
+          cursor,
+          ...budget,
+        }),
+      );
     return yield* collectContentSearchPages({
       limit: input.limit,
       searchPage: (cursor, budget) =>
-        runSearch(input.query, input.limit, "grep", () =>
-          finder.grep(searchQuery, {
-            mode: regexMode ? "regex" : "plain",
-            smartCase: !input.caseSensitive && !regexMode,
-            maxMatchesPerFile: Math.min(CONTENT_SEARCH_MAX_MATCHES_PER_FILE, rawPageSize),
-            pageSize: rawPageSize,
-            cursor,
-            ...budget,
+        grepPage(cursor, budget).pipe(
+          Effect.flatMap((result) => {
+            // fff searches an invalid pattern as a literal, which would keep the `(?i)` prefix.
+            if (!regexMode || input.caseSensitive || result.regexFallbackError === undefined) {
+              return Effect.succeed(result);
+            }
+            ({ searchQuery, regexMode } = buildContentSearchQuery({ ...input, useRegex: false }));
+            return grepPage(cursor, budget).pipe(
+              Effect.map((literal) => ({
+                ...literal,
+                regexFallbackError: result.regexFallbackError,
+              })),
+            );
           }),
         ),
       mapMatch: (match) => {

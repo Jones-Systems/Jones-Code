@@ -862,6 +862,11 @@ function makeReplayQueryRunner(
             assertNextOutboundFrame({ type: "query.background_tasks", toolUseId });
           }).pipe(Effect.as(true)),
         termination: retirement?.termination ?? Effect.void,
+        // Recorded CLIs predate MCP Apps capabilities, so replays never reach these.
+        mcpServerStatus: Effect.die("unexpected MCP server status in replay"),
+        readMcpResource: () => Effect.die("unexpected MCP resource read in replay"),
+        callMcpTool: () => Effect.die("unexpected MCP tool call in replay"),
+        listPermissionRules: Effect.die("unexpected permission rules read in replay"),
         interrupt: replayEffect(() => {
           assertNextOutboundFrame({ type: "query.interrupt" });
         }).pipe(Effect.andThen(retirement?.interrupt ?? Effect.void)),

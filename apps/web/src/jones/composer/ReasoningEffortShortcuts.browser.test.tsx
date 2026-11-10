@@ -61,7 +61,6 @@ async function render(
     promptUltrathink: readPromptUltrathink(overrides.prompt ?? ""),
     onPromptEdit: (edit: (prompt: string) => string) =>
       onPromptChange(edit(overrides.prompt ?? "")),
-    planModeEnabled: true,
     visible: true,
     ...overrides,
   };
@@ -250,7 +249,6 @@ describe("reasoning effort shortcuts", () => {
         options: [{ id: "reasoningEffort", value: "medium" }],
       },
       defaultDriverKind: ProviderDriverKind.make("codex"),
-      planModeEnabled: true,
     });
     await render({
       ...resolved,
@@ -354,7 +352,6 @@ describe("reasoning effort shortcuts", () => {
         ],
         promptUltrathink: readPromptUltrathink("Explain"),
         onPromptEdit: (edit) => onPromptChange(edit("Explain")),
-        planModeEnabled: true,
         allowPromptInjectedEffort: false,
       });
       return (

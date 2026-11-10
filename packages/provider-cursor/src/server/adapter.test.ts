@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import type { InteractionUpdate } from "@cursor/sdk";
+import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import {
   EnvironmentId,
   MessageId,
@@ -351,7 +352,7 @@ describe("CursorAdapterV2", () => {
                               : {}),
                           },
                         },
-                      }).pipe(Effect.orDie);
+                      });
                     }
                     const readUpdates: ReadonlyArray<InteractionUpdate> = [
                       {
@@ -379,7 +380,7 @@ describe("CursorAdapterV2", () => {
                       })),
                     ];
                     for (const update of readUpdates) {
-                      yield* input.onDelta!(update).pipe(Effect.orDie);
+                      yield* input.onDelta!(update);
                     }
                     return {
                       agentId: "native-cursor-lifecycle",
@@ -400,7 +401,7 @@ describe("CursorAdapterV2", () => {
                       }),
                       cancel: Effect.void,
                     };
-                  }),
+                  }).pipe(Effect.orDie),
               }),
           }),
           Effect.provide(TestProviderHost.layer({ cwd: workspace })),
@@ -1118,7 +1119,18 @@ describe("CursorAdapterV2", () => {
               args: { city: "Berlin" },
             },
             ...(type === "tool-call-completed"
-              ? { result: { status: "success" as const, value: { content: [], isError: false } } }
+              ? {
+                  result: {
+                    status: "success" as const,
+                    value: {
+                      content: [
+                        { text: { text: "Preview complete" } },
+                        { image: { data: "iVBORw0KGgo=", mimeType: "image/png" } },
+                      ],
+                      isError: false,
+                    },
+                  },
+                }
               : {}),
           },
         })),
@@ -1436,6 +1448,9 @@ describe("CursorAdapterV2", () => {
         });
         assert.deepEqual(item.input, { city: "Berlin" });
       }
+      assert.deepEqual(toolOutputImages(mcpItems.at(-1)?.output), [
+        { mimeType: "image/png", data: "iVBORw0KGgo=" },
+      ]);
       const fileSearchItems = events.flatMap((event) =>
         event.type === "turn_item.updated" &&
         event.turnItem.type === "file_search" &&

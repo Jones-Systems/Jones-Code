@@ -22,7 +22,6 @@ import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
   getClaudeCatalogModelCapabilities,
-  isClaudeCatalogUltracodeEffort,
   normalizeClaudeCatalogEffort,
   resolveClaudeCatalogApiModelId,
   resolveClaudeCatalogEffort,
@@ -69,22 +68,36 @@ const decodeClaudeOutput = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Union([ClaudeOutputEnvelope, Schema.Array(ClaudeOutputMessage)])),
 );
 
+// Only `success` results carry `result`; error subtypes such as
+// error_max_structured_output_retries report through `errors` instead.
 const ClaudeErrorResult = Schema.Struct({
   is_error: Schema.Literal(true),
   result: Schema.optionalKey(Schema.Unknown),
+  errors: Schema.optionalKey(Schema.Unknown),
 });
 const isClaudeErrorResult = Schema.is(ClaudeErrorResult);
 const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 // Claude reports JSON errors on stdout; stderr may contain only wrapper notices.
-function claudeErrorResult(stdout: string): string | undefined {
+function claudeErrorResult(stdout: string, surfaceErrorList: boolean): string | undefined {
   const output = Option.getOrUndefined(decodeJsonOption(stdout));
   const messages: ReadonlyArray<unknown> = Array.isArray(output) ? output : [output];
   const errors = messages.filter(isClaudeErrorResult);
+  const details = errors.map((message) => {
+    if (typeof message.result === "string") return message.result.trim();
+    // The errors list is opaque to a remote evaluator, so it never reaches the caller.
+    if (!surfaceErrorList || !Array.isArray(message.errors)) return "";
+    return (
+      message.errors
+        .filter((error): error is string => typeof error === "string")
+        // error_during_execution mixes CLI telemetry into the list.
+        .filter((error) => !error.startsWith("[ede_diagnostic]"))
+        .join("\n")
+        .trim()
+    );
+  });
   return (
-    errors
-      .map((message) => (typeof message.result === "string" ? message.result.trim() : ""))
-      .findLast((result) => result.length > 0) ??
+    details.findLast((detail) => detail.length > 0) ??
     (errors.length > 0 ? "Claude CLI reported an error without details." : undefined)
   );
 }
@@ -179,7 +192,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       resolvedEffort,
       resolvedModelSelection.model,
     );
-    const ultracode = isClaudeCatalogUltracodeEffort(resolvedEffort);
+    const ultracode = findDescriptor("ultracode")?.currentValue;
     const thinkingDescriptor = findDescriptor("thinking");
     const fastModeDescriptor = findDescriptor("fastMode");
     // Only a chosen value; otherwise Claude Code's own default applies, as in chat turns.
@@ -193,7 +206,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       disableAllHooks: true,
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
-      ...(ultracode ? { ultracode: true } : {}),
+      ...(typeof ultracode === "boolean" ? { ultracode } : {}),
     };
     const settingsJson = yield* encodeJsonForOperation(
       operation,
@@ -294,7 +307,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           stdout,
           stderr,
           exitCode,
-          reportedError: claudeErrorResult(stdout),
+          reportedError: claudeErrorResult(stdout, operation !== "evaluateRemoteRequest"),
         });
         return detail === undefined
           ? Effect.succeed(stdout)

@@ -93,7 +93,10 @@ const serverConfig: ServerConfig = {
         status: "ready",
         auth: { status: "authenticated" },
         checkedAt: "2026-03-17T19:12:28.000Z",
-        models: [{ slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null }],
+        models: [
+          { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null },
+          { slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null },
+        ],
       },
     ],
     availableEditors: [],
@@ -327,6 +330,8 @@ const shellSubscribers = new Set<Queue.Queue<OrchestrationV2ShellStreamItem>>();
 const threadSubscribers = new Map<string, Queue.Queue<OrchestrationV2ThreadStreamItem>>();
 let terminalMetadataSubscriber: Queue.Queue<TerminalMetadataStreamEvent> | null = null;
 let threads: ReadonlyArray<FakeThread> = [];
+let dispatched: OrchestrationV2Command[] = [];
+let acceptCommands = false;
 let sequence = 1;
 let vcsStatusSubscriber: Queue.Queue<VcsStatusStreamEvent> | null = null;
 
@@ -351,10 +356,15 @@ let sendHandler:
   | null = null;
 
 const handlers: Record<string, (input: never) => unknown> = {
-  [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (input: OrchestrationV2Command) =>
-    input.type === "message.dispatch"
-      ? (sendHandler?.(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, input) ?? Effect.never)
-      : Effect.succeed({ sequence: ++sequence }),
+  // Every command is recorded. A message dispatch waits for a scenario's deferred send, or for
+  // `acceptCommands`, since a pending command holds every later command on its thread. Other
+  // commands are accepted at once. Accepted commands' events never arrive.
+  [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) => {
+    dispatched.push(command);
+    if (command.type !== "message.dispatch") return Effect.succeed({ sequence: ++sequence });
+    if (sendHandler) return sendHandler(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command);
+    return acceptCommands ? Effect.succeed({ sequence: sequence + 1 }) : Effect.never;
+  },
   [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input: OrchestrationV2ThreadLaunchInput) =>
     sendHandler?.(ORCHESTRATION_V2_WS_METHODS.launchThread, input) ?? Effect.never,
   [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input: { readonly threadId: ThreadId }) =>
@@ -469,8 +479,13 @@ const encodedDescriptor = Schema.encodeSync(ExecutionEnvironmentDescriptor)(
 );
 
 /** Serves the environment's HTTP API and these threads until disposed. */
-export function installFakeEnvironment(fixtures: ReadonlyArray<FakeThread>): Disposable {
+export function installFakeEnvironment(
+  fixtures: ReadonlyArray<FakeThread>,
+  options?: { readonly acceptCommands?: boolean },
+): Disposable {
   threads = fixtures;
+  dispatched = [];
+  acceptCommands = options?.acceptCommands === true;
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
     if (url.origin !== window.location.origin) return realFetch(input, init);
@@ -493,8 +508,15 @@ export function installFakeEnvironment(fixtures: ReadonlyArray<FakeThread>): Dis
       globalThis.fetch = realFetch;
       threads = [];
       sendHandler = null;
+      dispatched = [];
+      acceptCommands = false;
     },
   };
+}
+
+/** Commands the app dispatched to the environment, oldest first. */
+export function dispatchedCommands(): ReadonlyArray<OrchestrationV2Command> {
+  return dispatched;
 }
 
 type ThreadEvent = Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }>["event"];

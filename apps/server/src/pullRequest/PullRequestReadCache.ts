@@ -171,6 +171,8 @@ export const make = Effect.gen(function* () {
           PersistenceError: () => read,
           SchemaError: () => read,
         }),
+        // A read stores its result under the revisions it started with, so an invalidation of
+        // one of its scopes must wait for it; reads of other scopes run on.
         scopeLocks.withReadScopes(scopes),
         readPermits.withPermits(1),
       );

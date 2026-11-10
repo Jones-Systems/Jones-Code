@@ -608,6 +608,8 @@ export const make = Effect.gen(function* () {
     const openInput = {
       threadId: input.threadId,
       terminalId,
+      // Captured and native definitions carry no opt-in; only a project action can ask to stop on settle.
+      stopOnSettle: "stopOnSettle" in script ? (script.stopOnSettle ?? false) : false,
       cwd,
       worktreePath: input.worktreePath,
       env: { ...env, NO_COLOR: "1", FORCE_COLOR: "0" },

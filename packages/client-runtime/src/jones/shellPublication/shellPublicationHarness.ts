@@ -89,7 +89,10 @@ export const makeShellPublicationHarness = Effect.fn("TestShellPublication.make"
             ),
         } as unknown as WsRpcProtocolClient,
         initialConfig: Effect.sync(() => {
-          return { shellResumeCompletionMarker: true } as never;
+          return {
+            shellResumeCompletionMarker: true,
+            environment: { serverVersion: "1.0.0" },
+          } as never;
         }),
         subscribeServerConfig: () => Stream.empty,
         ready: Effect.void,

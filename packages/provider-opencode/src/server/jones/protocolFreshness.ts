@@ -168,5 +168,10 @@ export const makeOpenCodeProtocolFreshness = <E>(
       get: read(false),
       refresh: read(true),
       lastSuccess: Effect.sync(() => lastSuccess),
+      // Hot reads only: an admission still re-verifies the source and version before it trusts this.
+      record: (probed: ProbedOpenCode) =>
+        Effect.sync(() => {
+          lastSuccess = Option.some(probed);
+        }),
     };
   });

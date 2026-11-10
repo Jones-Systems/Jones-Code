@@ -390,10 +390,19 @@ const filesystemBackupSpaceProbe: BackupSpaceProbe = {
   canClone: backupCanClone,
 };
 
-/**
- * Runs before the server is stopped so a full disk refuses the update instead of causing an
- * outage and a cold restart.
- */
+// A killed launcher skips the backup's cleanup, and retries only clear their own update's copy.
+// Update requests are refused while one is pending, so no staging directory is still in use here.
+// A paired snapshot's staging has unknown prior effects, so recovery keeps it for reconciliation.
+async function removeAbandonedBackupCopies(backupRoot: string): Promise<void> {
+  for (const entry of await NodeFSP.readdir(backupRoot)) {
+    if (!entry.endsWith(".staging")) continue;
+    const staging = NodePath.join(backupRoot, entry);
+    if (await pathExists(NodePath.join(staging, "paired-binding.json"))) continue;
+    await NodeFSP.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/** Check before stopping the server so full disks refuse updates without an outage. */
 export async function databaseBackupBlocker(
   baseDir: string,
   dbPath: string,
@@ -402,6 +411,7 @@ export async function databaseBackupBlocker(
   const { readFreeBytes, canClone } = { ...filesystemBackupSpaceProbe, ...probe };
   const backupRoot = NodePath.join(baseDir, "runtime", "db-backup");
   await NodeFSP.mkdir(backupRoot, { recursive: true, mode: 0o700 });
+  await removeAbandonedBackupCopies(backupRoot);
   const [files, free] = await Promise.all([statDatabaseFiles(dbPath), readFreeBytes(backupRoot)]);
   const size = files.reduce((total, file) => total + file.size, 0);
   const fullCopyBytes = size * 1.05;

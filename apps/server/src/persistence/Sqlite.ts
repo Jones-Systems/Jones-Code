@@ -13,7 +13,7 @@ import { makePoolObservers } from "../jones/serverParallelism/metrics.ts";
 import * as ServerConfig from "../config.ts";
 import { holdJonesServerNativeWriterFence } from "../jones/updates/nativeWriterStartup.ts";
 
-const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
+const WAL_SIZE_LIMIT_BYTES = 128 * 1024 * 1024;
 
 const layerSetup = Layer.effectDiscard(
   Effect.gen(function* () {

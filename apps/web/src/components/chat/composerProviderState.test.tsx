@@ -92,7 +92,6 @@ describe("getComposerProviderState", () => {
           selectDescriptor("serviceTier", [{ id: "priority", label: "Priority" }]),
         ]),
         modelOptions,
-        planModeEnabled: false,
       });
       expect(state.promptEffort).toBe(defaultEffort);
       expect(state.modelOptionsForDispatch).toEqual(modelOptions);
@@ -111,7 +110,6 @@ describe("getComposerProviderState", () => {
         ]),
       ]),
       modelOptions: selections(["reasoningEffort", "low"]),
-      planModeEnabled: false,
     });
     expect(state.promptEffort).toBe("low");
     expect(state.modelOptionsForDispatch).toEqual(selections(["reasoningEffort", "low"]));
@@ -143,7 +141,6 @@ describe("getComposerProviderState", () => {
           options: selections(["reasoningEffort", effort]),
         },
         defaultDriverKind: PROVIDER,
-        planModeEnabled: false,
       };
       expect(getComposerProviderState(input).promptEffort).toBe(effort);
       expect(getComposerProviderState(input).modelOptionsForDispatch).toEqual(options);
@@ -167,7 +164,6 @@ describe("getComposerProviderState", () => {
         ]),
       ]),
       modelOptions: undefined,
-      planModeEnabled: true,
     });
 
     expect(state).toEqual({
@@ -186,7 +182,6 @@ describe("getComposerProviderState", () => {
         booleanDescriptor("fastMode"),
       ]),
       modelOptions: selections(["effort", "high"], ["fastMode", false]),
-      planModeEnabled: true,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(
@@ -200,7 +195,6 @@ describe("getComposerProviderState", () => {
       model: MODEL,
       models: modelWith([booleanDescriptor("thinking")]),
       modelOptions: selections(["effort", "max"], ["thinking", false]),
-      planModeEnabled: true,
     });
 
     expect(state).toEqual({
@@ -226,14 +220,14 @@ describe("getComposerProviderState", () => {
         ]),
       ]),
       modelOptions: selections(["agent", "plan"]),
-      planModeEnabled: true,
+      includePlanAgent: true,
     });
 
     expect(state.promptEffort).toBe("high");
     expect(state.modelOptionsForDispatch).toEqual(selections(["agent", "plan"]));
   });
 
-  it("drops the plan agent from dispatch when legacy plan mode is disabled", () => {
+  it("drops the plan agent from dispatch unless it is included", () => {
     const state = getComposerProviderState({
       provider: PROVIDER,
       model: MODEL,
@@ -244,7 +238,6 @@ describe("getComposerProviderState", () => {
         ]),
       ]),
       modelOptions: selections(["agent", "plan"]),
-      planModeEnabled: false,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(selections(["agent", "build"]));
@@ -263,7 +256,6 @@ describe("getComposerProviderState", () => {
         },
       ],
       modelOptions: selections(["variant", "max"], ["agent", "build"]),
-      planModeEnabled: false,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(
@@ -292,7 +284,6 @@ describe("getComposerProviderState", () => {
         },
       ],
       modelOptions: selections(["effort", "low"], ["unknown", "value"]),
-      planModeEnabled: false,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(selections(["effort", "low"]));
@@ -304,7 +295,6 @@ describe("getComposerProviderState", () => {
       model: MODEL,
       models: modelWith([booleanDescriptor("fastMode", true)]),
       modelOptions: undefined,
-      planModeEnabled: true,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(selections(["fastMode", false]));
@@ -367,7 +357,6 @@ describe("trait controls fastMode display", () => {
         options: selections(["reasoningEffort", "high"]),
       },
       defaultDriverKind: PROVIDER,
-      planModeEnabled: true,
     };
     const effective = getComposerEffectiveTraitsOptions(input);
     expect(effective.modelOptions).toEqual(
@@ -482,7 +471,6 @@ describe("provider traits render guards", () => {
       modelOptions: undefined,
       promptUltrathink: readPromptUltrathink(""),
       onPromptEdit: () => {},
-      planModeEnabled: true,
     };
 
     expect(
@@ -532,7 +520,6 @@ describe("getComposerReasoningStep", () => {
       modelOptions: undefined,
       prompt: "Fix the bug",
       cursor: 0,
-      planModeEnabled: true,
       direction: 1,
       ...input,
     });
@@ -557,7 +544,6 @@ describe("getComposerReasoningStep", () => {
           options: selections(["reasoningEffort", "high"]),
         },
         defaultDriverKind: PROVIDER,
-        planModeEnabled: true,
       };
       expect(getComposerProviderState(input).promptEffort).toBe("high");
       expect(getComposerProviderState(input).modelOptionsForDispatch).toBeUndefined();

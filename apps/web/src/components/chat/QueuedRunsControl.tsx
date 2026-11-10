@@ -268,19 +268,25 @@ export function QueuedRunsControl({
   });
   const queueBusy = busyRunId !== null || batch.pending || removals.busy;
   const removalBlocked = busyRunId !== null || batch.pending;
-  const canSend = canDispatchQueuedRun({
-    busy: queueBusy,
-    importedHistory: importedEligible,
-    canStart: workflow?.canSendNow === true,
-    canSteer: workflow?.canPromoteToSteer === true,
-    queuedRunStart: serverConfig?.environment.capabilities.queuedRunStart,
-  });
+  // A fresh message starts its own turn: it may skip compaction, but not steer into a turn.
+  const canSteerRun = (freshContext: boolean) =>
+    workflow?.canPromoteToSteer === true &&
+    (!freshContext || workflow.promoteSkipsCompaction === true);
+  const canDispatchRun = (freshContext: boolean) =>
+    canDispatchQueuedRun({
+      busy: queueBusy,
+      importedHistory: importedEligible,
+      canStart: workflow?.canSendNow === true,
+      canSteer: canSteerRun(freshContext),
+      queuedRunStart: serverConfig?.environment.capabilities.queuedRunStart,
+    });
   const items = [
     ...queued.map(({ run, text, attachments, context, message }, serverIndex) => ({
       key: run.id,
       message,
       runId: run.id,
       messageId: run.userMessageId,
+      freshContext: run.freshContext === true,
       serverIndex,
       text,
       // A guest's message keeps the guest's words; the owner can cancel it, not rewrite it.
@@ -300,6 +306,7 @@ export function QueuedRunsControl({
       message: undefined,
       runId: null,
       messageId: message.id,
+      freshContext: false,
       serverIndex: null,
       text: message.text,
       editable: true,
@@ -343,7 +350,10 @@ export function QueuedRunsControl({
   };
 
   const sendQueuedMessage = async (queuedRunId: RunId) => {
-    if (!canSend || steerInFlightRef.current || removals.isBusy()) return;
+    const freshContext = queued.some(
+      ({ run }) => run.id === queuedRunId && run.freshContext === true,
+    );
+    if (!canDispatchRun(freshContext) || steerInFlightRef.current || removals.isBusy()) return;
     steerInFlightRef.current = true;
     setBusyRunId(queuedRunId);
     await (async () => {
@@ -367,7 +377,7 @@ export function QueuedRunsControl({
   useImperativeHandle(ref, () => ({
     steerNext(repeat) {
       const next = queued[0];
-      if (!next || !canSend) return false;
+      if (!next || !canDispatchRun(next.run.freshContext === true)) return false;
       if (!repeat && !queueBusy) void sendQueuedMessage(next.run.id);
       return true;
     },
@@ -485,7 +495,7 @@ export function QueuedRunsControl({
               aria-posinset={position + 1}
               aria-setsize={items.length}
               aria-current={isEditing ? "true" : undefined}
-              className="group/queued flex w-full flex-col items-end gap-1 transition-opacity duration-150 ease-out starting:opacity-0 motion-reduce:transition-none"
+              className="group/queued flex w-full flex-col items-end gap-1"
             >
               {canReorder && rowRunId !== null && rowServerIndex !== null ? (
                 <Button
@@ -522,14 +532,14 @@ export function QueuedRunsControl({
                 timestampFormat={props.timestampFormat}
                 onOpenThread={props.onOpenThread}
               >
-                {(workflow?.canSendNow || workflow?.canPromoteToSteer) && !isEditing ? (
+                {(workflow?.canSendNow || canSteerRun(item.freshContext)) && !isEditing ? (
                   <>
                     <Tooltip>
                       <TooltipTrigger render={<span className="flex shrink-0" />}>
                         <Button
                           size="xs"
                           variant="ghost-muted"
-                          disabled={item.runId === null || !canSend || queueBusy}
+                          disabled={item.runId === null || !canDispatchRun(item.freshContext)}
                           onClick={() => {
                             if (item.runId !== null) {
                               void sendQueuedMessage(item.runId);

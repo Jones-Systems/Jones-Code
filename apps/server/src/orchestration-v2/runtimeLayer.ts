@@ -2,6 +2,7 @@ import * as WorktreeMcpService from "../mcp/WorktreeMcpService.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as TitleStore from "../jones/threadTitle/store.ts";
+import * as WorktreeBranchSync from "./WorktreeBranchSync.ts";
 import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
@@ -500,6 +501,9 @@ const nativeWorkstreamsRuntimeProvided = NativeWorkstreams.nativeWorkstreamsRunt
 
 export const layerProduction = Layer.mergeAll(
   nativeWorkstreamsRuntimeProvided,
+  WorktreeBranchSync.layer.pipe(
+    Layer.provide(Layer.merge(layerThreadManagementProvided, ProjectionStore.layer)),
+  ),
   layerProjectService,
   layerManagedProjectFoldersProvided,
   layerThreadLaunchProvided,
