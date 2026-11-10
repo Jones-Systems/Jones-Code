@@ -7,6 +7,7 @@ import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads
 import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as WorkspaceLifecycleRuntime from "../jones/workspaceLifecycle/RuntimeIntegration.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as OrphanedRunRecords from "../jones/orchestration/OrphanedRunRecords.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
 import * as NativeCreationRepositorySqlite from "../jones/nativeCreation/NativeCreationRepositorySqlite.ts";
@@ -442,6 +443,9 @@ const layerProviderRuntimeRecoveryProvided = ProviderRuntimeRecoveryService.laye
       layerEventSinkProvided,
       IdAllocator.layer,
       ProjectionStore.layer,
+      OrphanedRunRecords.layer.pipe(
+        Layer.provide(Layer.merge(layerEventSinkProvided, IdAllocator.layer)),
+      ),
     ),
   ),
 );

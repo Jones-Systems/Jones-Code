@@ -3108,6 +3108,20 @@
         "apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx"
       ],
       "scope": "C9 broker-only conversation allocation with per-turn Git object snapshots, exact empty-directory identity and lifecycle, durable compare-and-swap handoff, shared delegation, terminal/setup admission and additive project allocation settings. Synthetic Codex and Claude transport fixtures exercise shipped adapter seams; configured passing evidence is required before counting adapter coverage. Shared provider/session/checkpoint/MCP/UI hooks retain their existing owners; no OS barrier, runtime adoption or provider automatic instructions claim."
+    },
+    {
+      "id": "orphaned-run-records",
+      "tests": [
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.test.ts",
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.integration.test.ts",
+        "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+        "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts"
+      ],
+      "scope": "Startup recovery closes provider turns, nodes and their open turn items still pending or running under runs that already ended, or under a provider-native subagent's ended runless root turn, as interrupted. A Jones service selects candidates with Jones-owned read queries over upstream projection tables (live-node partial index, item node/provider-turn/run indexes) and commits one receipt per thread through EventSink.commitCommand with the command:runtime-reconcile:orphaned-records identity, so existing reactors ignore the closures and planned update continuity exempts the exact receipt. Anything under a run that has not ended stays open, including queued and held runs; async questions with pending message requests, todo lists, proposed plans, active subagent rows and background-capable items stay with their owners; deleted threads are skipped. The accepted-shared ProviderRuntimeRecoveryService gains one optional serviceOption hook after its startup loop; the runtimeLayer hook provides the service. Best effort, idempotent, no schema, index, payload or wire change."
     }
   ]
 }

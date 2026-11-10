@@ -4911,6 +4911,26 @@
         "node scripts/jones/check-boundary.ts --strict",
         "git diff --check"
       ]
+    },
+    {
+      "id": "jones-orphaned-run-records",
+      "tests": [
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.test.ts",
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.integration.test.ts",
+        "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+        "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/OrphanedRunRecords.test.ts apps/server/src/jones/orchestration/OrphanedRunRecords.integration.test.ts apps/server/src/jones/updates/plannedContinuityPolicy.test.ts apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/orchestration/OrphanedRunRecords.ts apps/server/src/jones/orchestration/OrphanedRunRecords.test.ts apps/server/src/jones/orchestration/OrphanedRunRecords.integration.test.ts apps/server/src/jones/orchestration/OrphanedRunRecords.testkit.ts apps/server/src/jones/updates/plannedContinuityPolicy.ts apps/server/src/jones/updates/plannedContinuityPolicy.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts apps/server/src/orchestration-v2/runtimeLayer.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
     }
   ]
 }
