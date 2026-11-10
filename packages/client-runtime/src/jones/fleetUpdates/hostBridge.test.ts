@@ -63,6 +63,7 @@ it.effect("authenticates relay status reads and target-bound plan directive PUTs
     }> = [];
     const remote = RemoteEnvironmentAuthorization.of({
       renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
+      rememberCheckedDescriptor: () => Effect.void,
       authorizeBearer: () => Effect.die("Unexpected bearer authorization"),
       authorizeDpop: () => Effect.die("Status reads must not replace the socket"),
       authorizeDpopHttp: (input) =>

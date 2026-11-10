@@ -359,7 +359,9 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.orElseSucceed(() => readFallback(input))),
     ),
     // Application-owned MemberRecovery handles retained lookup. Public resume cannot mint recovery authority.
-    resumeRecorded: () => Effect.fail(new Recorded.RecordedCallerFence({ code: "missing" })),
+    resumeRecorded: Effect.fn("Public.WorkstreamOperations.resumeRecorded")(() =>
+      Effect.fail(new Recorded.RecordedCallerFence({ code: "missing" })),
+    ),
     setupStatus: Effect.fn("MemberPublicOperations.setupStatus")(() =>
       run(false, (home) =>
         Effect.gen(function* () {

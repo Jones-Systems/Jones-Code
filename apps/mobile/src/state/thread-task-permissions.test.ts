@@ -282,7 +282,7 @@ describe("mobile task permissions", () => {
           thread: { ...v2Projection.thread, historyOrigin: "v1_import" },
         };
       }
-      const composer = useThreadComposerState();
+      const composer = useThreadComposerState(NO_SIDE_CHATS);
       let release!: () => void;
       const waiting = new Promise<void>((resolve) => {
         release = resolve;

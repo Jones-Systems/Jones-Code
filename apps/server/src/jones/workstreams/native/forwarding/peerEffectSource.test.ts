@@ -18,6 +18,7 @@ import * as HttpResponse from "effect/http/HttpClientResponse";
 import * as DateTime from "effect/DateTime";
 import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import * as Links from "../../../../peer/PeerLinks.ts";
+import * as ServerSettings from "../../../../serverSettings.ts";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import migration from "../../../persistence/Migrations/119_JonesPeerEnvironmentLinks.ts";
@@ -143,7 +144,7 @@ const harness = () => {
             if (control.relinkAtResolve)
               yield* sql
                 .unsafe(
-                  "UPDATE jones_peer_environment_links SET secret_name='replacement-home-to-source'",
+                  "UPDATE peer_environment_links SET secret_name='replacement-home-to-source'",
                 )
                 .pipe(Effect.orDie);
             const generation = yield* actual.currentGeneration(environmentId);
@@ -157,7 +158,11 @@ const harness = () => {
           }),
       });
     }),
-  ).pipe(Layer.provide(Links.layer), Layer.provide(Layer.mock(Environment.ServerEnvironment)({})));
+  ).pipe(
+    Layer.provide(Links.layer),
+    Layer.provide(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
+    Layer.provide(Layer.mock(Environment.ServerEnvironment)({})),
+  );
   const layer = Source.layer.pipe(
     Layer.provideMerge(Peer.layer.pipe(Layer.provideMerge(links), Layer.provideMerge(http))),
   );
@@ -176,7 +181,7 @@ const within = <A, E, R>(
   Effect.gen(function* () {
     yield* migration;
     yield* f.sql.unsafe(
-      "INSERT INTO jones_peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('source:test','home-to-source:original','synthetic-source','[\"https://retained-source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
+      "INSERT INTO peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('source:test','home-to-source:original','synthetic-source','[\"https://retained-source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
     );
     h.control.parent = (request) => ({
       contract: Parent.WORKSTREAMS_SOURCE_READMISSION_CONTRACT_V3,
@@ -268,7 +273,7 @@ it.effect("refuses an unlinked or replaced captured generation before MCP initia
     within(f, h, (source, origin, receiving) =>
       Effect.gen(function* () {
         yield* f.sql.unsafe(
-          "UPDATE jones_peer_environment_links SET secret_name='replacement-home-to-source'",
+          "UPDATE peer_environment_links SET secret_name='replacement-home-to-source'",
         );
         expect(
           (yield* source.withReadmission(origin, receiving, () => Effect.void).pipe(Effect.result))
@@ -373,7 +378,7 @@ it.effect.each(["carrier", "inner", "generation", "session"] as const)(
             if (variant === "generation")
               h.control.beforeReply = () =>
                 f.sql
-                  .unsafe("UPDATE jones_peer_environment_links SET secret_name='replacement'")
+                  .unsafe("UPDATE peer_environment_links SET secret_name='replacement'")
                   .pipe(Effect.asVoid, Effect.orDie);
             if (variant === "session")
               h.control.beforeReply = () =>

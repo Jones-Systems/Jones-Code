@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
 import * as Logger from "effect/Logger";
@@ -231,7 +232,9 @@ function makeHarness(options: HarnessOptions = {}) {
       ),
   });
   const titleRegeneration = ThreadTitleRegeneration.layer.pipe(
-    Layer.provide(Layer.mergeAll(threadManagement, projectedProjects, externalServices)),
+    Layer.provide(
+      Layer.mergeAll(threadManagement, projectedProjects, externalServices, NodeServices.layer),
+    ),
   );
   return {
     layer: Layer.mergeAll(

@@ -152,7 +152,9 @@ const make = Effect.gen(function* () {
     const pinned = Layer.succeed(Keys.WorkstreamsKeyProvider, {
       activeKeyId: keys.activeKeyId,
       get: cachedGet,
-      indexKey: () => Effect.fail(new Keys.KeyUnavailable({ reason: "missing" })),
+      indexKey: Effect.fn("Keys.WorkstreamsKeyProvider.indexKey")(() =>
+        Effect.fail(new Keys.KeyUnavailable({ reason: "missing" })),
+      ),
     });
     const db = Database.layer.pipe(Layer.provideMerge(Envelope.layer.pipe(Layer.provide(pinned))));
     const records = Layer.mergeAll(Registry.layer, PinRecords.layer, Records.layer).pipe(

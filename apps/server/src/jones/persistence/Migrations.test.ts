@@ -479,6 +479,7 @@ it.effect(
           [148, "OrdinaryCheckoutProcessCustody"],
           [149, "AuthSessionClientMetadata"],
           [150, "WorkspaceRuntimeUses"],
+          [151, "PeerLinksAdoption"],
         ],
       );
       assert.deepStrictEqual(
@@ -711,6 +712,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [148, "OrdinaryCheckoutProcessCustody"],
       [149, "AuthSessionClientMetadata"],
       [150, "WorkspaceRuntimeUses"],
+      [151, "PeerLinksAdoption"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

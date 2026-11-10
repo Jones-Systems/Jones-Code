@@ -18,6 +18,7 @@ import * as HomeWire from "@t3tools/contracts/jones/workstreamsHomeBind";
 import * as MemberWire from "@t3tools/contracts/jones/workstreamsMemberEnrollment";
 import { sha256EnrollmentBytes as sha } from "../../enrollment/request.ts";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
 import * as AuthRows from "../../../../persistence/AuthSessions.ts";
 import * as Config from "../../../../config.ts";
@@ -218,6 +219,7 @@ const baseServices = (filename?: string) =>
     Layer.provideMerge(AuthRows.layer),
     Layer.provideMerge(
       Auth.layer.pipe(
+        Layer.provide(ManagedPolicy.layerTest()),
         Layer.provide(
           Layer.succeed(Secrets.ServerSecretStore, {
             get: () => Effect.succeedSome(Test.keyBytes),

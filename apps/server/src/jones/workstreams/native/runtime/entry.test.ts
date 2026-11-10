@@ -55,6 +55,8 @@ import { makeWorkstreamsNativeProvider } from "../../nativeProvider/service.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import * as Gateway from "../../../../workstreams/WorkstreamGateway.ts";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
+import * as ServerSettings from "../../../../serverSettings.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
 import * as McpOAuth from "../../../../auth/McpOAuth.ts";
 import * as Config from "../../../../config.ts";
@@ -652,6 +654,7 @@ it.effect(
       const prepared = yield* seed(f);
       yield* peerMigration;
       const authLayer = Auth.layer.pipe(
+        Layer.provide(ManagedPolicy.layerTest()),
         Layer.provide(
           Layer.mock(Secrets.ServerSecretStore)({
             get: () => Effect.succeedSome(Fixture.keyBytes),
@@ -882,12 +885,14 @@ it.effect(
           }),
         );
         const clock = yield* Clock.Clock;
-        const routes = Layer.mergeAll(
-          McpHttpServer.layerNativeHomeReadToolkit,
-          McpHttpServer.toolkitRegistration(probe, probes),
+        const routes = McpHttpServer.layerMcpTransport(
+          Layer.mergeAll(
+            McpHttpServer.layerNativeHomeReadToolkit,
+            McpHttpServer.toolkitRegistration(probe, probes),
+          ),
         ).pipe(
-          Layer.provideMerge(McpHttpServer.layerMcpTransport),
           Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+          Layer.provide(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
           Layer.provide(
             Layer.mock(McpSessions.McpSessionRegistry)({
               // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.

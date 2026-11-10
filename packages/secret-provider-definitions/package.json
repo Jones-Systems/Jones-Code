@@ -9,7 +9,7 @@
     }
   },
   "scripts": {
-    "typecheck": "effect-tsgo tsrs --noEmit"
+    "typecheck": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit"
   },
   "dependencies": {
     "@t3tools/secret-provider-core": "workspace:*",

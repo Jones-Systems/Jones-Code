@@ -22,6 +22,7 @@ import * as HttpResponse from "effect/http/HttpClientResponse";
 import * as DateTime from "effect/DateTime";
 import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import * as Links from "../../../../peer/PeerLinks.ts";
+import * as ServerSettings from "../../../../serverSettings.ts";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import migration from "../../../persistence/Migrations/119_JonesPeerEnvironmentLinks.ts";
@@ -153,7 +154,7 @@ const harness = (githubSource: string | null = "github:test") => {
             if (control.relinkAtResolve)
               yield* sql
                 .unsafe(
-                  "UPDATE jones_peer_environment_links SET secret_name='replacement-home-to-source'",
+                  "UPDATE peer_environment_links SET secret_name='replacement-home-to-source'",
                 )
                 .pipe(Effect.orDie);
             const generation = yield* actual.currentGeneration(environmentId);
@@ -167,7 +168,11 @@ const harness = (githubSource: string | null = "github:test") => {
           }),
       });
     }),
-  ).pipe(Layer.provide(Links.layer), Layer.provide(Layer.mock(Environment.ServerEnvironment)({})));
+  ).pipe(
+    Layer.provide(Links.layer),
+    Layer.provide(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
+    Layer.provide(Layer.mock(Environment.ServerEnvironment)({})),
+  );
   const github =
     githubSource === null
       ? GitHub.unconfiguredLayer
@@ -236,7 +241,7 @@ const withinRecovery = <A, E, R>(
   Effect.gen(function* () {
     yield* migration;
     yield* f.sql.unsafe(
-      "INSERT INTO jones_peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('source:test','home-to-source:original','synthetic-source','[\"https://retained-source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
+      "INSERT INTO peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('source:test','home-to-source:original','synthetic-source','[\"https://retained-source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
     );
     h.control.parent = (request) => ({
       contract: Parent.WORKSTREAMS_SOURCE_READMISSION_CONTRACT_V3,

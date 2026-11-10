@@ -265,7 +265,9 @@ const make = Effect.gen(function* () {
     for (const item of yield* active()) yield* recoverOne(item.command_id);
   });
   const runner = EffectRunner.of({
-    run: (intent) => runIntent(intent.command.command_id, false, intent),
+    run: Effect.fn("EffectRunner.run")((intent) =>
+      runIntent(intent.command.command_id, false, intent),
+    ),
     recoverOne,
     recover,
   });
@@ -273,16 +275,17 @@ const make = Effect.gen(function* () {
     Context.add(
       Initial.InitialPeerExecution,
       Initial.InitialPeerExecution.of({
-        ready: () =>
-          Option.isSome(peer)
-            ? Effect.void
-            : Effect.fail(new Session.RegistryError({ code: "peer_recovery_unmounted" })),
-        run: (ticket) =>
+        ready: Effect.fn("Initial.InitialPeerExecution.ready")(function* () {
+          if (Option.isNone(peer))
+            return yield* new Session.RegistryError({ code: "peer_recovery_unmounted" });
+        }),
+        run: Effect.fn("Initial.InitialPeerExecution.run")((ticket) =>
           lock.withPermit(
             Option.isSome(peer)
               ? peer.value.runInitial(ticket)
               : Effect.fail(new Session.RegistryError({ code: "peer_recovery_unmounted" })),
           ),
+        ),
       }),
     ),
   );
@@ -335,16 +338,18 @@ export const rawRecoveryLayer = Layer.effect(
           }),
         );
       }),
-      recoverPeer: (id) =>
+      recoverPeer: Effect.fn("Recovery.RawRecovery.recoverPeer")((id) =>
         runner.recoverOne(id).pipe(
           Effect.asVoid,
           Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "unavailable" })),
         ),
-      recoverOne: (id) =>
+      ),
+      recoverOne: Effect.fn("Recovery.RawRecovery.recoverOne")((id) =>
         runner.recoverOne(id).pipe(
           Effect.asVoid,
           Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "unavailable" })),
         ),
+      ),
     });
   }),
 );

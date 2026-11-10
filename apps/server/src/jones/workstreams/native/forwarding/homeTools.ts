@@ -103,16 +103,17 @@ const make = Effect.gen(function* () {
           return yield* new Keys.KeyUnavailable({ reason: "active_key_missing" });
         return preparedId;
       }),
-      get: (id) =>
+      get: Effect.fn("Keys.WorkstreamsKeyProvider.get")((id) =>
         Effect.suspend(() =>
           content.has(id)
             ? Effect.succeed(Uint8Array.from(content.get(id)!))
             : Effect.fail(missing()),
         ),
-      indexKey: (id) =>
-        id === home.registry_instance_id
-          ? Effect.succeed(Uint8Array.from(index))
-          : Effect.fail(missing()),
+      ),
+      indexKey: Effect.fn("Keys.WorkstreamsKeyProvider.indexKey")(function* (id) {
+        if (id !== home.registry_instance_id) return yield* missing();
+        return Uint8Array.from(index);
+      }),
     });
     const db = Database.layer.pipe(
       Layer.provideMerge(

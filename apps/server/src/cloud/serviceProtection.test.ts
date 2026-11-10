@@ -30,6 +30,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("renderPrivileg
         ServiceProtection.protectionPlan({
           uid,
           userUnitDir: "/home/theo/.config/systemd/user",
+          unitFile: "t3code.service",
           remoteAccessUnits,
           systemUnitDir,
         });
@@ -167,6 +168,7 @@ it.effect("lowers no score before the manager default is in place, and undoes in
     const plan = ServiceProtection.protectionPlan({
       uid: 1000,
       userUnitDir: NodePath.join(home, ".config", "systemd", "user"),
+      unitFile: "t3code.service",
       remoteAccessUnits: [],
       systemUnitDir: NodePath.join(home, "system"),
     });
@@ -249,7 +251,10 @@ it.effect("counts memory.min as protection and names the first cgroup that grant
   write(5, "memory.low", "1610612736");
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const read = ServiceProtection.readProtection("/home/theo/.config/systemd/user").pipe(
+    const read = ServiceProtection.readProtection(
+      "/home/theo/.config/systemd/user",
+      "t3code.service",
+    ).pipe(
       Effect.provideService(FileSystem.FileSystem, {
         ...fs,
         readFileString: (path, encoding) =>
@@ -264,6 +269,58 @@ it.effect("counts memory.min as protection and names the first cgroup that grant
     Effect.provideService(
       ProcessRunner.ProcessRunner,
       runner(`ControlGroup=/${controlGroup.join("/")}\nMainPID=0\n`),
+    ),
+    Effect.provide(NodeServices.layer),
+  );
+});
+
+it.effect("follows the installed service's unit file instead of the upstream name", () => {
+  const home = temporaryDirectory();
+  const userUnitDir = NodePath.join(home, ".config", "systemd", "user");
+  const calls: Array<ReadonlyArray<string>> = [];
+  return Effect.gen(function* () {
+    const plan = ServiceProtection.protectionPlan({
+      uid: 1000,
+      userUnitDir,
+      unitFile: "jones-code.service",
+      remoteAccessUnits: [],
+      systemUnitDir: NodePath.join(home, "system"),
+    });
+    expect(plan.user.map(({ unit }) => unit)).toEqual([
+      "app.slice",
+      "init.scope",
+      "jones-code.service",
+    ]);
+    expect(plan.user.some(({ path }) => path.includes("t3code.service"))).toBe(false);
+
+    const dropIn = NodePath.join(userUnitDir, "jones-code.service.d", "90-t3code-protect.conf");
+    NodeFS.mkdirSync(NodePath.dirname(dropIn), { recursive: true });
+    NodeFS.writeFileSync(dropIn, "[Service]\nOOMScoreAdjust=-900\n");
+    const state = yield* ServiceProtection.readProtection(userUnitDir, "jones-code.service");
+    expect(state?.setByProtect).toBe(true);
+    expect(calls.map((args) => args[1])).toEqual(["show"]);
+    expect(calls[0]).toContain("jones-code.service");
+    expect(calls[0]).not.toContain("t3code.service");
+  }).pipe(
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(home, { recursive: true, force: true }))),
+    Effect.provideService(
+      ProcessRunner.ProcessRunner,
+      ProcessRunner.ProcessRunner.of({
+        run: (input) =>
+          Effect.sync(() => {
+            calls.push(input.args);
+            return {
+              stdout: "ControlGroup=/app.slice/jones-code.service\nMainPID=0\n",
+              stderr: "",
+              code: ChildProcessSpawner.ExitCode(0),
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }),
+      }),
     ),
     Effect.provide(NodeServices.layer),
   );

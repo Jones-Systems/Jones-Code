@@ -239,6 +239,7 @@ it.each(explicitCases)(
         turnItems: [],
         activeThreadKey: routeThreadKey,
         activeThreadShell: thread,
+        limitRecoveryHoldsSnooze: false,
         activeLatestRun: thread.latestRun,
         activeProjectCwd: null,
         serverConfig: null,

@@ -1457,7 +1457,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
     );
 
     return stream.pipe(
-      Stream.filter(shellDelivery.accepts),
+      Stream.filter<OrchestrationV2ShellStreamItem>(shellDelivery.accepts),
       (merged) => skipUnchangedThreadShells(merged, { canSuppress: shellDelivery.canSuppress }),
       dedupeShellEnrichment,
       Stream.mapError(

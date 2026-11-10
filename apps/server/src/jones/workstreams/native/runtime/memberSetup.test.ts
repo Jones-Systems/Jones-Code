@@ -24,6 +24,7 @@ import {
   deriveNativeEnrollmentSession,
 } from "../../enrollment/request.ts";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
 import * as SessionStore from "../../../../auth/SessionStore.ts";
 import * as AuthRows from "../../../../persistence/AuthSessions.ts";
@@ -254,6 +255,7 @@ const baseServices = (filename?: string) =>
     Layer.provideMerge(AuthRows.layer),
     Layer.provideMerge(
       Auth.layer.pipe(
+        Layer.provide(ManagedPolicy.layerTest()),
         Layer.provide(
           Layer.succeed(Secrets.ServerSecretStore, {
             get: () => Effect.succeedSome(Test.keyBytes),

@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { ComposerQuickControls } from "./ComposerQuickControls";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
+import type { TraitsPersistence } from "../../components/chat/TraitsPicker";
 
 const instanceId = ProviderInstanceId.make("quick-controls-test");
 const draftId = DraftId.make("quick-controls-test");
@@ -37,7 +38,7 @@ function Fixture({
   ...overrides
 }: {
   descriptors?: ProviderOptionDescriptor[];
-} & Partial<ComponentProps<typeof ComposerQuickControls>>) {
+} & Partial<Omit<ComponentProps<typeof ComposerQuickControls>, keyof TraitsPersistence>>) {
   const selection = useComposerDraftStore(
     (store) => store.stickyModelSelectionByProvider[instanceId],
   );

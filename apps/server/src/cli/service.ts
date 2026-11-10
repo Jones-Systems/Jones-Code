@@ -377,9 +377,10 @@ const serviceStatusCommand = Command.make("status", projectLocationFlags).pipe(
         const status = yield* service.status;
         const protection =
           status.installed && (yield* HostProcess.Platform) === "linux"
-            ? yield* ServiceProtection.readProtection(path.dirname(status.unitPath)).pipe(
-                Effect.provide(ProcessRunner.layer),
-              )
+            ? yield* ServiceProtection.readProtection(
+                path.dirname(status.unitPath),
+                path.basename(status.unitPath),
+              ).pipe(Effect.provide(ProcessRunner.layer))
             : undefined;
         yield* Console.log(formatServiceStatus(status, packageJson.version, protection));
       }),
@@ -423,18 +424,27 @@ const serviceProtectCommand = Command.make("protect", {
         flags,
         Effect.gen(function* () {
           const uid = yield* HostProcess.UserId;
-          const remote = yield* ServiceProtection.detectRemoteAccessUnits;
           const { unitPath } = yield* (yield* BootService.BootService).status;
+          const path = yield* Path.Path;
+          // Drop-ins beside an adopted system unit belong to the system manager, not to this user.
+          if (path.dirname(unitPath) === ServiceProtection.SYSTEM_UNIT_DIR) {
+            return yield* Console.log(
+              "This service runs under the system manager. `t3 service protect` covers user services only.",
+            );
+          }
+          const remote = yield* ServiceProtection.detectRemoteAccessUnits;
           if (uid === undefined || remote === undefined || unitPath === "") {
             return yield* Console.log(unsupported);
           }
-          const userUnitDir = (yield* Path.Path).dirname(unitPath);
+          const userUnitDir = path.dirname(unitPath);
+          const unitFile = path.basename(unitPath);
 
           if (flags.undo) {
             const installed = yield* ServiceProtection.installedProtection(
               ServiceProtection.protectionPlan({
                 uid,
                 userUnitDir,
+                unitFile,
                 remoteAccessUnits: ServiceProtection.REMOTE_ACCESS_UNITS,
               }),
             );
@@ -475,6 +485,7 @@ const serviceProtectCommand = Command.make("protect", {
           const plan = ServiceProtection.protectionPlan({
             uid,
             userUnitDir,
+            unitFile,
             remoteAccessUnits: protectRemote ? remote : [],
           });
           yield* Console.log(

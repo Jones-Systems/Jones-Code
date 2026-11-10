@@ -111,7 +111,10 @@ const stores = Layer.mergeAll(
   OrchestrationEventStore.layer,
   ThreadMetadataReads.layer,
 );
-const memory = stores.pipe(Layer.provideMerge(SqlitePersistence.layerMemory));
+const memory = stores.pipe(
+  Layer.provideMerge(SqlitePersistence.layerMemory),
+  Layer.provideMerge(NodeServices.layer),
+);
 
 it.effect(
   "PR sweeps and single-thread refresh preserve commands and sequence guards using metadata SQL only",

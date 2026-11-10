@@ -1067,7 +1067,7 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       });
       // Three thin Shell lookups revalidate the caller; one payload lookup validates this delivery.
       // Reviewed raw-SQL hashes are independent of the builder and every observed query.
-      const shellDigest = "986e67c809e8d50a8a72db033577aeb662562c5d5bf6fc691d708a9b81834c81";
+      const shellDigest = "159b65345b7062b6802b11fa27cb76319b00e19aef2772d833f3cee748be71bc";
       const payloadDigest = "35a52bf9e8af7ef0a4435df85ea59d95d851e6eeabf322c3b107425f2d1d9a7e";
       const shellParameters = [
         "/compact",

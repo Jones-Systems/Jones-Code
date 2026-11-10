@@ -168,12 +168,14 @@ describe("web composer selection dispatch contract", () => {
     store.setModelSelection(target, selection, { explicit: true });
     const submitted = store.getComposerDraft(target);
     const shellResultAtom = Atom.map(stateAtom, AsyncResult.success);
+    const noPendingThreadIdsAtom = Atom.make((): ReadonlySet<ThreadId> => new Set());
     onTestFinished(
       subscribeComposerDraftModelReconciliation({
         registry,
         threadRefsAtom: Atom.make([target]),
         threadShellAtom: () => shellAtom,
         shellStateAtom: () => shellResultAtom,
+        pendingThreadIdsAtom: () => noPendingThreadIdsAtom,
       }),
     );
     const flush = () => {

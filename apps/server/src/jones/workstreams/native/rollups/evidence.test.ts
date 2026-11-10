@@ -7,6 +7,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const provider = yield* Evidence.RollupEvidenceProvider,
+        signal = yield* Effect.abortSignal,
         f = syntheticFixture();
       expect(provider.contract).toBe("workstreams-rollup-evidence/1.0.0");
       expect(provider.configured).toBe(false);
@@ -14,10 +15,8 @@ it.effect(
         { kind: "excluded", native_reference_id: "ref:test", reason: "content_unavailable" },
       ]);
       expect(yield* provider.verifyCurrentAuthorization(f.manifest)).toBe(false);
-      expect(
-        (yield* Effect.flip(
-          provider.readExtractionInputs(f.manifest, new AbortController().signal),
-        )).code,
-      ).toBe("provider_unconfigured");
+      expect((yield* Effect.flip(provider.readExtractionInputs(f.manifest, signal))).code).toBe(
+        "provider_unconfigured",
+      );
     }).pipe(Effect.provide(Evidence.unconfiguredLayer)),
 );

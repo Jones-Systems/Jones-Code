@@ -93,6 +93,10 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(SourceSettlement, make);
 export const unconfiguredLayer = Layer.succeed(SourceSettlement, {
-  settle: () => Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
-  lookup: () => Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
+  settle: Effect.fn("SourceSettlement.settle")(() =>
+    Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
+  ),
+  lookup: Effect.fn("SourceSettlement.lookup")(() =>
+    Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
+  ),
 });

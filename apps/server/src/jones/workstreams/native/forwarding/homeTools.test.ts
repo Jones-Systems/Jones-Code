@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
 import * as AuthRows from "../../../../persistence/AuthSessions.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
 import * as Config from "../../../../config.ts";
@@ -66,7 +67,9 @@ const signing = Layer.succeed(
 const services = (options: { filename?: string; keys?: Map<string, Uint8Array> } = {}) =>
   Layer.mergeAll(Records.layer, Authentication.layer).pipe(
     Layer.provideMerge(Pins.nativeLayer),
-    Layer.provideMerge(Auth.layer.pipe(Layer.provide(signing))),
+    Layer.provideMerge(
+      Auth.layer.pipe(Layer.provide(ManagedPolicy.layerTest()), Layer.provide(signing)),
+    ),
     Layer.provideMerge(Test.testLayer(options)),
     Layer.provideMerge(
       Config.layerTest(

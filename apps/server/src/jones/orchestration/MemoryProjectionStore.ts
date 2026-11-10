@@ -30,6 +30,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import { threadHtmlRenderAttachmentIds } from "../../attachmentStore.ts";
+import { threadPullRequestsOf } from "../../sourceControl/threadPullRequests.ts";
 import {
   isThreadHistoryUserTurn,
   isConversationHistoryItem,
@@ -115,6 +116,15 @@ export const makeMemoryLayer = (
         );
       case "delegated-completions":
         return projection.runs.some((run) => run.delegatedCompletion?.delivery != null);
+      case "restart-continuations":
+        return (
+          projection.providerSessions.some(
+            (session) => session.status !== "stopped" && session.status !== "error",
+          ) ||
+          projection.runs.some(
+            (run) => run.status === "starting" && run.restartContinuationOfRunId !== undefined,
+          )
+        );
       case "subagent-results": {
         const parentThreadId = projection.thread.lineage.parentThreadId;
         return (
@@ -687,6 +697,119 @@ export const makeMemoryLayer = (
                   pullRequests: thread.pullRequests ?? [],
                 })),
             ),
+          ),
+        getThreadLinkMetadata: (threadIds) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) =>
+              Object.fromEntries(
+                threadIds.flatMap((threadId) => {
+                  const thread = state.projections.get(threadId)?.thread;
+                  return thread === undefined || thread.deletedAt !== null
+                    ? []
+                    : [[threadId, { title: thread.title, projectId: thread.projectId }]];
+                }),
+              ),
+            ),
+          ),
+        getThreadTitles: (threadIds) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) =>
+              Object.fromEntries(
+                threadIds.flatMap((threadId) => {
+                  const thread = state.projections.get(threadId)?.thread;
+                  return thread === undefined || thread.deletedAt !== null
+                    ? []
+                    : [[threadId, thread.title]];
+                }),
+              ),
+            ),
+          ),
+        getMessagesById: (threadId, messageIds) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) => {
+              const requested = new Set<string>(messageIds);
+              return new Map(
+                (state.projections.get(threadId)?.messages ?? [])
+                  .filter((message) => requested.has(message.id))
+                  .map((message) => [message.id, message] as const),
+              );
+            }),
+          ),
+        getPullRequestSnapshot: ({ threadId, unsettledOnly = false }) =>
+          Effect.all([Ref.get(replayState), Ref.get(sequence)]).pipe(
+            Effect.map(([state, snapshotSequence]) => ({
+              snapshotSequence,
+              threads: [...state.projections.values()]
+                .map(({ thread }) => thread)
+                .filter(
+                  (thread) =>
+                    thread.deletedAt === null &&
+                    (threadId === undefined
+                      ? thread.archivedAt === null
+                      : thread.id === threadId) &&
+                    (!unsettledOnly ||
+                      (thread.settledAt === null && thread.settledOverride !== "settled")),
+                )
+                .toSorted(
+                  (left, right) =>
+                    DateTime.toEpochMillis(left.updatedAt) -
+                      DateTime.toEpochMillis(right.updatedAt) || left.id.localeCompare(right.id),
+                )
+                .map((thread) => ({
+                  id: thread.id,
+                  projectId: thread.projectId,
+                  lineage: thread.lineage,
+                  branch: thread.branch,
+                  worktreePath: thread.worktreePath,
+                  archivedAt: thread.archivedAt,
+                  settledOverride: thread.settledOverride,
+                  settledAt: thread.settledAt,
+                  linkedPullRequest: thread.linkedPullRequest,
+                  branchPullRequest: thread.branchPullRequest,
+                  pullRequests: threadPullRequestsOf(thread),
+                })),
+            })),
+          ),
+        getAgentAwarenessSnapshot: (threadId) =>
+          Effect.all([Ref.get(replayState), Ref.get(sequence)]).pipe(
+            Effect.map(([state, snapshotSequence]) => ({
+              snapshotSequence,
+              threads: [...state.projections.values()]
+                .filter(({ thread }) =>
+                  threadId === undefined
+                    ? thread.deletedAt === null &&
+                      thread.archivedAt === null &&
+                      thread.lineage.relationshipToParent !== "subagent" &&
+                      thread.lineage.sideChat !== true
+                    : thread.deletedAt === null && thread.id === threadId,
+                )
+                .map((projection) => threadShellFromProjection(projection))
+                .toSorted(
+                  (left, right) =>
+                    DateTime.toEpochMillis(left.updatedAt) -
+                      DateTime.toEpochMillis(right.updatedAt) || left.id.localeCompare(right.id),
+                )
+                .map((shell) => ({
+                  id: shell.id,
+                  projectId: shell.projectId,
+                  creationSource: shell.creationSource,
+                  archivedAt: shell.archivedAt,
+                  activeRunId: shell.activeRunId,
+                  latestRunId: shell.latestRunId,
+                  hasActionableProposedPlan: shell.hasActionableProposedPlan,
+                  title: shell.title,
+                  lineage: shell.lineage,
+                  modelSelection: shell.modelSelection,
+                  settledOverride: shell.settledOverride,
+                  updatedAt: shell.updatedAt,
+                  status: shell.status,
+                  activityRunStatus: shell.activityRunStatus,
+                  latestRunCompletedAt: shell.latestRunCompletedAt,
+                  latestRunStopRequested: shell.latestRunStopRequested,
+                  pendingRuntimeRequest: shell.pendingRuntimeRequest,
+                  pendingBackgroundTasks: shell.pendingBackgroundTasks,
+                })),
+            })),
           ),
         getLimitRecoveryCandidates: (options) =>
           Ref.get(replayState).pipe(

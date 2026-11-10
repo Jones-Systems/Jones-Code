@@ -202,7 +202,7 @@ export const requestAdmissionLayer = Layer.unwrap(
         let original: Admission.MemberRecordedWriteCallerV2 | null = null;
         return Admission.MemberAdmission.of({
           ...admission,
-          captureWrite: (target) =>
+          captureWrite: Effect.fn("Admission.MemberAdmission.captureWrite")((target) =>
             serial.withPermits(1)(
               Effect.gen(function* () {
                 if (original === null) original = yield* admission.captureWrite(target);
@@ -212,6 +212,7 @@ export const requestAdmissionLayer = Layer.unwrap(
                 return original;
               }),
             ),
+          ),
         });
       }),
     ),
