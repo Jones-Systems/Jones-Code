@@ -257,15 +257,15 @@ it.layer(layer)("pending control bodies", (it) => {
         const initial = yield* store.getThreadSnapshotWindow(threadId, { rowLimit: 2 });
         assert.deepEqual(
           initial.projection.visibleTurnItems,
-          [...controls.map(({ item }) => ({ ...item, runId })), ...expectedRecentTools].map(
-            (item, position) => ({
-              item,
-              position,
-              visibility: "local",
-              sourceThreadId: threadId,
-              sourceItemId: item.id,
-            }),
-          ),
+          // Upstream keeps pending controls out of the row window and appends
+          // them to turnItems after windowing; clients read them from turnItems.
+          expectedRecentTools.map((item, position) => ({
+            item,
+            position,
+            visibility: "local",
+            sourceThreadId: threadId,
+            sourceItemId: item.id,
+          })),
         );
         assert.lengthOf(initial.projection.turnItems, 5);
         const policy = { maxItems: 1, maxEncodedBytes: 2_048 };
@@ -392,9 +392,10 @@ it.layer(layer)("pending control bodies", (it) => {
             (item) => item.id === controls[0]!.item.id || item.id === controls[1]!.item.id,
           ),
         );
+        assert.isTrue(ended.projection.turnItems.some((item) => item.id === controls[2]!.item.id));
         assert.deepEqual(
           ended.projection.visibleTurnItems,
-          [{ ...controls[2]!.item, runId }, ...expectedRecentTools].map((item, position) => ({
+          expectedRecentTools.map((item, position) => ({
             item,
             position,
             visibility: "local",
