@@ -9,18 +9,21 @@ import * as Option from "effect/Option";
  * Background work stays untouched: the runtime's own state is still unconfirmed. A missing
  * session or a runtime without the probe is unknown, not idle, and settles nothing.
  */
-export const settleRunOfIdleTurn = <E1, E2, R>(input: {
+export const settleRunOfIdleTurn = Effect.fn("IdleTurnSettlement.settleRunOfIdleTurn")(function* <
+  E1,
+  E2,
+  R,
+>(input: {
   readonly session: Effect.Effect<
     Option.Option<Pick<ProviderAdapterV2SessionRuntime, "isTurnActive">>,
     E1
   >;
   readonly providerTurnId: ProviderTurnId;
   readonly settleRun: Effect.Effect<unknown, E2, R>;
-}) =>
-  Effect.gen(function* () {
-    const session = yield* input.session;
-    if (Option.isNone(session) || session.value.isTurnActive === undefined) return false;
-    if (yield* session.value.isTurnActive(input.providerTurnId)) return false;
-    yield* input.settleRun;
-    return true;
-  });
+}) {
+  const session = yield* input.session;
+  if (Option.isNone(session) || session.value.isTurnActive === undefined) return false;
+  if (yield* session.value.isTurnActive(input.providerTurnId)) return false;
+  yield* input.settleRun;
+  return true;
+});
