@@ -3105,6 +3105,17 @@
         "apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx"
       ],
       "scope": "C9 broker-only conversation allocation with per-turn Git object snapshots, exact empty-directory identity and lifecycle, durable compare-and-swap handoff, shared delegation, terminal/setup admission and additive project allocation settings. Synthetic Codex and Claude transport fixtures exercise shipped adapter seams; configured passing evidence is required before counting adapter coverage. Shared provider/session/checkpoint/MCP/UI hooks retain their existing owners; no OS barrier, runtime adoption or provider automatic instructions claim."
+    },
+    {
+      "id": "stalled-run-projection",
+      "tests": [
+        "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts"
+      ],
+      "scope": "A provider thread update emitted outside the SDK reader names its bound producer, and an update without producer evidence keeps the stored runtime identity unless it names another binding, another generation or a newer evidence revision. A rejected capture is reported by thread, provider thread, reason and event type without payload content. A root terminal whose provider thread lost every producer record settles its run through the current-run write, and a failed interrupt settles only the run when the runtime reports the turn idle; background work is never settled on an unknown outcome. Shared sink, run execution, effect worker, adapter and contract hooks keep their upstream owners. Synthetic adapter, sink and projection fixtures; no installed-runtime or live-thread recovery claim."
     }
   ]
 }

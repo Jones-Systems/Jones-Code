@@ -11578,6 +11578,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             (effect) => sdkMessageLock.withPermits(1)(effect),
           ),
           interruptTurn,
+          isTurnActive: (providerTurnId) =>
+            Effect.map(Ref.get(activeTurn), (turn) => turn?.providerTurnId === providerTurnId),
           stopSubagent: Effect.fn("ClaudeAdapterV2.stopSubagent")(function* (input) {
             const existing = yield* Ref.get(queryContext);
             const nativeThreadId = input.providerThread.nativeThreadRef?.nativeId;

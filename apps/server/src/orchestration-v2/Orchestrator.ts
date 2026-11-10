@@ -11722,6 +11722,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           now,
         });
       }
+      // Jones: the turn ended but its runtime is unconfirmed, so its background work stays.
+      if (command.runOnly === true) return;
       // A new turn may have started since Stop; its work is not this Stop's.
       if (
         projection.runs.some(
