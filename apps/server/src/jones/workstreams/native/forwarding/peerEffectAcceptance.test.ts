@@ -159,7 +159,7 @@ const harness = (githubSource: string | null = "github:test") => {
             if (control.relinkAtResolve)
               yield* sql
                 .unsafe(
-                  "UPDATE jones_peer_environment_links SET secret_name='replacement-home-to-source'",
+                  "UPDATE peer_environment_links SET secret_name='replacement-home-to-source'",
                 )
                 .pipe(Effect.orDie);
             const generation = yield* actual.currentGeneration(environmentId);
@@ -257,7 +257,7 @@ const withHome = <A, E, R>(
   Effect.gen(function* () {
     yield* migration;
     yield* f.sql.unsafe(
-      "INSERT INTO jones_peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('source:test','home-to-source:original','synthetic-source','[\"https://retained-source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
+      "INSERT INTO peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('source:test','home-to-source:original','synthetic-source','[\"https://retained-source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
     );
     const request = yield* decodeForward(f.forward);
     h.control.parent = (lookup) => ({

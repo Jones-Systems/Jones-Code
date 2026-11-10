@@ -199,6 +199,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
     }),
   );
 
+  it.effect("protect leaves an adopted system unit to the system manager", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-cli-test-" });
+      const { service } = makeTestService({
+        ...status,
+        unitPath: "/etc/systemd/system/jones-code.service",
+      });
+      vi.spyOn(BootService, "layer").mockReturnValue(
+        Layer.succeed(BootService.BootService, service),
+      );
+
+      const output = yield* Command.runWith(serviceCommand, { version: packageJson.version })([
+        "protect",
+        "--yes",
+        "--base-dir",
+        `${parent}/t3`,
+      ]).pipe(
+        Effect.andThen(TestConsole.logLines),
+        Effect.map((lines) => lines.join("\n")),
+        Effect.provideService(HostProcess.Environment, {}),
+        Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provideService(HostProcess.UserId, 1000),
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+            Layer.fresh(TestConsole.layer),
+          ),
+        ),
+      );
+      expect(output).toContain("system manager");
+      expect(output).not.toContain("Drop-ins it writes");
+    }),
+  );
+
   // regression: #13239 a stale nvm-installed CLI reported "already using" its own version
   it.effect.each(["install", "update"] as const)(
     "%s names the CLI that found nothing to change",

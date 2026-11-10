@@ -16,10 +16,20 @@ import {
   servePeer,
 } from "../../peer/PeerLinks.testkit.ts";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
+import { runJonesMigrations } from "../persistence/JonesMigrationGuard.ts";
 import * as JonesMigrations from "../persistence/JonesMigrations.ts";
-import { peerEnvironmentLinksTable } from "./table.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
+
+// Jones kept links in this table (migration 119) before upstream gained its own.
+// Migration 151 copies them across and leaves this table for rollback.
+const legacyTable = "jones_peer_environment_links";
+const adoptionId = 151;
+const lastUpstreamId = Math.max(...migrationManifest.map(([id]) => id));
+
+const jonesEntriesBeforeAdoption = JonesMigrations.jonesMigrationEntries.filter(
+  ([id]) => id < adoptionId,
+);
 
 const assertUpstreamPeerSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -38,80 +48,98 @@ const assertUpstreamPeerSchema = Effect.gen(function* () {
   ]);
   assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_list(peer_environment_links)`, []);
 });
-const upstreamMarker = {
-  environment_id: "synthetic-upstream-peer",
-  secret_name: "synthetic-upstream-secret-marker",
-  label: "Upstream marker",
-  urls_json: '["https://upstream-marker.invalid"]',
+
+const linkRow = (environmentId: string, overrides: Record<string, unknown> = {}) => ({
+  environment_id: environmentId,
+  secret_name: `peer-link-${environmentId}`,
+  label: `Label ${environmentId}`,
+  urls_json: `["https://${environmentId}.invalid"]`,
   access: "auto",
   linked_at: "2026-10-01T00:00:00.000Z",
   expires_at: "2027-10-01T00:00:00.000Z",
   last_reached_at: "2026-10-02T00:00:00.000Z",
   last_error: "synthetic preserved error",
-  fenced: 0,
-};
-const seedUpstreamMarker = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  yield* sql`INSERT INTO peer_environment_links ${sql.insert(upstreamMarker)}`;
-});
-const assertUpstreamMarker = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  yield* assertUpstreamPeerSchema;
-  assert.deepStrictEqual(yield* sql`SELECT * FROM peer_environment_links`, [upstreamMarker]);
+  fenced: 1,
+  ...overrides,
 });
 
-const assertJonesPeerSchema = Effect.gen(function* () {
+const assertAdoptionRecorded = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   assert.deepStrictEqual(
-    yield* sql`SELECT migration_id, name FROM jones_sql_migrations WHERE migration_id = 119`,
-    [{ migration_id: 119, name: "PeerEnvironmentLinks" }],
-  );
-  assert.deepStrictEqual(
-    yield* sql`SELECT * FROM pragma_foreign_key_list(${peerEnvironmentLinksTable})`,
-    [],
-  );
-  const columns = yield* sql<{ readonly name: string }>`
-    SELECT name FROM pragma_table_info(${peerEnvironmentLinksTable}) ORDER BY cid
-  `;
-  assert.deepStrictEqual(
-    columns.map(({ name }) => name),
-    [
-      "environment_id",
-      "secret_name",
-      "label",
-      "urls_json",
-      "access",
-      "linked_at",
-      "expires_at",
-      "last_reached_at",
-      "last_error",
-      "fenced",
-    ],
+    yield* sql`SELECT migration_id, name FROM jones_sql_migrations WHERE migration_id = ${adoptionId}`,
+    [{ migration_id: adoptionId, name: "PeerLinksAdoption" }],
   );
 });
 
-it.effect("fresh startup keeps experimental peer links entirely in the Jones ledger", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations();
-    const upstream = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+it.effect(
+  "fresh startup records the adoption, creates the upstream table and keeps the Jones one",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+      const upstream = yield* sql<{ readonly migration_id: number; readonly name: string }>`
       SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
     `;
-    assert.deepStrictEqual(
-      upstream.map(({ migration_id, name }) => [migration_id, name] as const),
-      migrationManifest,
-    );
-    assert.strictEqual(upstream.at(-1)?.migration_id, 77);
-    yield* assertJonesPeerSchema;
-    yield* assertUpstreamPeerSchema;
-    assert.deepStrictEqual(yield* sql`SELECT * FROM peer_environment_links`, []);
-    assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(peerEnvironmentLinksTable)}`, []);
-    assert.deepStrictEqual(yield* runMigrations(), []);
-  }).pipe(Effect.provide(memory)),
+      assert.deepStrictEqual(
+        upstream.map(({ migration_id, name }) => [migration_id, name] as const),
+        migrationManifest,
+      );
+      yield* assertAdoptionRecorded;
+      yield* assertUpstreamPeerSchema;
+      assert.deepStrictEqual(yield* sql`SELECT * FROM peer_environment_links`, []);
+      // Left in place so a rollback to the build that still reads it finds its rows.
+      assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(legacyTable)}`, []);
+      assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(memory)),
 );
 
 it.effect(
-  "released schema 63 keeps its rows through Jones migration and accepts upstream migrations",
+  "adoption copies Jones links into the upstream table and keeps a newer upstream row",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: lastUpstreamId });
+      yield* runJonesMigrations(jonesEntriesBeforeAdoption);
+      yield* assertUpstreamPeerSchema;
+
+      const rowA = linkRow("synthetic-env-a");
+      const rowB = linkRow("synthetic-env-b", {
+        fenced: 0,
+        last_reached_at: null,
+        last_error: null,
+      });
+      const legacy = [rowA, rowB, linkRow("synthetic-env-shared", { label: "Jones copy" })];
+      for (const row of legacy) {
+        yield* sql`INSERT INTO ${sql(legacyTable)} ${sql.insert(row)}`;
+      }
+      const upstreamRow = linkRow("synthetic-env-shared", { label: "Upstream copy" });
+      yield* sql`INSERT INTO peer_environment_links ${sql.insert(upstreamRow)}`;
+
+      assert.deepStrictEqual(
+        (yield* runJonesMigrations(JonesMigrations.jonesMigrationEntries)).map(([id]) => id),
+        [adoptionId],
+      );
+      yield* assertAdoptionRecorded;
+
+      const adopted = yield* sql`SELECT * FROM peer_environment_links ORDER BY environment_id`;
+      assert.deepStrictEqual(adopted, [rowA, rowB, upstreamRow]);
+      // The Jones rows stay as the pre-adoption record.
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM ${sql(legacyTable)} ORDER BY environment_id`,
+        legacy,
+      );
+
+      // A second run has nothing to do and does not copy again.
+      assert.deepStrictEqual(yield* runJonesMigrations(JonesMigrations.jonesMigrationEntries), []);
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM peer_environment_links ORDER BY environment_id`,
+        adopted,
+      );
+    }).pipe(Effect.provide(memory)),
+);
+
+it.effect(
+  "released schema 63 keeps its Jones links through upstream catch-up and then adopts them",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -121,59 +149,32 @@ it.effect(
         yield* sql`SELECT name FROM sqlite_master WHERE name = 'peer_environment_links'`,
         [],
       );
+      yield* runJonesMigrations(jonesEntriesBeforeAdoption);
+      const legacy = linkRow("synthetic-released-env");
+      yield* sql`INSERT INTO ${sql(legacyTable)} ${sql.insert(legacy)}`;
       yield* sql`
-      INSERT INTO orchestration_command_receipts
-        (command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status)
-      VALUES ('synthetic-peer-command', 'thread', 'synthetic-thread', '2026-10-21', 1, 'accepted')
-    `;
-      const objects = yield* sql<{
-        readonly type: string;
-        readonly name: string;
-        readonly sql: string | null;
-      }>`
-      SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
-    `;
-      const tables = objects.filter(({ type }) => type === "table");
-      const rowsBefore = yield* Effect.forEach(
-        tables,
-        ({ name }) => sql`SELECT * FROM ${sql(name)}`,
-      );
-
-      assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 63 }), []);
-      yield* JonesMigrations.runMigrations();
-      yield* assertJonesPeerSchema;
-      const objectsAfter = yield* sql`
-      SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
-    `;
-      for (const object of objects) assert.deepInclude(objectsAfter, object);
-      assert.deepStrictEqual(
-        yield* Effect.forEach(tables, ({ name }) => sql`SELECT * FROM ${sql(name)}`),
-        rowsBefore,
-      );
+        INSERT INTO orchestration_command_receipts
+          (command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status)
+        VALUES ('synthetic-peer-command', 'thread', 'synthetic-thread', '2026-10-21', 1, 'accepted')
+      `;
 
       assert.deepStrictEqual(
         yield* runMigrations(),
         migrationManifest.filter(([id]) => id > 63),
       );
+      yield* assertAdoptionRecorded;
+      yield* assertUpstreamPeerSchema;
+      assert.deepStrictEqual(yield* sql`SELECT * FROM peer_environment_links`, [legacy]);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(legacyTable)}`, [legacy]);
       assert.deepStrictEqual(yield* sql`SELECT command_id FROM orchestration_command_receipts`, [
         { command_id: "synthetic-peer-command" },
       ]);
-      yield* assertJonesPeerSchema;
-      yield* assertUpstreamPeerSchema;
-      yield* seedUpstreamMarker;
-      const peerObjects =
-        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='peer_environment_links' ORDER BY type,name`;
-      yield* JonesMigrations.runMigrations();
-      yield* assertUpstreamMarker;
-      assert.deepStrictEqual(
-        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='peer_environment_links' ORDER BY type,name`,
-        peerObjects,
-      );
-      assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(peerEnvironmentLinksTable)}`, []);
 
-      // Real upstream migrations own 64–77; synthetic later migrations prove
-      // Jones still leaves future upstream IDs available without predicting their contents.
-      const future = [78, 79].map((id) => [id, `SyntheticFuture${id}`] as const);
+      // Synthetic later upstream migrations prove Jones still leaves future upstream
+      // IDs available without predicting their contents.
+      const future = [lastUpstreamId + 1, lastUpstreamId + 2].map(
+        (id) => [id, `SyntheticFuture${id}`] as const,
+      );
       const executed = yield* Migrator.make({})({
         loader: Migrator.fromRecord(
           Object.fromEntries(
@@ -193,11 +194,11 @@ it.effect(
         yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
         futureHistory,
       );
-      yield* assertJonesPeerSchema;
+      assert.deepStrictEqual(yield* sql`SELECT * FROM peer_environment_links`, [legacy]);
     }).pipe(Effect.provide(memory)),
 );
 
-it.effect("pairing creates a sparse Jones row and unlink removes only the local link", () =>
+it.effect("pairing writes the upstream table and unlink removes only the local link", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const peer = yield* servePeer(descriptorOf("environment-box", "Box"), Layer.empty);
@@ -207,19 +208,13 @@ it.effect("pairing creates a sparse Jones row and unlink removes only the local 
       const links = Context.get(context, PeerLinks.PeerLinks);
       const sql = Context.get(context, SqlClient.SqlClient);
       yield* assertUpstreamPeerSchema.pipe(Effect.provideService(SqlClient.SqlClient, sql));
-      yield* seedUpstreamMarker.pipe(Effect.provideService(SqlClient.SqlClient, sql));
-      const peerObjects =
-        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='peer_environment_links' ORDER BY type,name`;
-      const preserveUpstream = assertUpstreamMarker.pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      );
       yield* JonesMigrations.runMigrations().pipe(Effect.provideService(SqlClient.SqlClient, sql));
-      yield* preserveUpstream;
       const rows = sql<{
         readonly environment_id: string;
         readonly secret_name: string;
         readonly fenced: number;
-      }>`SELECT environment_id, secret_name, fenced FROM ${sql(peerEnvironmentLinksTable)}`;
+      }>`SELECT environment_id, secret_name, fenced FROM peer_environment_links`;
+      const legacyRows = sql`SELECT * FROM ${sql(legacyTable)}`;
       assert.deepStrictEqual(yield* rows, []);
       const linked = yield* linkTo(links, peer);
       const stored = yield* rows;
@@ -227,16 +222,13 @@ it.effect("pairing creates a sparse Jones row and unlink removes only the local 
       assert.strictEqual(stored[0]?.environment_id, linked.environmentId);
       assert.strictEqual(stored[0]?.fenced, 1);
       assert.match(stored[0]!.secret_name, /^peer-link-[a-f0-9]+$/);
+      // Nothing is written to the retained Jones table any more.
+      assert.deepStrictEqual(yield* legacyRows, []);
       assert.strictEqual(
         (yield* links.resolve(linked.environmentId)).link.environmentId,
         linked.environmentId,
       );
       assert.strictEqual((yield* peer.linkedSessions).length, 1);
-      yield* preserveUpstream;
-      assert.deepStrictEqual(
-        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='peer_environment_links' ORDER BY type,name`,
-        peerObjects,
-      );
 
       assert.isTrue(yield* links.unlink(linked.environmentId));
       assert.deepStrictEqual(yield* rows, []);
@@ -247,11 +239,7 @@ it.effect("pairing creates a sparse Jones row and unlink removes only the local 
       );
       assert.isFalse(yield* links.unlink(linked.environmentId));
       assert.strictEqual((yield* peer.linkedSessions).length, 1);
-      yield* preserveUpstream;
-      assert.deepStrictEqual(
-        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='peer_environment_links' ORDER BY type,name`,
-        peerObjects,
-      );
+      assert.deepStrictEqual(yield* legacyRows, []);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

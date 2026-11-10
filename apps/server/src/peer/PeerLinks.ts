@@ -1,5 +1,4 @@
 import * as InFlight from "../jones/peerTransport/InFlight.ts";
-import { peerEnvironmentLinksTable } from "../jones/peerPersistence/table.ts";
 import {
   AuthMcpClientAccess,
   AuthMcpRegistrationError,
@@ -293,12 +292,12 @@ const make = Effect.gen(function* () {
   }, Effect.catch(failStorage));
 
   const readRows = sql<PeerLinkRow>`
-    SELECT * FROM ${sql(peerEnvironmentLinksTable)} ORDER BY label, environment_id
+    SELECT * FROM peer_environment_links ORDER BY label, environment_id
   `.pipe(NodeSqliteClient.readOnly, Effect.catch(failStorage));
 
   const readRow = (environmentId: EnvironmentId) =>
     sql<PeerLinkRow>`
-      SELECT * FROM ${sql(peerEnvironmentLinksTable)} WHERE environment_id = ${environmentId}
+      SELECT * FROM peer_environment_links WHERE environment_id = ${environmentId}
     `.pipe(
       NodeSqliteClient.readOnly,
       Effect.catch(failStorage),
@@ -307,7 +306,7 @@ const make = Effect.gen(function* () {
 
   const currentGeneration: PeerLinks["Service"]["currentGeneration"] = (environmentId) =>
     sql<{ readonly secret_name: string }>`
-      SELECT secret_name FROM ${sql(peerEnvironmentLinksTable)}
+      SELECT secret_name FROM peer_environment_links
       WHERE environment_id = ${environmentId}
     `.pipe(
       Effect.catch(failStorage),
@@ -541,7 +540,7 @@ const make = Effect.gen(function* () {
       const urlsJson = yield* encodeUrls(origins).pipe(Effect.catch(failStorage));
       const previous = yield* readRow(peer.environmentId);
       yield* sql`
-        INSERT INTO ${sql(peerEnvironmentLinksTable)} (
+        INSERT INTO peer_environment_links (
           environment_id, secret_name, label, urls_json, access, linked_at, expires_at,
           last_reached_at, last_error, fenced
         ) VALUES (
@@ -582,7 +581,7 @@ const make = Effect.gen(function* () {
     label === link.label
       ? Effect.succeed(link)
       : sql`
-          UPDATE ${sql(peerEnvironmentLinksTable)} SET label = ${label}
+          UPDATE peer_environment_links SET label = ${label}
           WHERE environment_id = ${link.environmentId}
         `.pipe(Effect.ignoreCause({ log: true }), Effect.as({ ...link, label }));
 
@@ -626,7 +625,7 @@ const make = Effect.gen(function* () {
   const unlink: PeerLinks["Service"]["unlink"] = Effect.fn("PeerLinks.unlink")(
     function* (environmentId) {
       const deleted = yield* sql<{ secret_name: string }>`
-        DELETE FROM ${sql(peerEnvironmentLinksTable)} WHERE environment_id = ${environmentId}
+        DELETE FROM peer_environment_links WHERE environment_id = ${environmentId}
         RETURNING secret_name
       `.pipe(Effect.catch(failStorage));
       for (const row of deleted) {
@@ -705,12 +704,12 @@ const make = Effect.gen(function* () {
       Effect.flatMap((now) =>
         outcome.error === null
           ? sql`
-              UPDATE ${sql(peerEnvironmentLinksTable)}
+              UPDATE peer_environment_links
               SET last_reached_at = ${DateTime.formatIso(now)}, last_error = NULL
               WHERE environment_id = ${environmentId} AND secret_name = ${generation}
             `
           : sql`
-              UPDATE ${sql(peerEnvironmentLinksTable)} SET last_error = ${outcome.error}
+              UPDATE peer_environment_links SET last_error = ${outcome.error}
               WHERE environment_id = ${environmentId} AND secret_name = ${generation}
             `,
       ),

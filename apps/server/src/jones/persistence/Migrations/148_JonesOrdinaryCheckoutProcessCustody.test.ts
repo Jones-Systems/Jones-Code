@@ -46,6 +46,7 @@ it.effect("fresh migration installs store-qualified views and preserves the rele
       { migration_id: 148, name: "OrdinaryCheckoutProcessCustody" },
       { migration_id: 149, name: "AuthSessionClientMetadata" },
       { migration_id: 150, name: "WorkspaceRuntimeUses" },
+      { migration_id: 151, name: "PeerLinksAdoption" },
     ]);
     yield* runUpstreamMigrations();
     assert.strictEqual(

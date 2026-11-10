@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentHttpApi,
+  type EnvironmentCloudLinkStateResult,
   type OrchestrationV2LinkOrigin,
   ProjectId,
   ProviderDriverKind,
@@ -35,6 +36,7 @@ import * as AuthHttp from "../../src/auth/http.ts";
 import * as McpOAuth from "../../src/auth/McpOAuth.ts";
 import * as McpOAuthHttp from "../../src/auth/mcpOAuthHttp.ts";
 import * as ServerSecretStore from "../../src/auth/ServerSecretStore.ts";
+import * as CloudLink from "../../src/cloud/CloudLink.ts";
 import * as ServerConfig from "../../src/config.ts";
 import * as ServerEnvironment from "../../src/environment/ServerEnvironment.ts";
 import * as ServerHttp from "../../src/http.ts";
@@ -97,6 +99,14 @@ const mcpClient = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("JE fixture does not request a client callback"),
 });
+
+const notCloudLinked: EnvironmentCloudLinkStateResult = {
+  linked: false,
+  cloudUserId: null,
+  relayUrl: null,
+  relayIssuer: null,
+  publishAgentActivity: false,
+};
 
 export const makeHome = (prefix: string) =>
   Effect.gen(function* () {
@@ -216,7 +226,15 @@ export const startServer = (
     );
     const routes = Layer.mergeAll(
       HttpApiBuilder.layer(FixtureApi).pipe(
-        Layer.provide(McpOAuthHttp.layer.pipe(Layer.provide(McpOAuth.layer))),
+        Layer.provide(
+          McpOAuthHttp.layer.pipe(
+            Layer.provide(McpOAuth.layer),
+            // The fixture is never linked to a cloud account; OAuth discovery only reads link state.
+            Layer.provide(
+              Layer.mock(CloudLink.CloudLink)({ linkState: () => Effect.succeed(notCloudLinked) }),
+            ),
+          ),
+        ),
         Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
         Layer.provide(AuthHttp.layerAuthenticatedAuth),
       ),

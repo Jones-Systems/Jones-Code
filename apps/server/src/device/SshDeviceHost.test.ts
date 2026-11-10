@@ -608,6 +608,131 @@ it.effect(
     ),
 );
 
+it.effect(
+  "counts a missed direct gateway probe with the others and reconnects only after consecutive misses",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped();
+      let forwardSpawns = 0;
+      let owner = "";
+      let generation = "";
+      let gatewayAnswers = true;
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          if (command._tag !== "StandardCommand") return yield* Effect.die("Unexpected command");
+          const forwarding = command.args.includes("-L");
+          let output = "";
+          if (forwarding) {
+            // A fresh forward reaches a healthy gateway again.
+            if (++forwardSpawns > 1) gatewayAnswers = true;
+          } else {
+            const stdin = command.options.stdin;
+            if (
+              !stdin ||
+              typeof stdin !== "object" ||
+              !("stream" in stdin) ||
+              !Stream.isStream(stdin.stream)
+            )
+              return yield* Effect.die("Missing script");
+            const script = yield* stdin.stream.pipe(
+              Stream.decodeText(),
+              Stream.runFold(
+                () => "",
+                (a, b) => a + b,
+              ),
+            );
+            const direct = /const direct = (.+);/.exec(script)?.[1];
+            const bootGeneration =
+              direct && direct !== "null" ? /"generation":"([^"]+)"/.exec(direct)?.[1] : undefined;
+            owner = /const owner = "([^"]+)"/.exec(script)?.[1] ?? owner;
+            if (bootGeneration) generation = bootGeneration;
+            output = JSON.stringify({
+              nodePath: "/node",
+              platforms: [{ platform: "ios", available: true }],
+              hubPort: 1234,
+              helpers: { serveSimAxSettings: null, serveSimCli: null },
+              ...(bootGeneration
+                ? {
+                    directMedia: {
+                      gatewayPort: 2234,
+                      admissionPort: 2235,
+                      generation: bootGeneration,
+                    },
+                  }
+                : {}),
+            });
+          }
+          return ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(123),
+            stdout: Stream.make(new TextEncoder().encode(output)),
+            stderr: Stream.empty,
+            all: Stream.empty,
+            exitCode: forwarding ? Effect.never : Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+            isRunning: Effect.succeed(forwarding),
+            kill: () => Effect.void,
+            stdin: Sink.drain,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+            unref: Effect.succeed(Effect.void),
+          });
+        }),
+      );
+      const host = yield* SshDeviceHost.make(
+        {
+          kind: "ssh",
+          id: "test",
+          label: "Test",
+          target: "vps-mini",
+          directSshTarget: "laptop-mini",
+        },
+        undefined,
+        undefined,
+        Effect.succeed(null),
+      ).pipe(
+        Effect.provideService(DeviceDirectGrants, {
+          issue: () => Effect.succeed(null),
+          admit: () => Effect.succeed({ _tag: "Denied" as const }),
+        }),
+        Effect.provide(Layer.mergeAll(ServerConfig.layerTest(home, home), Net.layer)),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.succeed(
+              HttpClientResponse.fromWeb(
+                request,
+                Response.json({ owner, generation: gatewayAnswers ? generation : "stale" }),
+              ),
+            ),
+          ),
+        ),
+      );
+      const ready = yield* host.ensureReady(() => Effect.void);
+      expect(ready.directMedia).toBeDefined();
+      expect(forwardSpawns).toBe(1);
+
+      // The hub answers throughout, so only the gateway probe can fail here.
+      gatewayAnswers = false;
+      yield* TestClock.adjust("20 seconds");
+      expect(forwardSpawns).toBe(1);
+      gatewayAnswers = true;
+      yield* TestClock.adjust("10 seconds");
+      // Recovery reset the miss count, so two new misses do not reconnect yet.
+      gatewayAnswers = false;
+      yield* TestClock.adjust("20 seconds");
+      expect(forwardSpawns).toBe(1);
+      // The third consecutive miss retires the forward, and the reconnect follows after its delay.
+      yield* TestClock.adjust("10 seconds");
+      yield* TestClock.adjust("2 seconds");
+      expect(forwardSpawns).toBe(2);
+      yield* host.stop;
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, TestClock.layer())),
+    ),
+);
+
 it.effect.each([
   {
     name: "a Windows PowerShell login shell",

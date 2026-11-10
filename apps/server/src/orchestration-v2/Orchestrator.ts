@@ -29,6 +29,7 @@ import {
 import { hasRetainedGoalStopTarget } from "../jones/goals/stopTarget.ts";
 import { executionProjection } from "../jones/threadConfiguration/executionSelection.ts";
 import * as CodexFailover from "../jones/codexFailover/CodexFailover.ts";
+import * as ChildResultHolds from "../jones/orchestration/childResultHolds.ts";
 import * as RemoteObservationHooks from "../jones/remoteDelegation/ObservationHooks.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 import { goalNotificationMaySteer } from "../jones/goals/GoalNotificationDelivery.ts";
@@ -1425,6 +1426,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const automaticTitles = yield* AutomaticTitles.make;
   const settlementRestores = makeSettlementRestoreStore(sql, makeJonesTablePresence(sql));
   const dependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
+  const childResultHolds = ChildResultHolds.make({
+    duties: dependencies.duties,
+    holdsChildResult: (threadId, run, taskId) =>
+      codexFailover.holdsChildResult(threadId, run, taskId),
+  });
   const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
   const ownerSelections = makeOwnerSelectionStore(sql, makeJonesTablePresence(sql));
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -15005,11 +15011,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       childControls.thread.forkedFrom?.type !== "node"
     )
       return;
-    if ((yield* dependencies.duties(childThreadId)).outgoing > 0) return;
+    if (yield* childResultHolds.owesDependencies(childThreadId)) return;
     const latestChildRun = latestExecutedRun(childControls.runs);
     if (
-      yield* codexFailover
-        .holdsChildResult(childThreadId, latestChildRun)
+      yield* childResultHolds
+        .holdsFailover(childThreadId, latestChildRun)
         .pipe(
           Effect.mapError(
             (cause) => new OrchestratorProjectionError({ threadId: childThreadId, cause }),
@@ -17832,7 +17838,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const delegatedTaskResultPending = Effect.fn("Orchestrator.delegatedTaskResultPending")(
     function* (childThreadId: ThreadId, taskId?: NodeId) {
-      if ((yield* dependencies.duties(childThreadId)).outgoing > 0) return true;
+      if (yield* childResultHolds.owesDependencies(childThreadId)) return true;
       const child = yield* projectionStore.getThreadRecords(
         childThreadId,
         ["runs", "messages", "subagents", "providerThreads", "providerTurns", "attempts"],
@@ -17842,13 +17848,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const runs = child.runs.filter((run) => run.delegatedTaskId === taskId);
         const run = runs.toSorted((a, b) => b.ordinal - a.ordinal)[0];
         if (run === undefined || delegatedTaskTerminalStatus(run.status) === null) return true;
-        if (yield* codexFailover.holdsChildResult(childThreadId, run, taskId)) return true;
+        if (yield* childResultHolds.holdsFailover(childThreadId, run, taskId)) return true;
         return yield* childAwaitsRestartContinuation(runs, run);
       }
       const progress = delegatedTaskProgress(child);
       if (progress.state !== "result_available") return true;
       if (progress.resultRun === undefined) return false;
-      if (yield* codexFailover.holdsChildResult(childThreadId, progress.resultRun)) return true;
+      if (yield* childResultHolds.holdsFailover(childThreadId, progress.resultRun)) return true;
       return yield* childAwaitsRestartContinuation(child.runs, progress.resultRun);
     },
     (effect, childThreadId, _taskId?) =>
