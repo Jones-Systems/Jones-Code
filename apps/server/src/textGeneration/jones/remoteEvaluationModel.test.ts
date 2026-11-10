@@ -92,9 +92,7 @@ it.effect(
       } as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"];
       const generation = yield* TextGeneration.make.pipe(
         Effect.provide(ServerSettings.layerTest()),
-        Effect.provide(
-          Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.succeed(undefined) }),
-        ),
+        Effect.provide(Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.void })),
         Effect.provideService(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
         Effect.provideService(
           SourceControlProviderRegistry.SourceControlProviderRegistry,

@@ -15,7 +15,6 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
@@ -150,7 +149,7 @@ function makeFixture(
         Layer.mock(Sessions.ProviderSessionManagerV2)({
           awaitThreadRetirement: () => retirement?.wait ?? Effect.void,
           // No live runtime reports background work, so released sessions detach.
-          get: () => Effect.succeed(Option.none()),
+          get: () => Effect.succeedNone,
           hasRetiredWriter: () => Effect.succeed(retirement?.marked ?? false),
           detach: Effect.fn("PrepareExecutionSessionTest.detach")(function* ({
             providerSessionId,
