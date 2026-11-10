@@ -139,8 +139,34 @@ const transitionBootstrap = (selection: Admin.InitSelection) =>
     }),
   );
 
+/** Key provisioning opens only the selected secret store; it never opens SQLite. */
+const keyBootstrap = (selection: Admin.InitSelection) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const path = yield* Path.Path,
+        fs = yield* FileSystem.FileSystem;
+      if (
+        selection.keyProvider !== "server-secret-store" ||
+        !path.isAbsolute(selection.home) ||
+        !(yield* fs.exists(selection.home))
+      )
+        return yield* new StartupError({ code: "explicit_selection_required" });
+      const config = yield* resolveCliAuthConfig(
+        { baseDir: Option.some(path.resolve(selection.home)) },
+        Option.none(),
+      );
+      if (path.resolve(config.baseDir) !== path.resolve(selection.home))
+        return yield* new StartupError({ code: "database_mismatch" });
+      const selectedConfig = ServerConfig.layer(config);
+      return Admin.keyLayer.pipe(
+        Layer.provide(SecretStore.layer.pipe(Layer.provide(selectedConfig))),
+      );
+    }),
+  );
+
 export const registryCommand = Admin.registryCommand(
   bootstrap,
   sourceBootstrap,
   transitionBootstrap,
+  keyBootstrap,
 );

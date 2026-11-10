@@ -1,4 +1,7 @@
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
+import * as Option from "effect/Option";
+import * as SecretStore from "../../../auth/ServerSecretStore.ts";
 import * as SourceSetup from "./runtime/sourceSetup.ts";
 import * as Transition from "./transition/cli.ts";
 import * as Console from "effect/Console";
@@ -41,6 +44,9 @@ const decodeInit = Schema.decodeUnknownEffect(RegistryInit);
 const isRegistryError = Schema.is(RegistryError);
 const isKeyUnavailable = Schema.is(Keys.KeyUnavailable);
 const decodeInitJson = Schema.decodeUnknownEffect(Schema.fromJsonString(RegistryInit));
+const encodeKeysJson = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Struct({ created: Schema.Array(Schema.String) })),
+);
 const encodeRegistryJson = Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeRegistry));
 export const layer = Layer.effect(
   NativeAdmin,
@@ -130,12 +136,72 @@ export const layer = Layer.effect(
   }),
 );
 
+export class NativeKeyAdmin extends Context.Service<
+  NativeKeyAdmin,
+  {
+    readonly initialize: (
+      input: RegistryInit,
+    ) => Effect.Effect<{ readonly created: readonly string[] }, RegistryError>;
+  }
+>()("t3/jones/workstreams/native/cli/NativeKeyAdmin") {}
+/** Names the KeyProvider reads for the content, local and registry index keys of `registry init`. */
+export const keyNames = (input: RegistryInit) => [
+  `workstreams-content-key-${input.content_key_id}`,
+  `workstreams-content-key-${input.local_key_id}`,
+  `workstreams-index-key-${input.registry.registry_instance_id}`,
+];
+/** Creates all three keys from CSPRNG bytes or none: any existing key refuses, and a failed run removes only keys it created. */
+export const keyLayer = Layer.effect(
+  NativeKeyAdmin,
+  Effect.gen(function* () {
+    const secrets = yield* SecretStore.ServerSecretStore,
+      crypto = yield* Crypto.Crypto;
+    const refuse = (code: string) => (cause: unknown) => new RegistryError({ code, cause });
+    return NativeKeyAdmin.of({
+      initialize: Effect.fn("NativeKeyAdmin.initialize")(function* (input) {
+        yield* decodeInit(input).pipe(Effect.mapError(refuse("invalid_request")));
+        if (input.content_key_id === input.local_key_id)
+          return yield* new RegistryError({ code: "invalid_request" });
+        const names = keyNames(input);
+        for (const name of names)
+          if (Option.isSome(yield* secrets.get(name).pipe(Effect.mapError(refuse("unavailable")))))
+            return yield* new RegistryError({ code: "key_exists" });
+        const created: string[] = [];
+        yield* Effect.gen(function* () {
+          for (const name of names) {
+            const bytes = yield* crypto
+              .randomBytes(32)
+              .pipe(Effect.mapError(refuse("unavailable")));
+            yield* secrets
+              .create(name, bytes)
+              .pipe(
+                Effect.mapError((cause) =>
+                  refuse(
+                    SecretStore.isSecretAlreadyExistsError(cause) ? "key_exists" : "unavailable",
+                  )(cause),
+                ),
+              );
+            created.push(name);
+          }
+        }).pipe(
+          Effect.tapError(() =>
+            Effect.forEach(created, (name) => secrets.remove(name).pipe(Effect.ignore), {
+              discard: true,
+            }),
+          ),
+        );
+        return { created: names };
+      }),
+    });
+  }),
+);
+
 export interface InitSelection {
   readonly home: string;
   readonly keyProvider: string;
 }
 /** A CLI boundary factory: the parent binds the selected home and provider before opening SQLite. */
-export const registryCommand = <E, R, SE, SR, TE, TR>(
+export const registryCommand = <E, R, SE, SR, TE, TR, KE, KR>(
   bootstrap: (selection: InitSelection) => Layer.Layer<NativeAdmin, E, R>,
   sourceBootstrap: (
     selection: InitSelection,
@@ -144,12 +210,42 @@ export const registryCommand = <E, R, SE, SR, TE, TR>(
   transitionBootstrap: (
     selection: InitSelection,
   ) => Layer.Layer<Transition.WorkstreamsTransition, TE, TR>,
+  keyBootstrap: (selection: InitSelection) => Layer.Layer<NativeKeyAdmin, KE, KR>,
 ) =>
   Command.make("registry").pipe(
     Command.withDescription("Manage an explicitly selected native Workstreams home."),
     Command.withSubcommands([
       SourceSetup.command(sourceBootstrap),
       Transition.command(transitionBootstrap),
+      Command.make("keys").pipe(
+        Command.withDescription("Provision native registry keys in the selected secret store."),
+        Command.withSubcommands([
+          Command.make("init", {
+            home: Flag.String("home"),
+            keyProvider: Flag.String("key-provider"),
+            request: Flag.String("request").pipe(
+              Flag.withDescription("The same registry-init JSON that `registry init` takes."),
+            ),
+          }).pipe(
+            Command.withDescription(
+              "Create the content, local and index keys for a new registry; never overwrites or prints keys.",
+            ),
+            Command.withHandler((flags) =>
+              Effect.gen(function* () {
+                const input = yield* decodeInitJson(flags.request, { onExcessProperty: "error" });
+                const result = yield* Effect.gen(function* () {
+                  return yield* (yield* NativeKeyAdmin).initialize(input);
+                }).pipe(
+                  Effect.provide(
+                    keyBootstrap({ home: flags.home, keyProvider: flags.keyProvider }),
+                  ),
+                );
+                yield* Console.log(yield* encodeKeysJson(result));
+              }),
+            ),
+          ),
+        ]),
+      ),
       Command.make("init", {
         home: Flag.String("home"),
         keyProvider: Flag.String("key-provider"),

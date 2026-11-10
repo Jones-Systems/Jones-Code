@@ -252,6 +252,87 @@ it.effect("mounted source-setup commands refuse an unqualified home without crea
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)));
 });
 
+it.effect("keys init creates the init keys once without printing them; init then succeeds", () => {
+  const f = fresh(false);
+  const keys = (home: string) => [
+    "keys",
+    "init",
+    "--home",
+    home,
+    "--key-provider",
+    "server-secret-store",
+    "--request",
+    JSON.stringify(request),
+  ];
+  const secrets = NodePath.join(f.home, "userdata/secrets");
+  const names = [
+    "workstreams-content-key-test-home",
+    "workstreams-content-key-test-local",
+    `workstreams-index-key-${request.registry.registry_instance_id}`,
+  ];
+  return Effect.gen(function* () {
+    yield* run(keys(f.home));
+    const created = names.map((name) => NodePath.join(secrets, name + ".bin"));
+    const bytes = created.map((file) => NodeFS.readFileSync(file));
+    for (const [i, file] of created.entries()) {
+      expect(bytes[i]!.byteLength).toBe(32);
+      expect(NodeFS.statSync(file).mode & 0o777).toBe(0o600);
+    }
+    expect(new Set(bytes.map((b) => b.toString("hex"))).size).toBe(3);
+    const text = (yield* TestConsole.logLines).join("\n");
+    expect(JSON.parse(text)).toEqual({ created: names });
+    for (const b of bytes) {
+      expect(text).not.toContain(b.toString("hex"));
+      expect(text).not.toContain(b.toString("base64"));
+    }
+    expect((yield* Effect.result(run(keys(f.home))))._tag).toBe("Failure");
+    expect(created.map((file) => NodeFS.readFileSync(file))).toEqual(bytes);
+    expect(NodeFS.existsSync(f.database)).toBe(false);
+    yield* run(selected(f.home));
+    expect(NodeFS.existsSync(f.database)).toBe(true);
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)));
+});
+
+it.effect(
+  "keys init refuses any existing key, a bad provider or a bad request and creates none",
+  () => {
+    const f = fresh(false);
+    const secrets = NodePath.join(f.home, "userdata/secrets");
+    const index = NodePath.join(
+      secrets,
+      `workstreams-index-key-${request.registry.registry_instance_id}.bin`,
+    );
+    const keys = (provider: string, body: unknown) => [
+      "keys",
+      "init",
+      "--home",
+      f.home,
+      "--key-provider",
+      provider,
+      "--request",
+      JSON.stringify(body),
+    ];
+    return Effect.gen(function* () {
+      for (const args of [
+        keys("unknown", request),
+        keys("server-secret-store", { ...request, local_key_id: request.content_key_id }),
+        keys("server-secret-store", { ...request, extra: true }),
+      ])
+        expect((yield* Effect.result(run(args)))._tag).toBe("Failure");
+      expect(NodeFS.existsSync(secrets) ? NodeFS.readdirSync(secrets) : []).toEqual([]);
+      NodeFS.mkdirSync(secrets, { recursive: true, mode: 0o700 });
+      NodeFS.writeFileSync(index, Buffer.alloc(32, 9), { mode: 0o600 });
+      expect((yield* Effect.result(run(keys("server-secret-store", request))))._tag).toBe(
+        "Failure",
+      );
+      expect(NodeFS.readdirSync(secrets)).toEqual([NodePath.basename(index)]);
+      expect(NodeFS.readFileSync(index)).toEqual(Buffer.alloc(32, 9));
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+    );
+  },
+);
+
 it.effect("mounted transition commands refuse a home without an existing database", () => {
   const f = fresh(false);
   const pem = NodeCrypto.generateKeyPairSync("ed25519")
