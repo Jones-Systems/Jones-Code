@@ -142,6 +142,7 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
       getThreadRecords,
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
+      acquireDomainEvents: Effect.succeed(Stream.never),
       streamDomainEvents: Stream.never,
       dispatch: (command) =>
         command.type === "thread.auto-settle"

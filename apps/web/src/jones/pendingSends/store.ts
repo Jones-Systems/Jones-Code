@@ -260,11 +260,12 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
             row.item.messageId === entry.message.id,
         );
         const message = projection.messages.some((message) => message.id === entry.message.id);
-        // Queue delivery has its own representation, including cancelled runs without a turn item.
+        // The server may queue a requested steer. Follow authoritative queue
+        // state, including cancelled placeholders that never get a turn item.
         const queueHandoff =
-          entry.message.inputIntent === "queued_turn" &&
           run !== undefined &&
-          (message || run.status === "cancelled");
+          (run.status === "cancelled" ||
+            (message && (run.status === "queued" || entry.message.inputIntent === "queued_turn")));
         if (visible || queueHandoff) {
           accept(entry.key);
           const hasPreview = entry.message.attachments?.some(
