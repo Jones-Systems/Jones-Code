@@ -103,9 +103,15 @@ export function completionObservation(
     omittedEnrichment: input.omittedEnrichment ?? [],
   };
 }
+/**
+ * Production callers keep the default deadline. A test that asserts the recorded
+ * content, not the latency bound, passes a longer one so a slow host cannot turn
+ * its process start into `metadata_deadline`.
+ */
 export function recordCompletion(
   observation: CompletionObservation,
   workerProgram = PROGRAM,
+  deadlineMilliseconds: number = CAPTURE_LIMITS.milliseconds,
 ): CaptureResult {
   const bytes = JSON.stringify(observation);
   if (Buffer.byteLength(bytes) > CAPTURE_LIMITS.bytes)
@@ -118,7 +124,7 @@ export function recordCompletion(
     {
       input: bytes,
       encoding: "utf8",
-      timeout: CAPTURE_LIMITS.milliseconds,
+      timeout: deadlineMilliseconds,
       killSignal: "SIGKILL",
       maxBuffer: CAPTURE_LIMITS.bytes,
       env: { PATH: process.env.PATH, NODE_NO_WARNINGS: "1" },
