@@ -169,6 +169,34 @@ jobs:
             exit 1
           fi
 
+      # Catches what the substring-reading workflow node-tests cannot: bad
+      # expression contexts and functions (a `cancelled()` in a step `env` broke
+      # the nightly native run until #904), unknown properties, bad `needs`
+      # and `uses` references. The binary is pinned and verified against the
+      # SHA-256 from the release's actionlint_<version>_checksums.txt. To bump
+      # it, change both values below together.
+      # 1.7.12 parses the schedule `timezone:` key and the YAML anchors in this
+      # file; 1.7.7 rejected both, so do not pin anything older.
+      # shellcheck and pyflakes are turned off (empty flags): actionlint runs them
+      # only when found on PATH, so the hosted image would decide what fails.
+      # This step checks workflow syntax and expressions only.
+      - name: Lint workflows
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          dir="$RUNNER_TEMP/actionlint"
+          mkdir -p "$dir"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$dir/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  $dir/$archive" | sha256sum --check --strict -
+          tar -xzf "$dir/$archive" -C "$dir" actionlint
+          "$dir/actionlint" -version
+          "$dir/actionlint" -no-color -shellcheck= -pyflakes=
+
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
