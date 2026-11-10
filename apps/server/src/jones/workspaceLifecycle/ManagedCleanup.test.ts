@@ -63,7 +63,15 @@ const fixtureProbe = () => ({
 
 const decodeCleanupRules = Schema.decodeUnknownEffect(WorktreeCleanupRules);
 
-it.effect.each(["matching", "missing", "head-changed", "successor", "native-changed"] as const)(
+it.effect.each([
+  "matching",
+  "missing",
+  "head-changed",
+  "successor",
+  "native-changed",
+  "startup",
+  "metadata-failure",
+] as const)(
   "real settle-script owner checks preservation (%s), without resume or a live provider",
   (mode) =>
     Effect.scoped(
@@ -90,6 +98,8 @@ it.effect.each(["matching", "missing", "head-changed", "successor", "native-chan
             f.state.assess();
           }
           const sql = yield* SqlClient.SqlClient;
+          if (mode === "metadata-failure")
+            yield* sql`CREATE TEMP TRIGGER reject_settle_outcome BEFORE UPDATE OF outcome_json ON jones_workspace_retirement_intents BEGIN SELECT RAISE(FAIL,'synthetic metadata failure'); END`;
           if (mode === "native-changed")
             f.state.beforeRegistryRead =
               sql`UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.settledOverride',NULL) WHERE thread_id=${threadId}`.pipe(
@@ -99,21 +109,29 @@ it.effect.each(["matching", "missing", "head-changed", "successor", "native-chan
           const engine = yield* Orchestrator.OrchestratorV2;
           const thread = (yield* engine.getThreadProjection(threadId)).thread;
           const finished = yield* Deferred.make<void>();
+          const scriptStarted = yield* Deferred.make<void>();
           const scripts: string[] = [];
-          const stream = Stream.succeed({
-            type: "thread.settled" as const,
-            id: EventId.make("settled-observation"),
-            threadId,
-            payload: thread,
-            occurredAt: yield* DateTime.now,
-          }).pipe(Stream.ensuring(Deferred.succeed(finished, undefined)));
+          const startup = mode === "startup" || mode === "metadata-failure";
+          const stream = (
+            startup
+              ? Stream.empty
+              : Stream.succeed({
+                  type: "thread.settled" as const,
+                  id: EventId.make("settled-observation"),
+                  threadId,
+                  payload: thread,
+                  occurredAt: yield* DateTime.now,
+                })
+          ).pipe(Stream.ensuring(Deferred.succeed(finished, undefined)));
           yield* Effect.gen(function* () {
             const settlement = yield* Settlement.make;
             yield* settlement.start();
-            yield* Deferred.await(finished);
+            yield* Deferred.await(startup ? scriptStarted : finished);
+            yield* settlement.drain;
           }).pipe(
             Effect.provideService(Orchestrator.OrchestratorV2, {
               ...engine,
+              acquireDomainEvents: Effect.succeed(stream),
               streamDomainEvents: stream,
             }),
             Effect.provide(
@@ -129,12 +147,22 @@ it.effect.each(["matching", "missing", "head-changed", "successor", "native-chan
                     Effect.sync(() => {
                       scripts.push(input.worktreePath!);
                       return { status: "no-script" as const };
-                    }),
+                    }).pipe(Effect.tap(() => Deferred.succeed(scriptStarted, undefined))),
                 }),
               ),
             ),
           );
-          expect(scripts).toEqual(["matching", "successor"].includes(mode) ? [f.linked] : []);
+          expect(scripts).toEqual(
+            ["matching", "successor", "startup", "metadata-failure"].includes(mode)
+              ? [f.linked]
+              : [],
+          );
+          if (startup) {
+            const rows = yield* sql<{
+              script_state: string;
+            }>`SELECT script_state FROM jones_workspace_retirement_intents ORDER BY rowid DESC LIMIT 1`;
+            expect(rows[0]!.script_state).toBe("completed");
+          }
           expect(f.state.resumes).toBe(mode === "successor" ? 2 : 1);
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
@@ -155,6 +183,7 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           // exercised by the real settlement owner above and the retirement suite.
           const fixtureSql = yield* SqlClient.SqlClient;
           yield* fixtureSql`UPDATE jones_workspace_retirement_intents SET script_state='completed',script_completed_at=settled_at,script_exit_code=0 WHERE worktree=${f.linked}`;
+          yield* fixtureSql`UPDATE jones_workspace_duty_claims SET released_at=acquired_at WHERE kind='settlement-intent' AND worktree=${f.linked}`;
           if (mode !== "missing") f.state.assess();
           if (mode === "head-changed")
             yield* f.runGit(["commit", "--allow-empty", "-m", "changed-head"], f.linked);
@@ -246,6 +275,7 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           // exercised by the real settlement owner above and the retirement suite.
           const fixtureSql = yield* SqlClient.SqlClient;
           yield* fixtureSql`UPDATE jones_workspace_retirement_intents SET script_state='completed',script_completed_at=settled_at,script_exit_code=0 WHERE worktree=${f.linked}`;
+          yield* fixtureSql`UPDATE jones_workspace_duty_claims SET released_at=acquired_at WHERE kind='settlement-intent' AND worktree=${f.linked}`;
           if (mode !== "missing") f.state.assess();
           if (mode === "head-changed")
             yield* f.runGit(["commit", "--allow-empty", "-m", "changed-head"], f.linked);

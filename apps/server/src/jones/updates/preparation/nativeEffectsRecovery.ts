@@ -5,6 +5,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import {
   jonesCandidateHandle,
   requireJonesStageDirectory,
@@ -14,8 +15,11 @@ import {
 const HASH = /^[a-f0-9]{64}$/;
 const LIMIT = 1024 * 1024;
 const COMMAND = "__jones-reconcile-preparation";
-// Geometry proves absence only for this producer's fixed, readonly, whole-image attachment contract.
-const PRODUCER_SOURCE = "317c4df82c77d06922a6723e318e09b0de20ff99";
+// Both revisions use the same fixed, read-only, whole-image attachment contract.
+const QUALIFIED_PRODUCER_SOURCES = new Set([
+  "317c4df82c77d06922a6723e318e09b0de20ff99",
+  "8dd90ff9e3d41e7ba9ac1c81bceb4f973734314b",
+]);
 const digest = (value: string | Buffer) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex");
 const fail = (): never => {
@@ -145,6 +149,7 @@ async function command(
   executable: string,
   args: readonly string[],
   stdin?: string,
+  timeout = 30_000,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = NodeChildProcess.execFile(
@@ -152,7 +157,7 @@ async function command(
       [...args],
       {
         encoding: "buffer",
-        timeout: 30_000,
+        timeout,
         maxBuffer: 8 * LIMIT,
         killSignal: "SIGKILL",
       },
@@ -173,10 +178,14 @@ async function command(
   });
 }
 
-async function plist(executable: string, args: readonly string[]): Promise<unknown> {
-  const xml = await command(executable, args);
+async function plist(
+  executable: string,
+  args: readonly string[],
+  timeout?: () => number,
+): Promise<unknown> {
+  const xml = await command(executable, args, undefined, timeout?.());
   return JSON.parse(
-    await command("/usr/bin/plutil", ["-convert", "json", "-o", "-", "-"], xml),
+    await command("/usr/bin/plutil", ["-convert", "json", "-o", "-", "-"], xml, timeout?.()),
   ) as unknown;
 }
 
@@ -187,6 +196,7 @@ export interface NativeEffectsRecoveryDependencies {
   readonly plist?: typeof plist;
   readonly validateArtifact?: typeof validateJonesStagedArtifact;
   readonly syncFile?: (file: string, descriptor: NodeFSP.FileHandle) => Promise<void>;
+  readonly beforeApply?: () => void;
   readonly checkpoint?: (
     phase: "proof-durable" | "release-prepared" | "release-durable",
   ) => Promise<void>;
@@ -250,7 +260,7 @@ async function createProof(
 /** Maintenance proves disjoint geometry; it never claims that the worker cleaned native effects. */
 export async function recoverNativeEffects(
   value: unknown,
-  mode: "inspect" | "apply",
+  mode: "inspect" | "apply" | "read-release",
   expectedProof?: string,
   dependencies: NativeEffectsRecoveryDependencies = {},
 ) {
@@ -303,14 +313,18 @@ export async function recoverNativeEffects(
           saved.schema !== 1 ||
           saved.planSha256 !== planSha256 ||
           saved.releasedSha256 !== lifecycle.sha256 ||
-          (mode === "apply" && saved.proofSha256 !== expectedProof)
+          (mode !== "inspect" && saved.proofSha256 !== expectedProof)
         )
           return fail();
         const { proofSha256, ...evidence } = saved;
         if (digest(JSON.stringify(evidence)) !== proofSha256) return fail();
         return { schema: 1, state: "released", proofSha256, proofPath };
       }
-      if (launch.state !== "started" || lifecycle.sha256 !== input.expected.lifecycle)
+      if (
+        mode === "read-release" ||
+        launch.state !== "started" ||
+        lifecycle.sha256 !== input.expected.lifecycle
+      )
         return fail();
       const jobDir = NodePath.join(preparationJobsDirectory(input.baseDir), input.jobId);
       const requestFile = NodePath.join(jobDir, "request.json");
@@ -342,7 +356,7 @@ export async function recoverNativeEffects(
       const requestKeys = Object.keys(record(record(request.value).job)).sort();
       if (
         job.job.cacheRoot !== NodePath.join(runtime, "jones-actions") ||
-        job.job.candidate.installedSource !== PRODUCER_SOURCE ||
+        !QUALIFIED_PRODUCER_SOURCES.has(job.job.candidate.installedSource) ||
         JSON.stringify(requestKeys) !==
           JSON.stringify(["activeVersion", "cacheRoot", "candidate", "dbPath", "host", "kind"])
       )
@@ -537,7 +551,7 @@ export async function recoverNativeEffects(
         virtualBytes,
         inventory: first,
         producerContract: {
-          source: PRODUCER_SOURCE,
+          source: job.job.candidate.installedSource,
           command: "/usr/bin/hdiutil",
           attachArguments: [
             "attach",
@@ -569,6 +583,7 @@ export async function recoverNativeEffects(
       if (mode === "inspect")
         return { schema: 1, state: "eligible", proofSha256, proofPath, evidence };
       if (expectedProof !== proofSha256) return fail();
+      dependencies.beforeApply?.();
       await NodeFSP.mkdir(proofRoot, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "EEXIST") throw error;
       });
@@ -591,6 +606,137 @@ export async function recoverNativeEffects(
       return { schema: 1, state: "released", proofSha256, proofPath };
     }),
   );
+}
+
+/** Bind proof to the host ledger's held stage job. No proof is persisted by inspection. */
+export async function inspectHeldPreparationCleanup(
+  baseDir: string,
+  receipt: Pick<
+    JonesOperationReceipt,
+    "phase" | "code" | "jobId" | "action" | "expectedInstalledSource"
+  >,
+  dependencies: NativeEffectsRecoveryDependencies = {},
+): Promise<((authorize: () => void) => Promise<boolean>) | undefined> {
+  const { phase, code, jobId, action, expectedInstalledSource } = receipt;
+  if (
+    (dependencies.platform ?? process.platform) !== "darwin" ||
+    (dependencies.architecture ?? process.arch) !== "arm64" ||
+    phase !== "held" ||
+    code !== "cleanup-unconfirmed" ||
+    jobId === undefined ||
+    action.kind === "install"
+  )
+    return undefined;
+  const bounded = (): NativeEffectsRecoveryDependencies => {
+    const deadline = performance.now() + 25_000;
+    const remaining = () => {
+      const ms = Math.floor(deadline - performance.now());
+      return ms > 0 ? ms : fail();
+    };
+    return {
+      ...dependencies,
+      plist: dependencies.plist ?? ((executable, args) => plist(executable, args, remaining)),
+      beforeApply: () => void remaining(),
+    };
+  };
+  const inspection = bounded();
+  try {
+    const {
+      decodePreparationRequest,
+      decodePreparationResult,
+      isPreparationJobId,
+      preparationJobsDirectory,
+    } = await import("./protocol.ts");
+    if (!isPreparationJobId(jobId) || !absolute(baseDir)) return undefined;
+    const runtime = NodePath.join(baseDir, "runtime");
+    const root = NodePath.join(runtime, "jones-preparation");
+    const lifecycleDir = NodePath.join(root, "lifecycle");
+    const jobsDir = preparationJobsDirectory(baseDir);
+    const jobDir = NodePath.join(jobsDir, jobId);
+    await directory(baseDir, "shared-ancestor");
+    await directory(runtime, "shared-ancestor");
+    for (const path of [root, lifecycleDir, jobsDir, jobDir]) await directory(path);
+    const lifecycle = await read(NodePath.join(lifecycleDir, `${jobId}.json`), 4096);
+    const launch = record(lifecycle.value);
+    const worker = record(launch.worker);
+    if (launch.state !== "started" || !positive(worker.pid) || worker.processGroup !== worker.pid)
+      return undefined;
+    const request = await read(NodePath.join(jobDir, "request.json"), 64 * 1024);
+    const result = await read(NodePath.join(jobDir, "result.json"), 256 * 1024);
+    const effects = await read(NodePath.join(lifecycleDir, `${jobId}.effects.json`), 4096);
+    const job = decodePreparationRequest(request.value, jobDir);
+    const outcome = decodePreparationResult(result.value, jobId, "stage");
+    if (job?.job.kind !== "stage" || outcome?.ok !== false) return undefined;
+    const { candidate, cacheRoot } = job.job;
+    if (
+      cacheRoot !== NodePath.join(runtime, "jones-actions") ||
+      candidate.installedSource !== expectedInstalledSource ||
+      candidate.source !== (action.kind === "download" ? action.sourceSha : action.targetSource) ||
+      (action.kind === "download" && candidate.artifactId !== action.artifactId)
+    )
+      return undefined;
+    const mountPath =
+      /^DMG mount ownership needs reconciliation at (.+); its directory was retained\.(?: |$)/.exec(
+        outcome.error.message,
+      )?.[1];
+    if (mountPath === undefined) return undefined;
+    const handle = jonesCandidateHandle(candidate);
+    await directory(cacheRoot);
+    await directory(NodePath.join(cacheRoot, "completed"));
+    const index = await read(NodePath.join(cacheRoot, "completed", `${handle}.json`), 4096, 2);
+    const selection = record(index.value);
+    if (!absolute(selection.directory)) return undefined;
+    const stage = await requireJonesStageDirectory(cacheRoot, handle, selection.directory);
+    await directory(stage);
+    const staged = await read(NodePath.join(stage, "jones-actions-stage.json"), 128 * 1024);
+    const payload = record(record(staged.value).receipt).sha256;
+    if (typeof payload !== "string") return undefined;
+    const input: NativeEffectsRecoveryRequest = {
+      schema: 1,
+      baseDir,
+      jobId,
+      worker: { pid: worker.pid, processGroup: worker.pid },
+      mountPath,
+      expected: {
+        request: request.sha256,
+        result: result.sha256,
+        lifecycle: lifecycle.sha256,
+        effects: effects.sha256,
+        index: index.sha256,
+        receipt: staged.sha256,
+        payload,
+        archive: candidate.artifactDigest,
+      },
+    };
+    const proof = await recoverNativeEffects(input, "inspect", undefined, inspection);
+    inspection.beforeApply?.();
+    if (proof.state !== "eligible" || typeof proof.proofSha256 !== "string") return undefined;
+    const expectedProof = proof.proofSha256;
+    return async (authorize) => {
+      const application = bounded();
+      try {
+        const outcome = await recoverNativeEffects(input, "apply", expectedProof, {
+          ...application,
+          beforeApply: () => {
+            application.beforeApply?.();
+            authorize();
+          },
+        });
+        return outcome.state === "released";
+      } catch {
+        // A failed response may follow the atomic release. Re-read only its exact durable proof.
+        const outcome = await recoverNativeEffects(
+          input,
+          "read-release",
+          expectedProof,
+          application,
+        ).catch(() => undefined);
+        return outcome?.state === "released";
+      }
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 export async function runNativeEffectsRecoveryCommand(args: readonly string[]): Promise<void> {

@@ -28,6 +28,8 @@ import {
   JonesOperationReadInput,
   JonesOperationReceipt,
   JonesOperationReadResult,
+  JonesRecoverCleanupInput,
+  JonesRecoverCleanupResult,
   JonesRecoveryPreflightInput,
   JonesRecoveryPreflight,
 } from "./jonesOperations.ts";
@@ -671,6 +673,14 @@ export const makeJonesHttpGroups = ({
         headers: OptionalBearerHeaders,
         payload: JonesOperationReadInput,
         success: JonesOperationReadResult,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recoverCleanup", "/api/jones-updates/operations/recover-cleanup", {
+        headers: OptionalBearerHeaders,
+        payload: JonesRecoverCleanupInput,
+        success: JonesRecoverCleanupResult,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
     )

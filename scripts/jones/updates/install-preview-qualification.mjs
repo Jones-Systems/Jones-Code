@@ -1360,6 +1360,9 @@ export function rendererSteps(origin, sourceSha, runId) {
     "Plan Stop binds the exact running host operation and cannot complete on request alone",
     `(() => { const op = s.installPlan.current.devices[0].operations.at(-1); const stop = s.calls.filter(c => c.action === 'fixture-host-operationStop').at(-1); return stop?.input.input.operationId === op.operationId && typeof op.receipt.stop?.stopId === 'string' && stop.input.input.stopId === op.receipt.stop.stopId && op.receipt.phase === 'stop-requested' && !s.installPlan.view.complete; })()`,
   );
+  control("host-VPS-held");
+  steps.push({ action: "wait", text: "Stop not confirmed" });
+  capture("plan-held-outcome", ["Install status", "Stop not confirmed", "unreaped"]);
   control("host-VPS-stopped");
   steps.push({ action: "wait", text: "Stopped · nothing installed" });
   planCheck(

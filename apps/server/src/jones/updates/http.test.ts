@@ -491,6 +491,11 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
         calls.push({ action: "operationRead", input });
         return unsupportedTargetOperations.read(input);
       }),
+    recoverCleanup: (input) =>
+      Effect.promise(() => {
+        calls.push({ action: "recoverCleanup", input });
+        return unsupportedTargetOperations.recoverCleanup(input);
+      }),
     recoveryPreflight: (input) =>
       Effect.suspend(() => {
         calls.push({ action: "recoveryPreflight", input });
@@ -889,6 +894,71 @@ describe("durable operation HTTP scopes", () => {
           expect(app.calls.slice(count)).toEqual(permitted ? [{ action, input: payload }] : []);
           if (permitted) expect(response.headers.get("cache-control")).toBe("no-store");
         }
+      } finally {
+        await app.dispose();
+      }
+    }
+  });
+
+  test("requires operate as well as read for exact install refresh", async () => {
+    const input = {
+      environmentId,
+      operationIds: [operationId],
+      refreshInstallOutcome: operationId,
+    };
+    for (const scopes of [
+      ["orchestration:read"],
+      ["orchestration:operate"],
+      ["orchestration:read", "orchestration:operate"],
+    ] as const) {
+      const app = fixture(scopes);
+      try {
+        const response = await app.handler(
+          new Request("http://fixture/api/jones-updates/operations/read", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(input),
+          }),
+        );
+        expect(response.status).toBe(scopes.length === 2 ? 200 : 403);
+        expect(app.calls).toEqual(scopes.length === 2 ? [{ action: "operationRead", input }] : []);
+      } finally {
+        await app.dispose();
+      }
+    }
+  });
+
+  test("requires read and operate scopes plus explicit recovery confirmation", async () => {
+    const input = {
+      environmentId,
+      operationId,
+      jobId: "22222222-2222-4222-8222-222222222222",
+      recoveryToken: "33333333-3333-4333-8333-333333333333",
+      confirmed: true,
+    };
+    for (const scopes of [
+      ["orchestration:read"],
+      ["orchestration:operate"],
+      ["orchestration:read", "orchestration:operate"],
+    ] as const) {
+      const app = fixture(scopes);
+      const send = (confirmed: boolean) =>
+        app.handler(
+          new Request("http://fixture/api/jones-updates/operations/recover-cleanup", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ...input, confirmed }),
+          }),
+        );
+      try {
+        const response = await send(true);
+        expect(response.status).toBe(scopes.length === 2 ? 200 : 403);
+        if (scopes.length === 2) {
+          expect(response.headers.get("cache-control")).toBe("no-store");
+          expect(await response.json()).toEqual({ recoveredCleanup: null });
+          expect((await send(false)).status).toBe(400);
+        }
+        expect(app.calls).toEqual(scopes.length === 2 ? [{ action: "recoverCleanup", input }] : []);
       } finally {
         await app.dispose();
       }

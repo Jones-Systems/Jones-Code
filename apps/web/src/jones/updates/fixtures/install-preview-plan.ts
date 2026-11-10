@@ -535,6 +535,7 @@ export function createScriptedInstallPlan(input: {
             receipt: receipts.get(operationId) ?? null,
           })),
         };
+      if (command.action === "recoverCleanup") return { recoveredCleanup: null };
       if (command.action === "recoveryPreflight")
         throw new Error("Fixture recovery is unsupported.");
       const previous = receipts.get(command.input.operationId);
@@ -570,7 +571,11 @@ export function createScriptedInstallPlan(input: {
     chooseRecovery: async () => null,
     now,
   });
-  const settleHost = async (label: string, phase: "staged" | "committed" | "stopped" | "held") => {
+  const settleHost = async (
+    label: string,
+    phase: "staged" | "committed" | "stopped" | "held",
+    heldCode: "unreaped" | "cleanup-unconfirmed" = "unreaped",
+  ) => {
     const device = native.current?.devices.find((d) => d.label === label);
     const op = device?.operations.at(-1);
     if (device === undefined || op === undefined || op.request.kind !== "operation-start")
@@ -605,7 +610,7 @@ export function createScriptedInstallPlan(input: {
           }
         : {}),
       ...(phase === "held"
-        ? { code: "unreaped", message: "Synthetic worker exit is unproved. No new work starts." }
+        ? { code: heldCode, message: "Synthetic cleanup is unproved. No new work starts." }
         : {}),
       ...(phase === "stopped" && previous.stop !== undefined
         ? { stop: { ...previous.stop, result: "stopped" } }
@@ -670,6 +675,7 @@ export function createScriptedInstallPlan(input: {
     services,
     store,
     laptopChanged,
+    publishHostReceipt: publishReceipt,
     settleHost,
     settleLaptopStop,
     setSupported,

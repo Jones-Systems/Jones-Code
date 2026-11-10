@@ -184,6 +184,7 @@ import {
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { modelSwitchSince } from "./modelSwitch.ts";
+import { transientSteerTarget } from "../jones/orchestration/TransientSteer.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
   backgroundWorkHoldsCompletion,
@@ -6338,6 +6339,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         dispatchMode = { type: "start_immediately" };
       }
     }
+    const deferredSteer = transientSteerTarget(
+      projection,
+      command,
+      dispatchMode,
+      modelSelection,
+      isGoalCommand(command) || isNativeMaintenanceCommand(command),
+    );
+    if (
+      deferredSteer !== undefined &&
+      !(yield* stopReachedRun(command, command.threadId, deferredSteer.id))
+    ) {
+      dispatchMode = { type: "queue_after_active" };
+    }
     // Stop leaves the run reading as running until its provider stops. A plain
     // send in that window queues behind the stopped queue instead of steering
     // text the agent never receives. Existing holds remain until explicit queue
@@ -6751,9 +6765,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         rootNodeId,
         activeAttemptId: attemptId,
         status: "queued",
-        ...(command.queuedToolBoundaryEligible === undefined
+        ...((command.queuedToolBoundaryEligible ??
+          (deferredSteer === undefined ? undefined : true)) === undefined
           ? {}
-          : { queuedToolBoundaryEligible: command.queuedToolBoundaryEligible }),
+          : { queuedToolBoundaryEligible: command.queuedToolBoundaryEligible ?? true }),
         ...(worktreeMissingRun !== undefined ||
         worktreeSetupUnresolved ||
         stoppedNotificationSource !== undefined ||

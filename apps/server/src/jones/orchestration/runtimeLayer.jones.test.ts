@@ -21,6 +21,7 @@ import {
   ProviderTurnId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -52,6 +53,7 @@ import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import { CommandReceiptStoreV2 } from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import { queuedToolBoundaryTarget } from "../../orchestration-v2/QueuedToolBoundary.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
@@ -469,6 +471,166 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
 });
 
 it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
+  it.effect("keeps an explicit steer rejected after Stop during a provider gap", () =>
+    Effect.gen(function* () {
+      const prefix = "steer-gap-stop";
+      const f = yield* queuedToolFixture(prefix);
+      yield* f.sink.write({
+        events: [
+          {
+            id: EventId.make(`${prefix}-waiting`),
+            type: "run.updated",
+            threadId: f.threadId,
+            runId: f.run.id,
+            occurredAt: f.now,
+            payload: { ...f.run, status: "waiting" },
+          },
+          {
+            id: EventId.make(`${prefix}-stop`),
+            type: "turn-item.updated",
+            threadId: f.threadId,
+            runId: f.run.id,
+            occurredAt: f.now,
+            payload: {
+              id: TurnItemId.make(`${prefix}-stop`),
+              threadId: f.threadId,
+              runId: f.run.id,
+              nodeId: f.run.rootNodeId!,
+              providerThreadId: f.provider.id,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1000,
+              status: "completed",
+              title: "Interrupt requested",
+              startedAt: f.now,
+              completedAt: f.now,
+              updatedAt: f.now,
+              type: "run_interrupt_request",
+              message: "Stop",
+            },
+          },
+        ],
+      });
+      const commandId = CommandId.make(`${prefix}-send`);
+      const result = yield* Effect.exit(
+        f.orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId,
+          threadId: f.threadId,
+          messageId: MessageId.make(`${prefix}-message`),
+          createdBy: "user",
+          creationSource: "web",
+          text: "Do not release Stop",
+          attachments: [],
+          deliveryIntent: "steer",
+          dispatchMode: { type: "start_immediately" },
+        }),
+      );
+      assert.isTrue(Exit.isFailure(result));
+      const receipts = yield* CommandReceiptStoreV2;
+      assert.equal(Option.getOrThrow(yield* receipts.getByCommandId(commandId)).status, "rejected");
+      assert.isFalse(
+        (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.some(
+          (run) => run.status === "queued",
+        ),
+      );
+    }),
+  );
+  it.effect.each(["preparing", "starting", "waiting", "running"] as const)(
+    "accepts a steer during the %s provider gap and promotes its original message at a tool boundary",
+    (status) =>
+      Effect.gen(function* () {
+        const prefix = `steer-gap-${status}`;
+        const f = yield* queuedToolFixture(prefix);
+        const initial = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const nativeTurn = initial.providerTurns.find((turn) => turn.id === f.turnId)!;
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-gap-run`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...f.run, status },
+            },
+            {
+              id: EventId.make(`${prefix}-pending-turn`),
+              type: "provider-turn.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...nativeTurn, status: "pending" },
+            },
+          ],
+        });
+        const commandId = CommandId.make(`${prefix}-send`);
+        const messageId = MessageId.make(`${prefix}-send`);
+        const command = {
+          type: "message.dispatch" as const,
+          threadId: f.threadId,
+          commandId,
+          messageId,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          text: "Keep this follow-up",
+          attachments: [],
+          deliveryIntent: "steer" as const,
+          dispatchMode: { type: "start_immediately" as const },
+        };
+        yield* f.orchestrator.dispatch(command);
+        const receipts = yield* CommandReceiptStoreV2;
+        assert.equal(
+          Option.getOrThrow(yield* receipts.getByCommandId(commandId)).status,
+          "accepted",
+        );
+        const queued = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.find(
+          (run) => run.userMessageId === messageId,
+        )!;
+        assert.equal(queued.status, "queued");
+        assert.isTrue(queued.queuedToolBoundaryEligible);
+        yield* f.orchestrator.dispatch(command);
+        assert.equal(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.filter(
+            (run) => run.userMessageId === messageId,
+          ).length,
+          1,
+        );
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-resumed-run`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...f.run, status: "running", startedAt: f.now },
+            },
+            {
+              id: EventId.make(`${prefix}-resumed-turn`),
+              type: "provider-turn.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: nativeTurn,
+            },
+          ],
+        });
+        yield* f.react(f.tool("safe-boundary"));
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(after.messages.find((message) => message.id === messageId)?.runId, f.run.id);
+        assert.isTrue(
+          after.turnItems.some(
+            (item) =>
+              item.type === "user_message" &&
+              item.messageId === messageId &&
+              item.inputIntent === "promoted_queued_to_steer",
+          ),
+        );
+        assert.equal(after.runs.find((run) => run.id === queued.id)?.status, "cancelled");
+      }),
+  );
   it.effect(
     "reselection shares the dispatch lock and the next same-account run uses its target",
     () =>

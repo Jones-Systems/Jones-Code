@@ -82,6 +82,7 @@
         "scripts/jones/sqliteHealth.worker.ts",
         "src/jones/cloud/*.ts",
         "src/jones/updates/*.ts",
+        "src/jones/updates/preparation/packagedDarwinStageRepro.ts",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
         "scripts/fetch-expo-schema.ts",

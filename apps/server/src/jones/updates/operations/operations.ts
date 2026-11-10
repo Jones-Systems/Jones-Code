@@ -9,6 +9,8 @@ import type {
   JonesOperationReadResult,
   JonesOperationReceipt,
   JonesRecoveryPreflightInput,
+  JonesRecoverCleanupInput,
+  JonesRecoverCleanupResult,
 } from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import {
@@ -19,6 +21,7 @@ import {
 } from "../JonesUpdater.ts";
 import { followerTargetRefusal } from "../followerPolicy.ts";
 import type { OperationReconciliation } from "../launcherOperation.ts";
+import { inspectHeldPreparationCleanup } from "../preparation/nativeEffectsRecovery.ts";
 import type { PreparationSupervisor } from "../preparation/supervisor.ts";
 import { serialized } from "../../fleetUpdates/store.ts";
 import { type OperationLedger, operationReceipt, operationTombstone } from "./ledger.ts";
@@ -63,6 +66,15 @@ export function createTargetOperations(options: {
   const { ledger, updater, preparation } = options;
   const active = new Map<string, AbortController>();
   const lifecycleHolds = new Set<string>();
+  const cleanupReviews = new Map<
+    string,
+    {
+      readonly token: string;
+      readonly expires: number;
+      readonly receipt: JonesOperationReceipt;
+      readonly apply: NonNullable<Awaited<ReturnType<typeof inspectHeldPreparationCleanup>>>;
+    }
+  >();
   let recoveryFailed = false;
   const gate = <A>(f: () => Promise<A>) => serialized(`target-operations:${options.key}`, f);
   const publish = (receipt: JonesOperationReceipt) => {
@@ -97,14 +109,12 @@ export function createTargetOperations(options: {
       ...(r.stop === undefined ? {} : { stop: { ...r.stop, result } }),
     };
   };
+  const clearLauncherHold = (receipt: JonesOperationReceipt) => {
+    const { code, message: _message, ...confirmed } = receipt;
+    return code === "launcher-unconfirmed" || code === "launcher-unreadable" ? confirmed : receipt;
+  };
   const confirmInstall = (id: string, fields: Partial<JonesOperationReceipt>) =>
-    change(id, (old) => {
-      const { code, message: _message, ...confirmed } = old;
-      return {
-        ...(code === "launcher-unconfirmed" || code === "launcher-unreadable" ? confirmed : old),
-        ...fields,
-      };
-    });
+    change(id, (old) => ({ ...clearLauncherHold(old), ...fields }));
   const held = (
     r: JonesOperationReceipt,
     code: "unreaped" | "cleanup-unconfirmed" = "unreaped",
@@ -135,6 +145,77 @@ export function createTargetOperations(options: {
       ...(p.version === undefined ? {} : { version: p.version }),
     };
   };
+  const nativeInstallMatches = (r: JonesOperationReceipt, native: OperationReconciliation) => {
+    const a = r.action;
+    const b = native.binding;
+    return (
+      a.kind === "install" &&
+      native.operationId === r.operationId &&
+      b !== undefined &&
+      b.environmentId === r.environmentId &&
+      b.currentVersion === a.currentVersion &&
+      b.expectedInstalledSource === r.expectedInstalledSource &&
+      b.targetSource === a.targetSource &&
+      b.stagedHandle === a.stagedHandle
+    );
+  };
+  const refreshExactInstallOutcome = (
+    environmentId: JonesOperationReadInput["environmentId"],
+    id: string,
+  ) =>
+    gate(async () => {
+      const r = await ledger.read(id);
+      if (
+        r?.environmentId !== environmentId ||
+        r.action.kind !== "install" ||
+        active.has(id) ||
+        (!["running", "handed-off", "held"].includes(r.phase) &&
+          !(r.phase === "completed" && r.outcome === undefined))
+      )
+        return r;
+      const native = await options.reconcileNative(id);
+      if (!nativeInstallMatches(r, native)) return r;
+      const { outcome } = native;
+      const fields: Partial<JonesOperationReceipt> | undefined =
+        native.state === "rejected"
+          ? { phase: "refused", code: "launcher-rejected" }
+          : native.updateId === id && outcome !== undefined && outcome.status === native.state
+            ? {
+                phase: outcome.status === "committed" ? "completed" : outcome.status,
+                updateId: id,
+                outcome,
+              }
+            : undefined;
+      if (fields === undefined || (terminal(r) && fields.phase !== r.phase)) return r;
+      const requested = r.action.recovery?.policy;
+      const recovery =
+        requested !== undefined && r.recovery === undefined && native.state !== "rejected"
+          ? { requested, observed: await options.recovery?.observed(id) }
+          : undefined;
+      const changed = new Error("Install receipt changed during native readback.");
+      try {
+        const receipt = await change(id, (old) => {
+          if (JSON.stringify(old) !== JSON.stringify(r)) throw changed;
+          return {
+            ...clearLauncherHold(old),
+            ...fields,
+            ...(recovery === undefined
+              ? {}
+              : {
+                  recovery: {
+                    requested: recovery.requested,
+                    ...(recovery.observed === undefined ? {} : { observed: recovery.observed }),
+                  },
+                }),
+          };
+        });
+        updater.releaseHeldJob(id);
+        return receipt;
+      } catch (error) {
+        if (error !== changed) throw error;
+        return ledger.read(id);
+      }
+    });
   const reconcileInstall = async (
     r: JonesOperationReceipt,
     refusal?: JonesInstallBeforeDispatchRefusal,
@@ -166,18 +247,11 @@ export function createTargetOperations(options: {
         message: "Native acceptance is unknown. This operation will not be sent again.",
       });
     }
-    const b = native.binding;
     const a = r.action;
-    const bound =
-      a.kind === "install" &&
-      native.operationId === r.operationId &&
-      b !== undefined &&
-      b.environmentId === r.environmentId &&
-      b.currentVersion === a.currentVersion &&
-      b.expectedInstalledSource === r.expectedInstalledSource &&
-      b.targetSource === a.targetSource &&
-      b.stagedHandle === a.stagedHandle;
-    if (!bound || (native.state === "blocked" && native.updateId !== r.operationId)) {
+    if (
+      !nativeInstallMatches(r, native) ||
+      (native.state === "blocked" && native.updateId !== r.operationId)
+    ) {
       updater.setHeldJobs([r.operationId]);
       return patch(r.operationId, {
         code: "launcher-unreadable",
@@ -198,7 +272,8 @@ export function createTargetOperations(options: {
       });
     }
     const snapshot = updater.snapshot();
-    const outcome = snapshot.updateId === r.operationId ? snapshot.outcome : undefined;
+    const outcome =
+      native.outcome ?? (snapshot.updateId === r.operationId ? snapshot.outcome : undefined);
     return confirmInstall(r.operationId, {
       phase: native.state === "committed" ? "completed" : native.state,
       updateId: r.operationId,
@@ -521,15 +596,98 @@ export function createTargetOperations(options: {
     read: async (input: JonesOperationReadInput): Promise<JonesOperationReadResult> => {
       if (input.environmentId !== updater.snapshot().environmentId)
         throw new Error("Read environment binding changed.");
+      const refresh = input.refreshInstallOutcome;
+      if (refresh !== undefined && input.inspectCleanup !== undefined)
+        throw new Error("Choose one exact update readback mode.");
+      if (
+        refresh !== undefined &&
+        input.operationIds.length === 1 &&
+        input.operationIds[0] === refresh
+      )
+        return {
+          receipts: [
+            {
+              operationId: refresh,
+              receipt: await refreshExactInstallOutcome(input.environmentId, refresh),
+            },
+          ],
+        };
+      const receipts = await Promise.all(
+        input.operationIds.map(async (operationId) => ({
+          operationId,
+          receipt: await ledger.read(operationId),
+        })),
+      );
+      const operationId = input.inspectCleanup;
+      if (operationId === undefined) return { receipts };
+      const receipt = receipts[0]?.receipt;
+      const apply =
+        receipts.length === 1 &&
+        receipts[0]?.operationId === operationId &&
+        receipt?.operationId === operationId &&
+        receipt.environmentId === input.environmentId
+          ? await inspectHeldPreparationCleanup(options.key, receipt)
+          : undefined;
+      const current = apply === undefined ? null : await ledger.read(operationId);
+      if (
+        receipt == null ||
+        apply === undefined ||
+        JSON.stringify(current) !== JSON.stringify(receipt)
+      )
+        return { receipts, cleanupInspection: { operationId, status: "unproved" } };
+      const now = performance.now();
+      for (const [id, review] of cleanupReviews)
+        if (review.expires <= now) cleanupReviews.delete(id);
+      const token = NodeCrypto.randomUUID();
+      cleanupReviews.delete(operationId);
+      if (cleanupReviews.size >= 16) {
+        const oldest = cleanupReviews.keys().next().value;
+        if (oldest !== undefined) cleanupReviews.delete(oldest);
+      }
+      cleanupReviews.set(operationId, { token, expires: now + 120_000, receipt, apply });
       return {
-        receipts: await Promise.all(
-          input.operationIds.map(async (operationId) => ({
-            operationId,
-            receipt: await ledger.read(operationId),
-          })),
-        ),
+        receipts,
+        cleanupInspection: { operationId, status: "eligible", recoveryToken: token },
       };
     },
+    recoverCleanup: (input: JonesRecoverCleanupInput): Promise<JonesRecoverCleanupResult> =>
+      gate(async () => {
+        const refused = { recoveredCleanup: null };
+        const { operationId, environmentId, jobId, recoveryToken } = input;
+        const review = cleanupReviews.get(operationId);
+        if (
+          input.confirmed !== true ||
+          environmentId !== updater.snapshot().environmentId ||
+          active.has(operationId) ||
+          review === undefined ||
+          review.token !== recoveryToken ||
+          review.expires <= performance.now() ||
+          review.receipt.environmentId !== environmentId ||
+          review.receipt.jobId !== jobId
+        )
+          return refused;
+        const unchanged = (receipt: JonesOperationReceipt | null) =>
+          JSON.stringify(receipt) === JSON.stringify(review.receipt);
+        if (!unchanged(await ledger.read(operationId))) return refused;
+        cleanupReviews.delete(operationId);
+        if (
+          !(await review.apply(() => {
+            if (performance.now() >= review.expires) throw new Error("Cleanup review expired.");
+          }))
+        )
+          return refused;
+        const recoveredCleanup = await change(operationId, (old) => {
+          if (!unchanged(old)) throw new Error("Cleanup operation binding changed.");
+          return {
+            ...finishStop(old, old.stop === undefined ? "interrupted" : "stopped", "stopped"),
+            code: "cleanup-recovered",
+            message: "Cleanup was verified and the preparation hold was released.",
+          };
+        });
+        lifecycleHolds.delete(jobId);
+        updater.releaseHeldJob(jobId);
+        return { recoveredCleanup };
+      }),
     reconcile,
     sweep: async () => {
       try {
@@ -558,5 +716,8 @@ export const unsupportedTargetOperations = {
   }),
   read: async (input: JonesOperationReadInput): Promise<JonesOperationReadResult> => ({
     receipts: input.operationIds.map((operationId) => ({ operationId, receipt: null })),
+  }),
+  recoverCleanup: async (_input: JonesRecoverCleanupInput): Promise<JonesRecoverCleanupResult> => ({
+    recoveredCleanup: null,
   }),
 };

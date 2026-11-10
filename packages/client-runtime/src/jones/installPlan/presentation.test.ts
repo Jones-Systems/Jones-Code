@@ -97,7 +97,7 @@ it("offers a fresh reviewed retry for settled install failures without releasing
   }
 });
 
-it.each(["refused", "failed"] as const)(
+it.each(["refused", "failed", "interrupted", "stopped"] as const)(
   "offers an explicit Retry download for a %s receipt only with fresh permission",
   (phase) => {
     const host = EnvironmentId.make("mini");
@@ -108,8 +108,9 @@ it.each(["refused", "failed"] as const)(
       expectedInstalledSource: "c".repeat(40),
       action: { kind: "download-exact", targetSource: source },
       phase,
-      code: phase === "refused" ? "busy" : "download-failed",
-      ...(phase === "failed" ? { acceptedAt: now } : {}),
+      code:
+        phase === "refused" ? "busy" : phase === "failed" ? "download-failed" : "cleanup-recovered",
+      ...(phase === "refused" ? {} : { acceptedAt: now, jobId: planId }),
       updatedAt: now,
     };
     const base = startPlan({
@@ -179,19 +180,93 @@ it.each(["refused", "failed"] as const)(
         devices: new Map([[host, { observation: { state: value, freshness }, canOperate }]]),
       }).rows[0]!;
     expect(observe()).toMatchObject({
-      phase: "not-updated",
+      phase: phase === "stopped" ? "stopped" : "not-updated",
       downloadLabel: "Retry download",
       actions: { download: true, install: false, checkAgain: true },
     });
     if (phase === "refused") expect(observe().text).toContain("Download request did not start");
     expect(observe(live, "stale").actions.download).toBe(false);
     expect(observe(live, "fresh", false).actions.download).toBe(false);
+    if (phase === "interrupted") {
+      const installedSource = {
+        repository: "Jones-Systems/Jones-Code",
+        sha: source,
+        tree,
+      } as const;
+      const running = { ...live, installedSource };
+      expect(observe(running)).toMatchObject({
+        phase: "not-updated",
+        targetBuildRunning: true,
+        actions: { download: false, install: false },
+      });
+      expect(observe(running, "fresh", false).targetBuildRunning).toBe(true);
+      expect(observe(running, "stale").targetBuildRunning).toBe(false);
+      expect(observe({ ...running, environmentId: env }).targetBuildRunning).toBe(false);
+      for (const wrong of [
+        { ...installedSource, sha: "c".repeat(40) },
+        { ...installedSource, tree: "c".repeat(40) },
+      ])
+        expect(observe({ ...running, installedSource: wrong }).targetBuildRunning).toBe(false);
+      const foreign = { ...installedSource, repository: "wrong/repo" };
+      expect(
+        observe({ ...running, installedSource: foreign as unknown as typeof installedSource })
+          .targetBuildRunning,
+      ).toBe(false);
+
+      const installId = "22222222-2222-4222-8222-222222222222";
+      const install: JonesOperationReceipt = {
+        ...receipt,
+        operationId: installId,
+        phase: "completed",
+        updateId: installId,
+        action: {
+          kind: "install",
+          stagedHandle: "stage",
+          currentVersion: "old",
+          targetSource: source,
+        },
+        outcome: { status: "committed", fromVersion: "old", targetVersion: "new" },
+      };
+      const current = state.current!;
+      const device = current.devices[0]!;
+      const confirmed = installPlanPresentation(
+        {
+          ...state,
+          current: {
+            ...current,
+            devices: [
+              {
+                ...device,
+                operations: [
+                  ...device.operations,
+                  {
+                    operationId: installId,
+                    step: "install",
+                    lease: device.operations[0]!.lease,
+                    request: { kind: "operation-start", input: install },
+                    receipt: install,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          now: Date.parse(now),
+          devices: new Map([
+            [host, { observation: { state: running, freshness: "fresh" }, canOperate: true }],
+          ]),
+        },
+      );
+      expect(confirmed.rows[0]).toMatchObject({ phase: "done", targetBuildRunning: false });
+    }
     for (const operation of [
       { ...receipt, phase: "held" as const, code: "unreaped" },
       { ...receipt, phase: "running" as const, code: "launcher-unconfirmed" },
     ])
       expect(observe({ ...live, operation }).actions.download).toBe(false);
     expect(state.current?.devices[0]?.operations).toHaveLength(1);
+    if (phase === "interrupted" || phase === "stopped") return;
     const laptop = installPlanPresentation(
       {
         ...state,

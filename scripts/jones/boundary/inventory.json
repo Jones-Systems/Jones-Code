@@ -2819,7 +2819,15 @@
     "packages/contracts/src/jones/workspaceRecreation.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/workspace-recreation.json": "jones-owned",
     "apps/server/src/jones/orchestration/shellDelivery.ts": "jones-owned",
-    "apps/server/src/jones/orchestration/shellDelivery.test.ts": "jones-owned"
+    "apps/server/src/jones/orchestration/shellDelivery.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/direct-producer-completion.json": "jones-owned",
+    "scripts/jones/direct-producers/completion.node-test.mjs": "jones-owned",
+    "scripts/jones/direct-producers/completion.ts": "jones-owned",
+    "packages/client-runtime/src/jones/sync/sessionResubscribe.ts": "jones-owned",
+    "packages/client-runtime/src/jones/sync/sessionResubscribe.test.ts": "jones-owned",
+    "packages/client-runtime/src/state/threads.ts": "hook",
+    "apps/server/src/jones/workspaceRetirement/SettlementRecovery.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/SettlementRecovery.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
