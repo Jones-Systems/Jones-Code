@@ -624,7 +624,7 @@ NodeTest.test(
 );
 
 NodeTest.test(
-  "GUI admission rejects locked, unavailable and unproved sessions before packaged work",
+  "GUI admission scopes lock requirements and rejects unavailable or unproved sessions",
   () => {
     const ready = {
       schema: "jones-packaged-desktop-gui-session/v1",
@@ -637,21 +637,40 @@ NodeTest.test(
     const accepted = validatePackagedDesktopGuiSession(ready, { uid: 501 });
     NodeAssert.deepEqual(accepted, ready);
     NodeAssert.ok(Object.isFrozen(accepted));
-    for (const [change, message] of [
-      [{ screenLocked: true }, /screen is locked/],
-      [{ screenLocked: null }, /state is unknown/],
-      [{ screenLocked: undefined }, /state is unknown/],
-      [{ screenLocked: "false" }, /state is unknown/],
-      [{ sessionAvailable: false }, /unavailable/],
-      [{ sessionUid: 502 }, /another user/],
-      [{ onConsole: false }, /not on console/],
-      [{ loginDone: false }, /login is incomplete/],
-    ]) {
-      NodeAssert.throws(
-        () => validatePackagedDesktopGuiSession({ ...ready, ...change }, { uid: 501 }),
-        message,
-      );
+    for (const lock of ["any", "unlocked"]) {
+      for (const screenLocked of [false, true]) {
+        const receipt = { ...ready, screenLocked };
+        if (lock === "unlocked" && screenLocked)
+          NodeAssert.throws(
+            () => validatePackagedDesktopGuiSession(receipt, { uid: 501, lock }),
+            /screen is locked/,
+          );
+        else {
+          const result = validatePackagedDesktopGuiSession(receipt, { uid: 501, lock });
+          NodeAssert.deepEqual(result, receipt);
+          NodeAssert.ok(Object.isFrozen(result));
+        }
+      }
+      for (const [change, message] of [
+        [{ screenLocked: null }, /state is unknown/],
+        [{ screenLocked: undefined }, /state is unknown/],
+        [{ screenLocked: "false" }, /state is unknown/],
+        [{ sessionAvailable: false }, /unavailable/],
+        [{ sessionUid: 502 }, /another user/],
+        [{ onConsole: false }, /not on console/],
+        [{ loginDone: false }, /login is incomplete/],
+      ]) {
+        NodeAssert.throws(
+          () => validatePackagedDesktopGuiSession({ ...ready, ...change }, { uid: 501, lock }),
+          message,
+        );
+      }
     }
+    for (const lock of [null, false, "sometimes"])
+      NodeAssert.throws(
+        () => validatePackagedDesktopGuiSession(ready, { uid: 501, lock }),
+        /Unknown GUI lock requirement/,
+      );
   },
 );
 
