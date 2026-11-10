@@ -142,6 +142,7 @@ export function jonesTargetStatus(
           check: {
             kind: classification.kind,
             text: checkText[classification.kind],
+            checkedAt: classification.checkedAt,
             bounded: classification.discovery?.bounded ?? false,
           },
         }),

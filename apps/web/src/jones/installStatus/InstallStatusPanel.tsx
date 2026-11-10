@@ -12,10 +12,11 @@ import {
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
+import { deviceStatusActive } from "@t3tools/client-runtime/jones/install-plan";
 import { cn } from "../../lib/utils";
 import { useInstallPlan } from "./useInstallPlan";
 import { installStatusStore, type InstallStatusStore } from "./panelUi";
-import { panelPresentation } from "./presentation";
+import { deviceLiveness, packageCheckLine, panelPresentation } from "./presentation";
 import { selectionFor } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
 import {
@@ -25,13 +26,7 @@ import {
   type CleanupInspection,
   type PanelAction,
 } from "./actions";
-import {
-  INSTALL_PLAN_GO,
-  INSTALL_PLAN_INFO,
-  INSTALL_PLAN_WAIT,
-  lastSeenLabel,
-  lastUpdateLabel,
-} from "./copy";
+import { INSTALL_PLAN_GO, INSTALL_PLAN_INFO, INSTALL_PLAN_WAIT, lastUpdateLabel } from "./copy";
 
 interface EditDraft {
   readonly planId: string;
@@ -91,8 +86,12 @@ export function InstallStatusPanel({
             : "Fresh operations and enrollment capability are required."))
         : undefined;
     const row = view.rows.find((r) => r.environmentId === environmentId);
+    const active = deviceStatusActive(device?.observation, member);
     return {
       environmentId,
+      active,
+      liveness: deviceLiveness(device, snapshot.pollHealth[environmentId], snapshot.updatedAt),
+      checkLine: packageCheckLine(row, device, active, snapshot.updatedAt),
       label: member?.label ?? device?.label ?? "Device",
       selection,
       locked,
@@ -320,7 +319,7 @@ export function InstallStatusPanel({
                     ? "Checking outcome…"
                     : view.laptop?.phase === "held"
                       ? "Check update outcome"
-                      : "Check again"}
+                      : "Refresh now"}
                 </Button>
               ) : null}
             </div>
@@ -404,7 +403,7 @@ export function InstallStatusPanel({
           </div>
           <ul className="m-0 list-none p-0">
             {choices.map((choice) => {
-              const { environmentId, label, row, device } = choice;
+              const { environmentId, label, row, device, liveness } = choice;
               const included = selected.has(environmentId);
               const text = editing
                 ? included
@@ -461,9 +460,12 @@ export function InstallStatusPanel({
                         ) : (
                           <span
                             aria-hidden
+                            data-liveness={liveness.kind}
                             className={cn(
                               "size-1.5 shrink-0 rounded-full border border-muted-foreground",
                               !included && "bg-muted-foreground opacity-50",
+                              liveness.kind === "unreachable" &&
+                                "border-warning bg-warning opacity-100",
                             )}
                           />
                         )}
@@ -480,6 +482,17 @@ export function InstallStatusPanel({
                       </TooltipPopup>
                     </Tooltip>
                   </div>
+                  {!editing && liveness.kind !== "live" ? (
+                    <p
+                      className={cn(
+                        "px-3 pb-1 text-2xs",
+                        liveness.kind === "unreachable" ? "text-warning" : "text-muted-foreground",
+                      )}
+                      role="status"
+                    >
+                      {liveness.text}
+                    </p>
+                  ) : null}
                   {!editing && row?.targetBuildRunning ? (
                     <p className="px-3 pb-1 text-2xs text-muted-foreground">
                       Target build is running
@@ -503,12 +516,9 @@ export function InstallStatusPanel({
                         <p>This plan has no confirmed install receipt for this host.</p>
                       ) : null}
                       {device?.observation.freshness !== "fresh" ? (
-                        <p>
-                          {device?.observation.message ?? "Fresh status unavailable."}{" "}
-                          {lastSeenLabel(device?.lastObservedAt)}
-                        </p>
+                        <p>{device?.observation.message ?? "Fresh status unavailable."}</p>
                       ) : null}
-                      {row?.status?.check ? <p>{row.status.check.text}</p> : null}
+                      {choice.checkLine === undefined ? null : <p>{choice.checkLine}</p>}
                       {row?.operationId ? <OperationId value={row.operationId} /> : null}
                       {receipt?.code ? <p>Code: {receipt.code}</p> : null}
                       {receipt?.message ? <p>{receipt.message}</p> : null}
@@ -646,7 +656,7 @@ export function InstallStatusPanel({
                               ? "Checking outcome…"
                               : held
                                 ? "Check update outcome"
-                                : "Check again"}
+                                : "Refresh now"}
                           </Button>
                         </div>
                       ) : null}

@@ -9,14 +9,22 @@ export function lastUpdateLabel(at: string) {
     ? `Last update · ${new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }).format(date)}`
     : "Last update";
 }
-export function lastSeenLabel(at: string | undefined) {
-  if (at === undefined || !Number.isFinite(Date.parse(at))) return "Last seen time unavailable";
-  return `Last seen ${new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  }).format(new Date(at))}`;
+/** Compact elapsed time such as "just now", "4m ago" or "2h ago". */
+export function relativeAge(at: number, now: number) {
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+}
+
+export function lastHeardLabel(at: number | undefined, now: number) {
+  return at === undefined ? "not heard yet" : `last heard ${relativeAge(at, now)}`;
+}
+
+export function updateCheckFailedLabel(checkedAt: string | undefined, now: number) {
+  const at = checkedAt === undefined ? Number.NaN : Date.parse(checkedAt);
+  return Number.isFinite(at)
+    ? `Update check failed ${relativeAge(at, now)}`
+    : "Update check failed";
 }
