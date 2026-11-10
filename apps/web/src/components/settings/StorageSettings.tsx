@@ -798,7 +798,7 @@ export function WorktreeCleanupSection() {
                     ]
                       .filter(Boolean)
                       .join(". ")}
-                    description="Retire worktrees this many days after their thread settles, its settle script durably finishes, and its final checkpoint completes. Set 0 days for the next cleanup. Branches and history are kept. Disabling this rule stops settlement retirement only. To stop all automatic checkout removal, disable every applicable cleanup cause in the effective project and environment settings."
+                    description="Retire worktrees this many days after their thread settles, its settle script finishes and its checkpoint completes (0 = next cleanup). Branches and history stay. Other cleanup causes still apply."
                     serverScoped={!isProjectScope}
                     control={
                       <RetentionControl
@@ -899,7 +899,7 @@ export function WorktreeCleanupSection() {
                     settings.worktreeKeepWhen === "any-local-files"
                       ? "Keeps any untracked or ignored content."
                       : settings.worktreeKeepWhen === "tracked-changes"
-                        ? "Keeps tracked edits. Individually enumerates up to 10,000 untracked paths and ignored roots for journaled disposal. Sensitive paths require exact confirmation; nested repositories and live consumers stay protected."
+                        ? "Keeps tracked edits. Enumerates up to 10,000 untracked paths and ignored roots for journaled disposal. Sensitive paths need exact confirmation; nested repositories and live consumers stay protected."
                         : "Keeps tracked edits and untracked files. Ignored roots require producer proof, preservation or the selected coverage classes. Sensitive paths stay protected."
                   }
                   serverScoped={!isProjectScope}
