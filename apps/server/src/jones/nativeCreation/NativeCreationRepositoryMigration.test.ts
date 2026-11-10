@@ -99,7 +99,6 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 148, name: "OrdinaryCheckoutProcessCustody" },
         { migration_id: 149, name: "AuthSessionClientMetadata" },
         { migration_id: 150, name: "WorkspaceRuntimeUses" },
-        { migration_id: 151, name: "PeerLinksAdoption" },
       ],
     );
     assert.deepEqual(
@@ -228,23 +227,11 @@ const nativeUpgradeFixture = Effect.gen(function* () {
     beforeUpgrade,
   );
   const legacyBefore = yield* sql`SELECT * FROM jones_native_creation_execution_starts`;
-  assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-    [137, "NativeCreationLeaseRenewal"],
-    [138, "WorkspaceRetirement"],
-    [139, "ConversationWorkspace"],
-    [140, "WorkstreamsNative"],
-    [141, "WorkstreamsSourceEnrollments"],
-    [142, "WorkstreamsRollupAttempts"],
-    [143, "WorkstreamsPeerSessionPins"],
-    [144, "WorkstreamsMemberBindings"],
-    [145, "WorkstreamsForwardReceipts"],
-    [146, "SettlementOriginRetention"],
-    [147, "NativeExecutionProcessCustody"],
-    [148, "OrdinaryCheckoutProcessCustody"],
-    [149, "AuthSessionClientMetadata"],
-    [150, "WorkspaceRuntimeUses"],
-    [151, "PeerLinksAdoption"],
-  ]);
+  // Every Jones migration after the released 136, in ledger order.
+  assert.deepStrictEqual(
+    yield* runJonesMigrations(jonesMigrationEntries),
+    jonesMigrationEntries.filter(([id]) => id >= 137).map(([id, name]) => [id, name]),
+  );
   assert.deepStrictEqual(
     yield* sql`SELECT * FROM jones_native_creation_execution_starts`,
     legacyBefore,

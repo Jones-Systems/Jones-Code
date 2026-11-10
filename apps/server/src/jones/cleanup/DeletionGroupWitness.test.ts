@@ -32,6 +32,7 @@ import * as ThreadCommands from "../../orchestration-v2/ThreadCommandExecutor.ts
 import * as Instances from "../../provider/ProviderInstanceRegistry.ts";
 import * as Git from "../../vcs/GitVcsDriver.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import { pruneEventLogLikeUpstream } from "../persistence/prunedEventLog.testkit.ts";
 import {
   captureDeletionGroupPhysical,
   makeDeletionGroupEvidence,
@@ -538,6 +539,19 @@ it.effect(
         "original_group_generation_changed",
       );
     }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect("rows the upstream pruner removes fail the witness closed, never shrink the group", () =>
+  Effect.gen(function* () {
+    const { evidence, input, stop } = yield* setup;
+    yield* stop;
+    const captured = yield* evidence.capture(input);
+    assert.isAbove((yield* pruneEventLogLikeUpstream(input.deletionSequence)).length, 0);
+    assert.strictEqual(
+      (yield* evidence.validate(captured).pipe(Effect.flip)).reason,
+      "original_group_deletion_boundary_unavailable",
+    );
+  }).pipe(Effect.provide(layer), Effect.scoped),
 );
 
 it.effect("app-owned or side-chat lineage never authenticates as an original native group", () =>

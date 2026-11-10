@@ -477,6 +477,7 @@ it.effect(
               Stream.runCollect,
               Effect.map((results) => results.at(-1)!.result),
               Effect.provideService(Invocation.McpInvocationContext, scope),
+              Effect.provideService(WorktreeMcp.WorktreeMcpService, service),
               Effect.provide(external),
             );
           const status = yield* toolkit.handle("t3_worktree_status", {}).pipe(

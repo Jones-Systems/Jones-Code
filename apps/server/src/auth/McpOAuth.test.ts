@@ -736,7 +736,8 @@ it.live("one-click approves only access the browser session holds the scopes for
       expect(new URL(readOnly.redirectTo!).searchParams.get("code")).toEqual(expect.any(String));
 
       // The hosted app approves with the owner's T3 Connect session, which sends no cookie.
-      const connect = `Bearer ${(yield* auth.issueSession({ scopes: [...AuthStandardClientScopes] })).token}`;
+      // Jones keeps access management out of the standard client scopes, so the owner session holds the administrative ones.
+      const connect = `Bearer ${(yield* auth.issueSession({ scopes: [...AuthAdministrativeScopes] })).token}`;
       const connectDetails = yield* details(connect);
       expect(connectDetails.oneClickAccess).toContain("full-access");
       const viaConnect = yield* decide(
@@ -750,7 +751,7 @@ it.live("one-click approves only access the browser session holds the scopes for
       // The hosted app may load and decide with two credentials minted for the same browser key.
       const key = makeDpopKey();
       const dpopSession = (thumbprint: string) =>
-        auth.issuePairingCredential({ scopes: [...AuthStandardClientScopes] }).pipe(
+        auth.issuePairingCredential({ scopes: [...AuthAdministrativeScopes] }).pipe(
           Effect.flatMap((pairing) =>
             auth.exchangeBootstrapCredentialForAccessToken(
               pairing.credential,

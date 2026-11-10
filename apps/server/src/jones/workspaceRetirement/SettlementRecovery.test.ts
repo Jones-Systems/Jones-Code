@@ -1,8 +1,10 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { userFacingDispatchErrorMessage } from "../../orchestration-v2/UserFacingErrors.ts";
@@ -80,7 +82,7 @@ it.effect(
           ).toEqual([{ count: 0 }]);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["unsettled", "time", "branch", "replacement", "legacy"] as const)(
@@ -143,7 +145,7 @@ it.effect.each(["unsettled", "time", "branch", "replacement", "legacy"] as const
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -182,7 +184,7 @@ it.effect(
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["present", "unknown", "absent", "changed-holder", "completed-race"] as const)(
@@ -263,5 +265,5 @@ it.effect.each(["present", "unknown", "absent", "changed-holder", "completed-rac
             ]);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

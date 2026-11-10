@@ -215,6 +215,7 @@ const fixture = Effect.fnUntraced(function* (attachmentAvailable = true) {
     isMcpCallerAttached: () => Effect.succeed(false),
     releaseUnlessBusy: () => Effect.die("Unexpected releaseUnlessBusy"),
     otherWorkingThreads: () => Effect.die("Unexpected otherWorkingThreads"),
+    subscribePromptSuggestion: () => Stream.empty,
     shutdown: Effect.void,
     isLive: () => Effect.die("unexpected_isLive"),
     open: () => Effect.die("unexpected_open"),

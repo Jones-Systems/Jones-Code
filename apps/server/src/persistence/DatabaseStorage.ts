@@ -15,6 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { resolveHostCliCommand } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
+import * as SettlementCompactionPreflight from "../jones/persistence/settlementCompactionPreflight.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -142,13 +143,25 @@ const make = Effect.gen(function* () {
       yield* Effect.sleep((Number(elapsed) / 1_000_000) * 9);
       sliceStarted = yield* Clock.monotonicTimeNanos;
     });
-    const result = yield* maintenance.pruneEventStore(betweenPages);
+    // Jones: online pruning needs the same settlement-proof preflight as the offline repair.
+    const result =
+      yield* SettlementCompactionPreflight.requireSettlementProofsBeforeCompaction.pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.flatMap(() => maintenance.pruneEventStore(betweenPages)),
+      );
     const completedAt = yield* Clock.currentTimeMillis;
     yield* fs.writeFileString(compactedAtPath, String(completedAt)).pipe(Effect.ignore);
     if (result.deletedEventCount > 0 || result.deletedReceiptCount > 0) {
       yield* Effect.logInfo("Compacted orchestration history", result);
     }
   }).pipe(
+    // Jones: no prune and no completion record, so the next pass retries.
+    Effect.catchTags({
+      JonesSettlementProofMigrationRequiredError: (error) =>
+        Effect.logWarning("Orchestration history compaction skipped before pruning", {
+          reason: error.message,
+        }),
+    }),
     Effect.catch((cause) =>
       Effect.logWarning("Orchestration history compaction failed", { cause }),
     ),

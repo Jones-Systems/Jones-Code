@@ -151,9 +151,12 @@ it("keeps ordinary expandable toasts at their original width", async () => {
     });
   });
   const toast = closeButton().closest<HTMLElement>("[data-position]")!;
-  const width = toast.getBoundingClientRect().width;
+  // The contract is the toast's layout width. getBoundingClientRect is taken after the toast's
+  // 0.5 s slide-in transform, which rounds the width to 360.00003 or 359.99997 mid-slide.
+  const layoutWidth = () => Number.parseFloat(getComputedStyle(toast).width);
+  const width = layoutWidth();
   expect(width).toBeGreaterThan(0);
   await userEvent.click(page.getByRole("button", { name: "Show details" }));
   expect(document.querySelector('[data-slot="toast-expandable-panel"]')).not.toBeNull();
-  expect(toast.getBoundingClientRect().width).toBe(width);
+  expect(layoutWidth()).toBe(width);
 });

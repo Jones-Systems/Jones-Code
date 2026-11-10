@@ -138,7 +138,7 @@ it.effect("does not register bind tools without an application-owned producer", 
   }).pipe(
     Effect.provide(
       Server.layerNativeHomeBindToolkit.pipe(
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(Server.layerInProcessMcpServer),
         Layer.provide(threads),
       ),
     ),
@@ -153,7 +153,7 @@ it.effect("registers exactly the fixed tools when the application supplies its p
   }).pipe(
     Effect.provide(
       Server.layerNativeHomeBindToolkit.pipe(
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(Server.layerInProcessMcpServer),
         Layer.provide(services(() => Effect.succeed(result))),
         Layer.provide(threads),
       ),

@@ -317,6 +317,7 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
       makeRun({ id: cancelledRunId, ordinal: 2, status: "cancelled" }),
     ],
     visibleTurnItems: [],
+    providerTurns: [],
     runtimeRequests: [],
     messages: [],
     contextTransfers: [],

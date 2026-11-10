@@ -98,7 +98,7 @@ const make = Effect.gen(function* () {
           yield* PubSub.publish(changes, { key, attached: true });
         } else if (event.type === "detached") {
           yield* detach(key);
-        } else {
+        } else if (event.type === "cdp") {
           const current = attached.get(keyOf(key));
           const queue = inbound.get(keyOf(key));
           if (

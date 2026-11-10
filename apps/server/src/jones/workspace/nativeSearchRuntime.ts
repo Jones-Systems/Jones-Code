@@ -464,16 +464,14 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
       searchPage: (cursor, budget) =>
         grepPage(cursor, budget).pipe(
           Effect.flatMap((result) => {
+            const { regexFallbackError } = result;
             // fff searches an invalid pattern as a literal, which would keep the `(?i)` prefix.
-            if (!regexMode || input.caseSensitive || result.regexFallbackError === undefined) {
+            if (!regexMode || input.caseSensitive || regexFallbackError === undefined) {
               return Effect.succeed(result);
             }
             ({ searchQuery, regexMode } = buildContentSearchQuery({ ...input, useRegex: false }));
             return grepPage(cursor, budget).pipe(
-              Effect.map((literal) => ({
-                ...literal,
-                regexFallbackError: result.regexFallbackError,
-              })),
+              Effect.map((literal) => ({ ...literal, regexFallbackError })),
             );
           }),
         ),

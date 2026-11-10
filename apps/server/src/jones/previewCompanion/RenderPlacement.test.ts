@@ -84,7 +84,12 @@ it.effect("unmounts after the 20-second attachment deadline without a local fall
       Placement.layer.pipe(
         Layer.provide(Layer.mock(Selection.RenderHostSelection, {})),
         Layer.provide(Layer.mock(Registry.CompanionHostRegistry, {})),
-        Layer.provide(Layer.mock(DesktopChannel.DesktopBrowserChannel, { available: false })),
+        Layer.provide(
+          Layer.mock(DesktopChannel.DesktopBrowserChannel, {
+            available: false,
+            isShown: () => false,
+          }),
+        ),
         Layer.provide(
           Layer.mock(Channel.CompanionBrowserChannel, {
             mount: () => Effect.void,
