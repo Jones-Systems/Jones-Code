@@ -2646,9 +2646,11 @@
         "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts",
         "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
         "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
-        "packages/contracts/src/jones/orchestrationCompatibility.test.ts"
+        "packages/contracts/src/jones/orchestrationCompatibility.test.ts",
+        "apps/server/src/jones/orchestration/TransientSteer.test.ts"
       ],
       "commands": [
+        "vp test run --root apps/server --config vite.config.ts src/jones/orchestration/TransientSteer.test.ts src/jones/orchestration/runtimeLayer.jones.test.ts src/orchestration-v2/CommandPolicy.test.ts src/orchestration-v2/ThreadStop.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run packages/contracts/src/jones/queuedSteerBatch.test.ts packages/shared/src/jones/queuedSteerBatch.test.ts packages/client-runtime/src/jones/queue/commands.test.ts packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -4370,13 +4372,14 @@
         "apps/web/src/jones/pendingSends/sidebar.browser.test.tsx",
         "apps/web/src/jones/pendingSends/store.test.ts",
         "apps/web/src/jones/pendingSends/app.browser.test.tsx",
+        "apps/web/src/jones/pendingSends/steerHandoff.browser.test.tsx",
         "packages/client-runtime/src/operations/commands.test.ts",
         "packages/client-runtime/src/state/threadCommands.test.ts"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/operations/commands.test.ts packages/client-runtime/src/state/threadCommands.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts src/jones/pendingSends/send.test.ts src/jones/pendingSends/sidebar.test.ts src/jones/pendingSends/store.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/web --config vite.config.ts src/jones/pendingSends/PendingSendStatus.browser.test.tsx src/jones/pendingSends/app.browser.test.tsx src/jones/pendingSends/sidebar.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts src/jones/pendingSends/PendingSendStatus.browser.test.tsx src/jones/pendingSends/app.browser.test.tsx src/jones/pendingSends/steerHandoff.browser.test.tsx src/jones/pendingSends/sidebar.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "vp lint apps/web/src/jones/pendingSends apps/web/src/components/ThreadRouteView.tsx apps/web/src/components/ChatView.tsx apps/web/src/components/ChatView.logic.ts apps/web/src/components/Sidebar.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/chat/QueuedRunsControl.tsx apps/web/src/components/chat/TimelineUserMessageRow.tsx apps/web/src/components/chat/chatViewSend.ts apps/web/src/components/chat/useAttachmentPreviewHandoff.ts apps/web/src/components/chat/useComposerSend.ts apps/web/src/components/chat/useComposerResume.ts apps/web/src/components/chat/useMultipleModelSend.ts apps/web/src/components/chat/useProposedPlanSend.ts apps/web/src/components/chat/useThreadLifecycle.tsx apps/web/src/components/sidebar/SidebarDraftBlock.tsx apps/web/src/components/sidebar/SidebarThreadRow.tsx apps/web/src/routes/__root.tsx apps/web/test/fakeEnvironment.ts",
         "node scripts/jones/check-boundary.ts --strict"
