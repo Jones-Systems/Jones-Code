@@ -427,7 +427,9 @@ export const make = Effect.gen(function* () {
   const selectionRevision = Effect.fn("CodexFailoverStore.selectionRevision")(function* (
     threadId: ThreadId,
   ) {
-    // Keep parity with ThreadSelfConfiguration's selection revision query.
+    // Same event query as ThreadSelfConfiguration's selection revision, but not raised to
+    // the pruned-through sequence: eligibility compares this with the switch event's own
+    // sequence. A pruned switch event leaves no sequence to compare, so the step stays ineligible.
     const rows = yield* sql<{ revision: number }>`
       SELECT COALESCE(MAX(sequence), 0) AS revision FROM orchestration_events
       WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${threadId}
