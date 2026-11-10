@@ -56,7 +56,16 @@ function initialDesktop(): DesktopUpdateState {
     },
   };
 }
-async function setup(options: { refuseFirstDownload?: boolean } = {}) {
+const fixtureRecoveryToken = "22222222-2222-4222-8222-222222222222";
+
+async function setup(
+  options: {
+    refuseFirstDownload?: boolean;
+    refuseFirstInstall?: boolean;
+    loseCleanupReply?: boolean;
+    refuseCleanupReport?: boolean;
+  } = {},
+) {
   let desktop = initialDesktop();
   const updates = new Set<(value: DesktopUpdateState) => void>();
   const calls: { action: string; input?: unknown }[] = [];
@@ -70,7 +79,22 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
     record: (action, input) => calls.push({ action, input }),
   });
   const bridge = {
-    installPlan: fixture.request,
+    installPlan: async (request: Parameters<typeof fixture.request>[0]) => {
+      if (
+        options.refuseCleanupReport &&
+        request.type === "report" &&
+        request.evidence.kind === "receipt" &&
+        request.evidence.receipt.code === "cleanup-recovered"
+      )
+        return {
+          state: fixture.snapshot(),
+          refused: {
+            code: "storage" as const,
+            message: "Fixture plan storage refused the receipt.",
+          },
+        };
+      return fixture.request(request);
+    },
     onInstallPlan: fixture.onInstallPlan,
     getUpdateState: async () => desktop,
     onUpdateState: (listener: (value: DesktopUpdateState) => void) => {
@@ -82,6 +106,7 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
   };
   const services = fixture.services(bridge);
   let refused: JonesOperationReceipt | undefined;
+  let released: JonesOperationReceipt | undefined;
   let readObserved!: () => void;
   const receiptRead = new Promise<void>((resolve) => (readObserved = resolve));
   const controller = startInstallPlanController(
@@ -89,10 +114,11 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
       ...services,
       operation: async (id, command) => {
         if (
-          options.refuseFirstDownload &&
           refused === undefined &&
           command.action === "operationStart" &&
-          command.input.action.kind !== "install"
+          (command.input.action.kind === "install"
+            ? options.refuseFirstInstall
+            : options.refuseFirstDownload)
         ) {
           calls.push({
             action: "fixture-host-operationStart",
@@ -109,13 +135,43 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
           return refused;
         }
         const result = await services.operation(id, command);
+        if (command.action === "recoverCleanup" && options.loseCleanupReply) {
+          const held = fixture
+            .snapshot()
+            .current?.devices.find((d) => d.environmentId === id)
+            ?.operations.at(-1)?.receipt;
+          if (
+            held?.operationId !== command.input.operationId ||
+            held.jobId !== command.input.jobId ||
+            command.input.recoveryToken !== fixtureRecoveryToken
+          )
+            throw new Error("Fixture recovery binding changed.");
+          released = {
+            ...held,
+            phase: "interrupted",
+            code: "cleanup-recovered",
+            message: "Cleanup was verified and the preparation hold was released.",
+          };
+          throw new Error("Fixture lost the recovery response.");
+        }
         if (command.action === "operationRead" && "receipts" in result) {
           readObserved();
           return {
+            ...(command.input.inspectCleanup === undefined
+              ? {}
+              : {
+                  cleanupInspection: {
+                    operationId: command.input.inspectCleanup,
+                    status: "eligible" as const,
+                    ...(options.loseCleanupReply ? { recoveryToken: fixtureRecoveryToken } : {}),
+                  },
+                }),
             receipts: result.receipts.map((entry) =>
               refused !== undefined && entry.operationId === refused.operationId
                 ? { ...entry, receipt: refused }
-                : entry,
+                : released !== undefined && entry.operationId === released.operationId
+                  ? { ...entry, receipt: released }
+                  : entry,
             ),
           };
         }
@@ -152,6 +208,7 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
   };
   return {
     fixture,
+    releaseReadback: () => released,
     bridge,
     screen,
     calls,
@@ -440,11 +497,190 @@ describe("Install status receipt fixture", () => {
     expect(screen.container.textContent).not.toContain("Retry");
     expect(visibleDone(screen)).toHaveLength(0);
     const sent = calls.filter((c) => c.action === "fixture-host-operationStart").length;
-    await click(screen, "Check again");
+    expect(screen.container.textContent).toContain("The host has yet to confirm the outcome");
+    await click(screen, "Check update outcome");
     expect(calls.filter((c) => c.action === "fixture-host-operationStart")).toHaveLength(sent);
     await act(() => fixture.settleHost("VPS", "stopped"));
     expect(screen.container.textContent).toContain("Stopped · nothing installed");
     expect(visibleDone(screen)).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    "reads back the exact Mini recovery without retry (report refused: %s)",
+    async (refuseCleanupReport) => {
+      await using world = await setup({ loseCleanupReply: true, refuseCleanupReport });
+      const { screen, fixture, controller, calls } = world;
+      await click(screen, "Edit");
+      await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+      await click(screen, "Done");
+      await click(screen, "Download on Laptop");
+      await world.stageLaptop();
+      await click(screen, "Install on Laptop");
+      await world.commitLaptop();
+      controller.wake();
+      await expect
+        .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase)
+        .toBe("running");
+      await act(() => fixture.settleHost("Mini", "held", "cleanup-unconfirmed"));
+      await click(screen, "Mini update details");
+      const held = fixture.snapshot().current!.devices[0]!.operations.at(-1)!.receipt!;
+      const first = calls.length;
+      await click(screen, "Inspect cleanup");
+      await expect
+        .poll(() => screen.container.textContent)
+        .toContain(
+          "Inspection confirmed the prior disk image is absent. The update remains on hold.",
+        );
+      expect(calls.slice(first).filter(({ action }) => action.startsWith("fixture-host-"))).toEqual(
+        [
+          {
+            action: "fixture-host-operationRead",
+            input: {
+              environmentId: held.environmentId,
+              input: {
+                environmentId: held.environmentId,
+                operationIds: [held.operationId],
+                inspectCleanup: held.operationId,
+              },
+            },
+          },
+        ],
+      );
+      expect(fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt).toEqual(held);
+      const confirmStart = calls.length;
+      await click(screen, "Recover cleanup");
+      if (refuseCleanupReport) {
+        await expect
+          .poll(() => screen.container.textContent)
+          .toContain(
+            "The host released the cleanup hold. Check the update outcome to refresh this plan.",
+          );
+        expect(fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt).toEqual(held);
+      } else {
+        await expect
+          .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt)
+          .toMatchObject({
+            operationId: held.operationId,
+            jobId: held.jobId,
+            phase: "interrupted",
+            code: "cleanup-recovered",
+          });
+      }
+      const recoveryCalls = calls
+        .slice(confirmStart)
+        .filter(({ action }) => action === "fixture-review" || action.startsWith("fixture-host-"));
+      expect(recoveryCalls.map(({ action }) => action)).toEqual([
+        "fixture-review",
+        "fixture-host-recoverCleanup",
+        "fixture-host-operationRead",
+      ]);
+      expect(recoveryCalls[0]?.input).toMatchObject({
+        message: expect.stringContaining(held.operationId),
+      });
+      expect(recoveryCalls[1]?.input).toEqual({
+        environmentId: held.environmentId,
+        input: {
+          environmentId: held.environmentId,
+          operationId: held.operationId,
+          jobId: held.jobId,
+          recoveryToken: fixtureRecoveryToken,
+          confirmed: true,
+        },
+      });
+      expect(recoveryCalls[2]?.input).toEqual({
+        environmentId: held.environmentId,
+        input: { environmentId: held.environmentId, operationIds: [held.operationId] },
+      });
+      if (!refuseCleanupReport) {
+        const released = world.releaseReadback();
+        expect(released).toBeDefined();
+        await act(() => fixture.publishHostReceipt(released!));
+        const hostStarts = () =>
+          calls.filter(({ action }) => action === "fixture-host-operationStart");
+        expect(hostStarts()).toHaveLength(1);
+        await click(screen, "Retry download");
+        await expect.poll(() => hostStarts().length).toBe(2);
+        const operations = fixture.snapshot().current!.devices[0]!.operations;
+        expect(operations).toHaveLength(2);
+        expect(operations[0]?.receipt).toEqual(released);
+        expect(operations[1]?.operationId).not.toBe(held.operationId);
+      }
+    },
+  );
+
+  it("offers Retry install for a refused VPS install and reviews the same stage with a fresh ID", async () => {
+    await using world = await setup({ refuseFirstInstall: true });
+    const { screen, fixture, controller, calls } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include VPS" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    controller.wake();
+    const operations = () => fixture.snapshot().current?.devices[0]?.operations;
+    await expect.poll(() => operations()?.at(-1)?.receipt?.phase).toBe("running");
+    await act(() => fixture.settleHost("VPS", "staged"));
+    await click(screen, "VPS update details");
+    await click(screen, "Install on VPS");
+    await expect.poll(() => operations()?.at(-1)?.receipt?.phase).toBe("refused");
+    const refused = operations()!.at(-1)!;
+    const staged = operations()![0]!.receipt!;
+    expect(staged.staged).toBeDefined();
+    await act(() =>
+      fixture.publishHostReceipt({
+        ...staged,
+        staged: { ...staged.staged!, stagedHandle: "different-stage" },
+      }),
+    );
+    expect(screen.container.textContent).not.toContain("Retry install");
+    await act(() => fixture.publishHostReceipt(staged));
+    const startCount = calls.filter(
+      ({ action }) => action === "fixture-host-operationStart",
+    ).length;
+    expect(startCount).toBe(2);
+    const beforeRetry = calls.length;
+    await click(screen, "Retry install");
+    await expect.poll(() => operations()?.at(-1)?.receipt?.phase).toBe("running");
+    const retry = operations()!.at(-1)!;
+    expect(retry.operationId).not.toBe(refused.operationId);
+    expect(retry.receipt?.action).toEqual(refused.receipt?.action);
+    expect(calls.filter(({ action }) => action === "fixture-host-operationStart")).toHaveLength(
+      startCount + 1,
+    );
+    expect(
+      calls
+        .slice(beforeRetry)
+        .filter(
+          ({ action }) => action === "fixture-review" || action === "fixture-host-operationStart",
+        )
+        .map(({ action }) => action),
+    ).toEqual(["fixture-review", "fixture-host-operationStart"]);
+    const beforeCheck = calls.length;
+    await click(screen, "Check again");
+    await expect
+      .poll(
+        () =>
+          calls
+            .slice(beforeCheck)
+            .find(
+              ({ action, input }) =>
+                action === "fixture-host-operationRead" &&
+                JSON.stringify(input).includes("refreshInstallOutcome"),
+            )?.input,
+      )
+      .toEqual({
+        environmentId: retry.receipt!.environmentId,
+        input: {
+          environmentId: retry.receipt!.environmentId,
+          operationIds: [retry.operationId],
+          refreshInstallOutcome: retry.operationId,
+        },
+      });
+    expect(calls.filter(({ action }) => action === "fixture-host-operationStart")).toHaveLength(
+      startCount + 1,
+    );
   });
 
   it("keeps unsupported devices out and uses a neutral dashed separator before and after Laptop verification", async () => {

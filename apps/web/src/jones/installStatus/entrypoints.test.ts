@@ -14,7 +14,8 @@ import {
   partitionUpdateEverything,
   legacyConnectionsGate,
 } from "./entrypoints";
-import { createInstallStatusStore, installStatusStore } from "./panelUi";
+import { performPanelAction } from "./actions";
+import { createInstallStatusStore, installStatusStore, type InstallStatusDevice } from "./panelUi";
 import { bindInstallPlanServices, type InstallPlanServices } from "./services";
 
 const environmentId = EnvironmentId.make("laptop-test");
@@ -83,6 +84,139 @@ const desktop: DesktopUpdateState = {
 };
 
 describe("install entrypoint routing", () => {
+  it("settles an unresolved directive only from exact fresh host status", async () => {
+    const hostId = EnvironmentId.make("vps");
+    const enrollmentId = "22222222-2222-4222-8222-222222222222";
+    const directiveId = "33333333-3333-4333-8333-333333333333";
+    const observedAt = "2026-10-27T04:00:00.000Z";
+    const directive = {
+      directiveId,
+      targetSource: target.sourceSha,
+      targetTree: target.sourceTree,
+      mode: "manual-review" as const,
+      issuedAt: observedAt,
+    };
+    const state = native({
+      ...plan,
+      devices: [
+        {
+          environmentId: hostId,
+          enrollmentId,
+          label: "VPS",
+          route: "follower-operations",
+          membership: "selected",
+          addedAt: observedAt,
+          operations: [
+            {
+              operationId: directiveId,
+              step: "directive",
+              lease: { claimant: "window:a", reservedAt: observedAt, leaseUntil: observedAt },
+              request: {
+                kind: "plan-directive",
+                input: {
+                  directiveId,
+                  environmentId: hostId,
+                  enrollmentId,
+                  repository: target.repository,
+                  expectedDirectiveId: null,
+                  targetSource: target.sourceSha,
+                  targetTree: target.sourceTree,
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const installPlan = vi.fn(
+      async (_request: JonesInstallPlanRequest): Promise<JonesInstallPlanResult> => ({ state }),
+    );
+    const fleetStatus = {
+      environmentId: hostId,
+      operationProtocol: 1 as const,
+      planDirectiveProtocol: 1 as const,
+      enrollment: {
+        environmentId: hostId,
+        enrollmentId,
+        enabled: true,
+        continueRunningThreads: false,
+      },
+      operation: null,
+      update: null,
+      follower: {
+        protocol: 1 as const,
+        leaderSource: target.sourceSha,
+        state: "waiting-for-leader" as const,
+        planDirective: directive,
+      },
+    };
+    const exact: InstallStatusDevice = {
+      environmentId: hostId,
+      label: "VPS",
+      canOperate: true,
+      observation: {
+        freshness: "fresh",
+        state: {
+          environmentId: hostId,
+          source: "jones-actions",
+          channel: "jones-main",
+          phase: "no-new",
+          currentVersion: "0.1.1",
+          capability: { check: true, download: true, install: true, operations: 1 },
+        },
+      },
+      fleetStatus,
+    };
+    const unused = vi.fn(async () => {
+      throw new Error("No host mutation is allowed.");
+    });
+    const observe = vi.fn(async () => exact);
+    const services: InstallPlanServices = {
+      bridge: { installPlan, getUpdateState: async () => desktop, onUpdateState: () => () => {} },
+      devices: () => [exact],
+      observe,
+      legacy: unused,
+      operation: unused,
+      stop: unused,
+      host: unused,
+      confirm: unused,
+      chooseRecovery: unused,
+      now: () => 0,
+    };
+    const unbind = bindInstallPlanServices(services, createInstallStatusStore());
+    try {
+      observe.mockResolvedValueOnce({
+        ...exact,
+        fleetStatus: {
+          ...fleetStatus,
+          follower: {
+            ...fleetStatus.follower,
+            planDirective: { ...directive, directiveId: "44444444-4444-4444-8444-444444444444" },
+          },
+        },
+      });
+      await performPanelAction(hostId, "check");
+      observe.mockResolvedValueOnce({
+        ...exact,
+        observation: { ...exact.observation, freshness: "stale" },
+      });
+      await performPanelAction(hostId, "check");
+      expect(installPlan.mock.calls.map(([request]) => request.type)).toEqual(["read", "read"]);
+
+      await performPanelAction(hostId, "check");
+      expect(installPlan.mock.calls.at(-1)?.[0]).toEqual({
+        type: "report",
+        planId: plan.planId,
+        environmentId: hostId,
+        operationId: directiveId,
+        evidence: { kind: "directive", status: fleetStatus },
+      });
+      expect(unused).not.toHaveBeenCalled();
+    } finally {
+      unbind();
+    }
+  });
+
   it("requires the full matching ordinary gate proof for legacy Connections", async () => {
     const ordinaryRecovery = {
       transactionId: `manual-${"d".repeat(64)}`,

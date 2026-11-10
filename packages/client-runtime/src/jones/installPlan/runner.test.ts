@@ -265,7 +265,7 @@ describe("bounded install plan runner", () => {
     expect(f.operation).not.toHaveBeenCalled();
   });
 
-  it("requires the enrolled directive receipt before a later pass may download", async () => {
+  it.each(["reply", "storage error"])("reconciles the directive after %s", async (result) => {
     const f = fixture(),
       p = f.plan();
     f.setPlan({
@@ -301,21 +301,20 @@ describe("bounded install plan runner", () => {
       targetTree: tree,
       expectedDirectiveId: null,
     };
-    f.desktop.mockResolvedValue({
-      state: {
-        schema: 1,
-        current: f.plan(),
-        last: null,
-        laptop: { observedAt: now, activationBlocked: false },
-        view: { complete: false },
-      },
-      grant: {
-        ...f.grant,
-        step: "directive",
-        request: { kind: "plan-directive", input: directive },
-      },
+    const state = (): JonesInstallPlanState => ({
+      schema: 1,
+      current: f.plan(),
+      last: null,
+      laptop: { observedAt: now, activationBlocked: false },
+      view: { complete: false },
     });
-    f.host.mockResolvedValue({
+    const grant: JonesInstallPlanGrant = {
+      ...f.grant,
+      step: "directive",
+      request: { kind: "plan-directive", input: directive },
+    };
+    f.desktop.mockResolvedValue({ state: state(), grant });
+    const applied = {
       ...fleet,
       follower: {
         ...fleet.follower,
@@ -323,13 +322,45 @@ describe("bounded install plan runner", () => {
           directiveId: opId,
           targetSource: source,
           targetTree: tree,
-          mode: "manual-review",
+          mode: "manual-review" as const,
           issuedAt: now,
         },
       },
-    });
+    };
+    if (result === "storage error")
+      f.host.mockRejectedValueOnce({
+        _tag: "FleetHostError",
+        reason: "storage",
+        message: "sync failed",
+      });
+    else f.host.mockResolvedValueOnce(applied);
+
     await advanceInstallPlan(f.driver);
     expect(f.host.mock.calls[0]?.[1]).toEqual({ action: "planDirective", input: directive });
+    if (result === "storage error") {
+      expect(f.desktop.mock.calls.map(([input]) => input.type)).toEqual(["read", "claim"]);
+      const pending = f.plan();
+      f.setPlan({
+        ...pending,
+        devices: [
+          {
+            ...pending.devices[0]!,
+            operations: [
+              {
+                operationId: opId,
+                step: "directive",
+                request: { kind: "plan-directive", input: directive },
+                lease: { claimant: f.driver.claimant, reservedAt: now, leaseUntil },
+              },
+            ],
+          },
+        ],
+      });
+      f.desktop.mockResolvedValue({ state: state() });
+      f.observe.mockResolvedValue({ ...observed, fleetStatus: applied });
+      await advanceInstallPlan({ ...f.driver, now: () => Date.parse(leaseUntil) });
+      expect(f.host).toHaveBeenCalledTimes(1);
+    }
     expect(f.operation).not.toHaveBeenCalled();
     expect(f.desktop.mock.calls.at(-1)?.[0]).toMatchObject({
       type: "report",

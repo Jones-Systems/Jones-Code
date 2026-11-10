@@ -127,6 +127,7 @@ describe("Jones environment HTTP registration", () => {
       ["operationStop", "POST", "/api/jones-updates/operations/stop"],
       ["operationFence", "POST", "/api/jones-updates/operations/fence"],
       ["operationRead", "POST", "/api/jones-updates/operations/read"],
+      ["recoverCleanup", "POST", "/api/jones-updates/operations/recover-cleanup"],
       ["recoveryPreflight", "POST", "/api/jones-updates/recovery-preflight"],
       ["peerSetupOwnerOperations", "POST", "/api/workstreams/native/peer-setup/v1/operations"],
       ["ownerOperations", "POST", "/api/workstreams/native/owner/v1/operations"],

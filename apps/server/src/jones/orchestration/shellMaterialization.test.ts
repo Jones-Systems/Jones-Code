@@ -106,6 +106,9 @@ it.effect("late subscribers reuse the committed version across different event s
     yield* Effect.gen(function* () {
       const service = yield* ShellMaterialization.ShellMaterialization;
       const first = yield* service.forSubscription;
+      const materialized = yield* first.getVersioned(threadId, 3);
+      assert.strictEqual(materialized.version, 20);
+      assert.strictEqual(materialized.shell?.title, "version:20");
       assert.strictEqual((yield* first.get(threadId, 3))?.title, "version:20");
       const late = yield* service.forSubscription;
       assert.strictEqual((yield* late.get(threadId, 17))?.title, "version:20");

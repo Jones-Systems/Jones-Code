@@ -26,7 +26,10 @@ export function usePendingPreviewRelease(
 ) {
   const entries = usePendingSends().filter(
     (entry) =>
-      entry.environmentId === environmentId && entry.threadId === threadId && entry.visible,
+      entry.environmentId === environmentId &&
+      entry.threadId === threadId &&
+      entry.visible &&
+      !entry.working,
   );
   const messages =
     projection?.visibleTurnItems.flatMap((row) => {

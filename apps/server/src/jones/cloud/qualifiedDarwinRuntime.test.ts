@@ -175,7 +175,7 @@ async function cancellationFixture(
       } else {
         assert.equal(command.command, "/usr/bin/hdiutil");
         assert.equal(command.args[0], "detach");
-        assert.equal(command.args[1], mount);
+        assert.equal(command.args[1], "/dev/disk123");
         assert.notEqual(command.signal, controller.signal);
         return detach(command);
       }
@@ -214,6 +214,7 @@ it.each(["extraction", "staging"] as const)(
       await NodeFSP.mkdir(destination);
       await NodeFSP.writeFile(NodePath.join(home, "native-state"), "unchanged");
       const calls: string[] = [];
+      const detachCalls: ReadonlyArray<string>[] = [];
       const artifact = stagedArtifact(root);
       const before = recentQualifiedDigestTimings();
       await extractQualifiedDarwinRuntime({
@@ -240,6 +241,9 @@ it.each(["extraction", "staging"] as const)(
               asar(),
             );
             await NodeFSP.writeFile(NodePath.join(app, "Contents", "Info.plist"), "plist fixture");
+          } else if (command === "/usr/bin/hdiutil" && args[0] === "detach") {
+            detachCalls.push(args);
+            return { code: args[1] === "/dev/disk123" ? 0 : 1, stdout: "" };
           } else if (command === "/usr/bin/ditto")
             await NodeFSP.cp(args[2]!, args[3]!, { recursive: true });
           else if (command === "/usr/bin/plutil")
@@ -251,6 +255,7 @@ it.each(["extraction", "staging"] as const)(
           return { code: 0, stdout: "" };
         }),
       });
+      assert.deepEqual(detachCalls, [["detach", "/dev/disk123"]]);
       const measured = recentQualifiedDigestTimings().filter((timing) => !before.includes(timing));
       assert.equal(measured.length, payloadVerification === "extraction" ? 1 : 0);
       assert.equal(
@@ -272,7 +277,7 @@ it.each(["extraction", "staging"] as const)(
   },
 );
 
-it("detaches the owned mount after the job is cancelled and preserves the cancellation", async () => {
+it("detaches the owned device after the job is cancelled and preserves the cancellation", async () => {
   await fixture(async (root) => {
     const detached: DarwinStageCommand[] = [];
     const result = await cancellationFixture(root, async (command) => {
@@ -280,13 +285,13 @@ it("detaches the owned mount after the job is cancelled and preserves the cancel
       return { code: 0, stdout: "" };
     });
     assert.equal(detached.length, 1);
-    assert.deepEqual(detached[0]!.args, ["detach", result.mount]);
+    assert.deepEqual(detached[0]!.args, ["detach", "/dev/disk123"]);
     assert.equal(result.failure, result.primary);
     await NodeAssert.rejects(NodeFSP.lstat(NodePath.dirname(result.mount)), { code: "ENOENT" });
   });
 });
 
-it("retries a failed detach with force on only the owned mount", async () => {
+it("retries a failed detach with force on only the owned device", async () => {
   await fixture(async (root) => {
     const detached: DarwinStageCommand[] = [];
     const result = await cancellationFixture(root, async (command) => {
@@ -296,8 +301,8 @@ it("retries a failed detach with force on only the owned mount", async () => {
     assert.deepEqual(
       detached.map(({ args }) => args),
       [
-        ["detach", result.mount],
-        ["detach", result.mount, "-force"],
+        ["detach", "/dev/disk123"],
+        ["detach", "/dev/disk123", "-force"],
       ],
     );
     assert.notEqual(detached[0]!.signal, detached[1]!.signal);
@@ -317,6 +322,10 @@ it("retains the exact mount and both staging and cleanup failures when forced de
     const blocked = result.failure as QualifiedRuntimeBlockedError;
     assert.equal(blocked.reason, "busy");
     assert.include(blocked.message, result.mount);
+    assert.include(blocked.message, "cleanup=after-forced-detach/attachment-remains");
+    assert.include(blocked.message, "failed-detach=ordinary,forced");
+    assert.notInclude(blocked.message, ordinary.message);
+    assert.notInclude(blocked.message, forced.message);
     assert.instanceOf(blocked.cause, AggregateError);
     const [primary, cleanup] = (blocked.cause as AggregateError).errors;
     assert.equal(primary, result.primary);
@@ -540,7 +549,16 @@ it.each([
       const primary = retained ? ((failure as Error).cause as AggregateError).errors[0] : failure;
       assert.include((primary as Error).message, "primary attach diagnostic");
       if (retained) {
-        assert.equal((failure as QualifiedRuntimeBlockedError).reason, "busy");
+        const blocked = failure as QualifiedRuntimeBlockedError;
+        assert.equal(blocked.reason, "busy");
+        assert.include(blocked.message, "Staging=attach");
+        assert.notInclude(blocked.message, "primary attach diagnostic");
+        if (scenario === "inventory lost after detach")
+          assert.include(blocked.message, "cleanup=after-ordinary-detach/hdiutil-info");
+        if (scenario === "malformed inventory")
+          assert.include(blocked.message, "cleanup=before-detach/inventory-shape");
+        if (scenario === "ambiguous images")
+          assert.include(blocked.message, "cleanup=before-detach/ownership");
         assert.isTrue((await NodeFSP.lstat(mount)).isDirectory());
       } else await NodeAssert.rejects(NodeFSP.lstat(NodePath.dirname(mount)), { code: "ENOENT" });
     });

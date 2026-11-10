@@ -16,6 +16,8 @@ import type {
   JonesOperationStopInput,
   JonesOperationFenceInput,
   JonesOperationReadInput,
+  JonesRecoverCleanupInput,
+  JonesRecoverCleanupResult,
   JonesRecoveryPreflightInput,
   JonesOperationReceipt,
   JonesOperationReadResult,
@@ -62,6 +64,7 @@ export type JonesOperationCommand =
   | { action: "operationStart"; input: JonesOperationStartInput }
   | { action: "operationFence"; input: JonesOperationFenceInput }
   | { action: "operationRead"; input: JonesOperationReadInput }
+  | { action: "recoverCleanup"; input: JonesRecoverCleanupInput }
   | { action: "recoveryPreflight"; input: JonesRecoveryPreflightInput };
 export type JonesStopCommand = { action: "operationStop"; input: JonesOperationStopInput };
 
@@ -72,11 +75,13 @@ type JonesRequest =
   | { action: "state"; after?: number };
 type JonesRequestResult<I extends JonesRequest> = I extends { action: "operationRead" }
   ? JonesOperationReadResult
-  : I extends { action: "recoveryPreflight" }
-    ? JonesRecoveryPreflight
-    : I extends { action: "operationStart" | "operationStop" | "operationFence" }
-      ? JonesOperationReceipt
-      : JonesUpdateState | null;
+  : I extends { action: "recoverCleanup" }
+    ? JonesRecoverCleanupResult
+    : I extends { action: "recoveryPreflight" }
+      ? JonesRecoveryPreflight
+      : I extends { action: "operationStart" | "operationStop" | "operationFence" }
+        ? JonesOperationReceipt
+        : JonesUpdateState | null;
 
 type JonesDispatchContext = {
   readonly client: Effect.Success<
@@ -113,6 +118,8 @@ const dispatchRequest = Effect.fn("clientRuntime.jonesUpdates.dispatch")(functio
       return yield* client.operationFence({ headers, payload: input.input });
     case "operationRead":
       return yield* client.operationRead({ headers, payload: input.input });
+    case "recoverCleanup":
+      return yield* client.recoverCleanup({ headers, payload: input.input });
     case "recoveryPreflight":
       return yield* client.recoveryPreflight({ headers, payload: input.input });
   }
@@ -148,6 +155,7 @@ const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
               "operationStop",
               "operationFence",
               "operationRead",
+              "recoverCleanup",
               "recoveryPreflight",
             ].includes(input.action)
           ? 60_000

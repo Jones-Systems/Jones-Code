@@ -1,4 +1,5 @@
 import type { EnvironmentId } from "@t3tools/contracts";
+import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesInstallPlanGrant } from "@t3tools/contracts/jones/installPlan";
 import {
   executeJonesAction,
@@ -9,7 +10,10 @@ import {
   type JonesReviewedInstall,
   isNativeJonesInstallReview,
 } from "@t3tools/client-runtime/jones/updates/executor";
-import { validateReceipt } from "@t3tools/client-runtime/jones/install-plan";
+import {
+  validateDirectiveEvidence,
+  validateReceipt,
+} from "@t3tools/client-runtime/jones/install-plan";
 import { claimantId, routeLaptopDownload, routeLaptopInstall } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
 
@@ -86,6 +90,157 @@ async function sendStopGrant(grant: JonesInstallPlanGrant) {
   if (result.refused !== undefined) throw new Error(result.refused.message);
 }
 
+export type CleanupInspection = {
+  readonly status: "eligible" | "unproved";
+  readonly recoveryToken?: string;
+};
+
+async function readHeldCleanup(
+  binding: NonNullable<ReturnType<typeof installPlanServices>>,
+  environmentId: EnvironmentId,
+  operationId: string,
+) {
+  const { state } = await requestInstallPlan({ type: "read" }, binding);
+  const plan = state.current;
+  const device = plan?.devices.find((d) => d.environmentId === environmentId);
+  const receipt = device?.operations.at(-1)?.receipt;
+  if (
+    state.readOnly !== undefined ||
+    plan == null ||
+    device === undefined ||
+    receipt?.operationId !== operationId ||
+    receipt.environmentId !== environmentId ||
+    receipt.phase !== "held" ||
+    receipt.code !== "cleanup-unconfirmed" ||
+    receipt.jobId === undefined ||
+    receipt.action.kind === "install"
+  )
+    return undefined;
+  const { canOperate, observation } = await binding.services.observe(environmentId);
+  if (
+    !canOperate ||
+    observation.freshness !== "fresh" ||
+    observation.state?.environmentId !== environmentId ||
+    observation.state.capability.operations !== 1
+  )
+    return undefined;
+  return { planId: plan.planId, label: device.label, receipt, jobId: receipt.jobId };
+}
+
+export async function inspectPanelCleanup(
+  environmentId: EnvironmentId,
+  operationId: string,
+): Promise<CleanupInspection> {
+  const unproved = { status: "unproved" } as const;
+  const binding = installPlanServices();
+  if (binding === undefined) return unproved;
+  try {
+    const held = await readHeldCleanup(binding, environmentId, operationId);
+    if (held === undefined) return unproved;
+    const result = await binding.services.operation(environmentId, {
+      action: "operationRead",
+      input: { environmentId, operationIds: [operationId], inspectCleanup: operationId },
+    });
+    if (!("receipts" in result) || result.cleanupInspection?.operationId !== operationId)
+      return unproved;
+    const exact = result.receipts[0];
+    return result.receipts.length === 1 &&
+      exact?.operationId === operationId &&
+      exact.receipt !== null &&
+      exact.receipt.phase === "held" &&
+      exact.receipt.code === "cleanup-unconfirmed" &&
+      exact.receipt.jobId === held.jobId &&
+      validateReceipt(held.receipt, exact.receipt)
+      ? result.cleanupInspection
+      : unproved;
+  } catch {
+    return unproved;
+  }
+}
+
+export async function recoverPanelCleanup(
+  environmentId: EnvironmentId,
+  reviewed: JonesOperationReceipt,
+  recoveryToken: string,
+): Promise<"released" | "released-plan-unconfirmed" | "unproved" | "cancelled"> {
+  const binding = installPlanServices();
+  if (binding === undefined) return "unproved";
+  const { services } = binding;
+  const operationId = reviewed.operationId;
+  const held = await readHeldCleanup(binding, environmentId, operationId);
+  if (
+    held === undefined ||
+    held.jobId !== reviewed.jobId ||
+    !validateReceipt(reviewed, held.receipt)
+  )
+    return "unproved";
+  if (
+    !(await services.confirm(
+      `Release the cleanup hold on ${held.label} for operation ${operationId}? The host will verify the disk image is absent before releasing the hold. This action will not retry the download or install anything.`,
+    ))
+  )
+    return "cancelled";
+  const fresh = await readHeldCleanup(binding, environmentId, operationId);
+  if (
+    installPlanServices() !== binding ||
+    fresh === undefined ||
+    fresh.planId !== held.planId ||
+    fresh.jobId !== held.jobId ||
+    fresh.receipt.updatedAt !== held.receipt.updatedAt ||
+    !validateReceipt(held.receipt, fresh.receipt)
+  )
+    return "unproved";
+  const recovered = (receipt: JonesOperationReceipt | null | undefined) =>
+    receipt != null &&
+    receipt.jobId === held.jobId &&
+    receipt.code === "cleanup-recovered" &&
+    (receipt.phase === "stopped" || receipt.phase === "interrupted") &&
+    validateReceipt(held.receipt, receipt);
+  const response = await services
+    .operation(environmentId, {
+      action: "recoverCleanup",
+      input: { environmentId, operationId, jobId: held.jobId, recoveryToken, confirmed: true },
+    })
+    .catch(() => undefined);
+  let receipt =
+    response !== undefined && "recoveredCleanup" in response ? response.recoveredCleanup : null;
+  if (!recovered(receipt)) {
+    const readback = await services
+      .operation(environmentId, {
+        action: "operationRead",
+        input: { environmentId, operationIds: [operationId] },
+      })
+      .catch(() => undefined);
+    receipt =
+      readback !== undefined &&
+      "receipts" in readback &&
+      readback.receipts.length === 1 &&
+      readback.receipts[0]?.operationId === operationId
+        ? readback.receipts[0].receipt
+        : null;
+  }
+  if (receipt === null || !recovered(receipt)) return "unproved";
+  const report = await requestInstallPlan(
+    {
+      type: "report",
+      planId: held.planId,
+      environmentId,
+      operationId,
+      evidence: { kind: "receipt", receipt },
+    },
+    binding,
+  ).catch(() => undefined);
+  const recorded =
+    report?.state.current?.planId === held.planId
+      ? report.state.current.devices
+          .find((d) => d.environmentId === environmentId)
+          ?.operations.find((o) => o.operationId === operationId)?.receipt
+      : undefined;
+  return report?.refused === undefined && recovered(recorded)
+    ? "released"
+    : "released-plan-unconfirmed";
+}
+
 /** Owner clicks claim once; lost replies keep the native reservation for receipt reconciliation. */
 export async function performPanelAction(
   environmentId: EnvironmentId | "laptop",
@@ -106,10 +261,41 @@ export async function performPanelAction(
       const operation = plan.devices
         .find((d) => d.environmentId === environmentId)
         ?.operations.at(-1);
-      if (operation?.request.kind === "operation-start") {
+      if (operation?.request.kind === "plan-directive") {
+        const { observation, fleetStatus } = observed;
+        if (
+          operation.directive === undefined &&
+          observed.canOperate &&
+          observation.freshness === "fresh" &&
+          observation.state?.environmentId === environmentId &&
+          observation.state.capability.operations === 1 &&
+          fleetStatus != null &&
+          validateDirectiveEvidence(operation.request.input, fleetStatus)
+        )
+          await requestInstallPlan(
+            {
+              type: "report",
+              planId: plan.planId,
+              environmentId,
+              operationId: operation.operationId,
+              evidence: { kind: "directive", status: fleetStatus },
+            },
+            binding,
+          );
+      } else if (operation?.request.kind === "operation-start") {
         const result = await services.operation(environmentId, {
           action: "operationRead",
-          input: { environmentId, operationIds: [operation.operationId] },
+          input: {
+            environmentId,
+            operationIds: [operation.operationId],
+            ...(operation.request.input.action.kind === "install" &&
+            observed.canOperate &&
+            observed.observation.freshness === "fresh" &&
+            observed.observation.state?.environmentId === environmentId &&
+            observed.observation.state.capability.operations === 1
+              ? { refreshInstallOutcome: operation.operationId }
+              : {}),
+          },
         });
         if ("receipts" in result) {
           const receipt = result.receipts.find(

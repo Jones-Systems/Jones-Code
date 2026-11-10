@@ -7,6 +7,10 @@
   "allowedImports": [
     {
       "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/orchestration/shellDelivery.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
       "to": "apps/server/src/jones/orchestration/shellMaterialization.ts"
     },
     {

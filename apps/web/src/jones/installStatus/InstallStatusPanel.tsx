@@ -18,7 +18,13 @@ import { installStatusStore, type InstallStatusStore } from "./panelUi";
 import { panelPresentation } from "./presentation";
 import { selectionFor } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
-import { performPanelAction, type PanelAction } from "./actions";
+import {
+  inspectPanelCleanup,
+  performPanelAction,
+  recoverPanelCleanup,
+  type CleanupInspection,
+  type PanelAction,
+} from "./actions";
 import {
   INSTALL_PLAN_GO,
   INSTALL_PLAN_INFO,
@@ -42,6 +48,11 @@ export function InstallStatusPanel({
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [detail, setDetail] = useState<EnvironmentId | "laptop" | null>(null);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
+  const [cleanupInspection, setCleanupInspection] = useState<{
+    readonly key: string;
+    readonly inspection: CleanupInspection;
+    readonly recovery?: "released" | "released-plan-unconfirmed" | "unproved";
+  } | null>(null);
   const descriptionId = useId();
   const view = panelPresentation(snapshot, snapshot.updatedAt);
   if (!snapshot.open || snapshot.native === null) return null;
@@ -294,17 +305,22 @@ export function InstallStatusPanel({
               ) : null}
               {view.laptop?.phase === "held" ? (
                 <p>
-                  The download process has not proved exit. Existing app and data are preserved; no
-                  new work starts. Check again for an exact outcome.
+                  Laptop update is on hold while the previous attempt is being verified. Check the
+                  outcome before starting another attempt.
                 </p>
               ) : null}
               {!view.readOnly ? (
                 <Button
                   variant="ghost-muted"
                   size="micro"
+                  disabled={pending.has("laptop:check")}
                   onClick={() => action("laptop", "check")}
                 >
-                  Check again
+                  {pending.has("laptop:check")
+                    ? "Checking outcome…"
+                    : view.laptop?.phase === "held"
+                      ? "Check update outcome"
+                      : "Check again"}
                 </Button>
               ) : null}
             </div>
@@ -401,6 +417,14 @@ export function InstallStatusPanel({
               const receipt = plan.devices
                 .find((d) => d.environmentId === environmentId)
                 ?.operations.at(-1)?.receipt;
+              const inspectKey =
+                receipt?.phase === "held" &&
+                receipt.code === "cleanup-unconfirmed" &&
+                receipt.jobId !== undefined &&
+                receipt.action.kind !== "install"
+                  ? `${plan.planId}:${environmentId}:${receipt.operationId}:${receipt.updatedAt}:cleanup`
+                  : null;
+              const cleanup = cleanupInspection?.key === inspectKey ? cleanupInspection : null;
               return (
                 <li key={environmentId}>
                   <div className="flex min-w-0 items-center gap-1">
@@ -456,6 +480,11 @@ export function InstallStatusPanel({
                       </TooltipPopup>
                     </Tooltip>
                   </div>
+                  {!editing && row?.targetBuildRunning ? (
+                    <p className="px-3 pb-1 text-2xs text-muted-foreground">
+                      Target build is running
+                    </p>
+                  ) : null}
                   {editing && choice.reason !== undefined ? (
                     <p
                       id={`${descriptionId}-${environmentId}`}
@@ -470,6 +499,9 @@ export function InstallStatusPanel({
                       aria-label={`${label} update status`}
                     >
                       <p>{text}</p>
+                      {row?.targetBuildRunning ? (
+                        <p>This plan has no confirmed install receipt for this host.</p>
+                      ) : null}
                       {device?.observation.freshness !== "fresh" ? (
                         <p>
                           {device?.observation.message ?? "Fresh status unavailable."}{" "}
@@ -487,12 +519,76 @@ export function InstallStatusPanel({
                       ) : null}
                       {held ? (
                         <p>
-                          Existing app and data are preserved. No retry is sent. Check again for the
-                          exact operation receipt; use Connections for host reconciliation.
+                          {receipt?.code === "cleanup-unconfirmed"
+                            ? "The host has yet to confirm cleanup from this attempt."
+                            : "The host has yet to confirm the outcome of this attempt."}{" "}
+                          Check the operation receipt. If the hold remains, open Connections for
+                          this host.
+                        </p>
+                      ) : null}
+                      {cleanup !== null ? (
+                        <p role="status">
+                          {cleanup.recovery === "unproved"
+                            ? "Cleanup release is unconfirmed. Check the update outcome before trying again."
+                            : cleanup.recovery === "released"
+                              ? "The cleanup hold was released."
+                              : cleanup.recovery === "released-plan-unconfirmed"
+                                ? "The host released the cleanup hold. Check the update outcome to refresh this plan."
+                                : cleanup.inspection.status === "eligible"
+                                  ? "Inspection confirmed the prior disk image is absent. The update remains on hold."
+                                  : "Inspection could not confirm cleanup. The update remains on hold."}
                         </p>
                       ) : null}
                       {!view.readOnly ? (
                         <div className="flex flex-wrap gap-1">
+                          {inspectKey !== null && receipt !== undefined && device?.canOperate ? (
+                            <Button
+                              variant="outline"
+                              size="micro"
+                              disabled={pending.has(inspectKey)}
+                              onClick={() =>
+                                void perform(inspectKey, async () => {
+                                  setCleanupInspection(null);
+                                  const inspection = await inspectPanelCleanup(
+                                    environmentId,
+                                    receipt.operationId,
+                                  );
+                                  setCleanupInspection({ key: inspectKey, inspection });
+                                })
+                              }
+                            >
+                              {pending.has(inspectKey) ? "Inspecting cleanup…" : "Inspect cleanup"}
+                            </Button>
+                          ) : null}
+                          {inspectKey !== null &&
+                          receipt !== undefined &&
+                          device?.canOperate &&
+                          cleanup?.inspection.recoveryToken !== undefined ? (
+                            <Button
+                              variant="outline"
+                              size="micro"
+                              disabled={pending.has(inspectKey)}
+                              onClick={() => {
+                                const token = cleanup.inspection.recoveryToken;
+                                if (token === undefined) return;
+                                void perform(inspectKey, async () => {
+                                  const recovery = await recoverPanelCleanup(
+                                    environmentId,
+                                    receipt,
+                                    token,
+                                  );
+                                  if (recovery !== "cancelled")
+                                    setCleanupInspection({
+                                      key: inspectKey,
+                                      inspection: { status: "eligible" },
+                                      recovery,
+                                    });
+                                });
+                              }}
+                            >
+                              Recover cleanup
+                            </Button>
+                          ) : null}
                           {row?.actions.remove ? (
                             <Button
                               variant="outline"
@@ -518,7 +614,7 @@ export function InstallStatusPanel({
                               disabled={pending.has(`${environmentId}:install`)}
                               onClick={() => action(environmentId, "install")}
                             >
-                              Install on {label}
+                              {row.installLabel}
                             </Button>
                           ) : null}
                           {row?.actions.stop ? (
@@ -543,9 +639,14 @@ export function InstallStatusPanel({
                           <Button
                             variant="ghost-muted"
                             size="micro"
+                            disabled={pending.has(`${environmentId}:check`)}
                             onClick={() => action(environmentId, "check")}
                           >
-                            Check again
+                            {pending.has(`${environmentId}:check`)
+                              ? "Checking outcome…"
+                              : held
+                                ? "Check update outcome"
+                                : "Check again"}
                           </Button>
                         </div>
                       ) : null}

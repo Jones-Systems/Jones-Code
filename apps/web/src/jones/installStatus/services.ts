@@ -10,6 +10,7 @@ import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import type {
   JonesOperationReadResult,
   JonesOperationReceipt,
+  JonesRecoverCleanupResult,
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
@@ -30,7 +31,12 @@ export interface InstallPlanServices {
   readonly operation: (
     environmentId: EnvironmentId,
     request: JonesOperationCommand,
-  ) => Promise<JonesOperationReceipt | JonesOperationReadResult | JonesRecoveryPreflight>;
+  ) => Promise<
+    | JonesOperationReceipt
+    | JonesOperationReadResult
+    | JonesRecoveryPreflight
+    | JonesRecoverCleanupResult
+  >;
   readonly stop: (
     environmentId: EnvironmentId,
     request: JonesStopCommand,

@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   MessageId,
   OrchestrationV2ThreadProjection,
+  OrchestrationV2ThreadShell,
   ThreadId,
 } from "@t3tools/contracts";
 import type { PreparedThreadTurn } from "@t3tools/client-runtime/operations";
@@ -239,10 +240,19 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
       environmentId: EnvironmentId,
       threadId: ThreadId,
       projection: OrchestrationV2ThreadProjection,
+      shell?: Pick<OrchestrationV2ThreadShell, "latestRunId" | "activeRunId"> | null,
     ) {
       for (const entry of entries) {
         if (entry.environmentId !== environmentId || entry.threadId !== threadId) continue;
         const run = projection.runs.find((run) => run.userMessageId === entry.message.id);
+        // Transcript and shell subscriptions advance independently. Acceptance
+        // of a live run cannot hand sidebar activity back to an older completion.
+        const awaitingShell =
+          entry.message.inputIntent !== "queued_turn" &&
+          run !== undefined &&
+          ["preparing", "queued", "starting", "running", "waiting"].includes(run.status) &&
+          shell?.latestRunId !== run.id &&
+          shell?.activeRunId !== run.id;
         const visible = projection.visibleTurnItems.some(
           (row) =>
             row.sourceThreadId === threadId &&
@@ -261,15 +271,16 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
             (attachment) =>
               "previewUrl" in attachment && attachment.previewUrl?.startsWith("blob:"),
           );
-          if (visible && hasPreview) {
-            if (!entry.visible || entry.working)
-              update(entry.key, (entry) => ({ ...entry, visible: true, working: false }));
+          if (visible && (hasPreview || awaitingShell)) {
+            if (!entry.visible || entry.working !== awaitingShell)
+              update(entry.key, (entry) => ({ ...entry, visible: true, working: awaitingShell }));
           } else dismiss(entry.key);
           continue;
         }
-        if ((run || message) && (entry.delivery !== "accepted" || (run && entry.working))) {
+        const working = run ? awaitingShell : entry.working;
+        if ((run || message) && (entry.delivery !== "accepted" || entry.working !== working)) {
           accept(entry.key);
-          update(entry.key, (entry) => ({ ...entry, working: run ? false : entry.working }));
+          update(entry.key, (entry) => ({ ...entry, working }));
         }
       }
     },

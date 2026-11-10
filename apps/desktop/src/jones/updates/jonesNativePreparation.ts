@@ -6,6 +6,8 @@ import * as Schema from "effect/Schema";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
 import type { JonesActiveInstall } from "./jonesActivation.ts";
 
+const NATIVE_INSTALL_PREPARATION_TIMEOUT_MS = 60_000;
+
 const decodeAccessToken = Schema.decodeUnknownSync(Schema.Struct({ access_token: Schema.String }));
 const decodePreparationState = Schema.decodeUnknownSync(
   Schema.Struct({
@@ -155,6 +157,7 @@ export async function prepareJonesNativeInstall(input: {
       currentVersion: input.active.version,
     }),
     accessToken,
+    NATIVE_INSTALL_PREPARATION_TIMEOUT_MS,
   );
   try {
     return decodePreparationState(state);
