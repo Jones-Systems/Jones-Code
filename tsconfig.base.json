@@ -106,21 +106,6 @@
               "packages/provider-testing/**/*"
             ],
             "options": { "diagnosticSeverity": { "effectFnOpportunity": "off" } }
-          },
-          // Upstream silences these sites with `globalJsonInEffect:off`, the name @effect/tsgo 0.67.1
-          // gives this rule. The pinned 0.57.0 calls it `preferSchemaOverJson` and ignores that
-          // directive. Remove this override with the tsgo bump (E5-16).
-          {
-            "include": [
-              "apps/server/scripts/verify-background-live.ts",
-              "apps/server/src/cli/sshHelper.ts",
-              "apps/server/src/cloud/bootService.ts",
-              "apps/server/src/device/deviceToolMaintenance.ts",
-              "apps/server/src/mcp/AcpMcpStdioBridge.ts",
-              "apps/server/src/mcp/toolkits/project/handlers.ts",
-              "apps/server/src/terminal/OutputProtocol.ts"
-            ],
-            "options": { "diagnosticSeverity": { "preferSchemaOverJson": "off" } }
           }
         ]
       }

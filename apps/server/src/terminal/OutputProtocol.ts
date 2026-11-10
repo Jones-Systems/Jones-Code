@@ -87,7 +87,7 @@ export function withOutputWindow(
           const window = windowFor(clientId, String(response.requestId));
           if (window) {
             window.sizes.push(
-              // @effect-diagnostics-next-line globalJsonInEffect:off
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
               window.bytes ? Buffer.byteLength(JSON.stringify(response)) : 0,
             );
             if (!isFull(window.sizes)) {
