@@ -279,7 +279,7 @@ it.live(
             ),
           );
           const before = yield* decodeEvidence(
-            (yield* call("t3_thread_configuration")).structuredContent,
+            (yield* call("t3_thread_configure")).structuredContent,
           );
           assert.isNotNull(before.executionPrecondition);
           const receipt = yield* decodeReceipt(

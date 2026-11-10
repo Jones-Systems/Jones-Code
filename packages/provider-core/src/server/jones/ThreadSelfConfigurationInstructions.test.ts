@@ -4,7 +4,8 @@ describe("safe thread configuration guidance", () => {
   it("distinguishes saved settings from captured runs and observations", () => {
     for (const text of [
       "t3_thread_self_configure",
-      "t3_thread_configuration",
+      "t3_thread_configure without modelSelection",
+      "Do not pass modelSelection to t3_thread_configure",
       "execution precondition",
       "subsequently admitted",
       "already captured",

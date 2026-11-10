@@ -250,7 +250,7 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
               commandId: CommandId.make(`server:remote-question:${key}`),
               threadId: parentThreadId,
               messageId: MessageId.make(`message:remote-question:${key}`),
-              text: `Delegated task ${taskId} is blocked on a question in linked environment ${observation.environmentId}. Read it with t3_pending_request_read using environmentId ${observation.environmentId}, threadId ${observation.threadId}, requestId ${request.requestId}. Answer through t3_pending_request_respond with those same IDs when the answer follows from the task or the user's instructions; otherwise ask the user. If it is no longer pending, it was answered or dismissed.`,
+              text: `Delegated task ${taskId} is blocked on a question in linked environment ${observation.environmentId}. Read it with t3_pending_request action read using environmentId ${observation.environmentId}, threadId ${observation.threadId}, requestId ${request.requestId}. Answer through t3_pending_request action respond with those same IDs when the answer follows from the task or the user's instructions; otherwise ask the user. If it is no longer pending, it was answered or dismissed.`,
               notification: {
                 source: { kind: "delegated_task", taskIds: [taskId] },
                 outcome: "updated",
