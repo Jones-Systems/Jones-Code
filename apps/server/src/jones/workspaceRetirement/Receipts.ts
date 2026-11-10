@@ -260,7 +260,8 @@ const make = Effect.gen(function* () {
     ) {
       return yield* sql.withTransaction(
         Effect.gen(function* () {
-          const rows = yield* sql`UPDATE jones_workspace_retirement_intents SET script_state='cancelled',script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())}
+          const rows =
+            yield* sql`UPDATE jones_workspace_retirement_intents SET script_state='cancelled',script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())}
           WHERE event_id=${event} AND script_state='running' AND EXISTS
           (SELECT 1 FROM jones_workspace_duty_claims WHERE claim_id=${settlementClaimId(event)} AND holder_json=${holder} AND released_at IS NULL) RETURNING event_id`;
           if (!rows.length) return false;
@@ -288,13 +289,14 @@ const make = Effect.gen(function* () {
             thread_id: string;
             settled_at: string;
           }>`SELECT script_state,worktree,thread_id,settled_at FROM jones_workspace_retirement_intents WHERE event_id=${event}`;
-          if (!rows[0])
+          const intent = rows[0];
+          if (!intent)
             return yield* new RetirementError({
               reason: "settlement_intent_missing",
               target: event,
             });
-          if (rows[0].script_state !== "pending") return false;
-          yield* writable(rows[0].worktree);
+          if (intent.script_state !== "pending") return false;
+          yield* writable(intent.worktree);
           const captured = yield* sql<{
             identity_json: string;
             holder_json: string;
@@ -302,19 +304,20 @@ const make = Effect.gen(function* () {
           if (recovery && !captured.length)
             return yield* new RetirementError({
               reason: "settlement_incarnation_unverified",
-              target: rows[0].worktree,
+              target: intent.worktree,
             });
           if (captured[0]) {
             const holder = yield* Schema.decodeEffect(SettlementHolderJson)(
               captured[0].holder_json,
             );
-            const currentThread = yield* sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=${rows[0].thread_id}
-              AND json_extract(payload_json,'$.settledOverride')='settled' AND json_extract(payload_json,'$.settledAt')=${rows[0].settled_at}
-              AND json_extract(payload_json,'$.worktreePath')=${rows[0].worktree} AND json_extract(payload_json,'$.projectId')=${holder.projectId}
+            const currentThread =
+              yield* sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=${intent.thread_id}
+              AND json_extract(payload_json,'$.settledOverride')='settled' AND json_extract(payload_json,'$.settledAt')=${intent.settled_at}
+              AND json_extract(payload_json,'$.worktreePath')=${intent.worktree} AND json_extract(payload_json,'$.projectId')=${holder.projectId}
               AND json_extract(payload_json,'$.branch') IS ${holder.branch}`;
             if (holder.eventId !== event || !currentThread.length) return false;
             const prior = yield* Schema.decodeEffect(DutyIdentityJson)(captured[0].identity_json);
-            const current = yield* Effect.promise(() => dutyIdentity(rows[0].worktree));
+            const current = yield* Effect.promise(() => dutyIdentity(intent.worktree));
             if (
               (recovery && (prior.status !== "bound" || current.status !== "bound")) ||
               (prior.status === "bound" &&
@@ -323,7 +326,7 @@ const make = Effect.gen(function* () {
             )
               return yield* new RetirementError({
                 reason: "settlement_incarnation_changed",
-                target: rows[0].worktree,
+                target: intent.worktree,
               });
             const native = yield* Effect.promise(() => inProcessOwner(event));
             yield* sql`UPDATE jones_workspace_duty_identity SET native_owner_json=${yield* Schema.encodeEffect(NativeDutyOwnerJson)(native)} WHERE claim_id=${settlementClaimId(event)}`;

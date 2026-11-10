@@ -6,7 +6,12 @@ import * as Projections from "../../orchestration-v2/ProjectionStore.ts";
 import { ClaimAbsence } from "./ClaimReconciliation.ts";
 import { DutyIdentityJson, SettlementHolderJson } from "./DurableCodecs.ts";
 import { dutyIdentity } from "./DutyIdentity.ts";
-import { settlementClaimId, type Receipts, type SettlementIntent } from "./Receipts.ts";
+import {
+  settlementClaimId,
+  type Receipts,
+  type RetirementError,
+  type SettlementIntent,
+} from "./Receipts.ts";
 
 export const held = (
   intent: SettlementIntent,
@@ -35,11 +40,11 @@ export const held = (
 
 export const make = Effect.fn("WorkspaceRetirement.makeSettlementRecovery")(function* (
   store: Receipts["Service"],
-  resume: (intent: SettlementIntent) => Effect.Effect<void>,
+  resume: (intent: SettlementIntent) => Effect.Effect<void, RetirementError>,
   propose: (
     thread: { id: ThreadId; projectId: ProjectId },
     worktree: string,
-  ) => Effect.Effect<void, unknown>,
+  ) => Effect.Effect<void, RetirementError>,
 ) {
   const projections = yield* Projections.ProjectionStoreV2;
   const absence = yield* ClaimAbsence;
@@ -197,7 +202,7 @@ export const make = Effect.fn("WorkspaceRetirement.makeSettlementRecovery")(func
                 ),
               ),
             ),
-            Effect.catch(() => Effect.void),
+            Effect.ignore,
           ),
         ),
       );

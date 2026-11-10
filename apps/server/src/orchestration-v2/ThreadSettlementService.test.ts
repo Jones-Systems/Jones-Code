@@ -29,6 +29,7 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
@@ -570,6 +571,7 @@ interface HarnessOptions {
 }
 
 const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options: HarnessOptions) {
+  const harnessScope = yield* Effect.scope;
   const activation = yield* Deferred.make<void>();
   const snapshots = yield* Ref.make(options.snapshot);
   const snapshotReadCount = yield* Ref.make(0);
@@ -679,7 +681,10 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
       },
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
-      acquireDomainEvents: PubSub.subscribe(domainEvents).pipe(Effect.map(Stream.fromSubscription)),
+      acquireDomainEvents: PubSub.subscribe(domainEvents).pipe(
+        Scope.provide(harnessScope),
+        Effect.map((subscription) => Stream.fromSubscription(subscription)),
+      ),
       streamDomainEvents: Stream.fromPubSub(domainEvents),
       dispatch,
     }),

@@ -152,7 +152,9 @@ it.effect.each([
             ),
           );
           expect(scripts).toEqual(
-            ["matching", "successor", "startup", "metadata-failure"].includes(mode) ? [f.linked] : [],
+            ["matching", "successor", "startup", "metadata-failure"].includes(mode)
+              ? [f.linked]
+              : [],
           );
           if (startup) {
             const rows = yield* sql<{

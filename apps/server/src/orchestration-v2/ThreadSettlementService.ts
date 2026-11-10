@@ -32,6 +32,7 @@ import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
@@ -618,7 +619,13 @@ export const make = Effect.gen(function* () {
 
   // Skip settle scripts in shared checkouts where other threads may still work.
   const cleanUpSettledThread = Effect.fn("ThreadSettlementServiceV2.cleanUpSettledThread")(
-    function* (threadId: ThreadId, expected?: RetirementReceipts.SettlementIntent) {
+    function* ({
+      threadId,
+      expected,
+    }: {
+      threadId: ThreadId;
+      expected?: RetirementReceipts.SettlementIntent;
+    }) {
       const settled = yield* projections.getThread(threadId);
       if (settled.settledOverride !== "settled") return;
       if (
@@ -700,30 +707,32 @@ export const make = Effect.gen(function* () {
       )
         return;
       if (retirement !== null && retirementIntent !== null)
-        yield* retirement.outcome(retirementIntent.event_id, {
-          state: "held",
-          reasonCodes: ["settle_script_pending"],
-          receiptId: null,
-          fingerprint: null,
-          paths: [],
-          details: [
-            {
-              reason: "settle_script_pending",
-              target: worktreePath,
-              root: worktreePath,
-              fact: "The durable settle-script intent has started and its completion is pending.",
-              missingFact: "durable_settle_script_completion",
-              lineage: [{ threadId }],
-              nextAction:
-                "Wait for the actual script completion; ten minutes without completion holds retirement.",
-            },
-          ],
-          outputObligations: [],
-        }).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Settle-script observation unavailable", { threadId, cause }),
-          ),
-        );
+        yield* retirement
+          .outcome(retirementIntent.event_id, {
+            state: "held",
+            reasonCodes: ["settle_script_pending"],
+            receiptId: null,
+            fingerprint: null,
+            paths: [],
+            details: [
+              {
+                reason: "settle_script_pending",
+                target: worktreePath,
+                root: worktreePath,
+                fact: "The durable settle-script intent has started and its completion is pending.",
+                missingFact: "durable_settle_script_completion",
+                lineage: [{ threadId }],
+                nextAction:
+                  "Wait for the actual script completion; ten minutes without completion holds retirement.",
+              },
+            ],
+            outputObligations: [],
+          })
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Settle-script observation unavailable", { threadId, cause }),
+            ),
+          );
       const run = yield* projectScripts
         .runForThread({
           threadId,
@@ -745,7 +754,7 @@ export const make = Effect.gen(function* () {
                       "Verify actual script completion or exact holder absence; do not replay this intent.",
                     ),
                   )
-                  .pipe(Effect.catch(() => Effect.void))
+                  .pipe(Effect.ignore)
               : Effect.void,
           ),
         );
@@ -762,7 +771,7 @@ export const make = Effect.gen(function* () {
           : Effect.void;
       if (run.status === "started" && run.completion) {
         yield* run.completion.pipe(
-          Effect.catch(() => Effect.succeed({ exitCode: null })),
+          Effect.orElseSucceed(() => ({ exitCode: null })),
           Effect.flatMap((result) => {
             if (result.exitCode !== null) return complete(result.exitCode);
             return retirement !== null && retirementIntent !== null
@@ -784,7 +793,7 @@ export const make = Effect.gen(function* () {
         );
       } else if (run.status !== "started") yield* complete(0);
     },
-    (effect, threadId) =>
+    (effect, { threadId }) =>
       effect.pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause)
@@ -802,8 +811,35 @@ export const make = Effect.gen(function* () {
       ? Effect.void
       : yield* SettlementRecovery.make(
           retirement,
-          (intent) => cleanUpSettledThread(ThreadId.make(intent.thread_id), intent),
-          recordRetirementProposal,
+          (intent) =>
+            cleanUpSettledThread({
+              threadId: ThreadId.make(intent.thread_id),
+              expected: intent,
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  Schema.is(RetirementReceipts.RetirementError)(cause)
+                    ? cause
+                    : new RetirementReceipts.RetirementError({
+                        reason: "settlement_resume_unavailable",
+                        target: intent.worktree,
+                        cause,
+                      }),
+              ),
+            ),
+          (thread, worktree) =>
+            recordRetirementProposal(thread, worktree).pipe(
+              Effect.mapError(
+                (cause) =>
+                  Schema.is(RetirementReceipts.RetirementError)(cause)
+                    ? cause
+                    : new RetirementReceipts.RetirementError({
+                        reason: "settlement_proposal_unavailable",
+                        target: worktree,
+                        cause,
+                      }),
+              ),
+            ),
         ).pipe(
           Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
           Effect.map((recover) => recover()),
@@ -812,7 +848,7 @@ export const make = Effect.gen(function* () {
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
       case "thread.settled":
-        return cleanUpSettledThread(event.threadId);
+        return cleanUpSettledThread({ threadId: event.threadId });
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
       case "provider-session.detached":
