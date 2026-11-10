@@ -35,7 +35,10 @@ export function completeProducer(
         roots: input.roots.map((root) => NodePath.resolve(input.worktree, root)),
         lineage,
         // An observation is never a replacement for the producer's allocation owner.
-        omittedEnrichment: ["allocation_disposition_not_observed", ...(input.omittedEnrichment ?? [])],
+        omittedEnrichment: [
+          "allocation_disposition_not_observed",
+          ...(input.omittedEnrichment ?? []),
+        ],
       }),
     );
   } catch {

@@ -110,7 +110,9 @@ export async function buildPlacement({
           ],
         });
       } catch {
-        console.error(`[jones-process-placement] completion metadata unavailable; outcome=${outcome}.`);
+        console.error(
+          `[jones-process-placement] completion metadata unavailable; outcome=${outcome}.`,
+        );
       }
     }
   }

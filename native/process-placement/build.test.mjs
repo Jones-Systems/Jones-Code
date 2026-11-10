@@ -131,10 +131,13 @@ NodeTest.test("cleanup failure fails success and does not hide an original compi
       build(NodePath.join(root, "failed"), "fail", undefined, removeScratch),
       (cause) => cause.exitCode === 23 && cause.cleanupError === cleanupFailure,
     );
-    NodeAssert.deepEqual(completions.map((event) => [event.status, event.scratchExists]), [
-      ["failed", true],
-      ["failed", true],
-    ]);
+    NodeAssert.deepEqual(
+      completions.map((event) => [event.status, event.scratchExists]),
+      [
+        ["failed", true],
+        ["failed", true],
+      ],
+    );
   }),
 );
 
