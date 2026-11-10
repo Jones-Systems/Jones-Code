@@ -16,6 +16,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
+import * as CommandReceipts from "../../../orchestration-v2/CommandReceiptStore.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
@@ -87,12 +88,47 @@ const access = Effect.gen(function* () {
   yield* readCaller();
   return yield* Project.ProjectService;
 });
+/**
+ * The id a linked keyed launch derives from the caller's namespace and key:
+ * upstream's `launchCommandId`, so the id stays within what thread-id
+ * consumers accept.
+ */
+export const linkedLaunchCommandId = launchCommandId;
+
+/**
+ * The id earlier builds derived for a linked keyed launch. It carries
+ * percent-encoded separators and, for a client or forwarded key, runs to
+ * about 127 characters, so it is never issued for a new launch; it is only
+ * recognised on retry.
+ */
+export const legacyLinkedLaunchCommandId = (namespace: string, key: string) =>
+  CommandId.make(`mcp:launch:${encodeURIComponent(namespace)}:${encodeURIComponent(key)}`);
+
+/**
+ * Resolves the command id of a linked keyed launch. A retry of a launch that
+ * an earlier build accepted under the legacy id keeps that id, so the launch
+ * service replays it instead of creating a second thread. Every other key
+ * uses the hashed id.
+ */
+const linkedKeyedLaunchCommandId = Effect.fn("mcp.linkedKeyedLaunchCommandId")(function* (
+  namespace: string,
+  key: string,
+) {
+  const legacy = legacyLinkedLaunchCommandId(namespace, key);
+  const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+  // A failed read stops the launch: guessing could create a duplicate thread.
+  const accepted = yield* receipts.getByCommandId(legacy).pipe(Effect.mapError(unavailable));
+  return Option.isSome(accepted) ? legacy : yield* linkedLaunchCommandId(namespace, key);
+});
+
 export const launchThread = Effect.fn("mcp.launchThread")(function* (
   input: Tool.Parameters<typeof ProjectToolkit.tools.t3_thread_launch>,
   gate: McpToolAccess.ThreadStartGate,
 ) {
   const keyedCaller = input.clientRequestId === undefined ? undefined : yield* readCaller();
   const modes = yield* gate.start;
+  // Jones replay owns local keyed launches; linked keyed launches use upstream's hashed id
+  // below and keep their origin.
   if (
     keyedCaller !== undefined &&
     input.clientRequestId !== undefined &&
@@ -116,7 +152,7 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
   const commandId =
     input.clientRequestId === undefined
       ? yield* newCommandId()
-      : yield* launchCommandId(scope.requestNamespace, input.clientRequestId);
+      : yield* linkedKeyedLaunchCommandId(scope.requestNamespace, input.clientRequestId);
   const threadId = ThreadId.make(commandId);
   const messageId = MessageId.make(commandId);
   const attachments = input.attachments ?? [];

@@ -27,6 +27,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -349,6 +350,10 @@ const clientLaunchHarness = Effect.fn("test.clientLaunchHarness")(function* (inp
   readonly overrideModel?: ModelSelection;
   readonly launched: Array<ThreadLaunch.ThreadLaunchInput>;
   readonly linked?: boolean;
+  /** Command ids whose launch an earlier build already accepted. */
+  readonly acceptedCommandIds?: ReadonlySet<string>;
+  /** Fails the receipt read, as an unavailable store would. */
+  readonly receiptReadFails?: boolean;
   readonly narrowedTo?: McpInvocationContext.ClientModes;
   readonly workspaceRoot?: string;
   readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
@@ -494,7 +499,27 @@ const clientLaunchHarness = Effect.fn("test.clientLaunchHarness")(function* (inp
   );
   // One actual migrated database and graph live through all invocations and
   // assertions of this harness. Invocation authorization still executes afresh.
-  const dependencies = Layer.succeedContext(yield* Layer.build(layerDependencies));
+  const built = yield* Layer.build(layerDependencies);
+  const storedReceipts = Context.get(built, CommandReceipts.CommandReceiptStoreV2);
+  // Earlier-build acceptances and an unavailable store are simulated on the real store.
+  const dependencies = Layer.succeedContext(
+    input.acceptedCommandIds === undefined && input.receiptReadFails !== true
+      ? built
+      : Context.add(built, CommandReceipts.CommandReceiptStoreV2, {
+          ...storedReceipts,
+          getByCommandId: (commandId) =>
+            input.receiptReadFails === true
+              ? Effect.fail(
+                  new CommandReceipts.CommandReceiptStoreReadError({
+                    commandId,
+                    cause: "unavailable",
+                  }),
+                )
+              : input.acceptedCommandIds?.has(commandId) === true
+                ? Effect.succeed(Option.some({} as CommandReceipts.CommandReceiptV2))
+                : storedReceipts.getByCommandId(commandId),
+        }),
+  );
   const receipt = (commandId: import("@t3tools/contracts").CommandId) =>
     CommandReceipts.CommandReceiptStoreV2.pipe(
       Effect.flatMap((store) => store.getByCommandId(commandId)),
@@ -1200,6 +1225,140 @@ it.effect(
         expect(input.interactionMode).toBe("plan");
       }
     }),
+);
+
+it.effect(
+  "derives linked keyed-launch ids as upstream's fixed-length hash, pinned by golden vectors",
+  () =>
+    Effect.gen(function* () {
+      // Vectors computed outside this code: sha256 of the JSON pair [namespace, key].
+      const vectors = [
+        [
+          "client:session-1",
+          "fix-1",
+          "mcp:launch:13323d3d71845a7f2c293a894f39437ca1b337408c1927ee33499e96d5a002a8",
+        ],
+        [
+          "client:session-1",
+          "fix-2",
+          "mcp:launch:cd0220b9ca42aaa97fde52795c9105489747f3786347088272dc8b23e173456d",
+        ],
+        [
+          "fwd:0123abcd",
+          "key with space/é",
+          "mcp:launch:a04b39bdceb432506effe49944eeef206dec806c6af11bcbec5e824666eec89f",
+        ],
+      ] as const;
+      for (const [namespace, key, expected] of vectors) {
+        expect(yield* ProjectHandlers.linkedLaunchCommandId(namespace, key)).toBe(expected);
+      }
+      // The caller stays apart from the key.
+      expect(yield* ProjectHandlers.linkedLaunchCommandId("a:b", "c")).not.toBe(
+        yield* ProjectHandlers.linkedLaunchCommandId("a", "b:c"),
+      );
+      // The earlier derivation, kept only to recognise a retry, is the percent-encoded form.
+      expect(ProjectHandlers.legacyLinkedLaunchCommandId("client:session-1", "fix-1")).toBe(
+        "mcp:launch:client%3Asession-1:fix-1",
+      );
+    }).pipe(Effect.provide(NodeCrypto.layer)),
+);
+
+it.effect("a linked keyed launch gets a short id with no percent-encoded separators", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = yield* clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      linked: true,
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Fix",
+        projectId,
+        message: "Fix the bug",
+        clientRequestId: `fwd:${"ab".repeat(32)}`,
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(launched).toHaveLength(1);
+    expect(launched[0]?.commandId).toMatch(/^mcp:launch:[0-9a-f]{64}$/);
+    expect(launched[0]?.commandId).not.toContain("%");
+    expect(launched[0]?.commandId.length).toBeLessThan(80);
+    expect(launched[0]?.threadId).toBe(launched[0]?.commandId);
+  }),
+);
+
+it.effect(
+  "a linked keyed launch accepted under the earlier id is replayed under it, not duplicated",
+  () =>
+    Effect.gen(function* () {
+      const legacyId = ProjectHandlers.legacyLinkedLaunchCommandId("client:session-1", "fix-1");
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = yield* clientLaunchHarness({
+        runtimeModeCeiling: "auto",
+        linked: true,
+        acceptedCommandIds: new Set([legacyId]),
+        launched,
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const launch = (clientRequestId: string) =>
+        toolkit
+          .handle("t3_thread_launch", {
+            title: "Fix",
+            projectId,
+            message: "Fix the bug",
+            clientRequestId,
+          })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      // The retried key was accepted before the upgrade: the same ids reach the launch service.
+      yield* launch("fix-1");
+      expect(launched[0]?.commandId).toBe(legacyId);
+      expect(launched[0]?.threadId).toBe(legacyId);
+      expect(launched[0]?.initialMessage?.messageId).toBe(legacyId);
+      // A key with no earlier acceptance takes the hashed id.
+      yield* launch("fix-2");
+      expect(launched[1]?.commandId).toBe(
+        "mcp:launch:cd0220b9ca42aaa97fde52795c9105489747f3786347088272dc8b23e173456d",
+      );
+    }),
+);
+
+it.effect("a linked keyed launch stops when the earlier-id receipt cannot be read", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = yield* clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      linked: true,
+      receiptReadFails: true,
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const result = yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Fix",
+        projectId,
+        message: "Fix the bug",
+        clientRequestId: "fix-1",
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    // Guessing an id could create a second thread, so nothing launches.
+    expect(result.at(-1)?.result).toMatchObject({ code: "orchestration_error" });
+    expect(launched).toHaveLength(0);
+  }),
 );
 
 it.effect("a delegated linked launch preserves inherited modes over project defaults", () =>

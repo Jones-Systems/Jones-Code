@@ -269,7 +269,7 @@ const ThreadReadTool = Tool.make("t3_thread_read", {
 
 const ThreadUpdateTool = Tool.make("t3_thread_update", {
   description:
-    "Rename a thread (`action:'rename'` with `title`) or regenerate its title. Omit `threadId` for this thread. Workspace and branch cannot change here.",
+    "Rename a thread (`action:'rename'` with `title`) or regenerate its title. Use block_thread_messages to reject new messages and merge-backs from other agents; allow_thread_messages is self-only. Owner input, self messages, task completion and already accepted work remain available. Omit `threadId` for this thread. Workspace and branch cannot change here. clientRequestId makes retries idempotent.",
   // Keeps the input's action/field check, which rebuilding the struct would drop.
   parameters: ThreadMetadataMcpUpdateInput.mapFields(
     Struct.assign({ environmentId: OrchestratorMcpEnvironmentTarget }),

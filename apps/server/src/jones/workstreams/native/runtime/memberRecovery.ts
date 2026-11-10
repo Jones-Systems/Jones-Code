@@ -1,10 +1,10 @@
 import * as Context from "effect/Context";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Forwarder from "../forwarding/forwarder.ts";
 import { RegistryError } from "../registry/session.ts";
 import * as Application from "./memberApplication.ts";
+import { makeSingleFlight, superviseLoop } from "./supervision.ts";
 
 export class MemberRecovery extends Context.Service<
   MemberRecovery,
@@ -16,37 +16,23 @@ export class MemberRecovery extends Context.Service<
 const make = Effect.gen(function* () {
   const application = yield* Application.MemberApplication;
   const scope = yield* Effect.scope;
-  let pending: Deferred.Deferred<readonly Forwarder.ForwardView[], RegistryError> | undefined;
+  // The owner scope runs the sweep. Waiting callers can leave without cancelling recovery.
+  const flight = yield* makeSingleFlight<readonly Forwarder.ForwardView[], RegistryError>({
+    whenBusy: "join",
+    starterCancels: false,
+  });
   const sweep = Effect.fn("MemberRecovery.sweep")(() =>
-    Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        if (scope.state._tag === "Closed")
-          return yield* new RegistryError({ code: "authority_fenced" });
-        let ready = pending;
-        if (ready === undefined) {
-          ready = yield* Deferred.make<readonly Forwarder.ForwardView[], RegistryError>();
-          const own = ready;
-          pending = own;
-          // The application owns the sweep. Waiting callers can leave without cancelling recovery.
-          const opener = yield* application
-            .recoverOpen({ dueOnly: true })
-            .pipe(Effect.interruptible, Effect.forkIn(scope));
-          // Completion must be observed even if scope disposal interrupts before the effect starts.
-          opener.addObserver((exit) => {
-            if (pending === own) pending = undefined;
-            Deferred.doneUnsafe(own, exit);
-          });
-        }
-        return yield* restore(Deferred.await(ready));
-      }),
+    Effect.suspend(() =>
+      scope.state._tag === "Closed"
+        ? Effect.fail(new RegistryError({ code: "authority_fenced" }))
+        : flight.run(application.recoverOpen({ dueOnly: true })),
     ),
   );
-  yield* Effect.gen(function* () {
-    for (;;) {
-      yield* sweep().pipe(Effect.catchTags({ NativeRegistryError: () => Effect.void }));
-      // Completion-based cadence never queues missed ticks or grants unknown-outcome redispatch.
-      yield* Effect.sleep(30_000);
-    }
+  // Completion-based cadence never queues missed ticks or grants unknown-outcome redispatch.
+  yield* superviseLoop({
+    loop: "member-recovery",
+    iteration: sweep(),
+    code: (error) => error.code,
   }).pipe(Effect.forkScoped);
   return MemberRecovery.of({ sweep });
 });

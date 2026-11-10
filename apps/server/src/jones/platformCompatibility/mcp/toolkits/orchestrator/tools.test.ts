@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
 import { OrchestratorToolkit } from "../../../../../mcp/toolkits/orchestrator/tools.ts";
@@ -93,5 +94,38 @@ describe("orchestrator MCP tool guidance", () => {
     ]);
     assert.notProperty(schema.properties ?? {}, "pullRequest");
     assert.include(ThreadUpdateTool.description ?? "", "Workspace and branch cannot change here.");
+  });
+
+  it("keeps the action and field check on the tool's own input schema", () => {
+    const decode = Schema.decodeUnknownExit(ThreadUpdateTool.parametersSchema);
+    const pullRequest = {
+      repository: "Jones-Systems/Jones-Code",
+      number: 1,
+      url: "https://github.com/Jones-Systems/Jones-Code/pull/1",
+    };
+    const rejected: ReadonlyArray<unknown> = [
+      { action: "rename" },
+      { action: "rename", title: "Title", pullRequest },
+      { action: "link_pull_request" },
+      { action: "link_pull_request", pullRequest, title: "Title" },
+      { action: "regenerate_title", title: "Title" },
+      { action: "unlink_pull_request", pullRequest },
+      { action: "block_thread_messages", title: "Title" },
+      { action: "allow_thread_messages", pullRequest },
+    ];
+    for (const input of rejected) {
+      assert.isTrue(decode(input)._tag === "Failure", JSON.stringify(input));
+    }
+    const accepted: ReadonlyArray<unknown> = [
+      { action: "rename", title: "Title" },
+      { environmentId: "environment-1", action: "link_pull_request", pullRequest },
+      { action: "regenerate_title" },
+      { action: "unlink_pull_request" },
+      { action: "block_thread_messages" },
+      { action: "allow_thread_messages" },
+    ];
+    for (const input of accepted) {
+      assert.isTrue(decode(input)._tag === "Success", JSON.stringify(input));
+    }
   });
 });
