@@ -4,6 +4,7 @@
   "jonesOwnedPaths": [
     "apps/server/src/jones/settlementRestore/SettlementRestore.ts",
     "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+    "apps/server/src/jones/settlementRestore/plan.test.ts",
     "apps/server/src/jones/settlementRestore/dispatch.ts",
     "apps/server/src/jones/settlementRestore/http.ts",
     "apps/server/src/jones/settlementRestore/plan.ts",

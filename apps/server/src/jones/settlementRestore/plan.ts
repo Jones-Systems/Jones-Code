@@ -1,13 +1,14 @@
-import type {
-  OrchestrationV2AppThread,
-  SettlementRestoreBlocker,
-  SettlementRestoreCommand,
-  SettlementRestoreRecord,
+import {
   SettlementRestoreRejectionCode,
-  SettlementRestoreStatus,
+  type OrchestrationV2AppThread,
+  type SettlementRestoreBlocker,
+  type SettlementRestoreCommand,
+  type SettlementRestoreRecord,
+  type SettlementRestoreStatus,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import type { StoredSettlementRestore } from "./store.ts";
 
 type Valid = { readonly type: "valid"; readonly thread: OrchestrationV2AppThread };
@@ -157,8 +158,6 @@ export const planSettlementRestore = (input: {
   };
 };
 
-const REJECTION_PREFIX = "Settlement restore rejected: ";
-
 const rejectionMessages: Record<SettlementRestoreRejectionCode, string> = {
   none: "this thread has no settlement to undo.",
   superseded: "the thread changed after it was settled.",
@@ -169,16 +168,27 @@ const rejectionMessages: Record<SettlementRestoreRejectionCode, string> = {
   command_id_reused: "this command ID belongs to another restore.",
 };
 
-/** The dispatch error cause. Clients see the text; the service reads the code back. */
-export const settlementRestoreRejection = (code: SettlementRestoreRejectionCode) =>
-  `${REJECTION_PREFIX}${code}: ${rejectionMessages[code]}`;
+/**
+ * A restore the orchestrator refused for a domain reason. It is the cause of the
+ * dispatch error, so the service reads `code` directly. Clients see only the
+ * message, and match its `Settlement restore rejected: <code>:` wording.
+ */
+export class SettlementRestoreRejectedError extends Schema.TaggedError<SettlementRestoreRejectedError>()(
+  "SettlementRestoreRejectedError",
+  { code: SettlementRestoreRejectionCode },
+) {
+  override get message(): string {
+    return `Settlement restore rejected: ${this.code}: ${rejectionMessages[this.code]}`;
+  }
+}
 
+const isRejection = Schema.is(SettlementRestoreRejectedError);
+
+/** The dispatch error cause for a rejected restore. */
+export const settlementRestoreRejection = (code: SettlementRestoreRejectionCode) =>
+  new SettlementRestoreRejectedError({ code });
+
+/** The rejection a dispatch error's cause carries, or null for any other cause. */
 export const readSettlementRestoreRejection = (
   cause: unknown,
-): SettlementRestoreRejectionCode | null => {
-  if (typeof cause !== "string" || !cause.startsWith(REJECTION_PREFIX)) return null;
-  const code = cause.slice(REJECTION_PREFIX.length).split(":", 1)[0];
-  return code !== undefined && Object.hasOwn(rejectionMessages, code)
-    ? (code as SettlementRestoreRejectionCode)
-    : null;
-};
+): SettlementRestoreRejectionCode | null => (isRejection(cause) ? cause.code : null);
