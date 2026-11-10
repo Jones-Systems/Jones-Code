@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- CLI tests use only freshly allocated synthetic homes; the root retains evidence and owns cleanup.
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeChildProcess from "node:child_process";
 import * as NodePath from "node:path";
@@ -243,6 +244,53 @@ it.effect("mounted source-setup commands refuse an unqualified home without crea
             "server-secret-store",
             "--request",
             "{}",
+          ]),
+        ))._tag,
+      ).toBe("Failure");
+    expect(NodeFS.existsSync(f.database)).toBe(false);
+    expect(NodeFS.existsSync(NodePath.join(f.home, "userdata/secrets"))).toBe(false);
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)));
+});
+
+it.effect("mounted transition commands refuse a home without an existing database", () => {
+  const f = fresh(false);
+  const pem = NodeCrypto.generateKeyPairSync("ed25519")
+    .publicKey.export({ type: "spki", format: "pem" })
+    .toString();
+  const snapshot = NodePath.join(f.home, "snapshot.enc"),
+    key = NodePath.join(f.home, "permit.pem");
+  NodeFS.writeFileSync(snapshot, "encrypted", { mode: 0o600 });
+  NodeFS.writeFileSync(key, pem, { mode: 0o600 });
+  const transitionRequest = JSON.stringify({
+    import_run_id: "70000000-0000-4000-8000-000000000001",
+    stream_key_id: "test-home",
+    permit: { key_id: "operator", header_sha256: "a".repeat(64), signature: "AAAA" },
+    permit_key_id: "operator",
+    home_environment_id: "home:test",
+    active_key_id: "test-home",
+    mappings: [],
+  });
+  return Effect.gen(function* () {
+    for (const [action, provider] of [
+      ["plan", "server-secret-store"],
+      ["apply", "server-secret-store"],
+      ["readback", "unknown"],
+    ] as const)
+      expect(
+        (yield* Effect.result(
+          run([
+            "transition",
+            action,
+            "--home",
+            f.home,
+            "--key-provider",
+            provider,
+            "--request",
+            transitionRequest,
+            "--snapshot",
+            snapshot,
+            "--permit-public-key",
+            key,
           ]),
         ))._tag,
       ).toBe("Failure");

@@ -2738,6 +2738,7 @@
     "apps/server/src/jones/workstreams/native/transition/apply.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/transition/archive.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/transition/canonical.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/cli.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/transition/cli.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/transition/plan.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/transition/principalMap.ts": "jones-owned",
