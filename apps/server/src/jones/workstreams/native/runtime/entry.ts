@@ -200,14 +200,16 @@ export const layer = Layer.effect(
             ),
           ),
       },
-      lookupLegacyReceipt: (input) =>
+      lookupLegacyReceipt: Effect.fn("Entry.lookupLegacyReceipt")((input) =>
         run("workstreams:read", null, (adapter) => adapter.lookupLegacyReceipt(input)).pipe(
           Effect.mapError(() => new RegistryError({ code: "unavailable" })),
         ),
-      placementResponse: (input, contract) =>
+      ),
+      placementResponse: Effect.fn("Entry.placementResponse")((input, contract) =>
         run("workstreams:read", null, (adapter) => adapter.placementResponse(input, contract)).pipe(
           Effect.mapError(() => new RegistryError({ code: "unavailable" })),
         ),
+      ),
     });
   }),
 );
@@ -329,7 +331,7 @@ export const operationsLayer = Layer.effect(
     });
     return Operations.WorkstreamOperations.of({
       resumeRecorded: operations.resumeRecorded,
-      submit: (input) =>
+      submit: Effect.fn("Operations.WorkstreamOperations.submit")((input) =>
         entry
           .run(
             "workstreams:write",
@@ -344,7 +346,8 @@ export const operationsLayer = Layer.effect(
                 : cause,
             ),
           ),
-      read: (input) =>
+      ),
+      read: Effect.fn("Operations.WorkstreamOperations.read")((input) =>
         entry
           .run("workstreams:read", "thread" in input ? input.thread.thread_id : null, () =>
             Effect.gen(function* () {
@@ -375,6 +378,7 @@ export const operationsLayer = Layer.effect(
                   : { assignment: { kind: "unverified" as const }, open_operation: null },
             ),
           ),
+      ),
       setupStatus: Effect.fn("NativeOperations.setupStatus")(function* () {
         const observed_at = DateTime.formatIso(yield* DateTime.now);
         const observed = yield* entry

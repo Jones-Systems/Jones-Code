@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "@effect/vitest";
 import * as NetService from "@t3tools/shared/Net";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -176,7 +177,14 @@ it.effect(
       }
       expect((yield* Effect.result(run(selected(f.home))))._tag).toBe("Failure");
     }).pipe(
-      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          EffectNodeCrypto.layer,
+          TestConsole.layer,
+          NetService.layer,
+        ),
+      ),
     );
   },
 );
@@ -228,7 +236,14 @@ it.effect(
       }
       expect(NodeFS.readdirSync(NodePath.join(f.home, "userdata/secrets"))).toEqual([]);
     }).pipe(
-      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          EffectNodeCrypto.layer,
+          TestConsole.layer,
+          NetService.layer,
+        ),
+      ),
     );
   },
 );
@@ -253,7 +268,16 @@ it.effect("mounted source-setup commands refuse an unqualified home without crea
       ).toBe("Failure");
     expect(NodeFS.existsSync(f.database)).toBe(false);
     expect(NodeFS.existsSync(NodePath.join(f.home, "userdata/secrets"))).toBe(false);
-  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)));
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        EffectNodeCrypto.layer,
+        TestConsole.layer,
+        NetService.layer,
+      ),
+    ),
+  );
 });
 
 it.effect("keys init creates the init keys once without printing them; init then succeeds", () => {
@@ -294,7 +318,16 @@ it.effect("keys init creates the init keys once without printing them; init then
     expect(NodeFS.existsSync(f.database)).toBe(false);
     yield* run(selected(f.home));
     expect(NodeFS.existsSync(f.database)).toBe(true);
-  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)));
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        EffectNodeCrypto.layer,
+        TestConsole.layer,
+        NetService.layer,
+      ),
+    ),
+  );
 });
 
 it.effect(
@@ -332,7 +365,14 @@ it.effect(
       expect(NodeFS.readdirSync(secrets)).toEqual([NodePath.basename(index)]);
       expect(NodeFS.readFileSync(index)).toEqual(Buffer.alloc(32, 9));
     }).pipe(
-      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          EffectNodeCrypto.layer,
+          TestConsole.layer,
+          NetService.layer,
+        ),
+      ),
     );
   },
 );
@@ -362,7 +402,11 @@ it.effect("a failed keys init removes only the keys that run created", () => {
     Effect.provide(
       Admin.keyLayer.pipe(
         Layer.provide(
-          Layer.mergeAll(Layer.succeed(SecretStore.ServerSecretStore, secrets), NodeServices.layer),
+          Layer.mergeAll(
+            Layer.succeed(SecretStore.ServerSecretStore, secrets),
+            NodeServices.layer,
+            EffectNodeCrypto.layer,
+          ),
         ),
       ),
     ),
@@ -462,7 +506,14 @@ it.effect(
       expect(NodeFS.readFileSync(file)).toEqual(bytes);
       expect(keyRows(f.database)).toEqual(rows);
     }).pipe(
-      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          EffectNodeCrypto.layer,
+          TestConsole.layer,
+          NetService.layer,
+        ),
+      ),
     );
   },
 );
@@ -517,7 +568,14 @@ it.effect(
         ),
       ).toBe(false);
     }).pipe(
-      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          EffectNodeCrypto.layer,
+          TestConsole.layer,
+          NetService.layer,
+        ),
+      ),
     );
   },
 );
@@ -566,7 +624,16 @@ it.effect("mounted transition commands refuse a home without an existing databas
       ).toBe("Failure");
     expect(NodeFS.existsSync(f.database)).toBe(false);
     expect(NodeFS.existsSync(NodePath.join(f.home, "userdata/secrets"))).toBe(false);
-  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)));
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        EffectNodeCrypto.layer,
+        TestConsole.layer,
+        NetService.layer,
+      ),
+    ),
+  );
 });
 
 it.effect(
@@ -675,6 +742,13 @@ it.effect(
       }
     }).pipe(
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          EffectNodeCrypto.layer,
+          TestConsole.layer,
+          NetService.layer,
+        ),
+      ),
     ),
 );

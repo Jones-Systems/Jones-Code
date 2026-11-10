@@ -66,8 +66,9 @@ const make = Effect.gen(function* () {
         // Other callers' operations are filtered before decoding/releasing their public request.
         const allowed = yield* admission.readmitWrite(row.member_forward.recorded_caller).pipe(
           Effect.as(true),
-          Effect.catch((error) =>
-            error.code === "forbidden" ? Effect.succeed(false) : Effect.fail(error),
+          Effect.catchIf(
+            (error) => error.code === "forbidden",
+            () => Effect.succeed(false),
           ),
         );
         if (!allowed) continue;

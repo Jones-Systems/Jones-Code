@@ -42,10 +42,11 @@ export const withPreparedReceivingAuthority = Effect.fn("ReceivingAuthority.with
           yield* registration.checkCurrent().pipe(Effect.mapError(Boundary.mapFailure));
         });
         const fence = Boundary.ReceivingAuthorityFence.of({
-          prepare: (exactInvocation) =>
+          prepare: Effect.fn("Boundary.ReceivingAuthorityFence.prepare")((exactInvocation) =>
             exactInvocation !== invocation
               ? Effect.fail(new Session.RegistryError({ code: "not_granted" }))
               : checkCurrent().pipe(Effect.as({ authority: prepared.authority, checkCurrent })),
+          ),
         });
         return yield* use(fence);
       }).pipe(Effect.provideService(Mcp.McpInvocationContext, invocation)),
@@ -105,13 +106,18 @@ export const layer = Layer.effect(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
     return Home.HomeTools.of({
-      access: (input, invocation) => invoke(invocation, (tools) => tools.access(input, invocation)),
-      registration: (input, invocation) =>
+      access: Effect.fn("Home.HomeTools.access")((input, invocation) =>
+        invoke(invocation, (tools) => tools.access(input, invocation)),
+      ),
+      registration: Effect.fn("Home.HomeTools.registration")((input, invocation) =>
         invoke(invocation, (tools) => tools.registration(input, invocation)),
-      forward: (input, invocation) =>
+      ),
+      forward: Effect.fn("Home.HomeTools.forward")((input, invocation) =>
         invoke(invocation, (tools) => tools.forward(input, invocation)),
-      readback: (input, invocation) =>
+      ),
+      readback: Effect.fn("Home.HomeTools.readback")((input, invocation) =>
         invoke(invocation, (tools) => tools.readback(input, invocation)),
+      ),
     });
   }),
 );

@@ -25,7 +25,7 @@ export class RollupAdmission extends Context.Service<
 export const admissionLayer = Layer.sync(RollupAdmission, () => {
   let running = false;
   return {
-    tryAcquire: () =>
+    tryAcquire: Effect.fn("RollupAdmission.tryAcquire")(() =>
       Effect.sync(() => {
         if (running) return null;
         running = true;
@@ -37,6 +37,7 @@ export const admissionLayer = Layer.sync(RollupAdmission, () => {
           }
         });
       }),
+    ),
   };
 });
 export interface RunOutcome {
@@ -108,8 +109,9 @@ const make = Effect.gen(function* () {
       yield* release;
       return { ...base, status: "idle" as const };
     }
-    const claim = claimed,
-      controller = new AbortController();
+    const claim = claimed;
+    // @effect-diagnostics-next-line abortControllerInEffect:off - The timeout and cleanup paths abort the provider call explicitly; an Effect-managed signal would abort only at scope close.
+    const controller = new AbortController();
     let stage: "input_unavailable" | "provider_failure" = "input_unavailable",
       providerStarted = false,
       inputRunning = false,
@@ -212,7 +214,7 @@ const make = Effect.gen(function* () {
       };
     }).pipe(
       Effect.catchTags({
-        WorkstreamsRollupError: (failure) =>
+        WorkstreamsRollupError: Effect.fn("WorkstreamsRollupError")((failure) =>
           Effect.gen(function* () {
             if (failure.code === "stale_claim")
               return { ...base, status: "superseded" as const, workstream_id: claim.workstream_id };
@@ -235,6 +237,7 @@ const make = Effect.gen(function* () {
               workstream_id: claim.workstream_id,
             };
           }),
+        ),
       }),
       Effect.ensuring(
         Effect.suspend(() => {

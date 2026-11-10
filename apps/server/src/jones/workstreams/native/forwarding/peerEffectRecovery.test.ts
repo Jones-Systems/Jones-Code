@@ -22,6 +22,7 @@ import * as HttpResponse from "effect/http/HttpClientResponse";
 import * as DateTime from "effect/DateTime";
 import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import * as Links from "../../../../peer/PeerLinks.ts";
+import * as ServerSettings from "../../../../serverSettings.ts";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import migration from "../../../persistence/Migrations/119_JonesPeerEnvironmentLinks.ts";
@@ -167,7 +168,11 @@ const harness = (githubSource: string | null = "github:test") => {
           }),
       });
     }),
-  ).pipe(Layer.provide(Links.layer), Layer.provide(Layer.mock(Environment.ServerEnvironment)({})));
+  ).pipe(
+    Layer.provide(Links.layer),
+    Layer.provide(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
+    Layer.provide(Layer.mock(Environment.ServerEnvironment)({})),
+  );
   const github =
     githubSource === null
       ? GitHub.unconfiguredLayer

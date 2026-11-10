@@ -291,12 +291,18 @@ const make = Effect.gen(function* () {
       return record;
     }),
     readmitWrite,
-    readmitWriteRetained: (record) => readmitWrite(record, true),
+    readmitWriteRetained: Effect.fn("MemberAdmission.readmitWriteRetained")((record) =>
+      readmitWrite(record, true),
+    ),
     capture,
     readmit,
-    captureOwnPlacement: () => capture(true),
-    readmitOwnPlacement: (record) => readmit(record, false, true),
-    readmitRetained: (record) => readmit(record, true),
+    captureOwnPlacement: Effect.fn("MemberAdmission.captureOwnPlacement")(() => capture(true)),
+    readmitOwnPlacement: Effect.fn("MemberAdmission.readmitOwnPlacement")((record) =>
+      readmit(record, false, true),
+    ),
+    readmitRetained: Effect.fn("MemberAdmission.readmitRetained")((record) =>
+      readmit(record, true),
+    ),
     current: Effect.fn("MemberAdmission.current")(function* () {
       const retained = yield* Effect.serviceOption(RetainedMemberCaller);
       return yield* readmit(Option.isSome(retained) ? retained.value : yield* capture());

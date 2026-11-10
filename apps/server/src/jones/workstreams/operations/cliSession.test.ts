@@ -3,6 +3,7 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSqlite from "@t3tools/shared/nodeSqliteClient";
 import {
@@ -42,7 +43,10 @@ const secretStore = (
 const fixture = Layer.effectDiscard(authMigration).pipe(
   Layer.provideMerge(NodeSqlite.layer({ filename: ":memory:" })),
 );
-const layer = Rows.layer.pipe(Layer.provideMerge(fixture), Layer.provideMerge(NodeServices.layer));
+const layer = Rows.layer.pipe(
+  Layer.provideMerge(fixture),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, EffectNodeCrypto.layer)),
+);
 const now = Date.parse("2026-08-02T12:00:00Z");
 const useSession = (mayWrite = true) => Cli.withWorkstreamCliSession(mayWrite, Effect.succeed);
 const verify = (token: string) =>

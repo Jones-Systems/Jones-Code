@@ -79,22 +79,37 @@ const make = Effect.gen(function* () {
       Effect.provideService(Keys.WorkstreamsKeyProvider, keys),
     );
   return WorkstreamsTransition.of({
-    plan: (...args) => provide(plan(...args)),
-    apply: (...args) => provide(apply(...args)),
-    readback: (...args) => provide(readback(...args)),
-    reconcileLegacyOpen: (...args) =>
+    plan: Effect.fn("WorkstreamsTransition.plan")((...args) => provide(plan(...args))),
+    apply: Effect.fn("WorkstreamsTransition.apply")((...args) => provide(apply(...args))),
+    readback: Effect.fn("WorkstreamsTransition.readback")((...args) => provide(readback(...args))),
+    reconcileLegacyOpen: Effect.fn("WorkstreamsTransition.reconcileLegacyOpen")((...args) =>
       provide(reconcileLegacyOpen(...args)).pipe(
         Effect.provideService(LegacySourceLookup, sourceLookup),
       ),
-    activate: (...args) => provide(activate(...args)),
-    prepareReverse: (...args) => provide(prepareReverse(...args)),
-    reverseExport: (...args) => provide(reverseExport(...args)),
-    prepareTransfer: (...args) => provide(prepareTransfer(...args)),
-    transfer: (...args) => provide(transfer(...args)),
-    readTransfer: (...args) => provide(readTransfer(...args)),
-    applyTransferExtensions: (...args) => provide(applyTransferExtensions(...args)),
-    readbackTransfer: (...args) => provide(readbackTransfer(...args)),
-    completeTransfer: (...args) => provide(completeTransfer(...args)),
+    ),
+    activate: Effect.fn("WorkstreamsTransition.activate")((...args) => provide(activate(...args))),
+    prepareReverse: Effect.fn("WorkstreamsTransition.prepareReverse")((...args) =>
+      provide(prepareReverse(...args)),
+    ),
+    reverseExport: Effect.fn("WorkstreamsTransition.reverseExport")((...args) =>
+      provide(reverseExport(...args)),
+    ),
+    prepareTransfer: Effect.fn("WorkstreamsTransition.prepareTransfer")((...args) =>
+      provide(prepareTransfer(...args)),
+    ),
+    transfer: Effect.fn("WorkstreamsTransition.transfer")((...args) => provide(transfer(...args))),
+    readTransfer: Effect.fn("WorkstreamsTransition.readTransfer")((...args) =>
+      provide(readTransfer(...args)),
+    ),
+    applyTransferExtensions: Effect.fn("WorkstreamsTransition.applyTransferExtensions")((...args) =>
+      provide(applyTransferExtensions(...args)),
+    ),
+    readbackTransfer: Effect.fn("WorkstreamsTransition.readbackTransfer")((...args) =>
+      provide(readbackTransfer(...args)),
+    ),
+    completeTransfer: Effect.fn("WorkstreamsTransition.completeTransfer")((...args) =>
+      provide(completeTransfer(...args)),
+    ),
   });
 });
 /** @public Operator composition supplies J1 persistence and explicitly provisioned keys. */

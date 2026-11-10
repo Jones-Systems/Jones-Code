@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { AuthSessionId, WORKSTREAMS_T3_PROVIDER_PROTOCOL } from "@t3tools/contracts";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
@@ -318,6 +319,8 @@ export const runWorkstreamProviderCliOperation = Effect.fn("runWorkstreamProvide
                     }),
                   ),
                   Effect.flatMap((materialize) => materialize(expected)),
+                  // The signer needs only the Mac family of effect/crypto; the standalone CLI has no server layer to supply it.
+                  Effect.provide(EffectNodeCrypto.layerMac),
                 ),
         });
         yield* trusted.verifyUnchanged;

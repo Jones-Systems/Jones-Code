@@ -80,6 +80,7 @@ import * as HttpRequest from "effect/http/HttpServerRequest";
 import * as ServerResponse from "effect/http/HttpServerResponse";
 import * as Cli from "../runtime/peerSetupCli.ts";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
 import * as Sessions from "../../../../auth/SessionStore.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
 import * as AuthRows from "../../../../persistence/AuthSessions.ts";
@@ -311,7 +312,11 @@ const fixture = Effect.gen(function* () {
         ),
       );
       const native = NativeAuth.layer.pipe(
-        Layer.provideMerge(Native.nativeLayer.pipe(Layer.provideMerge(Auth.layer))),
+        Layer.provideMerge(
+          Native.nativeLayer.pipe(
+            Layer.provideMerge(Auth.layer.pipe(Layer.provide(ManagedPolicy.layerTest()))),
+          ),
+        ),
       );
       const base = Layer.mergeAll(storage, native).pipe(
         Layer.provideMerge(secrets),
@@ -463,6 +468,7 @@ const fixture = Effect.gen(function* () {
         lastError: null,
       });
       const links = Layer.mock(PeerLinks.PeerLinks)({
+        enabled: Effect.succeed(true),
         get: () =>
           Effect.sync(() =>
             controls.linkStatus === "missing" ? Option.none() : Option.some(storedLink()),

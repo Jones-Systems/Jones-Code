@@ -32,7 +32,9 @@ export class SummaryAuthorizer extends Context.Service<
 >()("t3/jones/workstreams/native/rollups/summaryRead/SummaryAuthorizer") {}
 /** @public Account read permission is unknown until explicitly supplied, including for imported content. */
 export const unconfiguredAuthorizerLayer = Layer.succeed(SummaryAuthorizer, {
-  authorize: () => Effect.fail(new Evidence.RollupError({ code: "provider_unconfigured" })),
+  authorize: Effect.fn("SummaryAuthorizer.authorize")(() =>
+    Effect.fail(new Evidence.RollupError({ code: "provider_unconfigured" })),
+  ),
 });
 export interface SummaryView {
   readonly workstream_id: string;

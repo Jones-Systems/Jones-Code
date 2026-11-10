@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as TestClock from "effect/testing/TestClock";
 import * as HttpApi from "effect/http-api/HttpApi";
@@ -40,6 +41,7 @@ import * as ProjectionStore from "../../../../orchestration-v2/ProjectionStore.t
 import * as ThreadManagement from "../../../../orchestration-v2/ThreadManagementService.ts";
 import { liveThreadShell } from "../../../../mcp/McpToolAccess.testkit.ts";
 import * as AuthSessions from "../../../../persistence/AuthSessions.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
 import { runMigrations } from "../../../../persistence/Migrations.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as NativeAttempts from "../../nativeProvider/attemptRepository.ts";
@@ -321,9 +323,12 @@ export const seed = Effect.fn("NativeIngress.seed")(function* (
     Layer.provideMerge(currentOwner),
     Layer.provide(
       Layer.succeed(Admission.RecordedThreadLookup, {
-        getThreadShell: (id) =>
+        getThreadShell: Effect.fn("Admission.RecordedThreadLookup.getThreadShell")((id) =>
           Effect.succeed(id === "thread-synthetic" ? liveThreadShell(id) : null),
-        getThreadRecords: () => Effect.fail(new RecordedCallerFence({ code: "not_granted" })),
+        ),
+        getThreadRecords: Effect.fn("Admission.RecordedThreadLookup.getThreadRecords")(() =>
+          Effect.fail(new RecordedCallerFence({ code: "not_granted" })),
+        ),
       }),
     ),
     Layer.provide(Layer.succeed(SourceEnrollment.NativeSourceEnrollments, nativeSources)),
@@ -591,11 +596,21 @@ export const http = Effect.gen(function* () {
       EnvironmentAuth.layer.pipe(
         Layer.provide(
           Layer.succeed(ServerSecretStore.ServerSecretStore, {
-            get: () => Effect.succeedSome(Fixture.keyBytes),
-            getOrCreateRandom: () => Effect.succeed(Fixture.keyBytes),
-            set: () => Effect.die("Unexpected auth key write"),
-            create: () => Effect.die("Unexpected auth key create"),
-            remove: () => Effect.die("Unexpected auth key removal"),
+            get: Effect.fn("ServerSecretStore.ServerSecretStore.get")(() =>
+              Effect.succeedSome(Fixture.keyBytes),
+            ),
+            getOrCreateRandom: Effect.fn("ServerSecretStore.ServerSecretStore.getOrCreateRandom")(
+              () => Effect.succeed(Fixture.keyBytes),
+            ),
+            set: Effect.fn("ServerSecretStore.ServerSecretStore.set")(() =>
+              Effect.die("Unexpected auth key write"),
+            ),
+            create: Effect.fn("ServerSecretStore.ServerSecretStore.create")(() =>
+              Effect.die("Unexpected auth key create"),
+            ),
+            remove: Effect.fn("ServerSecretStore.ServerSecretStore.remove")(() =>
+              Effect.die("Unexpected auth key removal"),
+            ),
           }),
         ),
         Layer.provide(Layer.succeed(ServerConfig.ServerConfig, config)),
@@ -604,6 +619,8 @@ export const http = Effect.gen(function* () {
             getEnvironmentId: Effect.succeed(Wire.EnvironmentId.make(registry.home_environment_id)),
           }),
         ),
+        Layer.provide(ManagedPolicy.layerTest()),
+        Layer.provide(NodeCrypto.layer),
       ),
     ),
   );
@@ -752,7 +769,9 @@ export const withGitHub = Effect.fn("NativeIngress.withGitHub")(function* <A, E,
           authority_namespace: "github-authority",
           store_generation: 1,
         },
-        selectT3: () => Effect.die("GitHub-only fixture must not route a T3 reference"),
+        selectT3: Effect.fn("Resolver.ReferenceSources.selectT3")(() =>
+          Effect.die("GitHub-only fixture must not route a T3 reference"),
+        ),
       }),
     ),
   );

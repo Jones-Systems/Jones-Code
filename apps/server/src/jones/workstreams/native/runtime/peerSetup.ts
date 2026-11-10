@@ -8,6 +8,7 @@ import * as Context from "effect/Context";
 import * as ServerConfig from "../../../../config.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Mac from "effect/crypto/Mac";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -209,6 +210,7 @@ type SetupDependencies =
   | Client.PeerMcpClient
   | AuthRows.AuthSessionRepository
   | Secrets.ServerSecretStore
+  | Mac.Mac
   | Keys.WorkstreamsKeyProvider
   | Registry.RegistryStore;
 const make = Effect.gen(function* () {
@@ -346,24 +348,25 @@ const make = Effect.gen(function* () {
     const active = yield* keys.activeKeyId(scope);
     const bytes = yield* keys.get(active);
     const cached = Layer.succeed(Keys.WorkstreamsKeyProvider, {
-      activeKeyId: (s) =>
-        keys
-          .activeKeyId(s)
-          .pipe(
-            Effect.flatMap((id) =>
+      activeKeyId: Effect.fn("Keys.WorkstreamsKeyProvider.activeKeyId")((s) =>
+        keys.activeKeyId(s).pipe(
+          Effect.filterOrFail(
+            (id) =>
               id === active &&
               s.key_scope === "local" &&
               s.registry_instance_id === scope.registry_instance_id &&
-              s.owner_id === scope.owner_id
-                ? Effect.succeed(id)
-                : Effect.fail(new Keys.KeyUnavailable({ reason: "missing" })),
-            ),
+              s.owner_id === scope.owner_id,
+            () => new Keys.KeyUnavailable({ reason: "missing" }),
           ),
-      get: (id) =>
-        id === active
-          ? Effect.succeed(Uint8Array.from(bytes))
-          : Effect.fail(new Keys.KeyUnavailable({ reason: "missing" })),
-      indexKey: () => Effect.fail(new Keys.KeyUnavailable({ reason: "missing" })),
+        ),
+      ),
+      get: Effect.fn("Keys.WorkstreamsKeyProvider.get")(function* (id) {
+        if (id !== active) return yield* new Keys.KeyUnavailable({ reason: "missing" });
+        return Uint8Array.from(bytes);
+      }),
+      indexKey: Effect.fn("Keys.WorkstreamsKeyProvider.indexKey")(() =>
+        Effect.fail(new Keys.KeyUnavailable({ reason: "missing" })),
+      ),
     });
     const db = Database.layer.pipe(
       Layer.provideMerge(Envelope.layer.pipe(Layer.provideMerge(cached))),
@@ -923,10 +926,10 @@ const make = Effect.gen(function* () {
     return reply;
   });
   return PeerSetup.of({
-    prepare: (r) => run(prepare(r)),
-    read: (r, i) => run(read(r, i)),
-    apply: (r, i) => run(apply(r, i)),
-    ownerOperation: (r) => run(ownerOperation(r)),
+    prepare: Effect.fn("PeerSetup.prepare")((r) => run(prepare(r))),
+    read: Effect.fn("PeerSetup.read")((r, i) => run(read(r, i))),
+    apply: Effect.fn("PeerSetup.apply")((r, i) => run(apply(r, i))),
+    ownerOperation: Effect.fn("PeerSetup.ownerOperation")((r) => run(ownerOperation(r))),
     homeBind: {
       setupReadback: (r, i) => run(homeBind.setupReadback(r, i)),
       bind: (r, i) => run(homeBind.bind(r, i)),
