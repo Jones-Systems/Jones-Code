@@ -6,7 +6,7 @@ import type { JonesUpdateObservation } from "../updates/jonesUpdates.ts";
 import { jonesTargetStatus } from "../updates/targetStatus.ts";
 import {
   deviceSettled,
-  deviceState,
+  deviceStateWithRunningTarget,
   isPlanComplete,
   type InstallPlanDeviceState,
 } from "./model.ts";
@@ -61,7 +61,6 @@ export function installPlanPresentation(
       summary: "No update plan",
     };
   const rows = plan.devices.map((device) => {
-    const phase = deviceState(plan, device, options.now);
     const observed = options.devices?.get(device.environmentId);
     const status =
       observed === undefined
@@ -101,13 +100,16 @@ export function installPlanPresentation(
         receipt.updateId === operationId &&
         receipt.outcome?.status === "committed",
     );
-    const targetBuildRunning =
-      !confirmedInstall &&
+    const runningTarget =
       observed?.observation.freshness === "fresh" &&
       hostState?.environmentId === device.environmentId &&
       installed?.repository === plan.target.repository &&
       installed.sha === plan.target.sourceSha &&
       installed.tree === plan.target.sourceTree;
+    const targetBuildRunning = !confirmedInstall && runningTarget;
+    // A fresh running target outranks an older settled ledger record, such as an interrupted
+    // download that a later install through another operation made moot.
+    const phase = deviceStateWithRunningTarget(plan, device, runningTarget, options.now);
     const matchingRetryStage =
       lastDownload?.receipt?.phase === "completed" &&
       stage !== undefined &&
@@ -119,6 +121,12 @@ export function installPlanPresentation(
     let text = copy[phase];
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";
+    if (
+      runningTarget &&
+      phase === "updated-elsewhere" &&
+      latest?.receipt?.code !== "already-installed"
+    )
+      text = "Updated · running the selected source";
     if (phase === "directive") text = `Getting ${device.label} ready…`;
     if (phase === "ended")
       text =
@@ -138,7 +146,7 @@ export function installPlanPresentation(
       targetBuildRunning,
       downloadLabel: retryDownload ? "Retry download" : `Download on ${device.label}`,
       installLabel: retryInstall ? "Retry install" : `Install on ${device.label}`,
-      settled: deviceSettled(plan, device),
+      settled: phase === "updated-elsewhere" || deviceSettled(plan, device),
       status,
       ...(latest === undefined ? {} : { operationId: latest.operationId }),
       actions: {
