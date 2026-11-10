@@ -7,9 +7,11 @@
       "id": "direct-producer-completion",
       "tests": [
         "scripts/jones/direct-producers/completion.node-test.mjs",
-        "native/process-placement/build.test.mjs"
+        "native/process-placement/build.test.mjs",
+        "scripts/jones/direct-producers/finite-production.test.ts",
+        "scripts/jones/direct-producers/finite-production.node-test.mjs"
       ],
-      "scope": "Process-placement compiler errors wait for native close; optional completion observes known success/failure/drained cancellation after scratch cleanup, and metadata failure preserves the native result. Existing output names, compiler arguments, manifests and cleanup behavior are preserved. Completion reuses the 64 KiB/100 ms observation sink, with content proof deferred and allocation_disposition_not_observed explicit. This feature does not record durable allocation dispositions or hook other producers. The scripts package test command adds the focused Node test discovery path."
+      "scope": "Process-placement compiler errors wait for native close; optional completion observes known success/failure/drained cancellation after scratch cleanup, and metadata failure preserves the native result. Existing output names, compiler arguments, manifests and cleanup behavior are preserved. Completion reuses the 64 KiB/100 ms observation sink, with content proof deferred and allocation_disposition_not_observed explicit. Server build/build-exe now admit one exact in-checkout dist or dist-exe durable ProducerFinalizer duty before allocation and finalize after the whole existing operation and its owned child scope. Known native results remain independent of bookkeeping; leader-only completion retains writer_completion_not_observed, and unknown terminal/interruption keeps the active duty. Command diagnostics expose exact id/root/path/reason independently of optional capture. No content proof is requested. Standalone bundle, web, desktop, watch, MJS and external-root integration remain open. The scripts package test command adds the focused Node test discovery path."
     },
     {
       "id": "provider-node-deduplication",
@@ -289,6 +291,7 @@
       "id": "migration-order",
       "tests": [
         "scripts/jones/ci/jones-migration-order.node-test.cjs",
+        "scripts/jones/ci/jones-migration-ledger.node-test.cjs",
         "apps/server/src/jones/persistence/Migrations.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts"
       ],

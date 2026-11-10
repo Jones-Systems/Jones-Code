@@ -194,7 +194,7 @@ export const make = Effect.gen(function* () {
                 const latestControl = (yield* sql<{ command_type: string }>`
             SELECT command_type FROM orchestration_command_receipts
             WHERE aggregate_kind='thread' AND aggregate_id=${shell.id} AND status='accepted'
-              AND command_type IN ('message.dispatch','queue.resume','turn.interrupt','thread.stop','provider-session.detach')
+              AND command_type IN ('message.dispatch','queue.resume','run.interrupt','thread.stop','provider-session.detach')
             ORDER BY rowid DESC LIMIT 1`)[0]?.command_type;
                 if (
                   latestControl !== undefined &&

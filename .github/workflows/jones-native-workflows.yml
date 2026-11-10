@@ -977,7 +977,7 @@ jobs:
       - name: Aggregate every required first attempt without clearing earlier failures
         if: always() && env.JCUE_TASK_ROOT != ''
         env:
-          JCUE_CANCELLED: ${{ cancelled() }}
+          JCUE_CANCELLED: ${{ job.status == 'cancelled' }}
         run: node scripts/jones/ci/native-workflow-evidence.mjs aggregate
 
       - name: Record measured runner-step time
