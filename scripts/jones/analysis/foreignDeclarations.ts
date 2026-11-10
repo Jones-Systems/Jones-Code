@@ -19,9 +19,9 @@ export const sourcePins = {
     "apps/desktop/src/snapShot/GnomeCaptureSetup.ts":
       "6326cc5a064f263e1d11c30404bb510779307bc15421ea6b8795309a12f3fb1e",
     "apps/desktop/src/snapShot/DesktopSnapShot.ts":
-      "e64fc6054dacf43ec07de5152a8fa6f43e8b8359cc32708f3a3fb1ef325e4403",
+      "2817c375b8c32820a9a7c3ea82e1d3913a9266aa21cfea842e135f59382dab50",
     "scripts/build-desktop-artifact.ts":
-      "9543d2a8e6db68d435d8ce3ee3faf011d1ede9c9dd4caffb3b616b37b230d841",
+      "74761927bb4a70ff197b712a0fb2b456209e0ba6a4267efcff5971632a024da3",
   },
   pgrep: {
     "apps/desktop/scripts/electron-launcher.test.mjs":
@@ -29,7 +29,7 @@ export const sourcePins = {
   },
   hyprctl: {
     "apps/desktop/src/app/DesktopPreReadyPlatform.ts":
-      "f5b562744cb440dea1c76be03f1090f64308a20e0df1ff5ab190e66879128a13",
+      "9614a1eefedc79563d71bbd2423b1a35da7c17a646450ee24ed69ed8b6780141",
     "apps/desktop/src/app/DesktopEarlyElectronStartup.ts":
       "b89a17714fd4dd24061f07dd395e8900a27366e0a6111a4c8c20700076343b9a",
   },
