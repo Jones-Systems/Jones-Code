@@ -11,6 +11,7 @@ export const unusedAuthorization = RemoteEnvironmentAuthorization.of({
   authorizeDpopHttp: Effect.fn("Fixture.authorizeDpopHttp")(() =>
     Effect.die("Unexpected HTTP authorization in route fixture"),
   ),
+  rememberCheckedDescriptor: Effect.fn("Fixture.rememberCheckedDescriptor")(() => Effect.void),
   renewDpopBeforeExpiry: Effect.fn("Fixture.renewDpopBeforeExpiry")(() =>
     Effect.die("Unexpected renewal in non-DPoP route fixture"),
   ),

@@ -110,12 +110,12 @@ export const fetchEnvironmentNativeWorkstreamExport = Effect.fn(
       scope,
       request: nativeReadRequest({ route: "counts", params: {} }),
     }).pipe(
-      Effect.flatMap((result) =>
-        result.envelope.coverage.registry === "complete" &&
-        result.envelope.provenance.source === "live" &&
-        !result.envelope.provenance.stale
-          ? Effect.succeed(result)
-          : Effect.fail(new NativeReadError("incomplete", "Native home coverage is incomplete.")),
+      Effect.filterOrFail(
+        (result) =>
+          result.envelope.coverage.registry === "complete" &&
+          result.envelope.provenance.source === "live" &&
+          !result.envelope.provenance.stale,
+        () => new NativeReadError("incomplete", "Native home coverage is incomplete."),
       ),
     );
   yield* current();

@@ -19,7 +19,10 @@ describe("remote admission failure normalization", () => {
     [409, "other"],
   ] as const)("bounds HTTP %s to %s without retaining the URL or response", (status, kind) => {
     const error = normalizeRemoteAdmissionError(
-      new RemoteEnvironmentAuthUndeclaredStatusError(`https://${privateDetail}.invalid`, status),
+      new RemoteEnvironmentAuthUndeclaredStatusError({
+        requestUrl: `https://${privateDetail}.invalid`,
+        status,
+      }),
     );
     expect(error).toBeInstanceOf(RemoteAdmissionError);
     expect(error.kind).toBe(kind);
@@ -50,7 +53,10 @@ describe("remote admission failure normalization", () => {
         message: privateDetail,
         cause: { payload: privateDetail },
       }),
-      new RemoteEnvironmentAuthTimeoutError(`https://${privateDetail}.invalid`, 45_000),
+      new RemoteEnvironmentAuthTimeoutError({
+        requestUrl: `https://${privateDetail}.invalid`,
+        timeoutMs: 45_000,
+      }),
     ]) {
       const error = normalizeRemoteAdmissionError(failure);
       expect(error.kind).toBe("transient");

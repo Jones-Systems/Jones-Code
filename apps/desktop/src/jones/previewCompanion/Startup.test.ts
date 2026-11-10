@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import * as DesktopApp from "../../app/DesktopApp.ts";
 import * as DesktopAppIdentity from "../../app/DesktopAppIdentity.ts";
 import * as DesktopAppActivation from "../../app/DesktopAppActivation.ts";
+import * as DesktopCliCommand from "../../app/DesktopCliCommand.ts";
 import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as DesktopLegacyLocalStorage from "../../app/DesktopLegacyLocalStorage.ts";
 import * as DesktopState from "../../app/DesktopState.ts";
@@ -19,6 +20,7 @@ import * as ElectronApp from "../../electron/ElectronApp.ts";
 import * as ElectronTheme from "../../electron/ElectronTheme.ts";
 import * as DesktopLifecycle from "../../app/DesktopLifecycle.ts";
 import * as DesktopWindow from "../../window/DesktopWindow.ts";
+import * as DesktopShellEnvironment from "../../shell/DesktopShellEnvironment.ts";
 import * as DesktopSnapShot from "../../snapShot/DesktopSnapShot.ts";
 import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
 import * as ElectronProtocol from "../../electron/ElectronProtocol.ts";
@@ -102,6 +104,11 @@ function fixture(companion = config, localEnabled = true) {
     }),
     Layer.mock(DesktopSnapShot.DesktopSnapShot, {
       initialize: count("snapshot"),
+    }),
+    // Bootstrap only forks the first-launch CLI install behind shell discovery; no PATH was found here.
+    Layer.mock(DesktopCliCommand.DesktopCliCommand, { installOnFirstLaunch: Effect.void }),
+    Layer.mock(DesktopShellEnvironment.DesktopShellEnvironment, {
+      awaitUserShellDiscovery: Effect.succeed(false),
     }),
     Layer.mock(DesktopAppActivation.DesktopAppActivation, {
       start: count("appActivation"),

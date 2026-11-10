@@ -10,7 +10,11 @@ import {
 } from "@t3tools/contracts";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 import { ReasoningEffortShortcuts } from "./ReasoningEffortShortcuts";
-import { useTraitsSelection, readPromptUltrathink } from "../../components/chat/TraitsPicker";
+import {
+  useTraitsSelection,
+  readPromptUltrathink,
+  type TraitsPersistence,
+} from "../../components/chat/TraitsPicker";
 import { getComposerEffectiveTraitsOptions } from "../../components/chat/composerProviderState";
 
 const instanceId = ProviderInstanceId.make("reasoning-test");
@@ -40,7 +44,9 @@ let root: Screen;
 let onPromptChange = vi.fn<(prompt: string) => void>();
 
 async function render(
-  overrides: Partial<ComponentProps<typeof ReasoningEffortShortcuts>> & { prompt?: string } = {},
+  overrides: Partial<
+    Omit<ComponentProps<typeof ReasoningEffortShortcuts>, keyof TraitsPersistence>
+  > & { prompt?: string } = {},
   descriptors: ReadonlyArray<ProviderOptionDescriptor> = [effort, fast],
   withMenu = false,
 ) {
