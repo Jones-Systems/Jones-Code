@@ -15,14 +15,56 @@ an orphaned identity does not become local merely because import runs here.
 Unmapped principals remain historical identities without environment access.
 Unmapped active sources block activation.
 
-The operator composition uses the
+The installed CLI mounts the
 [transition service](../../apps/server/src/jones/workstreams/native/transition/cli.ts)
-with J1 persistence. Its thin command adapter accepts `plan`, `apply`, `readback`
-and `activate`. Do not serialize the returned plan to a plaintext file: its
-snapshot rows remain private in memory. On restart, rebuild it from the same
-encrypted input, signed permit, run ID and mapping inputs. The service checks the
-durable encrypted manifest before continuing. An installed CLI must mount that
-adapter with its own authorized base-directory and encrypted I/O composition.
+under `t3 workstream registry transition` with J1 persistence. Commands run only
+when an operator invokes them; startup never runs a transition. The plan is never
+serialized: every command rebuilds it in memory from the same encrypted input,
+signed permit, run ID and mapping inputs, and the service checks the durable
+encrypted manifest before continuing. Output carries digests, counts, state or
+ciphertext only, never plaintext snapshot rows or bundles.
+
+No shipped command registers key metadata for an imported registry, and
+`registry init` creates a registry, which import then refuses as
+`target_populated`. Until a key-registration route exists, `apply` refuses with
+`key_not_provisioned`. Legacy open-effect reconciliation is not mounted because
+no host-owned legacy source lookup exists in source.
+
+## Machine roles
+
+`<baseDir>/workstreams-native.json` selects the role; see
+[Native Workstreams home](workstreams-native.md). The `native-home` machine owns
+the registry database and keys and is the only transition target. A
+`native-member` machine holds no registry copy. It needs a bound member
+enrollment and current owner qualification from the home, prepared with
+`t3 workstream peer-setup` against its running server. Do not run transition
+commands on a member. After a transfer, members rebind before writes resume.
+
+## Command sequence
+
+Each command takes `--home <absolute existing home>`,
+`--key-provider server-secret-store`, `--request '<plan request JSON>'`,
+`--snapshot <encrypted stream file>` and `--permit-public-key <PEM file>`. The
+home database must already exist. Any refused input stops before the home opens.
+
+```sh
+t3 workstream registry transition plan     <common flags>
+t3 workstream registry transition apply    <common flags> [--limit N]
+t3 workstream registry transition readback <common flags>
+t3 workstream registry transition activate <common flags> --intent '<activation JSON>'
+```
+
+Reverse export: `reverse-prepare --reverse '<JSON>'` prints the header and
+`header_sha256` to sign, then `reverse-export` takes the same input plus
+`--reverse-permit`, `--reverse-permit-key-id` and `--reverse-public-key` and prints
+ciphertext JSON. Transfer: on the source, `transfer-prepare --transfer '<JSON>'`
+prints `bundle_sha256` to sign, then `transfer` prints the encrypted bundle. Write
+its `encrypted` value to a file byte for byte, for example with `jq -j`. On the
+destination, `transfer-apply-extensions` and `transfer-readback` take `--bundle`,
+`--bundle-request` and `--bundle-public-key`. Then activate the destination. On
+the source, `transfer-complete --receipt '<JSON>'` marks it transferred out.
+No command converts a transfer bundle into the destination plan's encrypted
+snapshot and header permit. Prepare them with the operator's signing procedure.
 
 ## Import and activate
 

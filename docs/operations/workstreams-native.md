@@ -214,3 +214,66 @@ JSONL and digest, and releases those exact bytes as one bounded result. It holds
 no disk cache and creates no local registry or home grant. Missing tool support,
 changed permission, incomplete bytes or home drift refuse without output or a
 legacy fallback. The fixed result is bounded to 16 MiB plus the completion trailer.
+
+## Go-live runbook
+
+This sequence starts a fresh registry; it does not import legacy data. For an
+import, use [transitions](workstreams-native-transition.md). These steps are
+source-derived and have not been run against a live host.
+
+### Native home
+
+1. `t3 workstream authority enroll --base-dir <home>` records the home's native
+   placement authority.
+2. `t3 workstream registry keys init --home <home> --key-provider
+   server-secret-store --request '<registry-init JSON>'` creates the content,
+   local and index keys in `<home>/userdata/secrets/` from random bytes. It
+   refuses if any of them exists and prints only key names.
+3. `t3 workstream registry init` with the same flags and request creates the
+   registry, its keys metadata, principal, grant and binding.
+4. Move `<home>/workstreams/activation.env` aside and unset the
+   `T3_WORKSTREAM_*` control-plane variables. Either one fences native startup.
+5. Write `<home>/workstreams-native.json` with `"mode": "native-home"`, the
+   registry from the init request and `bootstrap.home`, `bootstrap.database`
+   and `bootstrap.key_provider`. Restart the server.
+6. Run `t3 workstream registry source-setup plan`, `apply` and `readback` with
+   one saved `jones-code.native-source-setup/v1` request; see
+   [source setup](workstreams-native-source-setup.md).
+7. Set `bootstrap.source_session_id` to the AuthSession ID that source setup
+   issued (the request's enrollment session ID) and restart.
+
+### Members
+
+A member has no registry or home keys copy. Before peer setup it needs:
+
+- `t3 workstream authority enroll` on the member;
+- current peer links both ways: `t3 environment link <url> --pairing-code
+  <code> --access full-access`, using a code from `t3 pair` on the other side;
+- its own local key for the home registry. Run `t3 workstream registry keys
+  member-init --home <member-home> --key-provider server-secret-store --request
+  '{"registry": <home registry>, "local_key_id": "<id>"}'` once, with the same
+  registry object the member's `workstreams-native.json` will name. It needs the
+  member's existing `userdata/statev2.sqlite`, creates
+  `userdata/secrets/workstreams-content-key-<id>.bin` from random bytes and the
+  active `local` key row, and prints only the key name. It refuses if that
+  database already holds the registry or any key row for it, or the key file
+  exists; a failed run removes only the file it created. Without this key,
+  member setup and startup stop with `key_unavailable`. Back the file up: the
+  row cannot be deleted, so a lost file is not replaced by rerunning.
+
+Run peer setup on the member, against the member's own running server.
+`--source-environment-id` is the member and `--home-environment-id` is the home.
+The member reaches the home over its outbound link.
+
+```sh
+t3 workstream peer-setup prepare --home <member-home> --setup-id <id> \
+  --registry-id <uuid> --owner-id <owner> --home-environment-id <home-env> \
+  --home-generation <n> --source-environment-id <member-env>
+t3 workstream peer-setup apply  <same flags> --request-sha256 <from prepare>
+t3 workstream peer-setup status <same flags> --request-sha256 <from prepare>
+```
+
+After `status` reports `bound`, write the member's `workstreams-native.json`
+with `"mode": "native-member"` and the home's registry, then restart. After an
+`unknown` status, use `peer-setup resume` with the same flags. Repeating
+`prepare` with the same setup ID returns the retained request.
