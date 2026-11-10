@@ -5279,7 +5279,8 @@ it.effect(
         yield* resumeSecondThread;
         assert.equal((yield* Ref.get(state)).resumeCount, 3);
         // regression: #26722 a Linked environments change reloads only the idle thread's tools.
-        yield* settings.updateSettings({ linkedEnvironmentsEnabled: true });
+        // Jones enables Linked environments by default, so the change turns them off.
+        yield* settings.updateSettings({ linkedEnvironmentsEnabled: false });
         yield* resumeSecondThread;
         assert.equal((yield* Ref.get(state)).resumeCount, 4);
         assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, ["native-thread"]);
@@ -6179,7 +6180,8 @@ it.effect(
         assert.equal((yield* Ref.get(state)).openCount, 1);
 
         // regression: #26722 an exclusive runtime configures MCP at open, so it reopens.
-        yield* settings.updateSettings({ linkedEnvironmentsEnabled: true });
+        // Jones enables Linked environments by default, so the change turns them off.
+        yield* settings.updateSettings({ linkedEnvironmentsEnabled: false });
         yield* manager.open({
           threadId: firstThreadId,
           providerSessionId,
