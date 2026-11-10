@@ -7,10 +7,9 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
-import { BOOT_SERVICE_UNIT_FILE } from "./bootService.ts";
 
 const PROTECT_DROP_IN = "90-t3code-protect.conf";
-const SYSTEM_UNIT_DIR = "/etc/systemd/system";
+export const SYSTEM_UNIT_DIR = "/etc/systemd/system";
 export const REMOTE_ACCESS_UNITS = ["tailscaled.service", "ssh.service", "sshd.service"];
 
 // Covers app.slice (the server's 1536M) and init.scope (the user manager's 256M).
@@ -60,6 +59,8 @@ const dropIn = (
 export function protectionPlan(input: {
   readonly uid: number;
   readonly userUnitDir: string;
+  /** The installed service's unit file, so the plan follows its identity. */
+  readonly unitFile: string;
   readonly remoteAccessUnits: ReadonlyArray<string>;
   readonly systemUnitDir?: string;
 }): ProtectionPlan {
@@ -89,7 +90,7 @@ export function protectionPlan(input: {
     user: [
       user("app.slice", "Slice", ["MemoryLow=1536M"]),
       user("init.scope", "Scope", ["MemoryLow=256M"]),
-      user(BOOT_SERVICE_UNIT_FILE, "Service", [PROTECTED_OOM_SCORE]),
+      user(input.unitFile, "Service", [PROTECTED_OOM_SCORE]),
     ],
     oomUnits: [manager, ...remote],
   };
@@ -307,13 +308,16 @@ export interface ServiceProtectionState {
 }
 
 /** Reads what the kernel applies to the running service, whoever configured it. */
-export const readProtection = Effect.fn("ServiceProtection.read")(function* (userUnitDir: string) {
+export const readProtection = Effect.fn("ServiceProtection.read")(function* (
+  userUnitDir: string,
+  unitFile: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const shown = yield* run("read the service's cgroup", "systemctl", [
     "--user",
     "show",
-    BOOT_SERVICE_UNIT_FILE,
+    unitFile,
     "--property=ControlGroup,MainPID",
   ]).pipe(Effect.option);
   if (Option.isNone(shown)) return undefined;
@@ -339,7 +343,7 @@ export const readProtection = Effect.fn("ServiceProtection.read")(function* (use
     unprotected,
     oomScoreAdj: score === "" ? undefined : Number(score),
     setByProtect: yield* fs
-      .exists(path.join(userUnitDir, `${BOOT_SERVICE_UNIT_FILE}.d`, PROTECT_DROP_IN))
+      .exists(path.join(userUnitDir, `${unitFile}.d`, PROTECT_DROP_IN))
       .pipe(Effect.orElseSucceed(() => false)),
   } satisfies ServiceProtectionState;
 });

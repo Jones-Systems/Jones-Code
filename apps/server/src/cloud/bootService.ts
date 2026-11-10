@@ -55,7 +55,8 @@ export interface BootServiceIdentity {
   readonly description: string;
 }
 
-const DEFAULT_BOOT_SERVICE_IDENTITY: BootServiceIdentity = {
+/** The upstream service names. Only pure renderers and tests default to it. */
+export const UPSTREAM_BOOT_SERVICE_IDENTITY: BootServiceIdentity = {
   systemdUnitFile: BOOT_SERVICE_UNIT_FILE,
   launchdLabel: BOOT_SERVICE_LAUNCHD_LABEL,
   description: "T3 Code server",
@@ -115,7 +116,7 @@ export interface BootServicePlan {
 /** Pure renderer: service units cannot rely on the user's shell or PATH. */
 export function renderBootServiceUnit(
   plan: BootServicePlan,
-  identity: BootServiceIdentity = DEFAULT_BOOT_SERVICE_IDENTITY,
+  identity: BootServiceIdentity = UPSTREAM_BOOT_SERVICE_IDENTITY,
 ): string {
   // The user manager has no reliable network-online target; server networking retries itself.
   return [
@@ -172,7 +173,7 @@ function escapeXmlText(value: string): string {
 export function renderBootServicePlist(
   plan: BootServicePlan,
   options: { readonly homeDir: string; readonly environmentPath: string },
-  identity: BootServiceIdentity = DEFAULT_BOOT_SERVICE_IDENTITY,
+  identity: BootServiceIdentity = UPSTREAM_BOOT_SERVICE_IDENTITY,
 ): string {
   // KeepAlive/ThrottleInterval mirror Restart=always/RestartSec=5; launchd has no crash-loop burst limit.
   // ExitTimeOut matches systemd and exceeds the child's 75s grace; a longer queued stop keeps the transaction held.
@@ -673,7 +674,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   readonly logsDir: string;
   readonly cliVersion: string;
   readonly host?: BootServiceHost;
-  readonly identity?: BootServiceIdentity;
+  readonly identity: BootServiceIdentity;
   readonly environment?: Readonly<Record<string, string>>;
   readonly allowEnableLinger?: boolean;
   readonly runtimeMode?: "verified-private-artifact";
@@ -689,7 +690,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const homeDir = yield* Config.String("HOME").pipe(Config.withDefault(""));
   const xdgConfigHome = yield* Config.String("XDG_CONFIG_HOME").pipe(Config.withDefault(""));
   const installerPath = yield* Config.String("PATH").pipe(Config.withDefault(""));
-  const identity = input.identity ?? DEFAULT_BOOT_SERVICE_IDENTITY;
+  const identity = input.identity;
   const runningInsideService =
     (yield* Config.String(BOOT_SERVICE_UNIT_ENV).pipe(Config.withDefault(""))) ===
     identity.systemdUnitFile;
@@ -1319,7 +1320,7 @@ export const layer = (input: {
   readonly logsDir: string;
   readonly cliVersion: string;
   readonly host?: BootServiceHost;
-  readonly identity?: BootServiceIdentity;
+  readonly identity: BootServiceIdentity;
   readonly environment?: Readonly<Record<string, string>>;
   readonly allowEnableLinger?: boolean;
 }) => Layer.effect(BootService, make(input));

@@ -300,6 +300,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       );
       return yield* BootService.make({
         ...serviceOptions,
+        identity: serviceOptions.identity ?? BootService.UPSTREAM_BOOT_SERVICE_IDENTITY,
         baseDir: serviceBaseDir,
         logsDir: path.join(serviceBaseDir, "userdata", "logs"),
         cliVersion,
