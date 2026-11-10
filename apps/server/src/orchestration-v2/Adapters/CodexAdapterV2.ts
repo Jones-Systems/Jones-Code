@@ -10,6 +10,11 @@ import { codexCapacityRetriesExhausted } from "../../jones/provider/codex/CodexC
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import { boundedSteer, verifyCodexProcessExit } from "../../jones/orchestration/LateSteer.ts";
 import {
+  rootStartWaitMs,
+  STOP_CHILD_BUDGET_MS,
+  STOP_REQUEST_BUDGET_MS,
+} from "../../jones/provider/stopBudgets.ts";
+import {
   codexProducerOwnershipIsExclusive,
   makeCodexProducerRetirement,
   makeCodexThreadRetirements,
@@ -136,6 +141,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import type * as CodexRpc from "effect-codex-app-server/rpc";
 import * as CodexSchema from "effect-codex-app-server/schema";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
@@ -10009,7 +10015,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                               turnId: context.nativeTurnId,
                             })
                             .pipe(
-                              Effect.timeoutOption("3 seconds"),
+                              Effect.timeoutOption(STOP_REQUEST_BUDGET_MS),
                               Effect.tap((result) =>
                                 Option.isNone(result)
                                   ? Effect.logWarning(
@@ -10035,7 +10041,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                           ),
                         ),
                       { concurrency: 8, discard: true },
-                    ).pipe(Effect.timeoutOption("10 seconds"));
+                    ).pipe(Effect.timeoutOption(STOP_CHILD_BUDGET_MS));
                     if (Option.isNone(completed)) {
                       yield* Effect.logWarning(
                         "orchestration-v2.codex-remaining-lineage-interrupt-timeout",
@@ -10096,7 +10102,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                           turnId: context.nativeTurnId,
                         })
                         .pipe(
-                          Effect.timeoutOption("3 seconds"),
+                          Effect.timeoutOption(STOP_REQUEST_BUDGET_MS),
                           Effect.tap((result) =>
                             Option.isNone(result)
                               ? Effect.logWarning(
@@ -10111,7 +10117,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ),
                     ),
                   { concurrency: 8, discard: true },
-                ).pipe(Effect.timeoutOption("10 seconds"));
+                ).pipe(Effect.timeoutOption(STOP_CHILD_BUDGET_MS));
                 if (Option.isNone(completed)) {
                   yield* Effect.logWarning(
                     "orchestration-v2.codex-late-descendant-interrupt-timeout",
@@ -10150,11 +10156,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   | undefined;
                 // A wedged child must not prevent the root Stop request. Preserve
                 // the native fleet's bounded fan-out before addressing the root.
+                const stopStartedAt = yield* Clock.currentTimeMillis;
                 const childFleet = yield* Effect.forEach(
                   interruptTargets.filter((target) => target.context !== activeTurn),
                   (target) =>
                     interruptNativeContext(target.context).pipe(
-                      Effect.timeoutOption("3 seconds"),
+                      Effect.timeoutOption(STOP_REQUEST_BUDGET_MS),
                       Effect.tap((result) =>
                         Option.isNone(result)
                           ? Effect.logWarning("orchestration-v2.codex-child-interrupt-timeout", {
@@ -10169,7 +10176,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       ),
                     ),
                   { concurrency: 8, discard: true },
-                ).pipe(Effect.timeoutOption("10 seconds"));
+                ).pipe(Effect.timeoutOption(STOP_CHILD_BUDGET_MS));
                 if (Option.isNone(childFleet))
                   yield* Effect.logWarning("orchestration-v2.codex-child-fleet-interrupt-timeout", {
                     providerSessionId: input.providerSessionId,
@@ -10179,12 +10186,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   (yield* Ref.get(activeTurns)).get(activeTurn.nativeTurnId) === activeTurn
                 ) {
                   if (activeTurn.nativeStartReady !== undefined) {
+                    const startWaitMs = rootStartWaitMs(
+                      (yield* Clock.currentTimeMillis) - stopStartedAt,
+                    );
                     const ready = yield* Deferred.await(activeTurn.nativeStartReady).pipe(
-                      Effect.timeoutOption("10 seconds"),
+                      Effect.timeoutOption(startWaitMs),
                     );
                     if (Option.isNone(ready))
                       return yield* toProtocolError(
-                        "Codex did not start the queued turn within 10 seconds; Stop could not be delivered.",
+                        `Codex did not start the queued turn within ${Math.ceil(startWaitMs / 1000)} seconds; Stop could not be delivered.`,
                       );
                   }
                   if ((yield* Ref.get(activeTurns)).get(activeTurn.nativeTurnId) === activeTurn) {
@@ -10196,7 +10206,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       })
                       .pipe(
                         Effect.timeoutOrElse({
-                          duration: "3 seconds",
+                          duration: STOP_REQUEST_BUDGET_MS,
                           orElse: () =>
                             Effect.fail(
                               new CodexInterruptAcknowledgementTimeout({

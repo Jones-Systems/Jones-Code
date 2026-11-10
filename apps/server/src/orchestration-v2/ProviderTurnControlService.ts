@@ -29,6 +29,7 @@ import * as EventSink from "./EventSink.ts";
 import { awaitRestartTerminal } from "../jones/orchestration/RestartPreparation.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import { STOP_CHILD_BUDGET_MS, STOP_RECOVERY_BUDGET_MS } from "../jones/provider/stopBudgets.ts";
 
 export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnControlError>()(
   "ProviderTurnControlError",
@@ -204,7 +205,7 @@ export const layer: Layer.Layer<
     return ProviderTurnControlServiceV2.of({
       interrupt: Effect.fn("ProviderTurnControlService.interrupt")(
         function* (input) {
-          const interruptDeadline = (yield* Clock.currentTimeMillis) + 10_000;
+          const interruptDeadline = (yield* Clock.currentTimeMillis) + STOP_CHILD_BUDGET_MS;
           const loaded = yield* load({ ...input, operation: "interrupt" });
           const session = Option.isSome(loaded.session)
             ? loaded.session
@@ -316,7 +317,7 @@ export const layer: Layer.Layer<
               providerTurnId: loaded.providerTurn.id,
               preserveGoal: true,
             })
-            .pipe(Effect.timeout("14 seconds"));
+            .pipe(Effect.timeout(STOP_RECOVERY_BUDGET_MS));
 
           yield* awaitRestartTerminal({
             target: input,
