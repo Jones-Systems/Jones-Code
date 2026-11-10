@@ -284,12 +284,9 @@ interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
   readonly retryExpectedFailureAfter?: Duration.Input;
   readonly resubscribe?: Stream.Stream<unknown, never, never>;
   /**
-   * Opt-in for streams that must stay live for the whole session. If the stream
-   * completes, loses its transport, is interrupted by the server or dies while its
-   * session is still current, subscribe again on that session after this delay
-   * (doubling up to 30 seconds; see `jones/sync/sessionResubscribe.ts`). Without it,
-   * such a stream stays dormant until a replacement session or a `resubscribe`
-   * signal arrives, even though the connection is otherwise healthy.
+   * If the stream ends, fails in transport, or is interrupted or dies on the server while
+   * its session is still current, resubscribe on that session after this delay (doubling
+   * to 30 seconds; see `jones/sync/sessionResubscribe.ts`). Without it, the stream waits.
    */
   readonly resubscribeWhileSessionCurrent?: Duration.Input;
 }
