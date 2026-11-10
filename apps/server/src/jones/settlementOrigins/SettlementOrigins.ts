@@ -39,7 +39,7 @@ export class SettlementOriginsRetentionError extends Schema.TaggedError<Settleme
 }
 
 /** Rows older than this are deleted from both origin tables. */
-export const SETTLEMENT_ORIGIN_RETENTION = Duration.days(30);
+const SETTLEMENT_ORIGIN_RETENTION = Duration.days(30);
 /**
  * A missing marker proves `other` only inside this window, so a pruned client marker reads
  * `unknown`, never `other`. One day under retention covers the marker-to-event lag.
