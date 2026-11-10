@@ -8,7 +8,9 @@
     "apps/server/src/jones/git/backgroundGitAdmission.test.ts",
     "apps/server/src/jones/git/backgroundGitAdmission.fixture.ts",
     "apps/server/src/jones/git/gitTiming.ts",
-    "apps/server/src/jones/git/gitTiming.test.ts"
+    "apps/server/src/jones/git/gitTiming.test.ts",
+    "apps/server/src/jones/git/listRefsTelemetry.ts",
+    "apps/server/src/jones/git/listRefsTelemetry.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/git/GitManager.ts",
@@ -44,6 +46,10 @@
     {
       "from": "apps/server/src/vcs/GitVcsDriverCore.ts",
       "to": "apps/server/src/jones/git/gitTiming.ts"
+    },
+    {
+      "from": "apps/server/src/vcs/GitVcsDriverCore.ts",
+      "to": "apps/server/src/jones/git/listRefsTelemetry.ts"
     }
   ]
 }
