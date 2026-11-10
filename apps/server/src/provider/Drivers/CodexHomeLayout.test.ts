@@ -283,8 +283,12 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           expect(tmpLinkResult._tag).toBe("Failure");
           expect(yield* fileSystem.readFileString(localMemoryLock)).toBe("profile-memory-lock");
           expect(yield* fileSystem.readFileString(sharedMemoryLock)).toBe("shared-memory-lock");
-          expect(Option.getOrThrow((yield* fileSystem.stat(localMemoryLock)).ino)).toBe(localLockInode);
-          expect(Option.getOrThrow((yield* fileSystem.stat(sharedMemoryLock)).ino)).toBe(sharedLockInode);
+          expect(Option.getOrThrow((yield* fileSystem.stat(localMemoryLock)).ino)).toBe(
+            localLockInode,
+          );
+          expect(Option.getOrThrow((yield* fileSystem.stat(sharedMemoryLock)).ino)).toBe(
+            sharedLockInode,
+          );
         }),
     );
 
