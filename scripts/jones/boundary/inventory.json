@@ -2685,6 +2685,7 @@
     "scripts/vite.config.ts": "hook",
     "t3.json": "accepted-shared",
     "tsconfig.base.json": "hook",
+    "apps/mobile/tsconfig.json": "hook",
     "scripts/jones/boundary/fragments/thread-content-evidence.json": "jones-owned",
     "apps/server/src/jones/mcp/threadContentEvidence.ts": "jones-owned",
     "scripts/jones/updates/packaged-desktop-dialog-observer.m": "jones-owned",
