@@ -428,6 +428,7 @@ export function JonesBuildStatus({
           {primary.node ?? primary.text}
         </span>
       ) : null}
+      {primary !== undefined ? <span aria-hidden="true">·</span> : null}
       <DisclosureButton
         open={detailsOpen}
         controls={detailsId}

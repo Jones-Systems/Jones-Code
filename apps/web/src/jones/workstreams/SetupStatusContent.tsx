@@ -31,11 +31,11 @@ export function SetupStatusLine({
   children: string;
 }) {
   return (
-    <p role="status" className="flex flex-wrap items-center gap-1.5">
+    <p role="status" className="flex items-center gap-1.5">
       <Badge size="sm" variant={tone}>
         {badge}
       </Badge>
-      <span>{children}</span>
+      <span className="min-w-0 flex-1">{children}</span>
     </p>
   );
 }

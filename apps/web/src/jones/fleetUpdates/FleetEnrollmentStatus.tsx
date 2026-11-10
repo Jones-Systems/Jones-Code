@@ -71,7 +71,7 @@ export function FleetEnrollmentStatus({
           />
         }
       >
-        Auto <span className="font-medium text-foreground">{state}</span>
+        Auto-update <span className="font-medium text-foreground">{state}</span>
       </PopoverTrigger>
       <PopoverPopup side="bottom" align="end" width="md" padding="compact">
         <div className="space-y-2 text-xs">
