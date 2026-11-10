@@ -1,3 +1,4 @@
+import type { EnvironmentNativeCompletedExport } from "@t3tools/client-runtime/jones/workstreams/native-http";
 import type {
   NativeWorkstreamThreadAssurance,
   WorkstreamDtoPage,
@@ -14,6 +15,10 @@ import type { WorkstreamClient, WorkstreamUrls, WorkstreamUrlSelector } from "./
 import type { MobileWorkstreamGroup, MobileWorkstreamSnapshot } from "./projection";
 
 export interface MobileWorkstreams {
+  readonly exportNative?: (
+    snapshot: MobileWorkstreamSnapshot,
+    options?: { readonly signal?: AbortSignal; readonly pageSize?: number },
+  ) => Promise<EnvironmentNativeCompletedExport>;
   readonly saveAppearance: (
     snapshot: MobileWorkstreamSnapshot,
     input: WorkstreamAppearanceWrite,

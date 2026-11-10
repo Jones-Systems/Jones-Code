@@ -468,6 +468,12 @@ it.effect(
           [137, "NativeCreationLeaseRenewal"],
           [138, "WorkspaceRetirement"],
           [139, "ConversationWorkspace"],
+          [140, "WorkstreamsNative"],
+          [141, "WorkstreamsSourceEnrollments"],
+          [142, "WorkstreamsRollupAttempts"],
+          [143, "WorkstreamsPeerSessionPins"],
+          [144, "WorkstreamsMemberBindings"],
+          [145, "WorkstreamsForwardReceipts"],
         ],
       );
       assert.deepStrictEqual(
@@ -685,6 +691,12 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [137, "NativeCreationLeaseRenewal"],
       [138, "WorkspaceRetirement"],
       [139, "ConversationWorkspace"],
+      [140, "WorkstreamsNative"],
+      [141, "WorkstreamsSourceEnrollments"],
+      [142, "WorkstreamsRollupAttempts"],
+      [143, "WorkstreamsPeerSessionPins"],
+      [144, "WorkstreamsMemberBindings"],
+      [145, "WorkstreamsForwardReceipts"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;
@@ -731,6 +743,8 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      // Pin this historical upgrade at139; full startup tail coverage is above.
+      const through139 = jonesMigrationEntries.filter(([id]) => id <= 139);
       yield* runMigrations({ toMigrationInclusive: latestUpstreamMigration });
       yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 138));
       assert.deepStrictEqual(
@@ -759,7 +773,7 @@ it.effect(
       });
       const before = yield* readState;
       const failed = yield* runJonesMigrations(
-        jonesMigrationEntries.map(
+        through139.map(
           ([id, name, migration]) =>
             [
               id,
@@ -775,7 +789,7 @@ it.effect(
       ).pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(failed));
       assert.deepStrictEqual(yield* readState, before);
-      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+      assert.deepStrictEqual(yield* runJonesMigrations(through139), [
         [139, "ConversationWorkspace"],
       ]);
       assert.deepStrictEqual(
@@ -828,7 +842,7 @@ it.effect(
           { migration_id: 139, name: "ConversationWorkspace" },
         ],
       );
-      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* runJonesMigrations(through139), []);
       assert.deepStrictEqual(yield* readState, after);
       assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
     }).pipe(Effect.provide(memory)),

@@ -20,6 +20,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
+import * as Scope from "effect/Scope";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
@@ -739,6 +740,76 @@ describe("update admission through the event sink", () => {
       assert.sameMembers([...(yield* f.starts())], [active!.id, queued!.id]);
     }).pipe(Effect.provide(orchestration(Fence.layer))),
   );
+
+  it.effect("qualified launcher rejection resumes refused queued runs exactly once", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.send("active", "start_immediately");
+      yield* f.send("queued", "queue_after_active");
+      const [active, queued] = yield* f.runs();
+      yield* f.finish(active!);
+      let duringHandoff: string | undefined;
+      let afterRejection: string | undefined;
+      let reopenCount = 0;
+      const resumed = yield* Deferred.make<void>();
+      const exit = yield* Fence.fencedInstall({
+        fence: f.fence,
+        mode: "automatic",
+        handoffOutcome: () => Effect.succeed("rejected"),
+        reopened: Effect.sync(() => {
+          reopenCount++;
+        }).pipe(
+          Effect.andThen(f.orchestrator.resumeQueuedRuns),
+          Effect.orDie,
+          Effect.andThen(Deferred.succeed(resumed, undefined)),
+          Effect.asVoid,
+        ),
+        install: (hooks) =>
+          Effect.gen(function* () {
+            yield* hooks.onPrepared(Effect.void);
+            return yield* f.fence
+              .withLauncherHandoff(
+                Effect.gen(function* () {
+                  yield* f.orchestrator.resumeQueuedRuns.pipe(Effect.orDie);
+                  duringHandoff = (yield* f.runs()).find((run) => run.id === queued!.id)?.status;
+                  return yield* launcherRefused;
+                }),
+                (error) => error === launcherRefused,
+              )
+              .pipe(
+                Effect.onExit(() =>
+                  refusal(f.fence).pipe(
+                    Effect.tap((phase) =>
+                      Effect.sync(() => {
+                        afterRejection = phase;
+                      }),
+                    ),
+                  ),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new ServerSelfUpdateError({
+                      reason: "The synthetic launcher rejected the qualified handoff.",
+                      cause,
+                    }),
+                ),
+              );
+          }),
+      }).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(exit));
+      assert.strictEqual(duringHandoff, "queued");
+      assert.strictEqual(afterRejection, "handing-off");
+      yield* Deferred.await(resumed);
+      yield* drain;
+      assert.strictEqual(reopenCount, 1);
+      assert.isUndefined(yield* refusal(f.fence));
+      assert.notStrictEqual(
+        (yield* f.runs()).find((run) => run.id === queued!.id)?.status,
+        "queued",
+      );
+      assert.sameMembers([...(yield* f.starts())], [active!.id, queued!.id]);
+    }).pipe(Effect.provide(orchestration(Fence.layer))),
+  );
 });
 
 describe("work that is not a turn start yet", () => {
@@ -890,5 +961,132 @@ describe("a scheduled or webhook dispatch held for an update", () => {
       assert.lengthOf(yield* f.runs(), 0);
       assert.isTrue(yield* ticket.release);
     }).pipe(Effect.provide(orchestration(Fence.layer))),
+  );
+});
+
+describe("native use participation in the actual update fence", () => {
+  it.effect.each(["manual", "automatic"] as const)(
+    "invalidates %s uses permanently without changing provider admission",
+    (mode) =>
+      Effect.gen(function* () {
+        const fence = yield* Fence.make;
+        const firstScope = yield* Scope.make();
+        const secondScope = yield* Scope.make();
+        const first = yield* fence.nativeUse.pipe(Effect.provideService(Scope.Scope, firstScope));
+        const second = yield* fence.nativeUse.pipe(Effect.provideService(Scope.Scope, secondScope));
+        yield* first.checkCurrent;
+        const ticket = yield* fence.raise(mode);
+        yield* first.invalidated;
+        yield* second.invalidated;
+        assert.equal((yield* first.checkCurrent.pipe(Effect.result))._tag, "Failure");
+        assert.equal((yield* fence.nativeUse.pipe(Effect.scoped, Effect.result))._tag, "Failure");
+        // Native refusal does not manufacture provider events or trip an automatic ticket.
+        const handed = yield* Deferred.make<boolean>();
+        const handing = yield* Effect.forkChild(
+          ticket.handOff.pipe(Effect.tap((value) => Deferred.succeed(handed, value))),
+        );
+        yield* Scope.close(firstScope, Exit.void);
+        assert.isFalse(yield* Deferred.isDone(handed));
+        yield* Scope.close(secondScope, Exit.void);
+        assert.isTrue(yield* Fiber.join(handing));
+        yield* ticket.release;
+        assert.equal((yield* first.checkCurrent.pipe(Effect.result))._tag, "Failure");
+        const fresh = yield* fence.nativeUse;
+        yield* fresh.checkCurrent;
+        if (mode === "automatic") {
+          const automatic = yield* fence.raise("automatic");
+          yield* fence.admit(start);
+          assert.isFalse(yield* automatic.handOff);
+          yield* automatic.release;
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "direct launcher handoff waits for every native use; known rejection reopens a new epoch",
+    () =>
+      Effect.gen(function* () {
+        const fence = yield* Fence.make;
+        const firstScope = yield* Scope.make();
+        const secondScope = yield* Scope.make();
+        const first = yield* fence.nativeUse.pipe(Effect.provideService(Scope.Scope, firstScope));
+        const second = yield* fence.nativeUse.pipe(Effect.provideService(Scope.Scope, secondScope));
+        const called = yield* Deferred.make<void>();
+        const handing = yield* Effect.forkChild(
+          fence
+            .withLauncherHandoff(
+              Deferred.succeed(called, undefined).pipe(
+                Effect.andThen(Effect.fail("rejected" as const)),
+              ),
+              (error) => error === "rejected",
+            )
+            .pipe(Effect.result),
+        );
+        yield* first.invalidated;
+        assert.isFalse(yield* Deferred.isDone(called));
+        yield* Scope.close(firstScope, Exit.void);
+        assert.isFalse(yield* Deferred.isDone(called));
+        yield* Scope.close(secondScope, Exit.void);
+        assert.equal((yield* Fiber.join(handing))._tag, "Failure");
+        assert.isTrue(yield* Deferred.isDone(called));
+        assert.equal((yield* second.checkCurrent.pipe(Effect.result))._tag, "Failure");
+        const fresh = yield* fence.nativeUse;
+        yield* fresh.checkCurrent;
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each(["ambiguous", "accepted"] as const)(
+    "keeps native admission closed after %s direct handoff",
+    (outcome) =>
+      Effect.gen(function* () {
+        const fence = yield* Fence.make;
+        const raw = outcome === "accepted" ? Effect.succeed("accepted") : Effect.fail("ambiguous");
+        yield* fence.withLauncherHandoff(raw, () => false).pipe(Effect.result);
+        assert.equal((yield* fence.nativeUse.pipe(Effect.scoped, Effect.result))._tag, "Failure");
+        assert.isTrue(yield* busy(fence));
+      }),
+  );
+
+  it.effect("qualified fencedInstall joins its own ticket at the low-level boundary", () =>
+    Effect.gen(function* () {
+      const fence = yield* attachedFence;
+      let exchanged = 0;
+      yield* Fence.fencedInstall({
+        fence,
+        mode: "manual",
+        handoffOutcome: () => Effect.succeed("rejected"),
+        install: (hooks) =>
+          Effect.gen(function* () {
+            yield* hooks.onPrepared(Effect.void);
+            yield* fence
+              .withLauncherHandoff(
+                Effect.sync(() => {
+                  exchanged++;
+                }),
+                () => false,
+              )
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerSelfUpdateError({ reason: "Synthetic launcher failed", cause }),
+                ),
+              );
+            yield* hooks.onAccepted;
+          }),
+      });
+      assert.equal(exchanged, 1);
+      assert.isTrue(yield* busy(fence));
+    }),
+  );
+
+  it.effect("mixed known rejection and unproven teardown keeps admission closed", () =>
+    Effect.gen(function* () {
+      const fence = yield* Fence.make;
+      const mixed = Effect.fail("rejected" as const).pipe(
+        Effect.ensuring(Effect.die("synthetic unproven handoff teardown")),
+      );
+      yield* fence.withLauncherHandoff(mixed, (error) => error === "rejected").pipe(Effect.exit);
+      assert.equal((yield* fence.nativeUse.pipe(Effect.scoped, Effect.result))._tag, "Failure");
+    }),
   );
 });

@@ -25,11 +25,11 @@ it.each(["current", "parent-eof", "replay", "wrong-path", "wrong-run"] as const)
       const { openDesktopNativeOwnerChannel } = await import(${JSON.stringify(moduleUrl)});
       const channel = openDesktopNativeOwnerChannel({ binding: ${JSON.stringify(binding)}, assertCurrent() {} }, 8, 9);
       try {
-        await channel.refresh(); channel.assertCurrent(); process.stdout.write('qualified\\n');
+        await channel.refresh(); channel.assertCurrent(); const prepared = channel.prepareCurrent(); prepared.assertCurrent(); process.stdout.write('qualified\\n');
         await new Promise(resolve => process.stdin.once('data', resolve));
         if (${JSON.stringify(fault)} === 'parent-eof') await new Promise(resolve => setTimeout(resolve, 50));
         else await channel.refresh();
-        channel.assertCurrent(); process.stdout.write('current\\n');
+        channel.assertCurrent(); prepared.assertCurrent(); process.stdout.write('current\\n');
       } catch { process.stdout.write('refused\\n'); }
       finally { channel.close(); process.stdin.destroy(); }
     `;
@@ -177,7 +177,7 @@ it.each(["channel", "session"] as const)(
     const admission = { binding: ${JSON.stringify(binding)}, assertCurrent() {} };
     if (${JSON.stringify(surface)} === 'session') {
       const { registerHooks } = await import('node:module');
-      const fixture = 'data:text/javascript,' + encodeURIComponent('export const holdJonesNativeWriterFence = () => ({ binding: ' + JSON.stringify(admission.binding) + ', assertCurrent() {} });');
+      const fixture = 'data:text/javascript,' + encodeURIComponent('export const prepareJonesNativeWriterUse = () => { throw new Error("Synthetic recovery fixture cannot prepare authority"); }; export const holdJonesNativeWriterFence = () => ({ binding: ' + JSON.stringify(admission.binding) + ', assertCurrent() {} });');
       registerHooks({ resolve(specifier, context, next) {
         return specifier === '@t3tools/shared/jones/nativeWriterFence' ? { url: fixture, shortCircuit: true } : next(specifier, context);
       } });
@@ -192,7 +192,10 @@ it.each(["channel", "session"] as const)(
     const report = value => process.stdout.write(JSON.stringify(value) + '\\n');
     const refused = () => { try { channel.assertCurrent(); return false; } catch { return true; } };
     try {
-      await channel.refresh(); channel.assertCurrent(); report({ phase: 'qualified' });
+      await channel.refresh(); channel.assertCurrent();
+      const prepared = ${JSON.stringify(surface)} === 'channel' ? channel.prepareCurrent() : undefined;
+      prepared?.assertCurrent();
+      report({ phase: 'qualified' });
       for (let round = 0; round < 2; round++) {
         let timeout;
         try { await channel.refresh(); } catch (error) { timeout = { code: error.code, message: error.message }; }
@@ -203,7 +206,14 @@ it.each(["channel", "session"] as const)(
         admission.assertCurrent();
         report({ phase: 'after-late', round, refused: refused(), parentCurrent: process.ppid === parentPid, childPid: process.pid });
         try {
-          await channel.refresh(); channel.assertCurrent(); report({ phase: 'recovered', round });
+          await channel.refresh(); channel.assertCurrent();
+          if (prepared) {
+            let refused = false;
+            try { prepared.assertCurrent(); } catch { refused = true; }
+            if (!refused) throw new Error('A resumed channel revived a prepared proof');
+            channel.prepareCurrent().assertCurrent();
+          }
+          report({ phase: 'recovered', round });
         } catch (error) {
           report({ phase: 'unrecovered', round, code: error.code, message: error.message }); break;
         }

@@ -315,3 +315,29 @@ it.effect(
       expect(launches).toBe(1);
     }),
 );
+
+it.effect("recorded recovery credential lookup is non-secret and never renews liveness", () =>
+  Effect.gen(function* () {
+    let timestamp = 1000;
+    const registry = yield* makeRegistry(() => timestamp);
+    const issued = yield* registry.issue({
+      threadId: ThreadId.make("recorded-recovery-agent"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["orchestration"]),
+    });
+    const id = issued.config.providerSessionId;
+    const first = yield* registry.lookupByCredentialId(id);
+    expect(first?.thread.providerSessionId).toBe(id);
+    expect(JSON.stringify(first)).not.toContain(issued.config.authorizationHeader);
+    expect(Object.keys(first!)).not.toContain("tokenHash");
+    timestamp += 99;
+    expect(yield* registry.lookupByCredentialId(id)).toEqual(first);
+    timestamp += 2;
+    expect(yield* registry.lookupByCredentialId(id)).toBeUndefined();
+    expect(yield* registry.lookupByCredentialId("unknown")).toBeUndefined();
+    yield* registry.touch(ThreadId.make("recorded-recovery-agent"));
+    expect(yield* registry.lookupByCredentialId(id)).toEqual(first);
+    yield* registry.revokeProviderSession(id);
+    expect(yield* registry.lookupByCredentialId(id)).toBeUndefined();
+  }),
+);

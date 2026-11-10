@@ -23,6 +23,8 @@ export const layer = Layer.merge(
         }),
       // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
       resolve: () => Effect.succeed(undefined),
+      // @effect-diagnostics-next-line effectSucceedWithVoid:off - Credential lookup has an optional result.
+      lookupByCredentialId: () => Effect.succeed(undefined),
       touch: () => Effect.void,
       revokeProviderSession: () => Effect.void,
       revokeThread: () => Effect.void,

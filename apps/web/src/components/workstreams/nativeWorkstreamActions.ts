@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   currentT3Placement,
+  liveT3PlacementsCurrent,
   type LiveT3Placements,
 } from "@t3tools/client-runtime/state/workstreams";
 import {
@@ -42,7 +43,8 @@ export function planNativeMembership(input: {
     context.authorization_revision !== binding.authorizationRevision ||
     context.server_generation !== binding.serverGeneration ||
     context.registry_version !== binding.registryVersion ||
-    input.placements.readiness !== "ready"
+    input.placements.readiness !== "ready" ||
+    !liveT3PlacementsCurrent(input.placements)
   )
     throw new Error("Thread placement binding changed. Refresh before changing membership.");
   const key = nativeWorkstreamThreadKey(input.thread.environmentId, input.thread.id);

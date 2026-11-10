@@ -1,0 +1,162 @@
+{
+  "contract": "workstreams-snapshot/1.0.0",
+  "version": 1,
+  "canonicalization": "utf16-keys-integer-json-v1",
+  "payload_encoding": "exact-utf8-string",
+  "class_order": [
+    "workstream_registry_context",
+    "workstream_owner_grants",
+    "workstream_source_bindings",
+    "workstreams",
+    "workstream_native_references",
+    "workstream_memberships",
+    "workstream_declarations",
+    "workstream_lifecycle_declarations",
+    "workstream_edges",
+    "workstream_pr_observations",
+    "workstream_command_receipts",
+    "workstream_external_reservations",
+    "workstream_external_results",
+    "workstream_audit_events",
+    "workstream_rollup_manifests",
+    "workstream_rollup_manifest_accounts",
+    "workstream_rollup_queue",
+    "workstream_rollup_discovery_cursors",
+    "workstream_rollup_summaries",
+    "workstream_collection_projections",
+    "workstream_history_links",
+    "workstream_appearance",
+    "workstream_appearance_receipts",
+    "workstream_registry_identity",
+    "workstream_registry_binding_principals",
+    "workstream_registry_binding_requests"
+  ],
+  "table_keys": {
+    "workstream_registry_context": [
+      "owner_id"
+    ],
+    "workstream_owner_grants": [
+      "owner_id",
+      "principal_id",
+      "grant_version"
+    ],
+    "workstream_source_bindings": [
+      "owner_id",
+      "provider",
+      "source_instance_id",
+      "binding_version"
+    ],
+    "workstreams": [
+      "owner_id",
+      "workstream_id"
+    ],
+    "workstream_native_references": [
+      "owner_id",
+      "native_reference_id"
+    ],
+    "workstream_memberships": [
+      "owner_id",
+      "membership_id"
+    ],
+    "workstream_declarations": [
+      "owner_id",
+      "declaration_id",
+      "revision"
+    ],
+    "workstream_lifecycle_declarations": [
+      "owner_id",
+      "lifecycle_declaration_id"
+    ],
+    "workstream_edges": [
+      "owner_id",
+      "edge_id"
+    ],
+    "workstream_pr_observations": [
+      "owner_id",
+      "native_reference_id",
+      "observation_version"
+    ],
+    "workstream_command_receipts": [
+      "owner_id",
+      "command_id"
+    ],
+    "workstream_external_reservations": [
+      "owner_id",
+      "command_id"
+    ],
+    "workstream_external_results": [
+      "owner_id",
+      "command_id"
+    ],
+    "workstream_audit_events": [
+      "owner_id",
+      "event_id"
+    ],
+    "workstream_rollup_manifests": [
+      "owner_id",
+      "workstream_id",
+      "manifest_sha256"
+    ],
+    "workstream_rollup_manifest_accounts": [
+      "owner_id",
+      "workstream_id",
+      "manifest_sha256",
+      "account_id"
+    ],
+    "workstream_rollup_queue": [
+      "owner_id",
+      "workstream_id"
+    ],
+    "workstream_rollup_discovery_cursors": [
+      "cursor_id"
+    ],
+    "workstream_rollup_summaries": [
+      "owner_id",
+      "workstream_id",
+      "rollup_version"
+    ],
+    "workstream_collection_projections": [
+      "owner_id",
+      "collection",
+      "scope_key",
+      "sort_number_1",
+      "sort_text_1",
+      "sort_number_2",
+      "record_id"
+    ],
+    "workstream_history_links": [
+      "owner_id",
+      "scope_key",
+      "predecessor_registry_version",
+      "predecessor_event_id",
+      "valid_from_event_sequence"
+    ],
+    "workstream_appearance": [
+      "owner_id",
+      "workstream_id"
+    ],
+    "workstream_appearance_receipts": [
+      "owner_id",
+      "command_id"
+    ],
+    "workstream_registry_identity": [
+      "singleton"
+    ],
+    "workstream_registry_binding_principals": [
+      "principal_id"
+    ],
+    "workstream_registry_binding_requests": [
+      "provisioning_id"
+    ]
+  },
+  "files": {
+    "snapshot.schema.json": "67077e74a11b48a2b260c5576aa1eafd93476a6445eb55d45abe5db935d364ad",
+    "vectors.json": "f11e401b8ad7d031fb76f66b9693c1393537a8e57797936104824e87b80c336e",
+    "vectors.sha256": "b97fab2ba5d235b2139684e0cf8c1dcd224ee862adaa7a2f8b47cd6608ad17e7",
+    "spec.md": "94b01973c5730376b3b0b81e214a20437efaf026cd518d6c689c9cabdf000eba"
+  },
+  "producer_schema_versions": {
+    "control-plane": 15,
+    "jones-native": 124
+  }
+}

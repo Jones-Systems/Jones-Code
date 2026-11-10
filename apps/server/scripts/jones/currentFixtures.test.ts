@@ -198,6 +198,12 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 137, name: "NativeCreationLeaseRenewal" },
           { id: 138, name: "WorkspaceRetirement" },
           { id: 139, name: "ConversationWorkspace" },
+          { id: 140, name: "WorkstreamsNative" },
+          { id: 141, name: "WorkstreamsSourceEnrollments" },
+          { id: 142, name: "WorkstreamsRollupAttempts" },
+          { id: 143, name: "WorkstreamsPeerSessionPins" },
+          { id: 144, name: "WorkstreamsMemberBindings" },
+          { id: 145, name: "WorkstreamsForwardReceipts" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

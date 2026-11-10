@@ -70,6 +70,8 @@ import {
   WorkstreamAppearance,
 } from "@t3tools/contracts";
 
+const decodeWorkstreamError = Schema.decodeUnknownSync(Schema.fromJsonString(WorkstreamError));
+const encodePlacementRequest = Schema.encodeEffect(Schema.fromJsonString(T3PlacementRequest));
 const EMPTY_SHA256 = NodeCrypto.createHash("sha256").update("").digest("hex");
 const TIMEOUT_MS = 15_000;
 
@@ -90,6 +92,7 @@ class BoundedTransportFailure extends Error {
     | "invalid_target"
     | "response_too_large"
     | "http_error"
+    | "authority_fenced"
     | "cursor_stale"
     | "unsupported_appearance";
 
@@ -98,6 +101,7 @@ class BoundedTransportFailure extends Error {
       | "invalid_target"
       | "response_too_large"
       | "http_error"
+      | "authority_fenced"
       | "cursor_stale"
       | "unsupported_appearance",
   ) {
@@ -228,7 +232,7 @@ function decodeResponse(
   const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   if (!response.ok) {
     try {
-      const error = Schema.decodeSync(Schema.fromJsonString(WorkstreamError))(body, {
+      const error = decodeWorkstreamError(body, {
         onExcessProperty: "error",
       });
       if (
@@ -375,6 +379,12 @@ async function performRequest(input: {
     },
     ...(input.body === "" ? {} : { body: input.body }),
   });
+  // A transition fence is a refusal, never authenticated dispatch or receipt-absence evidence.
+  // Detect it before body/proof decoding so lagging reads cannot degrade to offline-cache success.
+  if (response.status === 503 && response.headers.get("x-workstreams-authority") === "fenced") {
+    void response.body?.cancel().catch(() => undefined);
+    throw new BoundedTransportFailure("authority_fenced");
+  }
   const bytes = await readBoundedResponse(
     response,
     registration
@@ -701,7 +711,7 @@ export function makeControlPlaneWorkstreamTransport(
           input.command_id,
         ),
       listThreadPlacements: (input) =>
-        Schema.encodeEffect(Schema.fromJsonString(T3PlacementRequest))(input, {
+        encodePlacementRequest(input, {
           onExcessProperty: "error",
         }).pipe(
           Effect.mapError(
