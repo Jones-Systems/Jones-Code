@@ -568,6 +568,7 @@ it.effect.each(
 
 it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail) => {
   let commits = 0;
+  let commitsBeforeOutboxReconcile: number | undefined;
   const tracer = Tracer.make({
     span(options) {
       const span = new Tracer.NativeSpan(options);
@@ -660,6 +661,12 @@ it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail)
             eventlessNotifications += ids.length;
             yield* outbox.signalCancellations(ids);
           }),
+        // Jones runs the outbox's three process-loss statements under the deletion writer
+        // fence, one transaction each. They follow the grouped recovery commits this test counts.
+        reconcileAfterProcessLoss: Effect.suspend(() => {
+          commitsBeforeOutboxReconcile = commits;
+          return outbox.reconcileAfterProcessLoss;
+        }),
       }),
       Effect.provideService(
         EffectWorker.OrchestrationEffectWorkerV2,
@@ -686,7 +693,7 @@ it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail)
     commits = 0;
     const result = yield* recovery.reconcile("shutdown").pipe(Effect.exit);
     assert.equal(Exit.isFailure(result), fail);
-    assert.equal(commits, fail ? 1 : 3);
+    assert.equal(commitsBeforeOutboxReconcile ?? commits, fail ? 1 : 3);
     const receipts =
       yield* sql`SELECT aggregate_id FROM orchestration_command_receipts WHERE command_type = 'provider-runtime.reconcile' ORDER BY aggregate_id`;
     assert.deepEqual(

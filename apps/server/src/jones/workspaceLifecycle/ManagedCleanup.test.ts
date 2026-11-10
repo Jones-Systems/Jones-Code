@@ -145,7 +145,10 @@ it.effect("settlement records exact native output duties with retirement disable
               Layer.mock(PullRequests.PullRequestService)({
                 subscribeMerges: Effect.succeed(Stream.empty),
               }),
-              Layer.mock(Terminals.TerminalManager)({ closeIdle: () => Effect.void }),
+              Layer.mock(Terminals.TerminalManager)({
+                closeIdle: () => Effect.void,
+                closeOnSettle: () => Effect.void,
+              }),
               Layer.mock(ProjectScripts.ProjectSetupScriptRunner)({
                 runForThread: (input) =>
                   Effect.sync(() => {
@@ -403,7 +406,10 @@ it.effect.each([
                 Layer.mock(PullRequests.PullRequestService)({
                   subscribeMerges: Effect.succeed(Stream.empty),
                 }),
-                Layer.mock(Terminals.TerminalManager)({ closeIdle: () => Effect.void }),
+                Layer.mock(Terminals.TerminalManager)({
+                  closeIdle: () => Effect.void,
+                  closeOnSettle: () => Effect.void,
+                }),
                 Layer.mock(ProjectScripts.ProjectSetupScriptRunner)({
                   runForThread: (input) =>
                     Effect.sync(() => {

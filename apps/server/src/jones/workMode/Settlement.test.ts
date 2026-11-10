@@ -152,7 +152,10 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
             )
           : Effect.die(new Error(`Unexpected command: ${command.type}`)),
     }),
-    Layer.mock(TerminalManager.TerminalManager)({ closeIdle: () => Effect.void }),
+    Layer.mock(TerminalManager.TerminalManager)({
+      closeIdle: () => Effect.void,
+      closeOnSettle: () => Effect.void,
+    }),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
       runForThread: () => Effect.succeed({ status: "no-script" } as const),
     }),
