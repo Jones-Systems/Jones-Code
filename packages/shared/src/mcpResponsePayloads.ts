@@ -1,4 +1,4 @@
-// @effect-diagnostics globalJsonInEffect:off
+// @effect-diagnostics preferSchemaOverJson:off
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
