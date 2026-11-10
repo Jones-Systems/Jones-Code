@@ -31,14 +31,18 @@ const KNOWN_SHARED_DIRECTORIES = [
 
 // auth.lock guards the shadow home's private auth.json.
 const PRIVATE_ENTRY_NAMES = new Set(["auth.json", "auth.lock", "models_cache.json"]);
-// Finder maintains metadata separately for each directory, including shadow homes.
-const SHADOW_LOCAL_ENTRY_NAMES = new Set(["log", "memories", "tmp", ".DS_Store"]);
-// Shadow homes may create local runtime locks first; replace them with shared links because they guard shared state.
-const REPLACEABLE_SHARED_RUNTIME_ENTRIES = new Set([
-  "mcp-oauth-locks",
-  "thread-writer-locks",
+// Entries each shadow home keeps for itself. SQLite maintenance stays per account, so an account
+// home never links the shared `.sqlite-maintenance.lock` and one account's maintenance cannot
+// block another's. Finder keeps its metadata separately for each directory.
+const SHADOW_LOCAL_ENTRY_NAMES = new Set([
   ".sqlite-maintenance.lock",
+  "log",
+  "memories",
+  "tmp",
+  ".DS_Store",
 ]);
+// Shadow homes may create local runtime locks first; replace them with shared links because they guard shared state.
+const REPLACEABLE_SHARED_RUNTIME_ENTRIES = new Set(["mcp-oauth-locks", "thread-writer-locks"]);
 
 function resolveHomePath(path: Path.Path, home: string, value: string | undefined): string {
   const expanded =
