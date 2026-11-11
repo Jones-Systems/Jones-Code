@@ -1912,7 +1912,7 @@
     "apps/web/src/state/query.test.ts": "jones-tests-in-upstream",
     "apps/web/src/state/session.test.ts": "jones-tests-in-upstream",
     "apps/web/src/state/session.ts": "accepted-shared",
-    "apps/web/src/state/threads.ts": "accepted-shared",
+    "apps/web/src/state/threads.ts": "hook",
     "apps/web/src/state/tokenAccounting.test.ts": "jones-owned",
     "apps/web/src/state/tokenAccounting.ts": "jones-owned",
     "apps/web/src/state/use-orchestration-command.ts": "accepted-shared",
@@ -3088,7 +3088,11 @@
     "apps/server/src/binMain.ts": "hook",
     "apps/server/src/jones/orchestration/DelegatedNoticeDisposition.integration.test.ts": "jones-owned",
     "packages/client-runtime/src/state/threadState.ts": "hook",
-    "apps/web/src/state/threads.ts": "hook"
+    "apps/server/src/jones/updates/checkRecord.ts": "jones-owned",
+    "apps/server/src/jones/updates/progress.test.ts": "jones-owned",
+    "apps/server/src/jones/updates/progress.ts": "jones-owned",
+    "apps/server/src/jones/git/listRefsTelemetry.ts": "jones-owned",
+    "apps/server/src/jones/git/listRefsTelemetry.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

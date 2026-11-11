@@ -12,10 +12,19 @@ import {
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
+import { deviceStatusActive } from "@t3tools/client-runtime/jones/install-plan";
 import { cn } from "../../lib/utils";
 import { useInstallPlan } from "./useInstallPlan";
 import { installStatusStore, type InstallStatusStore } from "./panelUi";
-import { panelPresentation } from "./presentation";
+import {
+  deviceAttention,
+  deviceHeardAt,
+  deviceLiveness,
+  packageCheckLine,
+  panelPresentation,
+} from "./presentation";
+import { Elapsed, HeardAgo } from "./Elapsed";
+import { ProgressSteps } from "./ProgressSteps";
 import { selectionFor } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
 import {
@@ -25,13 +34,7 @@ import {
   type CleanupInspection,
   type PanelAction,
 } from "./actions";
-import {
-  INSTALL_PLAN_GO,
-  INSTALL_PLAN_INFO,
-  INSTALL_PLAN_WAIT,
-  lastSeenLabel,
-  lastUpdateLabel,
-} from "./copy";
+import { INSTALL_PLAN_GO, INSTALL_PLAN_INFO, INSTALL_PLAN_WAIT, lastUpdateLabel } from "./copy";
 
 interface EditDraft {
   readonly planId: string;
@@ -91,8 +94,16 @@ export function InstallStatusPanel({
             : "Fresh operations and enrollment capability are required."))
         : undefined;
     const row = view.rows.find((r) => r.environmentId === environmentId);
+    const active = deviceStatusActive(device?.observation, member);
+    const health = snapshot.pollHealth[environmentId];
+    const liveness = deviceLiveness(device, health, snapshot.updatedAt);
     return {
       environmentId,
+      active,
+      liveness,
+      attention: deviceAttention(row?.progress, liveness, snapshot.updatedAt),
+      heardAt: deviceHeardAt(device, health),
+      checkLine: packageCheckLine(row, device, active, snapshot.updatedAt),
       label: member?.label ?? device?.label ?? "Device",
       selection,
       locked,
@@ -256,6 +267,15 @@ export function InstallStatusPanel({
             <span>Laptop</span>
             <span className="ml-auto min-w-0 truncate text-right text-muted-foreground">
               {view.laptop?.text}
+              {view.laptop?.progress?.active ? (
+                <>
+                  {" · "}
+                  <Elapsed
+                    since={view.laptop.progress.stepStartedAt}
+                    skewMs={view.laptop.progress.skewMs}
+                  />
+                </>
+              ) : null}
             </span>
             <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
           </button>
@@ -296,6 +316,7 @@ export function InstallStatusPanel({
           {detail === "laptop" ? (
             <div className="space-y-1 px-2 pb-2 text-2xs text-muted-foreground">
               <p>{view.laptop?.text}</p>
+              {view.laptop?.progress ? <ProgressSteps progress={view.laptop.progress} /> : null}
               {view.laptop?.operationId ? <OperationId value={view.laptop.operationId} /> : null}
               {plan.laptop.operations.at(-1)?.result?.code ? (
                 <p>Code: {plan.laptop.operations.at(-1)!.result!.code}</p>
@@ -320,7 +341,7 @@ export function InstallStatusPanel({
                     ? "Checking outcome…"
                     : view.laptop?.phase === "held"
                       ? "Check update outcome"
-                      : "Check again"}
+                      : "Refresh now"}
                 </Button>
               ) : null}
             </div>
@@ -404,14 +425,18 @@ export function InstallStatusPanel({
           </div>
           <ul className="m-0 list-none p-0">
             {choices.map((choice) => {
-              const { environmentId, label, row, device } = choice;
+              const { environmentId, label, row, device, attention } = choice;
               const included = selected.has(environmentId);
+              const silent =
+                attention.kind === "unreachable" || attention.kind === "restart-silent";
               const text = editing
                 ? included
                   ? "Waits for Laptop"
                   : "Not included"
                 : (row?.text ??
                   (choice.reason === undefined ? "Not included" : `Can't join · ${choice.reason}`));
+              const lineText = !editing && silent ? attention.text : text;
+              const timer = !editing && !silent && row?.progress?.active ? row.progress : undefined;
               const open = detail === environmentId && !editing;
               const held = row?.phase === "held" || row?.phase === "unknown";
               const receipt = plan.devices
@@ -461,25 +486,53 @@ export function InstallStatusPanel({
                         ) : (
                           <span
                             aria-hidden
+                            data-liveness={choice.liveness.kind}
+                            data-attention={attention.kind}
                             className={cn(
                               "size-1.5 shrink-0 rounded-full border border-muted-foreground",
                               !included && "bg-muted-foreground opacity-50",
+                              timer !== undefined && "border-primary bg-primary",
+                              silent && "border-warning bg-warning opacity-100",
                             )}
                           />
                         )}
                         <span className={cn("shrink-0", !included && "text-muted-foreground")}>
                           {label}
                         </span>
-                        <span className="ml-auto min-w-0 truncate text-right text-2xs text-muted-foreground">
-                          {text}
+                        <span
+                          className={cn(
+                            "ml-auto min-w-0 truncate text-right text-2xs text-muted-foreground",
+                            silent && "text-warning",
+                          )}
+                          data-row-text
+                        >
+                          {lineText}
+                          {timer !== undefined ? (
+                            <>
+                              {" · "}
+                              <Elapsed since={timer.stepStartedAt} skewMs={timer.skewMs} />
+                            </>
+                          ) : null}
                         </span>
                         <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
                       </TooltipTrigger>
                       <TooltipPopup>
-                        {editing && choice.reason !== undefined ? choice.reason : text}
+                        {editing && choice.reason !== undefined ? choice.reason : lineText}
                       </TooltipPopup>
                     </Tooltip>
                   </div>
+                  {!editing && (attention.kind === "quiet" || attention.kind === "stalled") ? (
+                    <p
+                      className="flex items-center gap-1 px-3 pb-1 text-2xs text-muted-foreground"
+                      role="status"
+                      data-attention-line={attention.kind}
+                    >
+                      {attention.kind === "stalled" ? (
+                        <TriangleAlertIcon className="size-3 shrink-0 text-warning/70" />
+                      ) : null}
+                      {attention.text}
+                    </p>
+                  ) : null}
                   {!editing && row?.targetBuildRunning ? (
                     <p className="px-3 pb-1 text-2xs text-muted-foreground">
                       Target build is running
@@ -498,17 +551,16 @@ export function InstallStatusPanel({
                       className="space-y-1 px-3 pb-2 text-2xs text-muted-foreground"
                       aria-label={`${label} update status`}
                     >
-                      <p>{text}</p>
+                      <p>{lineText}</p>
+                      {row?.progress ? <ProgressSteps progress={row.progress} /> : null}
                       {row?.targetBuildRunning ? (
                         <p>This plan has no confirmed install receipt for this host.</p>
                       ) : null}
                       {device?.observation.freshness !== "fresh" ? (
-                        <p>
-                          {device?.observation.message ?? "Fresh status unavailable."}{" "}
-                          {lastSeenLabel(device?.lastObservedAt)}
-                        </p>
+                        <p>{device?.observation.message ?? "Fresh status unavailable."}</p>
                       ) : null}
-                      {row?.status?.check ? <p>{row.status.check.text}</p> : null}
+                      {choice.checkLine === undefined ? null : <p>{choice.checkLine}</p>}
+                      {device === undefined ? null : <HeardAgo at={choice.heardAt} />}
                       {row?.operationId ? <OperationId value={row.operationId} /> : null}
                       {receipt?.code ? <p>Code: {receipt.code}</p> : null}
                       {receipt?.message ? <p>{receipt.message}</p> : null}
@@ -646,7 +698,7 @@ export function InstallStatusPanel({
                               ? "Checking outcome…"
                               : held
                                 ? "Check update outcome"
-                                : "Check again"}
+                                : "Refresh now"}
                           </Button>
                         </div>
                       ) : null}

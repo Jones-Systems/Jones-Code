@@ -10,7 +10,7 @@ import type {
   JonesOperationReceipt,
   JonesOperationStartInput,
 } from "@t3tools/contracts/jones/jonesOperations";
-import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
+import type { JonesUpdateProgress, JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import {
   applyEdit,
@@ -30,6 +30,75 @@ export const FIXTURE_HOSTS = ["VPS", "Mini", "Test"].map((label) => ({
   label,
   environmentId: EnvironmentId.make(`install-fixture-${label.toLowerCase()}`),
 }));
+/** Joins the plan only in the step progress showcase, where it cannot be reached. */
+const FIXTURE_SHOWCASE_HOST = {
+  label: "Studio",
+  environmentId: EnvironmentId.make("install-fixture-studio"),
+};
+
+const SHOWCASE_INSTALL_STEPS = [
+  ["mark-threads", "Mark running threads"],
+  ["verify-runtime", "Verify runtime"],
+  ["startup-readiness", "Check startup readiness"],
+  ["capture-continuity", "Capture continuity"],
+  ["launcher-handoff", "Hand off to launcher"],
+  ["restart", "Restart"],
+  ["confirm-restart", "Confirm restart"],
+] as const;
+const SHOWCASE_DOWNLOAD_STEPS = [
+  ["download", "Download build"],
+  ["verify-stage", "Verify download"],
+] as const;
+
+/**
+ * A synthetic progress record at one step. Finished steps take 20 seconds each and end when the
+ * current step starts. `at` turns a millisecond offset before now into an ISO time.
+ */
+function showcaseProgress(input: {
+  readonly kind: "install" | "download";
+  readonly operationId: string;
+  readonly stepIndex: number;
+  readonly phase: JonesUpdateProgress["phase"];
+  readonly stepAgoMs: number;
+  readonly updatedAgoMs: number;
+  /** When the host served this record, which is when the client heard it. */
+  readonly reportedAgoMs: number;
+  readonly at: (agoMs: number) => string;
+  readonly error?: JonesUpdateProgress["error"];
+}): JonesUpdateProgress {
+  const catalog = input.kind === "install" ? SHOWCASE_INSTALL_STEPS : SHOWCASE_DOWNLOAD_STEPS;
+  const finished = input.stepIndex - 1;
+  const stepStarted = input.stepAgoMs;
+  const [stepKey, stepLabel] = catalog[input.stepIndex - 1]!;
+  return {
+    schema: 1,
+    kind: input.kind,
+    operationId: input.operationId,
+    phase: input.phase,
+    stepIndex: input.stepIndex,
+    stepCount: catalog.length,
+    stepKey,
+    stepLabel,
+    stepStartedAt: input.at(stepStarted),
+    startedAt: input.at(stepStarted + finished * 20_000),
+    updatedAt: input.at(input.updatedAgoMs),
+    reportedAt: input.at(input.reportedAgoMs),
+    steps: catalog.map(([key, label], offset) => {
+      const index = offset + 1;
+      if (index > input.stepIndex) return { key, label };
+      if (index === input.stepIndex)
+        return {
+          key,
+          label,
+          startedAt: input.at(stepStarted),
+          ...(input.phase === "failed" ? { endedAt: input.at(input.updatedAgoMs) } : {}),
+        };
+      const ended = stepStarted + (finished - index) * 20_000;
+      return { key, label, startedAt: input.at(ended + 20_000), endedAt: input.at(ended) };
+    }),
+    ...(input.error === undefined ? {} : { error: input.error }),
+  };
+}
 
 /** Scripted receipts exercise renderer boundaries only; none proves a native or host effect. */
 export function createScriptedInstallPlan(input: {
@@ -77,6 +146,12 @@ export function createScriptedInstallPlan(input: {
       },
     ]),
   );
+  /** Showcase-only reachability: when each host was last heard, and whether it is fresh. */
+  const reachability = new Map<
+    EnvironmentId,
+    { readonly heardAt: number; readonly freshness: "fresh" | "stale" }
+  >();
+  const showcaseHosts: (typeof FIXTURE_SHOWCASE_HOST)[] = [];
   let native: JonesInstallPlanState = {
     schema: 1,
     current: null,
@@ -118,13 +193,32 @@ export function createScriptedInstallPlan(input: {
     for (const listener of listeners) listener(native);
   };
   const devices = () =>
-    FIXTURE_HOSTS.map((host) => ({
-      ...host,
-      observation: { state: hosts.get(host.environmentId)!, freshness: "fresh" as const },
-      canOperate: true,
-      fleetStatus: fleets.get(host.environmentId)!,
-      lastObservedAt: iso(),
-    }));
+    [...FIXTURE_HOSTS, ...showcaseHosts].map((host) => {
+      const reach = reachability.get(host.environmentId);
+      if (reach === undefined)
+        return {
+          ...host,
+          observation: { state: hosts.get(host.environmentId)!, freshness: "fresh" as const },
+          canOperate: true,
+          fleetStatus: fleets.get(host.environmentId)!,
+          lastObservedAt: iso(),
+        };
+      const { heardAt } = reach;
+      return {
+        ...host,
+        observation: {
+          state: hosts.get(host.environmentId)!,
+          freshness: reach.freshness,
+          heardAt,
+          ...(reach.freshness === "stale"
+            ? { message: "Update status is temporarily unavailable; retrying." }
+            : {}),
+        },
+        canOperate: true,
+        fleetStatus: fleets.get(host.environmentId)!,
+        lastObservedAt: new Date(heardAt).toISOString(),
+      };
+    });
   const result = (
     extras: Omit<Partial<JonesInstallPlanResult>, "state"> = {},
   ): JonesInstallPlanResult => ({ state: native, ...extras });
@@ -663,9 +757,187 @@ export function createScriptedInstallPlan(input: {
     });
     notify();
   };
+  /**
+   * Replace the plan with a verified Laptop and four hosts mid-flight: VPS preparing an install,
+   * Mini failed at a step, Test stalled mid-download, and Studio unreachable. Synthetic only.
+   */
+  const showcaseStepProgress = () => {
+    const desktop = input.readDesktop();
+    const provenance = desktop.jones?.provenance;
+    if (provenance === undefined) throw new Error("The showcase needs a Laptop target build.");
+    const at = (agoMs: number) => new Date(now() - agoMs).toISOString();
+    if (!showcaseHosts.includes(FIXTURE_SHOWCASE_HOST)) {
+      showcaseHosts.push(FIXTURE_SHOWCASE_HOST);
+      const template = hosts.get(FIXTURE_HOSTS[0]!.environmentId)!;
+      hosts.set(FIXTURE_SHOWCASE_HOST.environmentId, {
+        ...template,
+        environmentId: FIXTURE_SHOWCASE_HOST.environmentId,
+      });
+      fleets.set(FIXTURE_SHOWCASE_HOST.environmentId, {
+        ...fleets.get(FIXTURE_HOSTS[0]!.environmentId)!,
+        environmentId: FIXTURE_SHOWCASE_HOST.environmentId,
+        update: hosts.get(FIXTURE_SHOWCASE_HOST.environmentId)!,
+      });
+    }
+    const target = {
+      repository: "Jones-Systems/Jones-Code" as const,
+      sourceSha: provenance.sourceSha,
+      sourceTree: provenance.sourceTree,
+      version: provenance.version ?? desktop.availableVersion ?? "fixture",
+    };
+    const all = [...FIXTURE_HOSTS, FIXTURE_SHOWCASE_HOST];
+    const plan = startPlan({
+      planId: uuid(),
+      origin: "update-button",
+      target,
+      from: { version: desktop.currentVersion },
+      laptopEnvironmentId: FIXTURE_LAPTOP,
+      select: all.map(({ environmentId, label }) => ({
+        environmentId,
+        label,
+        route: "operations" as const,
+      })),
+      now: at(30 * 60_000),
+    });
+    const byLabel = (label: string) => all.find((host) => host.label === label)!;
+    const scenarios = [
+      {
+        host: byLabel("VPS"),
+        step: "install" as const,
+        phase: "running" as const,
+        progress: { kind: "install" as const, stepIndex: 3, phase: "prep" as const },
+        stepAgoMs: 102_000,
+        updatedAgoMs: 8_000,
+        reach: { heardAgoMs: 5_000, freshness: "fresh" as const },
+      },
+      {
+        host: byLabel("Mini"),
+        step: "install" as const,
+        phase: "failed" as const,
+        progress: { kind: "install" as const, stepIndex: 3, phase: "failed" as const },
+        stepAgoMs: 9 * 60_000,
+        updatedAgoMs: 8 * 60_000,
+        reach: { heardAgoMs: 20_000, freshness: "fresh" as const },
+        error: {
+          code: "startup-not-ready",
+          message: "The new build did not report ready within 60 seconds. Nothing was installed.",
+        },
+      },
+      {
+        host: byLabel("Test"),
+        step: "download" as const,
+        phase: "running" as const,
+        progress: { kind: "download" as const, stepIndex: 1, phase: "download" as const },
+        stepAgoMs: 7 * 60_000,
+        updatedAgoMs: 4 * 60_000,
+        reach: { heardAgoMs: 12_000, freshness: "fresh" as const },
+      },
+      {
+        host: byLabel("Studio"),
+        step: "install" as const,
+        phase: "running" as const,
+        progress: { kind: "install" as const, stepIndex: 4, phase: "prep" as const },
+        stepAgoMs: 19 * 60_000,
+        updatedAgoMs: 18 * 60_000,
+        reach: { heardAgoMs: 18 * 60_000, freshness: "stale" as const },
+      },
+    ];
+    const devicesWithWork = plan.devices.map((device) => {
+      const scenario = scenarios.find((s) => s.host.environmentId === device.environmentId)!;
+      const operationId = uuid();
+      const start: JonesOperationStartInput = {
+        operationId,
+        environmentId: device.environmentId,
+        expectedInstalledSource: desktop.jones!.installedSource?.sha ?? "b".repeat(40),
+        action:
+          scenario.step === "install"
+            ? {
+                kind: "install",
+                stagedHandle: `fixture-stage-${device.label}`,
+                currentVersion: desktop.currentVersion,
+                targetSource: target.sourceSha,
+              }
+            : { kind: "download-exact", targetSource: target.sourceSha },
+        correlation: { planId: plan.planId, deviceKey: device.environmentId },
+      };
+      const receipt: JonesOperationReceipt = {
+        protocol: 1,
+        ...start,
+        phase: scenario.phase,
+        acceptedAt: at(scenario.stepAgoMs + 60_000),
+        jobId: uuid(),
+        updatedAt: at(scenario.updatedAgoMs),
+        ...(scenario.error === undefined
+          ? {}
+          : { code: scenario.error.code, message: scenario.error.message }),
+      };
+      receipts.set(operationId, receipt);
+      hosts.set(device.environmentId, {
+        ...hosts.get(device.environmentId)!,
+        operation: receipt,
+        phase:
+          scenario.phase === "failed"
+            ? "error"
+            : scenario.step === "install"
+              ? "preparing"
+              : "downloading",
+        progress: showcaseProgress({
+          ...scenario.progress,
+          operationId,
+          stepAgoMs: scenario.stepAgoMs,
+          updatedAgoMs: scenario.updatedAgoMs,
+          reportedAgoMs: scenario.reach.heardAgoMs,
+          at,
+          ...(scenario.error === undefined ? {} : { error: scenario.error }),
+        }),
+      });
+      reachability.set(device.environmentId, {
+        heardAt: now() - scenario.reach.heardAgoMs,
+        freshness: scenario.reach.freshness,
+      });
+      return {
+        ...device,
+        operations: [
+          {
+            operationId,
+            step: scenario.step,
+            request: { kind: "operation-start" as const, input: start },
+            lease: { claimant: "fixture-showcase", reservedAt: at(0), leaseUntil: at(-120_000) },
+            receipt,
+          },
+        ],
+      };
+    });
+    native = {
+      ...native,
+      current: {
+        ...plan,
+        laptop: {
+          ...plan.laptop,
+          gate: {
+            openedAt: at(25 * 60_000),
+            basis: "plan-install",
+            transactionId: "fixture-native-commit",
+            activeGeneration: "fixture-generation-2",
+            activeSource: target.sourceSha,
+            activeTree: target.sourceTree,
+          },
+        },
+        devices: devicesWithWork,
+      },
+    };
+    notify();
+    store.update({
+      pollHealth: {
+        ...store.get().pollHealth,
+        [FIXTURE_SHOWCASE_HOST.environmentId]: { failures: 3, lastSuccessAt: now() - 18 * 60_000 },
+      },
+    });
+  };
   notify();
   return {
     request,
+    showcaseStepProgress,
     onInstallPlan: (listener: (state: JonesInstallPlanState) => void) => {
       listeners.add(listener);
       return () => {

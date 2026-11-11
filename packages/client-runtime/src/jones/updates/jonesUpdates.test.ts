@@ -11,6 +11,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
@@ -22,6 +23,7 @@ import {
   jonesInstallRefusal,
   jonesFollowerHold,
   jonesFollowerSummary,
+  jonesReadRetryDelayMs,
   jonesUpdateActionError,
   jonesCandidatePresentation,
   jonesUpdatePresentation,
@@ -487,7 +489,7 @@ it.effect("connection replacement cancels a pending read retry and resets its cu
   }),
 );
 
-it.effect("authorization refusal marks retained data stale without retrying", () =>
+it.effect("authorization refusal marks retained data stale without transient backoff", () =>
   Effect.gen(function* () {
     let reads = 0;
     let delays = 0;
@@ -506,6 +508,87 @@ it.effect("authorization refusal marks retained data stale without retrying", ()
     expect(delays).toBe(0);
   }),
 );
+
+/** Lets forked fibers reach their next TestClock sleep before the clock moves. */
+const letFibersSettle = TestClock.withLive(Effect.sleep("50 millis"));
+
+it.effect("retries a non-retryable read failure after a bounded wait instead of parking", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const observer = yield* observeJonesUpdateSnapshot(
+      Stream.succeed(Option.some("prepared")),
+      () =>
+        ++reads === 1
+          ? Effect.fail({ _tag: "EnvironmentAuthInvalidError" })
+          : Effect.succeed(staged),
+    ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+    yield* letFibersSettle;
+    yield* TestClock.adjust("149 seconds");
+    yield* letFibersSettle;
+    expect(reads).toBe(1);
+    yield* TestClock.adjust("1 second");
+    const results = yield* Fiber.join(observer);
+    expect(results.map((snapshot) => snapshot.freshness)).toEqual(["stale", "fresh"]);
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("stamps heardAt on every successful read, including an unchanged long-poll", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const polling = yield* Deferred.make<void>();
+    const observer = yield* observeJonesUpdateSnapshot(
+      Stream.succeed(Option.some("prepared")),
+      () => {
+        reads++;
+        if (reads === 1) return Effect.succeed(staged);
+        if (reads === 2)
+          return Deferred.succeed(polling, undefined).pipe(
+            Effect.andThen(Effect.sleep("25 seconds")),
+            Effect.as(staged),
+          );
+        return Effect.fail({ _tag: "RemoteEnvironmentAuthTimeoutError" });
+      },
+      () => Effect.never,
+    ).pipe(Stream.take(3), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(polling);
+    yield* TestClock.adjust("25 seconds");
+    const results = yield* Fiber.join(observer);
+    expect(results.map((snapshot) => snapshot.freshness)).toEqual(["fresh", "fresh", "stale"]);
+    const [first, second, failed] = results.map((snapshot) => snapshot.heardAt);
+    expect(second! - first!).toBe(25_000);
+    expect(failed).toBe(second);
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("a kick restarts reads for a non-fresh stream without waiting out its delay", () =>
+  Effect.gen(function* () {
+    const kick = yield* Deferred.make<void>();
+    const waiting = yield* Deferred.make<void>();
+    let reads = 0;
+    const observer = yield* observeJonesUpdateSnapshot(
+      Stream.succeed(Option.some("prepared")),
+      () =>
+        ++reads === 1
+          ? Effect.fail({ _tag: "EnvironmentAuthInvalidError" })
+          : Effect.succeed(staged),
+      () => Effect.never,
+      {
+        kicked: Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Deferred.await(kick))),
+      },
+    ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(waiting);
+    expect(reads).toBe(1);
+    yield* Deferred.succeed(kick, undefined);
+    const results = yield* Fiber.join(observer);
+    expect(results.map((snapshot) => snapshot.freshness)).toEqual(["stale", "fresh"]);
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it("caps the transient read backoff at 150 seconds", () => {
+  expect([1, 2, 3, 8, 9, 20].map(jonesReadRetryDelayMs)).toEqual([
+    1000, 2000, 4000, 128_000, 150_000, 150_000,
+  ]);
+});
 
 it("distinguishes fulfilled remote failures from accepted restart progress", () => {
   expect(

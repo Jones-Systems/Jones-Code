@@ -195,7 +195,7 @@ it.each(["refused", "failed", "interrupted", "stopped"] as const)(
       } as const;
       const running = { ...live, installedSource };
       expect(observe(running)).toMatchObject({
-        phase: "not-updated",
+        phase: "updated-elsewhere",
         targetBuildRunning: true,
         actions: { download: false, install: false },
       });
@@ -316,6 +316,93 @@ it.each(["refused", "failed", "interrupted", "stopped"] as const)(
     if (phase === "refused") expect(laptop?.text).toBe("Download request did not start");
   },
 );
+
+it.each([
+  { name: "interrupted download from before a later install", phase: "interrupted" as const },
+  { name: "staged download of the source already running", phase: "completed" as const },
+])("a fresh host already running the target supersedes a $name", ({ phase }) => {
+  const host = EnvironmentId.make("mini");
+  const receipt: JonesOperationReceipt = {
+    protocol: 1,
+    operationId: planId,
+    environmentId: host,
+    expectedInstalledSource: "c".repeat(40),
+    action: { kind: "download-exact", targetSource: source },
+    phase,
+    ...(phase === "interrupted" ? { code: "cleanup-recovered" } : {}),
+    ...(phase === "completed"
+      ? { staged: { stagedHandle: "stage", sourceSha: source, sourceTree: tree, artifactId: 1 } }
+      : {}),
+    acceptedAt: now,
+    jobId: planId,
+    updatedAt: now,
+  };
+  const base = startPlan({
+    planId,
+    now,
+    origin: "update-button",
+    laptopEnvironmentId: env,
+    select: [{ environmentId: host, label: "Mini", route: "operations" }],
+    target: {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: source,
+      sourceTree: tree,
+      version: "new",
+    },
+    from: { version: "old" },
+  });
+  const state: JonesInstallPlanState = {
+    schema: 1,
+    current: {
+      ...base,
+      devices: [
+        {
+          ...base.devices[0]!,
+          operations: [
+            {
+              operationId: planId,
+              step: "download",
+              lease: { claimant: "fixture", reservedAt: now, leaseUntil: now },
+              request: { kind: "operation-start", input: receipt },
+              receipt,
+            },
+          ],
+        },
+      ],
+    },
+    last: null,
+    laptop: { observedAt: now, activationBlocked: false },
+    view: { complete: false },
+  };
+  const running: JonesUpdateState = {
+    source: "jones-actions",
+    channel: "jones-main",
+    phase: phase === "completed" ? "staged" : "available",
+    environmentId: host,
+    installedSource: { repository: "Jones-Systems/Jones-Code", sha: source, tree },
+    capability: { check: true, download: true, install: true, exactSource: true, operations: 1 },
+    checkClassification: { kind: "available", checkedAt: now },
+    ...(phase === "completed" ? { stagedHandle: "stage" } : {}),
+  };
+  const row = (value: JonesUpdateState, freshness: "fresh" | "stale" = "fresh") =>
+    installPlanPresentation(state, {
+      now: Date.parse(now),
+      devices: new Map([[host, { observation: { state: value, freshness }, canOperate: true }]]),
+    }).rows[0]!;
+  expect(row(running)).toMatchObject({
+    phase: "updated-elsewhere",
+    text: "Updated · running the selected source",
+    settled: true,
+    targetBuildRunning: true,
+    actions: { download: false, install: false, end: false },
+  });
+  // Without fresh proof the ledger operation still drives the row.
+  expect(row(running, "stale").phase).toBe(phase === "completed" ? "staged" : "not-updated");
+  expect(
+    row({ ...running, installedSource: { ...running.installedSource!, sha: "c".repeat(40) } })
+      .phase,
+  ).toBe(phase === "completed" ? "staged" : "not-updated");
+});
 
 it("offers reviewed install for a fresh matching cold Laptop stage without opening the gate", () => {
   const plan = startPlan({

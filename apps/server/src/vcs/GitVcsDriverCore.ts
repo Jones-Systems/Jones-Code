@@ -58,6 +58,12 @@ import { makeIsServerInternalPath } from "../auth/serverInternalPaths.ts";
 import * as ServerConfig from "../config.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import {
+  getObservedListRefsSnapshot,
+  markListRefsSnapshotRead,
+  observeListRefs,
+  timeListRefsPhase,
+} from "../jones/git/listRefsTelemetry.ts";
+import {
   recordWorktreeProcessTime,
   withGitExecutionTiming,
   withGitPermitTiming,
@@ -4129,7 +4135,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const bumpListRefsGeneration = (gitCommonDir: string): number =>
     setListRefsGeneration(gitCommonDir, ++listRefsGenerationSequence);
   const listRefsSnapshotCache = yield* Cache.makeWith(
-    (cacheKey: GitRefsSnapshotCacheKey) => readGitRefsSnapshot(cacheKey.gitCommonDir),
+    (cacheKey: GitRefsSnapshotCacheKey) =>
+      markListRefsSnapshotRead(readGitRefsSnapshot(cacheKey.gitCommonDir)),
     {
       capacity: LIST_REFS_SNAPSHOT_CACHE_CAPACITY,
       timeToLive: (exit) => (Exit.isSuccess(exit) ? LIST_REFS_SNAPSHOT_CACHE_TTL : Duration.zero),
@@ -4160,11 +4167,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const snapshot =
         refresh || currentEpoch === undefined
           ? // Cache the entire snapshot read so slow scans stay single-flight beyond the coalescing TTL.
-            yield* Cache.get(
+            yield* getObservedListRefsSnapshot(
               listRefsRefreshSnapshotCache,
               new GitRefsRefreshCacheKey({ gitCommonDir, generation }),
             )
-          : yield* Cache.get(
+          : yield* getObservedListRefsSnapshot(
               listRefsSnapshotCache,
               new GitRefsSnapshotCacheKey({ gitCommonDir, epoch: currentEpoch }),
             );
@@ -4204,6 +4211,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           GitCommandError: (error) =>
             isMissingGitCwdError(error) ? Effect.succeed(null) : Effect.fail(error),
         }),
+        timeListRefsPhase("repositoryPathsMs"),
       );
       if (repositoryPaths === null) {
         return {
@@ -4218,7 +4226,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const snapshot = yield* resolveListRefsSnapshot(
         repositoryPaths.gitCommonDir,
         input.refresh === true,
-      );
+      ).pipe(timeListRefsPhase("snapshotMs"));
       const hasCurrentWorktreeBranch =
         repositoryPaths.worktreeRoot !== null &&
         snapshot.localBranches.some((ref) => ref.worktreePath === repositoryPaths.worktreeRoot);
@@ -4262,6 +4270,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         totalCount: refs.totalCount,
       };
     },
+    (effect, input) => observeListRefs(input.refresh === true)(effect),
   );
 
   const readLegacyMaterial = Effect.fn("readLegacyMaterial")(function* (input: {
