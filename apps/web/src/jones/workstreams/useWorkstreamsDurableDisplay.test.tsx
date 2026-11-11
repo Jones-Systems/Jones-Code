@@ -269,6 +269,27 @@ describe("durable Workstream assignment display", () => {
     expect(view.placements?.items).toHaveLength(2_300);
   });
 
+  it("reports partial coverage when an assigned identity is too large for any proof request", async () => {
+    const threads = [
+      ...nativeThreads(2),
+      { environmentId: "env:a", id: "x".repeat(T3_PLACEMENT_MAX_REQUEST_BYTES) },
+    ];
+    const server = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: threads.map((thread) => assign(thread, "alpha")),
+    });
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    await mount(threads);
+    await settle(() => loaded());
+
+    expect(server.state.placementRequests.flat()).toHaveLength(2);
+    expect(latest.view.placementInventory).toMatchObject({
+      coverage: "partial",
+      totalIdentities: 3,
+    });
+    expect(latest.view.placementInventory.identities).toHaveLength(2);
+  });
+
   it("keeps groups when the clock passes proof expiry, downgrading them to recorded", async () => {
     const threads = nativeThreads(3);
     const server = syntheticWorkstreams({

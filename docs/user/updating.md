@@ -32,8 +32,35 @@ has entered mount or copy work, or installation has begun, it cannot be stopped
 from the panel. A Stop request on a supported host remains pending until its
 worker and any native cleanup are proved finished; a late Stop can leave a completed download ready to
 install. **Held** or **Not confirmed** means the result is unresolved. Keep the
-operation ID and use **Check again** to read fresh evidence; it does not retry
+operation ID and use **Refresh now** to read fresh evidence; it does not retry
 the operation. Closing the panel or restarting the app does not clear a hold.
+
+The panel also refreshes each machine's status by itself: about every minute
+while a machine is downloading, installing or restarting, and about every ten
+minutes otherwise, less often while the window is in the background. Automatic
+refresh only reads status; it never checks for, downloads, installs or stops an
+update. A machine not heard from for a few minutes shows **last heard** with its
+age; after 15 minutes, or three failed refreshes in a row while its status
+stream is also silent, it shows **Can't reach**. A refresh that waits behind
+other work on a machine that is still answering does not count.
+
+While a machine reports its steps, its row shows one line with a timer for the
+current step, such as **Preparing 3 of 7 · 1:42**, **Downloading · 0:38**,
+**Restarting · 0:51** or **Confirming · 0:12**, and ends with **Updated ·
+verified** or **Install failed at step 3 of 7**. The header counts the work, for
+example **1 installing · 2 of 3 done**. Open a row to see each step: a check and
+its duration when done, a dot and live timer for the current step, an open
+circle for steps still to come, and a cross with the reason where a step failed.
+The detail also shows when the machine was last heard, the operation ID,
+**Refresh now** and, during a download, Stop. Timers use the machine's own clock,
+so a machine whose clock differs from yours still shows the right time. Machines
+running an older server show their previous status text instead.
+
+A reachable machine whose current step has not moved for 3 minutes shows **No
+progress for 3m**. A machine is expected to go quiet while it restarts, so a
+restarting row shows no warning for 10 minutes, then **No word since restart**
+with the time since the restart began. A build that is already running is never
+offered for installation.
 
 The header's completion **Done** appears only when Laptop and every chosen device
 have settled and no operation is outstanding. A downloaded stage or unresolved

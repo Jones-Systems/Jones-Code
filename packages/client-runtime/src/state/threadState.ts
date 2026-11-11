@@ -7,6 +7,8 @@ export type EnvironmentThreadStatus = "empty" | "cached" | "synchronizing" | "li
 
 export interface EnvironmentThreadState {
   readonly data: Option.Option<OrchestrationV2ThreadProjection>;
+  /** Global orchestration event sequence applied to data; absent evidence is unknown. */
+  readonly appliedSequence?: number | null;
   readonly status: EnvironmentThreadStatus;
   readonly error: Option.Option<string>;
   /**
@@ -18,6 +20,7 @@ export interface EnvironmentThreadState {
 
 export const EMPTY_ENVIRONMENT_THREAD_STATE: EnvironmentThreadState = {
   data: Option.none(),
+  appliedSequence: null,
   status: "empty",
   error: Option.none(),
   history: EMPTY_THREAD_HISTORY_META,

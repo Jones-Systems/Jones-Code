@@ -48,6 +48,8 @@ export interface InstallPlanServices {
   readonly confirm: JonesExecutorHost["confirm"];
   readonly chooseRecovery: NonNullable<JonesExecutorHost["chooseRecovery"]>;
   readonly now: () => number;
+  /** Ask a waiting update status stream to read now; it never interrupts a live long-poll. */
+  readonly kick?: (environmentId: EnvironmentId) => void;
 }
 let active: { services: InstallPlanServices; store: InstallStatusStore } | undefined;
 export function bindInstallPlanServices(services: InstallPlanServices, store = installStatusStore) {

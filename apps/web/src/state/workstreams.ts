@@ -495,19 +495,31 @@ const compareIdentities = (a: T3PlacementIdentity, b: T3PlacementIdentity): numb
   return left < right ? -1 : left > right ? 1 : 0;
 };
 
+export interface NativePlacementPlan {
+  readonly batches: readonly (readonly T3PlacementIdentity[])[];
+  /** Identities too large for any request. They are never requested, so coverage is partial. */
+  readonly skippedIdentities: number;
+}
+
+/** Stable key for one proof request plan; a skipped identity changes it without a new batch. */
+const placementProofKey = (
+  batches: readonly (readonly T3PlacementIdentity[])[],
+  skippedIdentities: number,
+): string => JSON.stringify(skippedIdentities > 0 ? { batches, skippedIdentities } : batches);
+
 /**
  * Splits proof requests for the native threads accepted by `include` (and the preferred
- * thread) so every request stays within the identity and encoded-byte ceilings. The preferred
- * thread is requested first, then unsettled and recently settled conversations; identities
- * within a request keep canonical order.
+ * thread) within the identity and encoded-byte ceilings: preferred first, then unsettled and
+ * recently settled conversations, each request in canonical order. An identity too large for
+ * any request is counted in `skippedIdentities`, never dropped silently.
  */
-export function nativePlacementBatches(
+export function planNativePlacementBatches(
   nativeThreads: readonly NativePlacementThread[],
   options: {
     readonly include?: (key: string) => boolean;
     readonly preferred?: { readonly environmentId: string; readonly id: string } | null;
   } = {},
-): readonly (readonly T3PlacementIdentity[])[] {
+): NativePlacementPlan {
   const preferredKey = options.preferred
     ? nativeWorkstreamThreadKey(options.preferred.environmentId, options.preferred.id)
     : null;
@@ -535,10 +547,15 @@ export function nativePlacementBatches(
   const batches: T3PlacementIdentity[][] = [];
   let batch: T3PlacementIdentity[] = [];
   let requestBytes = emptyRequestBytes;
+  let skippedIdentities = 0;
   for (const { identity } of ordered) {
     const identityBytes = encoder.encode(JSON.stringify(identity)).byteLength;
-    // An identity too large for any request stays unproven rather than failing the others.
-    if (emptyRequestBytes + identityBytes > T3_PLACEMENT_MAX_REQUEST_BYTES) continue;
+    // An identity too large for any request stays unproven rather than failing the others,
+    // and is reported so the inventory discloses partial coverage.
+    if (emptyRequestBytes + identityBytes > T3_PLACEMENT_MAX_REQUEST_BYTES) {
+      skippedIdentities += 1;
+      continue;
+    }
     if (
       batch.length === T3_PLACEMENT_MAX_IDENTITIES ||
       requestBytes + identityBytes + (batch.length > 0 ? 1 : 0) > T3_PLACEMENT_MAX_REQUEST_BYTES
@@ -551,7 +568,17 @@ export function nativePlacementBatches(
     batch.push(identity);
   }
   if (batch.length > 0) batches.push(batch);
-  return batches.map((identities) => identities.sort(compareIdentities));
+  return {
+    batches: batches.map((identities) => identities.sort(compareIdentities)),
+    skippedIdentities,
+  };
+}
+
+export function nativePlacementBatches(
+  nativeThreads: readonly NativePlacementThread[],
+  options: Parameters<typeof planNativePlacementBatches>[1] = {},
+): readonly (readonly T3PlacementIdentity[])[] {
+  return planNativePlacementBatches(nativeThreads, options).batches;
 }
 
 const sameTrustedEnvironments = (left: LiveT3Placements, right: LiveT3Placements): boolean => {
@@ -630,8 +657,9 @@ async function loadPlacementProofs(
   batches: readonly (readonly T3PlacementIdentity[])[],
   load: (identities: readonly T3PlacementIdentity[]) => Promise<LiveT3Placements>,
   signal: AbortSignal,
+  skippedIdentities = 0,
 ): Promise<LoadedPlacementProofs> {
-  const key = JSON.stringify(batches);
+  const key = placementProofKey(batches, skippedIdentities);
   const proven: {
     readonly identities: readonly T3PlacementIdentity[];
     result: LiveT3Placements;
@@ -662,10 +690,14 @@ async function loadPlacementProofs(
     key,
     placements,
     inventory: {
-      coverage: failed || (placements === null && proven.length > 0) ? "partial" : "complete",
+      coverage:
+        failed || skippedIdentities > 0 || (placements === null && proven.length > 0)
+          ? "partial"
+          : "complete",
       identities,
       json: JSON.stringify(identities),
-      totalIdentities: batches.reduce((total, batch) => total + batch.length, 0),
+      totalIdentities:
+        batches.reduce((total, batch) => total + batch.length, 0) + skippedIdentities,
       proofsUnavailable: batches.length > 0 && unsupported === batches.length,
     },
   };
@@ -836,8 +868,8 @@ export function useWorkstreams(
     };
   }, []);
 
-  const proofBatches = useStableCallback((index: WorkstreamAssignmentIndex) =>
-    nativePlacementBatches(nativeThreadsSnapshot.current, {
+  const proofPlan = useStableCallback((index: WorkstreamAssignmentIndex) =>
+    planNativePlacementBatches(nativeThreadsSnapshot.current, {
       include: (key) => index.entries.has(key),
       preferred: preferredThreadRef.current,
     }),
@@ -994,15 +1026,16 @@ export function useWorkstreams(
         throw cause;
       });
       if (superseded()) return;
-      const batches = core.index === null ? [] : proofBatches(core.index);
+      const plan = core.index === null ? null : proofPlan(core.index);
       const proofs =
-        core.index === null
+        core.index === null || plan === null
           ? null
           : await loadPlacementProofs(
               core.list,
-              batches,
+              plan.batches,
               (identities) => requestPlacements(core.list, identities, controller.signal),
               controller.signal,
+              plan.skippedIdentities,
             );
       if (superseded()) return;
       // Commit the whole snapshot at once so no render mixes versions or clears groups.
@@ -1058,7 +1091,7 @@ export function useWorkstreams(
     nativeBlock,
     nativeHidden,
     markStale,
-    proofBatches,
+    proofPlan,
     purgeAuthorizedState,
     requestPlacements,
   ]);
@@ -1068,15 +1101,12 @@ export function useWorkstreams(
   useEffect(() => {
     if (!placementsEnabled || data === null || assignmentIndex === null) return;
     if (listRequest.current !== null) return;
-    const batches = nativePlacementBatches(stableNativeThreads, {
+    const { batches, skippedIdentities } = planNativePlacementBatches(stableNativeThreads, {
       include: (key) => assignmentIndex.entries.has(key),
       preferred: preferredThread,
     });
-    if (
-      JSON.stringify(batches) === requestedProofKey.current &&
-      requestedProofReader.current === nativeReads
-    )
-      return;
+    const key = placementProofKey(batches, skippedIdentities);
+    if (key === requestedProofKey.current && requestedProofReader.current === nativeReads) return;
     proofRequest.current?.abort();
     const controller = new AbortController();
     proofRequest.current = controller;
@@ -1087,7 +1117,6 @@ export function useWorkstreams(
       assignmentIndexRef.current === assignmentIndex;
     const previousKey = requestedProofKey.current;
     const previousReader = requestedProofReader.current;
-    const key = JSON.stringify(batches);
     let settled = false;
     requestedProofKey.current = key;
     requestedProofReader.current = nativeReads;
@@ -1096,6 +1125,7 @@ export function useWorkstreams(
       batches,
       (identities) => requestPlacements(data, identities, controller.signal),
       controller.signal,
+      skippedIdentities,
     ).then(
       (proofs) => {
         if (!current()) return;

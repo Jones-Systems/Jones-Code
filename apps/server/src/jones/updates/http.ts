@@ -4,6 +4,7 @@ import {
   AuthEnvironmentMaintainScope,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpEffect from "effect/http/HttpEffect";
@@ -11,6 +12,7 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { requireEnvironmentScope } from "../../auth/http.ts";
 import { JonesUpdates } from "./service.ts";
 import * as SourceRelation from "./sourceRelation.ts";
+import { stampProgressReportedAt } from "./progress.ts";
 
 const noStore = HttpEffect.appendPreResponseHandler((_request, response) =>
   Effect.succeed(HttpServerResponse.setHeader(response, "cache-control", "no-store")),
@@ -101,7 +103,8 @@ export const jonesUpdatesHttpApiLayer = HttpApiBuilder.group(
           Effect.gen(function* () {
             yield* requireEnvironmentScope(AuthOrchestrationReadScope);
             yield* noStore;
-            return yield* updates.state(query.after);
+            const state = yield* updates.state(query.after);
+            return stampProgressReportedAt(state, yield* Clock.currentTimeMillis);
           }),
         )
         .handle("sourceRelation", ({ query }) =>

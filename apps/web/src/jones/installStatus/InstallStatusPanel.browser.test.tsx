@@ -7,6 +7,9 @@ import { act, render, type Screen } from "../../../test/render";
 import "../../index.css";
 import { InstallStatusPanel } from "./InstallStatusPanel";
 import { startInstallPlanController } from "./InstallPlanController";
+import { startInstallStatusPoller } from "./InstallStatusPoller";
+import type { InstallPlanServices } from "./services";
+import { STATUS_POLL_CADENCE } from "@t3tools/client-runtime/jones/install-plan";
 import { handOffJonesTargets, routeInstallStatusPill } from "./entrypoints";
 import { createScriptedInstallPlan, FIXTURE_HOSTS } from "../updates/fixtures/install-preview-plan";
 
@@ -291,7 +294,7 @@ describe("Install status receipt fixture", () => {
     expect(original.receipt?.acceptedAt).toBeUndefined();
     const sent = () => calls.filter((call) => call.action === "fixture-host-operationStart");
     expect(sent()).toHaveLength(1);
-    await click(screen, "Check again");
+    await click(screen, "Refresh now");
     await act(() => world.receiptRead);
     expect(calls.filter((call) => call.action === "fixture-host-operationRead")).toHaveLength(1);
     expect(sent()).toHaveLength(1);
@@ -658,7 +661,7 @@ describe("Install status receipt fixture", () => {
         .map(({ action }) => action),
     ).toEqual(["fixture-review", "fixture-host-operationStart"]);
     const beforeCheck = calls.length;
-    await click(screen, "Check again");
+    await click(screen, "Refresh now");
     await expect
       .poll(
         () =>
@@ -747,5 +750,269 @@ describe("Install status receipt fixture", () => {
     ]);
     expect(world.calls.filter((c) => c.action === "fixture-host-operationStart")).toHaveLength(0);
     expect(world.calls.filter((c) => c.action === "fixture-laptop-download")).toHaveLength(1);
+  });
+});
+
+/** Manual refresh timers: `fire` runs every due refresh wait but never a refresh timeout. */
+function manualTimers() {
+  const timers = new Map<number, { run: () => void; ms: number }>();
+  let next = 0;
+  return {
+    setTimer: (run: () => void, ms: number) => {
+      timers.set(++next, { run, ms });
+      return next;
+    },
+    clearTimer: (handle: unknown) => {
+      timers.delete(handle as number);
+    },
+    fire() {
+      const due = [...timers].filter(([, timer]) => timer.ms !== STATUS_POLL_CADENCE.timeoutMs);
+      for (const [id] of due) timers.delete(id);
+      for (const [, timer] of due) timer.run();
+    },
+    /** Pending refresh timeouts, which `fire` leaves alone. */
+    timeouts: () =>
+      [...timers.values()].filter((timer) => timer.ms === STATUS_POLL_CADENCE.timeoutMs).length,
+    fireTimeouts() {
+      const due = [...timers].filter(([, timer]) => timer.ms === STATUS_POLL_CADENCE.timeoutMs);
+      for (const [id] of due) timers.delete(id);
+      for (const [, timer] of due) timer.run();
+    },
+  };
+}
+
+/** Records every service call the poller makes, so a test can prove a tick only reads. */
+function recordingServices(services: InstallPlanServices) {
+  const effects: string[] = [];
+  const recorded: InstallPlanServices = {
+    ...services,
+    bridge: {
+      ...services.bridge,
+      installPlan: async (request) => {
+        effects.push(`installPlan:${request.type}`);
+        return services.bridge.installPlan!(request);
+      },
+    },
+    observe: (id) => {
+      effects.push(`observe:${id}`);
+      return services.observe(id);
+    },
+    operation: (id, command) => {
+      effects.push(
+        `operation:${command.action}${"refreshInstallOutcome" in command.input ? ":outcome" : ""}`,
+      );
+      return services.operation(id, command);
+    },
+    legacy: (id, request) => {
+      effects.push(`legacy:${request.action}`);
+      return services.legacy(id, request);
+    },
+    stop: (id, command) => {
+      effects.push("stop");
+      return services.stop(id, command);
+    },
+    host: (id, request) => {
+      effects.push(`host:${request.action}`);
+      return services.host(id, request);
+    },
+    confirm: (message) => {
+      effects.push("confirm");
+      return services.confirm(message);
+    },
+  };
+  return { services: recorded, effects };
+}
+
+describe("Install status automatic refresh", () => {
+  it("reads an active device's ledger operation without a click and never mutates", async () => {
+    await using world = await setup();
+    const { screen, fixture, calls } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    await expect
+      .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase)
+      .toBe("running");
+    const { services, effects } = recordingServices(fixture.services(world.bridge));
+    const timers = manualTimers();
+    const poller = startInstallStatusPoller(services, {
+      store: fixture.store,
+      attention: () => true,
+      subscribeAttention: () => () => {},
+      subscribeOnline: () => () => {},
+      poller: { ...timers, random: () => 0.5 },
+    });
+    try {
+      const reads = () => calls.filter((c) => c.action === "fixture-host-operationRead").length;
+      const before = reads();
+      const started = calls.filter((c) => c.action === "fixture-host-operationStart").length;
+      await act(() => timers.fire());
+      await expect.poll(reads).toBeGreaterThan(before);
+      await expect.poll(() => effects.includes("operation:operationRead")).toBe(true);
+      const allowed = /^(observe:|operation:operationRead$|installPlan:(read|report)$)/;
+      expect(effects.filter((effect) => !allowed.test(effect))).toEqual([]);
+      expect(calls.filter((c) => c.action === "fixture-host-operationStart")).toHaveLength(started);
+    } finally {
+      poller.close();
+    }
+  });
+
+  it("shows Can't reach after three failed refreshes and clears it on the next success", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    const mini = FIXTURE_HOSTS.find((h) => h.label === "Mini")!.environmentId;
+    const base = fixture.services(world.bridge);
+    let failing = true;
+    const timers = manualTimers();
+    const poller = startInstallStatusPoller(
+      {
+        ...base,
+        observe: async (id) => {
+          if (failing && id === mini) throw new Error("Mini is unreachable.");
+          return base.observe(id);
+        },
+      },
+      {
+        store: fixture.store,
+        attention: () => true,
+        subscribeAttention: () => () => {},
+        subscribeOnline: () => () => {},
+        poller: { ...timers, random: () => 0.5 },
+      },
+    );
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await act(() => timers.fire());
+        await expect.poll(() => fixture.store.get().pollHealth[mini]?.failures).toBe(attempt);
+      }
+      await expect.poll(() => screen.container.textContent).toContain("Can't reach · ");
+      failing = false;
+      await act(() => timers.fire());
+      await expect.poll(() => fixture.store.get().pollHealth[mini]?.failures).toBe(0);
+      await expect.poll(() => screen.container.textContent).not.toContain("Can't reach");
+    } finally {
+      poller.close();
+    }
+  });
+
+  it("keeps a host reachable when its operation read times out behind the queue but the stream is fresh", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    await expect
+      .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase)
+      .toBe("running");
+    const mini = FIXTURE_HOSTS.find((h) => h.label === "Mini")!.environmentId;
+    const base = fixture.services(world.bridge);
+    const timers = manualTimers();
+    const poller = startInstallStatusPoller(
+      {
+        ...base,
+        // The status stream keeps hearing Mini; only the queued operation read never answers.
+        observe: async (id) => {
+          const device = await base.observe(id);
+          return { ...device, observation: { ...device.observation, heardAt: base.now() } };
+        },
+        operation: (id, command) =>
+          id === mini && command.action === "operationRead"
+            ? new Promise<never>(() => {})
+            : base.operation(id, command),
+      },
+      {
+        store: fixture.store,
+        attention: () => true,
+        subscribeAttention: () => () => {},
+        subscribeOnline: () => () => {},
+        poller: { ...timers, random: () => 0.5 },
+      },
+    );
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await act(() => timers.fire());
+        await expect.poll(() => timers.timeouts()).toBeGreaterThan(0);
+        await expect
+          .poll(async () => {
+            await act(() => timers.fireTimeouts());
+            return fixture.store.get().pollHealth[mini]?.failures;
+          })
+          .toBe(attempt);
+      }
+      expect(fixture.store.get().pollHealth[mini]?.failures).toBe(3);
+      expect(screen.container.textContent).not.toContain("Can't reach");
+      expect(
+        screen.container
+          .querySelector('[aria-label="Mini update details"] [data-liveness]')
+          ?.getAttribute("data-liveness"),
+      ).toBe("live");
+    } finally {
+      poller.close();
+    }
+  });
+});
+
+describe("Install status step progress", () => {
+  const rowText = (screen: Screen, label: string) =>
+    screen.container
+      .querySelector(`[aria-label="${label} update details"] [data-row-text]`)
+      ?.textContent?.trim();
+
+  it("shows one glanceable line per device and a summary of active work", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    await act(() => fixture.showcaseStepProgress());
+    await expect.poll(() => rowText(screen, "VPS")).toMatch(/^Preparing 3 of 7 · 1:4[0-5]$/);
+    expect(rowText(screen, "Mini")).toBe("Install failed at step 3 of 7");
+    expect(rowText(screen, "Test")).toMatch(/^Downloading · (6:59|7:0[0-3])$/);
+    expect(rowText(screen, "Studio")).toBe("Can't reach · last heard 18m ago");
+    expect(screen.container.textContent).toContain("No progress for 4m");
+    expect(screen.container.textContent).toContain("2 installing · 1 downloading · 0 of 4 done");
+    // Only running rows mount a timer; the failed and unreachable rows do not.
+    expect(screen.container.querySelectorAll("[data-row-text] [data-elapsed]")).toHaveLength(2);
+  });
+
+  it("lists steps with durations, a live timer for the current step and the failure", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    await act(() => fixture.showcaseStepProgress());
+    await click(screen, "VPS update details");
+    const detail = screen.container.querySelector<HTMLElement>('[aria-label="VPS update status"]')!;
+    const steps = [...detail.querySelectorAll<HTMLElement>("[data-step-status]")];
+    expect(steps.map((step) => step.dataset.stepStatus)).toEqual([
+      "done",
+      "done",
+      "current",
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+    ]);
+    expect(steps[0]!.textContent).toContain("Mark running threads");
+    expect(steps[0]!.textContent).toContain("0:20");
+    const timer = () => steps[2]!.querySelector("[data-elapsed]")?.textContent;
+    const first = timer();
+    expect(first).toMatch(/^1:4[0-5]$/);
+    await expect.poll(timer, { timeout: 4_000 }).not.toBe(first);
+    expect(detail.textContent).toMatch(/Last heard \d+s ago/);
+    expect(detail.querySelector('input[aria-label="Operation ID"]')).not.toBeNull();
+    expect(detail.textContent).toContain("Refresh now");
+
+    await click(screen, "Mini update details");
+    const failed = screen.container.querySelector<HTMLElement>(
+      '[aria-label="Mini update status"]',
+    )!;
+    const failedStep = failed.querySelector<HTMLElement>('[data-step-status="failed"]')!;
+    expect(failedStep.textContent).toContain("Check startup readiness");
+    expect(failedStep.textContent).toContain("did not report ready within 60 seconds");
+    expect(failed.querySelectorAll("[data-elapsed]")).toHaveLength(0);
   });
 });

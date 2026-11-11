@@ -13,7 +13,9 @@ import {
   type OrchestrationV2ProviderGoal,
   type ThreadGoalInput,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -105,6 +107,9 @@ function fixture(
   let starts = 0;
   let active = options.active ?? false;
   let startVisible = !options.unknownStart;
+  let sessionStopped = false;
+  let controlCalls = 0;
+  let hold: { entered: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
   const startResult = () =>
     startVisible
       ? {
@@ -118,6 +123,13 @@ function fixture(
     providerSessionId: sessionId,
     controlGoal: (input: ProviderGoalControlInput) =>
       Effect.gen(function* () {
+        controlCalls++;
+        const held = hold;
+        hold = undefined;
+        if (held !== undefined) {
+          yield* Deferred.succeed(held.entered, undefined);
+          yield* Deferred.await(held.release);
+        }
         if (!(yield* input.revalidate))
           return { outcome: "stale" as const, goal: null, reason: "stale" };
         if (input.action !== "read") {
@@ -140,8 +152,9 @@ function fixture(
         };
       }),
   } as ProviderAdapterV2SessionRuntime;
-  const thread = () => ({
-    id: threadId,
+  // Ids prefixed "other-" stand for a second thread bound to its own copy of this session.
+  const thread = (id: string = threadId) => ({
+    id,
     projectId: "project",
     activeProviderThreadId: provider.id,
     providerInstanceId: instanceId,
@@ -166,8 +179,8 @@ function fixture(
       getThreadShell: (id) =>
         Effect.sync(
           () =>
-            (id === threadId
-              ? thread()
+            (id === threadId || id.startsWith("other-")
+              ? thread(id)
               : {
                   ...thread(),
                   id: callerId,
@@ -182,10 +195,11 @@ function fixture(
               providerThreads: [options.caller === "self" ? provider : callerProvider],
             }) as never,
         ),
-      getProjectThreadRecords: () => Effect.sync(() => records() as never),
+      getProjectThreadRecords: (input) =>
+        Effect.sync(() => ({ ...records(), thread: thread(input.threadId) }) as never),
     }),
     Layer.mock(Sessions.ProviderSessionManagerV2)({
-      get: () => Effect.sync(() => Option.some(runtime)),
+      get: () => Effect.sync(() => (sessionStopped ? Option.none() : Option.some(runtime))),
       isMcpCallerAttached: (input) =>
         Effect.sync(
           () =>
@@ -236,6 +250,18 @@ function fixture(
       }
     },
     counts: () => ({ mutations: mutationCalls, starts }),
+    controlCalls: () => controlCalls,
+    stopSession: (stopped: boolean) => {
+      sessionStopped = stopped;
+    },
+    holdNextControl: Effect.gen(function* () {
+      const next = {
+        entered: yield* Deferred.make<void>(),
+        release: yield* Deferred.make<void>(),
+      };
+      hold = next;
+      return next;
+    }),
     resumeState: (running: boolean, visible = true) => {
       active = running;
       startVisible = visible;
@@ -655,6 +681,85 @@ describe("agent goal controls", () => {
         .pipe(Effect.flip);
       expect(refused.code).toBe("capability_denied");
       expect(f.counts().mutations).toBe(0);
+    }).pipe(Effect.provide(f.layer));
+  });
+  it.effect("locks per thread: same-thread calls queue, other threads do not", () => {
+    const f = fixture();
+    const other = ThreadId.make("other-thread");
+    const settled = (fiber: Fiber.Fiber<unknown, unknown>) =>
+      Effect.gen(function* () {
+        for (let i = 0; i < 50; i++) yield* Effect.yieldNow;
+        return fiber.pollUnsafe() !== undefined;
+      });
+    return Effect.gen(function* () {
+      const service = yield* GoalControl.GoalControl;
+      const held = yield* f.holdNextControl;
+      const slow = yield* Effect.forkChild(read(service));
+      yield* Deferred.await(held.entered);
+      const entered = f.controlCalls();
+      const sameThread = yield* Effect.forkChild(read(service));
+      const otherThread = yield* Effect.forkChild(
+        service.execute(scope, { threadId: other, action: "read" }),
+      );
+      expect(yield* settled(otherThread)).toBe(true);
+      expect(yield* settled(sameThread)).toBe(false);
+      expect(f.controlCalls()).toBe(entered + 1);
+      yield* Deferred.succeed(held.release, undefined);
+      yield* Fiber.join(slow);
+      yield* Fiber.join(sameThread);
+      expect(f.controlCalls()).toBe(entered + 2);
+    }).pipe(Effect.provide(f.layer));
+  });
+  it.effect("a stopped session releases its binding when the thread is next called", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      const service = yield* GoalControl.GoalControl;
+      const before = yield* read(service);
+      f.stopSession(true);
+      expect(yield* read(service)).toMatchObject({ reason: "session_stopped" });
+      f.stopSession(false);
+      // Same runtime object returns, yet the old control token no longer applies.
+      expect(yield* mutate(service, before.controlToken!, "pause")).toMatchObject({
+        outcome: "stale",
+        reason: "read_current_goal_before_mutation",
+      });
+      expect(f.counts().mutations).toBe(0);
+    }).pipe(Effect.provide(f.layer));
+  });
+  it.effect("another thread's call releases a stopped session's binding", () => {
+    const f = fixture();
+    const other = ThreadId.make("other-thread");
+    return Effect.gen(function* () {
+      const service = yield* GoalControl.GoalControl;
+      const before = yield* read(service);
+      f.stopSession(true);
+      yield* service.execute(scope, { threadId: other, action: "read" });
+      f.stopSession(false);
+      expect(yield* mutate(service, before.controlToken!, "pause")).toMatchObject({
+        outcome: "stale",
+        reason: "read_current_goal_before_mutation",
+      });
+      expect(f.counts().mutations).toBe(0);
+    }).pipe(Effect.provide(f.layer));
+  });
+  it.effect("keeps a released binding's request keys from becoming new mutations", () => {
+    const f = fixture();
+    const other = ThreadId.make("other-thread");
+    return Effect.gen(function* () {
+      const service = yield* GoalControl.GoalControl;
+      const before = yield* read(service);
+      expect(yield* mutate(service, before.controlToken!, "pause", "kept")).toMatchObject({
+        outcome: "applied",
+      });
+      f.stopSession(true);
+      yield* service.execute(scope, { threadId: other, action: "read" });
+      f.stopSession(false);
+      const fresh = yield* read(service);
+      expect(yield* mutate(service, fresh.controlToken!, "pause", "kept")).toMatchObject({
+        outcome: "stale",
+        reason: "goal_binding_changed",
+      });
+      expect(f.counts().mutations).toBe(1);
     }).pipe(Effect.provide(f.layer));
   });
   it.effect.each(["claudeAgent", "opencode"])("%s never simulates native controls", (driver) => {
