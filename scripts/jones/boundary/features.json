@@ -3530,6 +3530,20 @@
         "apps/server/src/jones/settlementRestore/plan.test.ts"
       ],
       "scope": "Every Jones reader of orchestration_events is classified as capture, tolerate or unaffected against upstream's event-log pruning rule (v1 events, thread.created, running run.updated and each stream's newest event stay; the rest older than a day goes; the pruned-through boundary is published first; receipts stay), and a source scan fails when a new reader is unclassified. Readers that would have read a missing event as absence fail closed: deletion admission, ordinary-checkout admission, settlement origins (unknown, never other, past the marker window) and the self-configuration selection revision, which never falls below the pruned-through sequence. Settlement origin rows older than 30 days are pruned by an indexed, batched sweep (Jones migration 146) started once for the server lifetime, and an interrupted origin recording now propagates instead of being absorbed. A rejected settlement restore travels as a typed error whose message keeps the client-visible wording. Fixtures prune synthetic history with the upstream keep rule; the upstream pruner, its maintenance preflight and the maintenance hooks are not part of this feature."
+    },
+    {
+      "id": "orphaned-run-records",
+      "tests": [
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.test.ts",
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.integration.test.ts",
+        "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+        "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts"
+      ],
+      "scope": "Startup recovery closes provider turns, nodes and their open turn items still pending or running under runs that already ended, or under a provider-native subagent's ended runless root turn, as interrupted. A Jones service selects candidates with Jones-owned read queries over upstream projection tables (live-node partial index, item node/provider-turn/run indexes) and commits one receipt per thread through EventSink.commitCommand with the command:runtime-reconcile:orphaned-records identity, so existing reactors ignore the closures and planned update continuity exempts the exact receipt. Anything under a run that has not ended stays open, including queued and held runs; async questions with pending message requests, todo lists, proposed plans, active subagent rows and background-capable items stay with their owners; deleted threads are skipped. The accepted-shared ProviderRuntimeRecoveryService gains one optional serviceOption hook after its startup loop; the runtimeLayer hook provides the service. Best effort, idempotent, no schema, index, payload or wire change."
     }
   ]
 }
