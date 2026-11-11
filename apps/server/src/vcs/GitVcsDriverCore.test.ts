@@ -4717,7 +4717,14 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
               stdout = added
                 ? `worktree ${owned}\0HEAD ${oid}\0branch refs/heads/${currentBranch}\0\0`
                 : "";
-            else if (args.includes("for-each-ref")) {
+            else if (args.includes("for-each-ref") && args.at(-1) === "refs/heads/") {
+              // Upstream resolves a free branch name from one listing of every local branch.
+              const heads = [
+                ...(added ? [`refs/heads/${currentBranch}`] : []),
+                ...occupiedTargets,
+              ].filter((ref) => ref.startsWith("refs/heads/"));
+              stdout = heads.map((ref) => `${ref.slice("refs/heads/".length)}\n`).join("");
+            } else if (args.includes("for-each-ref")) {
               const target = args.at(-1)!;
               stdout =
                 (added && target === `refs/heads/${currentBranch}`) || occupiedTargets.has(target)
