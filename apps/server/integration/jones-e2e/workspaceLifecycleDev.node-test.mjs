@@ -1,9 +1,8 @@
 /**
  * SOURCE candidate: prepared Node 26.12.1; explicit --live --operator /absolute/private/operator-bindings.json.
- * Operator bindings require exported source, fresh admission, native consent and a unique 0700 root containing only provider-home.
- * Preparation owns account access; this driver reads no credentials or native profile content.
- * An explicit fleet nativeBinding retains external history/cache custody; only public launcher/release/executable bytes are verified.
- * Mini approval: V3 403a9344c2f86b3a822505b115778b9e311536ec. Actual host is recorded; laptop evidence cannot qualify Mini.
+ * Requires qualified exported source, fresh admission, native consent and a unique 0700 root containing only provider-home.
+ * Preparation owns account access; driver reads no credentials/native profile content; fleet nativeBinding history/cache stays externally owned (only public launcher/release/executable bytes verified).
+ * Record actual host; laptop evidence cannot qualify Mini. Mini approval: V3 403a9344c2f86b3a822505b115778b9e311536ec.
  */
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
