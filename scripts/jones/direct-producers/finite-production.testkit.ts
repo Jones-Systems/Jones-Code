@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Private finite Git/SQLite fixtures exercise durable records without an app or compiler.
 import * as NodeAssert from "node:assert/strict";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
-import NodeFSPMutable from "node:fs/promises";
-import { syncBuiltinESMExports } from "node:module";
+import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Cause from "effect/Cause";
@@ -926,14 +926,15 @@ export const capacityCases: Record<string, () => Promise<void>> = {
       finiteFixture(async ({ worktree, root, records }) => {
         const prior = await beginProduction(worktree, "jones-server-build", [root]);
         await finishProduction(prior, "succeeded");
-        const unlink = NodeFSPMutable.unlink;
+        const mutable: { unlink: typeof NodeFSP.unlink } = NodeFS.promises;
+        const unlink = mutable.unlink;
         let allocations = 0;
         try {
-          NodeFSPMutable.unlink = async (path) => {
+          mutable.unlink = async (path) => {
             if (path === prior.path) throw new Error("fixture unlink unavailable");
             return unlink(path);
           };
-          syncBuiltinESMExports();
+          NodeModule.syncBuiltinESMExports();
           const exit = await Effect.runPromise(
             Effect.exit(
               withFiniteProduction(
@@ -962,9 +963,11 @@ export const capacityCases: Record<string, () => Promise<void>> = {
             "disposed",
           );
         } finally {
-          NodeFSPMutable.unlink = unlink;
-          syncBuiltinESMExports();
+          mutable.unlink = unlink;
+          NodeModule.syncBuiltinESMExports();
         }
+        NodeAssert.equal(NodeFSP.unlink, unlink);
+        NodeAssert.equal(NodeFS.promises.unlink, unlink);
       }),
 
   "9999 and 10000 records admit only with an exact validated successor and keep the reader bound":

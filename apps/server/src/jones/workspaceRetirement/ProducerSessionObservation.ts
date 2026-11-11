@@ -92,11 +92,9 @@ async function linuxSessionSnapshot(
   const second = await forkEpoch();
   if (first !== second || performance.now() > deadline)
     throw new Error("session_observation_unavailable");
-  // Even a quiet snapshot cannot establish the installed kernel's publication
-  // ordering, complete visibility/no-hidepid and exact 64-bit build binding.
-  // Reviewed source: Linux v6.12.107 f717995c / Debian 6.12.107-1.
-  // Those host gates have no qualified entry in this slice. Never expose an
-  // assertion flag or injectable gate which promotes this snapshot to absence.
+  // Kernel publication, 64-bit build, visibility/no-hidepid and namespace gates
+  // remain unqualified. Reviewed: Linux v6.12.107 f717995c / Debian 6.12.107-1.
+  // Keep quiet snapshots unknown; no assertion flag or injected absence gate.
   return { state: "unknown", reason: "linux_kernel_visibility_unqualified" };
 }
 
