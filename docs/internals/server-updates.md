@@ -256,7 +256,7 @@ If never accepted, its tombstone preserves the real action, source and correlati
 has no `acceptedAt`, and authorizes no effect. A fence cannot overwrite an accepted
 operation. A timeout, missing receipt, missing payload or absent job does not
 prove no effect; unknown and held work stays unresolved until exact native or
-target evidence settles it. Check again reads evidence and never turns absence
+target evidence settles it. Refresh now reads evidence and never turns absence
 into Retry or completion. Directive expiry likewise requires matching target
 proof; it is not a synthetic operation fence.
 

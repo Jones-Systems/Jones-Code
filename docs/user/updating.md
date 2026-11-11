@@ -32,8 +32,16 @@ has entered mount or copy work, or installation has begun, it cannot be stopped
 from the panel. A Stop request on a supported host remains pending until its
 worker and any native cleanup are proved finished; a late Stop can leave a completed download ready to
 install. **Held** or **Not confirmed** means the result is unresolved. Keep the
-operation ID and use **Check again** to read fresh evidence; it does not retry
+operation ID and use **Refresh now** to read fresh evidence; it does not retry
 the operation. Closing the panel or restarting the app does not clear a hold.
+
+The panel also refreshes each machine's status by itself: about every minute
+while a machine is downloading, installing or restarting, and about every ten
+minutes otherwise, less often while the window is in the background. Automatic
+refresh only reads status; it never checks for, downloads, installs or stops an
+update. A machine not heard from for a few minutes shows **last heard** with its
+age; after 15 minutes, or three failed refreshes in a row, it shows
+**Can't reach**.
 
 The header's completion **Done** appears only when Laptop and every chosen device
 have settled and no operation is outstanding. A downloaded stage or unresolved

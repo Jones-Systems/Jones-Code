@@ -103,6 +103,7 @@ export function productionInstallPlanServices(
       return result.value;
     },
     host: fleetHost,
+    kick: jonesUpdates.kick,
     confirm: async (message) => (await requestConfirmDialog(message)) ?? false,
     chooseRecovery: chooseRecoveryPolicy,
   };
