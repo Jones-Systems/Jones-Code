@@ -8,7 +8,9 @@ import {
   ThreadId,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2Command,
+  type ModelSelection,
 } from "@t3tools/contracts";
+import { ownerSteerSelection } from "../threadConfiguration/ownerSelection.ts";
 import { transientSteerTarget } from "./TransientSteer.ts";
 
 const selection = { instanceId: ProviderInstanceId.make("codex"), model: "test" };
@@ -39,18 +41,53 @@ describe("transient steer delivery", () => {
     "defers a %s follow-up in a native turn gap",
     (creationSource) => {
       expect(
-        transientSteerTarget(projection(), { ...command, creationSource }, steer, selection, false)
-          ?.id,
+        transientSteerTarget(
+          projection(),
+          { ...command, creationSource },
+          steer,
+          () => selection,
+          false,
+        )?.id,
       ).toBe(runId);
     },
   );
+  it.each([
+    { ...selection, instanceId: ProviderInstanceId.make("other") },
+    { ...selection, model: "prospective" },
+    { ...selection, options: [{ id: "reasoningEffort", value: "high" }] },
+  ] satisfies ModelSelection[])("uses inherited owner selection with saved %j", (saved) => {
+    const inherited = (active: ModelSelection) =>
+      ownerSteerSelection({
+        ownerMessage: true,
+        explicit: false,
+        pending: undefined,
+        requested: saved,
+        active,
+      }).modelSelection;
+    expect(transientSteerTarget(projection(), command, steer, inherited, false)?.id).toBe(runId);
+    expect(transientSteerTarget(projection(), command, steer, () => saved, false)).toBeUndefined();
+  });
+  it.each([
+    { explicit: true, pending: undefined, requested: { ...selection, model: "explicit" } },
+    { explicit: false, pending: { ...selection, model: "pending" }, requested: selection },
+    { explicit: false, pending: selection, requested: { ...selection, model: "saved" } },
+  ])("preserves owner transition validation: %j", (input) => {
+    const effective = (active: ModelSelection) =>
+      ownerSteerSelection({
+        ownerMessage: true,
+        ...input,
+        active,
+      }).modelSelection;
+    const target = transientSteerTarget(projection(), command, steer, effective, false);
+    expect(target?.id).toBe(input.pending === selection ? runId : undefined);
+  });
   it("keeps a healthy turn on its steer validation path", () => {
     expect(
       transientSteerTarget(
         projection("running", [{ runAttemptId: attemptId, status: "running" }]),
         command,
         steer,
-        selection,
+        () => selection,
         false,
       ),
     ).toBeUndefined();
@@ -64,23 +101,31 @@ describe("transient steer delivery", () => {
           projection(),
           { ...legacy, ...(deliveryIntent && { deliveryIntent }) },
           steer,
-          selection,
+          () => selection,
           false,
         ),
       ).toBeUndefined();
     },
   );
   it("preserves separate-turn commands and configuration transition validation", () => {
-    expect(transientSteerTarget(projection(), command, steer, selection, true)).toBeUndefined();
     expect(
-      transientSteerTarget(projection(), command, steer, { ...selection, model: "other" }, false),
+      transientSteerTarget(projection(), command, steer, () => selection, true),
     ).toBeUndefined();
     expect(
       transientSteerTarget(
         projection(),
         command,
         steer,
-        { ...selection, instanceId: ProviderInstanceId.make("other") },
+        () => ({ ...selection, model: "other" }),
+        false,
+      ),
+    ).toBeUndefined();
+    expect(
+      transientSteerTarget(
+        projection(),
+        command,
+        steer,
+        () => ({ ...selection, instanceId: ProviderInstanceId.make("other") }),
         false,
       ),
     ).toBeUndefined();
@@ -89,7 +134,7 @@ describe("transient steer delivery", () => {
     "never defers a %s target",
     (status) => {
       expect(
-        transientSteerTarget(projection(status), command, steer, selection, false),
+        transientSteerTarget(projection(status), command, steer, () => selection, false),
       ).toBeUndefined();
     },
   );
@@ -99,7 +144,7 @@ describe("transient steer delivery", () => {
         projection(),
         { ...command, createdBy: "agent", creationSource: "server" },
         steer,
-        selection,
+        () => selection,
         false,
       ),
     ).toBeUndefined();

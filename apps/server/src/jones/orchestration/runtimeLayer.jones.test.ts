@@ -64,6 +64,7 @@ import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionM
 import * as RuntimeLayer from "../../orchestration-v2/runtimeLayer.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
+import { withOwnerSelectionIngress } from "../threadConfiguration/ownerIngress.ts";
 
 const PlatformTestLayer = Layer.merge(
   NodeServices.layer,
@@ -135,24 +136,25 @@ const alternateProviderInstance = {
   },
 } satisfies ProviderInstance;
 
-const TestProviderInstanceRegistry = Layer.succeed(
-  ProviderInstanceRegistry.ProviderInstanceRegistry,
-  {
-    getCatalogSource: (instanceId) =>
+const testProviderRegistry = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+  getCatalogSource: (instanceId) =>
+    [providerInstance, alternateProviderInstance].find(
+      (instance) => instanceId === instance.instanceId,
+    ),
+  getInstance: (instanceId) =>
+    Effect.succeed(
       [providerInstance, alternateProviderInstance].find(
         (instance) => instanceId === instance.instanceId,
       ),
-    getInstance: (instanceId) =>
-      Effect.succeed(
-        [providerInstance, alternateProviderInstance].find(
-          (instance) => instanceId === instance.instanceId,
-        ),
-      ),
-    listInstances: Effect.succeed([providerInstance, alternateProviderInstance]),
-    listUnavailable: Effect.succeed([]),
-    streamChanges: Stream.empty,
-    subscribeChanges: Effect.never,
-  },
+    ),
+  listInstances: Effect.succeed([providerInstance, alternateProviderInstance]),
+  listUnavailable: Effect.succeed([]),
+  streamChanges: Stream.empty,
+  subscribeChanges: Effect.never,
+});
+const TestProviderInstanceRegistry = Layer.succeed(
+  ProviderInstanceRegistry.ProviderInstanceRegistry,
+  testProviderRegistry,
 );
 
 /** Seed a project row the way a committed `project.created` event folds into it. */
@@ -470,71 +472,348 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
 });
 
 it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
-  it.effect("keeps an explicit steer rejected after Stop during a provider gap", () =>
-    Effect.gen(function* () {
-      const prefix = "steer-gap-stop";
-      const f = yield* queuedToolFixture(prefix);
-      yield* f.sink.write({
-        events: [
-          {
-            id: EventId.make(`${prefix}-waiting`),
-            type: "run.updated",
-            threadId: f.threadId,
-            runId: f.run.id,
-            occurredAt: f.now,
-            payload: { ...f.run, status: "waiting" },
-          },
-          {
-            id: EventId.make(`${prefix}-stop`),
-            type: "turn-item.updated",
-            threadId: f.threadId,
-            runId: f.run.id,
-            occurredAt: f.now,
-            payload: {
-              id: TurnItemId.make(`${prefix}-stop`),
+  it.effect.each([
+    { name: "model", saved: { ...modelSelection, model: "prospective-model" } },
+    { name: "provider", saved: { ...modelSelection, instanceId: alternateInstanceId } },
+    {
+      name: "options",
+      saved: { ...modelSelection, options: [{ id: "reasoningEffort", value: "high" }] },
+    },
+  ] satisfies Array<{ name: string; saved: ModelSelection }>)(
+    "queues an inherited owner steer under the saved $name after a provider gap",
+    ({ name, saved }) =>
+      Effect.gen(function* () {
+        const prefix = `steer-gap-inherited-${name}`;
+        const f = yield* queuedToolFixture(prefix);
+        if (name === "provider") {
+          const instances = testProviderRegistry;
+          const getInstance = instances.getInstance;
+          const identitySpy = vi.spyOn(instances, "getInstance").mockImplementation((id) =>
+            id === alternateInstanceId
+              ? Effect.succeed({
+                  ...alternateProviderInstance,
+                  continuationIdentity: providerInstance.continuationIdentity,
+                })
+              : getInstance(id),
+          );
+          yield* Effect.addFinalizer(() => Effect.sync(() => identitySpy.mockRestore()));
+          yield* f.sink.write({
+            events: [
+              {
+                id: EventId.make(`${prefix}-native-conversation`),
+                type: "provider-thread.updated",
+                threadId: f.threadId,
+                occurredAt: f.now,
+                payload: {
+                  ...f.provider,
+                  nativeThreadRef: { driver, nativeId: `${prefix}-native`, strength: "strong" },
+                },
+              },
+            ],
+          });
+        }
+        const initial = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const nativeTurn = initial.providerTurns.find((turn) => turn.id === f.turnId)!;
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-save`),
+              type: "thread.model-selection-updated",
+              threadId: f.threadId,
+              occurredAt: f.now,
+              payload: {
+                ...initial.thread,
+                providerInstanceId: saved.instanceId,
+                modelSelection: saved,
+                updatedAt: f.now,
+              },
+            },
+            {
+              id: EventId.make(`${prefix}-pending-turn`),
+              type: "provider-turn.updated",
               threadId: f.threadId,
               runId: f.run.id,
-              nodeId: f.run.rootNodeId!,
-              providerThreadId: f.provider.id,
-              providerTurnId: null,
-              nativeItemRef: null,
-              parentItemId: null,
-              ordinal: 1000,
-              status: "completed",
-              title: "Interrupt requested",
-              startedAt: f.now,
-              completedAt: f.now,
-              updatedAt: f.now,
-              type: "run_interrupt_request",
-              message: "Stop",
+              occurredAt: f.now,
+              payload: { ...nativeTurn, status: "pending" },
             },
-          },
-        ],
-      });
-      const commandId = CommandId.make(`${prefix}-send`);
-      const result = yield* Effect.exit(
-        f.orchestrator.dispatch({
-          type: "message.dispatch",
+          ],
+        });
+        const commandId = CommandId.make(`${prefix}-send`);
+        const messageId = MessageId.make(`${prefix}-follow-up`);
+        const command = {
+          type: "message.dispatch" as const,
           commandId,
           threadId: f.threadId,
-          messageId: MessageId.make(`${prefix}-message`),
-          createdBy: "user",
-          creationSource: "web",
-          text: "Do not release Stop",
+          messageId,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          text: "Keep the inherited follow-up",
           attachments: [],
-          deliveryIntent: "steer",
-          dispatchMode: { type: "start_immediately" },
-        }),
-      );
-      assert.isTrue(Exit.isFailure(result));
-      const receipts = yield* CommandReceiptStoreV2;
-      assert.equal(Option.getOrThrow(yield* receipts.getByCommandId(commandId)).status, "rejected");
-      assert.isFalse(
-        (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.some(
-          (run) => run.status === "queued",
-        ),
-      );
-    }),
+          modelSelection: saved,
+          modelSelectionExplicit: false,
+          deliveryIntent: "steer" as const,
+          dispatchMode: { type: "start_immediately" as const },
+        };
+        yield* f.orchestrator.dispatch(command).pipe(withOwnerSelectionIngress);
+        const receipts = yield* CommandReceiptStoreV2;
+        assert.equal(
+          Option.getOrThrow(yield* receipts.getByCommandId(commandId)).status,
+          "accepted",
+        );
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const queued = after.runs.find((run) => run.userMessageId === messageId)!;
+        assert.equal(queued.status, "queued");
+        assert.deepEqual(queued.modelSelection, saved);
+        assert.equal(queued.providerInstanceId, saved.instanceId);
+        assert.isTrue(queued.queuedToolBoundaryEligible);
+        yield* f.orchestrator.dispatch(command).pipe(withOwnerSelectionIngress);
+        assert.equal(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.filter(
+            (run) => run.userMessageId === messageId,
+          ).length,
+          1,
+        );
+        assert.deepEqual(
+          after.runs.find((run) => run.id === f.run.id)?.modelSelection,
+          modelSelection,
+        );
+        assert.deepEqual(after.thread.modelSelection, saved);
+        const sql = yield* SqlClient.SqlClient;
+        const ownerRows =
+          yield* sql`SELECT thread_id FROM jones_owner_selections WHERE thread_id = ${f.threadId}`;
+        assert.equal(ownerRows.length, 0);
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-resume-turn`),
+              type: "provider-turn.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: nativeTurn,
+            },
+          ],
+        });
+        yield* f.react(f.tool("safe-boundary"));
+        const boundary = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(boundary.runs.find((run) => run.id === queued.id)?.status, "queued");
+        assert.equal(
+          boundary.messages.find((message) => message.id === messageId)?.runId,
+          queued.id,
+        );
+        assert.isFalse(
+          boundary.turnItems.some(
+            (item) =>
+              item.type === "user_message" &&
+              item.messageId === messageId &&
+              item.inputIntent === "promoted_queued_to_steer",
+          ),
+        );
+        const started = yield* Queue.unbounded<RunId>();
+        yield* f.sink
+          .stream({ threadId: f.threadId, afterSequence: yield* f.sink.latestSequence() })
+          .pipe(
+            Stream.runForEach((stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === queued.id &&
+              stored.event.payload.status === "starting"
+                ? Queue.offer(started, queued.id)
+                : Effect.void,
+            ),
+            Effect.forkScoped,
+          );
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-terminal`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...f.run, status: "completed", startedAt: f.now, completedAt: f.now },
+            },
+          ],
+        });
+        assert.equal(yield* Queue.take(started), queued.id);
+        const terminal = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const next = terminal.runs.find((run) => run.id === queued.id)!;
+        assert.equal(next.status, "starting");
+        assert.deepEqual(next.modelSelection, saved);
+        assert.equal(next.providerInstanceId, saved.instanceId);
+        assert.equal(next.userMessageId, messageId);
+        assert.equal(terminal.messages.filter((message) => message.id === messageId).length, 1);
+      }),
+  );
+  it.effect.each([false, true])(
+    "keeps Stop rejection with prospective selection %s during a gap",
+    (prospective) =>
+      Effect.gen(function* () {
+        const prefix = `steer-gap-stop-${prospective}`;
+        const f = yield* queuedToolFixture(prefix);
+        const initial = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const saved = prospective
+          ? { ...modelSelection, model: "prospective-model" }
+          : modelSelection;
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-saved`),
+              type: "thread.model-selection-updated",
+              threadId: f.threadId,
+              occurredAt: f.now,
+              payload: { ...initial.thread, modelSelection: saved, updatedAt: f.now },
+            },
+          ],
+        });
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-waiting`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...f.run, status: "waiting" },
+            },
+            {
+              id: EventId.make(`${prefix}-stop`),
+              type: "turn-item.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: {
+                id: TurnItemId.make(`${prefix}-stop`),
+                threadId: f.threadId,
+                runId: f.run.id,
+                nodeId: f.run.rootNodeId!,
+                providerThreadId: f.provider.id,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 1000,
+                status: "completed",
+                title: "Interrupt requested",
+                startedAt: f.now,
+                completedAt: f.now,
+                updatedAt: f.now,
+                type: "run_interrupt_request",
+                message: "Stop",
+              },
+            },
+          ],
+        });
+        const commandId = CommandId.make(`${prefix}-send`);
+        const result = yield* Effect.exit(
+          f.orchestrator
+            .dispatch({
+              type: "message.dispatch",
+              commandId,
+              threadId: f.threadId,
+              messageId: MessageId.make(`${prefix}-follow-up`),
+              createdBy: "user",
+              creationSource: "web",
+              text: "Do not release Stop",
+              modelSelection: saved,
+              modelSelectionExplicit: false,
+              attachments: [],
+              deliveryIntent: "steer",
+              dispatchMode: { type: "start_immediately" },
+            })
+            .pipe(withOwnerSelectionIngress),
+        );
+        assert.isTrue(Exit.isFailure(result));
+        const receipts = yield* CommandReceiptStoreV2;
+        assert.equal(
+          Option.getOrThrow(yield* receipts.getByCommandId(commandId)).status,
+          "rejected",
+        );
+        assert.isFalse(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.some(
+            (run) => run.status === "queued",
+          ),
+        );
+      }),
+  );
+  it.effect.each(["healthy", "explicit", "pending"] as const)(
+    "preserves the %s owner steer path after a prospective save",
+    (mode) =>
+      Effect.gen(function* () {
+        const prefix = `steer-gap-owner-${mode}`;
+        const f = yield* queuedToolFixture(prefix);
+        const initial = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const saved = { ...modelSelection, model: "prospective-model" };
+        const nativeTurn = initial.providerTurns.find((turn) => turn.id === f.turnId)!;
+        if (mode === "pending") {
+          yield* f.orchestrator
+            .dispatch({
+              type: "thread.model-selection.set",
+              commandId: CommandId.make(`${prefix}-save`),
+              threadId: f.threadId,
+              modelSelection: saved,
+            })
+            .pipe(withOwnerSelectionIngress);
+        } else {
+          yield* f.sink.write({
+            events: [
+              {
+                id: EventId.make(`${prefix}-save`),
+                type: "thread.model-selection-updated",
+                threadId: f.threadId,
+                occurredAt: f.now,
+                payload: { ...initial.thread, modelSelection: saved, updatedAt: f.now },
+              },
+            ],
+          });
+        }
+        if (mode !== "healthy")
+          yield* f.sink.write({
+            events: [
+              {
+                id: EventId.make(`${prefix}-pending-turn`),
+                type: "provider-turn.updated",
+                threadId: f.threadId,
+                runId: f.run.id,
+                occurredAt: f.now,
+                payload: { ...nativeTurn, status: "pending" },
+              },
+            ],
+          });
+        const commandId = CommandId.make(`${prefix}-send`);
+        const messageId = MessageId.make(`${prefix}-follow-up`);
+        const result = yield* Effect.exit(
+          f.orchestrator
+            .dispatch({
+              type: "message.dispatch",
+              commandId,
+              threadId: f.threadId,
+              messageId,
+              createdBy: "user",
+              creationSource: "web",
+              text: "Owner follow-up",
+              attachments: [],
+              modelSelection: saved,
+              modelSelectionExplicit: mode === "explicit",
+              deliveryIntent: "steer",
+              dispatchMode: { type: "start_immediately" },
+            })
+            .pipe(withOwnerSelectionIngress),
+        );
+        const receipts = yield* CommandReceiptStoreV2;
+        assert.equal(
+          Option.getOrThrow(yield* receipts.getByCommandId(commandId)).status,
+          mode === "healthy" ? "accepted" : "rejected",
+        );
+        assert.equal(Exit.isSuccess(result), mode === "healthy");
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.isFalse(after.runs.some((run) => run.status === "queued"));
+        assert.deepEqual(
+          after.runs.find((run) => run.id === f.run.id)?.modelSelection,
+          modelSelection,
+        );
+        assert.deepEqual(after.thread.modelSelection, saved);
+        if (mode === "healthy")
+          assert.equal(after.messages.find((message) => message.id === messageId)?.runId, f.run.id);
+      }),
   );
   it.effect.each(["preparing", "starting", "waiting", "running"] as const)(
     "accepts a steer during the %s provider gap and promotes its original message at a tool boundary",

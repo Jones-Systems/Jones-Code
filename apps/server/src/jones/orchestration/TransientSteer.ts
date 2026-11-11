@@ -14,7 +14,7 @@ export function transientSteerTarget(
   projection: OrchestrationV2ThreadProjection,
   command: MessageDispatch,
   dispatchMode: MessageDispatch["dispatchMode"],
-  modelSelection: ModelSelection,
+  steerSelection: (active: ModelSelection) => ModelSelection,
   separateTurnCommand: boolean,
 ) {
   if (
@@ -26,8 +26,12 @@ export function transientSteerTarget(
   )
     return undefined;
   const run = projection.runs.find((candidate) => candidate.id === dispatchMode.targetRunId);
-  // Keep explicit configuration transitions on their existing validation path.
-  if (run === undefined || !modelSelectionsEqual(run.modelSelection, modelSelection))
+  // Inherited steers follow the active run; a prospective save is not a transition.
+  // Keep genuine configuration transitions on their existing validation path.
+  if (
+    run === undefined ||
+    !modelSelectionsEqual(run.modelSelection, steerSelection(run.modelSelection))
+  )
     return undefined;
   return run.status === "preparing" ||
     run.status === "starting" ||
