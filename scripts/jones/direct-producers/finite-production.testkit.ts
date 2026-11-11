@@ -894,6 +894,84 @@ async function padRecords(directory: string, count: number, prefix = "zz-pad") {
     );
 }
 export const capacityCases: Record<string, () => Promise<void>> = {
+  "referenced predecessor refusal advances the capacity cursor to recover 10001 records before admission":
+    async () =>
+      finiteFixture(async ({ worktree, root }) => {
+        const seed = await beginProduction(worktree, "bb-recovery", [root]);
+        await finishProduction(seed, "succeeded");
+        const directory = NodePath.dirname(seed.path);
+        const recordFor = (producer: string, n: number) => {
+          const record = structuredClone(seed.record);
+          record.producer = producer;
+          record.owner = producer;
+          record.id = producer + "-" + n.toString(16).padStart(32, "0");
+          return { path: NodePath.join(directory, record.id + ".json"), record };
+        };
+        const refusedPrior = recordFor("aa-poison", 0);
+        refusedPrior.record.binding.admin_id += "-mismatch";
+        const refusedSuccessor = recordFor("aa-poison", 1);
+        refusedSuccessor.record.supersedes = {
+          id: refusedPrior.record.id,
+          rev: refusedPrior.record.rev!,
+        };
+        const recoverablePrior = recordFor("bb-recovery", 1);
+        const recoverableSuccessor = recordFor("bb-recovery", 0);
+        recoverableSuccessor.record.started_at = new Date(
+          Date.parse(recoverablePrior.record.started_at) + 1,
+        ).toISOString();
+        recoverableSuccessor.record.supersedes = {
+          id: recoverablePrior.record.id,
+          rev: recoverablePrior.record.rev!,
+        };
+        const snapshots = [];
+        for (const session of [
+          refusedPrior,
+          refusedSuccessor,
+          recoverablePrior,
+          recoverableSuccessor,
+        ]) {
+          await rewrite(session);
+          await NodeFSP.chmod(session.path, 0o600);
+          snapshots.push({
+            path: session.path,
+            bytes: await NodeFSP.readFile(session.path),
+            mode: (await NodeFSP.stat(session.path)).mode,
+          });
+        }
+        await NodeFSP.unlink(seed.path);
+        for (let n = 2; n < 16; n++)
+          await NodeFSP.writeFile(
+            NodePath.join(directory, "aa-poison-" + n.toString(16).padStart(32, "0") + ".json"),
+            "{}",
+          );
+        await padRecords(directory, 9983);
+        NodeAssert.equal((await NodeFSP.readdir(directory)).length, 10001);
+        await NodeAssert.rejects(beginProduction(worktree, "bb-recovery", [root]), {
+          message: `capacity_unrecoverable; path=${directory}; count=10001`,
+        });
+        const cursor = NodePath.join(
+          seed.record.binding.git_dir,
+          "workspace-output-obligations-cursor.json",
+        );
+        NodeAssert.equal(
+          JSON.parse(await NodeFSP.readFile(cursor, "utf8")).after,
+          "aa-poison-" + (15).toString(16).padStart(32, "0") + ".json",
+        );
+        for (const snapshot of snapshots) {
+          NodeAssert.deepEqual(await NodeFSP.readFile(snapshot.path), snapshot.bytes);
+          NodeAssert.equal((await NodeFSP.stat(snapshot.path)).mode, snapshot.mode);
+        }
+        const admitted = await beginProduction(worktree, "bb-recovery", [root]);
+        NodeAssert.equal(admitted.record.supersedes?.id, recoverableSuccessor.record.id);
+        NodeAssert.equal(admitted.record.status, "active");
+        NodeAssert.equal((await NodeFSP.readdir(directory)).length, 10000);
+        await NodeAssert.rejects(NodeFSP.stat(recoverablePrior.path), { code: "ENOENT" });
+        await NodeAssert.rejects(NodeFSP.stat(recoverableSuccessor.path), { code: "ENOENT" });
+        for (const snapshot of snapshots.slice(0, 2)) {
+          NodeAssert.deepEqual(await NodeFSP.readFile(snapshot.path), snapshot.bytes);
+          NodeAssert.equal((await NodeFSP.stat(snapshot.path)).mode, snapshot.mode);
+        }
+      }),
   "the advisory cursor advances past preserved malformed filenames without treating them as deletion authority":
     async () =>
       finiteFixture(async ({ worktree, root }) => {

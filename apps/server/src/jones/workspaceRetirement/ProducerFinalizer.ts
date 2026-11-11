@@ -290,7 +290,12 @@ async function prune(successorPath: string, bound: Binding, count: number) {
   if (!link || !NAME.test(link.id + ".json") || !validHolders(successor)) return false;
   const path = NodePath.join(NodePath.dirname(successorPath), link.id + ".json");
   if (path === successorPath || !(await exists(path))) return false;
-  const prior = await load(path, bound);
+  let prior: Production;
+  try {
+    prior = await load(path, bound);
+  } catch {
+    return false;
+  }
   if (
     !sameKey(prior, successor) ||
     !prunable(prior) ||
