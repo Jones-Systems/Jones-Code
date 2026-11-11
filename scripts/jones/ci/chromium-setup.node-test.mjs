@@ -11,7 +11,7 @@ NodeTest.test("CI avoids unconditional Chromium apt work and duplicate per-job a
   NodeAssert.doesNotMatch(workflow, /install --with-deps --only-shell chromium/);
   for (const job of ["test", "test_desktop"]) {
     const packageJob = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [\w-]+:\n/)[0];
-    NodeAssert.equal(packageJob.match(/sudo apt-get update/g)?.length, 1, job);
+    NodeAssert.equal(packageJob.match(/node scripts\/jones\/ci\/apt-setup\.mjs/g)?.length, 1, job);
     NodeAssert.match(packageJob, /build-essential libsecret-1-dev pkg-config/);
     NodeAssert.match(packageJob, /command -v cc/);
   }
