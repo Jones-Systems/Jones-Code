@@ -302,6 +302,11 @@ export function applyEdit(
   return { plan: changed ? { ...plan, devices, revision: plan.revision + 1 } : plan, applied };
 }
 
+/** Whether a ledger operation still awaits its directive or a terminal receipt. */
+export function operationOutstanding(operation: JonesInstallPlanHostOperation): boolean {
+  return outstanding(operation);
+}
+
 function outstanding(operation: JonesInstallPlanHostOperation): boolean {
   return operation.step === "directive"
     ? operation.directive === undefined
@@ -390,6 +395,35 @@ export function deviceState(
     (plan.laptop.gate === undefined || plan.laptop.gateClosed !== undefined)
     ? "not-started"
     : "queued";
+}
+
+/**
+ * Settled ledger states that fresh proof of the target running on the host overrides. A later
+ * install by another operation can leave an older interrupted or staged download as the latest
+ * record; held, unknown and fenced records still require reading the exact operation.
+ */
+const SUPERSEDABLE_BY_RUNNING_TARGET: ReadonlySet<InstallPlanDeviceState> = new Set([
+  "not-updated",
+  "stopped",
+  "ended",
+  "staged",
+  "blocked",
+  "rolled-back",
+]);
+
+/** The row state once fresh host status proves the plan target is the running source. */
+export function deviceStateWithRunningTarget(
+  plan: JonesInstallPlan,
+  device: JonesInstallPlanDevice,
+  targetRunning: boolean,
+  now: number = Number.POSITIVE_INFINITY,
+): InstallPlanDeviceState {
+  const state = deviceState(plan, device, now);
+  return targetRunning &&
+    !device.operations.some(outstanding) &&
+    SUPERSEDABLE_BY_RUNNING_TARGET.has(state)
+    ? "updated-elsewhere"
+    : state;
 }
 
 export function deviceSettled(plan: JonesInstallPlan, device: JonesInstallPlanDevice): boolean {

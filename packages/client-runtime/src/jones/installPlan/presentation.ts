@@ -6,10 +6,11 @@ import type { JonesUpdateObservation } from "../updates/jonesUpdates.ts";
 import { jonesTargetStatus } from "../updates/targetStatus.ts";
 import {
   deviceSettled,
-  deviceState,
+  deviceStateWithRunningTarget,
   isPlanComplete,
   type InstallPlanDeviceState,
 } from "./model.ts";
+import { installProgressView, progressForOperation, type InstallProgressView } from "./progress.ts";
 
 const copy: Record<InstallPlanDeviceState, string> = {
   removed: "Removed · never started",
@@ -40,14 +41,38 @@ export interface InstallPlanDeviceObservation {
   readonly canOperate: boolean;
 }
 
+/** Ledger states whose own text must stay visible over host step progress. */
+const LEDGER_TEXT_WINS = new Set<InstallPlanDeviceState>(["held", "unknown", "stop-requested"]);
+const ALREADY_RUNNING_TEXT = "Downloaded · already running this build";
+
+function rowProgress(
+  observation: JonesUpdateObservation | undefined,
+  latestOperationId: string | undefined,
+  planless: boolean,
+): InstallProgressView | undefined {
+  const progress = progressForOperation(observation?.state?.progress, latestOperationId, planless);
+  return progress === undefined ? undefined : installProgressView(progress, observation?.heardAt);
+}
+
+type ActiveWork = "install" | "download" | undefined;
+function activeWork(phase: string, progress: InstallProgressView | undefined): ActiveWork {
+  if (progress?.active) return progress.kind;
+  if (phase === "installing") return "install";
+  if (phase === "downloading" || phase === "verifying") return "download";
+  return undefined;
+}
+
 export function installPlanPresentation(
   state: JonesInstallPlanState,
   options: {
     readonly now: number;
     readonly devices?: ReadonlyMap<EnvironmentId, InstallPlanDeviceObservation>;
     readonly laptop?: JonesUpdateObservation;
+    /** The plan is a local preview with no ledger, so any host progress is shown. */
+    readonly planless?: boolean;
   },
 ) {
+  const planless = options.planless === true;
   const plan = state.current ?? state.last;
   const readOnly = state.readOnly !== undefined || state.current === null;
   if (plan === null)
@@ -61,7 +86,6 @@ export function installPlanPresentation(
       summary: "No update plan",
     };
   const rows = plan.devices.map((device) => {
-    const phase = deviceState(plan, device, options.now);
     const observed = options.devices?.get(device.environmentId);
     const status =
       observed === undefined
@@ -101,13 +125,16 @@ export function installPlanPresentation(
         receipt.updateId === operationId &&
         receipt.outcome?.status === "committed",
     );
-    const targetBuildRunning =
-      !confirmedInstall &&
+    const runningTarget =
       observed?.observation.freshness === "fresh" &&
       hostState?.environmentId === device.environmentId &&
       installed?.repository === plan.target.repository &&
       installed.sha === plan.target.sourceSha &&
       installed.tree === plan.target.sourceTree;
+    const targetBuildRunning = !confirmedInstall && runningTarget;
+    // A fresh running target outranks an older settled ledger record, such as an interrupted
+    // download that a later install through another operation made moot.
+    const phase = deviceStateWithRunningTarget(plan, device, runningTarget, options.now);
     const matchingRetryStage =
       lastDownload?.receipt?.phase === "completed" &&
       stage !== undefined &&
@@ -119,6 +146,12 @@ export function installPlanPresentation(
     let text = copy[phase];
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";
+    if (
+      runningTarget &&
+      phase === "updated-elsewhere" &&
+      latest?.receipt?.code !== "already-installed"
+    )
+      text = "Updated · running the selected source";
     if (phase === "directive") text = `Getting ${device.label} ready…`;
     if (phase === "ended")
       text =
@@ -129,6 +162,13 @@ export function installPlanPresentation(
           : "Stopped · nothing installed";
     if (["held", "blocked", "not-updated"].includes(phase) && latest?.receipt?.code !== undefined)
       text += ` · ${latest.receipt.code}`;
+    const alreadyRunning =
+      phase === "staged" &&
+      observed?.observation.freshness === "fresh" &&
+      hostState?.stagedAlreadyRunning === true;
+    if (alreadyRunning) text = ALREADY_RUNNING_TEXT;
+    const progress = rowProgress(observed?.observation, latest?.operationId, planless);
+    if (progress?.text !== undefined && !LEDGER_TEXT_WINS.has(phase)) text = progress.text;
     return {
       environmentId: device.environmentId,
       label: device.label,
@@ -138,8 +178,10 @@ export function installPlanPresentation(
       targetBuildRunning,
       downloadLabel: retryDownload ? "Retry download" : `Download on ${device.label}`,
       installLabel: retryInstall ? "Retry install" : `Install on ${device.label}`,
-      settled: deviceSettled(plan, device),
+      settled: phase === "updated-elsewhere" || deviceSettled(plan, device),
       status,
+      activeWork: activeWork(phase, progress),
+      ...(progress === undefined ? {} : { progress }),
       ...(latest === undefined ? {} : { operationId: latest.operationId }),
       actions: {
         remove: !readOnly && device.membership === "selected" && device.operations.length === 0,
@@ -150,6 +192,7 @@ export function installPlanPresentation(
         install:
           mutable &&
           phase === "staged" &&
+          !alreadyRunning &&
           status?.actions.install === true &&
           (!retryInstall || matchingRetryStage),
         stop:
@@ -221,6 +264,21 @@ export function installPlanPresentation(
     preview: `Goes first · ${plan.target.version} available`,
   };
   const complete = isPlanComplete(plan);
+  const laptopAlreadyRunning =
+    laptopPhase === "staged" && laptopState?.stagedAlreadyRunning === true;
+  const laptopProgress = rowProgress(
+    options.laptop?.freshness === "fresh" ? options.laptop : undefined,
+    laptopOperation?.operationId,
+    planless,
+  );
+  const laptopText =
+    laptopOperation?.step === "download" && laptopPhase === "refused"
+      ? "Download request did not start"
+      : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
+        ? "Install didn't finish"
+        : laptopAlreadyRunning
+          ? ALREADY_RUNNING_TEXT
+          : (laptopCopy[laptopPhase] ?? "Not confirmed");
   const laptopActions = {
     download:
       !readOnly &&
@@ -231,6 +289,7 @@ export function installPlanPresentation(
     install:
       !readOnly &&
       (laptopPhase === "staged" || retryLaptopInstall) &&
+      !laptopAlreadyRunning &&
       plan.laptop.gate === undefined &&
       plan.laptop.gateClosed === undefined &&
       laptopState?.capability.install === true &&
@@ -257,20 +316,30 @@ export function installPlanPresentation(
       phase: laptopPhase,
       copyKey: `laptop.${laptopPhase}`,
       text:
-        laptopOperation?.step === "download" && laptopPhase === "refused"
-          ? "Download request did not start"
-          : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
-            ? "Install didn't finish"
-            : (laptopCopy[laptopPhase] ?? "Not confirmed"),
+        laptopProgress?.text !== undefined && laptopPhase !== "held"
+          ? laptopProgress.text
+          : laptopText,
       downloadLabel: retryLaptopDownload ? "Retry download" : "Download on Laptop",
       actions: laptopActions,
+      ...(laptopProgress === undefined ? {} : { progress: laptopProgress }),
       ...(laptopOperation === undefined ? {} : { operationId: laptopOperation.operationId }),
     },
     gateText: "Others wait until Laptop is updated and verified.",
-    summary: complete
-      ? "Update plan finished"
-      : `${selected.filter((r) => r.settled).length} of ${selected.length} devices settled`,
+    summary: complete ? "Update plan finished" : planSummary(selected),
   };
+}
+
+/** Header summary such as "1 installing · 2 of 3 done". */
+export function planSummary(
+  rows: readonly { readonly settled: boolean; readonly activeWork: ActiveWork }[],
+) {
+  const installing = rows.filter((row) => row.activeWork === "install").length;
+  const downloading = rows.filter((row) => row.activeWork === "download").length;
+  return [
+    ...(installing > 0 ? [`${installing} installing`] : []),
+    ...(downloading > 0 ? [`${downloading} downloading`] : []),
+    `${rows.filter((row) => row.settled).length} of ${rows.length} done`,
+  ].join(" · ");
 }
 
 export function recoveryPreflightPresentation(preflight: JonesRecoveryPreflight, label: string) {

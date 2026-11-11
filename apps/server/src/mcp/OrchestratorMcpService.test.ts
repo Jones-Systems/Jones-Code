@@ -10,6 +10,7 @@ import {
   OrchestratorMcpTarget,
   OrchestratorMcpFailure,
   type OrchestrationV2Subagent,
+  type OrchestrationV2PendingBackgroundTask,
   type RemoteTaskObservation,
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
@@ -3711,6 +3712,151 @@ describe("OrchestratorMcpService provider resolution", () => {
           }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
         }
       }),
+  );
+});
+
+describe("OrchestratorMcpService background work reads", () => {
+  const client: McpInvocationScope = {
+    environmentId: EnvironmentId.make("environment:background-work"),
+    requestNamespace: "client:background-work",
+    thread: undefined,
+    client: { sessionId: "background-work", label: "Fixture", access: "full-access" },
+    capabilities: new Set(["orchestration"]),
+    issuedAt: 1,
+  };
+  const shellFor = (
+    tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask> | undefined,
+    id = "thread:background-work",
+  ): OrchestrationV2ThreadShell => ({
+    ...liveThreadShell(ThreadId.make(id), { activeRunId: null }),
+    status: "completed",
+    ...(tasks === undefined ? {} : { pendingBackgroundTasks: tasks }),
+  });
+  const service = (shells: ReadonlyArray<OrchestrationV2ThreadShell>) =>
+    layerOrchestratorService.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          ServerSettings.layerTest(),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadShell: (threadId) =>
+              Effect.succeed(shells.find((shell) => shell.id === threadId) ?? null),
+            getProjectThreadRecords: ({ threadId }) => {
+              const shell = shells.find((shell) => shell.id === threadId);
+              if (shell === undefined) return Effect.die("Unexpected thread");
+              return Effect.succeed(idleThreadProjection({ ...shell, pendingBackgroundTasks: [] }));
+            },
+            getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+            listProjectThreads: () => Effect.succeed(shells),
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([]),
+          }),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        ),
+      ),
+    );
+
+  it.effect(
+    "publishes authoritative shell rosters and Jones completion holds on detail and list",
+    () =>
+      Effect.gen(function* () {
+        const cases: ReadonlyArray<{
+          readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+          readonly holds: boolean;
+        }> = [
+          { tasks: [], holds: false },
+          { tasks: [{ taskId: "command:server", kind: "command" }], holds: false },
+          { tasks: [{ taskId: "command:wait", kind: "command", awaited: true }], holds: true },
+          { tasks: [{ taskId: "monitor:work", kind: "monitor" }], holds: true },
+          { tasks: [{ taskId: "background:work", kind: "background_task" }], holds: true },
+          {
+            tasks: [
+              {
+                taskId: "task:child",
+                kind: "subagent",
+                description: "Wait for the child",
+                parentTaskId: "task:parent",
+                providerInstanceId: ProviderInstanceId.make("codex"),
+                childThreadId: ThreadId.make("thread:child"),
+              },
+            ],
+            holds: true,
+          },
+        ];
+        const shells = cases.map(({ tasks }, index) =>
+          shellFor(tasks, `thread:background-${index}`),
+        );
+        yield* Effect.gen(function* () {
+          const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const list = yield* mcp.listThreads(client, { projectId: shells[0]!.projectId });
+          for (const [index, { tasks, holds }] of cases.entries()) {
+            const detail = yield* mcp.readThread(client, { threadId: shells[index]!.id });
+            for (const thread of [detail.thread, list.threads[index]!]) {
+              assert.deepEqual(thread.pendingBackgroundTasks, tasks);
+              assert.equal(thread.backgroundHoldsCompletion, holds);
+              assert.isFalse(thread.pendingBackgroundTasksTruncated);
+            }
+          }
+        }).pipe(Effect.provide(service(shells)));
+      }),
+  );
+
+  it.effect("bounds paged list rosters at 20 without losing a hold beyond the cap", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2PendingBackgroundTask[] = Array.from(
+        { length: 20 },
+        (_, index) => ({ taskId: `command:${index}`, kind: "command" }),
+      );
+      const holdingTask: OrchestrationV2PendingBackgroundTask = {
+        taskId: "monitor:beyond-cap",
+        kind: "monitor",
+      };
+      const capped = shellFor(commands, "thread:exact-cap");
+      const truncated = shellFor([...commands, holdingTask], "thread:truncated");
+      yield* Effect.gen(function* () {
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const first = yield* mcp.listThreads(client, { projectId: capped.projectId, limit: 1 });
+        assert.equal(first.nextCursor, 1);
+        assert.equal(first.total, 2);
+        assert.deepEqual(first.threads[0]?.pendingBackgroundTasks, commands);
+        assert.isFalse(first.threads[0]?.pendingBackgroundTasksTruncated);
+        assert.isFalse(first.threads[0]?.backgroundHoldsCompletion);
+        const second = yield* mcp.listThreads(client, {
+          projectId: capped.projectId,
+          cursor: first.nextCursor!,
+          limit: 1,
+        });
+        assert.isNull(second.nextCursor);
+        assert.deepEqual(second.threads[0]?.pendingBackgroundTasks, commands);
+        assert.isTrue(second.threads[0]?.pendingBackgroundTasksTruncated);
+        assert.isTrue(second.threads[0]?.backgroundHoldsCompletion);
+        const detail = yield* mcp.readThread(client, { threadId: truncated.id, limit: 1 });
+        assert.deepEqual(detail.thread.pendingBackgroundTasks, [...commands, holdingTask]);
+        assert.isTrue(detail.thread.backgroundHoldsCompletion);
+        assert.isFalse(detail.thread.pendingBackgroundTasksTruncated);
+      }).pipe(Effect.provide(service([capped, truncated])));
+    }),
+  );
+
+  it.effect("preserves unknown background evidence when the shell has no roster", () =>
+    Effect.gen(function* () {
+      const shell = shellFor(undefined);
+      yield* Effect.gen(function* () {
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const detail = yield* mcp.readThread(client, { threadId: shell.id });
+        const list = yield* mcp.listThreads(client, { projectId: shell.projectId });
+        for (const thread of [detail.thread, ...list.threads]) {
+          assert.notProperty(thread, "pendingBackgroundTasks");
+          assert.notProperty(thread, "backgroundHoldsCompletion");
+          assert.notProperty(thread, "pendingBackgroundTasksTruncated");
+        }
+      }).pipe(Effect.provide(service([shell])));
+    }),
   );
 });
 

@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as Entries from "../operations/durableEntries.ts";
 import * as Operations from "../../operations/service.ts";
 import * as Callers from "./recordedCaller.ts";
+import { makeSingleFlight, superviseLoop } from "./supervision.ts";
 
 export class RecoveryError extends Schema.TaggedError<RecoveryError>()("NativeRecoveryError", {
   stage: Schema.Literals(["operations", "reservations"]),
@@ -47,80 +48,83 @@ const make = Effect.gen(function* () {
   const operations = yield* Operations.WorkstreamOperations;
   const callers = yield* Callers.RecordedCallers;
   const raw = yield* RawRecovery;
-  let sweeping = false;
-  const sweep = Effect.fn("NativeWorkstreamsRecovery.sweep")(() =>
-    Effect.suspend(() => {
-      if (sweeping) return Effect.succeed({ attempted: 0, fenced: 0, deferred: 0 });
-      sweeping = true;
-      return Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        const result = { attempted: 0, fenced: 0, deferred: 0 };
-        const pending = yield* entries
-          .open()
-          .pipe(Effect.mapError(() => new RecoveryError({ stage: "operations" })));
-        for (const saved of pending) {
-          if (!due(saved.operation.next_poll_at, now)) {
-            result.deferred++;
-            continue;
-          }
-          if (!saved.operation.recorded_caller) {
-            result.fenced++;
-            continue;
-          }
-          const resumed = yield* operations
-            .resumeRecorded(saved.operation.operation_id)
-            .pipe(Effect.result);
-          if (resumed._tag === "Failure") result.fenced++;
-          else result.attempted++;
-        }
-        for (const item of yield* raw.pending()) {
-          if (!due(item.next_poll_at, now)) {
-            result.deferred++;
-            continue;
-          }
-          if (item.origin === "native" && item.peer_recovery) {
-            if (!raw.recoverPeer) {
-              result.fenced++;
-              continue;
-            }
-            const recovered = yield* raw.recoverPeer(item.command_id).pipe(Effect.result);
-            if (recovered._tag === "Failure") result.fenced++;
-            else result.attempted++;
-            continue;
-          }
-          if (item.origin !== "native" || !item.recorded_caller) {
-            result.fenced++;
-            continue;
-          }
-          const record = item.recorded_caller;
-          const recovered = yield* Effect.gen(function* () {
-            const caller = yield* callers.readmitRecorded(record);
-            yield* caller
-              .check("workstreams:write", null)
-              .pipe(
-                Effect.mapError(() => new Callers.RecordedCallerFence({ code: "not_granted" })),
-              );
-            yield* Callers.withRecordedCaller(record, caller, raw.recoverOne(item.command_id));
-          }).pipe(Effect.result);
-          if (recovered._tag === "Failure") result.fenced++;
-          else result.attempted++;
-        }
-        return result;
-      }).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            sweeping = false;
-          }),
-        ),
-      );
-    }),
-  );
-  // One scoped fiber owns startup and cadence. Ordinary reads never trigger it.
-  yield* Effect.gen(function* () {
-    for (;;) {
-      yield* sweep().pipe(Effect.catch(() => Effect.void));
-      yield* Effect.sleep(30_000);
+  const flight = yield* makeSingleFlight<Sweep, RecoveryError>({
+    whenBusy: { skip: { attempted: 0, fenced: 0, deferred: 0 } },
+    starterCancels: true,
+  });
+  const attempt = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    const result = { attempted: 0, fenced: 0, deferred: 0 };
+    const pending = yield* entries
+      .open()
+      .pipe(Effect.mapError(() => new RecoveryError({ stage: "operations" })));
+    for (const saved of pending) {
+      if (!due(saved.operation.next_poll_at, now)) {
+        result.deferred++;
+        continue;
+      }
+      if (!saved.operation.recorded_caller) {
+        result.fenced++;
+        continue;
+      }
+      const resumed = yield* operations
+        .resumeRecorded(saved.operation.operation_id)
+        .pipe(Effect.result);
+      if (resumed._tag === "Failure") result.fenced++;
+      else result.attempted++;
     }
+    for (const item of yield* raw.pending()) {
+      if (!due(item.next_poll_at, now)) {
+        result.deferred++;
+        continue;
+      }
+      if (item.origin === "native" && item.peer_recovery) {
+        if (!raw.recoverPeer) {
+          result.fenced++;
+          continue;
+        }
+        const recovered = yield* raw.recoverPeer(item.command_id).pipe(Effect.result);
+        if (recovered._tag === "Failure") result.fenced++;
+        else result.attempted++;
+        continue;
+      }
+      if (item.origin !== "native" || !item.recorded_caller) {
+        result.fenced++;
+        continue;
+      }
+      const record = item.recorded_caller;
+      const recovered = yield* Effect.gen(function* () {
+        const caller = yield* callers.readmitRecorded(record);
+        yield* caller
+          .check("workstreams:write", null)
+          .pipe(Effect.mapError(() => new Callers.RecordedCallerFence({ code: "not_granted" })));
+        yield* Callers.withRecordedCaller(record, caller, raw.recoverOne(item.command_id));
+      }).pipe(Effect.result);
+      if (recovered._tag === "Failure") result.fenced++;
+      else result.attempted++;
+    }
+    return result;
+  });
+  const sweep = Effect.fn("NativeWorkstreamsRecovery.sweep")(() => flight.run(attempt));
+  // A fence count is logged when it changes, not on every sweep that finds the same fenced items.
+  let reportedFenced = 0;
+  const reportFenced = (result: Sweep) =>
+    Effect.suspend(() => {
+      if (result.fenced === reportedFenced) return Effect.void;
+      reportedFenced = result.fenced;
+      return (
+        result.fenced > 0
+          ? Effect.logWarning("Native workstreams recovery fenced operations it cannot resume")
+          : Effect.logInfo("Native workstreams recovery no longer has fenced operations")
+      ).pipe(Effect.annotateLogs({ loop: "recovery", ...result }));
+    });
+  // One scoped fiber owns startup and cadence, supervised so a failed sweep never ends it.
+  // Ordinary reads never trigger it.
+  yield* superviseLoop({
+    loop: "recovery",
+    iteration: sweep(),
+    code: (error) => error.stage,
+    onSuccess: reportFenced,
   }).pipe(Effect.forkScoped);
   return NativeWorkstreamsRecovery.of({ sweep });
 });

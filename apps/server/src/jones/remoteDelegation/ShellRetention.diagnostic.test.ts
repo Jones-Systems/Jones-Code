@@ -48,15 +48,22 @@ const seed = Effect.fn("ShellRetentionDiagnostic.seed")(function* (rows: number)
       },
     });
   }
+  // Every remote task owner ever recorded, and the subset that is still active.
+  const historical = new Set<string>();
   const expected = new Set<string>();
-  // Some tasks reference missing or archived owners; retention never adds them to active input.
+  // Some tasks reference missing or archived owners; retention leaves those out of the set.
   for (let offset = 0; offset < rows; offset += 100) {
     const batch = Array.from({ length: Math.min(100, rows - offset) }, (_, batchIndex) => {
       const index = offset + batchIndex;
       const remote = index % 3 === 0;
       const bound = index % 2 === 0;
-      const id = shellId(index % 2_400);
-      if (remote && bound) expected.add(id);
+      const owner = index % 2_400;
+      const id = shellId(owner);
+      if (remote && bound) {
+        historical.add(id);
+        // Owners 2000 and up were never created; every tenth owner is archived.
+        if (owner < 2_000 && owner % 10 !== 0) expected.add(id);
+      }
       return {
         subagent_id: `retention-cost:task:${index}`,
         thread_id: id,
@@ -79,7 +86,7 @@ const seed = Effect.fn("ShellRetentionDiagnostic.seed")(function* (rows: number)
     });
     yield* sql`INSERT INTO orchestration_v2_projection_subagents ${sql.insert(batch)}`;
   }
-  return expected;
+  return { expected, historical };
 });
 
 const bounded = <A, E, R>(effect: Effect.Effect<A, E, R>, phase: string) =>
@@ -93,7 +100,7 @@ const scenario = Effect.fn("ShellRetentionDiagnostic.scenario")(function* (
   rows: number,
   fileBacked: boolean,
 ) {
-  const expected = yield* seed(rows);
+  const { expected, historical } = yield* seed(rows);
   const sql = yield* SqlClient.SqlClient;
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const measurements: Measurement[] = [];
@@ -227,7 +234,8 @@ const scenario = Effect.fn("ShellRetentionDiagnostic.scenario")(function* (
       rows,
       shells: 2_000,
       fileBacked,
-      historicalOwnerIds: expected.size,
+      historicalOwnerIds: historical.size,
+      retainedOwnerIds: expected.size,
       activeOwnerRows: activeRetained.length,
       rowsActuallyKept: after.threads.length - before.threads.length,
       subscriberTimings,

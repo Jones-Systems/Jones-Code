@@ -11,6 +11,7 @@ import { collectProviderUpdateCandidates } from "@t3tools/client-runtime/jones/p
 import { getProviderUpdateRunOutcome } from "~/components/ProviderUpdateLaunchNotification.logic";
 import {
   createProviderUpdateController,
+  PROVIDER_UPDATE_CLIENT_TIMEOUT_MS,
   providerUpdatePresentationAttempt,
   type ProviderUpdateMachine,
 } from "./providerUpdateController";
@@ -252,6 +253,38 @@ describe("provider update controller", () => {
       generation: 2,
       phase: "succeeded",
     });
+  });
+
+  it("accepts a result that arrives after six minutes and bounds the wait above the server's 30 minutes", async () => {
+    vi.useFakeTimers();
+    const controller = createProviderUpdateController({
+      readCurrent: () => ({ connected: true, permitted: true, providers: [provider()] }),
+    });
+    const slow = deferred<ReturnType<typeof success>>();
+    const started = controller.start(machine(), () => slow.promise);
+    await vi.advanceTimersByTimeAsync(29 * 60_000);
+    expect(controller.getSnapshot().get(environmentId)).toMatchObject({ phase: "running" });
+    // A second click joins the running attempt instead of starting another.
+    expect(controller.start(machine(), async () => success())).toBe(started);
+    slow.resolve(success());
+    expect(await started).toHaveLength(1);
+    expect(controller.getSnapshot().get(environmentId)).toMatchObject({
+      generation: 1,
+      phase: "succeeded",
+    });
+
+    const never = deferred<ReturnType<typeof success>>();
+    const stuck = controller.start(machine(), () => never.promise);
+    await vi.advanceTimersByTimeAsync(PROVIDER_UPDATE_CLIENT_TIMEOUT_MS - 1);
+    expect(controller.getSnapshot().get(environmentId)).toMatchObject({ phase: "running" });
+    await vi.advanceTimersByTimeAsync(1);
+    await stuck;
+    expect(controller.getSnapshot().get(environmentId)).toMatchObject({
+      generation: 2,
+      phase: "failed",
+      message: expect.stringContaining("may still be running"),
+    });
+    expect(PROVIDER_UPDATE_CLIENT_TIMEOUT_MS).toBeGreaterThan(30 * 60_000);
   });
 
   it("turns read and dispatch exceptions into target failures", async () => {

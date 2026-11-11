@@ -118,6 +118,16 @@ const decodeToolResult = Schema.decodeUnknownEffect(ToolResult);
 const decodeInitialization = Schema.decodeUnknownEffect(Initialization);
 const decodeFailure = Schema.decodeUnknownOption(Failure);
 const decodeTextFailure = Schema.decodeUnknownOption(Schema.fromJsonString(Failure));
+/**
+ * Failures the peer itself answered with: an authenticated reply that refuses
+ * this one call. The link works, so they must not be recorded as a link failure.
+ */
+const peerRefusals = new WeakSet<object>();
+const peerRefusal = (fields: ConstructorParameters<typeof OrchestratorMcpFailure>[0]) => {
+  const failure = new OrchestratorMcpFailure(fields);
+  peerRefusals.add(failure);
+  return failure;
+};
 const malformed = () =>
   new OrchestratorMcpFailure({
     code: "orchestration_error",
@@ -188,7 +198,7 @@ const readEnvelope = Effect.fn("PeerMcpTransport.readEnvelope")(function* (
   if (envelope.error !== undefined) {
     const refused = decodeFailure(envelope.error.data);
     return yield* refused._tag === "Some"
-      ? new OrchestratorMcpFailure(refused.value)
+      ? peerRefusal(refused.value)
       : new OrchestratorMcpFailure({
           code: "orchestration_error",
           message:
@@ -496,12 +506,14 @@ export const make = Effect.gen(function* () {
           const refused = hasStructured
             ? decodeFailure(result.structuredContent)
             : decodeTextFailure(text);
-          return yield* refused._tag === "Some"
-            ? new OrchestratorMcpFailure(refused.value)
-            : new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: text || "The linked environment refused the call.",
-              });
+          return yield* peerRefusal(
+            refused._tag === "Some"
+              ? refused.value
+              : {
+                  code: "orchestration_error",
+                  message: text || "The linked environment refused the call.",
+                },
+          );
         }
         return yield* (
           hasStructured
@@ -523,7 +535,10 @@ export const make = Effect.gen(function* () {
         Effect.tapError((error) =>
           generation === undefined
             ? Effect.void
-            : links.recordOutcome(input.environmentId, generation, { error: error.message }),
+            : links.recordOutcome(input.environmentId, generation, {
+                // A refusal is still an answer: the link works, so only this call fails.
+                error: peerRefusals.has(error) ? null : error.message,
+              }),
         ),
         Effect.tap(() =>
           generation === undefined

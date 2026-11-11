@@ -13,6 +13,11 @@ import { outputObligations } from "./ProducerFinalizer.ts";
 import { participantGuard } from "./ParticipantGuard.ts";
 import { qualify } from "./Qualification.ts";
 
+// The record is the behavior under test, not worker start latency. The production
+// 100 ms bound is still proved by the stalled-capture case below.
+const RECORD_TEST_DEADLINE_MS = 10_000;
+const STALLED_WORKER_START_DEADLINE_MS = 2_000;
+
 export const completionCases: Record<string, () => Promise<void>> = {
   "default completion records outcomes and lineage without walking large output descriptors":
     async () =>
@@ -32,7 +37,7 @@ export const completionCases: Record<string, () => Promise<void>> = {
               pr: "https://github.com/example/project/pull/1",
             },
           });
-          const result = recordCompletion(observation);
+          const result = recordCompletion(observation, undefined, RECORD_TEST_DEADLINE_MS);
           NodeAssert.equal(result.status, "recorded", result.reason ?? undefined);
           const stored = JSON.parse(await NodeFSP.readFile(result.reference!, "utf8"));
           NodeAssert.equal(stored.status, status);
@@ -84,17 +89,22 @@ export const completionCases: Record<string, () => Promise<void>> = {
         );
         NodeAssert.equal(oversize.reason, "metadata_bound");
         NodeAssert.equal(await NodeFSP.stat(marker).catch(() => null), null);
-        const pidFile = NodePath.join(base, "worker.pid");
+        // The default deadline holds whether or not the worker started before it expired.
         const started = performance.now();
-        const stalled = recordCompletion(
-          observation,
-          `import{writeFileSync}from'node:fs';writeFileSync(${JSON.stringify(pidFile)},String(process.pid));while(true){}`,
-        );
+        const stalled = recordCompletion(observation, "while(true){}");
         NodeAssert.equal(stalled.reason, "metadata_deadline");
         NodeAssert.ok(
           performance.now() - started < 1500,
           "deadline plus OS process close must remain bounded",
         );
+        // Reaping needs a worker that has started, so give it a deadline it cannot miss on a slow host.
+        const pidFile = NodePath.join(base, "worker.pid");
+        const reaped = recordCompletion(
+          observation,
+          `import{writeFileSync}from'node:fs';writeFileSync(${JSON.stringify(pidFile)},String(process.pid));while(true){}`,
+          STALLED_WORKER_START_DEADLINE_MS,
+        );
+        NodeAssert.equal(reaped.reason, "metadata_deadline");
         const pid = Number(await NodeFSP.readFile(pidFile, "utf8"));
         NodeAssert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
         NodeAssert.deepEqual(await outputObligations(worktree), []);

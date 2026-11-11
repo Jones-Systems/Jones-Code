@@ -24,6 +24,7 @@ import type {
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
 import * as Schema from "effect/Schema";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Random from "effect/Random";
@@ -173,6 +174,16 @@ export interface JonesUpdateObservation {
   readonly state: JonesUpdateState | null;
   readonly freshness: "loading" | "fresh" | "stale" | "unsupported";
   readonly message?: string;
+  /** Client clock time of the last successful status read, including unchanged long-poll returns. */
+  readonly heardAt?: number;
+}
+
+/** Longest pause between status reads; an unanswered host is retried, never abandoned. */
+const JONES_READ_RETRY_CAP_MS = 150_000;
+
+/** Unjittered transient-failure backoff: doubles from one second up to the cap. */
+export function jonesReadRetryDelayMs(failure: number) {
+  return Math.min(JONES_READ_RETRY_CAP_MS, 1000 * 2 ** Math.min(Math.max(failure, 1) - 1, 9));
 }
 
 function readFailure(error: unknown): "unsupported" | "retry" | "wait" {
@@ -200,20 +211,31 @@ function readFailure(error: unknown): "unsupported" | "retry" | "wait" {
     : "wait";
 }
 
+export interface JonesUpdateSnapshotOptions {
+  /** Pause after a failure that a quick retry cannot fix, such as refused authorization. */
+  readonly waitDelay?: Effect.Effect<void>;
+  /** Completes on the next status refresh request; it cuts short a pending retry or wait. */
+  readonly kicked?: Effect.Effect<void>;
+}
+
 /** This subscription owns GET retries only; mutations and transport reconnection remain single-owner. */
 export function observeJonesUpdateSnapshot<A, E, R>(
   connections: Stream.Stream<Option.Option<A>>,
   read: (after?: number) => Effect.Effect<JonesUpdateState | null, E, R>,
   retryDelay: (failure: number) => Effect.Effect<void> = (failure) =>
     Random.nextBetween(0.5, 1).pipe(
-      Effect.flatMap((jitter) =>
-        Effect.sleep(Math.min(300_000, 1000 * 2 ** Math.min(failure - 1, 9)) * jitter),
-      ),
+      Effect.flatMap((jitter) => Effect.sleep(jonesReadRetryDelayMs(failure) * jitter)),
     ),
+  options: JonesUpdateSnapshotOptions = {},
 ): Stream.Stream<JonesUpdateObservation, never, R> {
+  const waitDelay = options.waitDelay ?? Effect.sleep(JONES_READ_RETRY_CAP_MS);
+  const pause = (delay: Effect.Effect<void>) =>
+    options.kicked === undefined ? delay : Effect.raceFirst(delay, options.kicked);
   return Stream.suspend(() => {
     let latest: JonesUpdateState | null = null;
     let latestIsFresh = false;
+    let heardAt: number | undefined;
+    const heard = () => (heardAt === undefined ? {} : { heardAt });
     type Cursor = { after?: number; failures: number; wait?: "retry" | "wait"; done?: boolean };
     return connections.pipe(
       Stream.switchMap((connection) => {
@@ -223,6 +245,7 @@ export function observeJonesUpdateSnapshot<A, E, R>(
             state: latest,
             freshness: latest === null ? "loading" : "stale",
             message: "Update status is waiting for a connection.",
+            ...heard(),
           });
         }
         const replacingFreshConnection = latestIsFresh;
@@ -234,14 +257,18 @@ export function observeJonesUpdateSnapshot<A, E, R>(
           ): Effect.Effect<readonly [JonesUpdateObservation, Cursor] | undefined, never, R> =>
             Effect.gen(function* () {
               if (cursor.done) return undefined;
-              if (cursor.wait === "wait") return yield* Effect.never;
-              if (cursor.wait === "retry") yield* retryDelay(cursor.failures);
+              if (cursor.wait === "wait") yield* pause(waitDelay);
+              if (cursor.wait === "retry") yield* pause(retryDelay(cursor.failures));
               return yield* read(cursor.after).pipe(
-                Effect.map((state): readonly [JonesUpdateObservation, Cursor] => {
+                Effect.flatMap((state) =>
+                  Clock.currentTimeMillis.pipe(Effect.map((now) => [state, now] as const)),
+                ),
+                Effect.map(([state, now]): readonly [JonesUpdateObservation, Cursor] => {
                   latest = state;
                   latestIsFresh = state !== null;
+                  heardAt = now;
                   return [
-                    { state, freshness: state === null ? "unsupported" : "fresh" },
+                    { state, freshness: state === null ? "unsupported" : "fresh", heardAt: now },
                     {
                       ...(state?.revision === undefined ? {} : { after: state.revision }),
                       failures: 0,
@@ -257,6 +284,7 @@ export function observeJonesUpdateSnapshot<A, E, R>(
                     {
                       state: latest,
                       freshness: disposition === "unsupported" ? "unsupported" : "stale",
+                      ...heard(),
                       ...(disposition === "unsupported"
                         ? {}
                         : {
@@ -281,6 +309,7 @@ export function observeJonesUpdateSnapshot<A, E, R>(
               state: latest,
               freshness: "stale",
               message: "Refreshing update status for the new connection.",
+              ...heard(),
             }).pipe(Stream.concat(reads))
           : reads;
       }),
@@ -302,14 +331,36 @@ export function observeJonesUpdateState<A, E, R>(
 export function createJonesUpdateAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | HttpClient.HttpClient | R, E>,
 ) {
+  const kickWaiters = new Map<EnvironmentId, Set<() => void>>();
+  const kicked = (environmentId: EnvironmentId) =>
+    Effect.callback<void>((resume) => {
+      const waiters = kickWaiters.get(environmentId) ?? new Set<() => void>();
+      kickWaiters.set(environmentId, waiters);
+      const wake = () => resume(Effect.void);
+      waiters.add(wake);
+      return Effect.sync(() => {
+        waiters.delete(wake);
+        if (waiters.size === 0 && kickWaiters.get(environmentId) === waiters)
+          kickWaiters.delete(environmentId);
+      });
+    });
+  /** Read status now if this host's stream is waiting out a failure; a live long-poll is unaffected. */
+  const kick = (environmentId: EnvironmentId) => {
+    const waiters = kickWaiters.get(environmentId);
+    kickWaiters.delete(environmentId);
+    for (const wake of waiters ?? []) wake();
+  };
   const subscription = createEnvironmentSubscriptionAtomFamily(runtime, {
     label: "environment:jones-updates",
-    subscribe: () =>
+    subscribe: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
       Stream.unwrap(
         EnvironmentSupervisor.pipe(
           Effect.map((supervisor) =>
-            observeJonesUpdateSnapshot(SubscriptionRef.changes(supervisor.prepared), (after) =>
-              request({ action: "state", ...(after === undefined ? {} : { after }) }),
+            observeJonesUpdateSnapshot(
+              SubscriptionRef.changes(supervisor.prepared),
+              (after) => request({ action: "state", ...(after === undefined ? {} : { after }) }),
+              undefined,
+              { kicked: kicked(environmentId) },
             ),
           ),
         ),
@@ -318,7 +369,7 @@ export function createJonesUpdateAtoms<R, E>(
   const observation = Atom.family((environmentId: import("@t3tools/contracts").EnvironmentId) =>
     Atom.make((get): JonesUpdateObservation =>
       Option.getOrElse(
-        AsyncResult.value(get(subscription({ environmentId, input: {} }))),
+        AsyncResult.value(get(subscription({ environmentId, input: { environmentId } }))),
         () => ({ state: null, freshness: "loading" }) as const,
       ),
     ),
@@ -341,7 +392,7 @@ export function createJonesUpdateAtoms<R, E>(
     concurrency: { mode: "serial", key: ({ environmentId }) => `${environmentId}:stop` },
     execute: (input: JonesStopCommand) => request(input),
   });
-  return { value, observation, action, operation, stop };
+  return { value, observation, action, operation, stop, kick };
 }
 
 const SETTLEMENT_REFUSALS = {

@@ -169,6 +169,34 @@ jobs:
             exit 1
           fi
 
+      # Catches what the substring-reading workflow node-tests cannot: bad
+      # expression contexts and functions (a `cancelled()` in a step `env` broke
+      # the nightly native run until #904), unknown properties, bad `needs`
+      # and `uses` references. The binary is pinned and verified against the
+      # SHA-256 from the release's actionlint_<version>_checksums.txt. To bump
+      # it, change both values below together.
+      # 1.7.12 parses the schedule `timezone:` key and the YAML anchors in this
+      # file; 1.7.7 rejected both, so do not pin anything older.
+      # shellcheck and pyflakes are turned off (empty flags): actionlint runs them
+      # only when found on PATH, so the hosted image would decide what fails.
+      # This step checks workflow syntax and expressions only.
+      - name: Lint workflows
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          dir="$RUNNER_TEMP/actionlint"
+          mkdir -p "$dir"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$dir/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  $dir/$archive" | sha256sum --check --strict -
+          tar -xzf "$dir/$archive" -C "$dir" actionlint
+          "$dir/actionlint" -version
+          "$dir/actionlint" -no-color -shellcheck= -pyflakes=
+
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
@@ -178,6 +206,9 @@ jobs:
 
       - name: Check Jones migration order
         run: node scripts/jones/ci/jones-migration-order.cjs
+
+      - name: Check Jones migration ledger
+        run: node scripts/jones/ci/jones-migration-ledger.cjs
 
       # electron's install.js (run by ensure:electron) reads this cache before it
       # downloads from GitHub. The key changes only with the Electron version.
@@ -1007,20 +1038,35 @@ jobs:
           T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
           T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
           JONES_SERVER_SHARD_TIMINGS_PATH: ${{ runner.temp }}/server-timings.ndjson
-        run: ${{ env.TEST_COMMAND }}
+        run: |
+          # pipefail keeps the test command's exit status through the filter.
+          set -o pipefail
+          # The runner's trace writer can crash on surrogate pairs in test output
+          # (upstream d51bc58f5e0). Escape non-ASCII in the log only; the JSON
+          # report and the timings files are written directly by the test run.
+          ${{ env.TEST_COMMAND }} 2>&1 | python3 -u -c '
+          import sys
+          sys.stdin.reconfigure(errors="backslashreplace")
+          for line in sys.stdin:
+              sys.stdout.write(line.encode("ascii", "backslashreplace").decode("ascii"))
+          '
 
       - *test_receipt
       - *test_receipt_upload
       - *test_receipt_cleanup
 
       # Uploaded even when the shard fails, so partial timings stay inspectable.
-      # The attempt and shard in the name keep reruns and shards apart.
+      # The attempt and shard in the name keep reruns and shards apart. The case
+      # events file (per-case and per-hook progress that the log omits) rides in
+      # the same artifact; the weights combine step reads only the timings file.
       - name: Upload server shard timings
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: server-timings-a${{ github.run_attempt }}-s${{ matrix.shard }}-of-${{ strategy.job-total }}
-          path: ${{ runner.temp }}/server-timings.ndjson
+          path: |
+            ${{ runner.temp }}/server-timings.ndjson
+            ${{ runner.temp }}/server-case-events.ndjson
           if-no-files-found: warn
           retention-days: 7
 

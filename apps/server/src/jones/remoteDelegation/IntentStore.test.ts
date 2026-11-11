@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { NodeId } from "@t3tools/contracts";
+import { CommandId, NodeId, ProjectId, RunId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -109,5 +109,133 @@ it.effect("replays an explicitly supervised intent with the same flag", () =>
     const request = { task: "Inspect fixture", supervisionRequestedByUser: true };
     yield* store.prepare(commandId, request, envelope);
     assert.deepEqual((yield* store.find(commandId, request))?.envelope, envelope);
+  }).pipe(Effect.provide(layer)),
+);
+
+const launched = {
+  threadId: ThreadId.make("remote:child"),
+  runId: RunId.make("remote:run"),
+  status: "running",
+  modelSelection: envelope.launch.modelSelection,
+  projectId: ProjectId.make("project:destination"),
+} as Store.LaunchResult;
+const admission = { id: "held-1", bindingDigest: "a".repeat(64), status: "held" } as const;
+
+const insertRaw = (
+  id: string,
+  status: "pending" | "recorded" | "stopped" | "denied",
+  createdAt: string,
+  envelopeJson = "{}",
+) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO jones_remote_delegation_intents
+      (command_id, request_json, envelope_json, status, created_at)
+      VALUES (${id}, '{}', ${envelopeJson}, ${status}, ${createdAt})`;
+  });
+const remaining = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ readonly command_id: string }>`
+    SELECT command_id FROM jones_remote_delegation_intents ORDER BY command_id`;
+  return rows.map((row) => row.command_id);
+});
+
+it.effect("round-trips the launch result and admission through schema-validated reads", () =>
+  Effect.gen(function* () {
+    const store = yield* Store.make;
+    yield* store.prepare(commandId, { task: "Inspect fixture" }, envelope);
+    yield* store.launched(commandId, launched);
+    yield* store.admission(commandId, admission);
+    const read = yield* store.get(commandId);
+    assert.deepEqual(read?.launched, launched);
+    assert.deepEqual(read?.admission, admission);
+    assert.deepEqual((yield* store.pending)[0]?.launched, launched);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("reports a stored row that does not match its schema as a storage failure", () =>
+  Effect.gen(function* () {
+    const store = yield* Store.make;
+    const sql = yield* SqlClient.SqlClient;
+    const request = { task: "Inspect fixture" };
+    const taskId = NodeId.make("reserved:task");
+    yield* store.prepare(commandId, request, envelope);
+    yield* store.reserved(commandId, taskId);
+    const failures = Effect.forEach(
+      [store.get(commandId), store.find(commandId, request), store.byTask(taskId)],
+      (read) =>
+        read.pipe(
+          Effect.flip,
+          Effect.map((failure) => failure.code),
+        ),
+    );
+    // Valid JSON that is not a launch result.
+    yield* sql`UPDATE jones_remote_delegation_intents SET launched_json = '{"threadId":1}' WHERE command_id = ${commandId}`;
+    assert.deepEqual(yield* failures, [
+      "orchestration_error",
+      "orchestration_error",
+      "orchestration_error",
+    ]);
+    // Valid JSON that is not an admission.
+    yield* sql`UPDATE jones_remote_delegation_intents SET launched_json = NULL, admission_json = '{"id":"","bindingDigest":"x","status":"nope"}' WHERE command_id = ${commandId}`;
+    assert.deepEqual(yield* failures, [
+      "orchestration_error",
+      "orchestration_error",
+      "orchestration_error",
+    ]);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("recovers the readable pending intents when one stored row cannot be read", () =>
+  Effect.gen(function* () {
+    const store = yield* Store.make;
+    yield* insertRaw("remote:intent:corrupt", "pending", "2026-10-01T00:00:00.000Z");
+    yield* store.prepare(commandId, { task: "Inspect fixture" }, envelope);
+    const pending = yield* store.pending;
+    assert.deepEqual(
+      pending.map((intent) => intent.commandId),
+      [commandId],
+    );
+    // The unreadable row is left in place for an operator, not deleted or closed.
+    assert.deepEqual(yield* remaining, ["remote:intent:corrupt", commandId]);
+    const failed = yield* store.get(CommandId.make("remote:intent:corrupt")).pipe(Effect.result);
+    assert.equal(failed._tag, "Failure");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("prunes only finished intents created before the cutoff", () =>
+  Effect.gen(function* () {
+    const store = yield* Store.make;
+    const cutoff = "2026-10-11T12:00:00.000Z";
+    const old = "2026-09-01T00:00:00.000Z";
+    yield* insertRaw("old:pending", "pending", old);
+    yield* insertRaw("old:recorded", "recorded", old);
+    yield* insertRaw("old:stopped", "stopped", old);
+    yield* insertRaw("old:denied", "denied", old);
+    yield* insertRaw("edge:recorded", "recorded", cutoff);
+    yield* insertRaw("new:recorded", "recorded", "2026-11-01T00:00:00.000Z");
+    yield* insertRaw("new:pending", "pending", "2026-11-01T00:00:00.000Z");
+    assert.equal(yield* store.pruneFinished(cutoff), 3);
+    assert.deepEqual(yield* remaining, [
+      "edge:recorded",
+      "new:pending",
+      "new:recorded",
+      "old:pending",
+    ]);
+    assert.equal(yield* store.pruneFinished(cutoff), 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("prunes a backlog larger than one batch without touching pending intents", () =>
+  Effect.gen(function* () {
+    const store = yield* Store.make;
+    const old = "2026-01-01T00:00:00.000Z";
+    yield* Effect.forEach(
+      Array.from({ length: 450 }, (_, index) => index),
+      (index) => insertRaw(`old:${String(index).padStart(3, "0")}`, "stopped", old),
+    );
+    yield* insertRaw("old:pending", "pending", old);
+    assert.equal(yield* store.pruneFinished("2026-10-11T12:00:00.000Z"), 450);
+    assert.deepEqual(yield* remaining, ["old:pending"]);
   }).pipe(Effect.provide(layer)),
 );

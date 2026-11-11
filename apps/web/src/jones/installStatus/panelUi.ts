@@ -4,7 +4,10 @@ import type {
   JonesInstallPlanState,
   JonesInstallPlanSelection,
 } from "@t3tools/contracts/jones/installPlan";
-import type { InstallPlanDeviceObservation } from "@t3tools/client-runtime/jones/install-plan";
+import type {
+  InstallPlanDeviceObservation,
+  StatusPollHealth,
+} from "@t3tools/client-runtime/jones/install-plan";
 
 export interface InstallStatusDevice extends InstallPlanDeviceObservation {
   readonly environmentId: EnvironmentId;
@@ -23,6 +26,8 @@ export interface InstallStatusSnapshot {
   readonly showLast: boolean;
   readonly previewSelection: readonly JonesInstallPlanSelection[];
   readonly error: string | null;
+  /** Automatic status refresh results by environment, written by the status poller. */
+  readonly pollHealth: Readonly<Partial<Record<EnvironmentId, StatusPollHealth>>>;
 }
 
 export function createInstallStatusStore() {
@@ -38,6 +43,7 @@ export function createInstallStatusStore() {
     showLast: false,
     previewSelection: [],
     error: null,
+    pollHealth: {},
   };
   const listeners = new Set<() => void>();
   const collapsedByPlan = new Map<string, boolean>();

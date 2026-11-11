@@ -94,6 +94,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 143, name: "WorkstreamsPeerSessionPins" },
         { migration_id: 144, name: "WorkstreamsMemberBindings" },
         { migration_id: 145, name: "WorkstreamsForwardReceipts" },
+        { migration_id: 146, name: "SettlementOriginRetention" },
       ],
     );
     assert.deepEqual(

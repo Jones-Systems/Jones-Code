@@ -9783,6 +9783,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         disposition: "disposed",
         now,
       });
+      const parentRun = projection.runs.find(
+        (candidate) => candidate.id === queuedMessage.delegatedCompletion?.parentRunId,
+      );
+      const currentDelivery = completionDeliveryRun(
+        projection,
+        parentRun?.delegatedCompletion?.delivery ?? null,
+      );
+      if (currentDelivery?.id !== queuedRun.id) {
+        yield* emitQueuedRunCancellation({
+          command,
+          events,
+          projection,
+          run: queuedRun,
+          now,
+        });
+      }
       return;
     }
     const queuedRootNode =

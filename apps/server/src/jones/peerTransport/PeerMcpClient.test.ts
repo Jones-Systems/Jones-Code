@@ -832,3 +832,134 @@ it.effect.each(["JSON-RPC", "structuredContent", "text"] as const)(
     );
   },
 );
+
+const recordingLinks = (outcomes: Array<{ generation: string; error: string | null }>) =>
+  Layer.mock(PeerLinks.PeerLinks)({
+    resolve: () =>
+      Effect.succeed({
+        url: "https://peer.invalid",
+        token: "synthetic-token",
+        generation: "generation-1",
+        link: {},
+      } as PeerLinks.ResolvedPeerLink),
+    recordOutcome: (_environmentId, generation, outcome) =>
+      Effect.sync(() => {
+        outcomes.push({ generation, error: outcome.error });
+      }),
+    currentGeneration: () => Effect.succeedSome("generation-1"),
+  });
+
+const heldAdmission = {
+  code: "remote_admission_pending",
+  message: "Waiting for owner input.",
+  remoteAdmission: {
+    id: "opaque-admission-id",
+    bindingDigest: "a".repeat(64),
+    status: "held",
+  },
+} as const;
+
+it.effect.each([
+  {
+    name: "a typed JSON-RPC refusal",
+    respond: (id: unknown) =>
+      Response.json({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32000, message: "RPC wrapper", data: heldAdmission },
+      }),
+  },
+  {
+    name: "a typed structured refusal",
+    respond: (id: unknown) =>
+      answer(id, {
+        content: [{ type: "text", text: "fallback" }],
+        structuredContent: heldAdmission,
+        isError: true,
+      }),
+  },
+  {
+    name: "a typed text refusal",
+    respond: (id: unknown) => answer(id, { content: content(heldAdmission), isError: true }),
+  },
+  {
+    name: "an untyped tool error",
+    respond: (id: unknown) =>
+      answer(id, { content: [{ type: "text", text: "plain refusal" }], isError: true }),
+  },
+])("keeps a link healthy when the peer answers with $name", ({ respond }) => {
+  const outcomes: Array<{ generation: string; error: string | null }> = [];
+  return Effect.gen(function* () {
+    const client = yield* PeerMcpClient.PeerMcpClient;
+    const failure = yield* client.call(input).pipe(Effect.flip);
+    expect(failure._tag).toBe("OrchestratorMcpFailure");
+    // The caller still hears the refusal, but the link records no failure.
+    expect(outcomes).toEqual([{ generation: "generation-1", error: null }]);
+  }).pipe(
+    Effect.provide(fixture((body) => respond(body.id), { linkLayer: recordingLinks(outcomes) })),
+  );
+});
+
+it.effect.each([
+  {
+    name: "an HTTP failure",
+    respond: () => new Response(null, { status: 503 }),
+    message: "The linked environment answered HTTP 503.",
+  },
+  {
+    name: "a revoked link",
+    respond: () => new Response(null, { status: 401 }),
+    message:
+      "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
+  },
+  {
+    name: "a lost session",
+    respond: () => new Response(null, { status: 404 }),
+    message: "The linked environment lost the MCP session (HTTP 404).",
+  },
+  {
+    name: "a malformed result",
+    respond: (id: unknown) => answer(id, { content: [], structuredContent: { count: "bad" } }),
+    message:
+      "The linked environment's answer did not match this version. Update both environments.",
+  },
+  {
+    name: "an unrecognized RPC error",
+    respond: (id: unknown) =>
+      Response.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "internal" } }),
+    message: "The linked environment reported an unrecognized RPC error.",
+  },
+])("still marks a link failing when the peer answers with $name", ({ respond, message }) => {
+  const outcomes: Array<{ generation: string; error: string | null }> = [];
+  return Effect.gen(function* () {
+    const client = yield* PeerMcpClient.PeerMcpClient;
+    const failure = yield* client.call(input).pipe(Effect.flip);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]?.error).toContain(message);
+    expect(outcomes[0]?.error).toBe(failure.message);
+  }).pipe(
+    Effect.provide(fixture((body) => respond(body.id), { linkLayer: recordingLinks(outcomes) })),
+  );
+});
+
+it.effect("clears an earlier failure after a refused call, then after a success", () => {
+  const outcomes: Array<{ generation: string; error: string | null }> = [];
+  let calls = 0;
+  return Effect.gen(function* () {
+    const client = yield* PeerMcpClient.PeerMcpClient;
+    yield* client.call(input).pipe(Effect.flip);
+    const ok = yield* client.call(input);
+    expect(ok).toEqual({ count: 1 });
+    expect(outcomes.map((outcome) => outcome.error)).toEqual([null, null]);
+  }).pipe(
+    Effect.provide(
+      fixture(
+        (body) =>
+          ++calls === 1
+            ? answer(body.id, { content: content(heldAdmission), isError: true })
+            : answer(body.id, { content: [], structuredContent: { count: 1 } }),
+        { linkLayer: recordingLinks(outcomes) },
+      ),
+    ),
+  );
+});

@@ -349,6 +349,32 @@ const deleted = (sequence = 3): OrchestrationV2ThreadStreamItem => {
 };
 
 describe("EnvironmentThreads", () => {
+  it.effect("exposes the applied global sequence with cached, replayed and reset projections", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ cached: BASE_PROJECTION, completionMarker: true });
+      const cached = yield* awaitThreadState(h.observed, (value) => Option.isSome(value.data));
+      expect(cached.appliedSequence).toBe(CACHED_SNAPSHOT_SEQUENCE);
+      yield* Queue.offerAll(h.inputs, [titleUpdated("Replayed", 18), synchronized()]);
+      const replayed = yield* awaitThreadState(
+        h.observed,
+        (value) =>
+          value.status === "live" && Option.getOrNull(value.data)?.thread.title === "Replayed",
+      );
+      expect(replayed.appliedSequence).toBe(18);
+      yield* Queue.offerAll(h.inputs, [snapshot(BASE_PROJECTION, 3), synchronized()]);
+      const reset = yield* awaitThreadState(
+        h.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.getOrNull(value.data)?.thread.title === BASE_PROJECTION.thread.title,
+      );
+      expect(reset.appliedSequence).toBe(3);
+      yield* Queue.offer(h.inputs, deleted(4));
+      const removed = yield* awaitThreadState(h.observed, (value) => value.status === "deleted");
+      expect(removed.appliedSequence).toBeNull();
+    }),
+  );
+
   it.effect("cancels a superseded HTTP load before its install can reach the next session", () =>
     Effect.gen(function* () {
       const loading = yield* Deferred.make<void>();
@@ -507,6 +533,7 @@ describe("EnvironmentThreads", () => {
         expect(Option.getOrThrow(state.data).thread.title).toBe("Current HTTP");
         expect(state.status).toBe("synchronizing");
         expect(resumeCache.snapshot?.sequence).toBe(2);
+        expect(state.appliedSequence).toBe(2);
         expect(Option.getOrThrow(resumeCache.snapshot!.state.data).thread.title).toBe(
           "Current HTTP",
         );
@@ -527,6 +554,7 @@ describe("EnvironmentThreads", () => {
             Option.getOrNull(value.data)?.thread.title === "Current reset",
         );
         expect(resumeCache.snapshot?.sequence).toBe(1);
+        expect(resumeCache.snapshot?.state.appliedSequence).toBe(1);
       }),
   );
 
@@ -700,6 +728,7 @@ describe("EnvironmentThreads", () => {
       const resumed = yield* makeHarness({ resumeCache });
       const state = yield* awaitThreadState(resumed.observed, (value) => value.status === "live");
       expect(Option.getOrThrow(state.data).thread.title).toBe(BASE_PROJECTION.thread.title);
+      expect(state.appliedSequence).toBe(CACHED_SNAPSHOT_SEQUENCE);
       expect(yield* Ref.get(resumed.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
       expect(yield* Ref.get(first.savedThreads)).toEqual([
         {
