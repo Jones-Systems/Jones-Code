@@ -11292,9 +11292,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           function* (nativeThreadId: string) {
             const configuredDir = adapterOptions.environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
             const projectsDir = path.join(
-              configuredDir.length > 0
-                ? path.resolve(session.cwd, configuredDir)
-                : homePath,
+              configuredDir.length > 0 ? path.resolve(session.cwd, configuredDir) : homePath,
               "projects",
             );
             // Any message in any transcript copy means Claude may still resume it.

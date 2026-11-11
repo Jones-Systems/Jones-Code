@@ -50,9 +50,10 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         }
         const absent = yield* makeClaudeEnvironment(config, environment);
         expect(Object.hasOwn(absent, "CLAUDE_CONFIG_DIR")).toBe(false);
-        expect({ HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR }).toEqual(
-          original,
-        );
+        expect({
+          HOME: process.env.HOME,
+          CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+        }).toEqual(original);
       }).pipe(Effect.provideService(HostProcess.HomeDirectory, "/synthetic/server-home")),
     );
 
@@ -61,9 +62,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         expect(yield* usesClaudeHostConfig({ HOME: "/server" })).toBe(true);
         expect(yield* usesClaudeHostConfig({})).toBe(true);
         expect(yield* usesClaudeHostConfig({ HOME: "/provider" })).toBe(false);
-        expect(yield* usesClaudeHostConfig({ HOME: "/server", CLAUDE_CONFIG_DIR: "" })).toBe(
-          false,
-        );
+        expect(yield* usesClaudeHostConfig({ HOME: "/server", CLAUDE_CONFIG_DIR: "" })).toBe(false);
         expect(
           yield* usesClaudeHostConfig({ HOME: "/server", CLAUDE_CONFIG_DIR: "/server/.claude" }),
         ).toBe(false);

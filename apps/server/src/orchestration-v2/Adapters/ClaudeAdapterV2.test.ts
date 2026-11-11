@@ -1173,7 +1173,8 @@ describe("ClaudeAdapterV2 resumeThread", () => {
           const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
             instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
             settings: DEFAULT_CLAUDE_SETTINGS,
-            environment: binding === "HOME" ? { HOME: providerHome } : { CLAUDE_CONFIG_DIR: configDir },
+            environment:
+              binding === "HOME" ? { HOME: providerHome } : { CLAUDE_CONFIG_DIR: configDir },
             attachmentsDir: configDir,
             fileSystem,
             path,
@@ -2059,7 +2060,9 @@ describe("ClaudeAdapterV2 native fork", () => {
     return Effect.gen(function* () {
       const fork = yield* Effect.acquireRelease(
         Effect.sync(() =>
-          vi.spyOn(ClaudeSdk, "forkSession").mockRejectedValue(new Error("Server SDK must not run")),
+          vi
+            .spyOn(ClaudeSdk, "forkSession")
+            .mockRejectedValue(new Error("Server SDK must not run")),
         ),
         (spy) => Effect.sync(() => spy.mockRestore()),
       );
@@ -7668,22 +7671,25 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   );
 
   it.effect.each(
-    [false, true].flatMap((nativeHome) => [
-      {
-        nativeHome,
-        tool: updateTask({ taskId: "2", status: "completed" }),
-        listId: undefined,
-        directory: WAKE_NATIVE_SESSION,
-        status: "completed",
-      },
-      {
-        nativeHome,
-        tool: createTask("2", "Implement"),
-        listId: " list/ID ",
-        directory: "list-ID",
-        status: "pending",
-      },
-    ] as const),
+    [false, true].flatMap(
+      (nativeHome) =>
+        [
+          {
+            nativeHome,
+            tool: updateTask({ taskId: "2", status: "completed" }),
+            listId: undefined,
+            directory: WAKE_NATIVE_SESSION,
+            status: "completed",
+          },
+          {
+            nativeHome,
+            tool: createTask("2", "Implement"),
+            listId: " list/ID ",
+            directory: "list-ID",
+            status: "pending",
+          },
+        ] as const,
+    ),
   )(
     "recovers persisted tasks on the first $tool.name after restart (native HOME=$nativeHome)",
     ({ tool, listId, directory, status, nativeHome }) =>

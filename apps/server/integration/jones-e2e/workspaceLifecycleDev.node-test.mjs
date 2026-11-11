@@ -489,15 +489,17 @@ async function qualify(v) {
     provider: {
       ...v.provider,
       accountObservation: "external-operator-attestation; native account identity not observed",
-      storageCustody: v.provider.nativeBinding === undefined
-        ? { state: "private-provider-home" }
-        : {
-            state: "external-native-history-and-cache",
-            home: v.provider.nativeBinding.home,
-            configDir: v.provider.nativeBinding.configDir,
-            cleanup: "excluded; native HOME, profile and launcher are never cleanup targets",
-            terminalScope: "explicit provider terminals can inherit this environment; setup and terminal-first omit the provider",
-          },
+      storageCustody:
+        v.provider.nativeBinding === undefined
+          ? { state: "private-provider-home" }
+          : {
+              state: "external-native-history-and-cache",
+              home: v.provider.nativeBinding.home,
+              configDir: v.provider.nativeBinding.configDir,
+              cleanup: "excluded; native HOME, profile and launcher are never cleanup targets",
+              terminalScope:
+                "explicit provider terminals can inherit this environment; setup and terminal-first omit the provider",
+            },
     },
     adapterCoverage: {
       selected: v.provider.driver,
@@ -1374,7 +1376,11 @@ async function qualify(v) {
     if (v.provider.nativeBinding !== undefined) {
       NodeAssert.equal(process.getuid(), 501);
       NodeAssert.equal(NodeOS.userInfo().username, "mjones");
-      NodeAssert.deepEqual(await NodeFSP.readdir(providerHome), [], "native binding uses an empty placeholder only");
+      NodeAssert.deepEqual(
+        await NodeFSP.readdir(providerHome),
+        [],
+        "native binding uses an empty placeholder only",
+      );
     }
     receipt.provider.nativeBindingObservation = await verifyNativeBinding(v.provider, v.host);
     const launcher = await NodeFSP.lstat(v.provider.launcher);
@@ -2315,8 +2321,16 @@ async function testNativeBindings() {
   }
   NodeAssert.throws(() => validateNativeBinding(providerFor(), { kind: "Apple Silicon laptop" }));
   NodeAssert.deepEqual(
-    providerInstanceBinding({ launcher: "/synthetic/private-cli" }, "/synthetic/private/provider-home"),
-    { config: { binaryPath: "/synthetic/private-cli", homePath: "/synthetic/private/provider-home" } },
+    providerInstanceBinding(
+      { launcher: "/synthetic/private-cli" },
+      "/synthetic/private/provider-home",
+    ),
+    {
+      config: {
+        binaryPath: "/synthetic/private-cli",
+        homePath: "/synthetic/private/provider-home",
+      },
+    },
   );
   const badOperators = [
     (v) => {
