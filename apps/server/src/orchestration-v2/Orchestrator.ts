@@ -6865,7 +6865,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection,
       command,
       dispatchMode,
-      modelSelection,
+      (active) =>
+        ownerMessage
+          ? ownerSteerSelection({
+              ownerMessage,
+              explicit: ownerExplicit,
+              pending: pendingOwner,
+              requested: modelSelection,
+              active,
+            }).modelSelection
+          : modelSelection,
       goalCommand !== null || isNativeMaintenanceCommand(command),
     );
     if (
