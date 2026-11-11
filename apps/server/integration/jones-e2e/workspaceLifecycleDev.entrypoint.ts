@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as RpcClient from "effect/rpc/RpcClient";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as Socket from "effect/socket/Socket";
@@ -42,7 +43,9 @@ const Binding = Schema.Struct({
   workspaceLifecycle: Configuration,
 });
 
-const decodeBinding = Schema.decodeUnknownEffect(Schema.fromJsonString(Binding), { onExcessProperty: "error" });
+const decodeBinding = Schema.decodeUnknownEffect(Schema.fromJsonString(Binding), {
+  onExcessProperty: "error",
+});
 const decodeLaunch = Schema.decodeUnknownEffect(OrchestrationV2ThreadLaunchInput);
 const decodeCommand = Schema.decodeUnknownEffect(OrchestrationV2Command);
 const decodeAttach = Schema.decodeUnknownEffect(TerminalAttachInput);
@@ -56,7 +59,11 @@ const serve = (raw: unknown) =>
   Effect.gen(function* () {
     const binding = yield* decodeBinding(raw);
     // oxlint-disable-next-line t3code/no-global-process-runtime -- Qualification requires the actual native platform.
-    if (process.versions.node !== "26.12.1" || process.platform !== "darwin" || process.arch !== "arm64")
+    if (
+      process.versions.node !== "26.12.1" ||
+      process.platform !== "darwin" ||
+      process.arch !== "arm64"
+    )
       return yield* Effect.die(new Error("qualified_apple_silicon_node_required"));
     const canonical = (path: string) => NodeFS.realpathSync(path) === path;
     const inside = (parent: string, child: string) => child.startsWith(parent + NodePath.sep);
@@ -70,10 +77,13 @@ const serve = (raw: unknown) =>
       binding.workspaceLifecycle.projects.length !== 1 ||
       binding.workspaceLifecycle.projects[0]?.projectRoot !== binding.projectRoot ||
       binding.credential.length < 32
-    ) return yield* Effect.die(new Error("isolated_instance_binding_mismatch"));
+    )
+      return yield* Effect.die(new Error("isolated_instance_binding_mismatch"));
 
     const baseDir = NodePath.join(binding.root, "jones-home");
-    const paths = yield* ServerConfig.deriveServerPaths(baseDir, undefined, { baseDirIsExplicit: true });
+    const paths = yield* ServerConfig.deriveServerPaths(baseDir, undefined, {
+      baseDirIsExplicit: true,
+    });
     if (NodeFS.readFileSync(paths.environmentIdPath, "utf8").trim() !== binding.environmentId)
       return yield* Effect.die(new Error("persisted_environment_identity_mismatch"));
     yield* ServerConfig.ensureServerDirectories(paths);
@@ -124,7 +134,14 @@ const serve = (raw: unknown) =>
 export const developmentRpc = async (
   origin: string,
   credential: string,
-  operation: "launch" | "dispatch" | "terminal-attach" | "terminal-write" | "terminal-close" | "settings" | "search",
+  operation:
+    | "launch"
+    | "dispatch"
+    | "terminal-attach"
+    | "terminal-write"
+    | "terminal-close"
+    | "settings"
+    | "search",
   input: unknown,
 ) => {
   const url = new URL("/ws", origin);
@@ -133,50 +150,77 @@ export const developmentRpc = async (
   url.protocol = "ws:";
   url.searchParams.set(ORCHESTRATION_PROTOCOL_QUERY_PARAM, String(ORCHESTRATION_PROTOCOL_VERSION));
   const protocol = RpcClient.layerProtocolSocket().pipe(
-    Layer.provide(Socket.layerWebSocket(url.toString(), { openTimeout: "10 seconds" }).pipe(
-      Layer.provide(Layer.succeed(Socket.WebSocketConstructor, (address, protocols) =>
-        new NodeSocket.NodeWS.WebSocket(address, protocols as string | string[] | undefined, {
-          headers: { authorization: `Bearer ${credential}` },
-          maxPayload: 1024 * 1024,
-        }) as unknown as globalThis.WebSocket,
-      )),
-    )),
+    Layer.provide(
+      Socket.layerWebSocket(url.toString(), { openTimeout: "10 seconds" }).pipe(
+        Layer.provide(
+          Layer.succeed(
+            Socket.WebSocketConstructor,
+            (address, protocols) =>
+              new NodeSocket.NodeWS.WebSocket(address, protocols as string | string[] | undefined, {
+                headers: { authorization: `Bearer ${credential}` },
+                maxPayload: 1024 * 1024,
+              }) as unknown as globalThis.WebSocket,
+          ),
+        ),
+      ),
+    ),
     Layer.provide(RpcSerialization.layerJson),
   );
-  return Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const client = yield* RpcClient.make(WsRpcGroup);
-    switch (operation) {
-      case "launch":
-        return yield* client["orchestration.launchThread"](yield* decodeLaunch(input));
-      case "dispatch":
-        return yield* client["orchestration.dispatchCommand"](yield* decodeCommand(input));
-      case "terminal-attach":
-        return yield* client["terminal.attach"](yield* decodeAttach(input));
-      case "terminal-write":
-        return yield* client["terminal.write"](yield* decodeWrite(input));
-      case "terminal-close":
-        return yield* client["terminal.close"](yield* decodeClose(input));
-      case "settings":
-        return yield* client["server.updateSettings"]({ patch: yield* decodeSettings(input) });
-      case "search":
-        return yield* client["projects.searchEntries"](yield* decodeSearch(input));
-    }
-  })).pipe(Effect.provide(protocol), Effect.timeout("15 seconds")));
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const client = yield* RpcClient.make(WsRpcGroup);
+        switch (operation) {
+          case "launch":
+            return yield* client["orchestration.launchThread"](yield* decodeLaunch(input));
+          case "dispatch":
+            return yield* client["orchestration.dispatchCommand"](yield* decodeCommand(input));
+          case "terminal-attach": {
+            const first = yield* client["terminal.attach"](yield* decodeAttach(input)).pipe(
+              Stream.runHead,
+            );
+            if (first._tag !== "Some" || first.value.type !== "snapshot")
+              return yield* Effect.die(new Error("terminal_attach_snapshot_required"));
+            return first.value.snapshot;
+          }
+          case "terminal-write":
+            return yield* client["terminal.write"](yield* decodeWrite(input));
+          case "terminal-close":
+            return yield* client["terminal.close"](yield* decodeClose(input));
+          case "settings":
+            return yield* client["server.updateSettings"]({ patch: yield* decodeSettings(input) });
+          case "search":
+            return yield* client["projects.searchEntries"](yield* decodeSearch(input));
+        }
+      }),
+    ).pipe(Effect.provide(protocol), Effect.timeout("15 seconds")),
+  );
 };
 
 if (process.argv[1] === NodeURL.fileURLToPath(import.meta.url)) {
   const path = process.argv[2];
   if (!path || process.argv.length !== 3 || !NodePath.isAbsolute(path))
-    throw new Error("Use workspaceLifecycleDev.node-test.mjs --live --operator /absolute/bindings.json");
+    throw new Error(
+      "Use workspaceLifecycleDev.node-test.mjs --live --operator /absolute/bindings.json",
+    );
   const stat = NodeFS.lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32768 || (stat.mode & 0o077) !== 0)
     throw new Error("private_bounded_instance_binding_required");
   process.on("message", (message: unknown) => {
     if (message === "inspect-native-workers") {
       const report = process.report?.getReport();
-      const workerThreads = typeof report === "object" && report !== null && "workers" in report && Array.isArray(report.workers)
-        ? report.workers.length : null;
-      process.send?.({ schema: "jones.workspace-lifecycle-dev.workers/v1", pid: process.pid, workerThreads });
+      const workerThreads =
+        typeof report === "object" &&
+        report !== null &&
+        "workers" in report &&
+        Array.isArray(report.workers)
+          ? report.workers.length
+          : null;
+      process.send?.({
+        schema: "jones.workspace-lifecycle-dev.workers/v1",
+        pid: process.pid,
+        workerThreads,
+      });
     }
   });
   NodeRuntime.runMain(serve(NodeFS.readFileSync(path, "utf8")));
