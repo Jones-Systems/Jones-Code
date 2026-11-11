@@ -246,8 +246,8 @@ it("preserves question sections and Markdown without changing code whitespace", 
     "  second line",
     "```",
   ].join("\n");
-  await act(async () =>
-    await root.rerender(<Harness questions={[{ ...question, question: markdown }]} />),
+  await act(
+    async () => await root.rerender(<Harness questions={[{ ...question, question: markdown }]} />),
   );
   const body = container.querySelector<HTMLElement>('[data-testid="question-markdown"]')!;
   const paragraph = body.querySelector("p")!;
