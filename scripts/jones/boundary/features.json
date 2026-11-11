@@ -4,6 +4,11 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "workspace-lifecycle-dev-proof",
+      "tests": ["apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs"],
+      "scope": "SOURCE candidate only: explicit opt-in isolated development qualification using production runServer, validated lifecycle configuration, real migrated registries, native reader/compute workers, shipped Codex or Claude adapter, setup/terminal/MCP/settlement services. Each selected adapter requires its own qualified native launcher/account invocation. The driver asserts conversation cwd and exact source content/unchanged Git inventory, same-key handoff replay across restart with one setup/continuation, a real pre-write setup interruption held across restart, terminal-first attachment, empty disposal/nonempty obligation, durable settlement/script/checkpoint ordering, disabled proposal, actual unforced retirement and receipt-HEAD recreation. Default invocation emits typed unavailable and starts nothing. Node 26.12.1/pnpm 12.14.0, exported source trees/tool hashes, external host/account/CPU-memory bindings, private root and storage admission are required. Whole-run/diagnostic/scratch bounds and exact owned-process/listener closure gate cleanup; bounded evidence is saved outside scratch first. Live proof is unexecuted by source delivery and no other adapter, installed runtime, platform or account acceptance is inferred."
+    },
+    {
       "id": "direct-producer-completion",
       "tests": [
         "scripts/jones/direct-producers/completion.node-test.mjs",
