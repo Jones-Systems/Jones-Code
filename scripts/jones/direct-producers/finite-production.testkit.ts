@@ -7,6 +7,7 @@ import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import {
@@ -916,9 +917,9 @@ export const capacityCases: Record<string, () => Promise<void>> = {
         };
         const recoverablePrior = recordFor("bb-recovery", 1);
         const recoverableSuccessor = recordFor("bb-recovery", 0);
-        recoverableSuccessor.record.started_at = new Date(
-          Date.parse(recoverablePrior.record.started_at) + 1,
-        ).toISOString();
+        recoverableSuccessor.record.started_at = DateTime.formatIso(
+          DateTime.makeUnsafe(Date.parse(recoverablePrior.record.started_at) + 1),
+        );
         recoverableSuccessor.record.supersedes = {
           id: recoverablePrior.record.id,
           rev: recoverablePrior.record.rev!,
