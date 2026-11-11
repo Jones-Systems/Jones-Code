@@ -2883,7 +2883,8 @@
     "apps/server/src/jones/workspaceRetirement/SettlementRecovery.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/RuntimeEvidenceGuard.ts": "jones-owned",
     "apps/server/src/jones/orchestration/IdleTurnSettlement.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/stalled-run-projection.json": "jones-owned"
+    "scripts/jones/boundary/fragments/stalled-run-projection.json": "jones-owned",
+    "apps/server/src/jones/orchestration/DelegatedNoticeDisposition.integration.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
