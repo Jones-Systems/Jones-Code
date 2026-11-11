@@ -1478,18 +1478,18 @@ describe("ThreadSettlementServiceV2 worker", () => {
             yield* Deferred.succeed(fixture.activation, undefined);
             const calls = yield* Effect.forEach(labels, () => Queue.take(lookups));
             expect(calls.map((call) => call.refresh)).toEqual(labels.map(() => fresh));
-            yield* Effect.forEach(Array.from({ length: 4 }), () => Queue.take(gitFixture.starts));
+            yield* Effect.forEach(Array.from({ length: 2 }), () => Queue.take(gitFixture.starts));
             const foreground = yield* gitFixture
               .run("foreground-fetch-resolution")
               .pipe(Effect.forkScoped);
             // Advancing the test clock lets all runnable fibers reach the fake
             // subprocess gates, including the foreground caller. No Git exits.
             yield* TestClock.adjust(1);
-            expect(gitFixture.peakBackground()).toBe(4);
+            expect(gitFixture.peakBackground()).toBe(2);
             expect(gitFixture.started).toContain("foreground-fetch-resolution");
             expect(
               gitFixture.started.filter((label) => label.startsWith("background-")),
-            ).toHaveLength(4);
+            ).toHaveLength(2);
 
             yield* gitFixture.releaseAll;
             yield* Fiber.join(foreground);
@@ -1497,7 +1497,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
             expect(
               gitFixture.started.filter((label) => label.startsWith("background-")),
             ).toHaveLength(8);
-            expect(gitFixture.peakBackground()).toBe(4);
+            expect(gitFixture.peakBackground()).toBe(2);
             expect(yield* Ref.get(fixture.commands)).toHaveLength(fresh ? 8 : 0);
           }).pipe(Effect.provide(fixture.layer));
         }),

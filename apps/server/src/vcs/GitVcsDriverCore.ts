@@ -57,7 +57,6 @@ import {
 import { makeIsServerInternalPath } from "../auth/serverInternalPaths.ts";
 import * as ServerConfig from "../config.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
-import { admitGitProcess } from "../jones/git/backgroundGitAdmission.ts";
 import {
   recordWorktreeProcessTime,
   withGitExecutionTiming,
@@ -1138,13 +1137,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         input.timeoutMs === null || (input.timeoutMs ?? DEFAULT_TIMEOUT_MS) > DEFAULT_TIMEOUT_MS
           ? execution
           : Effect.gen(function* () {
-              // Upstream background discovery runs in its own small lane, never the shared permits.
-              const lane = (yield* GitVcsDriver.BackgroundGitWork)
-                ? backgroundGitProcesses
-                : gitProcesses;
-              // Jones background work also waits at its gate before taking any of these permits.
-              return yield* admitGitProcess(
-                withGitPermitTiming(execution, lane, "git.shared_permit_wait_ms"),
+              const background = yield* GitVcsDriver.BackgroundGitWork;
+              const lane = background ? backgroundGitProcesses : gitProcesses;
+              // Jones: record the lane wait on this span; background work never takes shared permits.
+              return yield* withGitPermitTiming(
+                execution,
+                lane,
+                background ? "git.background_gate_wait_ms" : "git.shared_permit_wait_ms",
               );
             }),
       Effect.withSpan(input.operation, {

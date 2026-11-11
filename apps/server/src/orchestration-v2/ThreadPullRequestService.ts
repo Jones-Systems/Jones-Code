@@ -21,7 +21,6 @@ import * as Stream from "effect/Stream";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitManager from "../git/GitManager.ts";
-import { asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -206,12 +205,10 @@ export const make = Effect.gen(function* () {
           const detected =
             first.branch === null
               ? null
-              : yield* git
-                  .branchPullRequest(
-                    { cwd, branch: first.branch },
-                    { refresh: request.refresh, confirmTerminal: false },
-                  )
-                  .pipe(asBackgroundGitWork);
+              : yield* git.branchPullRequest(
+                  { cwd, branch: first.branch },
+                  { refresh: request.refresh, confirmTerminal: false },
+                );
           if (detected !== null && !pullRequestMatchesProject(detected, resolvedProject)) {
             return finishBackfill(group);
           }
@@ -286,9 +283,10 @@ export const make = Effect.gen(function* () {
           if (updates.length === 0) return;
 
           if (detected !== null && first.branch !== null) {
-            const current = yield* git
-              .branchPullRequest({ cwd, branch: first.branch }, { freshGitState: true })
-              .pipe(asBackgroundGitWork);
+            const current = yield* git.branchPullRequest(
+              { cwd, branch: first.branch },
+              { freshGitState: true },
+            );
             const currentIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot, {
               refresh: true,
             });
