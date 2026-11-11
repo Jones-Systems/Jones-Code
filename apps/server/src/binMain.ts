@@ -38,6 +38,8 @@ export async function runCliCommand() {
     const { runAcpMcpCliFastPath } = await import("./mcp/AcpMcpStdioBridge.ts");
     await runAcpMcpCliFastPath(command, process.argv.slice(3));
   } else if (command === "__jones-preparation-worker") {
+    // Jones: preparation workers keep the CLI compile cache they had before upstream's fast paths.
+    enableCliCompileCache();
     const { runPreparationWorkerCommand } = await import("./jones/updates/preparation/worker.ts");
     await runPreparationWorkerCommand(process.argv.slice(3));
   } else if (command === "__jones-native-authority-transition") {
