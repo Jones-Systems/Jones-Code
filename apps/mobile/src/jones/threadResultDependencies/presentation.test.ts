@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   RunId,
   RuntimeRequestId,
+  ThreadId,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
@@ -25,6 +26,26 @@ const terminal = makeRawThreadShell({
 });
 
 describe("mobile result dependency presentation", () => {
+  it("presents an ordinary shell-only subagent with the same child link and Waiting state", () => {
+    const child = {
+      taskId: "turn-item:delegated-task:outside-window",
+      kind: "subagent" as const,
+      childThreadId: ThreadId.make("child"),
+      description: "Review release readiness",
+    };
+    const thread = presentThreadShell(environmentId, {
+      ...terminal,
+      pendingBackgroundTasks: [child],
+    });
+    expect(resolveThreadListV2Status(thread)).toBe("waiting");
+    expect(presentPendingBackgroundWork(thread.pendingBackgroundTasks)).toMatchObject({
+      waiting: true,
+      items: [
+        { taskId: child.taskId, label: child.description, childThreadId: child.childThreadId },
+      ],
+    });
+  });
+
   it("shows Waiting after foreground completion with who and why in the background sheet", () => {
     const thread = presentThreadShell(environmentId, terminal);
     expect(resolveThreadListV2Status(thread)).toBe("waiting");

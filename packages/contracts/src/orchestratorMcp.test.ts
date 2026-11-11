@@ -13,6 +13,106 @@ const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegate
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
 
 describe("orchestrator MCP contracts", () => {
+  const threadListItem = {
+    threadId: "thread:background-work",
+    title: "Waiting for background work",
+    createdBy: "user",
+    creationSource: "web",
+    status: "completed",
+    latestRunId: null,
+    providerInstanceId: "codex",
+    model: "fixture",
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    linkedPullRequest: null,
+    settled: false,
+    settledAt: null,
+    snoozed: false,
+    snoozedUntil: null,
+    parentThreadId: null,
+    relationshipToParent: null,
+    itemCount: 0,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const threadDetail = {
+    ...threadListItem,
+    projectId: "project:background-work",
+    activeRunId: null,
+    titleRegeneration: null,
+    branch: null,
+    worktreePath: null,
+    runCount: 0,
+    pendingRequestCount: 0,
+    archived: false,
+  };
+
+  it("retains background work evidence on detail and paged list responses", () => {
+    const backgroundWork = {
+      pendingBackgroundTasks: [
+        {
+          taskId: "task:child",
+          kind: "subagent",
+          description: "Finish the delegated work",
+          parentTaskId: "task:parent",
+          providerInstanceId: "codex",
+          childThreadId: "thread:child",
+        },
+        { taskId: "task:command", kind: "command", awaited: true },
+        { taskId: "task:monitor", kind: "monitor" },
+        { taskId: "task:background", kind: "background_task" },
+      ],
+      backgroundHoldsCompletion: true,
+      pendingBackgroundTasksTruncated: false,
+    };
+    const detailPayload = { ...threadDetail, ...backgroundWork };
+    expect(
+      Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadDetail)(detailPayload),
+    ).toEqual(detailPayload);
+    const listPayload = {
+      projectId: threadDetail.projectId,
+      currentThreadId: null,
+      threads: [{ ...threadListItem, ...backgroundWork, pendingBackgroundTasksTruncated: true }],
+      nextCursor: 1,
+      total: 2,
+    };
+    expect(
+      Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadListResult)(listPayload),
+    ).toEqual(listPayload);
+    const empty = {
+      ...threadListItem,
+      pendingBackgroundTasks: [],
+      backgroundHoldsCompletion: false,
+      pendingBackgroundTasksTruncated: false,
+    };
+    expect(Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadListItem)(empty)).toEqual(
+      empty,
+    );
+  });
+
+  it("keeps absent background evidence unknown in older detail and paged peer payloads", () => {
+    const detail = Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadDetail)(
+      threadDetail,
+    );
+    const list = Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadListResult)({
+      projectId: threadDetail.projectId,
+      currentThreadId: null,
+      threads: [threadListItem],
+      nextCursor: 1,
+      total: 2,
+    });
+    for (const thread of [detail, ...list.threads]) {
+      for (const field of [
+        "pendingBackgroundTasks",
+        "backgroundHoldsCompletion",
+        "pendingBackgroundTasksTruncated",
+      ]) {
+        expect(Object.hasOwn(thread, field)).toBe(false);
+      }
+    }
+    expect(list.nextCursor).toBe(1);
+  });
+
   it("decodes cross-provider delegated task requests and durable results", () => {
     const request = decodeDelegateTaskInput({
       task: "Inspect the workspace and report the result.",

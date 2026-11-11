@@ -1,5 +1,19 @@
-import { MessageId, ProviderThreadId, RunId, RuntimeRequestId } from "@t3tools/contracts";
-import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
+import {
+  MessageId,
+  NodeId,
+  ProviderDriverKind,
+  ProviderThreadId,
+  RunId,
+  RuntimeRequestId,
+  ThreadId,
+  TurnItemId,
+  type OrchestrationV2TurnItem,
+} from "@t3tools/contracts";
+import {
+  mergeShellSnapshotProjects,
+  presentThreadShell,
+} from "@t3tools/client-runtime/state/shell";
+import { presentPendingBackgroundWork } from "@t3tools/client-runtime/state/thread-execution";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 import { deriveThreadPendingBackgroundTasks } from "../../components/ChatView.logic";
@@ -43,7 +57,7 @@ describe("ChatView result dependency integration", () => {
     expect(resolveThreadStatusPill({ thread: cleared })?.label).toBe("Completed");
   });
 
-  it("uses shell-only duties after completion without changing detail history", () => {
+  it("shows an ordinary out-of-window child in the banner and clears it after reconnect", () => {
     const projection = makeThreadProjectionFixture();
     const run = {
       id: RunId.make("run"),
@@ -64,10 +78,10 @@ describe("ChatView result dependency integration", () => {
     };
     const detail = { ...projection, runs: [run] };
     const task = {
-      taskId: "jones-dependency:review",
-      kind: "monitor",
-      awaited: true,
-      description: "Waiting for VPS review",
+      taskId: "turn-item:delegated-task:outside-window",
+      kind: "subagent",
+      childThreadId: ThreadId.make("child"),
+      description: "Review release readiness",
     } as const;
     const shell = {
       id: projection.thread.id,
@@ -76,6 +90,29 @@ describe("ChatView result dependency integration", () => {
       pendingBackgroundTasks: [task],
     };
     expect(deriveThreadPendingBackgroundTasks(detail, shell)).toEqual([task]);
+    const banner = presentPendingBackgroundWork(deriveThreadPendingBackgroundTasks(detail, shell));
+    expect(banner).toMatchObject({
+      waiting: true,
+      items: [{ label: task.description, childThreadId: task.childThreadId }],
+    });
+    const raw = makeThreadFixture().source;
+    const initial = {
+      schemaVersion: 1 as const,
+      snapshotSequence: 8,
+      projects: [],
+      threads: [{ ...raw, ...shell }],
+      archivedThreads: [],
+    };
+    const reconnected = mergeShellSnapshotProjects(initial, {
+      ...initial,
+      snapshotSequence: 9,
+      threads: [{ ...raw, ...shell, pendingBackgroundTasks: [] }],
+    });
+    expect(
+      presentPendingBackgroundWork(
+        deriveThreadPendingBackgroundTasks(detail, reconnected.threads[0]),
+      ),
+    ).toBeNull();
     expect(
       deriveThreadPendingBackgroundTasks(detail, { ...shell, pendingBackgroundTasks: [] }),
     ).toEqual([]);
@@ -89,5 +126,43 @@ describe("ChatView result dependency integration", () => {
       ),
     ).toEqual([]);
     expect(deriveThreadPendingBackgroundTasks(null, shell)).toEqual([]);
+
+    const terminal: OrchestrationV2TurnItem = {
+      id: TurnItemId.make(task.taskId),
+      threadId: projection.thread.id,
+      runId: run.id,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      type: "subagent",
+      subagentId: NodeId.make("child-task"),
+      origin: "app_owned",
+      driver: ProviderDriverKind.make("codex"),
+      providerInstanceId: projection.thread.providerInstanceId,
+      childThreadId: task.childThreadId,
+      prompt: task.description,
+      result: "Review complete",
+      status: "completed",
+      title: null,
+      startedAt: projection.updatedAt,
+      completedAt: projection.updatedAt,
+      updatedAt: projection.updatedAt,
+    };
+    const completedDetail = { ...detail, turnItems: [terminal] };
+    expect(
+      deriveThreadPendingBackgroundTasks(completedDetail, shell, {
+        detailAppliedSequence: 8,
+        shellSnapshotSequence: 9,
+      }),
+    ).toEqual([task]);
+    expect(
+      deriveThreadPendingBackgroundTasks(completedDetail, shell, {
+        detailAppliedSequence: 9,
+        shellSnapshotSequence: 9,
+      }),
+    ).toEqual([]);
   });
 });

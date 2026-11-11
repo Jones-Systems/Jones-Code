@@ -44,6 +44,7 @@ import {
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2Actor,
+  OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderGoal,
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
@@ -379,7 +380,24 @@ export const OrchestratorMcpThreadPullRequest = Schema.Struct({
 });
 export type OrchestratorMcpThreadPullRequest = typeof OrchestratorMcpThreadPullRequest.Type;
 
+const OrchestratorMcpThreadBackgroundWorkFields = {
+  pendingBackgroundTasks: Schema.optional(
+    Schema.Array(OrchestrationV2PendingBackgroundTask),
+  ).annotate({
+    description:
+      "Authoritative shell background work. Absent means unknown; list rosters are capped at 20.",
+  }),
+  backgroundHoldsCompletion: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Whether the full background roster holds completion, including omitted tasks. Absent means unknown.",
+  }),
+  pendingBackgroundTasksTruncated: Schema.optional(Schema.Boolean).annotate({
+    description: "Whether the returned background roster omits tasks. Absent means unknown.",
+  }),
+};
+
 export const OrchestratorMcpThreadListItem = Schema.Struct({
+  ...OrchestratorMcpThreadBackgroundWorkFields,
   waitingOn: Schema.optional(Schema.Array(ThreadResultDependency)),
   goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)),
   goalSource: Schema.optional(Schema.Literal("provider_projection")),
@@ -455,6 +473,7 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
 export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInput.Type;
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
+  ...OrchestratorMcpThreadBackgroundWorkFields,
   waitingOn: Schema.optional(Schema.Array(ThreadResultDependency)),
   owedRequests: Schema.optional(Schema.Array(ThreadResultRequest)),
   goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)),
