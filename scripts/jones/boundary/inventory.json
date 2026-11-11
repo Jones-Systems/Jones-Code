@@ -7,6 +7,8 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/web/src/jones/installStatus/finishPlan.test.ts": "jones-owned",
+    "apps/web/src/jones/installStatus/finishPlan.ts": "jones-owned",
     "scripts/jones/boundary/fragments/direct-producer-completion.json": "jones-owned",
     "scripts/jones/direct-producers/completion.node-test.mjs": "jones-owned",
     "scripts/jones/direct-producers/completion.ts": "jones-owned",
