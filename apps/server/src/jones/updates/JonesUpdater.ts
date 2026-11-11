@@ -24,6 +24,17 @@ import {
   followerTargetRefusal,
   type FollowerOrigin,
 } from "./followerPolicy.ts";
+import {
+  INSTALL_REPORTED_STEP,
+  advanceProgress,
+  completeProgress,
+  failProgress,
+  startProgress,
+  withOperationId,
+} from "./progress.ts";
+import { lastCheckRecord, sanitizeCheckFailure } from "./checkRecord.ts";
+
+const isCheckClassification = Schema.is(JonesCheckClassification);
 
 export interface JonesStagedRetirementInput {
   readonly operationId: string;
@@ -71,6 +82,12 @@ export interface JonesUpdaterHost {
   }>;
   readonly retireStaged?: (input: JonesStagedRetirementInput) => Promise<void>;
   readonly stateChanged?: (state: JonesUpdateState) => void;
+  /** Receives each failed check with its sanitized reason; the host logs it. */
+  readonly checkFailed?: (context: {
+    readonly targetSource?: string;
+    readonly staged: boolean;
+    readonly reason: string;
+  }) => void;
   readonly startupOutcome?: () =>
     | {
         status: "committed" | "rolled-back" | "failed";
@@ -288,8 +305,32 @@ export class JonesUpdater {
                 }
               : {}),
           }),
+      ...(this.stagedAlreadyRunning() ? { stagedAlreadyRunning: true as const } : {}),
       revision: this.revision,
     };
+  }
+
+  /** A staged build whose source or tree is the running one is not a pending install. */
+  private stagedAlreadyRunning(): boolean {
+    const staged = this.state.provenance;
+    const running = this.state.installedSource;
+    return (
+      this.state.stagedHandle !== undefined &&
+      staged !== undefined &&
+      running !== undefined &&
+      (staged.sourceSha === running.sha || staged.sourceTree === running.tree)
+    );
+  }
+
+  /** Applies one progress transition; the caller's next publication carries it. */
+  private setProgress(
+    transition: (
+      progress: JonesUpdateState["progress"],
+      now: string,
+    ) => JonesUpdateState["progress"],
+  ): void {
+    const next = transition(this.state.progress, new Date().toISOString());
+    if (next !== undefined) this.state = { ...this.state, progress: next };
   }
 
   recordOperation(operation: JonesOperationReceipt): void {
@@ -409,9 +450,11 @@ export class JonesUpdater {
     });
   }
 
-  private fail(error: unknown): JonesUpdateState {
+  /** `operation` marks the running download or install record failed; a check never does. */
+  private fail(error: unknown, operation = false): JonesUpdateState {
     // The Actions adapter sanitizes transport failures; injected host errors must also be safe to publish.
     const message = error instanceof Error ? error.message : "Jones update failed.";
+    if (operation) this.setProgress((progress, now) => failProgress(progress, now, message));
     return this.publish({
       phase: "blocked",
       message,
@@ -501,8 +544,23 @@ export class JonesUpdater {
         ...(targetSource === undefined ? {} : { targetSource }),
       });
       const checkedAt = new Date().toISOString();
-      if ("classification" in result && Schema.is(JonesCheckClassification)(result.classification))
-        this.publish({ checkClassification: result.classification });
+      const classified =
+        "classification" in result && isCheckClassification(result.classification)
+          ? result.classification
+          : undefined;
+      const failure =
+        result.state === "blocked"
+          ? sanitizeCheckFailure(new Error(result.reason))
+          : classified?.kind === "failure"
+            ? "The update check failed."
+            : undefined;
+      this.recordCheck(checkedAt, failure, targetSource, staged);
+      if (classified === undefined && this.state.checkClassification?.kind === "failure") {
+        // A later check that succeeded clears the earlier failure.
+        const { checkClassification: _stale, ...rest } = this.state;
+        this.state = rest;
+      }
+      if (classified !== undefined) this.publish({ checkClassification: classified });
       if (result.state === "available") {
         const candidate = result.candidate;
         const buildStartedAt = result.buildStartedAt;
@@ -582,11 +640,36 @@ export class JonesUpdater {
       this.clearAlternative();
       this.candidate = undefined;
       this.candidateBuildStartedAt = undefined;
+      const checkedAt = new Date().toISOString();
+      this.recordCheck(checkedAt, sanitizeCheckFailure(error), targetSource, staged);
+      this.state = {
+        ...this.state,
+        checkClassification: { kind: "failure", checkedAt },
+      };
       return {
-        state: staged ? this.publish({ checkedAt: new Date().toISOString() }) : this.fail(error),
+        state: staged ? this.publish({ checkedAt }) : this.fail(error),
         candidate: undefined,
       };
     }
+  }
+
+  /** Records the check time and outcome without publishing; a failure is also reported to the host. */
+  private recordCheck(
+    at: string,
+    failure: string | undefined,
+    targetSource: string | undefined,
+    staged: boolean,
+  ): void {
+    this.state = {
+      ...this.state,
+      lastCheck: lastCheckRecord(failure === undefined ? "succeeded" : "failed", at, failure),
+    };
+    if (failure !== undefined)
+      this.host.checkFailed?.({
+        ...(targetSource === undefined ? {} : { targetSource }),
+        staged,
+        reason: failure,
+      });
   }
 
   /**
@@ -869,6 +952,13 @@ export class JonesUpdater {
         ? {}
         : { operationId: operation.operationId, jobId: operation.jobId }),
     };
+    this.setProgress((_previous, now) =>
+      startProgress(
+        "download",
+        now,
+        operation === undefined ? {} : { operationId: operation.operationId },
+      ),
+    );
     this.publish({
       phase: "downloading",
       message: "Downloading the selected main build…",
@@ -891,7 +981,7 @@ export class JonesUpdater {
         await this.preparation?.join;
         return state;
       })
-      .then(finish, (cause: unknown) => finish(this.fail(cause)));
+      .then(finish, (cause: unknown) => finish(this.fail(cause, true)));
     return done;
   }
 
@@ -920,14 +1010,17 @@ export class JonesUpdater {
           if (this.preparation !== undefined) this.preparation.adopting = true;
         },
         onVerifying: () => {
-          if (!signal.aborted)
+          if (!signal.aborted) {
+            this.setProgress((progress, now) => advanceProgress(progress, "verify-stage", now));
             this.publish({
               phase: "verifying",
               message: "Verifying and staging the downloaded build…",
             });
+          }
         },
       });
       this.clearOutcome();
+      this.setProgress((progress, now) => completeProgress(progress, now));
       return this.publish({
         phase: "staged",
         stagedHandle: staged.stagedHandle,
@@ -947,18 +1040,33 @@ export class JonesUpdater {
       const join = await preparation?.join;
       if (join?.kind === "unreaped" || join?.kind === "cleanup-unconfirmed") {
         this.heldJobs.add(join.jobId);
+        this.setProgress((progress, now) =>
+          failProgress(
+            progress,
+            now,
+            "Preparation exit or cleanup is unproved.",
+            "stop-unconfirmed",
+          ),
+        );
         return this.publish({
           phase: "blocked",
           message:
             "Stop not confirmed: preparation exit or native cleanup is unproved. Nothing new starts until release is proved.",
         });
       }
-      if (signal.reason instanceof PreparationStopRequested && preparation?.adopting !== true)
+      if (signal.reason instanceof PreparationStopRequested && preparation?.adopting !== true) {
+        this.setProgress((progress, now) =>
+          failProgress(progress, now, "Download stopped. Nothing was installed.", "stopped"),
+        );
         return this.publish({
           phase: "available",
           message: "Download stopped. Nothing was installed.",
         });
+      }
       if (signal.reason instanceof PreparationSuperseded) {
+        this.setProgress((progress, now) =>
+          failProgress(progress, now, "The laptop's installed build changed.", "superseded"),
+        );
         const { provenance: _provenance, ...rest } = this.state;
         this.state = rest;
         if (this.candidate?.source === candidate.source) this.candidate = undefined;
@@ -975,6 +1083,7 @@ export class JonesUpdater {
               `${RETIRED_WITHOUT_TARGET} ${error instanceof Error ? error.message : "Preparation failed."}`,
             )
           : error,
+        true,
       );
     }
   }
@@ -1095,6 +1204,12 @@ export class JonesUpdater {
       return refused({ ...this.snapshot(), phase: "blocked", message: refusal });
     this.busy = true;
     this.clearOutcome();
+    this.setProgress((_previous, now) =>
+      startProgress("install", now, {
+        ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+        continueRunningThreads: input.continueRunningThreads === true,
+      }),
+    );
     this.publish({
       phase: "preparing",
       message: "Preparing the selected installation…",
@@ -1119,9 +1234,15 @@ export class JonesUpdater {
         hostInput,
         (step) => {
           currentMessage = messages[step];
+          this.setProgress((progress, now) =>
+            advanceProgress(progress, INSTALL_REPORTED_STEP[step], now),
+          );
           publishElapsed();
         },
         proveRefusal,
+      );
+      this.setProgress((progress, now) =>
+        advanceProgress(withOperationId(progress, accepted?.updateId), "restart", now),
       );
       return this.publish({
         phase: "installing",
@@ -1131,12 +1252,16 @@ export class JonesUpdater {
       });
     } catch (error) {
       const withdrawn = findActivationWithdrawal(error);
-      if (withdrawn !== undefined)
+      if (withdrawn !== undefined) {
+        this.setProgress((progress, now) =>
+          failProgress(progress, now, withdrawn.message, "withdrawn"),
+        );
         return this.publish({
           phase: "staged",
           message: `The automatic update was withdrawn before the launcher accepted it: ${withdrawn.message}`,
         });
-      return this.fail(error);
+      }
+      return this.fail(error, true);
     } finally {
       clearInterval(heartbeat);
       this.busy = false;

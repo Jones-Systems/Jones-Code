@@ -9,7 +9,14 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-const SCENARIOS = ["available", "staged", "bootstrap-required", "initial-race"] as const;
+const SCENARIOS = [
+  "available",
+  "staged",
+  "bootstrap-required",
+  "initial-race",
+  // A verified Laptop with hosts mid-install, failed, stalled and unreachable.
+  "progress",
+] as const;
 const OUTCOMES = ["accept", "reject", "refuse"] as const;
 export type FixtureOutcome = (typeof OUTCOMES)[number];
 const SOURCE = "a".repeat(40);
@@ -205,6 +212,10 @@ export function installPreviewBridge(
     },
   });
   const plan = planFixture;
+  if (selectedScenario === "progress") {
+    plan.showcaseStepProgress();
+    installStatusStore.open();
+  }
   const bridge = {
     ...(installPlansSupported
       ? { installPlan: plan.request, onInstallPlan: plan.onInstallPlan }
