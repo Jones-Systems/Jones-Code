@@ -18,11 +18,13 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ServerCommand,
 } from "@t3tools/contracts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -35,7 +37,11 @@ import * as TestClock from "effect/testing/TestClock";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as GitManager from "../git/GitManager.ts";
-import { admitGitProcess, asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
+import {
+  asBackgroundGitWork,
+  dependencies as gitDependencies,
+  makeFixture as makeGitFixture,
+} from "../jones/git/backgroundGitAdmission.fixture.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -845,36 +851,41 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           repositoryKey: identity.canonicalKey,
         };
         const activation = yield* Deferred.make<void>();
-        const discoveryGate = yield* Deferred.make<void>();
-        const confirmationGate = yield* Deferred.make<void>();
         const confirmationBarrier = yield* Deferred.make<void>();
-        const holderStarts = yield* Queue.unbounded<void>();
+        const holders = {
+          discovery: ["background-hold-discovery-0", "background-hold-discovery-1"],
+          confirmation: ["background-hold-confirmation-0", "background-hold-confirmation-1"],
+        } as const;
+        // Real driver: the service's Git goes through the upstream background lane.
+        const gitFixture = yield* makeGitFixture([
+          ...holders.discovery,
+          ...holders.confirmation,
+          "background-discovery",
+          "background-confirmation",
+          "foreground",
+        ]);
         const requested = yield* Queue.unbounded<"discovery" | "confirmation">();
-        const started = yield* Queue.unbounded<"discovery" | "confirmation">();
         const optionsSeen: Array<
           Parameters<GitManager.GitManager["Service"]["branchPullRequest"]>[1]
         > = [];
         const commands: Array<OrchestrationV2ServerCommand> = [];
         yield* Effect.addFinalizer(() =>
           Effect.all([
-            Deferred.succeed(discoveryGate, undefined),
-            Deferred.succeed(confirmationGate, undefined),
             Deferred.succeed(confirmationBarrier, undefined),
             Deferred.succeed(activation, undefined),
           ]),
         );
-        const fillLane = (gate: Deferred.Deferred<void>) =>
+        // The upstream background lane admits two processes.
+        const fillLane = (labels: ReadonlyArray<string>) =>
           Effect.gen(function* () {
-            yield* Effect.forEach(Array.from({ length: 4 }), () =>
-              Queue.offer(holderStarts, undefined).pipe(
-                Effect.andThen(Deferred.await(gate)),
-                admitGitProcess,
-                asBackgroundGitWork,
-                Effect.forkScoped,
-              ),
+            yield* Effect.forEach(labels, (label) =>
+              gitFixture.run(label).pipe(asBackgroundGitWork, Effect.forkScoped),
             );
-            yield* Effect.forEach(Array.from({ length: 4 }), () => Queue.take(holderStarts));
+            const starts = yield* Effect.forEach(labels, () => Queue.take(gitFixture.starts));
+            expect([...starts].toSorted()).toEqual([...labels].toSorted());
           });
+        const releaseLane = (labels: ReadonlyArray<string>) =>
+          Effect.forEach(labels, gitFixture.release, { discard: true });
         const dependencies = Layer.mergeAll(
           Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
             list: () =>
@@ -903,10 +914,9 @@ describe("ThreadPullRequestServiceV2 reads", () => {
                 // Hold confirmation before admission so its lane can be filled independently.
                 if (stage === "confirmation") yield* Deferred.await(confirmationBarrier);
                 yield* Queue.offer(requested, stage);
-                return yield* Queue.offer(started, stage).pipe(
-                  Effect.as(pullRequest),
-                  admitGitProcess,
-                );
+                return yield* gitFixture
+                  .run(`background-${stage}`)
+                  .pipe(Effect.orDie, Effect.as(pullRequest));
               }),
           }),
           Layer.mock(PullRequestService.PullRequestService)({}),
@@ -925,24 +935,29 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           Path.layer,
         );
         yield* Effect.gen(function* () {
-          yield* fillLane(discoveryGate);
+          yield* fillLane(holders.discovery);
           const service = yield* ThreadPullRequestService.make;
           yield* service.start();
           yield* Deferred.succeed(activation, undefined);
           expect(yield* Queue.take(requested)).toBe("discovery");
           yield* Effect.yieldNow;
-          expect(yield* Queue.size(started)).toBe(0);
-          expect(yield* admitGitProcess(Effect.succeed("foreground"))).toBe("foreground");
-          yield* Deferred.succeed(discoveryGate, undefined);
-          expect(yield* Queue.take(started)).toBe("discovery");
+          expect(yield* Queue.size(gitFixture.starts)).toBe(0);
+          const foreground = yield* gitFixture.run("foreground").pipe(Effect.forkScoped);
+          expect(yield* Queue.take(gitFixture.starts)).toBe("foreground");
+          yield* gitFixture.release("foreground");
+          yield* Fiber.join(foreground);
+          yield* releaseLane(holders.discovery);
+          expect(yield* Queue.take(gitFixture.starts)).toBe("background-discovery");
+          yield* gitFixture.release("background-discovery");
 
-          yield* fillLane(confirmationGate);
+          yield* fillLane(holders.confirmation);
           yield* Deferred.succeed(confirmationBarrier, undefined);
           expect(yield* Queue.take(requested)).toBe("confirmation");
           yield* Effect.yieldNow;
-          expect(yield* Queue.size(started)).toBe(0);
-          yield* Deferred.succeed(confirmationGate, undefined);
-          expect(yield* Queue.take(started)).toBe("confirmation");
+          expect(yield* Queue.size(gitFixture.starts)).toBe(0);
+          yield* releaseLane(holders.confirmation);
+          expect(yield* Queue.take(gitFixture.starts)).toBe("background-confirmation");
+          yield* gitFixture.release("background-confirmation");
           yield* service.drain;
           expect(optionsSeen).toEqual([
             { refresh: false, confirmTerminal: false },
@@ -970,7 +985,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           });
         }).pipe(Effect.provide(dependencies));
       }),
-    ),
+    ).pipe(Effect.provide(gitDependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
   );
 
   it.effect("folds a thread's queued requests together but not one arriving mid-lookup", () =>
