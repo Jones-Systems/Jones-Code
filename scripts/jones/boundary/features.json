@@ -1967,8 +1967,11 @@
     },
     {
       "id": "ci-dependency-setup",
-      "tests": ["scripts/jones/ci/chromium-setup.node-test.mjs"],
-      "scope": "CI resolves Chromium from each workspace, checks a real headless launch before installing system dependencies, and verifies a single repair attempt. Browser caching follows the upstream versioned key; native compiler and libsecret package setup is consolidated without changing tests or server sharding."
+      "tests": [
+        "scripts/jones/ci/chromium-setup.node-test.mjs",
+        "scripts/jones/ci/apt-setup.node-test.mjs"
+      ],
+      "scope": "CI resolves Chromium from each workspace, checks a real headless launch before installing system dependencies, and verifies a single repair attempt. Browser caching follows the upstream versioned key; native compiler and libsecret package setup is consolidated without changing tests or server sharding. Three primary Ubuntu dependency steps use strict signed refresh and download before offline install. Only proven transport failures or clean deadlines permit candidate-only isolated lists and archives, with exact source/keyring and cold index-target validation plus acquired freshness checks. An owned process-group gate proves termination before fallback or removal; cancellation and unknown cleanup stop. Injected tests cover route, trust, process and workspace boundaries; the Linux process regression runs in the existing CI Node test group. Candidate runner qualification remains required."
     },
     {
       "id": "child-input-navigation",
