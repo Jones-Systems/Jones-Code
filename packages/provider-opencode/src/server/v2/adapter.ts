@@ -2760,7 +2760,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         return { next, nextAdoption, stream: yield* next.events };
       }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       const previous = currentScope;
-      eventProducer.retire();
+      // Reconnecting to the same lent connection resumes the same event source, so events it already
+      // queued stay deliverable. Only a different connection, such as a restarted server, supersedes it.
+      if (next !== connection) eventProducer.retire();
       adoption = nextAdoption;
       eventProducer = makeConnectionProducer(nextAdoption);
       const producer = eventProducer;

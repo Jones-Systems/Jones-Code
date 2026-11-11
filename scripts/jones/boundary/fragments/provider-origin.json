@@ -5,7 +5,8 @@
     "packages/provider-core/src/server/jones/runtimeTypes.ts",
     "packages/provider-core/src/server/jones/ProviderEventOrigin.ts",
     "packages/provider-core/src/server/jones/ProviderRuntimeBindingDiagnostics.ts",
-    "apps/server/src/jones/provider/claudeQueryExitObserver.ts"
+    "apps/server/src/jones/provider/claudeQueryExitObserver.ts",
+    "apps/server/src/jones/provider/opencode/OpenCode2ReconnectOrigin.test.ts"
   ],
   "hookPaths": [
     "packages/provider-acp/src/server/adapter.ts",
