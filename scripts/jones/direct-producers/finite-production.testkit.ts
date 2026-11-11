@@ -18,7 +18,10 @@ import {
   productionSpawnResult,
   type ProductionSession,
 } from "../../../apps/server/src/jones/workspaceRetirement/ProducerFinalizer.ts";
-import { nativePlatform } from "../../../apps/server/src/jones/workspaceRetirement/Filesystem.ts";
+import {
+  canonical,
+  nativePlatform,
+} from "../../../apps/server/src/jones/workspaceRetirement/Filesystem.ts";
 import { binding } from "../../../apps/server/src/jones/workspaceRetirement/OutputAttestation.ts";
 import { resolveCommand } from "./resolve.ts";
 import {
@@ -684,11 +687,18 @@ export const resolutionCases: Record<string, () => Promise<void>> = {
       finiteFixture(async ({ worktree, root }) => {
         const session = await beginProduction(worktree, "fixture-overflow", [root]);
         await productionSpawnIntent(session);
-        // Inject the exact pre-threshold persisted size instead of hundreds of fsyncs.
-        session.record.sidecars = ["x".repeat(55000)];
+        // Binding paths and host identity vary; measure the actual canonical payload
+        // before padding past the spawn watermark, still below the record bound.
+        session.record.sidecars = [""];
+        const unpaddedBytes = Buffer.byteLength(canonical(session.record));
+        NodeAssert.ok(unpaddedBytes < 56000);
+        session.record.sidecars = ["x".repeat(56001 - unpaddedBytes)];
+        NodeAssert.equal(Buffer.byteLength(canonical(session.record)), 56001);
         await rewrite(session);
         const overflow = await productionSpawnIntent(session);
         NodeAssert.equal(overflow, null);
+        NodeAssert.equal(session.record.holders!.overflow, true);
+        NodeAssert.equal(session.record.holders!.spawns.length, 1);
         NodeAssert.ok(Buffer.byteLength(await NodeFSP.readFile(session.path)) < 60000);
         await finishProduction(session, undefined, [], { inProcessSettled: false });
         NodeAssert.ok(
