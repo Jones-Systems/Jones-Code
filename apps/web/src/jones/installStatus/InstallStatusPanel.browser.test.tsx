@@ -8,7 +8,7 @@ import "../../index.css";
 import { InstallStatusPanel } from "./InstallStatusPanel";
 import { startInstallPlanController } from "./InstallPlanController";
 import { startInstallStatusPoller } from "./InstallStatusPoller";
-import type { InstallPlanServices } from "./services";
+import { bindInstallPlanServices, type InstallPlanServices } from "./services";
 import { STATUS_POLL_CADENCE } from "@t3tools/client-runtime/jones/install-plan";
 import { handOffJonesTargets, routeInstallStatusPill } from "./entrypoints";
 import { createScriptedInstallPlan, FIXTURE_HOSTS } from "../updates/fixtures/install-preview-plan";
@@ -211,6 +211,7 @@ async function setup(
   };
   return {
     fixture,
+    services,
     releaseReadback: () => released,
     bridge,
     screen,
@@ -686,6 +687,64 @@ describe("Install status receipt fixture", () => {
     );
   });
 
+  it("Done finishes an already-running retained stage and allows a new plan", async () => {
+    await using world = await setup();
+    const { screen, fixture, controller, services, calls } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include VPS" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    await expect
+      .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase)
+      .toBe("running");
+    await act(() => fixture.settleHost("VPS", "staged"));
+    controller.close();
+    const devices = () =>
+      services.devices().map((device) => ({
+        ...device,
+        observation: {
+          ...device.observation,
+          state: {
+            ...device.observation.state!,
+            installedSource: {
+              repository: "Jones-Systems/Jones-Code" as const,
+              sha: source,
+              tree: "d".repeat(40),
+            },
+          },
+        },
+      }));
+    const unbind = bindInstallPlanServices({ ...services, devices }, fixture.store);
+    try {
+      await act(() => fixture.store.update({ devices: devices() }));
+      expect(visibleDone(screen)).toHaveLength(1);
+      const before = calls.length;
+      await click(screen, "Done with update plan");
+      await expect.poll(() => fixture.snapshot().current).toBeNull();
+      expect(
+        calls
+          .slice(before)
+          .filter((c) => c.action === "fixture-installPlan")
+          .map((c) => (c.input as { type: string }).type),
+      ).toEqual(["read", "end", "dismiss"]);
+      expect(fixture.store.get().open).toBe(false);
+      const previous = fixture.snapshot().last!;
+      const started = await fixture.request({
+        type: "start",
+        origin: "update-button",
+        target: previous.target,
+        select: [],
+      });
+      expect(started.refused).toBeUndefined();
+      expect(started.state.current?.planId).not.toBe(previous.planId);
+    } finally {
+      unbind();
+    }
+  });
+
   it("keeps unsupported devices out and uses a neutral dashed separator before and after Laptop verification", async () => {
     const oldClass = document.documentElement.className;
     const oldStyle = document.documentElement.style.cssText;
@@ -965,6 +1024,23 @@ describe("Install status step progress", () => {
     screen.container
       .querySelector(`[aria-label="${label} update details"] [data-row-text]`)
       ?.textContent?.trim();
+
+  it("keeps source proof above attempt progress and dates cached proof", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    await act(() => fixture.showcaseSourceProof());
+    expect(rowText(screen, "VPS")).toBe("Updated · running the selected source");
+    expect(rowText(screen, "Mini")).toBe("Updated · running the selected source");
+    expect(rowText(screen, "Test")).toBe("Last confirmed running the selected source · 5m ago");
+    expect(rowText(screen, "Studio")).toContain("Stop not confirmed");
+    expect(visibleDone(screen)).toHaveLength(0);
+    await click(screen, "VPS update details");
+    const detail = screen.container.querySelector('[aria-label="VPS update status"]')!;
+    expect(detail.textContent).toContain("This plan's attempt: Not updated · cleanup-recovered");
+    expect(detail.querySelector('input[aria-label="Operation ID"]')).not.toBeNull();
+    expect(detail.querySelectorAll("[data-step-status]")).toHaveLength(2);
+    expect(screen.container.textContent).not.toContain("Target build is running");
+  });
 
   it("shows one glanceable line per device and a summary of active work", async () => {
     await using world = await setup();
