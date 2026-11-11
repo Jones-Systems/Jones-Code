@@ -8,7 +8,9 @@
     "packages/client-runtime/src/operations/currentRuntimeStop.test.ts",
     "apps/server/src/jones/runtime/RuntimeStop.ts",
     "apps/server/src/jones/runtime/RuntimeStop.test.ts",
-    "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
+    "apps/server/src/jones/runtime/RuntimeStopSqlite.ts",
+    "apps/server/src/jones/provider/stopBudgets.ts",
+    "apps/server/src/jones/provider/stopBudgets.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/auth/RpcAuthorization.ts",
@@ -75,6 +77,26 @@
     {
       "from": "packages/client-runtime/src/operations/index.ts",
       "to": "packages/client-runtime/src/operations/currentRuntimeStop.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/stopBudgets.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/provider/stopBudgets.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/stopBudgets.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+      "to": "apps/server/src/jones/provider/stopBudgets.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnControlService.ts",
+      "to": "apps/server/src/jones/provider/stopBudgets.ts"
     }
   ]
 }
