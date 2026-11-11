@@ -4715,6 +4715,13 @@ describe("AcpAdapterV2", () => {
           return identity;
         },
       };
+      // The host decides the containment: a delegated cgroup yields a lease,
+      // otherwise the process ledger owns teardown.
+      const cgroupController = yield* AcpSessionRuntime.AcpLinuxCgroupControllerRef;
+      let cgroupLease: AcpSessionRuntime.AcpLinuxCgroupLease | undefined;
+      const observedCgroupController: AcpSessionRuntime.AcpLinuxCgroupController = {
+        create: () => (cgroupLease = cgroupController.create()),
+      };
       const observedSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"] = {
         ...childProcessSpawner,
         spawn: (command) =>
@@ -4747,6 +4754,7 @@ describe("AcpAdapterV2", () => {
             mockAgentPath,
             ownDescendantProcessGroups: true,
             ownDetachedProcessGroup: true,
+            linuxCgroupController: observedCgroupController,
             posixProcessTreeController: observedController,
             wrapRuntime: (runtime) => {
               captured = runtime;
@@ -4798,9 +4806,17 @@ describe("AcpAdapterV2", () => {
       const pids = Option.getOrThrow(published);
       publishedPids = pids;
       confirmDescendantsRecorded();
-      // The fixture exits only after the synchronous ownership sampler has seen
-      // its published descendants, so teardown tests retained ownership.
-      yield* Deferred.await(descendantsRecorded);
+      // The fixture exits only after T3 owns its published descendants, so
+      // teardown tests retained ownership. A cgroup lease holds them from fork
+      // and owns teardown without sampling the ledger; otherwise the
+      // synchronous ownership sampler must have seen them.
+      const lease = cgroupLease;
+      if (lease === undefined) yield* Deferred.await(descendantsRecorded);
+      else
+        assert.isTrue(
+          pids.every((pid) => lease.contains(pid)),
+          "the cgroup lease must contain the detached launcher, Bash, and sleep processes",
+        );
       assert.isDefined(captured);
       yield* captured!.notify("_test/exit", { code: 19 });
       assert.isTrue(
