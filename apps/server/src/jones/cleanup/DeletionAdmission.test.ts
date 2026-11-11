@@ -15,6 +15,10 @@ import {
   nativeCreationCanonicalJson,
   nativeCreationSha256,
 } from "../nativeCreation/NativeCreationPreparation.ts";
+import {
+  insertTestEvent,
+  pruneEventLogLikeUpstream,
+} from "../persistence/prunedEventLog.testkit.ts";
 import { makeDeletionAdmission } from "./DeletionAdmission.ts";
 import type { DeletionWorktreeRemovalObservationV1 } from "./DeletionWorktreeRemoval.ts";
 
@@ -540,4 +544,49 @@ it.effect(
         { state: "started" },
       ]);
     }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "a deletion event that is still the stream head survives pruning and admits normally",
+  () =>
+    Effect.gen(function* () {
+      const { owner } = yield* setup;
+      assert.deepStrictEqual(yield* pruneEventLogLikeUpstream(2), []);
+      assert.strictEqual((yield* owner.start(input)).status, "start_now");
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a pruned original deletion event fails closed before any start permit exists", () =>
+  Effect.gen(function* () {
+    const { owner, sql } = yield* setup;
+    // A later event on the thread stream stops the deletion event being its head, so upstream may drop it.
+    yield* insertTestEvent({
+      sequence: 3,
+      eventId: "event:after-deletion",
+      streamId: threadId,
+      type: "thread.test",
+    });
+    assert.deepStrictEqual(yield* pruneEventLogLikeUpstream(2), [2]);
+    const denial = yield* owner.start(input).pipe(Effect.flip);
+    assert.strictEqual(denial.reason, "original_birth_or_deletion_command_unavailable");
+    assert.deepStrictEqual(yield* sql`SELECT state FROM jones_deletion_worktree_admissions`, []);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("an original deletion event pruned after the start permit refuses revalidation", () =>
+  Effect.gen(function* () {
+    const { owner } = yield* setup;
+    const admitted = yield* owner.start(input);
+    yield* insertTestEvent({
+      sequence: 3,
+      eventId: "event:after-deletion",
+      streamId: threadId,
+      type: "thread.test",
+    });
+    assert.deepStrictEqual(yield* pruneEventLogLikeUpstream(2), [2]);
+    const denial = yield* owner
+      .revalidate(admitted.start, admitted.ordinal, input.currentRules, input.currentLive)
+      .pipe(Effect.flip);
+    assert.strictEqual(denial.reason, "original_deletion_event_changed");
+  }).pipe(Effect.provide(testLayer)),
 );

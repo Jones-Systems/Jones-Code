@@ -58,6 +58,7 @@ const makeFixture = Effect.gen(function* () {
   const result = {
     threadId: ThreadId.make("remote:child"),
     runId: RunId.make("remote:run"),
+    status: "running",
     modelSelection: envelope.launch.modelSelection,
     projectId: envelope.launch.projectId,
   } as Store.LaunchResult;
@@ -817,5 +818,51 @@ it.effect.each(["dispatching", "denied"] as const)(
         assert.deepEqual(fixture.getCounts(), stopped);
       } else assert.equal(fixture.getCounts().launches, 1);
       yield* active.close;
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "startup drops finished intents past the thirty day window and still resumes an older pending one",
+  () =>
+    Effect.gen(function* () {
+      const day = 24 * 60 * 60 * 1000;
+      const now = Date.parse("2026-11-10T12:00:00.000Z");
+      const at = (daysAgo: number) => DateTime.formatIso(DateTime.makeUnsafe(now - daysAgo * day));
+      yield* TestClock.setTime(now - 45 * day);
+      const fixture = yield* makeFixture;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TRIGGER simulated_crash BEFORE UPDATE OF launched_json ON jones_remote_delegation_intents BEGIN SELECT RAISE(ABORT, 'synthetic crash after remote launch'); END`;
+      const first = yield* fixture.create();
+      yield* first.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+      yield* first.close;
+      yield* sql`DROP TRIGGER simulated_crash`;
+      const insert = (id: string, status: string, createdAt: string) =>
+        sql`INSERT INTO jones_remote_delegation_intents
+          (command_id, request_json, envelope_json, status, created_at)
+          VALUES (${id}, '{}', '{}', ${status}, ${createdAt})`;
+      yield* insert("finished:old", "recorded", at(31));
+      yield* insert("stopped:old", "stopped", at(60));
+      yield* insert("finished:recent", "recorded", at(29));
+      const remaining = sql<{ readonly command_id: string }>`
+        SELECT command_id FROM jones_remote_delegation_intents ORDER BY command_id`.pipe(
+        Effect.map((rows) => rows.map((row) => row.command_id)),
+      );
+      yield* TestClock.setTime(now);
+      const restarted = yield* fixture.create();
+      yield* restarted.lifecycle.start;
+      yield* Deferred.await(fixture.bound);
+      // The pending intent was resumed although it is forty-five days old; the finished
+      // ones past the window are gone, and the one inside it is kept.
+      assert.equal(fixture.getCounts().remoteExecutions, 1);
+      assert.equal(fixture.getTask().remoteChild?.runId, "remote:run");
+      assert.deepEqual(yield* remaining, ["finished:recent", commandId]);
+      assert.equal((yield* fixture.store.get(commandId))?.status, "recorded");
+      yield* restarted.close;
+
+      // Once it has finished, the old intent leaves with the next startup.
+      const later = yield* fixture.create();
+      yield* later.lifecycle.start;
+      assert.deepEqual(yield* remaining, ["finished:recent"]);
+      yield* later.close;
     }).pipe(Effect.provide(layer)),
 );

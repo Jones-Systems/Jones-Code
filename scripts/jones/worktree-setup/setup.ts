@@ -175,6 +175,8 @@ type LifecycleDependencies = {
   report: Dependencies["report"];
   stdout: Pick<NodeJS.WriteStream, "write">;
   stderr: Pick<NodeJS.WriteStream, "write">;
+  /** Test seam for the optional completion sink; production uses its bounded default. */
+  record?: typeof recordCompletion;
 };
 
 export async function runSetupWorktree(
@@ -292,7 +294,7 @@ export async function runSetupWorktree(
       );
     }
     const outcome = cancelSignal ? "cancelled" : status === 0 ? "succeeded" : "failed";
-    const result = recordCompletion(
+    const result = (dependencies.record ?? recordCompletion)(
       completionObservation({
         producer: "jones-setup",
         owner: "jones-setup",

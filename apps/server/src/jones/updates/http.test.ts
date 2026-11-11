@@ -454,9 +454,13 @@ it.layer(NodeServices.layer)("Jones update Release compatibility", (it) => {
   );
 });
 
-function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
+function fixture(
+  scopes: ReadonlyArray<AuthEnvironmentScope>,
+  extra: Partial<JonesUpdateState> = {},
+) {
   const calls: unknown[] = [];
   const state: JonesUpdateState = {
+    ...extra,
     source: "jones-actions",
     channel: "jones-main",
     phase: "staged",
@@ -771,6 +775,37 @@ describe("qualified update HTTP authority and decoding", () => {
       const response = await app.handler(new Request("http://fixture/api/jones-updates?after=2"));
       expect(response.status).toBe(200);
       expect(app.calls).toEqual([{ action: "state", input: 2 }]);
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  test("serves the progress record on the read-scope long-poll, stamped at response time", async () => {
+    const progress = {
+      schema: 1 as const,
+      kind: "install" as const,
+      phase: "prep" as const,
+      stepIndex: 1,
+      stepCount: 6,
+      stepKey: "verify-runtime",
+      stepLabel: "Verifying the selected runtime",
+      stepStartedAt: "2026-11-10T00:00:00.000Z",
+      startedAt: "2026-11-10T00:00:00.000Z",
+      updatedAt: "2026-11-10T00:00:00.000Z",
+      reportedAt: "2026-11-10T00:00:00.000Z",
+    };
+    const app = fixture(["orchestration:read"], {
+      progress,
+      lastCheck: { at: "2026-11-10T00:00:00.000Z", outcome: "succeeded" },
+    });
+    try {
+      const response = await app.handler(new Request("http://fixture/api/jones-updates?after=2"));
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as JonesUpdateState;
+      // The fixture record was last stamped long before this response.
+      expect(body.progress).toEqual({ ...progress, reportedAt: expect.any(String) });
+      expect(body.progress?.reportedAt).not.toBe(progress.reportedAt);
+      expect(body.lastCheck).toEqual({ at: "2026-11-10T00:00:00.000Z", outcome: "succeeded" });
     } finally {
       await app.dispose();
     }

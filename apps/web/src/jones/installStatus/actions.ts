@@ -1,6 +1,6 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
-import type { JonesInstallPlanGrant } from "@t3tools/contracts/jones/installPlan";
+import type { JonesInstallPlan, JonesInstallPlanGrant } from "@t3tools/contracts/jones/installPlan";
 import {
   executeJonesAction,
   prepareReviewedInstall,
@@ -16,6 +16,7 @@ import {
 } from "@t3tools/client-runtime/jones/install-plan";
 import { claimantId, routeLaptopDownload, routeLaptopInstall } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
+import type { InstallStatusDevice } from "./panelUi";
 
 export type PanelAction = "download" | "install" | "stop" | "remove" | "end" | "check";
 function executorHostFor(environmentId: EnvironmentId): JonesExecutorHost {
@@ -241,6 +242,79 @@ export async function recoverPanelCleanup(
     : "released-plan-unconfirmed";
 }
 
+/**
+ * Read one device's latest plan operation and report evidence that passes the same validation as
+ * a manual refresh. It only reads hosts and records validated evidence in the plan; it never starts,
+ * stops, fences, claims or directs work. `refreshInstallOutcome` asks the host to re-derive an
+ * install outcome and stays limited to an explicit owner refresh.
+ */
+export async function refreshDeviceEvidence(
+  binding: NonNullable<ReturnType<typeof installPlanServices>>,
+  environmentId: EnvironmentId,
+  plan: JonesInstallPlan,
+  observed: InstallStatusDevice,
+  options: { readonly refreshInstallOutcome: boolean },
+) {
+  const { services } = binding;
+  const operation = plan.devices.find((d) => d.environmentId === environmentId)?.operations.at(-1);
+  if (operation?.request.kind === "plan-directive") {
+    const { observation, fleetStatus } = observed;
+    if (
+      operation.directive === undefined &&
+      observed.canOperate &&
+      observation.freshness === "fresh" &&
+      observation.state?.environmentId === environmentId &&
+      observation.state.capability.operations === 1 &&
+      fleetStatus != null &&
+      validateDirectiveEvidence(operation.request.input, fleetStatus)
+    )
+      await requestInstallPlan(
+        {
+          type: "report",
+          planId: plan.planId,
+          environmentId,
+          operationId: operation.operationId,
+          evidence: { kind: "directive", status: fleetStatus },
+        },
+        binding,
+      );
+  } else if (operation?.request.kind === "operation-start") {
+    const result = await services.operation(environmentId, {
+      action: "operationRead",
+      input: {
+        environmentId,
+        operationIds: [operation.operationId],
+        ...(options.refreshInstallOutcome &&
+        operation.request.input.action.kind === "install" &&
+        observed.canOperate &&
+        observed.observation.freshness === "fresh" &&
+        observed.observation.state?.environmentId === environmentId &&
+        observed.observation.state.capability.operations === 1
+          ? { refreshInstallOutcome: operation.operationId }
+          : {}),
+      },
+    });
+    if ("receipts" in result) {
+      const receipt = result.receipts.find((r) => r.operationId === operation.operationId)?.receipt;
+      if (
+        receipt != null &&
+        validateReceipt(operation.request.input, receipt) &&
+        (operation.receipt === undefined || validateReceipt(operation.receipt, receipt))
+      )
+        await requestInstallPlan(
+          {
+            type: "report",
+            planId: plan.planId,
+            environmentId,
+            operationId: operation.operationId,
+            evidence: { kind: "receipt", receipt },
+          },
+          binding,
+        );
+    }
+  }
+}
+
 /** Owner clicks claim once; lost replies keep the native reservation for receipt reconciliation. */
 export async function performPanelAction(
   environmentId: EnvironmentId | "laptop",
@@ -254,70 +328,14 @@ export async function performPanelAction(
   if (action === "check") {
     store.update({ desktop: await services.bridge.getUpdateState() });
     if (environmentId !== "laptop" && plan !== null) {
+      services.kick?.(environmentId);
       const observed = await services.observe(environmentId);
       store.update({
         devices: store.get().devices.map((d) => (d.environmentId === environmentId ? observed : d)),
       });
-      const operation = plan.devices
-        .find((d) => d.environmentId === environmentId)
-        ?.operations.at(-1);
-      if (operation?.request.kind === "plan-directive") {
-        const { observation, fleetStatus } = observed;
-        if (
-          operation.directive === undefined &&
-          observed.canOperate &&
-          observation.freshness === "fresh" &&
-          observation.state?.environmentId === environmentId &&
-          observation.state.capability.operations === 1 &&
-          fleetStatus != null &&
-          validateDirectiveEvidence(operation.request.input, fleetStatus)
-        )
-          await requestInstallPlan(
-            {
-              type: "report",
-              planId: plan.planId,
-              environmentId,
-              operationId: operation.operationId,
-              evidence: { kind: "directive", status: fleetStatus },
-            },
-            binding,
-          );
-      } else if (operation?.request.kind === "operation-start") {
-        const result = await services.operation(environmentId, {
-          action: "operationRead",
-          input: {
-            environmentId,
-            operationIds: [operation.operationId],
-            ...(operation.request.input.action.kind === "install" &&
-            observed.canOperate &&
-            observed.observation.freshness === "fresh" &&
-            observed.observation.state?.environmentId === environmentId &&
-            observed.observation.state.capability.operations === 1
-              ? { refreshInstallOutcome: operation.operationId }
-              : {}),
-          },
-        });
-        if ("receipts" in result) {
-          const receipt = result.receipts.find(
-            (r) => r.operationId === operation.operationId,
-          )?.receipt;
-          if (
-            receipt != null &&
-            validateReceipt(operation.request.input, receipt) &&
-            (operation.receipt === undefined || validateReceipt(operation.receipt, receipt))
-          )
-            await requestInstallPlan(
-              {
-                type: "report",
-                planId: plan.planId,
-                environmentId,
-                operationId: operation.operationId,
-                evidence: { kind: "receipt", receipt },
-              },
-              binding,
-            );
-        }
-      }
+      await refreshDeviceEvidence(binding, environmentId, plan, observed, {
+        refreshInstallOutcome: true,
+      });
     }
     return;
   }

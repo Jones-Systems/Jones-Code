@@ -53,6 +53,11 @@ import {
 } from "./nativePreparation.ts";
 import { isJonesRuntime, isPreviewRuntime } from "./qualification.ts";
 import { publishJonesUpdateCapabilityReceipt } from "./capabilityReceipt.ts";
+import {
+  createProgressRecorder,
+  readJonesUpdateProgress,
+  reconcileProgressAtStartup,
+} from "./progress.ts";
 import { qualifiedServerCapability } from "./serverCapability.ts";
 import {
   isUpdateOperationId,
@@ -752,8 +757,19 @@ export const layer = Layer.effect(
           return inspectQualifiedBackup(config.baseDir, config.dbPath);
         },
       });
+    // Best effort: the progress record never fails or delays an update.
+    const progressRecorder = createProgressRecorder(config.baseDir);
+    const startupProgress = reconcileProgressAtStartup(
+      yield* Effect.promise(() => readJonesUpdateProgress(config.baseDir)),
+      terminal,
+      yield* Clock.currentTimeMillis,
+    );
     const updater: JonesUpdater = new JonesUpdater({
-      stateChanged: publishCapability,
+      stateChanged: (state) => {
+        publishCapability(state);
+        progressRecorder.persist(state);
+      },
+      checkFailed: (context) => void run(Effect.logWarning("Jones update check failed", context)),
       startupOutcome: () => {
         const latest = launcher.qualifiedStartupOutcome;
         return restoreFailure === undefined && latest !== undefined
@@ -799,6 +815,7 @@ export const layer = Layer.effect(
           ? {}
           : { phase: "blocked" as const, message: restoreFailure }),
         ...(environmentId === undefined ? {} : { environmentId }),
+        ...(startupProgress === undefined ? {} : { progress: startupProgress }),
         currentVersion: version,
         ...(currentBuildStartedAt === undefined ? {} : { currentBuildStartedAt }),
         ...(installedSource === undefined ? {} : { installedSource }),
@@ -1016,6 +1033,7 @@ export const layer = Layer.effect(
         };
       },
     });
+    progressRecorder.persist(updater.snapshot());
     const fleetStore = createFleetHostStore(config.baseDir);
     const readPolicy = async (): Promise<JonesUpdatePolicy | undefined> => {
       const enrollment = await fleetStore.readEnrollment();

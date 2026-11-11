@@ -45,7 +45,10 @@ const layerLaunchDependencies = Layer.mergeAll(
   SqlitePersistence.layerMemory,
   DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
   Layer.mock(EventSink.EventSinkV2)({}),
-  Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({}),
+  // A keyed launch first looks for a receipt under the id earlier builds derived; none exists here.
+  Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
+    getByCommandId: () => Effect.succeedNone,
+  }),
 );
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
