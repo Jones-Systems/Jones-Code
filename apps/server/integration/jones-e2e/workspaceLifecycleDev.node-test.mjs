@@ -1,7 +1,8 @@
 /**
  * SOURCE candidate: prepared Node 26.12.1; explicit --live --operator /absolute/private/operator-bindings.json.
  * Operator bindings require exported source, fresh admission, native consent and a unique 0700 root containing only provider-home.
- * Preparation owns acquisition/account access; this driver discovers, copies or reads no credentials/configuration.
+ * Preparation owns account access; this driver reads no credentials or native profile content.
+ * An explicit fleet nativeBinding retains external history/cache custody; only public launcher/release/executable bytes are verified.
  * Mini approval: V3 403a9344c2f86b3a822505b115778b9e311536ec. Actual host is recorded; laptop evidence cannot qualify Mini.
  */
 import * as NodeAssert from "node:assert/strict";
@@ -95,6 +96,165 @@ const readJson = async (file, limit = 65536) => {
   }
 };
 
+const miniFleet = Object.freeze({
+  home: "/Users/mjones",
+  root: "/Users/mjones/.local/share/host-tooling/auth-fleet",
+  release: "ff3bae196519c74abbe416ec99b6e7aba2a17c2f",
+  nativeSha256: "a9d237949db816a0b7afd88a9a8e1df36b3a597a30f5a41d1c0539eb180a3450",
+  default: {
+    account: "malcolm",
+    configDir: null,
+    homePath: "",
+    launcherSha256: "d3041b4f5c8d010ac9c080ba04346f01638c96bc1c383180b67d60dd7aa6ca8f",
+    observation: "controller-bound-native-observation-unavailable",
+  },
+  jace: {
+    account: "jace",
+    configDir: "/Users/mjones/.claude-t3/jace",
+    homePath: "/Users/mjones/.claude-t3/jace",
+    launcherSha256: "fb631562eff373232e137eeb14e5e36db25397153e16d31d71f8c933277a041c",
+    observation: "owner-attested-native-observation-unavailable",
+  },
+});
+const fresh = (date) => {
+  const age = Date.now() - Date.parse(date);
+  NodeAssert.ok(
+    Number.isFinite(age) && age >= 0 && age <= 120000,
+    "fresh external admission/account binding required",
+  );
+};
+
+function validateNativeBinding(provider, host) {
+  if (!Object.hasOwn(provider, "nativeBinding")) {
+    NodeAssert.ok(
+      !/^claude-fleet-(default|jace)$/u.test(NodePath.basename(provider.launcher)),
+      "fleet launchers require an explicit native binding",
+    );
+    return;
+  }
+  const binding = provider.nativeBinding;
+  exact(binding, [
+    "schema",
+    "alias",
+    "home",
+    "homePath",
+    "configDir",
+    "release",
+    "nativeExecutable",
+    "accountRoute",
+  ]);
+  NodeAssert.equal(binding.schema, "jones.workspace-lifecycle-dev.claude-fleet-native-binding/v1");
+  NodeAssert.equal(provider.driver, "claudeAgent");
+  NodeAssert.equal(host.kind, "Apple Silicon Mini");
+  NodeAssert.ok(["default", "jace"].includes(binding.alias));
+  const tuple = miniFleet[binding.alias];
+  NodeAssert.equal(binding.home, miniFleet.home);
+  NodeAssert.equal(binding.homePath, tuple.homePath);
+  NodeAssert.equal(binding.configDir, tuple.configDir);
+  NodeAssert.equal(provider.launcher, `${miniFleet.root}/bin/claude-fleet-${binding.alias}`);
+  NodeAssert.equal(provider.launcherSha256, tuple.launcherSha256);
+  exact(binding.release, ["id", "manifestSha256", "qualificationReference"]);
+  NodeAssert.equal(binding.release.id, miniFleet.release);
+  NodeAssert.match(binding.release.manifestSha256, /^[a-f0-9]{64}$/u);
+  text(binding.release.qualificationReference);
+  exact(binding.nativeExecutable, ["path", "realPath", "sha256"]);
+  NodeAssert.equal(binding.nativeExecutable.path, `${miniFleet.home}/.local/bin/claude`);
+  absolute(binding.nativeExecutable.realPath);
+  NodeAssert.ok(inside(`${miniFleet.home}/.local`, binding.nativeExecutable.realPath));
+  NodeAssert.equal(
+    NodePath.basename(NodePath.dirname(binding.nativeExecutable.realPath)),
+    "versions",
+  );
+  NodeAssert.equal(NodePath.basename(binding.nativeExecutable.realPath), "2.1.322");
+  NodeAssert.equal(binding.nativeExecutable.sha256, miniFleet.nativeSha256);
+  const route = binding.accountRoute;
+  exact(route, [
+    "reference",
+    "verifiedAt",
+    "preparationReference",
+    "account",
+    "provider",
+    "model",
+    "binding",
+    "action",
+    "allowance",
+    "observation",
+  ]);
+  text(route.reference);
+  NodeAssert.equal(route.preparationReference, provider.preparationReference);
+  NodeAssert.equal(route.account, tuple.account);
+  NodeAssert.equal(route.provider, provider.driver);
+  NodeAssert.equal(route.model, provider.model);
+  NodeAssert.equal(route.binding, provider.accountBinding);
+  NodeAssert.equal(route.action, "start");
+  NodeAssert.ok(["unknown", "available"].includes(route.allowance));
+  NodeAssert.equal(route.observation, tuple.observation);
+  fresh(route.verifiedAt);
+  fresh(provider.verifiedAt);
+  NodeAssert.equal(provider.consent, "operator-validated-native-consent");
+}
+
+function providerInstanceBinding(provider, providerHome) {
+  const binding = provider.nativeBinding;
+  return {
+    ...(binding === undefined
+      ? {}
+      : { environment: [{ name: "HOME", value: binding.home, sensitive: false }] }),
+    config: { binaryPath: provider.launcher, homePath: binding?.homePath ?? providerHome },
+  };
+}
+
+// Only public launcher/release source and the selected executable are read.
+// Account/consent evidence is operator attestation, never a native auth probe.
+async function verifyNativeBinding(provider, host, fileSystem = NodeFSP, digest = sha) {
+  validateNativeBinding(provider, host);
+  if (provider.nativeBinding === undefined) return { state: "private-provider-home" };
+  const binding = provider.nativeBinding;
+  const releaseRoot = `${miniFleet.root}/releases/${binding.release.id}`;
+  NodeAssert.equal(await fileSystem.realpath(`${miniFleet.root}/current`), releaseRoot);
+  const manifestPath = `${releaseRoot}/manifest.json`;
+  const readPublic = async (file, cap, executable = false) => {
+    const stat = await fileSystem.lstat(file);
+    NodeAssert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size <= cap && stat.uid === 501);
+    NodeAssert.ok(!executable || (stat.mode & 0o111) !== 0);
+    NodeAssert.equal(await fileSystem.realpath(file), file);
+    return fileSystem.readFile(file);
+  };
+  const launcher = await readPublic(provider.launcher, MiB, true);
+  NodeAssert.equal(digest(launcher), provider.launcherSha256);
+  const manifestBytes = await readPublic(manifestPath, 65536);
+  NodeAssert.equal(digest(manifestBytes), binding.release.manifestSha256);
+  const manifest = object(JSON.parse(manifestBytes.toString("utf8")));
+  const files = Object.entries(manifest);
+  NodeAssert.ok(files.length > 0 && files.length <= 64);
+  for (const required of ["claude_launcher.py", "core.py", "node.py"])
+    NodeAssert.ok(Object.hasOwn(manifest, `src/host_tooling/auth_fleet/${required}`));
+  let bytes = 0;
+  for (const [relative, expectedDigest] of files) {
+    NodeAssert.match(relative, /^src\/host_tooling\/(?:[a-z_]+\/)*[a-z_]+\.py$/u);
+    NodeAssert.match(expectedDigest, /^[a-f0-9]{64}$/u);
+    const content = await readPublic(`${releaseRoot}/${relative}`, MiB);
+    bytes += content.length;
+    NodeAssert.ok(bytes <= 4 * MiB);
+    NodeAssert.equal(digest(content), expectedDigest);
+  }
+  NodeAssert.equal(
+    await fileSystem.realpath(binding.nativeExecutable.path),
+    binding.nativeExecutable.realPath,
+  );
+  const native = await readPublic(binding.nativeExecutable.realPath, 256 * MiB, true);
+  NodeAssert.equal(digest(native), binding.nativeExecutable.sha256);
+  // Recheck the mutable pointer after verifying the qualified closure.
+  NodeAssert.equal(await fileSystem.realpath(`${miniFleet.root}/current`), releaseRoot);
+  return {
+    state: "qualified-launcher-release-executable-chain-observed",
+    release: binding.release,
+    nativeExecutable: binding.nativeExecutable,
+    files: files.length,
+    account: { state: "not-observed", operatorAttestation: binding.accountRoute },
+  };
+}
+
 function validateOperator(v) {
   exact(v, [
     "schema",
@@ -166,6 +326,7 @@ function validateOperator(v) {
     "verifiedAt",
     "consent",
     "preparationReference",
+    ...(Object.hasOwn(v.provider, "nativeBinding") ? ["nativeBinding"] : []),
   ]);
   // Each invocation selects one of the two shipped conversation adapters.
   // The other adapter remains unqualified until its own real invocation passes.
@@ -190,12 +351,23 @@ function validateOperator(v) {
     Number.isSafeInteger(v.admission.availableMemoryBytes) && v.admission.availableMemoryBytes > 0,
   );
   text(v.admission.preparationReference);
-  for (const date of [v.admission.observedAt, v.provider.verifiedAt]) {
-    const age = Date.now() - Date.parse(date);
-    NodeAssert.ok(
-      Number.isFinite(age) && age >= 0 && age <= 120000,
-      "fresh external admission/account binding required",
-    );
+  for (const date of [v.admission.observedAt, v.provider.verifiedAt]) fresh(date);
+  validateNativeBinding(v.provider, v.host);
+  const binding = v.provider.nativeBinding;
+  if (binding !== undefined) {
+    NodeAssert.ok(!inside(v.root.path, binding.home), "scratch must never contain native HOME");
+    const protectedPaths = [
+      `${binding.home}/.claude`,
+      `${binding.home}/.claude.json`,
+      ...(binding.configDir === null ? [] : [binding.configDir]),
+      miniFleet.root,
+      binding.nativeExecutable.path,
+      binding.nativeExecutable.realPath,
+    ];
+    for (const target of protectedPaths) {
+      NodeAssert.ok(!inside(target, v.root.path) && !inside(v.root.path, target));
+      NodeAssert.ok(!inside(target, v.receipt) && !inside(v.receipt, target));
+    }
   }
   return v;
 }
@@ -316,7 +488,16 @@ async function qualify(v) {
     projectId: v.projectId,
     provider: {
       ...v.provider,
-      accountObservation: "external-operator-binding; native observation recorded separately",
+      accountObservation: "external-operator-attestation; native account identity not observed",
+      storageCustody: v.provider.nativeBinding === undefined
+        ? { state: "private-provider-home" }
+        : {
+            state: "external-native-history-and-cache",
+            home: v.provider.nativeBinding.home,
+            configDir: v.provider.nativeBinding.configDir,
+            cleanup: "excluded; native HOME, profile and launcher are never cleanup targets",
+            terminalScope: "explicit provider terminals can inherit this environment; setup and terminal-first omit the provider",
+          },
     },
     adapterCoverage: {
       selected: v.provider.driver,
@@ -1190,6 +1371,12 @@ async function qualify(v) {
       NodeAssert.ok(stat.isFile() && stat.size <= 256 * MiB);
       NodeAssert.equal(sha(await NodeFSP.readFile(v.tools[name])), v.tools[`${name}Sha256`]);
     }
+    if (v.provider.nativeBinding !== undefined) {
+      NodeAssert.equal(process.getuid(), 501);
+      NodeAssert.equal(NodeOS.userInfo().username, "mjones");
+      NodeAssert.deepEqual(await NodeFSP.readdir(providerHome), [], "native binding uses an empty placeholder only");
+    }
+    receipt.provider.nativeBindingObservation = await verifyNativeBinding(v.provider, v.host);
     const launcher = await NodeFSP.lstat(v.provider.launcher);
     NodeAssert.ok(launcher.isFile() && launcher.size <= 64 * MiB);
     NodeAssert.equal(sha(await NodeFSP.readFile(v.provider.launcher)), v.provider.launcherSha256);
@@ -1337,7 +1524,7 @@ async function qualify(v) {
               ? {
                   driver: "claudeAgent",
                   enabled: true,
-                  config: { binaryPath: v.provider.launcher, homePath: providerHome },
+                  ...providerInstanceBinding(v.provider, providerHome),
                 }
               : { driver: "claudeAgent", enabled: false },
         },
@@ -1346,7 +1533,7 @@ async function qualify(v) {
     );
     // Real project scripts run through the production setup and settlement
     // owners. Logs live outside the checkout, so no cleanup exemption is needed.
-    const script = `import * as NodeFSP from 'node:fs';\nimport * as NodeTimersPromises from 'node:timers/promises';\nconst [root,kind]=process.argv.slice(2);\nNodeFSP.appendFileSync(root+'/script-events.jsonl',JSON.stringify({kind,cwd:process.cwd(),pid:process.pid,ppid:process.ppid,at:new Date().toISOString()})+'\\n',{mode:0o600});\nif(kind==='settle' && NodeFSP.existsSync(root+'/block-settle')) { while(NodeFSP.existsSync(root+'/block-settle')) await NodeTimersPromises.setTimeout(50); }\nNodeFSP.appendFileSync(root+'/script-events.jsonl',JSON.stringify({kind:kind+'-completed',cwd:process.cwd(),pid:process.pid,at:new Date().toISOString()})+'\\n');\n`;
+    const script = `import * as NodeFSP from 'node:fs';\nimport * as NodeTimersPromises from 'node:timers/promises';\nconst [root,kind]=process.argv.slice(2);\nNodeFSP.appendFileSync(root+'/script-events.jsonl',JSON.stringify({kind,cwd:process.cwd(),home:process.env.HOME,pid:process.pid,ppid:process.ppid,at:new Date().toISOString()})+'\\n',{mode:0o600});\nif(kind==='settle' && NodeFSP.existsSync(root+'/block-settle')) { while(NodeFSP.existsSync(root+'/block-settle')) await NodeTimersPromises.setTimeout(50); }\nNodeFSP.appendFileSync(root+'/script-events.jsonl',JSON.stringify({kind:kind+'-completed',cwd:process.cwd(),home:process.env.HOME,pid:process.pid,at:new Date().toISOString()})+'\\n');\n`;
     await NodeFSP.writeFile(NodePath.join(root, "project-script.mjs"), script, {
       flag: "wx",
       mode: 0o600,
@@ -1367,6 +1554,7 @@ async function qualify(v) {
       runOnWorktreeCreate: kind === "setup",
       runOnSettle: kind === "settle",
     }));
+    validateOperator(v);
     await start();
     await api("/api/projects/mutate", {
       type: "project.create",
@@ -1553,18 +1741,27 @@ async function qualify(v) {
     NodeAssert.equal(obligation[0].thread_id, empty);
     NodeAssert.equal(obligation[0].reason, "conversation_dir_nonempty");
     const terminalMarker = NodePath.join(root, "terminal-cwd.txt");
+    const terminalHomeMarker = NodePath.join(root, "terminal-home.txt");
     await call("terminal-write", {
       threadId: empty,
       terminalId: "dev-first",
-      data: `/bin/pwd > ${quote(terminalMarker)}\n`,
+      data: `/bin/pwd > ${quote(terminalMarker)}; printf '%s\\n' "$HOME" > ${quote(terminalHomeMarker)}\n`,
     });
-    await wait("native terminal cwd", async () => await exists(terminalMarker));
+    await wait(
+      "native terminal cwd and HOME",
+      async () => (await exists(terminalMarker)) && (await exists(terminalHomeMarker)),
+    );
     NodeAssert.equal((await NodeFSP.readFile(terminalMarker, "utf8")).trim(), terminal.cwd);
+    NodeAssert.equal((await NodeFSP.readFile(terminalHomeMarker, "utf8")).trim(), home);
+    for (const event of (await scripts()).filter((r) => r.kind === "setup"))
+      NodeAssert.equal(event.home, home, "setup must retain private server HOME");
     await call("terminal-close", { threadId: empty, terminalId: "dev-first" });
     mark("terminal-first", {
       attachedCwd: terminal.cwd,
       terminalPid: terminal.pid,
       setupBeforeUse: true,
+      home,
+      providerInstanceId: "omitted",
     });
     mark("conversation-disposal", {
       emptyPath: original.path,
@@ -1873,6 +2070,8 @@ async function qualify(v) {
     });
     receipt.acceptance = obligations.every((key) => receipt.oracles[key] === "passed");
     NodeAssert.equal(receipt.acceptance, true);
+    for (const event of await scripts())
+      NodeAssert.equal(event.home, home, "project scripts must retain private server HOME");
     receipt.outcome = "passed";
   } catch (error) {
     receipt.outcome = error instanceof Unavailable ? "unavailable" : "failed";
@@ -1930,8 +2129,333 @@ async function qualify(v) {
   return receipt;
 }
 
+// Synthetic contract fixtures never open a native path or execute a provider.
+async function testNativeBindings() {
+  const host = { kind: "Apple Silicon Mini" };
+  const providerFor = (alias = "default") => ({
+    driver: "claudeAgent",
+    launcher: `${miniFleet.root}/bin/claude-fleet-${alias}`,
+    launcherSha256: miniFleet[alias].launcherSha256,
+    model: "synthetic-model",
+    accountBinding: "synthetic-controller-binding",
+    verifiedAt: new Date().toISOString(),
+    consent: "operator-validated-native-consent",
+    preparationReference: "synthetic-preparation",
+    nativeBinding: {
+      schema: "jones.workspace-lifecycle-dev.claude-fleet-native-binding/v1",
+      alias,
+      home: miniFleet.home,
+      homePath: miniFleet[alias].homePath,
+      configDir: miniFleet[alias].configDir,
+      release: {
+        id: miniFleet.release,
+        manifestSha256: "0".repeat(64),
+        qualificationReference: "synthetic-release-qualification",
+      },
+      nativeExecutable: {
+        path: `${miniFleet.home}/.local/bin/claude`,
+        realPath: `${miniFleet.home}/.local/share/claude/versions/2.1.322`,
+        sha256: miniFleet.nativeSha256,
+      },
+      accountRoute: {
+        reference: "synthetic-normal-controller-route",
+        verifiedAt: new Date().toISOString(),
+        preparationReference: "synthetic-preparation",
+        account: miniFleet[alias].account,
+        provider: "claudeAgent",
+        model: "synthetic-model",
+        binding: "synthetic-controller-binding",
+        action: "start",
+        allowance: "unknown",
+        observation: miniFleet[alias].observation,
+      },
+    },
+  });
+  const operatorFor = (alias = "default") => ({
+    schema: "jones.workspace-lifecycle-dev.operator/v1",
+    source: {
+      root: "/synthetic/source",
+      commit: "a".repeat(40),
+      tree: "b".repeat(40),
+      manifest: "/synthetic/manifest.json",
+      manifestSha256: "c".repeat(64),
+      v3Root: "/synthetic/v3",
+      v3Commit: "d".repeat(40),
+      v3SrcTree: "e".repeat(40),
+      v3Manifest: "/synthetic/v3-manifest.json",
+      v3ManifestSha256: "f".repeat(64),
+    },
+    tools: {
+      node: "/synthetic/node",
+      nodeSha256: "a".repeat(64),
+      pnpm: "/synthetic/pnpm",
+      pnpmSha256: "b".repeat(64),
+      git: "/synthetic/git",
+      python: "/synthetic/python",
+      pythonSha256: "c".repeat(64),
+      path: "/synthetic/bin",
+    },
+    host: {
+      ...host,
+      hostname: "synthetic-mini",
+      executionEnvironmentId: "synthetic-host",
+      approvalReference: "synthetic-approval",
+    },
+    root: {
+      path: `${miniFleet.home}/jones-workspace-lifecycle-dev-00000000-0000-4000-8000-000000000001`,
+      dev: 1,
+      ino: 2,
+      uid: 501,
+      gid: 20,
+      cleanupAuthorized: true,
+    },
+    receipt: "/synthetic/receipt.json",
+    environmentId: "synthetic-environment",
+    projectId: "synthetic-project",
+    provider: providerFor(alias),
+    admission: {
+      cpuUsedPercent: 10,
+      availableMemoryBytes: GiB,
+      observedAt: new Date().toISOString(),
+      preparationReference: "synthetic-preparation",
+    },
+  });
+  for (const alias of ["default", "jace"]) {
+    const provider = providerFor(alias);
+    validateOperator(operatorFor(alias));
+    const translated = providerInstanceBinding(provider, "/synthetic/private/provider-home");
+    NodeAssert.deepEqual(translated.environment, [
+      { name: "HOME", value: miniFleet.home, sensitive: false },
+    ]);
+    NodeAssert.equal(translated.config.homePath, miniFleet[alias].homePath);
+    NodeAssert.equal(translated.config.binaryPath, provider.launcher);
+    NodeAssert.equal(
+      translated.environment.some((variable) => variable.name === "CLAUDE_CONFIG_DIR"),
+      false,
+    );
+  }
+  const rejected = [
+    (p) => {
+      p.driver = "codex";
+    },
+    (p) => {
+      p.nativeBinding.alias = "other";
+    },
+    (p) => {
+      p.nativeBinding.home = "/synthetic/private/home";
+    },
+    (p) => {
+      p.nativeBinding.homePath = `${miniFleet.home}/.claude`;
+    },
+    (p) => {
+      p.nativeBinding.configDir = "";
+    },
+    (p) => {
+      p.nativeBinding.environment = { HOME: miniFleet.home };
+    },
+    (p) => {
+      p.nativeBinding.release.id = "0".repeat(40);
+    },
+    (p) => {
+      p.launcherSha256 = "0".repeat(64);
+    },
+    (p) => {
+      p.launcher = "/synthetic/other-launcher";
+    },
+    (p) => {
+      p.nativeBinding.nativeExecutable.path = "/synthetic/other-native";
+    },
+    (p) => {
+      p.nativeBinding.nativeExecutable.realPath = "/outside/versions/2.1.322";
+    },
+    (p) => {
+      p.nativeBinding.nativeExecutable.sha256 = "0".repeat(64);
+    },
+    (p) => {
+      p.nativeBinding.accountRoute.account = "jace";
+    },
+    (p) => {
+      p.nativeBinding.accountRoute.provider = "other";
+    },
+    (p) => {
+      p.nativeBinding.accountRoute.model = "other";
+    },
+    (p) => {
+      p.nativeBinding.accountRoute.binding = "other";
+    },
+    (p) => {
+      p.nativeBinding.accountRoute.preparationReference = "other";
+    },
+    (p) => {
+      p.nativeBinding.accountRoute.allowance = "exhausted";
+    },
+    (p) => {
+      p.nativeBinding.accountRoute.observation = "native-authenticated";
+    },
+    (p) => {
+      p.nativeBinding.accountRoute.verifiedAt = new Date(Date.now() - 120001).toISOString();
+    },
+    (p) => {
+      p.verifiedAt = new Date(Date.now() - 120001).toISOString();
+    },
+    (p) => {
+      p.nativeBinding.accountRoute.verifiedAt = new Date(Date.now() + 60000).toISOString();
+    },
+    (p) => {
+      p.consent = "not-validated";
+    },
+    (p) => {
+      delete p.nativeBinding;
+    },
+  ];
+  for (const mutate of rejected) {
+    const provider = providerFor();
+    mutate(provider);
+    NodeAssert.throws(() => validateNativeBinding(provider, host));
+  }
+  NodeAssert.throws(() => validateNativeBinding(providerFor(), { kind: "Apple Silicon laptop" }));
+  NodeAssert.deepEqual(
+    providerInstanceBinding({ launcher: "/synthetic/private-cli" }, "/synthetic/private/provider-home"),
+    { config: { binaryPath: "/synthetic/private-cli", homePath: "/synthetic/private/provider-home" } },
+  );
+  const badOperators = [
+    (v) => {
+      v.provider.environment = { HOME: miniFleet.home };
+    },
+    (v) => {
+      v.provider.preparationReference = "";
+    },
+    (v) => {
+      v.admission.observedAt = new Date(Date.now() - 120001).toISOString();
+    },
+    (v) => {
+      v.root.path = `${miniFleet.home}/.claude/jones-workspace-lifecycle-dev-00000000-0000-4000-8000-000000000001`;
+    },
+    (v) => {
+      v.receipt = `${miniFleet.home}/.claude/receipt.json`;
+    },
+    (v) => {
+      v.receipt = `${miniFleet.root}/receipt.json`;
+    },
+  ];
+  for (const mutate of badOperators) {
+    const operator = operatorFor();
+    mutate(operator);
+    NodeAssert.throws(() => validateOperator(operator));
+  }
+  const chainFixture = () => {
+    const provider = providerFor();
+    const binding = provider.nativeBinding;
+    const release = `${miniFleet.root}/releases/${binding.release.id}`;
+    const files = new Map();
+    const manifest = {};
+    for (const name of ["claude_launcher.py", "core.py", "node.py"]) {
+      const relative = `src/host_tooling/auth_fleet/${name}`;
+      const content = Buffer.from(`synthetic:${name}`);
+      manifest[relative] = sha(content);
+      files.set(`${release}/${relative}`, content);
+    }
+    const bytes = Buffer.from(JSON.stringify(manifest));
+    binding.release.manifestSha256 = sha(bytes);
+    files.set(`${release}/manifest.json`, bytes);
+    files.set(provider.launcher, Buffer.from("synthetic-launcher"));
+    files.set(binding.nativeExecutable.realPath, Buffer.from("synthetic-native"));
+    const links = new Map([
+      [`${miniFleet.root}/current`, release],
+      [binding.nativeExecutable.path, binding.nativeExecutable.realPath],
+    ]);
+    const fileSystem = {
+      realpath: async (file) => links.get(file) ?? file,
+      lstat: async (file) => {
+        NodeAssert.ok(files.has(file), "unexpected fixture read");
+        return {
+          uid: 501,
+          mode: 0o755,
+          size: files.get(file).length,
+          isFile: () => true,
+          isSymbolicLink: () => false,
+        };
+      },
+      readFile: async (file) => {
+        NodeAssert.ok(files.has(file));
+        return files.get(file);
+      },
+    };
+    // Fixed shipped hashes cannot have synthetic preimages. Substitute only
+    // those two byte identities; manifest and source digests use real SHA-256.
+    const digest = (bytes) =>
+      bytes.toString() === "synthetic-launcher"
+        ? provider.launcherSha256
+        : bytes.toString() === "synthetic-native"
+          ? miniFleet.nativeSha256
+          : sha(bytes);
+    const verify = () => verifyNativeBinding(provider, host, fileSystem, digest);
+    return { provider, binding, release, files, links, fileSystem, verify };
+  };
+  const valid = chainFixture();
+  const observation = await valid.verify();
+  NodeAssert.equal(observation.state, "qualified-launcher-release-executable-chain-observed");
+  NodeAssert.equal(observation.account.state, "not-observed");
+  const badChains = [
+    (f) => f.links.set(`${miniFleet.root}/current`, "/synthetic/unqualified-release"),
+    (f) => f.links.set(f.binding.nativeExecutable.path, "/synthetic/wrong-native"),
+    (f) => f.files.set(f.provider.launcher, Buffer.from("tampered-launcher")),
+    (f) => f.files.set(f.binding.nativeExecutable.realPath, Buffer.from("tampered-native")),
+    (f) => f.files.set(`${f.release}/manifest.json`, Buffer.from("{}")),
+    (f) =>
+      f.files.set(`${f.release}/src/host_tooling/auth_fleet/core.py`, Buffer.from("tampered-core")),
+    (f) => {
+      f.fileSystem.lstat = async () => ({
+        uid: 501,
+        size: 1,
+        mode: 0o755,
+        isFile: () => true,
+        isSymbolicLink: () => true,
+      });
+    },
+    (f) => {
+      f.fileSystem.lstat = async () => ({
+        uid: 501,
+        size: 1,
+        mode: 0o600,
+        isFile: () => true,
+        isSymbolicLink: () => false,
+      });
+    },
+    (f) => {
+      const realpath = f.fileSystem.realpath;
+      let currentReads = 0;
+      f.fileSystem.realpath = async (file) =>
+        file === `${miniFleet.root}/current` && ++currentReads > 1
+          ? "/synthetic/changed-release"
+          : realpath(file);
+    },
+  ];
+  for (const mutate of badChains) {
+    const fixture = chainFixture();
+    mutate(fixture);
+    await NodeAssert.rejects(fixture.verify());
+  }
+  console.log(
+    JSON.stringify({
+      schema: "jones.workspace-lifecycle-dev.native-binding-fixtures/v1",
+      outcome: "passed",
+      acceptedAliases: 2,
+      rejectedTuples: rejected.length + 1,
+      rejectedOperators: badOperators.length,
+      rejectedChains: badChains.length,
+      nativeAccountObservation: "not-observed",
+      execution: "synthetic-only",
+    }),
+  );
+}
+
 async function main() {
   const args = process.argv.slice(2);
+  if (args.length === 1 && args[0] === "--test-native-bindings") {
+    await testNativeBindings();
+    return;
+  }
   if (args.length === 0) {
     console.log(
       JSON.stringify({
@@ -1971,7 +2495,12 @@ async function main() {
   if (!result.acceptance) process.exitCode = result.outcome === "unavailable" ? 3 : 1;
 }
 if (process.argv[1] === NodeURL.fileURLToPath(import.meta.url))
-  await main().catch(() => {
+  await main().catch((error) => {
+    if (process.argv.length === 3 && process.argv[2] === "--test-native-bindings") {
+      console.error(error);
+      process.exitCode = 1;
+      return;
+    }
     console.log(
       JSON.stringify({
         schema,

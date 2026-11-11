@@ -10,6 +10,7 @@
         "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts"
       ],
       "commands": [
+        "node apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs --test-native-bindings",
         "vp test run apps/server/src/provider/Drivers/ClaudeHome.test.ts apps/server/src/provider/Drivers/ClaudeDriver.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/server/src/provider/Drivers/ClaudeHome.ts apps/server/src/provider/Drivers/ClaudeHome.test.ts apps/server/src/provider/Drivers/ClaudeDriver.ts apps/server/src/provider/Drivers/ClaudeDriver.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
         "node --check apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
