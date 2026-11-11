@@ -849,7 +849,7 @@
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts"
       ],
-      "scope": "Bound owner-backed observation through ProviderSessionManager and optional ThreadManagementService/MCP output. Codex reports current positive live work with partial coverage; unsupported adapters and missing native coverage remain explicit. Ordinary MCP status and session retention are unchanged."
+      "scope": "Bound owner-backed observation through ProviderSessionManager and optional ThreadManagementService/MCP output. Codex reports current positive live work with partial coverage; unsupported adapters and missing native coverage remain explicit. Ordinary MCP status and session retention are unchanged. Optional MCP detail/list background rosters, full-roster completion holds and explicit list truncation explain authoritative Waiting without changing task liveness."
     },
     {
       "id": "opencode-process-adoption",
@@ -2779,9 +2779,10 @@
         "packages/client-runtime/src/state/shell-sync.test.ts",
         "apps/web/src/jones/threadResultDependencies/bannerTasks.test.ts",
         "apps/web/src/jones/threadResultDependencies/ChatView.integration.test.ts",
-        "apps/mobile/src/jones/threadResultDependencies/presentation.test.ts"
+        "apps/mobile/src/jones/threadResultDependencies/presentation.test.ts",
+        "packages/client-runtime/src/state/threads-sync.test.ts"
       ],
-      "scope": "Explicit correlated cross-thread result requests persist sender waiting and receiver answer duties independently of foreground completion. Jones-owned storage, transaction fences and event-driven local/remote observation preserve multiple dependencies and release semantics. Additive opt-in shell refreshes retain replay ordering, persistence and producer isolation for shared web, desktop and mobile consumers; no ordinary message or navigation link creates a wait. The existing shell-sync test harness is the upstream-test exception for actual subscription and persistence behavior. MCP registration and production reuse one memoized request watcher and dependency bus; existing core and peer fixtures add only their missing Orchestrator port. New Jones composition regressions cover standalone durable fences and EventSink/MCP bus identity and publication."
+      "scope": "Explicit correlated cross-thread result requests persist sender waiting and receiver answer duties independently of foreground completion. Jones-owned storage, transaction fences and event-driven local/remote observation preserve multiple dependencies and release semantics. Additive opt-in shell refreshes retain replay ordering, persistence and producer isolation for shared web, desktop and mobile consumers; no ordinary message or navigation link creates a wait. The existing shell-sync test harness is the upstream-test exception for actual subscription and persistence behavior. MCP registration and production reuse one memoized request watcher and dependency bus; existing core and peer fixtures add only their missing Orchestrator port. New Jones composition regressions cover standalone durable fences and EventSink/MCP bus identity and publication. Web/desktop banners include all same-thread shell work, with applied global detail sequence metadata protecting freshness-aware terminal precedence."
     },
     {
       "id": "optimistic-send-feedback",
