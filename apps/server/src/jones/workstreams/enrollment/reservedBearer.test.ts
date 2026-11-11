@@ -107,7 +107,11 @@ it.effect(
       expect(result._tag).toBe("Failure");
       expect(generated).toBe(0);
     }).pipe(
-      Effect.provide(AuthSessions.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory))),
-      Effect.provide(NodeCrypto.layer),
+      Effect.provide(
+        AuthSessions.layer.pipe(
+          Layer.provideMerge(SqlitePersistence.layerMemory),
+          Layer.provideMerge(NodeCrypto.layer),
+        ),
+      ),
     ),
 );

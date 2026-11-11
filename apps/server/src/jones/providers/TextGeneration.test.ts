@@ -112,18 +112,18 @@ describe("Jones remote evaluation routing", () => {
                 ),
               ];
         const generation = yield* TextGeneration.make.pipe(
-          Effect.provide(ServerSettings.layerTest()),
           Effect.provide(
-            Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),
+            Layer.mergeAll(
+              ServerSettings.layerTest(),
+              Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),
+              Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+                resolveLink: () => Effect.die("Evaluator must not investigate linked content"),
+              }),
+            ),
           ),
           Effect.provideService(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             makeStubRegistry(instances),
-          ),
-          Effect.provide(
-            Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
-              resolveLink: () => Effect.die("Evaluator must not investigate linked content"),
-            }),
           ),
         );
         const result = yield* generation.evaluateRemoteRequest(input).pipe(Effect.result);
