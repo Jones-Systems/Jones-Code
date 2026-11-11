@@ -16,12 +16,10 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
-import * as Duration from "effect/Duration";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type * as Tool from "effect/ai/Tool";
@@ -44,18 +42,12 @@ import * as PeerLinks from "./PeerLinks.ts";
 import * as RemoteLifecycle from "../jones/remoteDelegation/Lifecycle.ts";
 import * as PeerMonitor from "../jones/remoteDelegation/PeerMonitor.ts";
 import * as FinalText from "../jones/remoteDelegation/FinalText.ts";
+import * as FollowerSupervision from "../jones/remoteDelegation/FollowerSupervision.ts";
 import * as ObservationSupport from "../jones/remoteDelegation/ObservationSupport.ts";
 import { refuseUnsolicitedSupervision } from "../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 
 /** How long one follow of a remote task waits on its thread there before checking again. */
 const FOLLOW_WAIT_MS = 50_000;
-/** A linked environment that stops answering is retried, backing off to this. */
-const FOLLOW_MAX_BACKOFF = Duration.minutes(5);
-const backoff = Schedule.exponential(Duration.seconds(2)).pipe(
-  Schedule.modifyDelay(({ duration }) =>
-    Effect.succeed(Duration.min(duration, FOLLOW_MAX_BACKOFF)),
-  ),
-);
 
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
 
@@ -181,6 +173,14 @@ const make = Effect.gen(function* () {
   const observe: RemoteDelegation["Service"]["observe"] = Effect.fn("RemoteDelegation.observe")(
     function* (scope, task) {
       const remote = task.remoteChild;
+      if (
+        remote !== undefined &&
+        (task.result === null ||
+          remote.stoppedThere === false ||
+          ((task.status === "cancelled" || task.status === "interrupted") &&
+            remote.stoppedThere !== true))
+      )
+        yield* followOne(task.threadId, task.id).pipe(Effect.forkIn(followers));
       if (remote?.runId === undefined)
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
@@ -507,8 +507,7 @@ const make = Effect.gen(function* () {
             }
           }),
       }),
-      Effect.retry(backoff),
-      Effect.ignoreCause({ log: true }),
+      (operation) => FollowerSupervision.retry(operation, { operation: "follow", taskId }),
     );
 
   /**
@@ -819,33 +818,32 @@ const make = Effect.gen(function* () {
   const start: RemoteDelegation["Service"]["start"] = () =>
     forkParked(
       Effect.gen(function* () {
-        yield* lifecycle.start;
+        yield* FollowerSupervision.retry(lifecycle.start, { operation: "startup" });
         if (threads.recoverRemoteTaskQuestions !== undefined)
           yield* threads.recoverRemoteTaskQuestions.pipe(
-            Effect.retry(backoff),
+            (operation) => FollowerSupervision.retry(operation, { operation: "questions" }),
             Effect.forkIn(followers),
           );
-        // A finished task's follower has ended, so a Stop here that owes its
-        // thread there a stop starts it again. Started before the scan below;
-        // a Stop that slips between the two stays owed for the next start.
-        yield* Stream.runForEach(threads.streamDomainEvents, (event) =>
-          event.type === "subagent.updated" && event.payload.remoteChild?.stoppedThere === false
-            ? followOne(event.threadId, event.payload.id).pipe(Effect.forkIn(followers))
-            : Effect.void,
-        ).pipe(
-          Effect.ignoreCause({ log: true }),
-          Effect.forkIn(followers, { startImmediately: true }),
-        );
-        const open = yield* projections.getOpenRemoteDelegatedTasks;
-        yield* Effect.forEach(
-          open,
-          ({ parentThreadId, taskId }) => followOne(parentThreadId, taskId),
-          {
-            concurrency: "unbounded",
-            discard: true,
-          },
-        );
-      }).pipe(Effect.ignoreCause({ log: true })),
+        yield* FollowerSupervision.subscribe(
+          Stream.runForEach(threads.streamDomainEvents, (event) =>
+            event.type === "subagent.updated" && event.payload.remoteChild?.stoppedThere === false
+              ? followOne(event.threadId, event.payload.id).pipe(Effect.forkIn(followers))
+              : Effect.void,
+          ),
+          FollowerSupervision.retry(projections.getOpenRemoteDelegatedTasks, {
+            operation: "scan",
+          }).pipe(
+            Effect.flatMap((open) =>
+              Effect.forEach(
+                open,
+                ({ parentThreadId, taskId }) =>
+                  followOne(parentThreadId, taskId).pipe(Effect.forkIn(followers)),
+                { concurrency: "unbounded", discard: true },
+              ),
+            ),
+          ),
+        ).pipe(Effect.forkIn(followers, { startImmediately: true }));
+      }),
     );
 
   return RemoteDelegation.of({ observe, delegate, cancel, start });
