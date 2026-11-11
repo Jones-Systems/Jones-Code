@@ -80,3 +80,61 @@ describe("alternative offer wire compatibility", () => {
     });
   });
 });
+
+describe("progress and check record wire compatibility", () => {
+  const progress = {
+    schema: 1,
+    kind: "install",
+    operationId: "11111111-1111-4111-8111-111111111111",
+    phase: "prep",
+    stepIndex: 2,
+    stepCount: 6,
+    stepKey: "startup-readiness",
+    stepLabel: "Checking startup readiness",
+    stepStartedAt: "2026-11-10T00:00:05.000Z",
+    startedAt: "2026-11-10T00:00:00.000Z",
+    updatedAt: "2026-11-10T00:00:05.000Z",
+    reportedAt: "2026-11-10T00:00:07.000Z",
+    steps: [
+      {
+        key: "verify-runtime",
+        label: "Verifying the selected runtime",
+        startedAt: "2026-11-10T00:00:00.000Z",
+        endedAt: "2026-11-10T00:00:05.000Z",
+      },
+      { key: "startup-readiness", label: "Checking startup readiness" },
+    ],
+  };
+  const old = {
+    source: "jones-actions",
+    channel: "jones-main",
+    phase: "preparing",
+    capability: { check: true, download: true, install: true },
+    stagedHandle: "retained",
+  };
+
+  it("old hosts omit the new keys and old clients ignore them", () => {
+    expect(decodeState(old)).toEqual(old);
+    const modern = decodeState({
+      ...old,
+      progress,
+      lastCheck: { at: "2026-11-10T00:00:00.000Z", outcome: "failed", reason: "offline" },
+      stagedAlreadyRunning: true,
+    });
+    expect(modern.progress?.stepKey).toBe("startup-readiness");
+    expect(modern.lastCheck?.outcome).toBe("failed");
+    expect(decodeOldState(modern)).toEqual(old);
+  });
+
+  it("rejects records outside their bounds", () => {
+    for (const patch of [
+      { stepLabel: "l".repeat(81) },
+      { stepCount: 13 },
+      { stepIndex: 0 },
+      { steps: Array.from({ length: 13 }, () => progress.steps[1]) },
+      { error: { code: "bad code", message: "x" } },
+      { error: { code: "failed", message: "x".repeat(241) } },
+    ])
+      expect(() => decodeState({ ...old, progress: { ...progress, ...patch } })).toThrow();
+  });
+});
