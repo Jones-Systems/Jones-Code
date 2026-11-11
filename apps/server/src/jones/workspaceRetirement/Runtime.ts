@@ -572,8 +572,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
                 : { breadcrumbId: record.binding.breadcrumb_id }),
             },
           ],
-          nextAction:
-            `Have the recorded producer owner run node scripts/jones/direct-producers/resolve.ts --worktree '${record.binding.path.replaceAll("'", "'\\''")}' --json on the workspace-owning server; reobserve the reported holder or host limitation, then reevaluate this checkout.`,
+          nextAction: `Have the recorded producer owner run node scripts/jones/direct-producers/resolve.ts --worktree '${record.binding.path.replaceAll("'", "'\\''")}' --json on the workspace-owning server; reobserve the reported holder or host limitation, then reevaluate this checkout.`,
         })),
       );
   const outcome: WorkspaceRetirementOutcome = {

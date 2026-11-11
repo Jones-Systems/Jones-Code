@@ -40,7 +40,10 @@ print(str(info.sec)+':'+str(info.usec))
 
 function linuxStat(value: string) {
   const end = value.lastIndexOf(")");
-  const fields = value.slice(end + 2).trim().split(/\s+/);
+  const fields = value
+    .slice(end + 2)
+    .trim()
+    .split(/\s+/);
   if (end < 0 || fields.length < 20 || !/^\d+$/.test(fields[19]!) || !/^\d+$/.test(fields[3]!))
     throw new Error("process_identity_unavailable");
   if (fields[0] === "Z" || fields[0] === "X") throw new Error("process_identity_unavailable");
@@ -60,18 +63,25 @@ async function forkEpoch() {
     const read = await file.read(bytes, 0, bytes.length, null);
     if (read.bytesRead === bytes.length) throw new Error("session_observation_unavailable");
     const count = /^processes ([0-9]+)$/m.exec(bytes.subarray(0, read.bytesRead).toString())?.[1];
-    if (!count || BigInt(count) > 0xffffffffffffffffn) throw new Error("session_observation_unavailable");
+    if (!count || BigInt(count) > 0xffffffffffffffffn)
+      throw new Error("session_observation_unavailable");
     return count;
-  } finally { await file.close(); }
+  } finally {
+    await file.close();
+  }
 }
 
-async function linuxSessionSnapshot(identity: ProducerIdentity, sid: number): Promise<HolderObservation> {
+async function linuxSessionSnapshot(
+  identity: ProducerIdentity,
+  sid: number,
+): Promise<HolderObservation> {
   const deadline = performance.now() + 250;
   const first = await forkEpoch();
   let count = 0;
   const entries = await NodeFSP.opendir("/proc");
   for await (const entry of entries) {
-    if (++count > 65536 || performance.now() > deadline) throw new Error("session_observation_unavailable");
+    if (++count > 65536 || performance.now() > deadline)
+      throw new Error("session_observation_unavailable");
     if (!/^[0-9]+$/.test(entry.name)) continue;
     const namespace = await NodeFSP.readlink(`/proc/${entry.name}/ns/pid`);
     if (namespace !== identity.namespace) throw new Error("host_or_namespace_mismatch");
@@ -80,7 +90,8 @@ async function linuxSessionSnapshot(identity: ProducerIdentity, sid: number): Pr
     if (info.sid === sid && sid > 0) return { state: "present", reason: "holder_present" };
   }
   const second = await forkEpoch();
-  if (first !== second || performance.now() > deadline) throw new Error("session_observation_unavailable");
+  if (first !== second || performance.now() > deadline)
+    throw new Error("session_observation_unavailable");
   // Even a quiet snapshot cannot establish the installed kernel's publication
   // ordering, complete visibility/no-hidepid and exact 64-bit build binding.
   // Reviewed source: Linux v6.12.107 f717995c / Debian 6.12.107-1.
@@ -93,8 +104,12 @@ async function hostIdentity() {
   if (nativePlatform === "linux") {
     const boot = (await NodeFSP.readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
     const namespace = await NodeFSP.readlink("/proc/self/ns/pid");
-    if (!boot || !/^pid:\[\d+\]$/.test(namespace) ||
-      linuxStat(await NodeFSP.readFile("/proc/self/stat", "utf8")).pid !== process.pid) throw new Error("holder_identity_unavailable");
+    if (
+      !boot ||
+      !/^pid:\[\d+\]$/.test(namespace) ||
+      linuxStat(await NodeFSP.readFile("/proc/self/stat", "utf8")).pid !== process.pid
+    )
+      throw new Error("holder_identity_unavailable");
     return { host: NodeOS.hostname(), boot, namespace };
   }
   if (nativePlatform === "darwin") {
@@ -107,9 +122,10 @@ async function hostIdentity() {
 
 export async function producerIdentity(): Promise<ProducerIdentity> {
   const host = await hostIdentity();
-  const start = nativePlatform === "linux"
-    ? linuxStat(await NodeFSP.readFile(`/proc/${process.pid}/stat`, "utf8")).start
-    : await command("/usr/bin/python3", ["-B", "-c", DARWIN_START, String(process.pid)]);
+  const start =
+    nativePlatform === "linux"
+      ? linuxStat(await NodeFSP.readFile(`/proc/${process.pid}/stat`, "utf8")).start
+      : await command("/usr/bin/python3", ["-B", "-c", DARWIN_START, String(process.pid)]);
   return { ...host, pid: process.pid, start };
 }
 
@@ -143,7 +159,10 @@ export async function observeProducerSelf(identity: ProducerIdentity): Promise<H
   }
 }
 
-export async function observeProducerSession(identity: ProducerIdentity, sid: number): Promise<HolderObservation> {
+export async function observeProducerSession(
+  identity: ProducerIdentity,
+  sid: number,
+): Promise<HolderObservation> {
   try {
     if (!Number.isSafeInteger(sid) || sid <= 0)
       return { state: "unknown", reason: "session_observation_unavailable" };

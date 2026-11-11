@@ -3,9 +3,7 @@
   "feature": "direct-producer-completion",
   "jonesOwnedPaths": [
     "apps/server/src/jones/workspaceRetirement/ProducerSessionObservation.ts",
-    "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts",
-    "scripts/jones/direct-producers/resolve.ts",
-    "scripts/jones/direct-producers/resolve.test.ts"
+    "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts"
   ],
   "hookPaths": ["apps/server/scripts/cli.ts"],
   "tombstones": [],

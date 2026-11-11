@@ -65,13 +65,16 @@ export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")
       try: async () => {
         // Only lstat ENOENT at the requested repository's .git permits an
         // unowned distribution build. Present/broken/unreadable Git blocks.
-        try { await NodeFSP.lstat(NodePath.join(input.worktree, ".git")); }
-        catch (cause) {
+        try {
+          await NodeFSP.lstat(NodePath.join(input.worktree, ".git"));
+        } catch (cause) {
           if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
           report(`[${input.producer}] git_absent; unowned build root=${input.root}`);
           return null;
         }
-        return (dependencies.begin ?? beginProduction)(input.worktree, input.producer, [input.root]);
+        return (dependencies.begin ?? beginProduction)(input.worktree, input.producer, [
+          input.root,
+        ]);
       },
       catch: (cause) => new FiniteProductionAdmissionError({ ...input, cause }),
     }),
@@ -82,21 +85,35 @@ export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")
             leaderExited: () => {
               leaderExited = true;
             },
-            spawn: (start, detached) => Effect.uninterruptibleMask((restore) =>
-              Effect.gen(function* () {
-                const intent = session === null ? null : yield* Effect.tryPromise({
-                  try: () => productionSpawnIntent(session),
-                  catch: (cause) => new FiniteProductionAdmissionError({ ...input, cause }),
-                });
-                commandStarted = true;
-                const child = yield* restore(Effect.suspend(start));
-                if (session !== null) yield* Effect.promise(async () => {
-                  try { await productionSpawnResult(session, intent, { kind: "session", pid: child.pid, detached }); }
-                  catch { report(`[${input.producer}] spawn_binding_uncertain; id=${session.record.id}; path=${session.path}`); }
-                });
-                return child;
-              }),
-            ),
+            spawn: (start, detached) =>
+              Effect.uninterruptibleMask((restore) =>
+                Effect.gen(function* () {
+                  const intent =
+                    session === null
+                      ? null
+                      : yield* Effect.tryPromise({
+                          try: () => productionSpawnIntent(session),
+                          catch: (cause) => new FiniteProductionAdmissionError({ ...input, cause }),
+                        });
+                  commandStarted = true;
+                  const child = yield* restore(Effect.suspend(start));
+                  if (session !== null)
+                    yield* Effect.promise(async () => {
+                      try {
+                        await productionSpawnResult(session, intent, {
+                          kind: "session",
+                          pid: child.pid,
+                          detached,
+                        });
+                      } catch {
+                        report(
+                          `[${input.producer}] spawn_binding_uncertain; id=${session.record.id}; path=${session.path}`,
+                        );
+                      }
+                    });
+                  return child;
+                }),
+              ),
           }),
         ),
       ),
@@ -110,10 +127,12 @@ export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")
             ? "failed"
             : undefined;
         try {
-          const record = await (dependencies.finish ?? finishProduction)(session, status,
-            [],
-            { inProcessSettled: Exit.isSuccess(exit) });
-          report(`[${input.producer}] native=${record.status}; allocation=${record.outcome}; reasons=${record.reasons.join(",") || "none"}; ${reference}`);
+          const record = await (dependencies.finish ?? finishProduction)(session, status, [], {
+            inProcessSettled: Exit.isSuccess(exit),
+          });
+          report(
+            `[${input.producer}] native=${record.status}; allocation=${record.outcome}; reasons=${record.reasons.join(",") || "none"}; ${reference}`,
+          );
         } catch {
           report(`[${input.producer}] finalization_not_confirmed; durable duty ${reference}`);
         }

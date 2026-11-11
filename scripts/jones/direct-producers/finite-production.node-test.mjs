@@ -50,9 +50,20 @@ export const acquireUseRelease = (acquire, use, release) => effect(async context
     };
   },
 });
-const { finiteProductionCases, resolutionCases, resolveCases, capacityCases, finiteScratchReceipts } =
-  await import("./finite-production.testkit.ts");
-for (const [name, run] of Object.entries({ ...finiteProductionCases, ...resolutionCases, ...resolveCases, ...capacityCases })) NodeTest.test(name, run);
+const {
+  finiteProductionCases,
+  resolutionCases,
+  resolveCases,
+  capacityCases,
+  finiteScratchReceipts,
+} = await import("./finite-production.testkit.ts");
+for (const [name, run] of Object.entries({
+  ...finiteProductionCases,
+  ...resolutionCases,
+  ...resolveCases,
+  ...capacityCases,
+}))
+  NodeTest.test(name, run);
 NodeTest.after(() => {
   NodeAssert.ok(finiteScratchReceipts.every((receipt) => receipt.cleaned));
   console.log("exact scratch cleanup", JSON.stringify(finiteScratchReceipts));

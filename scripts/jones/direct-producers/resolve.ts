@@ -4,8 +4,11 @@ import { resolveProductions } from "../../../apps/server/src/jones/workspaceReti
 
 export async function resolveCommand(args: readonly string[]) {
   if (
-    args.length < 2 || args[0] !== "--worktree" || !args[1] ||
-    args.length > 3 || args[2] !== undefined && args[2] !== "--json"
+    args.length < 2 ||
+    args[0] !== "--worktree" ||
+    !args[1] ||
+    args.length > 3 ||
+    (args[2] !== undefined && args[2] !== "--json")
   )
     throw new Error("usage: resolve.ts --worktree <path> [--json]");
   const records = await resolveProductions(args[1]);
@@ -23,10 +26,12 @@ if (import.meta.main) {
     process.stdout.write(JSON.stringify(result) + "\n");
     if (result.blocked) process.exitCode = 1;
   } catch (cause) {
-    process.stderr.write(JSON.stringify({
-      schema: "workspace-production-resolution/v1",
-      error: cause instanceof Error ? cause.message : "resolution_unavailable",
-    }) + "\n");
+    process.stderr.write(
+      JSON.stringify({
+        schema: "workspace-production-resolution/v1",
+        error: cause instanceof Error ? cause.message : "resolution_unavailable",
+      }) + "\n",
+    );
     process.exitCode = 1;
   }
 }

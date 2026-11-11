@@ -9,7 +9,10 @@ import * as Path from "effect/Path";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { withFiniteProduction, type FiniteProductionEvidence } from "../../../scripts/jones/direct-producers/finite-production.ts";
+import {
+  withFiniteProduction,
+  type FiniteProductionEvidence,
+} from "../../../scripts/jones/direct-producers/finite-production.ts";
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
 import rootPackageJson from "../../../package.json" with { type: "json" };
@@ -26,9 +29,14 @@ const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("../../..", import.meta.url))),
 );
 
-const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.StandardCommand, spawn?: FiniteProductionEvidence["spawn"]) {
+const runCommand = Effect.fn("runCommand")(function* (
+  command: ChildProcess.StandardCommand,
+  spawn?: FiniteProductionEvidence["spawn"],
+) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const child = yield* (spawn ? spawn(() => spawner.spawn(command), command.options.detached === true) : spawner.spawn(command));
+  const child = yield* spawn
+    ? spawn(() => spawner.spawn(command), command.options.detached === true)
+    : spawner.spawn(command);
   const exitCode = yield* child.exitCode;
 
   if (exitCode !== 0) {
