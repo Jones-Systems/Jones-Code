@@ -1,4 +1,5 @@
 import * as QueryExitObserver from "../../jones/provider/claudeQueryExitObserver.ts";
+import { STOP_CHILD_BUDGET_MS } from "../../jones/provider/stopBudgets.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import {
@@ -5649,8 +5650,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               };
             }
           }
+          // Prompt suggestions are unpersisted hints that no evidence guard reads.
           const queuedEvent: ProviderAdapter.ProviderAdapterV2Event =
-            binding === undefined || event.type === "runtime_identity.observed"
+            binding === undefined ||
+            event.type === "runtime_identity.observed" ||
+            event.type === "prompt_suggestion.updated"
               ? event
               : {
                   ...event,
@@ -11683,7 +11687,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ...(cause === undefined ? {} : { cause }),
             });
             unboundRetirement ??= makeClaudeQueryRetirement({
-              deadline: (yield* Clock.currentTimeMillis) + 10_000,
+              deadline: (yield* Clock.currentTimeMillis) + STOP_CHILD_BUDGET_MS,
               close: querySession.close,
               termination: querySession.termination,
               drain: Stream.runDrain(querySession.messages).pipe(Effect.ignore),
@@ -12638,7 +12642,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ) {
             const inheritedDeadline = yield* ProviderControlDeadline;
             const deadline = Math.min(
-              (yield* Clock.currentTimeMillis) + 10_000,
+              (yield* Clock.currentTimeMillis) + STOP_CHILD_BUDGET_MS,
               inheritedDeadline ?? Infinity,
             );
             yield* verifyOwner;

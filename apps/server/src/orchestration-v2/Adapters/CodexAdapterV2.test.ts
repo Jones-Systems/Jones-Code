@@ -3,6 +3,11 @@ import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Path from "effect/Path";
 import { findSteerFailure, verifyCodexProcessExit } from "../../jones/orchestration/LateSteer.ts";
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
+import {
+  STOP_CHILD_BUDGET_MS,
+  STOP_RECOVERY_BUDGET_MS,
+  STOP_REQUEST_BUDGET_MS,
+} from "../../jones/provider/stopBudgets.ts";
 import { ServerEnvironmentIdentity } from "../../environment/ServerEnvironment.ts";
 import type {
   GoalContinuityContext,
@@ -72,6 +77,7 @@ import * as FileSystem from "effect/FileSystem";
 import { MCP_APP_OUTPUT_KEY, readMcpAppReference } from "@t3tools/shared/mcpApp";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
+import * as Clock from "effect/Clock";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
@@ -524,6 +530,7 @@ describe("CodexAdapterV2 process spawning", () => {
           "shell_environment_policy.set.T3CODE_THREAD_ID": "thread-codex-mcp",
           // Codex waits up to 10 s, not 1 s, for MCP servers before the first request.
           mcp_optional_startup_grace_ms: 10_000,
+          "features.concurrent_reasoning_summaries": true,
           "mcp_servers.t3-code": {
             url: "http://127.0.0.1:43123/mcp",
             tool_timeout_sec: 3_900,
@@ -615,7 +622,10 @@ describe("CodexAdapterV2 process spawning", () => {
       });
       const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
         Effect.provide(
-          CodexAdapterV2.layerAppServerClientFactory.pipe(Layer.provide(ProcessAttribution.layer)),
+          CodexAdapterV2.layerAppServerClientFactory.pipe(
+            Layer.provide(ProcessAttribution.layer),
+            Layer.provide(PortScanner.layerTest),
+          ),
         ),
         Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -680,7 +690,7 @@ describe("CodexAdapterV2 process spawning", () => {
             CodexAdapterV2.layerAppServerClientFactory,
             Layer.succeed(ServerConfig.ServerConfig, config),
             ControlAdmission.layer,
-          ).pipe(Layer.provide(ProcessAttribution.layer)),
+          ).pipe(Layer.provide(ProcessAttribution.layer), Layer.provide(PortScanner.layerTest)),
         ),
         Effect.provideService(HostProcess.HomeDirectory, home),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -760,7 +770,9 @@ describe("registerCodexAppServerProcess", () => {
             getOutputFd: () => Stream.empty,
           });
           const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
-            Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
+            Effect.provide(
+              CodexAdapterV2.layerAppServerClientFactory.pipe(Layer.provide(PortScanner.layerTest)),
+            ),
             Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})),
             Effect.provideService(ProcessAttribution.ProcessAttribution, attribution),
             Effect.provideService(
@@ -1675,6 +1687,8 @@ describe("CodexAdapterV2 process exit", () => {
   it.effect("counts the app-server as a running agent until its session closes", () => {
     let runningAgents = 0;
     const factoryLayer = CodexAdapterV2.layerAppServerClientFactory.pipe(
+      Layer.provide(ProcessAttribution.layer),
+      Layer.provide(Layer.succeed(FileSystem.FileSystem, FileSystem.makeNoop({}))),
       Layer.provide(
         Layer.mock(PortScanner.PortDiscovery)({
           trackAgent: () => {
@@ -4310,6 +4324,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ).size === childCount,
         "all live children",
       );
+      const stopStartedAt = yield* Clock.currentTimeMillis;
       const stopping = yield* session.runtime
         .interruptTurn({ providerThread: session.providerThread, providerTurnId })
         .pipe(Effect.flip, Effect.forkScoped);
@@ -4320,7 +4335,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           "first child batch",
         );
         for (let batch = 2; batch <= 4; batch++) {
-          yield* TestClock.adjust("3 seconds");
+          yield* TestClock.adjust(STOP_REQUEST_BUDGET_MS);
           yield* session.until(
             () =>
               session.requests.filter((request) => request.method === "turn/interrupt").length ===
@@ -4336,11 +4351,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               request.params.threadId === codexCollabWire.rootThreadId,
           ),
         );
-        yield* TestClock.adjust("1 second");
+        yield* TestClock.adjust(STOP_CHILD_BUDGET_MS - 3 * STOP_REQUEST_BUDGET_MS);
       }
       yield* session.rootInterruptRequested;
-      yield* TestClock.adjust("3 seconds");
+      yield* TestClock.adjust(STOP_REQUEST_BUDGET_MS);
       const error = yield* Fiber.join(stopping);
+      assert.isAtMost((yield* Clock.currentTimeMillis) - stopStartedAt, STOP_RECOVERY_BUDGET_MS);
       assert.equal(error._tag, "ProviderAdapterInterruptError");
       assert.nestedPropertyVal(error, "cause._tag", "CodexInterruptAcknowledgementTimeout");
       assert.match(error.cause instanceof Error ? error.cause.message : "", /may still be running/);
@@ -4773,7 +4789,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
         .pipe(Effect.flip, Effect.forkScoped);
       yield* Deferred.await(sent);
-      yield* TestClock.adjust("3 seconds");
+      yield* TestClock.adjust(STOP_REQUEST_BUDGET_MS);
       const error = yield* Fiber.join(stopping);
       assert.nestedPropertyVal(error, "cause._tag", "CodexInterruptAcknowledgementTimeout");
       assert.lengthOf(harness.terminalEvents(), 0);
@@ -7801,7 +7817,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }),
       );
       const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
-        Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
+        Effect.provide(
+          CodexAdapterV2.layerAppServerClientFactory.pipe(Layer.provide(PortScanner.layerTest)),
+        ),
         Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})),
         Effect.provideService(ProcessAttribution.ProcessAttribution, attribution),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

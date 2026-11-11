@@ -27,7 +27,10 @@ import {
   monitorSettlementBlockerMessage,
 } from "../jones/threadMonitor/guardedSettle.ts";
 import { hasRetainedGoalStopTarget } from "../jones/goals/stopTarget.ts";
-import { executionProjection } from "../jones/threadConfiguration/executionSelection.ts";
+import {
+  executionProjection,
+  selectionAheadOfQueuedPicks,
+} from "../jones/threadConfiguration/executionSelection.ts";
 import * as CodexFailover from "../jones/codexFailover/CodexFailover.ts";
 import * as ChildResultHolds from "../jones/orchestration/childResultHolds.ts";
 import * as RemoteObservationHooks from "../jones/remoteDelegation/ObservationHooks.ts";
@@ -1083,18 +1086,29 @@ function queuedRunModelSelection(
     : run.modelSelection;
 }
 
+/** Queued runs that carry their own selection rather than following the current conversation. */
+function queuedPicks(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
+): Array<OrchestrationV2Run> {
+  return queuedRunsInDeliveryOrder(projection).filter(
+    (run) =>
+      !followsCurrentConversation(
+        projection.messages.find((message) => message.id === run.userMessageId),
+      ),
+  );
+}
+
 /** The selection the thread will be on once every queued run has started. */
 function queueTailModelSelection(
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "messages">,
 ): ModelSelection {
-  return (
-    queuedRunsInDeliveryOrder(projection).findLast(
-      (run) =>
-        !followsCurrentConversation(
-          projection.messages.find((message) => message.id === run.userMessageId),
-        ),
-    )?.modelSelection ?? projection.thread.modelSelection
-  );
+  const tail = queuedPicks(projection).at(-1);
+  // Jones: a save made after the tail was queued is newer than the selection that run captured.
+  return tail === undefined ||
+    (!modelSelectionsEqual(projection.thread.modelSelection, tail.modelSelection) &&
+      DateTime.isGreaterThan(projection.thread.updatedAt, tail.requestedAt))
+    ? projection.thread.modelSelection
+    : tail.modelSelection;
 }
 
 function usageLimitHoldsQueue(
@@ -6840,12 +6854,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         dispatchMode = { type: "start_immediately" };
       }
     }
+    // Codex and Claude own /goal; elsewhere it is ordinary text that cannot steer.
+    const parsedGoalCommand = parseGoalCommand(command);
+    const goalCommand =
+      parsedGoalCommand === null ||
+      (yield* goalDriverFor(command, modelSelection.instanceId)) === undefined
+        ? null
+        : parsedGoalCommand;
     const deferredSteer = transientSteerTarget(
       projection,
       command,
       dispatchMode,
       modelSelection,
-      isGoalCommand(command) || isNativeMaintenanceCommand(command),
+      goalCommand !== null || isNativeMaintenanceCommand(command),
     );
     if (
       deferredSteer !== undefined &&
@@ -6879,13 +6900,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       dispatchMode = { type: "queue_after_active" };
     }
-    // Codex and Claude own /goal; elsewhere it is ordinary text that cannot steer.
-    const parsedGoalCommand = parseGoalCommand(command);
-    const goalCommand =
-      parsedGoalCommand === null ||
-      (yield* goalDriverFor(command, modelSelection.instanceId)) === undefined
-        ? null
-        : parsedGoalCommand;
     let goalStopRunId: RunId | undefined;
     if (goalCommand !== null) {
       // A goal command never joins a running turn. One that starts or ends goal
@@ -7173,6 +7187,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       !isBufferedProviderNotification(incomingMessage)
     ) {
       modelSelection = queueTailModelSelection(projection);
+    } else if (
+      shouldQueue &&
+      command.modelSelection === undefined &&
+      (goalStopRunId !== undefined || isBufferedProviderNotification(incomingMessage))
+    ) {
+      modelSelection = selectionAheadOfQueuedPicks(
+        projection.thread,
+        executionProjection(projection).thread.modelSelection,
+        queuedPicks(projection),
+      );
     }
     yield* ensureGoalCommandSupported(command, command, modelSelection.instanceId);
     // A plain send starts or joins its admitted cohort. It never grants authority

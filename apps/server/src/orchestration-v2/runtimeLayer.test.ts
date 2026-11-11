@@ -109,6 +109,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
 import * as ProjectionReplay from "./testkit/ProjectionReplay.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as PullRequestWatchReactor from "./PullRequestWatchReactor.ts";
 import { PULL_REQUEST_WATCH_WAKE_LIMIT } from "./pullRequestWatch.ts";
@@ -6916,6 +6917,74 @@ it.layer(layerTest)("RuntimeLayer.layer lifecycle", (it) => {
       assert.equal(delivered.status, "starting");
       assert.deepEqual(delivered.modelSelection, pickedSelection);
       assert.deepEqual(after.thread.modelSelection, pickedSelection);
+    }),
+  );
+
+  it.effect.each([
+    ["inherits the selection of the queued run ahead when no save is newer", false],
+    ["takes a default saved after the queued run was queued", true],
+  ] as const)("a queued message that names no model %s", ([, savedSince]) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make(`runtime-layer-queue-tail-selection-${savedSince}`);
+      const capturedSelection = { ...modelSelection, model: "gpt-5.5" };
+      const savedSelection = { ...modelSelection, model: "gpt-5.4-mini" };
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId: ProjectId.make(`${threadId}:project`),
+        createdBy: "user",
+        creationSource: "web",
+        title: "Queue tail selection",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const dispatch = (key: string, selection: typeof modelSelection | undefined) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:${key}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:${key}`),
+          text: key,
+          attachments: [],
+          ...(selection === undefined ? {} : { modelSelection: selection }),
+          dispatchMode: { type: key === "active" ? "start_immediately" : "queue_after_active" },
+          createdBy: selection === undefined ? "agent" : "user",
+          creationSource: selection === undefined ? "mcp" : "web",
+        });
+      yield* dispatch("active", modelSelection);
+      yield* TestClock.adjust("1 second");
+      // An automatic capture keeps its own selection without moving the thread.
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`${threadId}:captured`),
+        threadId,
+        messageId: MessageId.make(`${threadId}:captured`),
+        text: "captured",
+        attachments: [],
+        modelSelection: capturedSelection,
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "system",
+        creationSource: "server",
+      });
+      yield* TestClock.adjust("1 second");
+      if (savedSince)
+        yield* orchestrator.dispatch({
+          type: "thread.model-selection.set",
+          commandId: CommandId.make(`${threadId}:save`),
+          threadId,
+          modelSelection: savedSelection,
+        });
+      yield* dispatch("next", undefined);
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      const [, captured, next] = after.runs;
+      assert.deepEqual(captured?.modelSelection, capturedSelection);
+      assert.deepEqual(next?.modelSelection, savedSince ? savedSelection : capturedSelection);
+      assert.deepEqual(after.thread.modelSelection, savedSince ? savedSelection : modelSelection);
     }),
   );
 

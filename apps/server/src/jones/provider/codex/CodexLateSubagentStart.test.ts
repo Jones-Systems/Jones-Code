@@ -221,7 +221,7 @@ describe("Codex late subagent reader progress", () => {
       // Only filesystem dependencies are inert. The adapter, RPC correlation,
       // notification dispatch and serialized protocol reader are all real.
       const fileSystem = FileSystem.makeNoop({
-        makeTempDirectory: () => Effect.succeed("/synthetic/late-child-reader"),
+        makeTempDirectoryScoped: () => Effect.succeed("/synthetic/late-child-reader"),
         makeDirectory: () => Effect.void,
         exists: () => Effect.succeed(false),
       });

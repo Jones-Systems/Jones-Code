@@ -502,8 +502,11 @@ export const layerExecutor: Layer.Layer<
                           text: message.text,
                           ...(message.context ? { context: message.context } : {}),
                           attachments: message.attachments,
+                          // A delegated-task question is a new turn on the thread's selection;
+                          // other notifications stay on the run they were meant to reach.
                           ...(message.delegatedCompletion === undefined &&
-                          message.notification === undefined
+                          (message.notification === undefined ||
+                            message.notification.source.kind === "delegated_task")
                             ? {}
                             : { modelSelection: run.modelSelection }),
                           dispatchMode: {

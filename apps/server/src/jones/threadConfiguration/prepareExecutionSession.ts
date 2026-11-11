@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
@@ -24,6 +25,35 @@ export class ExecutionSessionRevalidationError extends Schema.TaggedError<Execut
     return "The run attempt or provider selection changed during retirement.";
   }
 }
+
+/** Mirrors the orchestrator's probe: a failed probe cannot confirm that the work ended. */
+const sessionHasBackgroundWork = Effect.fn("jones.prepareExecutionSession.backgroundWork")(
+  function* (
+    sessions: Sessions.ProviderSessionManagerV2["Service"],
+    detaching: OrchestrationV2ThreadProjection["providerSessions"][number],
+    providerThreads: OrchestrationV2ThreadProjection["providerThreads"],
+  ) {
+    const session = yield* sessions
+      .get(detaching.id)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    if (Option.isNone(session)) return false;
+    const runtime = session.value;
+    const probes =
+      !detaching.capabilities.sessions.supportsMultipleProviderThreadsPerSession &&
+      runtime.hasPendingBackgroundWork !== undefined
+        ? [runtime.hasPendingBackgroundWork]
+        : providerThreads.flatMap((providerThread) =>
+            providerThread.providerSessionId === detaching.id &&
+            runtime.hasPendingBackgroundWorkForThread !== undefined
+              ? [runtime.hasPendingBackgroundWorkForThread(providerThread)]
+              : [],
+          );
+    for (const probe of probes) {
+      if (yield* probe.pipe(Effect.catchCause(() => Effect.succeed(true)))) return true;
+    }
+    return false;
+  },
+);
 
 /** Runs only at normal start; retirement and its durable binding removal precede replacement. */
 export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession")(function* (
@@ -45,6 +75,13 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     const retired = projection.providerSessions.find((session) => session.id === providerSessionId);
     if (retired === undefined)
       return yield* Effect.fail("Released session has no captured identity.");
+    // Detaching ends background work in the provider process. A handoff runs in its own session,
+    // so a busy one stays up; the queue holds a busy restart before it reaches admission.
+    if (
+      plan.transition.type !== "restart_and_resume" &&
+      (yield* sessionHasBackgroundWork(sessions, retired, projection.providerThreads))
+    )
+      continue;
     yield* sessions.detach({
       providerSessionId,
       threadId: run.threadId,

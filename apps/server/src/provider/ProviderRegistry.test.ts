@@ -2038,6 +2038,8 @@ it.layer(
                     current.find((instance) => instance.instanceId === requestedId),
                   ),
                 ),
+              getCatalogSource: (requestedId) =>
+                Ref.getUnsafe(instances).find((instance) => instance.instanceId === requestedId),
               listInstances: Ref.get(instances),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,

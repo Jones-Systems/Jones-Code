@@ -148,6 +148,8 @@ function makeFixture(
         }),
         Layer.mock(Sessions.ProviderSessionManagerV2)({
           awaitThreadRetirement: () => retirement?.wait ?? Effect.void,
+          // No live runtime reports background work, so released sessions detach.
+          get: () => Effect.succeedNone,
           hasRetiredWriter: () => Effect.succeed(retirement?.marked ?? false),
           detach: Effect.fn("PrepareExecutionSessionTest.detach")(function* ({
             providerSessionId,
