@@ -91,6 +91,7 @@ import {
   modelSelectionsEqual,
   withLegacyUltracodeEffort,
 } from "@t3tools/shared/model";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/jones/threadAttention";
 import {
   hasPendingChildRuns,
   latestTerminalResultRun,
@@ -185,6 +186,7 @@ const TASK_WAKE_EVENTS = [
 ] as const;
 const SECRET_REQUEST_POLL_INTERVAL_MS = 500;
 const DEFAULT_THREAD_LIST_LIMIT = 50;
+const THREAD_LIST_ROSTER_LIMIT = 20;
 const DEFAULT_THREAD_READ_LIMIT = 50;
 const DEFAULT_THREAD_RUN_LIMIT = 10;
 const DEFAULT_THREAD_ITEM_MAX_CHARS = 20_000;
@@ -791,12 +793,30 @@ function threadPullRequests(
   }));
 }
 
+function threadBackgroundWork(
+  shell: OrchestrationV2ThreadShell,
+  limit?: number,
+): Pick<
+  OrchestratorMcpThreadListItem,
+  "pendingBackgroundTasks" | "backgroundHoldsCompletion" | "pendingBackgroundTasksTruncated"
+> {
+  const tasks = shell.pendingBackgroundTasks;
+  if (tasks === undefined) return {};
+  const pendingBackgroundTasks = limit === undefined ? tasks : tasks.slice(0, limit);
+  return {
+    pendingBackgroundTasks,
+    backgroundHoldsCompletion: backgroundWorkHoldsCompletion(tasks),
+    pendingBackgroundTasksTruncated: pendingBackgroundTasks.length < tasks.length,
+  };
+}
+
 function listItemFromShell(
   scope: McpInvocationScope,
   shell: OrchestrationV2ThreadShell,
   nowMs: number,
 ): OrchestratorMcpThreadListItem {
   return {
+    ...threadBackgroundWork(shell, THREAD_LIST_ROSTER_LIMIT),
     threadId: shell.id,
     projectId: shell.projectId,
     title: shell.title,
@@ -832,6 +852,7 @@ function threadDetail(
   const latest = ThreadManagementService.latestRun(projection);
   const active = ThreadManagementService.latestActiveRun(projection);
   return {
+    ...threadBackgroundWork(shell),
     threadId: projection.thread.id,
     ...(shell.goal === undefined
       ? {}
@@ -3345,7 +3366,7 @@ const make = Effect.gen(function* () {
                         .dependencies(shell.id)
                         .pipe(NodeSqliteClient.readOnly, Effect.mapError(unavailable)))
                         .filter((item) => ["sending", "awaiting", "resolved"].includes(item.state))
-                        .slice(0, 20),
+                        .slice(0, THREAD_LIST_ROSTER_LIMIT),
                     }),
               };
               if (

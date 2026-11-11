@@ -14,7 +14,9 @@
     "apps/server/src/orchestration-v2/ProjectionStore.ts",
     "apps/web/src/components/ChatView.logic.ts",
     "packages/client-runtime/src/state/shellReducer.ts",
-    "packages/shared/src/orchestrationV2PendingBackgroundWork.ts"
+    "packages/shared/src/orchestrationV2PendingBackgroundWork.ts",
+    "packages/client-runtime/src/state/threadState.ts",
+    "apps/web/src/state/threads.ts"
   ],
   "tombstones": [],
   "allowedImports": [

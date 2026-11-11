@@ -3086,7 +3086,10 @@
     "apps/mobile/src/features/settings/ThreadSettingsSections.tsx": "accepted-shared",
     "apps/web/src/proposedPlan.ts": "accepted-shared",
     "apps/web/src/session-logic.ts": "accepted-shared",
-    "apps/server/src/binMain.ts": "hook"
+    "apps/server/src/binMain.ts": "hook",
+    "apps/server/src/jones/orchestration/DelegatedNoticeDisposition.integration.test.ts": "jones-owned",
+    "packages/client-runtime/src/state/threadState.ts": "hook",
+    "apps/web/src/state/threads.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

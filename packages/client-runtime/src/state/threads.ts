@@ -260,9 +260,13 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     retained?.sequence ??
     Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence });
   const initialState: EnvironmentThreadState = retained
-    ? cachedThreadState(retained.state)
+    ? {
+        ...cachedThreadState(retained.state),
+        appliedSequence: Option.isSome(retained.state.data) ? initialSequence : null,
+      }
     : {
         data: cachedThread,
+        appliedSequence: Option.isSome(cachedThread) ? initialSequence : null,
         status: statusWithoutLiveData(cachedThread),
         error: Option.none(),
         history: Option.match(cached, {
@@ -433,6 +437,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   ) {
     const waiting = awaitingCompletion;
     const sequence = yield* SubscriptionRef.get(lastSequence);
+    const appliedSequence = sequence;
     // Atomic with concurrent history meta updates: never get-then-set the whole
     // state when only the projection changes. Bounded installs pass history so
     // projection + cursor persist together in one enqueue.
@@ -447,6 +452,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return {
         ...previous,
         data: Option.some(thread),
+        appliedSequence,
         status: Option.isSome(previous.error)
           ? ("cached" as const)
           : waiting
@@ -484,6 +490,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     awaitingCompletion = false;
     yield* SubscriptionRef.set(state, {
       data: Option.none(),
+      appliedSequence: null,
       status: "deleted",
       error: Option.none(),
       history: EMPTY_THREAD_HISTORY_META,
@@ -535,7 +542,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }
     if (sequence === appliedSequence) return;
     yield* SubscriptionRef.set(lastSequence, sequence);
-    if (fresh.length === 0) return;
 
     const waiting = awaitingCompletion;
     // Apply against the latest projection/history in one update so a concurrent
@@ -611,8 +617,20 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           if (applied._tag !== "noop") result = applied;
           if (applied._tag === "delete") break;
         }
+        // Jones freshness readers need the applied sequence even when the batch changed nothing.
+        const detailSequence =
+          Option.isSome(current.data) && current.status !== "deleted"
+            ? sequence
+            : (current.appliedSequence ?? null);
         // A batch that changed nothing keeps its state object, so readers do not re-render.
-        return [result, result._tag === "noop" ? current : { ...current, sequence }];
+        if (result._tag === "noop")
+          return [
+            result,
+            detailSequence === (current.appliedSequence ?? null)
+              ? current
+              : { ...current, appliedSequence: detailSequence },
+          ];
+        return [result, { ...current, sequence, appliedSequence: detailSequence }];
       },
     );
 

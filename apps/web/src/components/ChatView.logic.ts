@@ -1511,6 +1511,10 @@ export function presentThreadShellFromProjection(
 export function deriveThreadPendingBackgroundTasks(
   projection: ThreadStructure | null,
   shell?: Parameters<typeof deriveDependencyBannerTasks>[0]["shell"],
+  freshness?: Pick<
+    Parameters<typeof deriveDependencyBannerTasks>[0],
+    "detailAppliedSequence" | "shellSnapshotSequence"
+  >,
 ) {
   if (projection === null) return [];
   const sessionError =
@@ -1524,6 +1528,7 @@ export function deriveThreadPendingBackgroundTasks(
     ...deriveDependencyBannerTasks({
       threadId: projection.thread.id,
       shell,
+      ...freshness,
       latestRun,
       providerThreads: projection.providerThreads,
       turnItems: projection.turnItems,

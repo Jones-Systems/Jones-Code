@@ -43,7 +43,7 @@ import * as ObservationSupport from "./ObservationSupport.ts";
 import { refuseUnsolicitedSupervision } from "../mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 
 import type { RemoteDelegation } from "../../peer/RemoteDelegation.ts";
-import { FollowRetrySchedule } from "./retrySchedule.ts";
+import * as FollowerSupervision from "./FollowerSupervision.ts";
 const FOLLOW_WAIT_MS = 50_000;
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
 /** Loss of access fails the local task, while remote stop debt remains until acknowledged. */
@@ -60,7 +60,6 @@ export const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const random = yield* SecureRandom.SecureRandom;
-  const backoff = yield* FollowRetrySchedule;
   const hereId = yield* ServerEnvironment.ServerEnvironment.pipe(
     Effect.flatMap((environment) => environment.getEnvironmentId),
   );
@@ -121,6 +120,14 @@ export const make = Effect.gen(function* () {
   const observe: RemoteDelegation["Service"]["observe"] = Effect.fn("RemoteDelegation.observe")(
     function* (scope, task) {
       const remote = task.remoteChild;
+      if (
+        remote !== undefined &&
+        (task.result === null ||
+          remote.stoppedThere === false ||
+          ((task.status === "cancelled" || task.status === "interrupted") &&
+            remote.stoppedThere !== true))
+      )
+        yield* followOne(task.threadId, task.id).pipe(Effect.forkIn(followers));
       if (remote?.runId === undefined)
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
@@ -452,8 +459,7 @@ export const make = Effect.gen(function* () {
           }),
         ),
       }),
-      Effect.retry(backoff),
-      Effect.ignoreCause({ log: true }),
+      (operation) => FollowerSupervision.retry(operation, { operation: "follow", taskId }),
     );
 
   /**
@@ -768,33 +774,32 @@ export const make = Effect.gen(function* () {
   const start: RemoteDelegation["Service"]["start"] = () =>
     forkParked(
       Effect.gen(function* () {
-        yield* lifecycle.start;
+        yield* FollowerSupervision.retry(lifecycle.start, { operation: "startup" });
         if (threads.recoverRemoteTaskQuestions !== undefined)
           yield* threads.recoverRemoteTaskQuestions.pipe(
-            Effect.retry(backoff),
+            (operation) => FollowerSupervision.retry(operation, { operation: "questions" }),
             Effect.forkIn(followers),
           );
-        // A finished task's follower has ended, so a Stop here that owes its
-        // thread there a stop starts it again. Started before the scan below;
-        // a Stop that slips between the two stays owed for the next start.
-        yield* Stream.runForEach(threads.streamDomainEvents, (event) =>
-          event.type === "subagent.updated" && event.payload.remoteChild?.stoppedThere === false
-            ? followOne(event.threadId, event.payload.id).pipe(Effect.forkIn(followers))
-            : Effect.void,
-        ).pipe(
-          Effect.ignoreCause({ log: true }),
-          Effect.forkIn(followers, { startImmediately: true }),
-        );
-        const open = yield* projections.getOpenRemoteDelegatedTasks;
-        yield* Effect.forEach(
-          open,
-          ({ parentThreadId, taskId }) => followOne(parentThreadId, taskId),
-          {
-            concurrency: "unbounded",
-            discard: true,
-          },
-        );
-      }).pipe(Effect.ignoreCause({ log: true })),
+        yield* FollowerSupervision.subscribe(
+          Stream.runForEach(threads.streamDomainEvents, (event) =>
+            event.type === "subagent.updated" && event.payload.remoteChild?.stoppedThere === false
+              ? followOne(event.threadId, event.payload.id).pipe(Effect.forkIn(followers))
+              : Effect.void,
+          ),
+          FollowerSupervision.retry(projections.getOpenRemoteDelegatedTasks, {
+            operation: "scan",
+          }).pipe(
+            Effect.flatMap((open) =>
+              Effect.forEach(
+                open,
+                ({ parentThreadId, taskId }) =>
+                  followOne(parentThreadId, taskId).pipe(Effect.forkIn(followers)),
+                { concurrency: "unbounded", discard: true },
+              ),
+            ),
+          ),
+        ).pipe(Effect.forkIn(followers, { startImmediately: true }));
+      }),
     );
 
   return { observe, delegate, cancel, start } satisfies RemoteDelegation["Service"];

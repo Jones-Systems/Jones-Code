@@ -3,7 +3,11 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/thread-requests";
 import { useAtomValue } from "@effect/atom-react";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
-import { arrayElementsEqual } from "@t3tools/client-runtime/state/entities";
+import {
+  arrayElementsEqual,
+  parseThreadKey,
+  threadKey,
+} from "@t3tools/client-runtime/state/entities";
 import {
   createEnvironmentThreadDetailAtoms,
   createEnvironmentThreadShellAtoms,
@@ -14,14 +18,19 @@ import {
   createThreadEnvironmentAtoms,
   createThreadFamilyAtoms,
 } from "@t3tools/client-runtime/state/threads";
-import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationV2ThreadShell,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { serverEnvironment } from "./server";
-import { environmentShell } from "./shell";
+import { environmentShell, environmentSnapshotAtom } from "./shell";
 
 export const threadFamilies = createThreadFamilyAtoms(
   connectionAtomRuntime,
@@ -64,6 +73,44 @@ export function useEnvironmentThread(
   );
   const state = AsyncResult.getOrElse(result, () => EMPTY_ENVIRONMENT_THREAD_STATE);
   return state;
+}
+
+const EMPTY_BACKGROUND_WORK_FRESHNESS = {
+  detailAppliedSequence: null as number | null,
+  shellSnapshotSequence: null as number | null,
+  shell: null as OrchestrationV2ThreadShell | null,
+};
+const EMPTY_BACKGROUND_WORK_FRESHNESS_ATOM = Atom.make(EMPTY_BACKGROUND_WORK_FRESHNESS);
+const backgroundWorkFreshnessAtom = Atom.family((key: string) =>
+  Atom.make((get) => {
+    const ref = parseThreadKey(key);
+    const state = Option.getOrNull(
+      AsyncResult.value(get(environmentThreads.stateAtom(ref.environmentId, ref.threadId))),
+    );
+    const snapshot = get(environmentSnapshotAtom(ref.environmentId));
+    return {
+      detailAppliedSequence: state?.appliedSequence ?? null,
+      shellSnapshotSequence: snapshot?.snapshotSequence ?? null,
+      shell: snapshot?.threads.find((thread) => thread.id === ref.threadId) ?? null,
+    };
+  }),
+);
+
+export function useThreadBackgroundWorkFreshness(
+  ref: ScopedThreadRef | null,
+  shell: OrchestrationV2ThreadShell | null,
+) {
+  const freshness = useAtomValue(
+    ref === null
+      ? EMPTY_BACKGROUND_WORK_FRESHNESS_ATOM
+      : backgroundWorkFreshnessAtom(threadKey(ref)),
+  );
+  return {
+    detailAppliedSequence: freshness.detailAppliedSequence,
+    // Family/search rows have separate watermarks; the enclosing live shell cannot date them.
+    shellSnapshotSequence:
+      shell !== null && freshness.shell === shell ? freshness.shellSnapshotSequence : null,
+  };
 }
 
 const isRunning = (status: string) =>

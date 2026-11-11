@@ -253,7 +253,7 @@ import {
   primaryServerKeybindingsAtom,
   serverEnvironment,
 } from "../state/server";
-import { threadEnvironment } from "../state/threads";
+import { threadEnvironment, useThreadBackgroundWorkFreshness } from "../state/threads";
 import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
 import { chatGitStatusAtom, NO_CHAT_GIT_STATUS_ATOM, vcsEnvironment } from "../state/vcs";
 import {
@@ -498,6 +498,10 @@ export default function ChatView(props: ChatViewProps) {
   });
   const serverThreadProjection = useQuietThreadProjection(routeThreadDetailRef);
   const serverProjection = serverThreadProjection?.projection ?? null;
+  const backgroundWorkFreshness = useThreadBackgroundWorkFreshness(
+    serverThreadShell?.source.pendingBackgroundTasks?.length ? routeThreadDetailRef : null,
+    serverThreadShell?.source ?? null,
+  );
   const pendingSendEntries = usePendingSends();
   // Subagent rows, an open child's own row and its ancestors come from the family when the shell
   // leaves idle children out. Every source agrees on the root, so the key never flips.
@@ -1448,6 +1452,7 @@ export default function ChatView(props: ChatViewProps) {
   const pendingBackgroundTasks = deriveThreadPendingBackgroundTasks(
     serverProjection,
     serverThreadShell?.source,
+    backgroundWorkFreshness,
   );
   const activeWorkStartedAt =
     deriveActiveWorkStartedAt(activeActivityRun, activeRuntime, localDispatchStartedAt) ??
