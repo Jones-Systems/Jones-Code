@@ -186,6 +186,65 @@ describe("OpenCode admission freshness", () => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect("observes status without identity reads and without seeding an admission", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      let reads = 0;
+      const probe = yield* makeOpenCodeRuntimeProbe(
+        Effect.sync(() => {
+          calls += 1;
+          return v2;
+        }),
+        Effect.sync(() => {
+          reads += 1;
+          return "source";
+        }),
+      );
+      assert.deepStrictEqual(yield* probe.observe, v2);
+      assert.deepStrictEqual({ calls, reads }, { calls: 1, reads: 0 });
+      assert.deepStrictEqual(yield* probe.lastSuccess, Option.some(v2));
+      // A status read is a hot read only; the admission verifies its own source and version.
+      assert.deepStrictEqual(yield* probe.get, v2);
+      assert.deepStrictEqual({ calls, reads }, { calls: 2, reads: 2 });
+    }),
+  );
+
+  it.effect("lets a status read neither fence an admission nor replace a newer result", () =>
+    Effect.gen(function* () {
+      let started = yield* Deferred.make<void>();
+      let release = yield* Deferred.make<void>();
+      let slow: ProbedOpenCode | undefined = v1;
+      let calls = 0;
+      const probe = yield* makeOpenCodeRuntimeProbe(
+        Effect.gen(function* () {
+          calls += 1;
+          const result = slow;
+          if (result === undefined) return v2;
+          slow = undefined;
+          yield* Deferred.succeed(started, undefined);
+          yield* Deferred.await(release);
+          return result;
+        }),
+      );
+      const admission = yield* probe.get.pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      assert.deepStrictEqual(yield* probe.observe, v2);
+      yield* Deferred.succeed(release, undefined);
+      assert.deepStrictEqual(yield* Fiber.join(admission), v1);
+
+      started = yield* Deferred.make<void>();
+      release = yield* Deferred.make<void>();
+      slow = v1;
+      const observation = yield* probe.observe.pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      assert.deepStrictEqual(yield* probe.refresh, v2);
+      yield* Deferred.succeed(release, undefined);
+      assert.deepStrictEqual(yield* Fiber.join(observation), v1);
+      assert.deepStrictEqual(yield* probe.lastSuccess, Option.some(v2));
+      assert.strictEqual(calls, 4);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("fences a prior source epoch while the successor is admitted", () =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();

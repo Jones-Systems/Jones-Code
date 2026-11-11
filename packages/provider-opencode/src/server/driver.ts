@@ -347,7 +347,7 @@ export const OpenCodeDriver: ProviderDriver<
         provider: checkOpenCodeProviderStatus(
           effectiveConfig,
           host.paths.cwd,
-          runtimeProbe.refresh,
+          runtimeProbe.observe,
           loadOpenCode2Models,
         ).pipe(
           Effect.annotateLogs({ providerInstanceId: instanceId }),
