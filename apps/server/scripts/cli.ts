@@ -9,7 +9,7 @@ import * as Path from "effect/Path";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { withFiniteProduction } from "../../../scripts/jones/direct-producers/finite-production.ts";
+import { withFiniteProduction, type FiniteProductionEvidence } from "../../../scripts/jones/direct-producers/finite-production.ts";
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
 import rootPackageJson from "../../../package.json" with { type: "json" };
@@ -26,9 +26,9 @@ const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("../../..", import.meta.url))),
 );
 
-const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.StandardCommand) {
+const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.StandardCommand, spawn?: FiniteProductionEvidence["spawn"]) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const child = yield* spawner.spawn(command);
+  const child = yield* (spawn ? spawn(() => spawner.spawn(command), command.options.detached === true) : spawner.spawn(command));
   const exitCode = yield* child.exitCode;
 
   if (exitCode !== 0) {
@@ -82,14 +82,16 @@ const buildCmd = Command.make(
         (evidence) =>
           Effect.gen(function* () {
             yield* Effect.log("[cli] Running tsdown...");
-            yield* Effect.sync(evidence.commandStarted);
             yield* runCommand(
               ChildProcess.make(process.execPath, ["--run", "build:bundle"], {
                 cwd: serverDir,
                 stdout: config.verbose ? "inherit" : "ignore",
                 stderr: "inherit",
                 shell: false,
+                // oxlint-disable-next-line t3code/no-global-process-runtime -- The actual Node spawner ABI determines detached-session capture, independently of application runtime references.
+                detached: process.platform !== "win32",
               }),
+              evidence.spawn,
             ).pipe(
               Effect.tap(() => Effect.sync(evidence.leaderExited)),
               Effect.tapError((error) =>
@@ -142,7 +144,6 @@ const buildExeCmd = Command.make(
           Effect.gen(function* () {
             yield* Effect.log("[cli] Building single-executable...");
             const spawnCommand = yield* resolveSpawnCommand("vp", ["pack"]);
-            yield* Effect.sync(evidence.commandStarted);
             yield* runCommand(
               ChildProcess.make(spawnCommand.command, spawnCommand.args, {
                 cwd: serverDir,
@@ -157,7 +158,10 @@ const buildExeCmd = Command.make(
                 stdout: config.verbose ? "inherit" : "ignore",
                 stderr: "inherit",
                 shell: spawnCommand.shell,
+                // oxlint-disable-next-line t3code/no-global-process-runtime -- The actual Node spawner ABI determines detached-session capture, independently of application runtime references.
+                detached: process.platform !== "win32",
               }),
+              evidence.spawn,
             ).pipe(
               Effect.tap(() => Effect.sync(evidence.leaderExited)),
               Effect.tapError((error) =>

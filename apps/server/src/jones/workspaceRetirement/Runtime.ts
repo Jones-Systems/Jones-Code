@@ -21,7 +21,7 @@ import { Configuration } from "../workspaceLifecycle/Configuration.ts";
 import * as Schema from "effect/Schema";
 import { canonical, exists, git, inside, readBounded } from "./Filesystem.ts";
 import { binding } from "./OutputAttestation.ts";
-import { outputObligations } from "./ProducerFinalizer.ts";
+import { outputObligations, resolveProductions } from "./ProducerFinalizer.ts";
 import { Receipts, layer, RetirementError, type RetirementReceipt } from "./Receipts.ts";
 import { qualify, type QualificationInput } from "./Qualification.ts";
 import type { Probe } from "./ConsumerProbe.ts";
@@ -109,6 +109,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
   let outputs: readonly Registry.OutputRecord[] = [];
   const nativeOutputs = yield* Effect.tryPromise({
     try: async () => {
+      await resolveProductions(request.worktree);
       const records = await outputObligations(request.worktree);
       if (records.some((record) => canonical(record.binding) !== canonical(bound)))
         throw new Error("identity_mismatch");
@@ -572,7 +573,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
             },
           ],
           nextAction:
-            "Have the recorded producer owner resolve this allocation or record its retained ownership or disposal, then reevaluate this checkout.",
+            `Have the recorded producer owner run node scripts/jones/direct-producers/resolve.ts --worktree '${record.binding.path.replaceAll("'", "'\\''")}' --json on the workspace-owning server; reobserve the reported holder or host limitation, then reevaluate this checkout.`,
         })),
       );
   const outcome: WorkspaceRetirementOutcome = {

@@ -1,7 +1,12 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "direct-producer-completion",
-  "jonesOwnedPaths": [],
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/workspaceRetirement/ProducerSessionObservation.ts",
+    "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts",
+    "scripts/jones/direct-producers/resolve.ts",
+    "scripts/jones/direct-producers/resolve.test.ts"
+  ],
   "hookPaths": ["apps/server/scripts/cli.ts"],
   "tombstones": [],
   "allowedImports": [
