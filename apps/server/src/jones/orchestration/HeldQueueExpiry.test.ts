@@ -6,6 +6,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   ThreadId,
   type OrchestrationV2Run,
 } from "@t3tools/contracts";
@@ -13,6 +14,7 @@ import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/Provi
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
@@ -28,7 +30,8 @@ import {
   sweepHeldQueue,
   type HeldQueuedRunRow,
 } from "./HeldQueueExpiry.ts";
-import { holdQueuedRun } from "./QueueHold.ts";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
+import { makeQueueHoldStore } from "./QueueHoldStore.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
 const expiryMs = 24 * HOUR_MS;
@@ -58,6 +61,8 @@ type Source = "user" | "peer" | "mcp" | "server" | "notification";
 const fixture = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const store = yield* ProjectionStore.ProjectionStoreV2;
+  const sql = yield* SqlClient.SqlClient;
+  const holds = makeQueueHoldStore(sql, makeJonesTablePresence(sql));
   const threadId = ThreadId.make("thread:held-queue-expiry");
   yield* orchestrator.dispatch({
     type: "thread.create",
@@ -114,6 +119,14 @@ const fixture = Effect.gen(function* () {
         payload: next,
       });
     });
+  /** Holds a run and records a restart hold at the current time, as startup recovery would. */
+  const putRestartHold = (held: OrchestrationV2Run) =>
+    Effect.gen(function* () {
+      yield* put({ ...held, queueHeld: true });
+      yield* holds.record([
+        { runId: held.id, threadId, reason: "restart", heldAt: yield* DateTime.now },
+      ]);
+    });
   /** Queues a message behind the active run, then records the hold a restart would. */
   const holdNew = (text: string, source: Source) =>
     Effect.gen(function* () {
@@ -135,10 +148,22 @@ const fixture = Effect.gen(function* () {
           },
         });
       }
-      yield* put(holdQueuedRun(yield* run(text), "restart", yield* DateTime.now));
+      yield* putRestartHold(yield* run(text));
     });
   yield* send("active", "start_immediately");
-  return { orchestrator, store, threadId, send, projection, run, message, put, holdNew };
+  return {
+    orchestrator,
+    store,
+    holds,
+    threadId,
+    send,
+    projection,
+    run,
+    message,
+    put,
+    putRestartHold,
+    holdNew,
+  };
 });
 
 const status = (runs: ReadonlyArray<OrchestrationV2Run>, text: string) =>
@@ -157,10 +182,14 @@ describe("held queue expiry", () => {
         yield* f.holdNew("monitor-old", "notification");
         // A hold recorded before reasons existed: its age runs from the request.
         yield* f.send("legacy", "queue_after_active", "peer");
-        const { queueHeldAt: _at, queueHeldReason: _reason, ...legacyRun } = yield* f.run("legacy");
+        const legacyRun = yield* f.run("legacy");
         yield* f.put({ ...legacyRun, queueHeld: true });
+        yield* f.holds.forget([legacyRun.id]);
+        // Requested long ago but held recently: its age runs from the recorded hold.
+        yield* f.send("peer-late-hold", "queue_after_active", "peer");
         yield* TestClock.adjust("20 hours");
         yield* f.holdNew("peer-young", "peer");
+        yield* f.putRestartHold(yield* f.run("peer-late-hold"));
         yield* TestClock.adjust("5 hours");
 
         const result = yield* sweepHeldQueue({ expiryMs });
@@ -181,10 +210,18 @@ describe("held queue expiry", () => {
         for (const text of ["peer-old", "mcp-old", "server-old", "monitor-old", "legacy"]) {
           assert.equal(status(runs, text), "cancelled", text);
         }
-        for (const text of ["human-old", "peer-young"]) {
+        for (const text of ["human-old", "peer-young", "peer-late-hold"]) {
           assert.equal(status(runs, text), "queued", text);
           assert.isTrue(runs.find((run) => run.userMessageId === `message:${text}`)?.queueHeld);
         }
+        // Cancelling a held run forgets its recorded hold; waiting holds keep theirs.
+        const recorded = yield* f.holds.get(runs.map((run) => RunId.make(run.id)));
+        assert.sameMembers(
+          [...recorded.keys()],
+          yield* Effect.forEach(["human-old", "peer-young", "peer-late-hold"], (text) =>
+            f.run(text).pipe(Effect.map((run) => run.id)),
+          ),
+        );
         assert.equal(status(runs, "active"), "starting");
 
         const effects = yield* EffectOutbox.EffectOutboxV2.pipe(
@@ -203,9 +240,9 @@ describe("held queue expiry", () => {
         // Human words wait however long they are held.
         yield* TestClock.adjust("1000 hours");
         const later = yield* sweepHeldQueue({ expiryMs });
-        assert.deepEqual(
+        assert.sameMembers(
           later.cancelled.map((entry) => entry.runId),
-          [(yield* f.run("peer-young")).id],
+          [(yield* f.run("peer-young")).id, (yield* f.run("peer-late-hold")).id],
         );
         assert.equal(status((yield* f.projection()).runs, "human-old"), "queued");
       }).pipe(Effect.provide(testLayer)),
@@ -235,7 +272,7 @@ describe("held queue expiry", () => {
           delivery: { generation: 1, messageId: completion.id, taskIds: [] },
         },
       });
-      yield* f.put(holdQueuedRun(yield* f.run("completion"), "restart", yield* DateTime.now));
+      yield* f.putRestartHold(yield* f.run("completion"));
       yield* TestClock.adjust("25 hours");
 
       const result = yield* sweepHeldQueue({ expiryMs });
@@ -257,8 +294,6 @@ describe("held message classification", () => {
     run_id: "run",
     thread_id: "thread",
     requested_at: "2026-11-10T00:00:00.000Z",
-    held_at: null,
-    held_reason: null,
     message_id: "message:typed",
     message_role: "user",
     created_by: "user",

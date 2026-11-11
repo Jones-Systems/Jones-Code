@@ -11,9 +11,11 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as DateTime from "effect/DateTime";
@@ -21,6 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
@@ -32,12 +35,15 @@ import * as ProviderRuntimeRecovery from "../../orchestration-v2/ProviderRuntime
 import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
+import QueueHoldsMigration from "../persistence/Migrations/147_JonesQueueHolds.ts";
 import {
-  holdQueuedRun,
   isCompletedRestartContinuation,
-  releaseQueuedRunHold,
+  type QueueHold,
+  type QueueHoldReason,
   restartHoldsEndedBy,
 } from "./QueueHold.ts";
+import { classifyQueueHoldEvents, makeQueueHoldStore } from "./QueueHoldStore.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "gpt-5.1-codex" };
@@ -64,6 +70,8 @@ const fixture = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const sink = yield* EventSink.EventSinkV2;
+  const sql = yield* SqlClient.SqlClient;
+  const holds = makeQueueHoldStore(sql, makeJonesTablePresence(sql));
   const threadId = ThreadId.make("thread:queue-hold-reasons");
   yield* orchestrator.dispatch({
     type: "thread.create",
@@ -103,17 +111,28 @@ const fixture = Effect.gen(function* () {
         current.runs.find((candidate) => candidate.userMessageId === `message:${text}`)!,
       ),
     );
-  const put = (next: OrchestrationV2Run) =>
+  /** The recorded hold of a message's run, if any. */
+  const hold = (text: string) =>
+    Effect.gen(function* () {
+      const current = yield* run(text);
+      return (yield* holds.get([current.id])).get(current.id);
+    });
+  /** Holds a run in the projection and records its reason, bypassing the sink as a fixture. */
+  const putHold = (held: OrchestrationV2Run, reason: QueueHoldReason, heldAt: DateTime.Utc) =>
     Effect.gen(function* () {
       yield* store.apply({
-        id: EventId.make(`fixture:${next.id}:${next.status}:${String(next.queueHeldReason)}`),
+        id: EventId.make(`fixture:${held.id}:${reason}`),
         type: "run.updated",
         threadId,
-        runId: next.id,
-        occurredAt: yield* DateTime.now,
-        payload: next,
+        runId: held.id,
+        occurredAt: heldAt,
+        payload: { ...held, queueHeld: true },
       });
+      yield* holds.record([{ runId: held.id, threadId, reason, heldAt }]);
     });
+  const holdCount = sql<{
+    readonly count: number;
+  }>`SELECT COUNT(*) AS count FROM jones_queue_holds`.pipe(Effect.map((rows) => rows[0]!.count));
   /** Writes a terminal run through the sink so the queue reactor drains the thread. */
   const end = (ended: OrchestrationV2Run, status: "completed" | "failed" | "interrupted") =>
     Effect.gen(function* () {
@@ -150,7 +169,23 @@ const fixture = Effect.gen(function* () {
     });
   /** Waits for the reactor to start this run. */
   const starts = (id: RunId) => updated((run) => run.id === id && run.status === "starting");
-  return { orchestrator, store, sink, threadId, send, projection, run, put, end, updated, starts };
+  return {
+    orchestrator,
+    store,
+    sink,
+    sql,
+    holds,
+    threadId,
+    send,
+    projection,
+    run,
+    hold,
+    putHold,
+    holdCount,
+    end,
+    updated,
+    starts,
+  };
 });
 
 describe("hold reasons", () => {
@@ -165,12 +200,21 @@ describe("hold reasons", () => {
         commandId: CommandId.make("stop"),
         threadId: f.threadId,
       });
-      const held = yield* f.run("queued");
-      assert.isTrue(held.queueHeld);
-      assert.equal(held.queueHeldReason, "stop");
+      assert.isTrue((yield* f.run("queued")).queueHeld);
+      const recorded = yield* f.hold("queued");
+      assert.equal(recorded?.reason, "stop");
       assert.isTrue(
-        held.queueHeldAt !== undefined && DateTime.isGreaterThanOrEqualTo(held.queueHeldAt, before),
+        recorded !== undefined && DateTime.isGreaterThanOrEqualTo(recorded.heldAt, before),
       );
+      // The reason lives only in the Jones table; upstream run rows and events keep their shape.
+      const leaked = yield* f.sql<{ readonly count: number }>`
+        SELECT
+          (SELECT COUNT(*) FROM orchestration_v2_projection_runs
+            WHERE payload_json LIKE '%queueHeldReason%' OR payload_json LIKE '%queueHeldAt%')
+          + (SELECT COUNT(*) FROM orchestration_events
+            WHERE payload_json LIKE '%queueHeldReason%' OR payload_json LIKE '%queueHeldAt%')
+          AS count`;
+      assert.equal(leaked[0]?.count, 0);
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -179,14 +223,12 @@ describe("hold reasons", () => {
       const f = yield* fixture;
       yield* f.send("active", "start_immediately");
       yield* f.send("cohort", "queue_after_active");
-      yield* f.put(holdQueuedRun(yield* f.run("cohort"), "stop", yield* DateTime.now));
+      yield* f.putHold(yield* f.run("cohort"), "stop", yield* DateTime.now);
       yield* f.send("arrival", "queue_after_active", "peer");
-      const arrival = yield* f.run("arrival");
-      assert.isTrue(arrival.queueHeld);
-      assert.equal(arrival.queueHeldReason, "inherited");
-      assert.isDefined(arrival.queueHeldAt);
+      assert.isTrue((yield* f.run("arrival")).queueHeld);
+      assert.equal((yield* f.hold("arrival"))?.reason, "inherited");
       // A new message never releases the hold it joined.
-      assert.equal((yield* f.run("cohort")).queueHeldReason, "stop");
+      assert.equal((yield* f.hold("cohort"))?.reason, "stop");
 
       yield* f.end(yield* f.run("active"), "completed");
       yield* f.orchestrator.dispatch({
@@ -194,10 +236,8 @@ describe("hold reasons", () => {
         commandId: CommandId.make("resume"),
         threadId: f.threadId,
       });
-      for (const run of (yield* f.projection()).runs) {
-        assert.isUndefined(run.queueHeldReason);
-        assert.isUndefined(run.queueHeldAt);
-      }
+      // Release deletes the recorded holds in the same write.
+      assert.equal(yield* f.holdCount, 0);
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -207,7 +247,7 @@ describe("hold reasons", () => {
       yield* f.send("active", "start_immediately");
       yield* f.send("stopped", "queue_after_active");
       yield* f.send("waiting", "queue_after_active");
-      yield* f.put(holdQueuedRun(yield* f.run("stopped"), "stop", yield* DateTime.now));
+      yield* f.putHold(yield* f.run("stopped"), "stop", yield* DateTime.now);
       const active = yield* f.run("active");
       const now = yield* DateTime.now;
       yield* f.sink.write({
@@ -247,15 +287,13 @@ describe("hold reasons", () => {
       });
       const waiting = yield* f.run("waiting");
       yield* f.end(active, "failed");
-      const held = yield* f.updated((run) => run.id === waiting.id && run.queueHeld === true);
-      assert.equal(held.queueHeldReason, "provider_failure");
-      assert.isDefined(held.queueHeldAt);
-      assert.equal((yield* f.run("waiting")).queueHeldReason, "provider_failure");
-      assert.equal((yield* f.run("stopped")).queueHeldReason, "stop");
+      yield* f.updated((run) => run.id === waiting.id && run.queueHeld === true);
+      assert.equal((yield* f.hold("waiting"))?.reason, "provider_failure");
+      assert.equal((yield* f.hold("stopped"))?.reason, "stop");
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("startup recovery records a restart hold", () => {
+  it.effect("startup recovery's hold classifies as a restart hold", () => {
     const threadId = ThreadId.make("thread_restart_hold");
     const runId = RunId.make("run_restart_hold");
     let committed: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null = null;
@@ -313,8 +351,14 @@ describe("hold reasons", () => {
       assert.isTrue(event?.type === "run.updated");
       if (event?.type !== "run.updated") return;
       assert.isTrue(event.payload.queueHeld);
-      assert.equal(event.payload.queueHeldReason, "restart");
-      assert.isDefined(event.payload.queueHeldAt);
+      assert.isFalse("queueHeldReason" in event.payload || "queueHeldAt" in event.payload);
+      const classified = classifyQueueHoldEvents(committed!.events, {
+        commandType: committed!.commandType,
+      });
+      assert.deepEqual(
+        classified.holds.map((hold) => [hold.runId, hold.reason]),
+        [[runId, "restart"]],
+      );
     }).pipe(Effect.provide(layer));
   });
 });
@@ -335,9 +379,7 @@ describe("restart continuation release", () => {
     assert.equal(continuation.status, "starting");
     for (const text of ["first", "second", "free"]) yield* f.send(text, "queue_after_active");
     const now = yield* DateTime.now;
-    for (const text of ["first", "second"]) {
-      yield* f.put(holdQueuedRun(yield* f.run(text), "restart", now));
-    }
+    for (const text of ["first", "second"]) yield* f.putHold(yield* f.run(text), "restart", now);
     return { ...f, continuation };
   });
 
@@ -355,11 +397,9 @@ describe("restart continuation release", () => {
       const second = yield* f.run("second");
       assert.equal(second.status, "queued");
       assert.isFalse(second.queueHeld);
-      assert.isUndefined(second.queueHeldReason);
-      assert.isUndefined(second.queueHeldAt);
-      const stopped = yield* f.run("stopped");
-      assert.isTrue(stopped.queueHeld);
-      assert.equal(stopped.queueHeldReason, "stop");
+      assert.isUndefined(yield* f.hold("second"));
+      assert.isTrue((yield* f.run("stopped")).queueHeld);
+      assert.equal((yield* f.hold("stopped"))?.reason, "stop");
 
       assert.equal((yield* f.run("free")).status, "queued");
       yield* f.end(yield* f.run("first"), "completed");
@@ -383,9 +423,9 @@ describe("restart continuation release", () => {
           const run = yield* f.run(text);
           assert.equal(run.status, "queued");
           assert.isTrue(run.queueHeld);
-          assert.equal(run.queueHeldReason, "restart");
+          assert.equal((yield* f.hold(text))?.reason, "restart");
         }
-        assert.equal((yield* f.run("stopped")).queueHeldReason, "stop");
+        assert.equal((yield* f.hold("stopped"))?.reason, "stop");
       }).pipe(Effect.provide(testLayer)),
   );
 
@@ -402,8 +442,9 @@ describe("restart continuation release", () => {
         const run = yield* f.run(text);
         assert.equal(run.status, "queued");
         assert.isTrue(run.queueHeld);
-        assert.equal(run.queueHeldReason, "stop");
-        assert.isTrue(DateTime.Equivalence(run.queueHeldAt!, stoppedAt));
+        const recorded = yield* f.hold(text);
+        assert.equal(recorded?.reason, "stop");
+        assert.isTrue(recorded !== undefined && DateTime.Equivalence(recorded.heldAt, stoppedAt));
       }
       // Even a completed continuation record would now end nothing.
       const projection = yield* f.projection();
@@ -411,6 +452,7 @@ describe("restart continuation release", () => {
         restartHoldsEndedBy(
           { ...f.continuation, status: "completed", completedAt: stoppedAt },
           projection.runs,
+          yield* f.holds.get(projection.runs.map((run) => run.id)),
         ),
         [],
       );
@@ -425,45 +467,168 @@ describe("hold helpers", () => {
     id: RunId.make("run:queued"),
     threadId: ThreadId.make("thread:helpers"),
     status: "queued",
+    queueHeld: true,
     userMessageId: MessageId.make("message:queued"),
     completedAt: null,
   } as unknown as OrchestrationV2Run;
+  const runWith = (id: string, fields: Partial<OrchestrationV2Run> = {}) =>
+    ({ ...base, id: RunId.make(id), ...fields }) as OrchestrationV2Run;
 
-  it("keeps the first hold's reason and time", () => {
-    const held = holdQueuedRun(base, "stop", at);
-    const again = holdQueuedRun(held, "provider_failure", later);
-    assert.equal(again.queueHeldReason, "stop");
-    assert.isTrue(DateTime.Equivalence(again.queueHeldAt!, at));
-    const released = releaseQueuedRunHold(again);
-    assert.isFalse(released.queueHeld);
-    assert.isFalse("queueHeldReason" in released || "queueHeldAt" in released);
-  });
-
-  it("ends only restart holds recorded before a completed continuation finished", () => {
-    const continuation = {
-      ...base,
-      id: RunId.make("run:continuation"),
+  it("ends only recorded restart holds from before a completed continuation finished", () => {
+    const continuation = runWith("run:continuation", {
       userMessageId: MessageId.make("message:restart-continuation:run:source"),
       status: "completed",
       completedAt: at,
-    } as OrchestrationV2Run;
-    const restart = holdQueuedRun({ ...base, id: RunId.make("run:restart") }, "restart", at);
-    const laterRestart = holdQueuedRun({ ...base, id: RunId.make("run:later") }, "restart", later);
-    const stop = holdQueuedRun({ ...base, id: RunId.make("run:stop") }, "stop", at);
-    const legacy = { ...base, id: RunId.make("run:legacy"), queueHeld: true };
+      queueHeld: false,
+    });
+    const restart = runWith("run:restart");
+    const laterRestart = runWith("run:later");
+    const stop = runWith("run:stop");
+    const legacy = runWith("run:legacy");
+    // A stale row for a run that is no longer held ends nothing.
+    const released = runWith("run:released", { queueHeld: false });
+    const holds = new Map<RunId, QueueHold>([
+      [restart.id, { reason: "restart", heldAt: at }],
+      [laterRestart.id, { reason: "restart", heldAt: later }],
+      [stop.id, { reason: "stop", heldAt: at }],
+      [released.id, { reason: "restart", heldAt: at }],
+    ]);
+    const runs = [restart, laterRestart, stop, legacy, released];
     assert.isTrue(isCompletedRestartContinuation(continuation));
     assert.deepEqual(
-      restartHoldsEndedBy(continuation, [restart, laterRestart, stop, legacy]).map((run) => run.id),
+      restartHoldsEndedBy(continuation, runs, holds).map((run) => run.id),
       [restart.id],
     );
     for (const status of ["failed", "interrupted", "cancelled"] as const) {
-      assert.deepEqual(restartHoldsEndedBy({ ...continuation, status }, [restart]), []);
+      assert.deepEqual(restartHoldsEndedBy({ ...continuation, status }, runs, holds), []);
     }
     assert.deepEqual(
-      restartHoldsEndedBy({ ...continuation, userMessageId: MessageId.make("message:typed") }, [
-        restart,
-      ]),
+      restartHoldsEndedBy(
+        { ...continuation, userMessageId: MessageId.make("message:typed") },
+        runs,
+        holds,
+      ),
       [],
     );
   });
+
+  const event = (
+    type: "run.created" | "run.updated",
+    run: OrchestrationV2Run,
+  ): OrchestrationV2DomainEvent =>
+    ({
+      id: EventId.make(`event:${run.id}`),
+      type,
+      threadId: run.threadId,
+      runId: run.id,
+      occurredAt: later,
+      payload: run,
+    }) as OrchestrationV2DomainEvent;
+
+  it("classifies holds only from the sites that place them", () => {
+    const held = runWith("run:held");
+    const reasons = (
+      events: ReadonlyArray<OrchestrationV2DomainEvent>,
+      origin?: Parameters<typeof classifyQueueHoldEvents>[1],
+    ) => classifyQueueHoldEvents(events, origin).holds.map((hold) => hold.reason);
+    assert.deepEqual(reasons([event("run.created", held)]), ["inherited"]);
+    assert.deepEqual(reasons([event("run.updated", held)], { commandType: "thread.stop" }), [
+      "stop",
+    ]);
+    assert.deepEqual(reasons([event("run.updated", held)], { commandType: "run.interrupt" }), [
+      "stop",
+    ]);
+    assert.deepEqual(
+      reasons([event("run.updated", held)], { commandType: "provider-runtime.reconcile" }),
+      ["restart"],
+    );
+    // Other writers re-emit a held run unchanged; they record nothing.
+    assert.deepEqual(reasons([event("run.updated", held)]), []);
+    assert.deepEqual(reasons([event("run.updated", held)], { commandType: "queue.reorder" }), []);
+    assert.deepEqual(
+      reasons([event("run.updated", held)], {
+        commandType: "provider-runtime.reconcile-orphaned-records",
+      }),
+      [],
+    );
+    assert.deepEqual(
+      reasons([event("run.updated", held), event("run.updated", runWith("run:other"))], {
+        queueHold: { reason: "provider_failure", runIds: [held.id] },
+      }),
+      ["provider_failure"],
+    );
+    const [recorded] = classifyQueueHoldEvents([event("run.created", held)], undefined).holds;
+    assert.isTrue(recorded !== undefined && DateTime.Equivalence(recorded.heldAt, later));
+  });
+
+  it("forgets holds when a run leaves the queue, is released, or its thread is deleted", () => {
+    const result = classifyQueueHoldEvents(
+      [
+        event("run.updated", runWith("run:resumed", { queueHeld: false })),
+        event("run.updated", runWith("run:cancelled", { status: "cancelled" })),
+        event("run.updated", runWith("run:running", { status: "running", queueHeld: false })),
+        event("run.updated", runWith("run:unheld", { queueHeld: undefined })),
+        {
+          id: EventId.make("event:deleted"),
+          type: "thread.deleted",
+          threadId: base.threadId,
+          occurredAt: later,
+          payload: {},
+        } as unknown as OrchestrationV2DomainEvent,
+      ],
+      { commandType: "thread.stop" },
+    );
+    assert.deepEqual(result.released, [RunId.make("run:resumed"), RunId.make("run:cancelled")]);
+    assert.deepEqual(result.deletedThreads, [base.threadId]);
+    assert.deepEqual(result.holds, []);
+  });
+});
+
+describe("hold store", () => {
+  const threadId = ThreadId.make("thread:store");
+  const runId = RunId.make("run:store");
+  const heldAt = DateTime.makeUnsafe("2026-11-10T00:00:00.000Z");
+
+  it.effect("a database without the Jones table reads every hold as unrecorded", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const holds = makeQueueHoldStore(sql, makeJonesTablePresence(sql));
+      yield* holds.record([{ runId, threadId, reason: "stop", heldAt }]);
+      yield* holds.forget([runId]);
+      yield* holds.forgetThreads([threadId]);
+      assert.equal((yield* holds.get([runId])).size, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("records replace, unreadable rows are ignored, and a failed write leaves no row", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* QueueHoldsMigration;
+      const holds = makeQueueHoldStore(sql, makeJonesTablePresence(sql));
+      yield* holds.record([{ runId, threadId, reason: "restart", heldAt }]);
+      const later = DateTime.makeUnsafe("2026-11-10T02:00:00.000Z");
+      yield* holds.record([{ runId, threadId, reason: "stop", heldAt: later }]);
+      const recorded = (yield* holds.get([runId])).get(runId);
+      assert.equal(recorded?.reason, "stop");
+      assert.isTrue(recorded !== undefined && DateTime.Equivalence(recorded.heldAt, later));
+
+      yield* sql`INSERT INTO jones_queue_holds VALUES ('run:future', ${threadId}, 'future', '2026-11-10T00:00:00.000Z')`;
+      yield* sql`INSERT INTO jones_queue_holds VALUES ('run:garbled', ${threadId}, 'stop', 'not a time')`;
+      const read = yield* holds.get([RunId.make("run:future"), RunId.make("run:garbled"), runId]);
+      assert.deepEqual([...read.keys()], [runId]);
+
+      const failed = RunId.make("run:failed");
+      yield* sql
+        .withTransaction(
+          holds
+            .record([{ runId: failed, threadId, reason: "stop", heldAt }])
+            .pipe(Effect.andThen(Effect.fail("rejected" as const))),
+        )
+        .pipe(Effect.ignore);
+      assert.equal((yield* holds.get([failed])).size, 0);
+
+      yield* holds.forgetThreads([threadId]);
+      assert.equal((yield* holds.get([runId])).size, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
 });

@@ -174,13 +174,14 @@ import {
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { transientSteerTarget } from "../jones/orchestration/TransientSteer.ts";
 import {
-  holdQueuedRun,
-  inheritedQueueHold,
   isCompletedRestartContinuation,
-  releaseQueuedRunHold,
   restartHoldsEndedBy,
-  stopQueuedRun,
 } from "../jones/orchestration/QueueHold.ts";
+import {
+  makeQueueHoldStore,
+  providerFailureQueueHold,
+  type QueueHoldIntent,
+} from "../jones/orchestration/QueueHoldStore.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
   derivePendingBackgroundWork,
@@ -1251,6 +1252,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
   const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
   const ownerSelections = makeOwnerSelectionStore(sql, makeJonesTablePresence(sql));
+  const queueHolds = makeQueueHoldStore(sql, makeJonesTablePresence(sql));
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
@@ -1495,7 +1497,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.fnUntraced(function* (
       events: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>,
       effects: ReadonlyArray<PendingOrchestrationEffectV2> = [],
-      options: { readonly updateDelegatedCompletionOnly?: boolean } = {},
+      options: {
+        readonly updateDelegatedCompletionOnly?: boolean;
+        readonly queueHold?: QueueHoldIntent;
+      } = {},
     ) {
       const withIds = yield* Effect.forEach(events, (event) =>
         makeSystemEvent(event as Omit<OrchestrationV2DomainEvent, "id">),
@@ -1769,7 +1774,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     )
       return;
     const { runs } = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
-    const released = restartHoldsEndedBy(continuation, runs);
+    const holds = yield* queueHolds.get(
+      runs.filter((run) => run.status === "queued" && run.queueHeld === true).map((run) => run.id),
+    );
+    const released = restartHoldsEndedBy(continuation, runs, holds);
     if (released.length === 0) return;
     const now = yield* DateTime.now;
     yield* writeSystemEvents(
@@ -1779,7 +1787,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: run.id,
         providerInstanceId: run.providerInstanceId,
         occurredAt: now,
-        payload: releaseQueuedRunHold(run),
+        payload: { ...run, queueHeld: false },
       })),
     );
   });
@@ -1897,8 +1905,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               runId: run.id,
               providerInstanceId: run.providerInstanceId,
               occurredAt: now,
-              payload: holdQueuedRun(run, "provider_failure", now),
+              payload: { ...run, queueHeld: true },
             })),
+          [],
+          { queueHold: providerFailureQueueHold(projection.runs) },
         );
         return;
       }
@@ -6251,7 +6261,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             candidate.queueHeld === true &&
             candidate.ordinal > queueBehindRun.ordinal,
         )
-          ? inheritedQueueHold(now)
+          ? { queueHeld: true }
           : {}),
         queuePosition:
           Math.max(
@@ -11044,7 +11054,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: run.id,
         providerInstanceId: run.providerInstanceId,
         occurredAt: now,
-        payload: releaseQueuedRunHold(run),
+        payload: { ...run, queueHeld: false },
       });
     }
   });
@@ -11581,6 +11591,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const bufferedMessageIds = new Set(
       queuedMessages.filter(isBufferedProviderNotification).map((message) => message.id),
     );
+    // Jones: Stop replaces a restart hold so the continuation's completion leaves this work held.
+    const recordedHolds = yield* queueHolds
+      .get(queuedRuns.filter((run) => run.queueHeld === true).map((run) => run.id))
+      .pipe(
+        Effect.mapError((cause) => new OrchestratorProjectionError({ threadId: thread.id, cause })),
+      );
     for (const run of runs) {
       // A resumed queue can have a lower ordinal than a pending continuation source.
       // Stop must reach those sources even when interrupting the resumed run succeeds.
@@ -11603,15 +11619,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         continue;
       }
-      // Stop replaces a restart hold so the continuation's completion leaves this work held.
-      if (run.queueHeld === true && run.queueHeldReason !== "restart") continue;
+      if (run.queueHeld === true && recordedHolds.get(run.id)?.reason !== "restart") continue;
       yield* emitEvent({
         type: "run.updated",
         threadId: thread.id,
         runId: run.id,
         providerInstanceId: run.providerInstanceId,
         occurredAt: input.now,
-        payload: stopQueuedRun(run, input.now),
+        payload: { ...run, queueHeld: true },
       });
     }
     const pullRequests = thread.pullRequests ?? [];
@@ -14266,7 +14281,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             runId: run.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: now,
-            payload: releaseQueuedRunHold(run),
+            payload: { ...run, queueHeld: false },
           });
         }
         if (queued.length === 0) {

@@ -6,7 +6,9 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
-import { RESTART_CONTINUATION_MESSAGE_PREFIX } from "./QueueHold.ts";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
+import { type QueueHold, RESTART_CONTINUATION_MESSAGE_PREFIX } from "./QueueHold.ts";
+import { makeQueueHoldStore } from "./QueueHoldStore.ts";
 
 /** Hours a held automatic message waits before the sweep cancels it. */
 const HELD_QUEUE_EXPIRY_HOURS_ENV = "T3CODE_HELD_QUEUE_EXPIRY_HOURS";
@@ -25,8 +27,6 @@ export interface HeldQueuedRunRow {
   readonly run_id: string;
   readonly thread_id: string;
   readonly requested_at: string;
-  readonly held_at: string | null;
-  readonly held_reason: string | null;
   readonly message_id: string | null;
   readonly message_role: string | null;
   readonly created_by: string | null;
@@ -58,19 +58,26 @@ export function isHumanTypedHeldMessage(row: HeldQueuedRunRow): boolean {
   return !automatic;
 }
 
+/** A held queued run with its recorded hold, when Jones recorded one. */
+interface HeldQueuedRun extends HeldQueuedRunRow {
+  readonly hold: QueueHold | undefined;
+}
+
 /** Held age starts at the recorded hold, or at the request for holds recorded without a time. */
-function heldSinceMs(row: HeldQueuedRunRow): number {
-  return Date.parse(row.held_at ?? row.requested_at);
+function heldSinceMs(run: HeldQueuedRun): number {
+  return run.hold === undefined
+    ? Date.parse(run.requested_at)
+    : DateTime.toEpochMillis(run.hold.heldAt);
 }
 
 function expiredHeldRuns(
-  rows: ReadonlyArray<HeldQueuedRunRow>,
+  runs: ReadonlyArray<HeldQueuedRun>,
   nowMs: number,
   expiryMs: number,
-): ReadonlyArray<HeldQueuedRunRow> {
-  return rows.filter((row) => {
-    const since = heldSinceMs(row);
-    return Number.isFinite(since) && nowMs - since >= expiryMs && !isHumanTypedHeldMessage(row);
+): ReadonlyArray<HeldQueuedRun> {
+  return runs.filter((run) => {
+    const since = heldSinceMs(run);
+    return Number.isFinite(since) && nowMs - since >= expiryMs && !isHumanTypedHeldMessage(run);
   });
 }
 
@@ -78,16 +85,14 @@ const heldQueueExpiryCommandId = (runId: string) =>
   CommandId.make(`command:held-queue-expiry:${runId}`);
 
 // The partial recovery index on (status, thread_id) bounds this to queued runs; each message is
-// read by its primary key.
+// read by its primary key. Recorded holds come from the Jones table by run ID.
 const readHeldQueuedRuns = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<HeldQueuedRunRow>`
+  const rows = yield* sql<HeldQueuedRunRow>`
     SELECT
       run.run_id AS run_id,
       run.thread_id AS thread_id,
       run.requested_at AS requested_at,
-      json_extract(run.payload_json, '$.queueHeldAt') AS held_at,
-      json_extract(run.payload_json, '$.queueHeldReason') AS held_reason,
       message.message_id AS message_id,
       message.role AS message_role,
       json_extract(message.payload_json, '$.createdBy') AS created_by,
@@ -104,6 +109,10 @@ const readHeldQueuedRuns = Effect.gen(function* () {
     WHERE run.status = 'queued'
       AND json_extract(run.payload_json, '$.queueHeld') = 1
   `;
+  const holds = yield* makeQueueHoldStore(sql, makeJonesTablePresence(sql)).get(
+    rows.map((row) => RunId.make(row.run_id)),
+  );
+  return rows.map((row): HeldQueuedRun => ({ ...row, hold: holds.get(RunId.make(row.run_id)) }));
 });
 
 export interface HeldQueueExpiryResult {
@@ -156,7 +165,7 @@ export const sweepHeldQueue = Effect.fn("HeldQueueExpiry.sweep")(function* (opti
     cancelled.push({
       runId: row.run_id,
       threadId: row.thread_id,
-      reason: row.held_reason,
+      reason: row.hold?.reason ?? null,
       heldHours: Math.floor((nowMs - heldSinceMs(row)) / HOUR_MS),
     });
   }

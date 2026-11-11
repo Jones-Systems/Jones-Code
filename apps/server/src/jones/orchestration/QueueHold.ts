@@ -1,34 +1,28 @@
-import type { OrchestrationV2QueueHeldReason, OrchestrationV2Run } from "@t3tools/contracts";
+import type { OrchestrationV2Run, RunId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 /** Message IDs of server-made restart continuations (see `RestartContinuation.ts`). */
 export const RESTART_CONTINUATION_MESSAGE_PREFIX = "message:restart-continuation:";
 
-/** Holds a queued run, keeping the time and reason of a hold it already has. */
-export function holdQueuedRun(
-  run: OrchestrationV2Run,
-  reason: OrchestrationV2QueueHeldReason,
-  at: DateTime.Utc,
-): OrchestrationV2Run {
-  if (run.queueHeld === true) return { ...run, queueHeld: true };
-  return { ...run, queueHeld: true, queueHeldAt: at, queueHeldReason: reason };
-}
+/**
+ * Why a queued run was held. `stop` and `inherited` holds wait for the user; a `restart` hold
+ * ends when the restart continuation completes. Runs held before reasons were recorded have no
+ * recorded hold.
+ */
+export type QueueHoldReason = "stop" | "restart" | "provider_failure" | "inherited";
+const QUEUE_HOLD_REASONS: ReadonlySet<string> = new Set([
+  "stop",
+  "restart",
+  "provider_failure",
+  "inherited",
+]);
+export const isQueueHoldReason = (value: string): value is QueueHoldReason =>
+  QUEUE_HOLD_REASONS.has(value);
 
-/** Stop holds a queued run as stopped, replacing a restart hold that its continuation would end. */
-export function stopQueuedRun(run: OrchestrationV2Run, at: DateTime.Utc): OrchestrationV2Run {
-  const base = run.queueHeldReason === "restart" ? releaseQueuedRunHold(run) : run;
-  return holdQueuedRun(base, "stop", at);
-}
-
-/** The hold fields a new queued run takes when it queues behind held work. */
-export function inheritedQueueHold(at: DateTime.Utc) {
-  return { queueHeld: true, queueHeldAt: at, queueHeldReason: "inherited" } as const;
-}
-
-/** Releases a hold and drops its time and reason. */
-export function releaseQueuedRunHold(run: OrchestrationV2Run): OrchestrationV2Run {
-  const { queueHeldAt: _at, queueHeldReason: _reason, ...released } = run;
-  return { ...released, queueHeld: false };
+/** A recorded hold, kept in `jones_queue_holds` beside the upstream run. */
+export interface QueueHold {
+  readonly reason: QueueHoldReason;
+  readonly heldAt: DateTime.Utc;
 }
 
 export function isCompletedRestartContinuation(run: OrchestrationV2Run): boolean {
@@ -39,21 +33,24 @@ export function isCompletedRestartContinuation(run: OrchestrationV2Run): boolean
 
 /**
  * Restart holds a completed continuation ends: those recorded no later than its completion. A
- * hold from a later restart waits for that restart's own continuation.
+ * hold from a later restart waits for that restart's own continuation, and a held run without a
+ * recorded restart hold stays held.
  */
 export function restartHoldsEndedBy(
   continuation: OrchestrationV2Run,
   runs: ReadonlyArray<OrchestrationV2Run>,
+  holds: ReadonlyMap<RunId, QueueHold>,
 ): ReadonlyArray<OrchestrationV2Run> {
   if (!isCompletedRestartContinuation(continuation) || continuation.completedAt === null) return [];
   const completedAt = continuation.completedAt;
-  return runs.filter(
-    (run) =>
+  return runs.filter((run) => {
+    const hold = holds.get(run.id);
+    return (
       run.threadId === continuation.threadId &&
       run.status === "queued" &&
       run.queueHeld === true &&
-      run.queueHeldReason === "restart" &&
-      run.queueHeldAt !== undefined &&
-      DateTime.isLessThanOrEqualTo(run.queueHeldAt, completedAt),
-  );
+      hold?.reason === "restart" &&
+      DateTime.isLessThanOrEqualTo(hold.heldAt, completedAt)
+    );
+  });
 }

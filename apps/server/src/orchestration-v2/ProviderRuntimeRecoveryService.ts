@@ -340,7 +340,7 @@ export const make = Effect.gen(function* () {
           runId: run.id,
           providerInstanceId: run.providerInstanceId,
           occurredAt: now,
-          payload: { ...run, queueHeld: true, queueHeldAt: now, queueHeldReason: "restart" },
+          payload: { ...run, queueHeld: true },
         });
       }
       for (const request of requests) {

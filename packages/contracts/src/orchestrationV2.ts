@@ -6,7 +6,6 @@ import {
 } from "./jones/deliveryEvidence.ts";
 import { QueuedSteerBatchCommand } from "./jones/queuedSteerBatch.ts";
 import { SettlementRestoreCommand } from "./jones/settlementRestore.ts";
-import { OrchestrationV2QueueHeldReason } from "./jones/queueHold.ts";
 import { ThreadTurnDispatchGuard } from "./providerQueue.ts";
 import { RuntimeIdentityAttestation } from "./jones/providerRuntimeIdentity.ts";
 import {
@@ -695,9 +694,6 @@ export const OrchestrationV2Run = Schema.Struct({
   status: OrchestrationV2RunStatus,
   queuePosition: Schema.optional(Schema.NullOr(PositiveInt)),
   queueHeld: Schema.optional(Schema.Boolean),
-  /** When and why `queueHeld` was set; absent on holds recorded before reasons existed. */
-  queueHeldAt: Schema.optional(Schema.DateTimeUtc),
-  queueHeldReason: Schema.optional(OrchestrationV2QueueHeldReason),
   /** Recorded queue admission; absent or false keeps separate-turn delivery. */
   queuedToolBoundaryEligible: Schema.optional(Schema.Boolean),
   requestedAt: Schema.DateTimeUtc,
@@ -2320,7 +2316,6 @@ export const OrchestrationV2RunJson = OrchestrationV2Run.mapFields((fields) => (
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   completedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   workStartedAt: Schema.optional(Schema.DateTimeUtcFromString),
-  queueHeldAt: Schema.optional(Schema.DateTimeUtcFromString),
 }));
 export type OrchestrationV2RunJson = typeof OrchestrationV2RunJson.Type;
 
