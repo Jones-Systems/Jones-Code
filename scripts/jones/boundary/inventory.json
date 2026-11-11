@@ -7,6 +7,9 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/server/src/provider/Drivers/ClaudeHome.ts": "accepted-shared",
+    "apps/server/src/provider/Drivers/ClaudeHome.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/Drivers/ClaudeDriver.ts": "accepted-shared",
     "scripts/jones/boundary/fragments/direct-producer-completion.json": "jones-owned",
     "scripts/jones/direct-producers/completion.node-test.mjs": "jones-owned",
     "scripts/jones/direct-producers/completion.ts": "jones-owned",

@@ -5,7 +5,7 @@
     "apps/server/integration/jones-e2e/workspaceLifecycleDev.entrypoint.ts",
     "apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs"
   ],
-  "hookPaths": [],
+  "hookPaths": ["apps/server/src/provider/Drivers/ClaudeHome.ts"],
   "tombstones": [],
   "allowedImports": []
 }
