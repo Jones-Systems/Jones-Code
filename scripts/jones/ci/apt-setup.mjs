@@ -1,7 +1,7 @@
-import { spawn, execFileSync } from "node:child_process";
-import * as fs from "node:fs/promises";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 
 export const candidate = "https://mirrors.edge.kernel.org/ubuntu/";
 export const workspace = "/var/lib/jones-ci-apt";
@@ -97,7 +97,7 @@ export function validateTargets(text) {
     if (
       target["Repo-URI"] !== candidate ||
       !target.Filename ||
-      !path.posix.resolve(target.Filename).startsWith(`${workspace}/lists/`)
+      !NodePath.posix.resolve(target.Filename).startsWith(`${workspace}/lists/`)
     ) {
       throw fail("config", "index target escaped candidate or isolated lists");
     }
@@ -180,11 +180,11 @@ export function parseProcStat(raw) {
 
 export async function groupMembers(group) {
   const members = [];
-  for (const pid of await fs.readdir("/proc")) {
+  for (const pid of await NodeFSP.readdir("/proc")) {
     if (!/^\d+$/.test(pid)) continue;
     let stat;
     try {
-      stat = parseProcStat(await fs.readFile(`/proc/${pid}/stat`, "utf8"));
+      stat = parseProcStat(await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8"));
     } catch (error) {
       if (error.code === "ENOENT" || error.code === "ESRCH") continue;
       throw error;
@@ -200,8 +200,8 @@ export async function groupMembers(group) {
 const gate =
   'printf "jones-apt-group %s\\n" "$$"; IFS= read -r ack && [ "$ack" = jones-apt-go ] || exit 125; LC_ALL=C; export LC_ALL; umask 022; exec "$@"';
 export function createCommandRunner({
-  launch = spawn,
-  readStat = async (group) => parseProcStat(await fs.readFile(`/proc/${group}/stat`, "utf8")),
+  launch = NodeChildProcess.spawn,
+  readStat = async (group) => parseProcStat(await NodeFSP.readFile(`/proc/${group}/stat`, "utf8")),
   members = groupMembers,
   privilege = ["/usr/bin/sudo", "-n"],
   report = console.log,
@@ -413,7 +413,7 @@ export async function setupApt({
   args,
   route = "",
   run = createCommandRunner(),
-  readFile = (file) => fs.readFile(file, "utf8"),
+  readFile = (file) => NodeFSP.readFile(file, "utf8"),
   now = () => Date.now(),
   signal,
   report = console.log,
@@ -560,15 +560,19 @@ export async function setupApt({
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === NodeURL.pathToFileURL(NodePath.resolve(process.argv[1])).href
+) {
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.on("SIGINT", cancel);
   process.on("SIGTERM", cancel);
   try {
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone CI helper checks the actual runner before privileged package setup without loading application services.
     if (process.platform !== "linux" || process.env.GITHUB_ACTIONS !== "true")
       throw fail("config", "Ubuntu CI helper requires a disposable Linux Actions runner");
-    const checkout = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], {
+    const checkout = NodeChildProcess.execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], {
       encoding: "utf8",
     }).trim();
     console.log(`apt setup checkout SHA: ${checkout}`);

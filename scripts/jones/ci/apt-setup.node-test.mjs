@@ -1,8 +1,8 @@
-import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import * as fs from "node:fs/promises";
-import { PassThrough, Writable } from "node:stream";
-import { test } from "node:test";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeEvents from "node:events";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeStream from "node:stream";
+import * as NodeTest from "node:test";
 import {
   candidate,
   workspace,
@@ -97,231 +97,264 @@ function scenario({
 }
 const aptCalls = (s) => s.calls.filter(({ argv }) => argv[0] === "/usr/bin/apt-get");
 const removed = (s) => s.calls.some(({ argv }) => argv[0] === "/usr/bin/rm");
-const rejectsLabel = (promise, label) => assert.rejects(promise, (error) => error.label === label);
+const rejectsLabel = (promise, label) =>
+  NodeAssert.rejects(promise, (error) => error.label === label);
 
-test("normal route refreshes once, downloads then installs offline with package/recommends parity", async () => {
-  for (const args of [
-    ["libsecret-1-dev", "pkg-config"],
-    ["--no-install-recommends", "build-essential", "libsecret-1-dev", "pkg-config"],
-  ]) {
-    const s = scenario({ args });
-    await setupApt(s.options);
-    assert.deepEqual(
-      aptCalls(s).map(({ argv }) => argv.slice(1)),
-      [
-        ["update", "--error-on=any"],
-        ["install", "-y", ...args, "--download-only"],
-        ["install", "-y", ...args, "--no-download", "-o", "DPkg::Lock::Timeout=30"],
-      ],
-    );
-    assert.deepEqual(
-      s.calls.map(({ settings }) => settings.timeoutMs),
-      [60_000, 60_000, 120_000],
-    );
-    assert.deepEqual(s.reads, []);
-  }
-});
-
-test("transport failure at refresh or download enters isolated candidate and never reuses default lists", async () => {
-  for (const failingCall of [1, 2]) {
-    const s = scenario({
-      intercept: (_argv, _settings, count) => (count === failingCall ? network() : undefined),
-    });
-    await setupApt(s.options);
-    const later = aptCalls(s).slice(failingCall);
-    assert.equal(later.length, 4);
-    for (const { argv } of later) assert.deepEqual(argv.slice(1, 1 + isolation.length), isolation);
-    assert.ok(later[0].argv.includes("--no-release-info"));
-    assert.equal(later.filter(({ argv }) => argv.includes("update")).length, 1);
-    assert.equal(later[1].settings.timeoutMs, 120_000);
-    assert.ok(later[2].argv.includes("--download-only"));
-    assert.ok(later[3].argv.includes("--no-download"));
-    assert.equal(removed(s), true);
-    assert.ok(
-      s.reads
-        .filter((file) => file.endsWith("InRelease"))
-        .every((file) => file.startsWith(`${workspace}/lists/`)),
-    );
-    const written = s.calls.find(({ argv }) => argv[0] === "/usr/bin/tee");
-    assert.equal(written.settings.input, sources.replace(/^URIs:.*$/gm, `URIs: ${candidate}`));
-  }
-});
-
-test("clean deadline may fall back; candidate failure never tries healthy originals", async () => {
-  const normal = scenario({
-    intercept: (_a, _s, n) => (n === 1 ? network({ stderr: "", timedOut: true }) : undefined),
-  });
-  await setupApt(normal.options);
-  assert.equal(aptCalls(normal).length, 5);
-  const forced = scenario({
-    route: "candidate",
-    intercept: (argv) => (argv.includes("update") ? network() : undefined),
-  });
-  await rejectsLabel(setupApt(forced.options), "network");
-  assert.ok(aptCalls(forced).every(({ argv }) => argv.includes(isolation[1])));
-  assert.equal(removed(forced), true);
-});
-
-test("terminal diagnostics override transport/timeouts; exit 100 and HTTP 404 stay unclassified", async () => {
-  for (const [diagnostic, label] of [
-    ["E: GPG error: NO_PUBKEY bad", "signature"],
-    ["E: Hash Sum mismatch", "signature"],
-    ["E: Release file for URL is expired (invalid since 2d)", "freshness"],
-    ["E: Could not get lock /var/lib/dpkg/lock - open (13: Permission denied)", "config"],
-    ["E: Command line option --bad is not understood", "config"],
-    ["sudo: a password is required", "config"],
-    ["E: unexplained apt failure", "unclassified"],
-    ["E: Failed to fetch https://example/file 404 Not Found", "unclassified"],
-  ]) {
-    for (const timedOut of [false, true]) {
-      const result = network({ stderr: `${dns}${diagnostic}\n`, timedOut });
-      assert.equal(classifyFailure(result), label);
-      const s = scenario({ intercept: (_a, _s, n) => (n === 1 ? result : undefined) });
-      await rejectsLabel(setupApt(s.options), label);
-      assert.equal(s.calls.length, 1);
+NodeTest.test(
+  "normal route refreshes once, downloads then installs offline with package/recommends parity",
+  async () => {
+    for (const args of [
+      ["libsecret-1-dev", "pkg-config"],
+      ["--no-install-recommends", "build-essential", "libsecret-1-dev", "pkg-config"],
+    ]) {
+      const s = scenario({ args });
+      await setupApt(s.options);
+      NodeAssert.deepEqual(
+        aptCalls(s).map(({ argv }) => argv.slice(1)),
+        [
+          ["update", "--error-on=any"],
+          ["install", "-y", ...args, "--download-only"],
+          ["install", "-y", ...args, "--no-download", "-o", "DPkg::Lock::Timeout=30"],
+        ],
+      );
+      NodeAssert.deepEqual(
+        s.calls.map(({ settings }) => settings.timeoutMs),
+        [60_000, 60_000, 120_000],
+      );
+      NodeAssert.deepEqual(s.reads, []);
     }
-    if (["config", "signature", "freshness"].includes(label)) {
+  },
+);
+
+NodeTest.test(
+  "transport failure at refresh or download enters isolated candidate and never reuses default lists",
+  async () => {
+    for (const failingCall of [1, 2]) {
       const s = scenario({
-        intercept: (_a, _s, n) => (n === 1 ? ok({ stderr: diagnostic }) : undefined),
+        intercept: (_argv, _settings, count) => (count === failingCall ? network() : undefined),
       });
-      await rejectsLabel(setupApt(s.options), label);
-      assert.equal(s.calls.length, 1);
+      await setupApt(s.options);
+      const later = aptCalls(s).slice(failingCall);
+      NodeAssert.equal(later.length, 4);
+      for (const { argv } of later)
+        NodeAssert.deepEqual(argv.slice(1, 1 + isolation.length), isolation);
+      NodeAssert.ok(later[0].argv.includes("--no-release-info"));
+      NodeAssert.equal(later.filter(({ argv }) => argv.includes("update")).length, 1);
+      NodeAssert.equal(later[1].settings.timeoutMs, 120_000);
+      NodeAssert.ok(later[2].argv.includes("--download-only"));
+      NodeAssert.ok(later[3].argv.includes("--no-download"));
+      NodeAssert.equal(removed(s), true);
+      NodeAssert.ok(
+        s.reads
+          .filter((file) => file.endsWith("InRelease"))
+          .every((file) => file.startsWith(`${workspace}/lists/`)),
+      );
+      const written = s.calls.find(({ argv }) => argv[0] === "/usr/bin/tee");
+      NodeAssert.equal(
+        written.settings.input,
+        sources.replace(/^URIs:.*$/gm, `URIs: ${candidate}`),
+      );
     }
-  }
-  assert.equal(classifyFailure(network({ stderr: "" })), "unclassified");
-  assert.equal(
-    classifyFailure(
-      network({
-        stderr:
-          "E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?",
-      }),
-    ),
-    "unclassified",
-  );
-});
+  },
+);
 
-test("preflight rejects altered suite, keyring, mirrors, directives, codename or architecture", () => {
-  assert.equal(
-    validateSources(sourceFixture),
-    sources.replace(/^URIs:.*$/gm, `URIs: ${candidate}`),
-  );
-  const withHeader = `# Image-owned Ubuntu configuration\n\n${sources}`;
-  assert.equal(
-    validateSources({ ...sourceFixture, sources: withHeader }),
-    withHeader.replace(/^URIs:.*$/gm, `URIs: ${candidate}`),
-  );
-  for (const change of [
-    { sources: sources.replace("noble-backports", "jammy") },
-    { sources: sources.replaceAll("ubuntu-archive-keyring.gpg", "other.gpg") },
-    { mirrors: mirrors.replace("priority:3", "priority:4") },
-    { sources: `${sources}Trusted: yes\n` },
-    { sources: `${sources}Check-Valid-Until: no\n` },
-    { sources: sources.replace("Components: main", "Snapshot: test\nComponents: main") },
-    { architecture: "arm64" },
-    { osRelease: "VERSION_CODENAME=jammy" },
-  ])
-    assert.throws(
-      () => validateSources({ ...sourceFixture, ...change }),
-      (error) => error.label === "config",
-    );
-});
-
-test("cold isolation proof requires candidate URI, all 4x4 amd64 targets and confined filenames without release fields", () => {
-  validateTargets(targetText);
-  for (const text of [
-    targetText.replaceAll("noble-security", "jammy-security"),
-    targetText.replace("Repo-URI: " + candidate, "Repo-URI: https://archive.ubuntu.com/ubuntu/"),
-    targetText.replace(`Filename: ${workspace}/lists/`, "Filename: /var/lib/apt/lists/"),
-    targetText
-      .replaceAll("binary-amd64", "binary-arm64")
-      .replaceAll("Architecture: amd64", "Architecture: arm64"),
-    targetText.split(/\n\n/).slice(1).join("\n\n"),
-    "",
-  ])
-    assert.throws(
-      () => validateTargets(text),
-      (error) => error.label === "config",
-    );
-});
-
-test("candidate preflight, keyring and target-proof failures stop before network", async () => {
-  for (const kind of ["source", "keyring", "targets"]) {
-    const s = scenario({
-      route: "candidate",
-      files:
-        kind === "source"
-          ? { "/etc/apt/sources.list.d/ubuntu.sources": sources + "Trusted: yes\n" }
-          : {},
-      intercept: (argv) =>
-        kind === "keyring" && argv.includes("--verify")
-          ? ok({ stdout: "changed keyring" })
-          : kind === "targets" && argv.includes("indextargets")
-            ? ok({ stdout: targetText.replaceAll(candidate, "https://foreign/") })
-            : undefined,
+NodeTest.test(
+  "clean deadline may fall back; candidate failure never tries healthy originals",
+  async () => {
+    const normal = scenario({
+      intercept: (_a, _s, n) => (n === 1 ? network({ stderr: "", timedOut: true }) : undefined),
     });
-    await rejectsLabel(setupApt(s.options), "config");
-    assert.equal(
-      aptCalls(s).some(({ argv }) => argv.includes("update")),
-      false,
-    );
-    assert.equal(removed(s), kind === "targets");
-  }
-});
+    await setupApt(normal.options);
+    NodeAssert.equal(aptCalls(normal).length, 5);
+    const forced = scenario({
+      route: "candidate",
+      intercept: (argv) => (argv.includes("update") ? network() : undefined),
+    });
+    await rejectsLabel(setupApt(forced.options), "network");
+    NodeAssert.ok(aptCalls(forced).every(({ argv }) => argv.includes(isolation[1])));
+    NodeAssert.equal(removed(forced), true);
+  },
+);
 
-test("a preexisting workspace is never removed", async () => {
+NodeTest.test(
+  "terminal diagnostics override transport/timeouts; exit 100 and HTTP 404 stay unclassified",
+  async () => {
+    for (const [diagnostic, label] of [
+      ["E: GPG error: NO_PUBKEY bad", "signature"],
+      ["E: Hash Sum mismatch", "signature"],
+      ["E: Release file for URL is expired (invalid since 2d)", "freshness"],
+      ["E: Could not get lock /var/lib/dpkg/lock - open (13: Permission denied)", "config"],
+      ["E: Command line option --bad is not understood", "config"],
+      ["sudo: a password is required", "config"],
+      ["E: unexplained apt failure", "unclassified"],
+      ["E: Failed to fetch https://example/file 404 Not Found", "unclassified"],
+    ]) {
+      for (const timedOut of [false, true]) {
+        const result = network({ stderr: `${dns}${diagnostic}\n`, timedOut });
+        NodeAssert.equal(classifyFailure(result), label);
+        const s = scenario({ intercept: (_a, _s, n) => (n === 1 ? result : undefined) });
+        await rejectsLabel(setupApt(s.options), label);
+        NodeAssert.equal(s.calls.length, 1);
+      }
+      if (["config", "signature", "freshness"].includes(label)) {
+        const s = scenario({
+          intercept: (_a, _s, n) => (n === 1 ? ok({ stderr: diagnostic }) : undefined),
+        });
+        await rejectsLabel(setupApt(s.options), label);
+        NodeAssert.equal(s.calls.length, 1);
+      }
+    }
+    NodeAssert.equal(classifyFailure(network({ stderr: "" })), "unclassified");
+    NodeAssert.equal(
+      classifyFailure(
+        network({
+          stderr:
+            "E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?",
+        }),
+      ),
+      "unclassified",
+    );
+  },
+);
+
+NodeTest.test(
+  "preflight rejects altered suite, keyring, mirrors, directives, codename or architecture",
+  () => {
+    NodeAssert.equal(
+      validateSources(sourceFixture),
+      sources.replace(/^URIs:.*$/gm, `URIs: ${candidate}`),
+    );
+    const withHeader = `# Image-owned Ubuntu configuration\n\n${sources}`;
+    NodeAssert.equal(
+      validateSources({ ...sourceFixture, sources: withHeader }),
+      withHeader.replace(/^URIs:.*$/gm, `URIs: ${candidate}`),
+    );
+    for (const change of [
+      { sources: sources.replace("noble-backports", "jammy") },
+      { sources: sources.replaceAll("ubuntu-archive-keyring.gpg", "other.gpg") },
+      { mirrors: mirrors.replace("priority:3", "priority:4") },
+      { sources: `${sources}Trusted: yes\n` },
+      { sources: `${sources}Check-Valid-Until: no\n` },
+      { sources: sources.replace("Components: main", "Snapshot: test\nComponents: main") },
+      { architecture: "arm64" },
+      { osRelease: "VERSION_CODENAME=jammy" },
+    ])
+      NodeAssert.throws(
+        () => validateSources({ ...sourceFixture, ...change }),
+        (error) => error.label === "config",
+      );
+  },
+);
+
+NodeTest.test(
+  "cold isolation proof requires candidate URI, all 4x4 amd64 targets and confined filenames without release fields",
+  () => {
+    validateTargets(targetText);
+    for (const text of [
+      targetText.replaceAll("noble-security", "jammy-security"),
+      targetText.replace("Repo-URI: " + candidate, "Repo-URI: https://archive.ubuntu.com/ubuntu/"),
+      targetText.replace(`Filename: ${workspace}/lists/`, "Filename: /var/lib/apt/lists/"),
+      targetText
+        .replaceAll("binary-amd64", "binary-arm64")
+        .replaceAll("Architecture: amd64", "Architecture: arm64"),
+      targetText.split(/\n\n/).slice(1).join("\n\n"),
+      "",
+    ])
+      NodeAssert.throws(
+        () => validateTargets(text),
+        (error) => error.label === "config",
+      );
+  },
+);
+
+NodeTest.test(
+  "candidate preflight, keyring and target-proof failures stop before network",
+  async () => {
+    for (const kind of ["source", "keyring", "targets"]) {
+      const s = scenario({
+        route: "candidate",
+        files:
+          kind === "source"
+            ? { "/etc/apt/sources.list.d/ubuntu.sources": sources + "Trusted: yes\n" }
+            : {},
+        intercept: (argv) =>
+          kind === "keyring" && argv.includes("--verify")
+            ? ok({ stdout: "changed keyring" })
+            : kind === "targets" && argv.includes("indextargets")
+              ? ok({ stdout: targetText.replaceAll(candidate, "https://foreign/") })
+              : undefined,
+      });
+      await rejectsLabel(setupApt(s.options), "config");
+      NodeAssert.equal(
+        aptCalls(s).some(({ argv }) => argv.includes("update")),
+        false,
+      );
+      NodeAssert.equal(removed(s), kind === "targets");
+    }
+  },
+);
+
+NodeTest.test("a preexisting workspace is never removed", async () => {
   const s = scenario({
     route: "candidate",
     intercept: (argv) =>
       argv[0] === "/usr/bin/mkdir" ? ok({ code: 1, stderr: "File exists" }) : undefined,
   });
   await rejectsLabel(setupApt(s.options), "config");
-  assert.equal(removed(s), false);
-  assert.equal(aptCalls(s).length, 0);
+  NodeAssert.equal(removed(s), false);
+  NodeAssert.equal(aptCalls(s).length, 0);
 });
 
-test("freshness uses only acquired files and rejects missing, malformed, stale or future dates", async () => {
-  for (const value of [
-    new Error("missing"),
-    "Date: nonsense\n",
-    "Date: Sun, 01 Nov 2026 15:00:00 UTC\n",
-    "Date: Thu, 12 Nov 2026 15:00:00 UTC\n",
-    "Date: Wed, 11 Nov 2026 15:00:00 UTC\nDate: Wed, 11 Nov 2026 15:00:00 UTC\n",
-  ]) {
-    const s = scenario({
-      route: "candidate",
-      files: {
-        [`${workspace}/lists/mirrors.edge.kernel.org_ubuntu_dists_noble-security_InRelease`]: value,
-      },
-    });
-    await rejectsLabel(setupApt(s.options), "freshness");
-    assert.equal(
-      aptCalls(s).some(({ argv }) => argv.includes("install")),
-      false,
-    );
-    assert.equal(removed(s), true);
-  }
-});
+NodeTest.test(
+  "freshness uses only acquired files and rejects missing, malformed, stale or future dates",
+  async () => {
+    for (const value of [
+      new Error("missing"),
+      "Date: nonsense\n",
+      "Date: Sun, 01 Nov 2026 15:00:00 UTC\n",
+      "Date: Thu, 12 Nov 2026 15:00:00 UTC\n",
+      "Date: Wed, 11 Nov 2026 15:00:00 UTC\nDate: Wed, 11 Nov 2026 15:00:00 UTC\n",
+    ]) {
+      const s = scenario({
+        route: "candidate",
+        files: {
+          [`${workspace}/lists/mirrors.edge.kernel.org_ubuntu_dists_noble-security_InRelease`]:
+            value,
+        },
+      });
+      await rejectsLabel(setupApt(s.options), "freshness");
+      NodeAssert.equal(
+        aptCalls(s).some(({ argv }) => argv.includes("install")),
+        false,
+      );
+      NodeAssert.equal(removed(s), true);
+    }
+  },
+);
 
-test("invalid positional packages/options and selectors cannot become privileged path overrides", async () => {
-  for (const args of [
-    [],
-    ["-o"],
-    ["pkg;true"],
-    ["/tmp/pkg"],
-    ["pkg", "--no-install-recommends"],
-    ["--no-install-recommends"],
-  ]) {
-    assert.throws(
-      () => parseArguments(args),
-      (error) => error.label === "config",
-    );
-  }
-  for (const route of ["other", "AUTO", "/tmp/sources"])
-    assert.throws(
-      () => parseArguments(["pkg"], route),
-      (error) => error.label === "config",
-    );
-});
+NodeTest.test(
+  "invalid positional packages/options and selectors cannot become privileged path overrides",
+  async () => {
+    for (const args of [
+      [],
+      ["-o"],
+      ["pkg;true"],
+      ["/tmp/pkg"],
+      ["pkg", "--no-install-recommends"],
+      ["--no-install-recommends"],
+    ]) {
+      NodeAssert.throws(
+        () => parseArguments(args),
+        (error) => error.label === "config",
+      );
+    }
+    for (const route of ["other", "AUTO", "/tmp/sources"])
+      NodeAssert.throws(
+        () => parseArguments(["pkg"], route),
+        (error) => error.label === "config",
+      );
+  },
+);
 
 function processFixture({
   survivor = false,
@@ -340,16 +373,16 @@ function processFixture({
     leader,
     tick = 0;
   const launch = (file, argv) => {
-    const child = new EventEmitter();
-    child.stdout = new PassThrough();
-    child.stderr = new PassThrough();
-    child.stdin = new Writable({
+    const child = new NodeEvents.EventEmitter();
+    child.stdout = new NodeStream.PassThrough();
+    child.stderr = new NodeStream.PassThrough();
+    child.stdin = new NodeStream.Writable({
       write(_chunk, _encoding, done) {
         done();
       },
     });
     if (file === "/usr/bin/kill") {
-      assert.equal(argv.at(-1), "-712");
+      NodeAssert.equal(argv.at(-1), "-712");
       const sig = argv[1];
       events.push(sig);
       queueMicrotask(() => {
@@ -362,8 +395,8 @@ function processFixture({
         leader.emit("close");
       });
     } else {
-      assert.equal(file, "/usr/bin/setsid");
-      assert.deepEqual(argv.slice(0, 3), ["--wait", "/bin/sh", "-c"]);
+      NodeAssert.equal(file, "/usr/bin/setsid");
+      NodeAssert.deepEqual(argv.slice(0, 3), ["--wait", "/bin/sh", "-c"]);
       leader = child;
       queueMicrotask(() => {
         alive = true;
@@ -414,76 +447,88 @@ function processFixture({
   return { run, events, logs };
 }
 
-test("owned runner confirms live identity before ack; TERM leader exit still escalates survivor to KILL before fallback", async () => {
-  const fixture = processFixture({ survivor: true });
-  const s = scenario({
-    runner: (argv, settings) => fixture.run(argv, { ...settings, timeoutMs: 15 }),
-  });
-  await setupApt(s.options);
-  assert.deepEqual(fixture.events, ["identity", "ack", "TERM", "KILL"]);
-  assert.ok(fixture.logs.some((line) => line.includes("712: deadline hit")));
-  assert.ok(fixture.logs.some((line) => line.includes("712: quiescence proven")));
-  assert.equal(s.calls[1].argv[0], "/usr/bin/dpkg");
-});
+NodeTest.test(
+  "owned runner confirms live identity before ack; TERM leader exit still escalates survivor to KILL before fallback",
+  async () => {
+    const fixture = processFixture({ survivor: true });
+    const s = scenario({
+      runner: (argv, settings) => fixture.run(argv, { ...settings, timeoutMs: 15 }),
+    });
+    await setupApt(s.options);
+    NodeAssert.deepEqual(fixture.events, ["identity", "ack", "TERM", "KILL"]);
+    NodeAssert.ok(fixture.logs.some((line) => line.includes("712: deadline hit")));
+    NodeAssert.ok(fixture.logs.some((line) => line.includes("712: quiescence proven")));
+    NodeAssert.equal(s.calls[1].argv[0], "/usr/bin/dpkg");
+  },
+);
 
-test("survivor outliving KILL stops candidate and retains an owned workspace", async () => {
-  const fixture = processFixture({ survivor: true, immortal: true });
-  const s = scenario({
-    route: "candidate",
-    intercept: (argv) =>
-      argv.includes("update") ? fixture.run(argv, { timeoutMs: 15 }) : undefined,
-  });
-  await rejectsLabel(setupApt(s.options), "cleanup-unresolved");
-  assert.deepEqual(fixture.events, ["identity", "ack", "TERM", "KILL"]);
-  assert.equal(removed(s), false);
-  assert.equal(
-    aptCalls(s).some(({ argv }) => argv.includes("install")),
-    false,
-  );
-});
+NodeTest.test(
+  "survivor outliving KILL stops candidate and retains an owned workspace",
+  async () => {
+    const fixture = processFixture({ survivor: true, immortal: true });
+    const s = scenario({
+      route: "candidate",
+      intercept: (argv) =>
+        argv.includes("update") ? fixture.run(argv, { timeoutMs: 15 }) : undefined,
+    });
+    await rejectsLabel(setupApt(s.options), "cleanup-unresolved");
+    NodeAssert.deepEqual(fixture.events, ["identity", "ack", "TERM", "KILL"]);
+    NodeAssert.equal(removed(s), false);
+    NodeAssert.equal(
+      aptCalls(s).some(({ argv }) => argv.includes("install")),
+      false,
+    );
+  },
+);
 
-test("cancellation terminates the current group and never falls back", async () => {
+NodeTest.test("cancellation terminates the current group and never falls back", async () => {
   const controller = new AbortController();
   const fixture = processFixture({ survivor: true, cancel: () => controller.abort() });
   const s = scenario({ signal: controller.signal, runner: fixture.run });
   await rejectsLabel(setupApt(s.options), "cancelled");
-  assert.equal(s.calls.length, 1);
-  assert.deepEqual(fixture.events, ["identity", "ack", "TERM", "KILL"]);
+  NodeAssert.equal(s.calls.length, 1);
+  NodeAssert.deepEqual(fixture.events, ["identity", "ack", "TERM", "KILL"]);
 });
 
-test("successful lingering member continues only the same route, never signals and skips removal", async () => {
-  const fixture = processFixture({ lingering: true });
-  const s = scenario({
-    route: "candidate",
-    intercept: (argv) => (argv.includes("update") ? fixture.run(argv) : undefined),
-  });
-  await setupApt(s.options);
-  assert.deepEqual(fixture.events, ["identity", "ack"]);
-  assert.equal(removed(s), false);
-  assert.equal(aptCalls(s).filter(({ argv }) => argv.includes("install")).length, 2);
-  const failure = scenario({
-    intercept: (_a, _s, n) =>
-      n === 1 ? ok({ quiescent: false }) : n === 2 ? network() : undefined,
-  });
-  await rejectsLabel(setupApt(failure.options), "cleanup-unresolved");
-  assert.equal(failure.calls.length, 2);
-});
+NodeTest.test(
+  "successful lingering member continues only the same route, never signals and skips removal",
+  async () => {
+    const fixture = processFixture({ lingering: true });
+    const s = scenario({
+      route: "candidate",
+      intercept: (argv) => (argv.includes("update") ? fixture.run(argv) : undefined),
+    });
+    await setupApt(s.options);
+    NodeAssert.deepEqual(fixture.events, ["identity", "ack"]);
+    NodeAssert.equal(removed(s), false);
+    NodeAssert.equal(aptCalls(s).filter(({ argv }) => argv.includes("install")).length, 2);
+    const failure = scenario({
+      intercept: (_a, _s, n) =>
+        n === 1 ? ok({ quiescent: false }) : n === 2 ? network() : undefined,
+    });
+    await rejectsLabel(setupApt(failure.options), "cleanup-unresolved");
+    NodeAssert.equal(failure.calls.length, 2);
+  },
+);
 
-test("fast gated commands wait for diagnostics after exit before classification", async () => {
-  const quick = processFixture({ fastExit: 0 });
-  const result = await quick.run(["/bin/true"]);
-  assert.equal(result.code, 0);
-  assert.deepEqual(quick.events, ["identity", "ack"]);
-  const late = processFixture({
-    fastExit: 100,
-    lateDiagnostic: `${dns}E: GPG error: BADSIG bad\n`,
-  });
-  const s = scenario({ runner: late.run });
-  await rejectsLabel(setupApt(s.options), "signature");
-  assert.equal(s.calls.length, 1);
-});
+NodeTest.test(
+  "fast gated commands wait for diagnostics after exit before classification",
+  async () => {
+    const quick = processFixture({ fastExit: 0 });
+    const result = await quick.run(["/bin/true"]);
+    NodeAssert.equal(result.code, 0);
+    NodeAssert.deepEqual(quick.events, ["identity", "ack"]);
+    const late = processFixture({
+      fastExit: 100,
+      lateDiagnostic: `${dns}E: GPG error: BADSIG bad\n`,
+    });
+    const s = scenario({ runner: late.run });
+    await rejectsLabel(setupApt(s.options), "signature");
+    NodeAssert.equal(s.calls.length, 1);
+  },
+);
 
-test("cancellation during the post-exit wait terminates surviving members", async () => {
+NodeTest.test("cancellation during the post-exit wait terminates surviving members", async () => {
   const controller = new AbortController();
   const fixture = processFixture({
     lingering: true,
@@ -491,23 +536,27 @@ test("cancellation during the post-exit wait terminates surviving members", asyn
     cancelOnQuiet: () => controller.abort(),
   });
   const result = await fixture.run(["/bin/true"], { signal: controller.signal });
-  assert.equal(result.cancelled, true);
-  assert.equal(result.quiescent, true);
-  assert.deepEqual(fixture.events, ["identity", "ack", "TERM", "KILL"]);
+  NodeAssert.equal(result.cancelled, true);
+  NodeAssert.equal(result.quiescent, true);
+  NodeAssert.deepEqual(fixture.events, ["identity", "ack", "TERM", "KILL"]);
 });
 
-test("missing marker distinguishes exited child from live unresolved child without signaling an unconfirmed group", async () => {
-  for (const liveMissing of [false, true]) {
-    const fixture = processFixture({ missing: true, liveMissing });
-    await rejectsLabel(fixture.run(["/bin/true"]), liveMissing ? "cleanup-unresolved" : "config");
-    assert.deepEqual(fixture.events, []);
-  }
-});
+NodeTest.test(
+  "missing marker distinguishes exited child from live unresolved child without signaling an unconfirmed group",
+  async () => {
+    for (const liveMissing of [false, true]) {
+      const fixture = processFixture({ missing: true, liveMissing });
+      await rejectsLabel(fixture.run(["/bin/true"]), liveMissing ? "cleanup-unresolved" : "config");
+      NodeAssert.deepEqual(fixture.events, []);
+    }
+  },
+);
 
-test(
+NodeTest.test(
   "Linux real process: TERM exits leader but KILL reaps its surviving group before returning",
   {
     skip:
+      // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone process regression must identify the actual host before using Linux process groups.
       process.platform !== "linux"
         ? "requires Linux setsid, /proc and kill; Mac does not qualify production process machinery"
         : false,
@@ -529,38 +578,44 @@ wait`;
       },
     });
     const result = await run(["/bin/sh", "-c", script], { timeoutMs: 1_000, signal: t.signal });
-    assert.equal(survivorReady, true);
-    assert.equal(result.timedOut, true);
-    assert.equal(result.quiescent, true);
-    assert.ok(logs.some((line) => line.endsWith("send TERM")));
-    assert.ok(logs.some((line) => line.endsWith("send KILL")));
+    NodeAssert.equal(survivorReady, true);
+    NodeAssert.equal(result.timedOut, true);
+    NodeAssert.equal(result.quiescent, true);
+    NodeAssert.ok(logs.some((line) => line.endsWith("send TERM")));
+    NodeAssert.ok(logs.some((line) => line.endsWith("send KILL")));
     const group = Number(
       logs.find((line) => line.includes("captured and confirmed")).match(/group (\d+)/)[1],
     );
-    assert.deepEqual(await groupMembers(group), []);
+    NodeAssert.deepEqual(await groupMembers(group), []);
   },
 );
 
-test("primary workflow uses one exact helper call per package set, preserves compiler checks and dispatch selection", async () => {
-  const workflow = await fs.readFile(
-    new URL("../../../.github/workflows/ci.yml", import.meta.url),
-    "utf8",
-  );
-  for (const job of ["build", "test", "test_desktop"]) {
-    const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [\w-]+:\n/)[0];
-    assert.equal(block.match(/node scripts\/jones\/ci\/apt-setup.mjs/g)?.length, 1);
-    assert.doesNotMatch(block, /apt-get/);
-    const expected =
-      job === "build"
-        ? "libsecret-1-dev pkg-config"
-        : "--no-install-recommends build-essential libsecret-1-dev pkg-config";
-    assert.ok(block.includes(`node scripts/jones/ci/apt-setup.mjs ${expected}\n`));
-    assert.match(block, /JONES_CI_APT_ROUTE: \$\{\{ inputs.apt_route \}\}/);
-    if (job !== "build") assert.match(block, /command -v cc/);
-  }
-  assert.match(
-    workflow,
-    /apt_route:\n[\s\S]*?type: choice\n\s+options:\n\s+- auto\n\s+- candidate\n\s+default: auto/,
-  );
-  assert.match(workflow, /node --test --test-concurrency=1 scripts\/jones\/ci\/\*\.node-test\.\*/);
-});
+NodeTest.test(
+  "primary workflow uses one exact helper call per package set, preserves compiler checks and dispatch selection",
+  async () => {
+    const workflow = await NodeFSP.readFile(
+      new URL("../../../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+    for (const job of ["build", "test", "test_desktop"]) {
+      const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [\w-]+:\n/)[0];
+      NodeAssert.equal(block.match(/node scripts\/jones\/ci\/apt-setup.mjs/g)?.length, 1);
+      NodeAssert.doesNotMatch(block, /apt-get/);
+      const expected =
+        job === "build"
+          ? "libsecret-1-dev pkg-config"
+          : "--no-install-recommends build-essential libsecret-1-dev pkg-config";
+      NodeAssert.ok(block.includes(`node scripts/jones/ci/apt-setup.mjs ${expected}\n`));
+      NodeAssert.match(block, /JONES_CI_APT_ROUTE: \$\{\{ inputs.apt_route \}\}/);
+      if (job !== "build") NodeAssert.match(block, /command -v cc/);
+    }
+    NodeAssert.match(
+      workflow,
+      /apt_route:\n[\s\S]*?type: choice\n\s+options:\n\s+- auto\n\s+- candidate\n\s+default: auto/,
+    );
+    NodeAssert.match(
+      workflow,
+      /node --test --test-concurrency=1 scripts\/jones\/ci\/\*\.node-test\.\*/,
+    );
+  },
+);
