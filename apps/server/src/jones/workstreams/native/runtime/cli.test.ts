@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- CLI tests use only freshly allocated synthetic homes; the root retains evidence and owns cleanup.
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeChildProcess from "node:child_process";
 import * as NodePath from "node:path";
@@ -12,6 +13,10 @@ import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import { Command } from "effect/cli";
 import * as TestConsole from "effect/testing/TestConsole";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as SecretStore from "../../../../auth/ServerSecretStore.ts";
+import * as Admin from "../cli.ts";
+import * as Keys from "../crypto/keyProvider.ts";
 import * as Fixture from "../store/sql.testkit.ts";
 import { registryCommand } from "./cli.ts";
 import { vi } from "vite-plus/test";
@@ -243,6 +248,319 @@ it.effect("mounted source-setup commands refuse an unqualified home without crea
             "server-secret-store",
             "--request",
             "{}",
+          ]),
+        ))._tag,
+      ).toBe("Failure");
+    expect(NodeFS.existsSync(f.database)).toBe(false);
+    expect(NodeFS.existsSync(NodePath.join(f.home, "userdata/secrets"))).toBe(false);
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)));
+});
+
+it.effect("keys init creates the init keys once without printing them; init then succeeds", () => {
+  const f = fresh(false);
+  const keys = (home: string) => [
+    "keys",
+    "init",
+    "--home",
+    home,
+    "--key-provider",
+    "server-secret-store",
+    "--request",
+    JSON.stringify(request),
+  ];
+  const secrets = NodePath.join(f.home, "userdata/secrets");
+  const names = [
+    "workstreams-content-key-test-home",
+    "workstreams-content-key-test-local",
+    `workstreams-index-key-${request.registry.registry_instance_id}`,
+  ];
+  return Effect.gen(function* () {
+    yield* run(keys(f.home));
+    const created = names.map((name) => NodePath.join(secrets, name + ".bin"));
+    const bytes = created.map((file) => NodeFS.readFileSync(file));
+    for (const [i, file] of created.entries()) {
+      expect(bytes[i]!.byteLength).toBe(32);
+      expect(NodeFS.statSync(file).mode & 0o777).toBe(0o600);
+    }
+    expect(new Set(bytes.map((b) => b.toString("hex"))).size).toBe(3);
+    const text = (yield* TestConsole.logLines).join("\n");
+    expect(JSON.parse(text)).toEqual({ created: names });
+    for (const b of bytes) {
+      expect(text).not.toContain(b.toString("hex"));
+      expect(text).not.toContain(b.toString("base64"));
+    }
+    expect((yield* Effect.result(run(keys(f.home))))._tag).toBe("Failure");
+    expect(created.map((file) => NodeFS.readFileSync(file))).toEqual(bytes);
+    expect(NodeFS.existsSync(f.database)).toBe(false);
+    yield* run(selected(f.home));
+    expect(NodeFS.existsSync(f.database)).toBe(true);
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)));
+});
+
+it.effect(
+  "keys init refuses any existing key, a bad provider or a bad request and creates none",
+  () => {
+    const f = fresh(false);
+    const secrets = NodePath.join(f.home, "userdata/secrets");
+    const index = NodePath.join(
+      secrets,
+      `workstreams-index-key-${request.registry.registry_instance_id}.bin`,
+    );
+    const keys = (provider: string, body: unknown) => [
+      "keys",
+      "init",
+      "--home",
+      f.home,
+      "--key-provider",
+      provider,
+      "--request",
+      JSON.stringify(body),
+    ];
+    return Effect.gen(function* () {
+      for (const args of [
+        keys("unknown", request),
+        keys("server-secret-store", { ...request, local_key_id: request.content_key_id }),
+        keys("server-secret-store", { ...request, extra: true }),
+      ])
+        expect((yield* Effect.result(run(args)))._tag).toBe("Failure");
+      expect(NodeFS.existsSync(secrets) ? NodeFS.readdirSync(secrets) : []).toEqual([]);
+      NodeFS.mkdirSync(secrets, { recursive: true, mode: 0o700 });
+      NodeFS.writeFileSync(index, Buffer.alloc(32, 9), { mode: 0o600 });
+      expect((yield* Effect.result(run(keys("server-secret-store", request))))._tag).toBe(
+        "Failure",
+      );
+      expect(NodeFS.readdirSync(secrets)).toEqual([NodePath.basename(index)]);
+      expect(NodeFS.readFileSync(index)).toEqual(Buffer.alloc(32, 9));
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+    );
+  },
+);
+
+it.effect("a failed keys init removes only the keys that run created", () => {
+  const stored = new Map<string, Uint8Array>([["unrelated", new Uint8Array(32)]]);
+  const removed: string[] = [];
+  const names = Admin.keyNames(request);
+  const secrets = SecretStore.ServerSecretStore.of({
+    get: (name) => Effect.succeed(Option.fromNullishOr(stored.get(name))),
+    set: () => Effect.die("Unexpected secret write"),
+    create: (name, value) =>
+      name === names[1]
+        ? Effect.fail(
+            new SecretStore.SecretStorePersistError({ resource: name, cause: "synthetic" }),
+          )
+        : Effect.sync(() => void stored.set(name, value)),
+    getOrCreateRandom: () => Effect.die("Unexpected automatic key creation"),
+    remove: (name) => Effect.sync(() => void (stored.delete(name), removed.push(name))),
+  });
+  return Effect.gen(function* () {
+    const result = yield* Effect.result((yield* Admin.NativeKeyAdmin).initialize(request));
+    expect(result._tag === "Failure" && result.failure.code).toBe("unavailable");
+    expect(removed).toEqual([names[0]]);
+    expect([...stored.keys()]).toEqual(["unrelated"]);
+  }).pipe(
+    Effect.provide(
+      Admin.keyLayer.pipe(
+        Layer.provide(
+          Layer.mergeAll(Layer.succeed(SecretStore.ServerSecretStore, secrets), NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+});
+
+const memberRequest = { registry: request.registry, local_key_id: "member-local" };
+const memberKeyName = "workstreams-content-key-member-local";
+const memberHome = () => {
+  const f = fresh(false);
+  NodeFS.mkdirSync(NodePath.dirname(f.database), { recursive: true });
+  new NodeSqlite.DatabaseSync(f.database).close();
+  return { ...f, secrets: NodePath.join(f.home, "userdata/secrets") };
+};
+const memberKeys = (
+  home: string,
+  body: unknown = memberRequest,
+  provider = "server-secret-store",
+) => [
+  "keys",
+  "member-init",
+  "--home",
+  home,
+  "--key-provider",
+  provider,
+  "--request",
+  JSON.stringify(body),
+];
+const refusal = <A, E, R>(run: Effect.Effect<A, E, R>) =>
+  Effect.map(Effect.result(run), (result) =>
+    result._tag === "Failure" ? ((result.failure as { code?: string }).code ?? "failure") : "ok",
+  );
+const keyRows = (database: string) => {
+  const db = new NodeSqlite.DatabaseSync(database, { readOnly: true });
+  try {
+    return db
+      .prepare("SELECT key_id, registry_instance_id, scope, state FROM jones_workstreams_keys")
+      .all();
+  } finally {
+    db.close();
+  }
+};
+
+it.effect(
+  "keys member-init provisions the member's local key once and the key provider resolves it",
+  () => {
+    const f = memberHome();
+    const file = NodePath.join(f.secrets, memberKeyName + ".bin");
+    // The same activeKeyId/get calls member setup, member startup and peer setup make first.
+    const fileSecrets = SecretStore.ServerSecretStore.of({
+      get: (name) =>
+        Effect.sync(() => {
+          const path = NodePath.join(f.secrets, name + ".bin");
+          return NodeFS.existsSync(path)
+            ? Option.some(Uint8Array.from(NodeFS.readFileSync(path)))
+            : Option.none();
+        }),
+      set: () => Effect.die("Unexpected secret write"),
+      create: () => Effect.die("Unexpected secret creation"),
+      getOrCreateRandom: () => Effect.die("Unexpected automatic key creation"),
+      remove: () => Effect.die("Unexpected key removal"),
+    });
+    const provider = Keys.layer.pipe(
+      Layer.provide(Layer.succeed(SecretStore.ServerSecretStore, fileSecrets)),
+      Layer.provide(NodeSqliteClient.layer({ filename: f.database })),
+    );
+    return Effect.gen(function* () {
+      yield* run(memberKeys(f.home));
+      const bytes = NodeFS.readFileSync(file);
+      expect(bytes.byteLength).toBe(32);
+      expect(NodeFS.statSync(file).mode & 0o777).toBe(0o600);
+      // Migration logs may precede the single JSON result line.
+      const lines = (yield* TestConsole.logLines).map(String),
+        text = lines.join("\n");
+      expect(JSON.parse(lines.at(-1)!)).toEqual({ created: [memberKeyName] });
+      expect(text).not.toContain(bytes.toString("hex"));
+      expect(text).not.toContain(bytes.toString("base64"));
+      const rows = [
+        {
+          key_id: "member-local",
+          registry_instance_id: Fixture.scope.registry_instance_id,
+          scope: "local",
+          state: "active",
+        },
+      ];
+      expect(keyRows(f.database)).toEqual(rows);
+      const resolved = yield* Effect.gen(function* () {
+        const keys = yield* Keys.WorkstreamsKeyProvider;
+        const id = yield* keys.activeKeyId({ ...Fixture.scope, key_scope: "local" });
+        return { id, bytes: yield* keys.get(id) };
+      }).pipe(Effect.provide(provider));
+      expect(resolved.id).toBe("member-local");
+      expect(Buffer.from(resolved.bytes)).toEqual(bytes);
+      for (const body of [memberRequest, { ...memberRequest, local_key_id: "member-local-2" }])
+        expect(yield* refusal(run(memberKeys(f.home, body)))).toBe("key_exists");
+      expect(NodeFS.readdirSync(f.secrets)).toEqual([memberKeyName + ".bin"]);
+      expect(NodeFS.readFileSync(file)).toEqual(bytes);
+      expect(keyRows(f.database)).toEqual(rows);
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+    );
+  },
+);
+
+it.effect(
+  "keys member-init refuses bad selections, a home registry or existing keys and keeps nothing it created",
+  () => {
+    const f = memberHome();
+    const file = NodePath.join(f.secrets, memberKeyName + ".bin");
+    return Effect.gen(function* () {
+      const missing = fresh(false);
+      for (const [args, code] of [
+        [memberKeys(f.home, memberRequest, "unknown"), "explicit_selection_required"],
+        [memberKeys(f.home, { ...memberRequest, extra: true }), "failure"],
+        [memberKeys(f.home, { ...memberRequest, local_key_id: "bad key" }), "failure"],
+        [memberKeys(missing.home), "home_unavailable"],
+      ] as const)
+        expect(yield* refusal(run(args))).toBe(code);
+      expect(NodeFS.existsSync(missing.database)).toBe(false);
+      expect(NodeFS.existsSync(NodePath.join(missing.home, "userdata/secrets"))).toBe(false);
+      expect(NodeFS.existsSync(f.secrets) ? NodeFS.readdirSync(f.secrets) : []).toEqual([]);
+      // An existing key file refuses before any row is written.
+      NodeFS.mkdirSync(f.secrets, { recursive: true, mode: 0o700 });
+      NodeFS.writeFileSync(file, Buffer.alloc(32, 9), { mode: 0o600 });
+      expect(yield* refusal(run(memberKeys(f.home)))).toBe("key_exists");
+      expect(NodeFS.readFileSync(file)).toEqual(Buffer.alloc(32, 9));
+      expect(keyRows(f.database)).toEqual([]);
+      NodeFS.rmSync(file);
+      // A failed row write removes the key file this run created.
+      const db = new NodeSqlite.DatabaseSync(f.database);
+      try {
+        db.exec(
+          "CREATE TRIGGER synthetic_key_refusal BEFORE INSERT ON jones_workstreams_keys BEGIN SELECT RAISE(ABORT,'synthetic'); END",
+        );
+      } finally {
+        db.close();
+      }
+      expect(yield* refusal(run(memberKeys(f.home)))).toBe("unavailable");
+      expect(NodeFS.readdirSync(f.secrets)).toEqual([]);
+      expect(keyRows(f.database)).toEqual([]);
+      // A home that holds the registry refuses: its keys come from `keys init` and `init`.
+      const home = fresh(true);
+      yield* run(selected(home.home));
+      expect(
+        yield* refusal(
+          run(memberKeys(home.home, { ...memberRequest, local_key_id: "other-local" })),
+        ),
+      ).toBe("already_initialized");
+      expect(
+        NodeFS.existsSync(
+          NodePath.join(home.home, "userdata/secrets/workstreams-content-key-other-local.bin"),
+        ),
+      ).toBe(false);
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+    );
+  },
+);
+
+it.effect("mounted transition commands refuse a home without an existing database", () => {
+  const f = fresh(false);
+  const pem = NodeCrypto.generateKeyPairSync("ed25519")
+    .publicKey.export({ type: "spki", format: "pem" })
+    .toString();
+  const snapshot = NodePath.join(f.home, "snapshot.enc"),
+    key = NodePath.join(f.home, "permit.pem");
+  NodeFS.writeFileSync(snapshot, "encrypted", { mode: 0o600 });
+  NodeFS.writeFileSync(key, pem, { mode: 0o600 });
+  const transitionRequest = JSON.stringify({
+    import_run_id: "70000000-0000-4000-8000-000000000001",
+    stream_key_id: "test-home",
+    permit: { key_id: "operator", header_sha256: "a".repeat(64), signature: "AAAA" },
+    permit_key_id: "operator",
+    home_environment_id: "home:test",
+    active_key_id: "test-home",
+    mappings: [],
+  });
+  return Effect.gen(function* () {
+    for (const [action, provider] of [
+      ["plan", "server-secret-store"],
+      ["apply", "server-secret-store"],
+      ["readback", "unknown"],
+    ] as const)
+      expect(
+        (yield* Effect.result(
+          run([
+            "transition",
+            action,
+            "--home",
+            f.home,
+            "--key-provider",
+            provider,
+            "--request",
+            transitionRequest,
+            "--snapshot",
+            snapshot,
+            "--permit-public-key",
+            key,
           ]),
         ))._tag,
       ).toBe("Failure");

@@ -790,6 +790,202 @@ it.effect("settles only the stopped run's background work, once", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("a run-only settlement ends a stalled run once and leaves its background work", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:idle-run-settle");
+    const providerThreadId = ProviderThreadId.make("provider-thread:idle-run-settle");
+    const runId = RunId.make("run:idle-run-settle");
+    const attemptId = RunAttemptId.make("attempt:idle-run-settle");
+    const nodeId = NodeId.make("node:idle-run-settle");
+    const providerTurnId = ProviderTurnId.make("provider-turn:idle-run-settle");
+    const itemId = TurnItemId.make("turn-item:idle-run-settle");
+    const now = yield* DateTime.now;
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-idle-run-settle"),
+      threadId,
+      projectId: ProjectId.make("project:idle-run-settle"),
+      title: "Idle run settle",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:provider-thread"),
+      type: "provider-thread.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: providerThreadId,
+        driver: adapter.driver,
+        providerInstanceId: instanceId,
+        providerSessionId: null,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "active",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:run"),
+      type: "run.created",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId: instanceId,
+        modelSelection,
+        providerThreadId,
+        userMessageId: MessageId.make("message:idle-run-settle"),
+        rootNodeId: nodeId,
+        activeAttemptId: attemptId,
+        status: "running",
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    });
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:attempt"),
+      type: "run-attempt.created",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: attemptId,
+        runId,
+        attemptOrdinal: 1,
+        rootNodeId: nodeId,
+        providerInstanceId: instanceId,
+        providerThreadId,
+        providerTurnId,
+        reason: "initial",
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      },
+    });
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:node"),
+      type: "node.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: nodeId,
+        threadId,
+        runId,
+        parentNodeId: null,
+        rootNodeId: nodeId,
+        kind: "root_turn",
+        status: "running",
+        countsForRun: true,
+        providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      },
+    });
+    // The projection never saw the turn end, which is what leaves the run running.
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:turn"),
+      type: "provider-turn.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: providerTurnId,
+        providerThreadId,
+        nodeId,
+        runAttemptId: attemptId,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      },
+    });
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:item"),
+      type: "turn-item.updated",
+      threadId,
+      runId,
+      occurredAt: now,
+      payload: {
+        id: itemId,
+        threadId,
+        runId,
+        nodeId,
+        providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 10,
+        status: "running",
+        title: "Background command",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "command_execution",
+        input: "sleep 60",
+      },
+    });
+    const state = Effect.map(projections.getThreadProjection(threadId), (projection) => ({
+      run: projection.runs.find((run) => run.id === runId)?.status,
+      attempt: projection.attempts.find((attempt) => attempt.id === attemptId)?.status,
+      turn: projection.providerTurns.find((turn) => turn.id === providerTurnId)?.status,
+      item: projection.turnItems.find((item) => item.id === itemId)?.status,
+    }));
+    const settleRunOnly = {
+      type: "thread.background-work.settle",
+      commandId: CommandId.make("stop-idle-run:idle-run-settled"),
+      threadId,
+      providerThreadId,
+      providerTurnId,
+      runOnly: true,
+    } as const;
+    const settled = yield* orchestrator.dispatch(settleRunOnly);
+    assert.isAbove(settled.storedEvents.length, 0);
+    assert.deepEqual(yield* state, {
+      run: "interrupted",
+      attempt: "interrupted",
+      turn: "interrupted",
+      item: "running",
+    });
+    const repeated = yield* orchestrator.dispatch({
+      ...settleRunOnly,
+      commandId: CommandId.make("stop-idle-run-again:idle-run-settled"),
+    });
+    assert.lengthOf(repeated.storedEvents, 0, "an already settled run is not settled again");
+    // A confirmed stop still ends the background work the run-only settlement left alone.
+    yield* orchestrator.dispatch({
+      type: "thread.background-work.settle",
+      commandId: CommandId.make("stop-idle-run:background-work-settled"),
+      threadId,
+      providerThreadId,
+      providerTurnId,
+    });
+    assert.equal((yield* state).item, "interrupted");
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("keeps delegated child pull-request links independent of the parent", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

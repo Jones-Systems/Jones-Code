@@ -34,6 +34,7 @@ import {
   nativeCreationSha256 as digest,
 } from "../nativeCreation/NativeCreationPreparation.ts";
 import { selectionAdmissionReason } from "./selectionAdmission.ts";
+import { readSelectionEventRevision } from "./selectionRevision.ts";
 
 export class ThreadSelfConfigurationError extends Schema.TaggedError<ThreadSelfConfigurationError>()(
   "ThreadSelfConfigurationError",
@@ -89,13 +90,9 @@ const make = Effect.gen(function* () {
   let nextGeneration = 0;
   const residentGenerations = new WeakMap<object, string>();
   const revision = Effect.fn("ThreadSelfConfiguration.revision")(function* (threadId: ThreadId) {
-    const rows = yield* sql<{ revision: number }>`
-    SELECT COALESCE(MAX(sequence), 0) AS revision FROM orchestration_events
-    WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${threadId}
-      AND event_type IN ('thread.created', 'thread.model-selection-updated', 'thread.provider-switched')
-  `;
+    const events = yield* readSelectionEventRevision(sql, threadId);
     const owner = yield* ownerSelections.read(threadId);
-    return Math.max(rows[0]?.revision ?? 0, owner?.resultSequence ?? 0);
+    return Math.max(events, owner?.resultSequence ?? 0);
   });
   const snapshot = Effect.fn("ThreadSelfConfiguration.snapshot")(function* (
     threadId: ThreadId,

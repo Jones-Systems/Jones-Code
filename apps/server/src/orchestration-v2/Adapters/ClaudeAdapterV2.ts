@@ -7957,20 +7957,35 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const emitRosterUpdate = Effect.fnUntraced(function* (
           nativeThreadId: string,
           activeContext: ActiveClaudeTurnContext | null,
+          // Callers outside the SDK reader pass the bound query so the update keeps its evidence.
+          boundQuery?: ClaudeLiveQueryContext,
         ) {
-          const baseThread =
+          const snapshot =
             activeContext?.input.providerThread ??
             (yield* Ref.get(lastProviderThreadByNativeThread)).get(nativeThreadId);
-          if (baseThread === undefined) {
+          if (snapshot === undefined) {
             return;
           }
+          const producer = boundQuery?.providerThread.id === snapshot.id ? boundQuery : undefined;
+          // The turn-start snapshot predates the query binding and would strip its generation.
+          const baseThread =
+            producer === undefined
+              ? snapshot
+              : { ...snapshot, runtimeIdentity: producer.providerThread.runtimeIdentity };
           const status =
             activeContext === null
               ? ("idle" as const)
               : baseThread.status === "idle"
                 ? ("active" as const)
                 : baseThread.status;
-          yield* emitProviderThreadRoster({ nativeThreadId, providerThread: baseThread, status });
+          const emit = emitProviderThreadRoster({
+            nativeThreadId,
+            providerThread: baseThread,
+            status,
+          });
+          yield* producer === undefined
+            ? emit
+            : emit.pipe(Effect.provideService(ClaudeProducerContext, producer));
         });
 
         const applyBackgroundTaskRosterMessage = Effect.fnUntraced(function* (input: {
@@ -11552,15 +11567,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
               }
               const active = yield* Ref.get(activeTurn);
+              // This MCP call runs outside the SDK reader, so it names its producer itself.
               yield* emitRosterUpdate(
                 nativeThreadId,
                 active?.nativeThreadId === nativeThreadId ? active : null,
+                boundQueriesByNativeThread.get(nativeThreadId),
               );
               return { matched };
             },
             (effect) => sdkMessageLock.withPermits(1)(effect),
           ),
           interruptTurn,
+          isTurnActive: (providerTurnId) =>
+            Effect.map(Ref.get(activeTurn), (turn) => turn?.providerTurnId === providerTurnId),
           stopSubagent: Effect.fn("ClaudeAdapterV2.stopSubagent")(function* (input) {
             const existing = yield* Ref.get(queryContext);
             const nativeThreadId = input.providerThread.nativeThreadRef?.nativeId;

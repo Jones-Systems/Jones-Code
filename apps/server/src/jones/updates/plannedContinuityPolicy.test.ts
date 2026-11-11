@@ -122,7 +122,7 @@ it("preserves preexisting holds and recognizes later Stop or hold even without n
   const ids = continuationRunIds(snapshot, projection);
   for (const command_type of [
     "queue.hold",
-    "turn.interrupt",
+    "run.interrupt",
     "thread.runtime.stop",
     "thread.metadata.update",
     "message.dispatch",
@@ -244,7 +244,7 @@ it("ignores a recovery-cancelled provider wake without ignoring a user Stop or h
   const snapshot = capture(recovered)!;
   expect(snapshot.sourceRunId).toBe(root.id);
   expect(canReleasePlannedQueue(snapshot, recovered)).toBe(true);
-  for (const command_type of ["turn.interrupt", "thread.runtime.stop", "queue.hold"])
+  for (const command_type of ["run.interrupt", "thread.runtime.stop", "queue.hold"])
     expect(
       changesPlannedControl(
         { command_id: "explicit-user-control", command_type },

@@ -7,9 +7,11 @@
       "id": "direct-producer-completion",
       "tests": [
         "scripts/jones/direct-producers/completion.node-test.mjs",
-        "native/process-placement/build.test.mjs"
+        "native/process-placement/build.test.mjs",
+        "scripts/jones/direct-producers/finite-production.test.ts",
+        "scripts/jones/direct-producers/finite-production.node-test.mjs"
       ],
-      "scope": "Process-placement compiler errors wait for native close; optional completion observes known success/failure/drained cancellation after scratch cleanup, and metadata failure preserves the native result. Existing output names, compiler arguments, manifests and cleanup behavior are preserved. Completion reuses the 64 KiB/100 ms observation sink, with content proof deferred and allocation_disposition_not_observed explicit. This feature does not record durable allocation dispositions or hook other producers. The scripts package test command adds the focused Node test discovery path."
+      "scope": "Process-placement compiler errors wait for native close; optional completion observes known success/failure/drained cancellation after scratch cleanup, and metadata failure preserves the native result. Existing output names, compiler arguments, manifests and cleanup behavior are preserved. Completion reuses the 64 KiB/100 ms observation sink, with content proof deferred and allocation_disposition_not_observed explicit. Server build/build-exe now admit one exact in-checkout dist or dist-exe durable ProducerFinalizer duty before allocation and finalize after the whole existing operation and its owned child scope. Known native results remain independent of bookkeeping; leader-only completion retains writer_completion_not_observed, and unknown terminal/interruption keeps the active duty. Command diagnostics expose exact id/root/path/reason independently of optional capture. No content proof is requested. Standalone bundle, web, desktop, watch, MJS and external-root integration remain open. The scripts package test command adds the focused Node test discovery path."
     },
     {
       "id": "provider-node-deduplication",
@@ -289,6 +291,7 @@
       "id": "migration-order",
       "tests": [
         "scripts/jones/ci/jones-migration-order.node-test.cjs",
+        "scripts/jones/ci/jones-migration-ledger.node-test.cjs",
         "apps/server/src/jones/persistence/Migrations.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts"
       ],
@@ -758,6 +761,7 @@
       "id": "settlement-restore",
       "tests": [
         "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+        "apps/server/src/jones/settlementRestore/plan.test.ts",
         "packages/contracts/src/jones/settlementRestore.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "packages/client-runtime/src/jones/settlementRestore/controller.test.ts",
@@ -1545,6 +1549,7 @@
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
         "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
+        "apps/server/src/jones/persistence/Migrations/146_JonesSettlementOriginRetention.test.ts",
         "apps/server/scripts/jones/currentFixtures.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
         "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
@@ -1738,10 +1743,12 @@
         "apps/server/src/jones/remoteDelegation/ChildProgress.test.ts",
         "apps/server/src/jones/remoteDelegation/BlockingQuestions.test.ts",
         "apps/server/src/jones/remoteDelegation/ObservationHooks.test.ts",
+        "apps/server/src/jones/remoteDelegation/PeerMonitor.test.ts",
+        "apps/server/src/jones/remoteDelegation/shared.test.ts",
         "packages/contracts/src/jones/remoteTaskObservation.test.ts",
         "apps/server/src/mcp/OrchestratorMcpService.test.ts"
       ],
-      "scope": "Jones-owned durable remote delegation intent and peer monitoring integrate with the imported remote service. Reservation precedes remote launch; acknowledged child binding, cancellation debt and completion survive reconnect/restart. Shared orchestration commands and event emission remain with their existing owner to preserve atomic event projection and replay. Existing service/orchestrator tests remain in the real delegation harness instead of duplicating its projection, wake and stop machinery. ThreadManagementService keeps pending owner input nonterminal until the request resolves and wakes the existing long poll; ProviderRuntimeRecoveryService preserves unbound remote reservations during local provider recovery. Their existing integration tests exercise those shared lifecycle owners. PeerForwarding retains its existing test harness with the synthetic lifecycle dependencies required by the composed remote service. Final reply assembly is Jones-owned and validates exact-run text continuations before publishing a complete result. Additive, versioned question observations and exact-original-run child progress use Jones-owned contracts and sparse storage. Existing MCP, thread-management and reactor harnesses cover parent wake, restart, cancellation and unchanged original results. Unsupported peer observations remain explicit. New launches negotiate the versioned observation capability before any remote launch attempt. Existing legacy terminal tasks reconcile complete exact-run results after one bounded wait; unsupported nonterminal work fails visibly through existing Stop debt. Lost launch receipts preserve their pending intent and admission with a stable reconciliation notice, never fabricated no-effect. Launch forwarding uses the persisted intent creation time across retries and restarts without applying it to other calls."
+      "scope": "Jones-owned durable remote delegation intent and peer monitoring integrate with the imported remote service. Reservation precedes remote launch; acknowledged child binding, cancellation debt and completion survive reconnect/restart. Shared orchestration commands and event emission remain with their existing owner to preserve atomic event projection and replay. Existing service/orchestrator tests remain in the real delegation harness instead of duplicating its projection, wake and stop machinery. ThreadManagementService keeps pending owner input nonterminal until the request resolves and wakes the existing long poll; ProviderRuntimeRecoveryService preserves unbound remote reservations during local provider recovery. Their existing integration tests exercise those shared lifecycle owners. PeerForwarding retains its existing test harness with the synthetic lifecycle dependencies required by the composed remote service. Final reply assembly is Jones-owned and validates exact-run text continuations before publishing a complete result. Additive, versioned question observations and exact-original-run child progress use Jones-owned contracts and sparse storage. Existing MCP, thread-management and reactor harnesses cover parent wake, restart, cancellation and unchanged original results. Unsupported peer observations remain explicit. New launches negotiate the versioned observation capability before any remote launch attempt. Existing legacy terminal tasks reconcile complete exact-run results after one bounded wait; unsupported nonterminal work fails visibly through existing Stop debt. Lost launch receipts preserve their pending intent and admission with a stable reconciliation notice, never fabricated no-effect. Launch forwarding uses the persisted intent creation time across retries and restarts without applying it to other calls. Remote delegation state stays bounded: finished intent, observation and admission rows are deleted after a thirty day retention window, startup recovery processes only open work, stored rows are schema-validated, a claim left dispatching by a stopped process is closed with a recorded failure, and the peer monitor never holds a permit across a long poll."
     },
     {
       "id": "peer-transport",
@@ -3196,6 +3203,7 @@
         "apps/server/src/jones/workstreams/native/conformance/mcpParity.test.ts",
         "apps/server/src/jones/workstreams/native/conformance/cpDenied.test.ts",
         "apps/server/src/jones/workstreams/native/transition/apply.test.ts",
+        "apps/server/src/jones/workstreams/native/transition/cli.test.ts",
         "apps/server/src/jones/workstreams/native/transition/snapshotReader.test.ts",
         "apps/server/src/jones/persistence/Migrations/125_JonesWorkstreamsNative.test.ts",
         "apps/server/src/jones/workstreams/native/crypto/envelope.test.ts",
@@ -3239,6 +3247,7 @@
         "apps/server/src/jones/persistence/Migrations/127_JonesWorkstreamsRollupAttempts.test.ts",
         "apps/server/src/jones/workstreams/native/rollups/manifestSource.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/rollupWorker.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/supervision.test.ts",
         "packages/contracts/src/jones/workstreamsPeerAuthority.test.ts",
         "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
         "packages/contracts/src/jones/workstreamsHomeReadResult.test.ts",
@@ -3249,6 +3258,7 @@
         "apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts",
         "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativePeerMiddleware.test.ts",
         "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts",
         "packages/shared/src/atomicWrite.test.ts",
         "apps/server/src/serverRuntimeState.test.ts",
@@ -3489,6 +3499,30 @@
         "apps/mobile/src/features/workstreams/Controls.operations.test.tsx"
       ],
       "scope": "Shared authenticated closed native read/export and application-owned read lifetimes. Web detail/reference and mobile appearance use the original prepared connection/session/generation and independently authenticated public-list binding; replacement/disposal cancels pending work and withholds late results. Negotiated placement-v2 consumers retain native evidence and home observations, validate complete snapshots and inventory, and independently capture the original live source descriptors; replaced source connections invalidate memory-only proof witnesses used by grouping and action planning. Explicit placement-v1 loading remains separate, with no v2 failure fallback. Snapshot-scoped exports are callable from both application controllers. Existing cookie/Bearer/DPoP renewal remains the sole owner. Web download and mobile save/share actions consume only complete controller bytes and cancel on authenticated scope replacement. Capability advertisement and physical platform acceptance remain separate."
+    },
+    {
+      "id": "stalled-run-projection",
+      "tests": [
+        "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts"
+      ],
+      "scope": "A provider thread update emitted outside the SDK reader names its bound producer, and an update without producer evidence that predates the stored runtime identity (no generation, or the same generation at an older evidence revision) keeps the stored identity. Another binding, another generation, a newer revision, or the stored generation and revision apply as written. A rejected capture is reported by thread, provider thread, reason and event type without payload content. A root terminal whose provider thread lost every producer record settles its run through the current-run write, and a failed interrupt settles only the run when the runtime reports the turn idle; background work is never settled on an unknown outcome. Shared sink, run execution, effect worker, adapter and contract hooks keep their upstream owners. Synthetic adapter, sink and projection fixtures; no installed-runtime or live-thread recovery claim."
+    },
+    {
+      "id": "event-log-pruning",
+      "tests": [
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts",
+        "apps/server/src/jones/settlementOrigins/SettlementOrigins.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailoverStore.test.ts",
+        "apps/server/src/jones/persistence/Migrations/146_JonesSettlementOriginRetention.test.ts",
+        "apps/server/src/jones/settlementRestore/plan.test.ts"
+      ],
+      "scope": "Every Jones reader of orchestration_events is classified as capture, tolerate or unaffected against upstream's event-log pruning rule (v1 events, thread.created, running run.updated and each stream's newest event stay; the rest older than a day goes; the pruned-through boundary is published first; receipts stay), and a source scan fails when a new reader is unclassified. Readers that would have read a missing event as absence fail closed: deletion admission, ordinary-checkout admission, settlement origins (unknown, never other, past the marker window) and the self-configuration selection revision, which never falls below the pruned-through sequence. Settlement origin rows older than 30 days are pruned by an indexed, batched sweep (Jones migration 146) started once for the server lifetime, and an interrupted origin recording now propagates instead of being absorbed. A rejected settlement restore travels as a typed error whose message keeps the client-visible wording. Fixtures prune synthetic history with the upstream keep rule; the upstream pruner, its maintenance preflight and the maintenance hooks are not part of this feature."
     }
   ]
 }

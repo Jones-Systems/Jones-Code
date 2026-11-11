@@ -496,7 +496,10 @@ const boxToolkitLayer = (thread: BoxThread) => {
       Layer.mergeAll(
         SqlitePersistence.layerMemory,
         Layer.mock(EventSink.EventSinkV2)({}),
-        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({}),
+        // A keyed launch first looks for a receipt under the id earlier builds derived; none exists here.
+        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
+          getByCommandId: () => Effect.succeedNone,
+        }),
       ),
     ),
     Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),

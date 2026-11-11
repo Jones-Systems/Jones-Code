@@ -21,6 +21,7 @@ export { voiceReviewResponseHeadersLayer } from "../../voiceReview/http.ts";
 export const provideConversationAndVoiceReview = <A, E, R>(api: Layer.Layer<A, E, R>) =>
   api.pipe(
     Layer.provide(settlementOriginsHttpApiLayer.pipe(Layer.provide(SettlementOrigins.layer))),
+    Layer.provide(SettlementOrigins.retentionLayer),
     Layer.provide(
       settlementRestoreHttpApiLayer.pipe(
         Layer.provide(SettlementRestore.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),

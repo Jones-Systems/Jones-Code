@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import * as Callers from "./recordedCaller.ts";
 import * as Recovery from "./recovery.ts";
+import { captureLogs } from "./supervision.testkit.ts";
 import * as Entries from "../operations/durableEntries.ts";
 import * as Operations from "../../operations/service.ts";
 const record: Callers.RecordedCallerV1 = {
@@ -281,3 +282,126 @@ it.effect("tagged PEER recovery remains fenced if the lookup-only owner is absen
     ),
   ),
 );
+
+it.effect(
+  "a failing or defecting sweep is logged with its failure class and the loop keeps sweeping",
+  () => {
+    const capture = captureLogs();
+    let calls = 0;
+    const tail = () => capture.logs.slice(-1)[0]!;
+    return Effect.scoped(
+      Effect.gen(function* () {
+        yield* Recovery.NativeWorkstreamsRecovery;
+        // Let the forked loop run its first sweep before observing it.
+        yield* TestClock.adjust(0);
+        // The first sweep fails with a typed error: it is logged, never swallowed.
+        expect(calls).toBe(1);
+        // Control: the capture reaches the loop fiber, so a missing warning means none was logged.
+        expect(capture.at("Info").map((entry) => entry.message)).toEqual([
+          ["synthetic sweep marker"],
+        ]);
+        expect(capture.at("Warn")).toHaveLength(1);
+        expect(capture.at("Warn")[0]!.annotations).toEqual({
+          loop: "recovery",
+          failure: "typed",
+          code: "reservations",
+          consecutiveFailures: 1,
+          retryInMs: 30_000,
+        });
+        expect(capture.at("Warn")[0]!.cause.reasons.length).toBeGreaterThan(0);
+        // A defect used to end the loop silently; it is logged and the next cadence still runs.
+        yield* TestClock.adjust(30_000);
+        expect(calls).toBe(2);
+        expect(capture.at("Warn")).toHaveLength(2);
+        expect(capture.at("Warn")[1]!.annotations).toEqual({
+          loop: "recovery",
+          failure: "defect",
+          consecutiveFailures: 2,
+          retryInMs: 60_000,
+        });
+        // Repeated failure backs off; the next attempt is not due at the base cadence.
+        yield* TestClock.adjust(59_999);
+        expect(calls).toBe(2);
+        yield* TestClock.adjust(1);
+        expect(calls).toBe(3);
+        expect(capture.at("Warn")).toHaveLength(2);
+        expect(tail().level).toBe("Info");
+        expect(tail().annotations).toEqual({ loop: "recovery", afterFailures: 2 });
+        // Success restores the base cadence.
+        yield* TestClock.adjust(29_999);
+        expect(calls).toBe(3);
+        yield* TestClock.adjust(1);
+        expect(calls).toBe(4);
+      }).pipe(
+        Effect.provide(
+          worker({
+            pending: () =>
+              Effect.gen(function* () {
+                calls++;
+                yield* Effect.logInfo("synthetic sweep marker");
+                if (calls === 1)
+                  return yield* new Recovery.RecoveryError({ stage: "reservations" });
+                if (calls === 2) return yield* Effect.die(new Error("synthetic recovery defect"));
+                return [];
+              }),
+            recoverOne: () => Effect.die("no item is selected"),
+          }).pipe(Layer.provide(capture.layer)),
+        ),
+      ),
+    );
+  },
+);
+it.effect("a changed fenced count is logged once per change, not once per sweep", () => {
+  const capture = captureLogs();
+  let pending: Array<{
+    command_id: string;
+    origin: "native";
+    next_poll_at: null;
+    recorded_caller: null;
+  }> = [
+    { command_id: "old", origin: "native", next_poll_at: null, recorded_caller: null },
+    { command_id: "older", origin: "native", next_poll_at: null, recorded_caller: null },
+  ];
+  const markers = () =>
+    capture.at("Info").filter((entry) => entry.message[0] === "synthetic sweep marker");
+  const fenced = () =>
+    capture.logs.filter(
+      (entry) => entry.annotations.loop === "recovery" && "fenced" in entry.annotations,
+    );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* Recovery.NativeWorkstreamsRecovery;
+      yield* TestClock.adjust(0);
+      // Control: the capture reaches the loop fiber, so a missing warning means none was logged.
+      expect(markers()).toHaveLength(1);
+      expect(fenced()).toHaveLength(1);
+      expect(fenced()[0]!.level).toBe("Warn");
+      expect(fenced()[0]!.annotations).toEqual({
+        loop: "recovery",
+        fenced: 2,
+        attempted: 0,
+        deferred: 0,
+      });
+      // An unchanged count stays quiet on every later sweep.
+      yield* TestClock.adjust(120_000);
+      expect(fenced()).toHaveLength(1);
+      pending = [];
+      yield* TestClock.adjust(30_000);
+      expect(fenced()).toHaveLength(2);
+      expect(fenced()[1]!.level).toBe("Info");
+      expect(fenced()[1]!.annotations).toEqual({
+        loop: "recovery",
+        fenced: 0,
+        attempted: 0,
+        deferred: 0,
+      });
+    }).pipe(
+      Effect.provide(
+        worker({
+          pending: () => Effect.logInfo("synthetic sweep marker").pipe(Effect.as(pending)),
+          recoverOne: () => Effect.die("no item is selected"),
+        }).pipe(Layer.provide(capture.layer)),
+      ),
+    ),
+  );
+});

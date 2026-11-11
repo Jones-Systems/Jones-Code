@@ -14,6 +14,7 @@ import * as SecretStore from "../../../../auth/ServerSecretStore.ts";
 import * as Persistence from "../../../../persistence/Sqlite.ts";
 import { resolveCliAuthConfig } from "../../../../cli/config.ts";
 import * as Admin from "../cli.ts";
+import * as Transition from "../transition/cli.ts";
 import { nativePersistenceLayer } from "../integration.ts";
 import { StartupError } from "./startup.ts";
 
@@ -107,4 +108,94 @@ const sourceBootstrap = (selection: Admin.InitSelection, action: "plan" | "apply
     }),
   );
 
-export const registryCommand = Admin.registryCommand(bootstrap, sourceBootstrap);
+/** Transition commands open only an existing selected home database; they never create a home or keys. */
+const transitionBootstrap = (selection: Admin.InitSelection) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const path = yield* Path.Path,
+        fs = yield* FileSystem.FileSystem;
+      if (
+        selection.keyProvider !== "server-secret-store" ||
+        !path.isAbsolute(selection.home) ||
+        !(yield* fs.exists(selection.home))
+      )
+        return yield* new StartupError({ code: "explicit_selection_required" });
+      const config = yield* resolveCliAuthConfig(
+        { baseDir: Option.some(path.resolve(selection.home)) },
+        Option.none(),
+      );
+      if (path.resolve(config.baseDir) !== path.resolve(selection.home))
+        return yield* new StartupError({ code: "database_mismatch" });
+      if (!(yield* fs.exists(config.dbPath)))
+        return yield* new StartupError({ code: "home_unavailable" });
+      const selectedConfig = ServerConfig.layer(config);
+      const secrets = SecretStore.layer.pipe(Layer.provide(selectedConfig));
+      return Transition.layer.pipe(
+        Layer.provide(nativePersistenceLayer),
+        Layer.provide(secrets),
+        Layer.provide(Persistence.layerFromPath(config.dbPath)),
+        Layer.provide(selectedConfig),
+      );
+    }),
+  );
+
+/** Key provisioning opens only the selected secret store; it never opens SQLite. */
+const keyBootstrap = (selection: Admin.InitSelection) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const path = yield* Path.Path,
+        fs = yield* FileSystem.FileSystem;
+      if (
+        selection.keyProvider !== "server-secret-store" ||
+        !path.isAbsolute(selection.home) ||
+        !(yield* fs.exists(selection.home))
+      )
+        return yield* new StartupError({ code: "explicit_selection_required" });
+      const config = yield* resolveCliAuthConfig(
+        { baseDir: Option.some(path.resolve(selection.home)) },
+        Option.none(),
+      );
+      if (path.resolve(config.baseDir) !== path.resolve(selection.home))
+        return yield* new StartupError({ code: "database_mismatch" });
+      const selectedConfig = ServerConfig.layer(config);
+      return Admin.keyLayer.pipe(
+        Layer.provide(SecretStore.layer.pipe(Layer.provide(selectedConfig))),
+      );
+    }),
+  );
+
+/** Member key provisioning opens only an existing selected database (normal migrations run) and its secret store. */
+const memberKeyBootstrap = (selection: Admin.InitSelection) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const path = yield* Path.Path,
+        fs = yield* FileSystem.FileSystem;
+      if (
+        selection.keyProvider !== "server-secret-store" ||
+        !path.isAbsolute(selection.home) ||
+        !(yield* fs.exists(selection.home))
+      )
+        return yield* new StartupError({ code: "explicit_selection_required" });
+      const config = yield* resolveCliAuthConfig(
+        { baseDir: Option.some(path.resolve(selection.home)) },
+        Option.none(),
+      );
+      if (path.resolve(config.baseDir) !== path.resolve(selection.home))
+        return yield* new StartupError({ code: "database_mismatch" });
+      if (!(yield* fs.exists(config.dbPath)))
+        return yield* new StartupError({ code: "home_unavailable" });
+      const selectedConfig = ServerConfig.layer(config);
+      return Admin.memberKeyLayer.pipe(
+        Layer.provide(SecretStore.layer.pipe(Layer.provide(selectedConfig))),
+        Layer.provide(Persistence.layerFromPath(config.dbPath)),
+      );
+    }),
+  );
+
+export const registryCommand = Admin.registryCommand(
+  bootstrap,
+  sourceBootstrap,
+  transitionBootstrap,
+  keyBootstrap,
+  memberKeyBootstrap,
+);

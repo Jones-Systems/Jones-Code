@@ -386,3 +386,29 @@ it.effect(
       }
     }),
 );
+
+it.effect("owner ids follow the live thread list: archived and deleted owners drop out", () =>
+  Effect.gen(function* () {
+    const harness = yield* createRetentionHarness();
+    const retained = Effect.map(readRemoteTaskOwnerIds(harness.sql), (ids) => ids.has(parent.id));
+    expect(yield* retained).toBe(true);
+    for (const [type, archivedAt, deletedAt, expected] of [
+      ["thread.archived", now, null, false],
+      ["thread.unarchived", null, null, true],
+      ["thread.deleted", null, now, false],
+    ] as const) {
+      yield* harness.eventSink.write({
+        events: [
+          {
+            id: EventId.make(`owner-ids-${type}`),
+            type,
+            threadId: parent.id,
+            occurredAt: now,
+            payload: { ...parent, archivedAt, deletedAt },
+          },
+        ],
+      });
+      expect(yield* retained, type).toBe(expected);
+    }
+  }),
+);
