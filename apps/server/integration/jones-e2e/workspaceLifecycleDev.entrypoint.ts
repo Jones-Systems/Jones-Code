@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Opt-in development process and its loopback client; never imported by the ordinary CLI.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as NodeProcess from "node:process";
 import * as NodeURL from "node:url";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -58,11 +59,10 @@ const decodeSearch = Schema.decodeUnknownEffect(ProjectSearchEntriesInput);
 const serve = (raw: unknown) =>
   Effect.gen(function* () {
     const binding = yield* decodeBinding(raw);
-    // oxlint-disable-next-line t3code/no-global-process-runtime -- Qualification requires the actual native platform.
     if (
       process.versions.node !== "26.12.1" ||
-      process.platform !== "darwin" ||
-      process.arch !== "arm64"
+      NodeProcess.platform !== "darwin" ||
+      NodeProcess.arch !== "arm64"
     )
       return yield* Effect.die(new Error("qualified_apple_silicon_node_required"));
     const canonical = (path: string) => NodeFS.realpathSync(path) === path;

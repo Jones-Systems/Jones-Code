@@ -1,23 +1,14 @@
 /**
- * SOURCE CANDIDATE: explicit live qualification, never a default paid CI test.
- *
- * Qualified Node 26.12.1, from a clean, dependency-prepared source checkout:
- *   node apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs \
- *     --live --operator /absolute/private/operator-bindings.json
- *
- * The operator supplies the v1 object described by validateOperator below,
- * including a unique 0700 scratch root containing ONLY an externally prepared
- * provider-home. No credentials/configuration are discovered, copied or read.
- * Acquiring Node, pnpm, dependencies, native consent, selecting/verifying the
- * account and accepting the execution host belong to the preparation operator.
- * An operator manifest records those bindings; it does not grant that authority.
- * Mini approval is recorded in V3 403a9344c2f86b3a822505b115778b9e311536ec.
- * The actual hostname/platform are always recorded; laptop results are not Mini results.
+ * SOURCE candidate: prepared Node 26.12.1; explicit --live --operator /absolute/private/operator-bindings.json.
+ * Operator bindings require exported source, fresh admission, native consent and a unique 0700 root containing only provider-home.
+ * Preparation owns acquisition/account access; this driver discovers, copies or reads no credentials/configuration.
+ * Mini approval: V3 403a9344c2f86b3a822505b115778b9e311536ec. Actual host is recorded; laptop evidence cannot qualify Mini.
  */
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
+import * as NodeProcess from "node:process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
@@ -231,7 +222,7 @@ async function verifyExport(root, manifestPath, manifestSha256, commit, tree) {
     text(file.path);
     NodeAssert.ok(
       !NodePath.isAbsolute(file.path) &&
-        !file.NodePath.split("/").some((part) => !part || part === "." || part === ".."),
+        !file.path.split("/").some((part) => !part || part === "." || part === ".."),
     );
     NodeAssert.ok(!paths.has(file.path));
     paths.add(file.path);
@@ -255,7 +246,7 @@ async function verifyExport(root, manifestPath, manifestSha256, commit, tree) {
       .update(bytes)
       .digest();
     let parent = nodes;
-    const segments = file.NodePath.split("/"),
+    const segments = file.path.split("/"),
       name = segments.pop();
     for (const segment of segments) {
       if (!parent.has(segment)) parent.set(segment, new Map());
@@ -315,12 +306,11 @@ async function qualify(v) {
     outcome: "failed",
     acceptance: false,
     source: v.source,
-    // oxlint-disable-next-line t3code/no-global-process-runtime -- Qualification records the actual native host.
     host: {
       ...v.host,
       actualHostname: NodeOS.hostname(),
-      platform: process.platform,
-      arch: process.arch,
+      platform: NodeProcess.platform,
+      arch: NodeProcess.arch,
     },
     environmentId: v.environmentId,
     projectId: v.projectId,
@@ -358,11 +348,22 @@ async function qualify(v) {
   };
   let cleanupMode = false,
     acquired = false,
+    receiptWritten = false,
+    retirementUnreconciled = false,
     live,
     rpc,
     database,
     phase = "preflight",
     captureGitTrace = false;
+  const persistReceipt = async () => {
+    const encoded = JSON.stringify(receipt, null, 2) + "\n";
+    NodeAssert.ok(Buffer.byteLength(encoded) <= MiB, "bounded assertion receipt");
+    await NodeFSP.writeFile(v.receipt, encoded, {
+      flag: receiptWritten ? "w" : "wx",
+      mode: 0o600,
+    });
+    receiptWritten = true;
+  };
   const children = new Set();
   const owned = new Map();
   const groups = new Set();
@@ -476,7 +477,7 @@ async function qualify(v) {
     NodeAssert.equal(await NodeFSP.realpath(root), root);
   };
   // Explicit proof inventory only, bounded to the captured synthetic root. This
-  // is never installed in a production completion/observation hot NodePath.
+  // is never installed in a production completion/observation hot path.
   const scratchInventory = async () => {
     let bytes = 0,
       entries = 0;
@@ -553,6 +554,7 @@ async function qualify(v) {
       [
         "threads",
         "runs",
+        "run_attempts",
         "provider_threads",
         "provider_turns",
         "turn_items",
@@ -661,6 +663,35 @@ async function qualify(v) {
         ? turns
         : undefined;
     });
+  const history = (thread) => ({
+    runIds: payloads("runs", thread).map((r) => r.id),
+    turnIds: payloads("provider_turns", thread).map((r) => r.id),
+  });
+  const completedScope = (thread, previous) => {
+    const runs = payloads("runs", thread).filter((r) => !previous.runIds.includes(r.id));
+    const turns = payloads("provider_turns", thread).filter(
+      (r) => !previous.turnIds.includes(r.id),
+    );
+    NodeAssert.equal(runs.length, 1, "one newly admitted run required");
+    NodeAssert.equal(turns.length, 1, "one new native turn required");
+    const run = runs[0],
+      turn = turns[0];
+    NodeAssert.equal(run.status, "completed");
+    NodeAssert.equal(turn.status, "completed");
+    const attempt = payloads("run_attempts", thread).find((r) => r.id === turn.runAttemptId);
+    NodeAssert.ok(attempt);
+    NodeAssert.equal(attempt.runId, run.id);
+    NodeAssert.equal(attempt.providerTurnId, turn.id);
+    NodeAssert.equal(turn.providerThreadId, run.providerThreadId);
+    NodeAssert.equal(turn.nativeTurnRef?.driver, v.provider.driver);
+    text(turn.nativeTurnRef?.nativeId);
+    return {
+      runId: run.id,
+      providerTurnId: turn.id,
+      nativeTurnId: turn.nativeTurnRef.nativeId,
+      runAttemptId: attempt.id,
+    };
+  };
   const native = (thread) => {
     const identities = payloads("provider_threads", thread);
     const ids = identities.map((r) => {
@@ -699,9 +730,47 @@ async function qualify(v) {
     }
     return false;
   };
-  const cwdEvidence = (thread, cwd, after = 0) => {
+  const exactResult = (value, expected) => {
+    if (typeof value === "string" && value.length <= 65536) {
+      try {
+        return exactResult(JSON.parse(value), expected);
+      } catch {
+        return false;
+      }
+    }
+    if (!value || typeof value !== "object" || value.isError === true) return false;
+    try {
+      NodeAssert.deepEqual(value, expected);
+      return true;
+    } catch {
+      return Object.values(value).some((child) => exactResult(child, expected));
+    }
+  };
+  const assertHandoffReplay = (item, input, result, scope) => {
+    NodeAssert.ok(item);
+    NodeAssert.equal(item.runId, scope.runId);
+    NodeAssert.equal(item.providerTurnId, scope.providerTurnId);
+    NodeAssert.ok(item.nativeItemRef?.nativeId);
+    NodeAssert.equal(item.status, "completed");
+    NodeAssert.deepEqual(item.input, input);
+    NodeAssert.ok(exactResult(item.output, result), "original successful handoff result required");
+    return {
+      id: item.id,
+      runId: item.runId,
+      providerTurnId: item.providerTurnId,
+      nativeItemRef: item.nativeItemRef,
+      input: item.input,
+      output: item.output,
+    };
+  };
+  const cwdEvidence = (thread, cwd, after = 0, scope) => {
     const calls = payloads("turn_items", thread)
-      .filter((r) => r.type === "command_execution")
+      .filter(
+        (r) =>
+          r.type === "command_execution" &&
+          (scope === undefined ||
+            (r.runId === scope.runId && r.providerTurnId === scope.providerTurnId)),
+      )
       .slice(after);
     NodeAssert.ok(
       calls.length > 0,
@@ -716,7 +785,13 @@ async function qualify(v) {
       NodeAssert.equal(r.output?.trim(), cwd);
       NodeAssert.ok(r.providerTurnId && r.nativeItemRef?.nativeId);
     }
-    return calls.map((r) => ({ id: r.id, providerTurnId: r.providerTurnId, cwd: r.output.trim() }));
+    return calls.map((r) => ({
+      id: r.id,
+      runId: r.runId,
+      providerTurnId: r.providerTurnId,
+      nativeItemRef: r.nativeItemRef,
+      cwd: r.output.trim(),
+    }));
   };
   const sourceInventory = async () => {
     // This explicit source-tool oracle alone hashes Git refs/index/object bytes.
@@ -742,8 +817,22 @@ async function qualify(v) {
   const readPrompt =
     "This is an authorized synthetic lifecycle qualification. No children. Run only /bin/pwd once through your native command tool, call t3_source_read with path AGENTS.md, then end the turn. Do not read any other files, write, attach, hand off, log in, install, or start another process. Do not replace either tool result with assistant text.";
   let sourceHead;
-  const conversationOracle = async (thread, before, label) => {
+  const conversationOracle = async (
+    thread,
+    before,
+    label,
+    previous = { runIds: [], turnIds: [] },
+  ) => {
     await completed(thread);
+    const scope = completedScope(thread, previous);
+    const recorded = rows(
+      "SELECT snapshot FROM jones_conversation_turns WHERE run_id=? AND thread_id=?",
+      scope.runId,
+      thread,
+    );
+    NodeAssert.equal(recorded.length, 1, "this run's recorded source snapshot required");
+    const snapshot = JSON.parse(recorded[0].snapshot);
+    NodeAssert.equal(snapshot.commit, sourceHead);
     const b = binding(thread);
     NodeAssert.ok(b);
     NodeAssert.equal(b.state, "conversation");
@@ -768,20 +857,30 @@ async function qualify(v) {
       1,
     );
     NodeAssert.deepEqual(await NodeFSP.readdir(b.path), []);
-    const reads = tool(thread, "t3_source_read");
+    const reads = tool(thread, "t3_source_read").filter(
+      (r) => r.runId === scope.runId && r.providerTurnId === scope.providerTurnId,
+    );
     NodeAssert.ok(
       reads.some(
         (r) =>
           r.status === "completed" &&
-          r.input.path === "AGENTS.md" &&
-          contains(r.output, { commit: sourceHead, content: instructions }),
+          r.nativeItemRef?.nativeId &&
+          r.input?.path === "AGENTS.md" &&
+          contains(r.output, { commit: snapshot.commit, content: instructions }),
       ),
       "exact MCP source content and commit required",
     );
     NodeAssert.deepEqual(await sourceInventory(), before);
-    mark(label, { binding: b, cwd: cwdEvidence(thread, b.path), native: native(thread) });
+    mark(label, {
+      binding: b,
+      scope,
+      cwd: cwdEvidence(thread, b.path, 0, scope),
+      native: native(thread),
+    });
     mark("source-read", {
-      commit: sourceHead,
+      scope,
+      snapshot,
+      commit: snapshot.commit,
       content: instructions,
       inventorySha256: sha(JSON.stringify(before)),
       unchanged: true,
@@ -992,11 +1091,10 @@ async function qualify(v) {
   };
 
   try {
-    // oxlint-disable-next-line t3code/no-global-process-runtime -- Native execution must match the externally qualified host.
     if (
       process.versions.node !== "26.12.1" ||
-      process.platform !== "darwin" ||
-      process.arch !== "arm64"
+      NodeProcess.platform !== "darwin" ||
+      NodeProcess.arch !== "arm64"
     )
       throw new Unavailable("qualified_apple_silicon_node_required");
     NodeAssert.equal(NodeOS.hostname(), v.host.hostname);
@@ -1112,7 +1210,7 @@ async function qualify(v) {
       "-S",
       "-B",
       "-c",
-      `import runpy,sys; sys.NodePath.insert(0,sys.argv.pop(1)); runpy.run_module('${module}',run_name='__main__')`,
+      `import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module('${module}',run_name='__main__')`,
       NodePath.join(v.source.v3Root, "src"),
     ];
     const registry = {
@@ -1253,11 +1351,9 @@ async function qualify(v) {
       flag: "wx",
       mode: 0o600,
     });
-    // Handoff waits for the real setup owner's writeCompletion, not the script's
-    // exit. A blocking script would falsely test a different boundary. This
-    // task-owned zsh startup gate keeps readiness pending before that write.
-    // Continuous tiny output prevents the runner's quiet-shell fallback from
-    // acknowledging readiness. No protected shell/profile content is loaded.
+    // Handoff waits for setup writeCompletion, not script exit. This owned zsh
+    // startup gate blocks that write; tiny output prevents quiet-shell readiness.
+    // It loads no protected shell/profile content.
     await NodeFSP.writeFile(
       NodePath.join(home, ".zshrc"),
       `if [[ -f ${quote(NodePath.join(root, "block-setup-write"))} ]]; then\n  printf '%s\\n' "$PWD" "$$" >> ${quote(NodePath.join(root, "setup-shell-started"))}\n  while [[ -f ${quote(NodePath.join(root, "block-setup-write"))} ]]; do\n    printf 'qualification startup pending\\r'\n    /bin/sleep 0.05\n  done\nfi\n`,
@@ -1289,12 +1385,13 @@ async function qualify(v) {
     await stop();
     await start();
     const beforeResume = await sourceInventory(),
+      resumeHistory = history(main),
       completedBefore = payloads("provider_turns", main).filter(
         (r) => r.status === "completed",
       ).length;
     await message(main, readPrompt);
     await completed(main, completedBefore);
-    const resumed = await conversationOracle(main, beforeResume, "resume");
+    const resumed = await conversationOracle(main, beforeResume, "resume", resumeHistory);
     NodeAssert.equal(resumed.path, original.path);
     NodeAssert.equal(native(main).nativeThreadId, nativeBefore.nativeThreadId);
     phase = "empty";
@@ -1346,6 +1443,10 @@ async function qualify(v) {
     await completed(main);
     NodeAssert.equal(attached.commit, sourceHead);
     NodeAssert.equal(attached.requestId, key);
+    NodeAssert.equal(attached.result?.worktreePath, attached.path);
+    NodeAssert.equal(attached.result?.branch, branch);
+    NodeAssert.equal(attached.result?.setupScript.status, "started");
+    NodeAssert.equal(attached.result?.continuation.status, "scheduled");
     NodeAssert.equal(await git(attached.path, "rev-parse", "HEAD"), sourceHead);
     NodeAssert.equal(
       (await scripts()).filter((r) => r.kind === "setup" && r.cwd === attached.path).length,
@@ -1360,18 +1461,37 @@ async function qualify(v) {
     );
     NodeAssert.equal(replayItems.length, 2);
     NodeAssert.deepEqual(replayItems[0].input, replayItems[1].input);
+    const continuedReplay = assertHandoffReplay(
+      replayItems.find((r) => r.providerTurnId === continued[0].providerTurnId),
+      replayRequest,
+      attached.result,
+      continued[0],
+    );
     NodeAssert.equal(await exists(original.path), false);
     await stop();
     await start();
     NodeAssert.deepEqual(handoff(main), attached);
-    const replayTurnCount = payloads("provider_turns", main).filter(
-      (r) => r.status === "completed",
-    ).length;
+    const restartHistory = history(main),
+      replayTurnCount = payloads("provider_turns", main).filter(
+        (r) => r.status === "completed",
+      ).length;
     await message(
       main,
       `Replay t3_worktree_handoff with exactly ${JSON.stringify(replayRequest)} once and end. No pwd, writes, setup or children. This is a replay after isolated restart; do not schedule another continuation.`,
     );
     await completed(main, replayTurnCount);
+    const restartScope = completedScope(main, restartHistory);
+    const restartReplays = tool(main, "t3_worktree_handoff").filter(
+      (r) => !replayItems.some((previous) => previous.id === r.id),
+    );
+    receipt.handoffRestartReplay = { scope: restartScope, items: restartReplays };
+    NodeAssert.equal(restartReplays.length, 1, "one new restart replay item required");
+    const restartReplay = assertHandoffReplay(
+      restartReplays[0],
+      replayRequest,
+      attached.result,
+      restartScope,
+    );
     NodeAssert.deepEqual(handoff(main), attached);
     NodeAssert.equal(
       tool(main, "t3_worktree_handoff").filter((r) => r.input?.clientRequestId === key).length,
@@ -1394,6 +1514,8 @@ async function qualify(v) {
       continued,
       native: native(main),
       replayItemIds: replayItems.map((r) => r.id),
+      continuedReplay,
+      restartReplay,
       setupCount: 1,
       checkoutCount: 1,
     });
@@ -1524,17 +1646,31 @@ async function qualify(v) {
     await call("settings", { storageCleanup: { ...disabled, worktreeSettledAfterDays: 0 } });
     const physicalBefore = await NodeFSP.stat(attached.path);
     const headBefore = await git(attached.path, "rev-parse", "HEAD");
+    retirementUnreconciled = true;
+    receipt.retirement = {
+      state: "unreconciled",
+      threadId: main,
+      worktree: attached.path,
+      expectedHead: headBefore,
+      observation: { intent: null, receipt: null },
+    };
+    await persistReceipt();
     await dispatch(main, { type: "thread.settle" });
-    const retirement = await wait("real retirement receipt", () => {
+    const readRetirement = async () => {
       const r = rows(
-        "SELECT receipt_json FROM jones_workspace_retirement_receipts WHERE worktree=? ORDER BY rowid DESC LIMIT 1",
+        "SELECT receipt_id,receipt_json FROM jones_workspace_retirement_receipts WHERE worktree=? ORDER BY rowid DESC LIMIT 1",
         attached.path,
       )[0];
+      const outcome = rows(
+        "SELECT event_id,outcome_json FROM jones_workspace_retirement_intents WHERE thread_id=? ORDER BY rowid DESC LIMIT 1",
+        main,
+      )[0];
+      const observation = { intent: outcome ?? null, receipt: r ?? null };
+      if (JSON.stringify(observation) !== JSON.stringify(receipt.retirement.observation)) {
+        receipt.retirement.observation = observation;
+        await persistReceipt();
+      }
       if (!r) {
-        const outcome = rows(
-          "SELECT outcome_json FROM jones_workspace_retirement_intents WHERE thread_id=? ORDER BY rowid DESC LIMIT 1",
-          main,
-        )[0];
         if (outcome?.outcome_json) {
           const parsed = JSON.parse(outcome.outcome_json);
           if (
@@ -1555,7 +1691,8 @@ async function qualify(v) {
       if (["unknown", "partial", "not_retired"].includes(value.state))
         throw new Unavailable("native_retirement_not_successful");
       return value.state === "retired" ? value : undefined;
-    });
+    };
+    const retirement = await wait("real retirement receipt", readRetirement);
     NodeAssert.equal(retirement.binding.path, attached.path);
     NodeAssert.equal(retirement.qualification.head, headBefore);
     for (const ref of retirement.preservationRefs)
@@ -1661,6 +1798,9 @@ async function qualify(v) {
       recreation: proof,
       native: native(main),
     });
+    receipt.retirement.state = "reconciled";
+    await persistReceipt();
+    retirementUnreconciled = false;
 
     // Unknown setup issue/restart is a separate real provider conversation. It
     // runs last so its deliberate hold cannot contaminate successful flows.
@@ -1753,7 +1893,14 @@ async function qualify(v) {
         await stop();
         await checkRoot();
         receipt.scratchInventory = await scratchInventory();
-        receipt.cleanup = { state: "native_absence_and_listener_closure_verified", root: v.root };
+        receipt.cleanup = retirementUnreconciled
+          ? {
+              state: "held",
+              root: v.root,
+              reason: "retirement_effects_unreconciled",
+              nativeClosure: "native_absence_and_listener_closure_verified",
+            }
+          : { state: "native_absence_and_listener_closure_verified", root: v.root };
       } catch {
         receipt.cleanup = {
           state: "held",
@@ -1765,10 +1912,8 @@ async function qualify(v) {
       }
     }
     receipt.elapsedMs = Math.round(performance.now() - started);
-    const encoded = JSON.stringify(receipt, null, 2) + "\n";
-    NodeAssert.ok(Buffer.byteLength(encoded) <= MiB, "bounded assertion receipt");
     // Preserve assertion evidence separately BEFORE any recursive scratch removal.
-    await NodeFSP.writeFile(v.receipt, encoded, { flag: "wx", mode: 0o600 });
+    await persistReceipt();
     if (receipt.cleanup.state === "native_absence_and_listener_closure_verified") {
       try {
         await NodeFSP.rm(root, { recursive: true });
@@ -1779,7 +1924,7 @@ async function qualify(v) {
         receipt.acceptance = false;
         if (receipt.outcome === "passed") receipt.outcome = "failed";
       }
-      await NodeFSP.writeFile(v.receipt, JSON.stringify(receipt, null, 2) + "\n", { mode: 0o600 });
+      await persistReceipt();
     }
   }
   return receipt;
