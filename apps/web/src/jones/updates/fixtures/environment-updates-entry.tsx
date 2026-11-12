@@ -3,7 +3,7 @@ import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { EnvironmentId, type EnvironmentMachineKind } from "@t3tools/contracts";
-import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/targetStatus";
+import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/target-status";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { AUTH_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
 import "../../../index.css";
