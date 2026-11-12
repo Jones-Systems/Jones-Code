@@ -107,6 +107,7 @@ export async function setupWorktree(
     throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
   }
   const signal = dependencies.signal ?? new AbortController().signal;
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Preinstall admission reads the physical OS before application dependencies exist.
   const mac = (dependencies.platform ?? NodeOS.platform()) === "darwin";
   const admission = dependencies.admission ?? createLocalMacAdmission();
   async function admit(producer: string) {
