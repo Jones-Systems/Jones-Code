@@ -573,6 +573,13 @@ export async function bindPackagedDesktopPreparedIntent({
       NodeAssert.equal(continuation.preparationClaimProtocol, 3);
       NodeAssert.equal(plan.selection, continuation.selectionPath);
       NodeAssert.equal(plan.selectionSha256, sha(selectionBytes));
+    } else {
+      NodeAssert.equal(plan.protocol, 1);
+      NodeAssert.equal(plan.intent, intent);
+      NodeAssert.equal(plan.intentSha256, sha(intentBytes));
+      NodeAssert.equal(plan.transactionId, activation.transactionId);
+    }
+    if (continuation.preparationClaimProtocol === 3) {
       NodeAssert.equal(
         NodePath.dirname(continuation.selectionPath),
         NodePath.join(active.home, "runtime/jones-updates/staging"),
@@ -651,11 +658,6 @@ export async function bindPackagedDesktopPreparedIntent({
           expected: active,
         },
       );
-    } else {
-      NodeAssert.equal(plan.protocol, 1);
-      NodeAssert.equal(plan.intent, intent);
-      NodeAssert.equal(plan.intentSha256, sha(intentBytes));
-      NodeAssert.equal(plan.transactionId, activation.transactionId);
     }
     initialJournalBytes = await privateFixtureBytes(
       pair.fixtureRoot,

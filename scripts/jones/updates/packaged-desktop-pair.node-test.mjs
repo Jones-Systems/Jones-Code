@@ -574,6 +574,81 @@ async function refusedFixture(body, managed = null) {
   }, managed);
 }
 
+async function useDirectIntentRefusalPlan(f) {
+  const planPath = NodePath.join(f.root, "python-preload/fault-plan.json");
+  const { selection, selectionSha256, ...plan } = JSON.parse(await NodeFSP.readFile(planPath));
+  NodeAssert.equal(selection, f.selectionPath);
+  NodeAssert.equal(selectionSha256, f.claim.selectionSha256);
+  await f.write(planPath, {
+    ...plan,
+    protocol: 1,
+    intent: f.intent,
+    intentSha256: f.receipt.intentSha256,
+    transactionId: f.activation.transactionId,
+  });
+  f.receipt.planSha256 = digest(await NodeFSP.readFile(planPath));
+  await f.write(f.receiptPath, f.receipt);
+}
+
+NodeTest.test(
+  "direct-intent refusal instrumentation cannot bypass protocol-3 preparation records",
+  async () => {
+    await refusedFixture(async (f) => {
+      await useDirectIntentRefusalPlan(f);
+      const args = { pair: f.pair, helper: f.helper, manifest: f.manifest, intent: f.intent };
+      const refused = { ...args, outcome: "pre-effect-refused", fault: f.receipt };
+      const preparePath = NodePath.join(f.transaction, "prepare-request.json");
+      const activationPath = NodePath.join(f.transaction, "activation-request.json");
+      for (const path of [preparePath, activationPath, f.attemptPath]) {
+        const original = await NodeFSP.readFile(path);
+        await NodeFSP.unlink(path);
+        await NodeAssert.rejects(bindPackagedDesktopPreparedIntent(refused), { code: "ENOENT" });
+        await f.write(path, original);
+      }
+      for (const [path, value] of [
+        [preparePath, { ...f.prepare, claimSha256: "0".repeat(64) }],
+        [preparePath, { ...f.prepare, processes: [{ ...f.prepare.processes[0], startSec: 0 }] }],
+        [activationPath, { ...f.activation, processes: [] }],
+        [f.attemptPath, { protocol: 1, transactionId: "0".repeat(64) }],
+      ]) {
+        const original = await NodeFSP.readFile(path);
+        await f.write(path, value);
+        await NodeAssert.rejects(bindPackagedDesktopPreparedIntent(refused));
+        await f.write(path, original);
+      }
+      await NodeAssert.rejects(bindPackagedDesktopPreparedIntent(args));
+      const binding = await bindPackagedDesktopPreparedIntent(refused);
+      NodeAssert.deepEqual(binding.preparation, f.prepare);
+      await binding.assertInputsUnchanged();
+      await f.write(preparePath, { ...f.prepare, claimSha256: "0".repeat(64) });
+      await NodeAssert.rejects(binding.assertInputsUnchanged());
+    });
+  },
+);
+
+NodeTest.test("direct-intent refusal still supports preparation protocol 2", async () => {
+  await refusedFixture(async (f) => {
+    const claim = { ...f.claim, preparationClaimProtocol: 2 };
+    await f.write(f.activation.continuationReceipt, { ...claim, prepared: true });
+    for (const name of ["prepare-intent.json", "prepare-dispatched.json"])
+      await f.write(NodePath.join(f.transaction, name), claim);
+    for (const path of [
+      NodePath.join(f.transaction, "prepare-request.json"),
+      NodePath.join(f.transaction, "activation-request.json"),
+      f.attemptPath,
+    ])
+      await NodeFSP.unlink(path);
+    const args = { pair: f.pair, helper: f.helper, manifest: f.manifest, intent: f.intent };
+    const refused = { ...args, outcome: "pre-effect-refused", fault: f.receipt };
+    await NodeAssert.rejects(bindPackagedDesktopPreparedIntent(refused));
+    await useDirectIntentRefusalPlan(f);
+    await NodeAssert.rejects(bindPackagedDesktopPreparedIntent(args));
+    const binding = await bindPackagedDesktopPreparedIntent(refused);
+    NodeAssert.equal(binding.preparation, null);
+    await binding.assertInputsUnchanged();
+  });
+});
+
 NodeTest.test(
   "completed refusal binding preserves strict default and rejects stale or forged prepared relations",
   async () => {
