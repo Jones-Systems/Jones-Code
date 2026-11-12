@@ -25,15 +25,19 @@ import {
   NodeId,
   ProviderDriverKind,
   ProviderTurnId,
+  RunId,
+  RunAttemptId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ThreadDispatch from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as Store from "./Store.ts";
+import { pruneEventLogLikeUpstream } from "../persistence/prunedEventLog.testkit.ts";
 
 const heldTasks = (count = 1) =>
   Effect.gen(function* () {
@@ -50,12 +54,271 @@ const heldTasks = (count = 1) =>
     return { ...f, sql, read };
   });
 const held = heldTasks();
+const witnessAfterRestart = Effect.fnUntraced(function* (f: Effect.Success<typeof Fixture.seed>) {
+  const sink = yield* EventSink.EventSinkV2;
+  const p = yield* f.orchestrator.getThreadProjection(f.threadId);
+  const original = p.attempts.find((a) => a.id === f.run.activeAttemptId)!;
+  const now = yield* DateTime.now;
+  const run = {
+    ...f.run,
+    id: RunId.make("run:after-restart"),
+    userMessageId: MessageId.make("message:after-restart"),
+    activeAttemptId: RunAttemptId.make("attempt:after-restart"),
+    ordinal: Math.max(...p.runs.map((r) => r.ordinal)) + 1,
+    status: "running" as const,
+    startedAt: now,
+    completedAt: null,
+  };
+  const attempt = {
+    ...original,
+    id: run.activeAttemptId,
+    runId: run.id,
+    status: "running" as const,
+    startedAt: now,
+    completedAt: null,
+  };
+  yield* sink.write({
+    events: [
+      yield* f.event({ type: "run.created", threadId: f.threadId, runId: run.id, payload: run }),
+      yield* f.event({
+        type: "run-attempt.created",
+        threadId: f.threadId,
+        runId: run.id,
+        payload: attempt,
+      }),
+    ],
+  });
+  yield* sink.write({
+    events: [
+      yield* f.event({
+        type: "provider-turn.updated",
+        threadId: f.threadId,
+        runId: run.id,
+        driver: Fixture.driver,
+        payload: {
+          id: ProviderTurnId.make("turn:after-restart"),
+          providerThreadId: attempt.providerThreadId,
+          nodeId: attempt.rootNodeId,
+          runAttemptId: attempt.id,
+          ordinal: Math.max(0, ...p.providerTurns.map((t) => t.ordinal)) + 1,
+          status: "running",
+          nativeTurnRef: {
+            driver: Fixture.driver,
+            nativeId: "native:after-restart",
+            strength: "strong",
+          },
+          startedAt: now,
+          completedAt: null,
+        },
+      }),
+    ],
+  });
+});
+const resolveTask = Effect.fnUntraced(function* (
+  f: Effect.Success<typeof Fixture.seed>,
+  action: "acknowledge" | "dispose",
+  key: string,
+) {
+  return yield* f.orchestrator.dispatch(
+    action === "acknowledge"
+      ? {
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make(`ack:${key}`),
+          parentThreadId: f.threadId,
+          taskId: f.taskId,
+          observedByRunId: f.parent.id,
+        }
+      : {
+          type: "delegated_task.completion-delivery.dispose",
+          commandId: CommandId.make(`dispose:${key}`),
+          parentThreadId: f.threadId,
+          taskId: f.taskId,
+        },
+  );
+});
+
+it.effect.each(["acknowledge", "dispose"] as const)(
+  "%s before the first successor reservation retains the certified remainder",
+  (action) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const retained = yield* Effect.gen(function* () {
+        const f = yield* Fixture.seedTasks(2);
+        yield* sql`CREATE TEMP TRIGGER fail_first_hold BEFORE INSERT ON jones_start_refusal_holds
+          BEGIN SELECT RAISE(ABORT, 'synthetic pre-reservation crash'); END`;
+        yield* f.start.start({ threadId: f.threadId, runId: f.run.id }).pipe(Effect.result);
+        yield* f.orchestrator.recoverDelegatedTasks;
+        assert.isTrue(yield* (yield* Store.StartRefusals).qualifies(f.threadId, f.run.id));
+        assert.lengthOf(yield* sql`SELECT 1 FROM jones_start_refusal_holds`, 0);
+        yield* sql`DROP TRIGGER fail_first_hold`;
+        return f;
+      }).pipe(Effect.provide(Fixture.runtimeOn(sql, false)));
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const f = { ...retained, orchestrator };
+        yield* resolveTask(f, action, "before-first-reservation");
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* orchestrator.recoverDelegatedTasks;
+        const p = yield* orchestrator.getThreadProjection(f.threadId);
+        const delivery = p.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.delivery!;
+        assert.deepEqual(delivery.taskIds, f.delivery.taskIds.slice(1));
+        assert.notEqual(delivery.messageId, f.delivery.messageId);
+        assert.deepEqual(
+          (yield* sql`SELECT state FROM jones_start_refusal_holds ORDER BY generation`).map(
+            (r) => r.state,
+          ),
+          ["void", "held"],
+        );
+        assert.deepEqual(
+          p.messages.find((m) => m.id === f.delivery.messageId)!.delegatedCompletion!.taskIds,
+          f.delivery.taskIds,
+        );
+        yield* witnessAfterRestart(f);
+        yield* joinRelease(f.threadId);
+        const delivered = yield* acceptCurrent(f, "pre-reservation-remainder");
+        assert.deepEqual(delivered.taskIds, f.delivery.taskIds.slice(1));
+        const final = yield* orchestrator.getThreadProjection(f.threadId);
+        assert.deepEqual(
+          final.subagents.map((t) => t.completionDelivery!.state),
+          [action === "acknowledge" ? "acknowledged" : "disposed", "delivered"],
+        );
+      }).pipe(Effect.provide(Fixture.runtimeOn(sql, true)));
+    }).pipe(Effect.provide(Fixture.database)),
+);
+
+it.effect.each(["acknowledge", "dispose"] as const)(
+  "%s of the last held member reserves a pending late sibling",
+  (action) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const retained = yield* Effect.gen(function* () {
+        const f = yield* held;
+        const p = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const old = p.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.delivery!;
+        const siblingId = NodeId.make("task:late-after-last");
+        yield* f.sink.write({
+          events: [
+            yield* f.event({
+              type: "subagent.updated",
+              threadId: f.threadId,
+              runId: f.parent.id,
+              payload: {
+                ...p.subagents[0]!,
+                id: siblingId,
+                status: "running",
+                result: null,
+                completionDelivery: { state: "pending", observedByRunId: null },
+              },
+            }),
+          ],
+        });
+        yield* f.orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make("complete:late-after-last"),
+          parentThreadId: f.threadId,
+          taskId: siblingId,
+          status: "completed",
+          result: "Untouched late result",
+          stoppedThere: "ran-out",
+        });
+        yield* f.sql`CREATE TEMP TRIGGER fail_late_claim BEFORE UPDATE ON orchestration_v2_projection_subagents
+        WHEN NEW.subagent_id = 'task:late-after-last' AND NEW.completion_delivery_state = 'claimed'
+        BEGIN SELECT RAISE(ABORT, 'synthetic sibling reservation failure'); END`;
+        assert.equal(
+          (yield* resolveTask(f, action, "last-held").pipe(Effect.result))._tag,
+          "Failure",
+        );
+        const rolledBack = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(
+          rolledBack.subagents.find((t) => t.id === f.taskId)!.completionDelivery!.state,
+          "claimed",
+        );
+        assert.equal(
+          rolledBack.subagents.find((t) => t.id === siblingId)!.completionDelivery!.state,
+          "pending",
+        );
+        assert.deepEqual(
+          (yield* f.read).map((r) => r.state),
+          ["held"],
+        );
+        assert.lengthOf(
+          yield* f.sql`SELECT 1 FROM orchestration_command_receipts
+        WHERE command_id = ${action === "acknowledge" ? "ack:last-held" : "dispose:last-held"}`,
+          0,
+        );
+        yield* f.sql`DROP TRIGGER fail_late_claim`;
+        yield* resolveTask(f, action, "last-held");
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const next = after.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.delivery;
+        assert.isNotNull(next);
+        assert.deepEqual(next!.taskIds, [siblingId]);
+        assert.notEqual(next!.messageId, old.messageId);
+        assert.equal(next!.generation, old.generation + 1);
+        assert.isTrue(
+          (yield* Fixture.Offers).requests.some(
+            (request) => request.delegatedCompletion?.messageId === next!.messageId,
+          ),
+        );
+        assert.equal(
+          after.subagents.find((t) => t.id === siblingId)!.completionDelivery!.state,
+          "claimed",
+        );
+        assert.deepEqual(
+          (yield* f.read).map((r) => r.state),
+          ["void"],
+        );
+        yield* resolveTask(f, action, "last-held-replay");
+        return { ...f, siblingId, old, next: next! };
+      }).pipe(Effect.provide(Fixture.runtimeOn(sql, false)));
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const f = { ...retained, orchestrator };
+        const { siblingId, old } = retained;
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* orchestrator.recoverDelegatedTasks;
+        const recovered = yield* orchestrator.getThreadProjection(f.threadId);
+        assert.deepEqual(
+          recovered.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.delivery,
+          retained.next,
+        );
+        yield* witnessAfterRestart(f);
+        assert.isTrue(
+          yield* (yield* Store.StartRefusals).blocked({
+            threadId: f.threadId,
+            parentRunId: f.parent.id,
+            generation: old.generation,
+            messageId: old.messageId,
+          }),
+        );
+        yield* (yield* ThreadDispatch.ThreadCommandExecutor).withLock(f.threadId, Effect.void);
+        const delivered = yield* acceptCurrent(f, "late-after-last");
+        assert.deepEqual(delivered.taskIds, [siblingId]);
+        const final = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(
+          final.subagents.find((t) => t.id === f.taskId)!.completionDelivery!.state,
+          action === "acknowledge" ? "acknowledged" : "disposed",
+        );
+        assert.equal(
+          final.subagents.find((t) => t.id === siblingId)!.completionDelivery!.state,
+          "delivered",
+        );
+        assert.lengthOf(
+          final.runs.filter((r) => r.userMessageId === delivered.messageId),
+          1,
+        );
+      }).pipe(Effect.provide(Fixture.runtimeOn(sql, true)));
+    }).pipe(Effect.provide(Fixture.database)),
+);
 const joinRelease = Effect.fnUntraced(function* (threadId: ThreadId) {
-  const gate = yield* Fixture.Gate;
-  yield* Queue.take(gate.entered);
+  const gate = yield* Effect.serviceOption(Fixture.Gate);
+  if (Option.isNone(gate)) return yield* Effect.die("Release test requires the probe gate");
+  yield* Queue.take(gate.value.entered);
   yield* (yield* ThreadDispatch.ThreadCommandExecutor).withLock(threadId, Effect.void);
 });
-const dispatchHeld = Effect.fnUntraced(function* (f: Effect.Success<typeof held>, key: string) {
+const dispatchHeld = Effect.fnUntraced(function* (
+  f: Effect.Success<typeof Fixture.seed>,
+  key: string,
+) {
   const p = yield* f.orchestrator.getThreadProjection(f.threadId);
   const delivery = p.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.delivery!;
   const h = { message_id: delivery.messageId, generation: delivery.generation };
@@ -78,7 +341,10 @@ const dispatchHeld = Effect.fnUntraced(function* (f: Effect.Success<typeof held>
   });
 });
 
-const acceptCurrent = Effect.fnUntraced(function* (f: Effect.Success<typeof held>, key: string) {
+const acceptCurrent = Effect.fnUntraced(function* (
+  f: Effect.Success<typeof Fixture.seed>,
+  key: string,
+) {
   const p = yield* f.orchestrator.getThreadProjection(f.threadId);
   const delivery = p.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.delivery!;
   yield* dispatchHeld(f, key);
@@ -369,9 +635,9 @@ it.effect.each([
   }).pipe(Effect.provide(runtime)),
 );
 
-it.effect(
-  "a crash after certification but before successor reservation retains the source claim for recovery",
-  () =>
+it.effect.each([false, true])(
+  "a crash after certification but before successor reservation retains the source claim for recovery (pruned: %s)",
+  (pruned) =>
     Effect.gen(function* () {
       const f = yield* Fixture.seed;
       const sql = yield* SqlClient.SqlClient;
@@ -387,6 +653,53 @@ it.effect(
       );
       assert.lengthOf(yield* sql`SELECT 1 FROM jones_start_refusal_holds`, 0);
       yield* sql`DROP TRIGGER fail_hold`;
+      if (pruned) {
+        const certificate = (yield* sql<{ settlement_event_id: string }>`SELECT settlement_event_id
+          FROM jones_start_refusal_attempts WHERE state = 'refused'`)[0]!;
+        const settlement = (yield* sql<{
+          sequence: number;
+        }>`SELECT sequence FROM orchestration_events
+          WHERE event_id = ${certificate.settlement_event_id}`)[0]!;
+        const head = (yield* f.sink.write({
+          events: [
+            yield* f.event({
+              type: "subagent.updated",
+              threadId: f.threadId,
+              runId: f.parent.id,
+              payload: failed.subagents[0]!,
+            }),
+          ],
+        }))[0]!;
+        assert.isAbove(head.sequence, settlement.sequence);
+        assert.include(yield* pruneEventLogLikeUpstream(head.sequence), settlement.sequence);
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM orchestration_events
+          WHERE event_id = ${certificate.settlement_event_id}`,
+          0,
+        );
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM orchestration_events
+          WHERE event_id = ${head.event.id}`,
+          1,
+        );
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM jones_start_refusal_attempts
+          WHERE state = 'refused' AND settlement_event_id = ${certificate.settlement_event_id}`,
+          1,
+        );
+        const offers = (yield* Fixture.Offers).requests;
+        const beforeOffers = offers.length;
+        for (let i = 0; i < 3; i++) {
+          yield* f.orchestrator.recoverDelegatedTasks;
+          const recovered = yield* f.orchestrator.getThreadProjection(f.threadId);
+          assert.equal(recovered.subagents[0]!.completionDelivery!.state, "claimed");
+          assert.deepEqual(recovered.runs, failed.runs);
+          assert.deepEqual(recovered.attempts, failed.attempts);
+          assert.lengthOf(yield* sql`SELECT 1 FROM jones_start_refusal_holds`, 0);
+          assert.lengthOf(offers, beforeOffers);
+        }
+        return;
+      }
       yield* f.orchestrator.recoverDelegatedTasks;
       yield* f.orchestrator.recoverDelegatedTasks;
       assert.lengthOf(yield* sql`SELECT 1 FROM jones_start_refusal_holds`, 1);

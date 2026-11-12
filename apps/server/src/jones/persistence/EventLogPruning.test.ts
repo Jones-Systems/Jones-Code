@@ -34,6 +34,14 @@ interface Reader {
 }
 const readers: ReadonlyArray<Reader> = [
   {
+    file: "startRefusal/Store.ts",
+    classification: "tolerate",
+    after:
+      "A persistent refusal certificate with a missing settlement event is unknown: recovery retains the unread claim and current delivery without reserving or offering a successor. Missing attempt-birth evidence denies arming an existing hold.",
+    proof:
+      "startRefusal/Orchestrator.integration.test.ts (upstream-like pruning after crash before reservation); startRefusal/Store.test.ts (missing settlement proof)",
+  },
+  {
     file: "cleanup/DeletionAdmission.ts",
     classification: "tolerate",
     after:

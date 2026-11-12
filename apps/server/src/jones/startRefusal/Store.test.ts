@@ -87,6 +87,10 @@ it.effect.each([
     assert.equal(p.reason, reason);
     assert.isNotNull(p.settlement_event_id);
     assert.isTrue(yield* (yield* StartRefusal.StartRefusals).qualifies(f.threadId, f.run.id));
+    assert.equal(
+      yield* (yield* StartRefusal.StartRefusals).classify(f.threadId, f.run.id),
+      "qualified",
+    );
   }).pipe(Effect.provide(Fixture.runtimeWithoutProbe)),
 );
 
@@ -193,6 +197,10 @@ it.effect.each([
         ],
       });
     assert.isFalse(yield* store.qualifies(f.threadId, f.run.id));
+    assert.equal(
+      yield* store.classify(f.threadId, f.run.id),
+      mode === "missing_event" ? "unknown" : "ordinary",
+    );
   }).pipe(Effect.provide(Fixture.runtimeWithoutProbe)),
 );
 

@@ -119,15 +119,12 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const qualifies = Effect.fn("StartRefusal.qualifies")(function* (
-    threadId: ThreadId,
-    runId: RunId,
-  ) {
-    if (!(yield* attemptsPresent) || !(yield* holdsPresent)) return false;
+  const classify = Effect.fn("StartRefusal.classify")(function* (threadId: ThreadId, runId: RunId) {
+    if (!(yield* attemptsPresent) || !(yield* holdsPresent)) return "ordinary" as const;
     const runs = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
       WHERE run_id = ${runId} AND thread_id = ${threadId} AND status = 'failed'
         AND json_type(payload_json, '$.startedAt') = 'null'`;
-    if (runs.length !== 1) return false;
+    if (runs.length !== 1) return "ordinary" as const;
     const attempts = yield* sql<{
       readonly attempt_id: string;
       readonly root_node_id: string;
@@ -138,26 +135,38 @@ const make = Effect.gen(function* () {
         AND json_type(payload_json, '$.providerTurnId') = 'null'
         AND json_type(payload_json, '$.providerSettlement') = 'null') AS clean FROM orchestration_v2_projection_run_attempts
       WHERE thread_id = ${threadId} AND run_id = ${runId}`;
-    if (attempts.length === 0) return false;
+    if (attempts.length === 0) return "ordinary" as const;
+    let unavailable = false;
     for (const attempt of attempts) {
-      const proof = yield* sql`SELECT 1 FROM jones_start_refusal_attempts AS proof
-        WHERE proof.thread_id = ${threadId} AND proof.run_id = ${runId}
-          AND proof.attempt_id = ${attempt.attempt_id} AND proof.state = 'refused'
-          AND proof.scope = 'delegated_completion'
-          AND EXISTS (SELECT 1 FROM orchestration_events AS event
+      const proof = yield* sql<{ readonly available: number }>`
+        SELECT EXISTS (SELECT 1 FROM orchestration_events AS event
             WHERE event.event_id = proof.settlement_event_id AND event.event_type = 'run.updated'
               AND event.stream_id = ${threadId}
               AND json_extract(event.payload_json, '$.id') = ${runId}
               AND json_extract(event.payload_json, '$.activeAttemptId') = ${attempt.attempt_id}
               AND json_extract(event.payload_json, '$.status') = 'failed'
-              AND json_type(event.payload_json, '$.startedAt') = 'null')`;
-      if (proof.length !== 1 || attempt.clean !== 1) return false;
+              AND json_type(event.payload_json, '$.startedAt') = 'null') AS available
+        FROM jones_start_refusal_attempts AS proof
+        WHERE proof.thread_id = ${threadId} AND proof.run_id = ${runId}
+          AND proof.attempt_id = ${attempt.attempt_id} AND proof.state = 'refused'
+          AND proof.scope = 'delegated_completion'`;
+      if (proof.length !== 1 || attempt.clean !== 1) return "ordinary" as const;
+      if (proof[0]!.available !== 1) unavailable = true;
       const turns = yield* sql`SELECT 1 FROM orchestration_v2_projection_provider_turns
         WHERE thread_id = ${threadId}
           AND (run_attempt_id = ${attempt.attempt_id} OR node_id = ${attempt.root_node_id}) LIMIT 1`;
-      if (turns.length > 0) return false;
+      if (turns.length > 0) return "ordinary" as const;
     }
-    return true;
+    // A persistent certificate outlives its settlement event. Missing proof
+    // permits neither a successor nor ordinary finalization of unread results.
+    return unavailable ? ("unknown" as const) : ("qualified" as const);
+  });
+
+  const qualifies = Effect.fn("StartRefusal.qualifies")(function* (
+    threadId: ThreadId,
+    runId: RunId,
+  ) {
+    return (yield* classify(threadId, runId)) === "qualified";
   });
 
   const currentDelivery = Effect.fn("StartRefusal.currentDelivery")(function* (
@@ -534,6 +543,7 @@ const make = Effect.gen(function* () {
     establish,
     cross,
     certify,
+    classify,
     qualifies,
     validateReservation,
     reserve,
