@@ -258,16 +258,26 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
       Layer.provide(dependencies),
     ),
   );
-  const testLayer = Layer.mergeAll(ingestionLayer,
-    RunExecutionService.layer.pipe(Layer.provide(Layer.mergeAll(
-      ingestionLayer, McpAppModelContext.layerEmpty, PreviewAgentActivity.layer,
-      ServerSettings.layerTest(),
-      Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
-      Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({ allocate: () => Effect.succeed(1) }),
-      Layer.succeed(RunFinalizationService.RunFinalizationObserver, {
-        refresh: () => Effect.void, refreshAfterTurn: () => Effect.void,
-      }),
-    )))),
+  const testLayer = Layer.mergeAll(
+    ingestionLayer,
+    RunExecutionService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ingestionLayer,
+          McpAppModelContext.layerEmpty,
+          PreviewAgentActivity.layer,
+          ServerSettings.layerTest(),
+          Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
+          Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({
+            allocate: () => Effect.succeed(1),
+          }),
+          Layer.succeed(RunFinalizationService.RunFinalizationObserver, {
+            refresh: () => Effect.void,
+            refreshAfterTurn: () => Effect.void,
+          }),
+        ),
+      ),
+    ),
   );
   return Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;
