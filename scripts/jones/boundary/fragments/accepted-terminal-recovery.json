@@ -1,0 +1,25 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "accepted-terminal-recovery",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.ts",
+    "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts",
+    "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.testkit.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
+      "to": "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderEventIngestor.ts",
+      "to": "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+      "to": "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.testkit.ts"
+    }
+  ]
+}

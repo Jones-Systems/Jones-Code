@@ -2,6 +2,24 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-accepted-terminal-recovery",
+      "tests": [
+        "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+        "packages/provider-core/src/server/jones/providerControlOutcome.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts packages/provider-core/src/server/jones/providerControlOutcome.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/orchestration/AcceptedTerminalRecovery.ts apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts apps/server/src/jones/orchestration/AcceptedTerminalRecovery.testkit.ts apps/server/src/orchestration-v2/RunExecutionService.ts apps/server/src/orchestration-v2/ProviderEventIngestor.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
       "id": "jones-reader-admission-failures",
       "tests": [
         "packages/shared/src/jones/sqliteReaders/admissionFailure.test.ts",
