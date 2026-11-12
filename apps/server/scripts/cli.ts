@@ -9,7 +9,10 @@ import * as Path from "effect/Path";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { withFiniteProduction } from "../../../scripts/jones/direct-producers/finite-production.ts";
+import {
+  withFiniteProduction,
+  type FiniteProductionEvidence,
+} from "../../../scripts/jones/direct-producers/finite-production.ts";
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
 import { injectLinuxArm64Sea } from "../../../scripts/lib/linux-arm64-sea.ts";
@@ -29,9 +32,14 @@ const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("../../..", import.meta.url))),
 );
 
-const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.StandardCommand) {
+const runCommand = Effect.fn("runCommand")(function* (
+  command: ChildProcess.StandardCommand,
+  spawn?: FiniteProductionEvidence["spawn"],
+) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const child = yield* spawner.spawn(command);
+  const child = yield* spawn
+    ? spawn(() => spawner.spawn(command), command.options.detached === true)
+    : spawner.spawn(command);
   const exitCode = yield* child.exitCode;
 
   if (exitCode !== 0) {
@@ -85,14 +93,16 @@ const buildCmd = Command.make(
         (evidence) =>
           Effect.gen(function* () {
             yield* Effect.log("[cli] Running tsdown...");
-            yield* Effect.sync(evidence.commandStarted);
             yield* runCommand(
               ChildProcess.make(process.execPath, ["--run", "build:bundle"], {
                 cwd: serverDir,
                 stdout: config.verbose ? "inherit" : "ignore",
                 stderr: "inherit",
                 shell: false,
+                // oxlint-disable-next-line t3code/no-global-process-runtime -- The actual Node spawner ABI determines detached-session capture, independently of application runtime references.
+                detached: process.platform !== "win32",
               }),
+              evidence.spawn,
             ).pipe(
               Effect.tap(() => Effect.sync(evidence.leaderExited)),
               Effect.tapError((error) =>
@@ -152,8 +162,8 @@ const buildExeCmd = Command.make(
               (yield* HostProcess.Architecture) === "arm64";
             const spawnCommand = yield* resolveSpawnCommand("vp", ["pack"]);
             const cliAssetDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-asset-" });
-            // The finite-production evidence tracks the leader: it exited only after the last pack
-            // (or after a failed one, which stops the sequence), never between the two packs.
+            // Each pack records its own durable spawn intent. The leader exited only after the last
+            // pack (or after a failed one, which stops the sequence), never between the two packs.
             const pack = (packMode: "bundle" | "bootstrap" | "1", last: boolean) =>
               runCommand(
                 ChildProcess.make(spawnCommand.command, spawnCommand.args, {
@@ -167,7 +177,10 @@ const buildExeCmd = Command.make(
                   stdout: config.verbose ? "inherit" : "ignore",
                   stderr: "inherit",
                   shell: spawnCommand.shell,
+                  // oxlint-disable-next-line t3code/no-global-process-runtime -- The actual Node spawner ABI determines detached-session capture, independently of application runtime references.
+                  detached: process.platform !== "win32",
                 }),
+                evidence.spawn,
               ).pipe(
                 Effect.tap(() => (last ? Effect.sync(evidence.leaderExited) : Effect.void)),
                 Effect.tapError((error) =>
@@ -177,7 +190,6 @@ const buildExeCmd = Command.make(
                 ),
               );
 
-            yield* Effect.sync(evidence.commandStarted);
             yield* pack("bundle", false);
             const cliMainPath = path.join(cliAssetDir, "binMain.mjs");
             yield* pack(linuxArm64 ? "bootstrap" : "1", true);

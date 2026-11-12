@@ -3101,7 +3101,11 @@
     "apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/QueueHoldStore.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/147_JonesQueueHolds.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/held-queue-expiry.json": "jones-owned"
+    "scripts/jones/boundary/fragments/held-queue-expiry.json": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/ProducerSessionObservation.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts": "jones-owned",
+    "scripts/jones/direct-producers/resolve.ts": "jones-owned",
+    "scripts/jones/direct-producers/resolve.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
