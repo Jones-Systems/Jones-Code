@@ -98,7 +98,7 @@ export const DecisionSnapshotNativeCountsLive = Layer.effect(
         startup.value.mode !== "legacy" &&
         !(startup.value.mode === "disabled" && startup.value.config === null));
     return DecisionSnapshotNativeCounts.of({
-      readRegistryCounts: () =>
+      readRegistryCounts: Effect.fn("DecisionSnapshotNativeCounts.readRegistryCounts")(() =>
         nativeSelected
           ? Option.isNone(nativeReads)
             ? Effect.fail(new NativeCountReadError({ source: "workstreams" }))
@@ -126,10 +126,13 @@ export const DecisionSnapshotNativeCountsLive = Layer.effect(
               Effect.map((observation) => ({ ...observation, complete: true })),
               Effect.mapError(() => new NativeCountReadError({ source: "workstreams" })),
             ),
-      readOperatingCounts: (projectId) =>
-        census
-          .readOperatingCounts(projectId)
-          .pipe(Effect.mapError(() => new NativeCountReadError({ source: "threads" }))),
+      ),
+      readOperatingCounts: Effect.fn("DecisionSnapshotNativeCounts.readOperatingCounts")(
+        (projectId) =>
+          census
+            .readOperatingCounts(projectId)
+            .pipe(Effect.mapError(() => new NativeCountReadError({ source: "threads" }))),
+      ),
     });
   }),
 ).pipe(Layer.provide(RuntimeCensus.layer));

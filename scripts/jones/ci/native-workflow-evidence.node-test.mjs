@@ -13,11 +13,8 @@ import {
   removeRun,
 } from "../../../apps/desktop/scripts/ui-evidence/lifecycle.mjs";
 import { sha256 } from "../../../apps/desktop/scripts/ui-evidence/provenance.mjs";
-import {
-  classifyNativeFailure,
-  validateNativeBoundary,
-  readNativeEvidence,
-} from "../../../apps/desktop/scripts/ui-evidence/native-workflow-boundary.mjs";
+import { classifyNativeFailure } from "../../../apps/desktop/scripts/ui-evidence/native-workflow-boundary.mjs";
+import { validateNativeBoundary, readNativeEvidence } from "./native-workflow-boundary.mjs";
 import {
   nativeVariants,
   nativeAdmission,

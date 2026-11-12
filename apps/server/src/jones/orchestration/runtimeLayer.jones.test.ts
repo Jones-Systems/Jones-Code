@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as SourceControlProviderRegistry from "../../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -67,7 +68,7 @@ import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExec
 import { withOwnerSelectionIngress } from "../threadConfiguration/ownerIngress.ts";
 
 const PlatformTestLayer = Layer.merge(
-  NodeServices.layer,
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
@@ -1320,9 +1321,7 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           ["provider-turn.steer-batch"],
         );
         const workerId = `${prefix}-claim-worker`;
-        const effect = Option.getOrThrow(
-          yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 }),
-        );
+        const effect = Option.getOrThrow(yield* outbox.claimNext({ workerId }));
         assert.equal(effect.threadId, threadId);
         assert.equal(effect.request.type, "provider-turn.steer-batch");
         if (effect.request.type !== "provider-turn.steer-batch") return;

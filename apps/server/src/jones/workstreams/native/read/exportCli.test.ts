@@ -6,8 +6,10 @@ import * as NodeOS from "node:os";
 import * as Fiber from "effect/Fiber";
 import * as CliSessions from "../runtime/peerSetupCli.ts";
 import { expect, it } from "@effect/vitest";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Sink from "effect/Sink";
 import * as Stdio from "effect/Stdio";
@@ -357,5 +359,5 @@ it.effect(
       }
       expect(used).toBe(0);
       expect(NodeFS.readdirSync(home)).toEqual([]);
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, EffectNodeCrypto.layerMac))),
 );

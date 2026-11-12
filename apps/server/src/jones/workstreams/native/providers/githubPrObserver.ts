@@ -323,5 +323,7 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(LinkedPrObserver, make);
 export const unconfiguredLayer = Layer.succeed(LinkedPrObserver, {
-  observe: () => Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
+  observe: Effect.fn("LinkedPrObserver.observe")(() =>
+    Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
+  ),
 });

@@ -319,62 +319,60 @@ export type Fixture = {
   release: () => void;
 };
 
-// oxlint-disable-next-line t3code/prefer-effect-fn -- Generic test scope wrapper preserves the caller's result and error types without adding a span.
-export const withCheckpointClient = <A, E>(
+export const withCheckpointClient = Effect.fnUntraced(function* <A, E>(
   checkpointFor: (filename: string) => NodeWorkerThreads.Worker | undefined,
   use: (fixture: Fixture) => Effect.Effect<A, E, Scope.Scope | SqlClient.SqlClient>,
-) =>
-  Effect.gen(function* () {
-    requireCapabilities();
-    const directory = yield* Effect.acquireRelease(Effect.sync(scratchDirectory), (path) =>
-      Effect.sync(() => {
-        NodeFS.rmSync(path, { recursive: true, force: true });
-        assert.isFalse(
-          NodeFS.existsSync(path),
-          "the creating fixture must remove its exact scratch root",
-        );
-      }),
-    );
-    const filename = NodePath.join(directory, "synthetic.sqlite");
-    return yield* Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const worker = checkpointFor(filename);
-      assert.isDefined(worker, "unavailable coverage: real checkpoint worker did not activate");
-      assert.deepEqual(yield* sql`PRAGMA wal_autocheckpoint`, [{ wal_autocheckpoint: 0 }]);
-      assert.deepEqual(yield* sql`PRAGMA journal_mode = WAL`, [{ journal_mode: "wal" }]);
-      const journal = observeWorker(worker!);
-      yield* Effect.addFinalizer(() => Effect.sync(journal.close));
-      const traffic = checkpointTraffic(worker!);
-      const releases: Array<() => void> = [];
-      const release = () => {
-        for (const cleanup of releases.splice(0)) cleanup();
-        traffic.release();
-      };
-      const fixture: Fixture = {
-        sql,
+) {
+  requireCapabilities();
+  const directory = yield* Effect.acquireRelease(Effect.sync(scratchDirectory), (path) =>
+    Effect.sync(() => {
+      NodeFS.rmSync(path, { recursive: true, force: true });
+      assert.isFalse(
+        NodeFS.existsSync(path),
+        "the creating fixture must remove its exact scratch root",
+      );
+    }),
+  );
+  const filename = NodePath.join(directory, "synthetic.sqlite");
+  return yield* Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const worker = checkpointFor(filename);
+    assert.isDefined(worker, "unavailable coverage: real checkpoint worker did not activate");
+    assert.deepEqual(yield* sql`PRAGMA wal_autocheckpoint`, [{ wal_autocheckpoint: 0 }]);
+    assert.deepEqual(yield* sql`PRAGMA journal_mode = WAL`, [{ journal_mode: "wal" }]);
+    const journal = observeWorker(worker!);
+    yield* Effect.addFinalizer(() => Effect.sync(journal.close));
+    const traffic = checkpointTraffic(worker!);
+    const releases: Array<() => void> = [];
+    const release = () => {
+      for (const cleanup of releases.splice(0)) cleanup();
+      traffic.release();
+    };
+    const fixture: Fixture = {
+      sql,
+      filename,
+      worker: worker!,
+      journal,
+      traffic,
+      own: (release) => {
+        releases.push(release);
+      },
+      release,
+    };
+    // The inner body releases holds BEFORE child/scope finalizers can await
+    // masked cleanup. The layer then stops workers before closing its database.
+    return yield* Effect.scoped(use(fixture).pipe(Effect.ensuring(Effect.sync(release))));
+  }).pipe(
+    Effect.provide(
+      SqliteClient.layer({
         filename,
-        worker: worker!,
-        journal,
-        traffic,
-        own: (release) => {
-          releases.push(release);
-        },
-        release,
-      };
-      // The inner body releases holds BEFORE child/scope finalizers can await
-      // masked cleanup. The layer then stops workers before closing its database.
-      return yield* Effect.scoped(use(fixture).pipe(Effect.ensuring(Effect.sync(release))));
-    }).pipe(
-      Effect.provide(
-        SqliteClient.layer({
-          filename,
-          checkpointWorker: true,
-          readerWorker: true,
-          readerFailureMode: "fail",
-        }),
-      ),
-    );
-  }).pipe(Effect.scoped);
+        checkpointWorker: true,
+        readerWorker: true,
+        readerFailureMode: "fail",
+      }),
+    ),
+  );
+}, Effect.scoped);
 
 export const pinSmallWal = Effect.fn("sqliteWriterAdmission.pinSmallWal")(function* (
   fixture: Fixture,

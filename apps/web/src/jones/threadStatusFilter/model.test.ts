@@ -355,6 +355,15 @@ describe("thread activity window", () => {
         classifyThreadStatus({ ...recent, runtime: runtime("idle") }, layout, false, window, now),
       ).toBe("working");
       expect(
+        classifyThreadStatus(
+          { ...recent, runtime: runtime("preparing") },
+          layout,
+          false,
+          window,
+          now,
+        ),
+      ).toBe("working");
+      expect(
         classifyThreadStatus({ ...recent, hasPendingUserInput: true }, layout, false, window, now),
       ).toBe("input");
       expect(

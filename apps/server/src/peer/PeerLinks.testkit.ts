@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentHttpApi,
@@ -20,7 +21,9 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as AuthHttp from "../auth/http.ts";
 import * as McpOAuth from "../auth/McpOAuth.ts";
 import * as McpOAuthHttp from "../auth/mcpOAuthHttp.ts";
+import type * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as CloudLink from "../cloud/CloudLink.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerHttp from "../http.ts";
@@ -28,7 +31,9 @@ import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 
 class PeerTestApi extends HttpApi.make("environment")
   .add(EnvironmentHttpApi.groups.metadata)
@@ -72,11 +77,13 @@ export const servePeer = <E, R>(
       getDescriptor: Ref.get(descriptor),
     });
     const authContext = yield* EnvironmentAuth.layer.pipe(
+      Layer.provide(ManagedPolicy.layerTest()),
+      Layer.provideMerge(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
       Layer.provide(Sqlite.layerMemory),
       Layer.provideMerge(ServerSecretStore.layer),
       Layer.provideMerge(ServerEnvironment.layerIdentity),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-link-peer-" })),
-      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       Layer.fresh,
       Layer.build,
     );
@@ -102,12 +109,27 @@ export const servePeer = <E, R>(
     );
     const layerRoutes = Layer.mergeAll(
       HttpApiBuilder.layer(PeerTestApi).pipe(
-        Layer.provide(McpOAuthHttp.layer.pipe(Layer.provide(McpOAuth.layer))),
+        Layer.provide(
+          McpOAuthHttp.layer.pipe(
+            Layer.provide(McpOAuth.layer),
+            Layer.provide(
+              Layer.mock(CloudLink.CloudLink)({
+                linkState: () =>
+                  Effect.succeed({
+                    linked: false,
+                    cloudUserId: null,
+                    relayUrl: null,
+                    relayIssuer: null,
+                    publishAgentActivity: false,
+                  }),
+              }),
+            ),
+          ),
+        ),
         Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
         Layer.provide(AuthHttp.layerAuthenticatedAuth),
       ),
-      tools.pipe(
-        Layer.provideMerge(McpHttpServer.layerMcpTransport),
+      McpHttpServer.layerMcpTransport(tools).pipe(
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: () => Effect.undefined,
@@ -133,6 +155,8 @@ export const servePeer = <E, R>(
     return {
       url,
       auth,
+      /** Its settings, as for turning its Linked environments beta off. */
+      settings: Context.get(authContext, ServerSettings.ServerSettingsService),
       descriptor,
       bearers,
       /** How often its descriptor was asked for, as a probe of whether it answers. */
@@ -156,11 +180,19 @@ export type ServedPeer = Effect.Success<ReturnType<typeof servePeer>>;
  * The environment that links: its own database and secret store, reaching
  * peers over plain HTTP. Provide it to anything built on its links.
  */
-export const layerLinkingEnvironment = (descriptor: ExecutionEnvironmentDescriptor) =>
+export const layerLinkingEnvironment = <E = never>(
+  descriptor: ExecutionEnvironmentDescriptor,
+  secrets: typeof ServerSecretStore.layer = ServerSecretStore.layer,
+  database: Layer.Layer<
+    SqlClient.SqlClient,
+    E | Layer.Error<typeof Sqlite.layerMemory>
+  > = Sqlite.layerMemory,
+) =>
   PeerMcpClient.layer.pipe(
     Layer.provideMerge(PeerLinks.layer),
-    Layer.provideMerge(Sqlite.layerMemory),
-    Layer.provide(Layer.mergeAll(ServerSecretStore.layer, FetchHttpClient.layer)),
+    Layer.provideMerge(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
+    Layer.provideMerge(database),
+    Layer.provide(Layer.mergeAll(secrets, FetchHttpClient.layer)),
     // Services that act for this environment, such as delegation, name it too.
     Layer.provideMerge(
       Layer.succeed(ServerEnvironment.ServerEnvironment, {
@@ -169,7 +201,7 @@ export const layerLinkingEnvironment = (descriptor: ExecutionEnvironmentDescript
       }),
     ),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-link-here-" })),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     Layer.fresh,
   );
 

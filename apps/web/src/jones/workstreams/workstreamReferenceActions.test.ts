@@ -177,6 +177,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const compiledDecodeSync1 = Schema.decodeSync(WorkstreamPrObservation);
+
 describe("GitHub references", () => {
   it("stops a cancelled refresh after its deferred observation without allocating or submitting a command", async () => {
     const f = fixture([reference]);
@@ -470,7 +472,7 @@ describe("GitHub references", () => {
   });
   it("refreshes against current membership and observation versions and reads back the new receipt version", async () => {
     const f = fixture([reference]);
-    const observed = Schema.decodeSync(WorkstreamPrObservation)({
+    const observed = compiledDecodeSync1({
       native_reference_id: "reference",
       observation_version: 2,
       attempted_at: "2026-09-30T12:00:00Z",
@@ -513,7 +515,7 @@ describe("GitHub references", () => {
     expect(f.controller.loadReference).toHaveBeenCalledTimes(2);
   });
   it("retains last success and describes observation failure without inventing PR state", () => {
-    const observation = Schema.decodeSync(WorkstreamPrObservation)({
+    const observation = compiledDecodeSync1({
       native_reference_id: "reference",
       observation_version: 2,
       attempted_at: "2026-09-30T12:00:00Z",
@@ -530,7 +532,7 @@ describe("GitHub references", () => {
     expect(workstreamPrObservationLabel(observation)).toBe("merged · refresh inaccessible");
     expect(
       workstreamPrObservationLabel(
-        Schema.decodeSync(WorkstreamPrObservation)({
+        compiledDecodeSync1({
           ...observation,
           outcome: "unavailable",
           last_success: null,

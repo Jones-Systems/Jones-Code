@@ -17,8 +17,7 @@ import {
   getComposerProviderState,
   getComposerReasoningStep,
   getComposerEffectiveTraitsOptions,
-  renderProviderTraitsMenuContent,
-  renderProviderTraitsPicker,
+  resolveComposerTraitsInput,
   withImplicitFastModeDefault,
 } from "./composerProviderState";
 import { readPromptUltrathink } from "./TraitsPicker";
@@ -93,7 +92,6 @@ describe("getComposerProviderState", () => {
           selectDescriptor("serviceTier", [{ id: "priority", label: "Priority" }]),
         ]),
         modelOptions,
-        planModeEnabled: false,
       });
       expect(state.promptEffort).toBe(defaultEffort);
       expect(state.modelOptionsForDispatch).toEqual(modelOptions);
@@ -112,7 +110,6 @@ describe("getComposerProviderState", () => {
         ]),
       ]),
       modelOptions: selections(["reasoningEffort", "low"]),
-      planModeEnabled: false,
     });
     expect(state.promptEffort).toBe("low");
     expect(state.modelOptionsForDispatch).toEqual(selections(["reasoningEffort", "low"]));
@@ -144,7 +141,6 @@ describe("getComposerProviderState", () => {
           options: selections(["reasoningEffort", effort]),
         },
         defaultDriverKind: PROVIDER,
-        planModeEnabled: false,
       };
       expect(getComposerProviderState(input).promptEffort).toBe(effort);
       expect(getComposerProviderState(input).modelOptionsForDispatch).toEqual(options);
@@ -168,7 +164,6 @@ describe("getComposerProviderState", () => {
         ]),
       ]),
       modelOptions: undefined,
-      planModeEnabled: true,
     });
 
     expect(state).toEqual({
@@ -187,7 +182,6 @@ describe("getComposerProviderState", () => {
         booleanDescriptor("fastMode"),
       ]),
       modelOptions: selections(["effort", "high"], ["fastMode", false]),
-      planModeEnabled: true,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(
@@ -201,7 +195,6 @@ describe("getComposerProviderState", () => {
       model: MODEL,
       models: modelWith([booleanDescriptor("thinking")]),
       modelOptions: selections(["effort", "max"], ["thinking", false]),
-      planModeEnabled: true,
     });
 
     expect(state).toEqual({
@@ -227,14 +220,14 @@ describe("getComposerProviderState", () => {
         ]),
       ]),
       modelOptions: selections(["agent", "plan"]),
-      planModeEnabled: true,
+      includePlanAgent: true,
     });
 
     expect(state.promptEffort).toBe("high");
     expect(state.modelOptionsForDispatch).toEqual(selections(["agent", "plan"]));
   });
 
-  it("drops the plan agent from dispatch when legacy plan mode is disabled", () => {
+  it("drops the plan agent from dispatch unless it is included", () => {
     const state = getComposerProviderState({
       provider: PROVIDER,
       model: MODEL,
@@ -245,7 +238,6 @@ describe("getComposerProviderState", () => {
         ]),
       ]),
       modelOptions: selections(["agent", "plan"]),
-      planModeEnabled: false,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(selections(["agent", "build"]));
@@ -264,7 +256,6 @@ describe("getComposerProviderState", () => {
         },
       ],
       modelOptions: selections(["variant", "max"], ["agent", "build"]),
-      planModeEnabled: false,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(
@@ -293,7 +284,6 @@ describe("getComposerProviderState", () => {
         },
       ],
       modelOptions: selections(["effort", "low"], ["unknown", "value"]),
-      planModeEnabled: false,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(selections(["effort", "low"]));
@@ -305,7 +295,6 @@ describe("getComposerProviderState", () => {
       model: MODEL,
       models: modelWith([booleanDescriptor("fastMode", true)]),
       modelOptions: undefined,
-      planModeEnabled: true,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(selections(["fastMode", false]));
@@ -368,7 +357,6 @@ describe("trait controls fastMode display", () => {
         options: selections(["reasoningEffort", "high"]),
       },
       defaultDriverKind: PROVIDER,
-      planModeEnabled: true,
     };
     const effective = getComposerEffectiveTraitsOptions(input);
     expect(effective.modelOptions).toEqual(
@@ -483,11 +471,11 @@ describe("provider traits render guards", () => {
       modelOptions: undefined,
       promptUltrathink: readPromptUltrathink(""),
       onPromptEdit: () => {},
-      planModeEnabled: true,
     };
 
-    expect(renderProviderTraitsPicker(args)).toBeNull();
-    expect(renderProviderTraitsMenuContent(args)).toBeNull();
+    expect(
+      resolveComposerTraitsInput({ ...args, instanceId: ProviderInstanceId.make("codex") }),
+    ).toBeNull();
   });
 });
 
@@ -532,7 +520,6 @@ describe("getComposerReasoningStep", () => {
       modelOptions: undefined,
       prompt: "Fix the bug",
       cursor: 0,
-      planModeEnabled: true,
       direction: 1,
       ...input,
     });
@@ -557,7 +544,6 @@ describe("getComposerReasoningStep", () => {
           options: selections(["reasoningEffort", "high"]),
         },
         defaultDriverKind: PROVIDER,
-        planModeEnabled: true,
       };
       expect(getComposerProviderState(input).promptEffort).toBe("high");
       expect(getComposerProviderState(input).modelOptionsForDispatch).toBeUndefined();
@@ -608,48 +594,40 @@ describe("getComposerReasoningStep", () => {
     }
   });
 
-  it("adds and strips the Ultrathink prefix while the caret stays on the same character", () => {
-    for (const { prompt, modelOptions, direction, expected } of [
-      {
-        prompt: "  Fix the bug \n",
-        modelOptions: selections(["effort", "high"]),
-        direction: 1,
-        expected: { prompt: "Ultrathink:\nFix the bug", cursor: 20 },
-      },
-      {
-        prompt: "Ultrathink:\n  Fix the bug",
-        modelOptions: selections(["effort", "medium"]),
-        direction: -1,
-        expected: {
-          prompt: "Fix the bug",
-          cursor: 8,
-          modelOptions: selections(["effort", "high"]),
-        },
-      },
+  it("steps Antigravity's thinking_level like other effort controls", () => {
+    expect(
+      step({
+        provider: ProviderDriverKind.make("antigravity"),
+        models: modelWith([selectDescriptor("thinking_level", LEVELS)]),
+      })?.modelOptions,
+    ).toStrictEqual(selections(["thinking_level", "high"]));
+  });
+
+  it("never steps into Ultrathink and strips a typed prefix with the caret on the same character", () => {
+    expect(step({ ...CLAUDE, modelOptions: selections(["effort", "high"]) })).toStrictEqual({
+      prompt: "Fix the bug",
+      cursor: 0,
+      modelOptions: selections(["effort", "medium"]),
+    });
+    const prompt = "Ultrathink:\n  Fix the bug";
+    // A typed Ultrathink sits above the pickable levels, so up wraps and down lands on the top level.
+    for (const [direction, to] of [
+      [-1, "high"],
+      [1, "medium"],
     ] as const) {
       const result = step({
         ...CLAUDE,
         prompt,
         cursor: prompt.indexOf("bug"),
-        modelOptions,
+        modelOptions: selections(["effort", "medium"]),
         direction,
       });
-      expect(result).toStrictEqual(expected);
-      expect(result?.prompt.slice(result.cursor)).toMatch(/^bug/);
+      expect(result, `by ${direction}`).toStrictEqual({
+        prompt: "Fix the bug",
+        cursor: 8,
+        modelOptions: selections(["effort", to]),
+      });
     }
-    expect(
-      step({ ...CLAUDE, prompt: "   Fix", modelOptions: selections(["effort", "high"]) })?.cursor,
-    ).toBe("Ultrathink:\n".length);
-  });
-
-  it("skips Ultrathink for slash commands and does nothing when the prompt locks it", () => {
-    expect(
-      step({ ...CLAUDE, prompt: "/review", modelOptions: selections(["effort", "high"]) }),
-    ).toStrictEqual({
-      prompt: "/review",
-      cursor: 0,
-      modelOptions: selections(["effort", "medium"]),
-    });
     for (const [prompt, direction] of [
       ["Please ultrathink harder", 1],
       ["Ultrathink:\nPlease ultrathink harder", -1],

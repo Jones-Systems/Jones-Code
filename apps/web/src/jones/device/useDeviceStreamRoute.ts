@@ -57,7 +57,7 @@ export function useDeviceStreamRoute(input: {
     stop?.();
     input.retire();
   });
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the visible device media route and retire its stream, tunnel and callbacks when its configuration changes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the visible device media route and retire its stream, tunnel and callbacks when its configuration changes.
   useEffect(() => {
     if (refreshes.current?.configuration !== configuration) {
       refreshes.current = { configuration, count: 0 };

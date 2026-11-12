@@ -10,6 +10,7 @@ it.effect(
     let allowed = true;
     return Effect.gen(function* () {
       const p = yield* Evidence.RollupEvidenceProvider;
+      const signal = yield* Effect.abortSignal;
       expect((yield* p.describe([f.binding]))[0]?.kind).toBe("available");
       expect((yield* p.describe([{ ...f.binding, account_id: "account:other" }]))[0]).toMatchObject(
         { kind: "excluded", reason: "content_unavailable" },
@@ -19,18 +20,16 @@ it.effect(
           createManifest({ ...f.manifest, owner_id: "owner:other" }),
         ),
       ).toBe(false);
-      expect(yield* p.readExtractionInputs(f.manifest, new AbortController().signal)).toEqual([
-        f.input,
-      ]);
+      expect(yield* p.readExtractionInputs(f.manifest, signal)).toEqual([f.input]);
       allowed = false;
       expect(yield* p.verifyCurrentAuthorization(f.manifest)).toBe(false);
       expect((yield* p.describe([f.binding]))[0]).toMatchObject({
         kind: "excluded",
         reason: "not_authorized",
       });
-      expect(
-        (yield* Effect.flip(p.readExtractionInputs(f.manifest, new AbortController().signal))).code,
-      ).toBe("input_unavailable");
+      expect((yield* Effect.flip(p.readExtractionInputs(f.manifest, signal))).code).toBe(
+        "input_unavailable",
+      );
     }).pipe(Effect.provide(syntheticEvidenceLayer([{ ...f, authorized: () => allowed }])));
   },
 );

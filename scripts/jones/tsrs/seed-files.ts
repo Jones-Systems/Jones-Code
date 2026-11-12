@@ -2,7 +2,7 @@ import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ByteSize from "effect/ByteSize";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
@@ -57,8 +57,8 @@ export function errorCode(error: unknown): string | undefined {
 export function digest(bytes: string | Buffer): string {
   return Buffer.from(
     Effect.runSync(
-      Effect.flatMap(Crypto.Crypto, (crypto) =>
-        crypto.digest("SHA-256", typeof bytes === "string" ? Buffer.from(bytes) : bytes),
+      Effect.flatMap(Digest.Digest, (crypto) =>
+        crypto.digest(Digest.sha256, typeof bytes === "string" ? Buffer.from(bytes) : bytes),
       ).pipe(Effect.provide(NodeCrypto.layer)),
     ),
   ).toString("hex");

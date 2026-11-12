@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -42,10 +42,11 @@ export const withPreparedReceivingAuthority = Effect.fn("ReceivingAuthority.with
           yield* registration.checkCurrent().pipe(Effect.mapError(Boundary.mapFailure));
         });
         const fence = Boundary.ReceivingAuthorityFence.of({
-          prepare: (exactInvocation) =>
+          prepare: Effect.fn("Boundary.ReceivingAuthorityFence.prepare")((exactInvocation) =>
             exactInvocation !== invocation
               ? Effect.fail(new Session.RegistryError({ code: "not_granted" }))
               : checkCurrent().pipe(Effect.as({ authority: prepared.authority, checkCurrent })),
+          ),
         });
         return yield* use(fence);
       }).pipe(Effect.provideService(Mcp.McpInvocationContext, invocation)),
@@ -63,7 +64,7 @@ export const layer = Layer.effect(
     const sql = yield* SqlClient.SqlClient;
     const home = yield* NativeHome;
     const keys = yield* Keys.WorkstreamsKeyProvider;
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* Digest.Digest;
     const source = yield* Supplied.SourceForwardQualification;
     const local = yield* Session.Session;
     const initial = yield* Effect.serviceOption(Initial.InitialPeerExecution);
@@ -88,7 +89,7 @@ export const layer = Layer.effect(
                   Layer.succeed(SqlClient.SqlClient, sql),
                   Layer.succeed(NativeHome, home),
                   Layer.succeed(Keys.WorkstreamsKeyProvider, keys),
-                  Layer.succeed(Crypto.Crypto, crypto),
+                  Layer.succeed(Digest.Digest, crypto),
                   Layer.succeed(Supplied.SourceForwardQualification, source),
                   Layer.succeed(Session.Session, local),
                   Option.isSome(initial)
@@ -105,13 +106,18 @@ export const layer = Layer.effect(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
     return Home.HomeTools.of({
-      access: (input, invocation) => invoke(invocation, (tools) => tools.access(input, invocation)),
-      registration: (input, invocation) =>
+      access: Effect.fn("Home.HomeTools.access")((input, invocation) =>
+        invoke(invocation, (tools) => tools.access(input, invocation)),
+      ),
+      registration: Effect.fn("Home.HomeTools.registration")((input, invocation) =>
         invoke(invocation, (tools) => tools.registration(input, invocation)),
-      forward: (input, invocation) =>
+      ),
+      forward: Effect.fn("Home.HomeTools.forward")((input, invocation) =>
         invoke(invocation, (tools) => tools.forward(input, invocation)),
-      readback: (input, invocation) =>
+      ),
+      readback: Effect.fn("Home.HomeTools.readback")((input, invocation) =>
         invoke(invocation, (tools) => tools.readback(input, invocation)),
+      ),
     });
   }),
 );

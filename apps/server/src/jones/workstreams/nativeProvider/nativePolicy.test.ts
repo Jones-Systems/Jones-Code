@@ -21,6 +21,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
+import { pruneEventLogLikeUpstream } from "../../persistence/prunedEventLog.testkit.ts";
 import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as NativeEvidence from "./evidence.ts";
@@ -151,6 +153,8 @@ const fixture = Effect.gen(function* () {
   };
 });
 
+const compiledDecodeEffect1 = Schema.decodeEffect(WorkstreamsNativeSettlementResponse);
+
 it.effect(
   "native policy denial retains pins, snooze and history and produces only a rejected receipt",
   () =>
@@ -196,7 +200,7 @@ it.effect(
       const before = yield* f.projections.getThreadProjection(f.threadId);
       const provider = makeWorkstreamsNativeProvider(f.ports);
       const result = yield* provider.settle(binding, request, requestBytesSha256);
-      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result);
+      yield* compiledDecodeEffect1(result);
       assert.strictEqual(result.state, "terminal");
       if (result.state === "terminal") assert.strictEqual(result.result.native_outcome, "denied");
       assert.deepEqual(yield* f.projections.getThreadProjection(f.threadId), before);
@@ -219,6 +223,10 @@ it.effect(
     }).pipe(Effect.provide(testLayer)),
 );
 
+const compiledEncodeEffect2 = Schema.encodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeSettlementRequest),
+);
+
 it.effect(
   "real Orchestrator settles and unsettles with exact V2 receipt and event associations",
   () =>
@@ -231,13 +239,9 @@ it.effect(
           command_id: `registry-synthetic-${action}`,
           native_action: action,
         };
-        const digest = sha256Bytes(
-          yield* Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
-            input,
-          ),
-        );
+        const digest = sha256Bytes(yield* compiledEncodeEffect2(input));
         const result = yield* provider.settle(binding, input, digest);
-        yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result);
+        yield* compiledDecodeEffect1(result);
         assert.strictEqual(result.state, "terminal");
         if (result.state !== "terminal") throw new Error("Expected durable terminal evidence.");
         assert.strictEqual(result.result.native_outcome, "committed");
@@ -329,7 +333,7 @@ it.effect(
       yield* Fiber.interrupt(pending);
       const before = yield* f.sql`SELECT sequence FROM orchestration_events ORDER BY sequence`;
       const recovered = yield* provider.lookup(binding, request, requestBytesSha256);
-      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(recovered);
+      yield* compiledDecodeEffect1(recovered);
       assert.strictEqual(recovered.state, "terminal");
       if (recovered.state === "terminal")
         assert.strictEqual(recovered.result.native_outcome, "committed");
@@ -369,14 +373,10 @@ it.effect(
         command_id: "registry-colon-thread-settle",
         identity: { ...request.identity, native_id: threadId },
       };
-      const digest = sha256Bytes(
-        yield* Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
-          input,
-        ),
-      );
+      const digest = sha256Bytes(yield* compiledEncodeEffect2(input));
       const provider = makeWorkstreamsNativeProvider(f.ports);
       const result = yield* provider.settle(binding, input, digest);
-      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result);
+      yield* compiledDecodeEffect1(result);
       assert.strictEqual(result.state, "terminal");
       if (result.state !== "terminal") throw new Error("Expected durable terminal evidence.");
       assert.strictEqual(result.result.native_outcome, "committed");
@@ -464,7 +464,7 @@ it.effect.each(
     [false, true].map((upgrade) => ({ scenario, upgrade })),
   ),
 )(
-  "lost $scenario reply reconciles after real compaction (upgrade=$upgrade)",
+  "lost $scenario reply reconciles after real event pruning (upgrade=$upgrade)",
   ({ scenario, upgrade }) =>
     Effect.gen(function* () {
       const action = scenario === "unsettle" ? "unsettle" : "settle";
@@ -485,11 +485,7 @@ it.effect.each(
         });
       }
       const input: WorkstreamsNativeSettlementRequest = { ...request, native_action: action };
-      const digest = sha256Bytes(
-        yield* Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
-          input,
-        ),
-      );
+      const digest = sha256Bytes(yield* compiledEncodeEffect2(input));
       const committed = yield* Deferred.make<void>();
       let dispatches = 0;
       const ports: NativeProviderPorts = {
@@ -587,15 +583,19 @@ it.effect.each(
         commandId: CommandId.make("newer-metadata"),
         threadId: f.threadId,
       });
-      const compacted = yield* maintenance.compactEventStore();
-      assert.isAbove(compacted.deletedEventCount, 0);
+      // Upstream's pruner marks the head on its first pass and deletes through that mark once
+      // the mark is a day old. Receipts stay for idempotency.
+      assert.strictEqual((yield* maintenance.pruneEventStore()).deletedEventCount, 0);
+      yield* TestClock.adjust("1 day");
+      const pruned = yield* maintenance.pruneEventStore();
+      assert.isAbove(pruned.deletedEventCount, 0);
       assert.deepEqual(
         yield* f.sql`SELECT event_id FROM orchestration_events WHERE command_id = ${attempt.nativeCommandId}`,
         [],
       );
       const recovered = yield* reopened.lookup(binding, input, digest);
       assert.strictEqual(recovered.state, "terminal");
-      if (recovered.state !== "terminal") throw new Error("Expected compacted durable proof.");
+      if (recovered.state !== "terminal") throw new Error("Expected pruned durable proof.");
       assert.strictEqual(recovered.result.native_outcome, "committed");
       assert.strictEqual(recovered.settlement_event?.eventId, settlement.event_id);
       assert.strictEqual(recovered.native_receipt?.resultSequence, original.at(-1)!.sequence);
@@ -618,6 +618,64 @@ it.effect.each(
         (yield* f.sql`SELECT command_id FROM workstreams_native_attempts`).length,
         countBefore,
       );
+      assert.strictEqual(dispatches, 1);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+// Applies upstream's keep rule directly, without the maintenance API, so the outcome does not
+// depend on how the pruner schedules itself.
+it.effect.each(["stored", "null"] as const)(
+  "events deleted by the upstream keep rule leave the %s settlement proof outcome explicit",
+  (proof) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      let dispatches = 0;
+      const ports: NativeProviderPorts = {
+        ...f.ports,
+        engine: {
+          dispatch: (command) => {
+            dispatches += 1;
+            return f.orchestrator.dispatch(command);
+          },
+        },
+      };
+      const provider = makeWorkstreamsNativeProvider(ports);
+      const settled = yield* provider.settle(binding, request, requestBytesSha256);
+      assert.strictEqual(settled.state, "terminal");
+      const attempt = Option.getOrThrow(yield* f.attempts.get(request));
+      // The settlement event must not be the stream's newest row, or the keep rule retains it.
+      yield* f.orchestrator.dispatch({
+        type: "thread.pin",
+        commandId: CommandId.make("newer-metadata"),
+        threadId: f.threadId,
+      });
+      if (proof === "null") {
+        // Migration 107 leaves proof_json NULL for an attempt whose events were already pruned.
+        // The fixture drops the edit guard to recreate that row; it is not a supported edit.
+        yield* f.sql`DROP TRIGGER jones_workstreams_settlement_proofs_immutable`;
+        yield* f.sql`UPDATE jones_workstreams_settlement_proofs SET proof_json = NULL
+          WHERE native_command_id = ${attempt.nativeCommandId}`;
+      }
+      const head = yield* f.sql<{
+        sequence: number;
+      }>`SELECT MAX(sequence) AS sequence FROM orchestration_events`;
+      const deleted = yield* pruneEventLogLikeUpstream(head[0]!.sequence);
+      assert.isAbove(deleted.length, 0);
+      assert.deepEqual(
+        yield* f.sql`SELECT event_id FROM orchestration_events WHERE command_id = ${attempt.nativeCommandId}`,
+        [],
+      );
+      assert.strictEqual(
+        (yield* f.sql`SELECT command_id FROM orchestration_command_receipts
+          WHERE command_id = ${attempt.nativeCommandId}`).length,
+        1,
+      );
+      const expected =
+        proof === "stored"
+          ? settled
+          : { protocol: binding.protocol, state: "unknown", request, reason: "evidence_conflict" };
+      assert.deepEqual(yield* provider.lookup(binding, request, requestBytesSha256), expected);
+      assert.deepEqual(yield* provider.settle(binding, request, requestBytesSha256), expected);
       assert.strictEqual(dispatches, 1);
     }).pipe(Effect.provide(testLayer)),
 );

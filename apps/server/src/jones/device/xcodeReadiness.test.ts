@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -84,7 +85,9 @@ const fixture = Effect.fn("xcodeFixture")(function* (android = false, xcodebuild
       ChildProcessSpawner.make((command) => {
         expect(ChildProcess.isStandardCommand(command)).toBe(true);
         if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
-        starts.push([...command.args]);
+        starts.push(
+          command.args.map((word) => (Redacted.isRedacted(word) ? Redacted.value(word) : word)),
+        );
         return Effect.acquireRelease(
           Effect.succeed(
             ChildProcessSpawner.makeHandle({

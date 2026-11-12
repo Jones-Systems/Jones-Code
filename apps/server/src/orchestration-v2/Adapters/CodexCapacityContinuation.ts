@@ -1,12 +1,10 @@
 export {
   codexCapacityRetryPolicy,
   makeCodexCapacityContinuation,
+  makeCodexCapacityRetryFacts,
   reduceCodexCapacityContinuation,
-  type CodexCapacityContinuationAction,
+  type CodexCapacityCancellationReason,
   type CodexCapacityContinuationBinding,
-  type CodexCapacityContinuationReduction,
   type CodexCapacityContinuationSignal,
   type CodexCapacityContinuationState,
-  type CodexCapacityCancellationReason,
-  type CodexCapacityTerminalStatus,
 } from "../../jones/provider/codex/CodexCapacityContinuation.ts";

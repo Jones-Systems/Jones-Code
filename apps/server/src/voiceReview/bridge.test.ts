@@ -269,6 +269,9 @@ describe("voice review server bridge", () => {
     }));
 });
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(ThreadRegistrySnapshot);
+const compiledDecodeSync2 = Schema.decodeSync(ThreadRegistryLabelPayload);
+
 describe("voice routing and registry bridge", () => {
   it("retains released command text while redacting deleted, expired, unavailable and foreign text", async () =>
     withFixture(async (tokenFile) => {
@@ -326,7 +329,7 @@ describe("voice routing and registry bridge", () => {
           },
         ],
       };
-      expect(Schema.decodeUnknownSync(ThreadRegistrySnapshot)(snapshot).threads).toHaveLength(1);
+      expect(compiledDecodeUnknownSync1(snapshot).threads).toHaveLength(1);
       const bridge = makeVoiceReviewBridge(config(tokenFile), async () => Response.json(snapshot));
       const result = await bridge.registrySnapshot(principal);
       expect(result.partial).toBe(true);
@@ -488,7 +491,7 @@ describe("voice routing and registry bridge", () => {
     expect(() => decode({ ...association, dispatch: true })).toThrow();
     expect(() => decode({ ...association, expected_revision: "0" })).toThrow();
     expect(() =>
-      Schema.decodeSync(ThreadRegistryLabelPayload)({
+      compiledDecodeSync2({
         schema: "voice.association-mutation/v1",
         label_id: "native:voice",
         name: "name",

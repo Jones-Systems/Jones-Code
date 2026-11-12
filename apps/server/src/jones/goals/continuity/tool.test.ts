@@ -1,3 +1,4 @@
+import * as InProcessMcp from "../../../mcp/McpHttpServer.ts";
 import { expect, it } from "@effect/vitest";
 import * as C from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -83,7 +84,7 @@ function harness(refuse = false) {
     kit,
     Access.toLayer(kit, { t3_thread_continuity: goalContinuityHandler }),
   ).pipe(
-    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
     Layer.provideMerge(domain),
     Layer.provideMerge(
       Layer.mock(Threads.ThreadManagementService)({

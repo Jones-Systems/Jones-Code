@@ -4,6 +4,9 @@ import { OrchestrationMessageContext } from "../composerContext.ts";
 import { CheckoutRecreationRequest } from "./workspaceRecreation.ts";
 import { ExecutionEnvironmentCapabilities } from "../environment.ts";
 
+const decodeMessageContext = Schema.decodeSync(OrchestrationMessageContext);
+const decodeRecreationRequest = Schema.decodeUnknownSync(CheckoutRecreationRequest);
+
 it("preserves explicit receipt-bound detached requests through message-context replay and keeps old messages valid", () => {
   const context = {
     version: 1 as const,
@@ -12,7 +15,7 @@ it("preserves explicit receipt-bound detached requests through message-context r
   };
   const codec = Schema.fromJsonString(OrchestrationMessageContext);
   expect(Schema.decodeSync(codec)(Schema.encodeSync(codec)(context))).toEqual(context);
-  expect(Schema.decodeSync(OrchestrationMessageContext)({ version: 1, records: [] })).toEqual({
+  expect(decodeMessageContext({ version: 1, records: [] })).toEqual({
     version: 1,
     records: [],
   });
@@ -20,7 +23,7 @@ it("preserves explicit receipt-bound detached requests through message-context r
     { receiptId: "", mode: "detached" },
     { receiptId: "receipt", mode: "reset" },
   ])
-    expect(() => Schema.decodeUnknownSync(CheckoutRecreationRequest)(request)).toThrow();
+    expect(() => decodeRecreationRequest(request)).toThrow();
   const decodeCapabilities = Schema.decodeUnknownSync(ExecutionEnvironmentCapabilities);
   expect(decodeCapabilities({}).checkoutRecreation).toBeUndefined();
   expect(decodeCapabilities({ checkoutRecreation: true }).checkoutRecreation).toBe(true);

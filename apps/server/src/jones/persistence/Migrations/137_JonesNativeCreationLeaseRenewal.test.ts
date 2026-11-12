@@ -58,9 +58,9 @@ const seedStart = (id: string, expiry: string, rowid: number) =>
       VALUES (${id}, 'thread', ${id}, 'prepared-run.release', ${activeExpiry}, ${rowid}, 'accepted')`;
     yield* sql`INSERT INTO orchestration_v2_effect_outbox
       (effect_id, command_id, thread_id, effect_type, payload_json, status, attempt_count,
-       available_at, lease_owner, lease_expires_at, created_at, updated_at)
+       available_at, lease_owner, created_at, updated_at)
       VALUES (${id}, ${id}, ${id}, 'provider-turn.start', '{}', 'running', 1,
-        ${activeExpiry}, 'worker', ${expiry}, ${activeExpiry}, ${activeExpiry})`;
+        ${activeExpiry}, 'worker', ${activeExpiry}, ${activeExpiry})`;
     yield* sql`INSERT INTO jones_native_creation_execution_acceptances
       (rowid, command_id, claim_id, thread_id, command_digest, binding_digest, event_id, event_sequence)
       VALUES (${rowid}, ${id}, ${id}, ${id}, ${"a".repeat(64)}, ${"b".repeat(64)}, ${id}, ${rowid})`;

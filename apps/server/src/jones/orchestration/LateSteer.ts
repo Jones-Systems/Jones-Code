@@ -55,6 +55,10 @@ export class SteerOutcomeUnknown extends Schema.TaggedError<SteerOutcomeUnknown>
   }
 }
 
+const compiledIs1 = Schema.is(SteerNotDispatched);
+const compiledIs2 = Schema.is(SteerOutcomeUnknown);
+const compiledIs3 = Schema.is(ControlAdmission.ControlAdmissionHeld);
+
 export function findSteerFailure(
   error: unknown,
 ): SteerNotDispatched | SteerOutcomeUnknown | ControlAdmission.ControlAdmissionHeld | undefined {
@@ -62,12 +66,7 @@ export function findSteerFailure(
   let current = error;
   while (typeof current === "object" && current !== null && !visited.has(current)) {
     visited.add(current);
-    if (
-      Schema.is(SteerNotDispatched)(current) ||
-      Schema.is(SteerOutcomeUnknown)(current) ||
-      Schema.is(ControlAdmission.ControlAdmissionHeld)(current)
-    )
-      return current;
+    if (compiledIs1(current) || compiledIs2(current) || compiledIs3(current)) return current;
     if (Cause.isCause(current)) {
       const failure = Cause.findErrorOption(current);
       current = Option.isSome(failure) ? failure.value : undefined;

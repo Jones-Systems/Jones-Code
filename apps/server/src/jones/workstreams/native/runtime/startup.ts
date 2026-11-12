@@ -398,7 +398,9 @@ export const homeServicesLayer = (
       Option.isSome(source)
         ? recordedSourceEnrollmentLayer(source.value)
         : Layer.succeed(NativeAdmission.RecordedSourceEnrollment, {
-            lookup: () => Effect.fail(new Recorded.RecordedCallerFence({ code: "unavailable" })),
+            lookup: Effect.fn("NativeAdmission.RecordedSourceEnrollment.lookup")(() =>
+              Effect.fail(new Recorded.RecordedCallerFence({ code: "unavailable" })),
+            ),
           }),
     ),
   );
@@ -546,7 +548,9 @@ export const unavailableServicesLayer = (selection: Selection) => {
     purgeAuthorization: () => {},
   };
   const registration = Registration.WorkstreamsRegistrationContext.of({
-    read: () => Effect.fail(new Registration.RegistrationContextError({ reason: "unconfigured" })),
+    read: Effect.fn("Registration.WorkstreamsRegistrationContext.read")(() =>
+      Effect.fail(new Registration.RegistrationContextError({ reason: "unconfigured" })),
+    ),
   });
   const operations = Layer.effect(
     Operations.WorkstreamOperations,
@@ -554,9 +558,13 @@ export const unavailableServicesLayer = (selection: Selection) => {
       const environment = yield* Environment.ServerEnvironmentIdentity;
       const environmentId = yield* environment.getEnvironmentId;
       return Operations.WorkstreamOperations.of({
-        resumeRecorded: () => Effect.fail(new Recorded.RecordedCallerFence({ code: "missing" })),
-        submit: () => Effect.fail(new Operations.OperationInternalError({})),
-        read: (input) =>
+        resumeRecorded: Effect.fn("Operations.WorkstreamOperations.resumeRecorded")(() =>
+          Effect.fail(new Recorded.RecordedCallerFence({ code: "missing" })),
+        ),
+        submit: Effect.fn("Operations.WorkstreamOperations.submit")(() =>
+          Effect.fail(new Operations.OperationInternalError({})),
+        ),
+        read: Effect.fn("Operations.WorkstreamOperations.read")((input) =>
           Effect.succeed(
             "operation_id" in input
               ? { operation: null }
@@ -564,6 +572,7 @@ export const unavailableServicesLayer = (selection: Selection) => {
                 ? { operations: [] }
                 : { assignment: { kind: "unverified" }, open_operation: null },
           ),
+        ),
         setupStatus: Effect.fn("NativeUnavailable.setupStatus")(function* () {
           return {
             contract: WORKSTREAM_OPERATIONS_CONTRACT,

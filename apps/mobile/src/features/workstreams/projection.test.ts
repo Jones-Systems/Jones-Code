@@ -18,14 +18,14 @@ function snapshot(
 ): MobileWorkstreamSnapshot {
   return {
     prepared: {
-      environmentId: Schema.decodeUnknownSync(EnvironmentId)(environmentId),
+      environmentId: decodeEnvironmentId(environmentId),
       label: environmentId,
       httpBaseUrl: "https://test.invalid",
       socketUrl: "wss://test.invalid",
       httpAuthorization: null,
       target: {
         _tag: "PrimaryConnectionTarget",
-        environmentId: Schema.decodeUnknownSync(EnvironmentId)(environmentId),
+        environmentId: decodeEnvironmentId(environmentId),
         label: environmentId,
         httpBaseUrl: "https://test.invalid",
         wsBaseUrl: "wss://test.invalid",
@@ -459,3 +459,5 @@ describe("mobile connected-environment display trust", () => {
     expect(result.conflictingThreadKeys).toEqual(new Set([key]));
   });
 });
+
+const decodeEnvironmentId = Schema.decodeUnknownSync(EnvironmentId);

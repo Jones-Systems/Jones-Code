@@ -13,6 +13,15 @@ const state = vi.hoisted(() => ({
   batch: vi.fn(),
   row: vi.fn(),
 }));
+vi.mock(import("@t3tools/client-runtime/state/thread-workflows"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    deriveThreadQueueWorkflowState: ((
+      ...args: Parameters<typeof actual.deriveThreadQueueWorkflowState>
+    ) => ({ ...actual.deriveThreadQueueWorkflowState(...args), canReorder: true })) as never,
+  };
+});
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
   useThreadProjection: (() => ({ projection: state.projection })) as never,
@@ -39,6 +48,17 @@ vi.mock(import("../../assets/assetUrls"), async (original) => ({
   useAssetUrls: (() => []) as never,
 }));
 
+// Model the frozen additive queue command interface; exact package/runtime qualification remains blocked by L5-REQ05.
+vi.mock(import("../../state/threads"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    threadEnvironment: {
+      ...actual.threadEnvironment,
+      reorderQueuedRun: { label: "environment-data:commands:thread:reorder-queued-run" },
+    },
+  } as never;
+});
 import {
   QueuedRunsControl,
   type QueuedRunsControlHandle,
@@ -83,6 +103,7 @@ function queueProjection(count = 22): OrchestrationV2ThreadProjection {
       attachments: [],
       createdBy: "user",
       creationSource: "web",
+      createdAt: DateTime.makeUnsafe("2026-10-20T12:00:00Z"),
       updatedAt: DateTime.makeUnsafe("2026-10-20T12:00:00Z"),
     })),
     runtimeRequests: [],
@@ -120,6 +141,9 @@ async function render(props: Partial<React.ComponentProps<typeof QueuedRunsContr
       threadId={"thread:test" as never}
       optimisticMessages={[]}
       editingRunId={null}
+      editBlockedReason={null}
+      timestampFormat="locale"
+      onOpenThread={() => undefined}
       onEditQueuedRun={() => undefined}
       onCancelEdit={() => undefined}
       {...props}

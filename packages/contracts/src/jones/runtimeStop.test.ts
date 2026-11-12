@@ -22,14 +22,17 @@ const input = {
     evidenceRevision: 3,
   },
 };
+const compiledDecodeSync1 = Schema.decodeSync(StopCurrentThreadRuntimeInput);
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(StopCurrentThreadRuntimeInput);
+const compiledDecodeSync3 = Schema.decodeSync(ReadCurrentRuntimeStopTargetResult);
+const compiledDecodeUnknownSync4 = Schema.decodeUnknownSync(ReadCurrentRuntimeStopTargetResult);
+
 describe("captured runtime stop contract", () => {
   it("requires complete capture identity rather than only a thread name", () => {
-    expect(Schema.decodeSync(StopCurrentThreadRuntimeInput)(input)).toEqual(input);
+    expect(compiledDecodeSync1(input)).toEqual(input);
+    expect(() => compiledDecodeUnknownSync2({ ...input, target: undefined })).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(StopCurrentThreadRuntimeInput)({ ...input, target: undefined }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeSync(StopCurrentThreadRuntimeInput)({
+      compiledDecodeSync1({
         ...input,
         target: { ...input.target, evidenceRevision: -1 },
       }),
@@ -37,7 +40,7 @@ describe("captured runtime stop contract", () => {
   });
   it("does not accept payload authority as part of a stop command", () => {
     expect(() =>
-      Schema.decodeUnknownSync(StopCurrentThreadRuntimeInput)(
+      compiledDecodeUnknownSync2(
         { ...input, actorSessionId: "fabricated", scopes: ["orchestration:operate"] },
         { onExcessProperty: "error" },
       ),
@@ -45,14 +48,14 @@ describe("captured runtime stop contract", () => {
   });
   it("reports unsupported physical capture without manufacturing a target", () => {
     expect(
-      Schema.decodeSync(ReadCurrentRuntimeStopTargetResult)({
+      compiledDecodeSync3({
         status: "unavailable",
         reason: "physical_capture_unavailable",
         backgroundCoverage: "partial",
       }).status,
     ).toBe("unavailable");
     expect(() =>
-      Schema.decodeUnknownSync(ReadCurrentRuntimeStopTargetResult)({
+      compiledDecodeUnknownSync4({
         status: "available",
         backgroundCoverage: "partial",
       }),
@@ -84,6 +87,9 @@ describe("captured runtime stop contract", () => {
   });
 });
 
+const compiledDecodeUnknownSync5 = Schema.decodeUnknownSync(OrchestrationV2DomainEventJson);
+const compiledEncodeSync6 = Schema.encodeSync(OrchestrationV2DomainEventJson);
+
 it("replays requested stop without decoding it as successful detachment", () => {
   const wire = {
     id: "event:stop:requested",
@@ -94,12 +100,12 @@ it("replays requested stop without decoding it as successful detachment", () => 
     providerInstanceId: "codex",
     payload: { providerSessionId: "session:stop" },
   };
-  const event = Schema.decodeUnknownSync(OrchestrationV2DomainEventJson)(wire);
+  const event = compiledDecodeUnknownSync5(wire);
   expect(event.type).toBe("provider-session.detach-requested");
-  expect(Schema.encodeSync(OrchestrationV2DomainEventJson)(event)).toEqual(wire);
+  expect(compiledEncodeSync6(event)).toEqual(wire);
   expect(event.payload).toEqual({ providerSessionId: "session:stop" });
   expect(() =>
-    Schema.decodeUnknownSync(OrchestrationV2DomainEventJson)({
+    compiledDecodeUnknownSync5({
       ...wire,
       type: "provider-session.detached",
     }),

@@ -316,7 +316,6 @@ function pageInput(input: { readonly limit?: number; readonly cursor?: string } 
   }
   return { limit, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) };
 }
-
 const decodePlacementLoadRequest = Schema.decodeUnknownEffect(T3PlacementLoadRequest);
 const decodePlacementPage = Schema.decodeUnknownEffect(T3PlacementPage);
 const decodePlacementResult = Schema.decodeUnknownEffect(T3PlacementResult);
@@ -1022,18 +1021,25 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       readThreadPlacements,
       readSession,
       readMetadata,
-      readDetail: (id) =>
+      readDetail: Effect.fn("WorkstreamGateway.readDetail")((id) =>
         boundDetail(() => transport.getWorkstream({ workstreamId: id, ...contractInput })),
-      readReferences: (input) => boundRead((request) => transport.listReferences(request), input),
-      readReference: (id) =>
+      ),
+      readReferences: Effect.fn("WorkstreamGateway.readReferences")((input) =>
+        boundRead((request) => transport.listReferences(request), input),
+      ),
+      readReference: Effect.fn("WorkstreamGateway.readReference")((id) =>
         boundDetail(() => transport.getReference({ nativeReferenceId: id, ...contractInput })),
-      readMemberships: (id, input) =>
+      ),
+      readMemberships: Effect.fn("WorkstreamGateway.readMemberships")((id, input) =>
         boundRead((request) => transport.listMemberships({ workstreamId: id, ...request }), input),
-      readDeclarations: (id, input) =>
+      ),
+      readDeclarations: Effect.fn("WorkstreamGateway.readDeclarations")((id, input) =>
         boundRead((request) => transport.listDeclarations({ workstreamId: id, ...request }), input),
-      readEdges: (id, input) =>
+      ),
+      readEdges: Effect.fn("WorkstreamGateway.readEdges")((id, input) =>
         boundRead((request) => transport.listEdges({ workstreamId: id, ...request }), input),
-      readHistory: (id, input) =>
+      ),
+      readHistory: Effect.fn("WorkstreamGateway.readHistory")((id, input) =>
         boundRead(
           (request) =>
             transport.listHistory({
@@ -1042,6 +1048,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
             }),
           input,
         ),
+      ),
       pollCommand,
       readReceipt,
       resubmit,

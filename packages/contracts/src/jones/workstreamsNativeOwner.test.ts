@@ -32,6 +32,8 @@ it("accepts only the five explicit owner operations without caller-selected loca
   expect(() => decode({ operation: "provider-plan", enrollmentId: "../other" })).toThrow();
   expect(() => decode({ operation: "restore" })).toThrow();
 });
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(WorkstreamsNativeOwnerResponse);
+
 it("never accepts a credential in an owner response", () => {
   const response = {
     schema: "jones-code.workstreams-native-authority-enrolled/v1",
@@ -39,9 +41,9 @@ it("never accepts a credential in an owner response", () => {
     authority_namespace: "t3-native:fixture",
     store_generation: 1,
   };
-  expect(Schema.decodeUnknownSync(WorkstreamsNativeOwnerResponse)(response)).toEqual(response);
+  expect(compiledDecodeUnknownSync1(response)).toEqual(response);
   expect(() =>
-    Schema.decodeUnknownSync(WorkstreamsNativeOwnerResponse)({
+    compiledDecodeUnknownSync1({
       ...response,
       authorization_header: "Bearer secret",
     }),

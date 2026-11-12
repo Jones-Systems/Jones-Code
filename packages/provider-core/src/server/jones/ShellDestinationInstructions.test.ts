@@ -7,7 +7,7 @@ import {
 import {
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
   t3AcpPromptWithInstructions,
-  t3OrchestrationPromptForFirstRun,
+  t3OrchestrationPrompt,
   t3OrchestrationSystemPrompt,
 } from "../orchestrationInstructions.ts";
 import { JONES_SHELL_DESTINATION_INSTRUCTIONS } from "./ShellDestinationInstructions.ts";
@@ -61,15 +61,21 @@ describe("shell destination instructions", () => {
     const guidance = JONES_SHELL_DESTINATION_INSTRUCTIONS.trim();
     for (const instructions of [
       T3_CODE_ORCHESTRATION_INSTRUCTIONS,
-      t3OrchestrationSystemPrompt(true),
-      t3OrchestrationPromptForFirstRun({ prompt, runOrdinal: 1, hasT3Mcp: true }),
-      t3AcpPromptWithInstructions({
+      t3OrchestrationSystemPrompt(true, false),
+      t3OrchestrationPrompt({
         prompt,
-        state: { interactionMode: "default", hasT3Mcp: true },
+        hasT3Mcp: true,
+        hasDeviceTools: false,
+        orchestrationDelivered: false,
+        deviceInstructionsDelivered: false,
       }),
       t3AcpPromptWithInstructions({
         prompt,
-        state: { interactionMode: "plan", hasT3Mcp: true },
+        state: { interactionMode: "default", hasT3Mcp: true, hasDeviceTools: false },
+      }),
+      t3AcpPromptWithInstructions({
+        prompt,
+        state: { interactionMode: "plan", hasT3Mcp: true, hasDeviceTools: false },
       }),
     ]) {
       expect(instructions).toContain(guidance);
@@ -79,20 +85,32 @@ describe("shell destination instructions", () => {
 
   it("retains existing MCP and repeat-injection gates", () => {
     const prompt = "Continue.";
-    expect(t3OrchestrationSystemPrompt(false)).toBeUndefined();
-    expect(t3OrchestrationPromptForFirstRun({ prompt, runOrdinal: 1, hasT3Mcp: false })).toBe(
-      prompt,
-    );
-    expect(t3OrchestrationPromptForFirstRun({ prompt, runOrdinal: 2, hasT3Mcp: true })).toBe(
-      prompt,
-    );
+    expect(t3OrchestrationSystemPrompt(false, false)).toBeUndefined();
+    expect(
+      t3OrchestrationPrompt({
+        prompt,
+        hasT3Mcp: false,
+        hasDeviceTools: false,
+        orchestrationDelivered: false,
+        deviceInstructionsDelivered: false,
+      }),
+    ).toBe(prompt);
+    expect(
+      t3OrchestrationPrompt({
+        prompt,
+        hasT3Mcp: true,
+        hasDeviceTools: false,
+        orchestrationDelivered: true,
+        deviceInstructionsDelivered: true,
+      }),
+    ).toBe(prompt);
     expect(
       t3AcpPromptWithInstructions({
         prompt,
-        state: { interactionMode: "default", hasT3Mcp: false },
+        state: { interactionMode: "default", hasT3Mcp: false, hasDeviceTools: false },
       }),
     ).not.toContain(JONES_SHELL_DESTINATION_INSTRUCTIONS.trim());
-    const state = { interactionMode: "default", hasT3Mcp: true } as const;
+    const state = { interactionMode: "default", hasT3Mcp: true, hasDeviceTools: false } as const;
     expect(t3AcpPromptWithInstructions({ prompt, state, previousState: state })).toBe(prompt);
   });
 });

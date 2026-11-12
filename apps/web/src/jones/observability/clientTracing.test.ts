@@ -7,9 +7,11 @@ import { OtlpTracer } from "effect/observability";
 vi.mock("../../environments/primary", () => ({
   resolvePrimaryEnvironmentHttpUrl: (path: string) => `https://environment.example.test${path}`,
 }));
-vi.mock("../../environments/primary/httpLayer", async () => ({
-  layer: (await import("effect/Layer")).empty,
-}));
+vi.mock("../../environments/primary/httpLayer", async () => {
+  const [Layer, Effect] = await Promise.all([import("effect/Layer"), import("effect/Effect")]);
+  // The production HTTP layer initializes asynchronously; an empty layer hid runSync defects.
+  return { layer: Layer.effectDiscard(Effect.yieldNow) };
+});
 vi.mock("../../env", () => ({ isElectron: false }));
 vi.mock("../../branding", () => ({ APP_VERSION: "0.0.0-test" }));
 vi.mock("effect/observability", async (importOriginal) => {

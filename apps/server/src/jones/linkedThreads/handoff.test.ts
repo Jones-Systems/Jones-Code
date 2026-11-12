@@ -1,3 +1,5 @@
+import * as InProcessMcp from "../../mcp/McpHttpServer.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -125,7 +127,10 @@ function fixture(
       getThreadShell: (id) =>
         Effect.succeed(liveThreadShell(id, { runtimeMode: options.runtimeMode ?? "full-access" })),
     }),
-    Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
+    Layer.mock(PeerLinks.PeerLinks)({
+      enabled: Effect.succeed(true),
+      get: () => Effect.succeedNone,
+    }),
     Layer.mock(Forwarding.PeerForwarding)(
       options.forwarding === undefined ? {} : { call: options.forwarding },
     ),
@@ -191,6 +196,10 @@ function fixture(
   };
 }
 
+const encodeEffectFromJsonStringRecordedAppThreadJson = Schema.encodeEffect(
+  Schema.fromJsonString(RecordedAppThreadJson),
+);
+
 it.effect(
   "a forwarded handoff retry preserves the receiver tombstone and manual relink remains possible",
   () => {
@@ -214,9 +223,7 @@ it.effect(
                 yield* migration;
                 const sql = yield* SqlClient.SqlClient;
                 yield* sql`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT, payload_json TEXT NOT NULL)`;
-                const encodeThread = Schema.encodeEffect(
-                  Schema.fromJsonString(RecordedAppThreadJson),
-                );
+                const encodeThread = encodeEffectFromJsonStringRecordedAppThreadJson;
                 for (const id of [origin, target]) {
                   const payload = yield* encodeThread(
                     idleThreadProjection(liveThreadShell(id)).thread,
@@ -248,7 +255,7 @@ it.effect(
           toolkit,
           toLayer(toolkit, { t3_thread_link: threadLinkHandler }),
         ).pipe(
-          Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
           Layer.provide(
             Layer.mergeAll(
               threads,
@@ -279,6 +286,8 @@ it.effect(
             Effect.provideService(Invocation.McpInvocationContext, remoteScope),
             Effect.provideService(McpSchema.McpServerClient, client),
             Effect.provide(receiverContext),
+            // An actual peer request owns receiver services, never the forwarding caller's store.
+            Effect.provideService(Links.LinkedThreads, receiver),
             Effect.flatMap((response) => {
               const text = response.content
                 .map((part) => (part.type === "text" ? part.text : ""))
@@ -294,12 +303,15 @@ it.effect(
           Forwarding.layer.pipe(
             Layer.provide(
               Layer.mergeAll(
-                NodeServices.layer,
+                Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
                 threads,
                 Layer.mock(Projects.ProjectService)({
                   getById: () => Effect.succeedNone,
                 }),
-                Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
+                Layer.mock(PeerLinks.PeerLinks)({
+                  enabled: Effect.succeed(true),
+                  get: () => Effect.succeedNone,
+                }),
                 Layer.mock(Peers.PeerMcpClient)({
                   call: (request) => {
                     payloads.push(request.arguments);
@@ -448,7 +460,7 @@ it.effect("preserves production blocked-send refusal locally and through forward
     const mcp = Orchestrator.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
           threads,
           ServerSettings.layerTest(),
           Layer.mock(ProviderRegistry.ProviderRegistry)({}),
@@ -483,10 +495,13 @@ it.effect("preserves production blocked-send refusal locally and through forward
         Forwarding.layer.pipe(
           Layer.provideMerge(
             Layer.mergeAll(
-              NodeServices.layer,
+              Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
               threads,
               Layer.mock(Projects.ProjectService)({ getById: () => Effect.succeedNone }),
-              Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
+              Layer.mock(PeerLinks.PeerLinks)({
+                enabled: Effect.succeed(true),
+                get: () => Effect.succeedNone,
+              }),
               Layer.mock(Peers.PeerMcpClient)({
                 call: (request) =>
                   request.tool === "t3_thread_read"
@@ -539,6 +554,10 @@ it.effect("preserves production blocked-send refusal locally and through forward
     Effect.andThen(check(ambiguous, true)),
   );
 });
+
+const decodeEffectFromJsonStringThreadHandoffToolResult = Schema.decodeEffect(
+  Schema.fromJsonString(ThreadHandoffToolResult),
+);
 
 it.effect.each([
   { receiverRaises: false, name: "admits an unchanged receiver" },
@@ -598,7 +617,7 @@ it.effect.each([
   return Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const response = yield* server.callTool({ name: "t3_thread_handoff", arguments: input });
-    const result = yield* Schema.decodeEffect(Schema.fromJsonString(ThreadHandoffToolResult))(
+    const result = yield* decodeEffectFromJsonStringThreadHandoffToolResult(
       response.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
     );
     expect(observedLimit).toMatchObject({
@@ -626,7 +645,7 @@ it.effect.each([
     Effect.provideService(McpSchema.McpServerClient, client),
     Effect.provide(
       McpHttpServer.toolkitRegistration(toolkit, handlers).pipe(
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
         Layer.provideMerge(f.layer),
       ),
     ),

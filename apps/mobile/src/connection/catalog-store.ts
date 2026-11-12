@@ -73,7 +73,7 @@ export const makeCompatibilityHintStore = Effect.fn(
     .pipe(Effect.mapError((cause) => catalogError("read compatibility hints from", cause)));
   const set = Effect.fn("mobile.connectionStorage.writeCompatibilityHint")(
     function* (environmentId: EnvironmentId, routeBinding: string, kind: "outdated-update" | null) {
-      yield* Schema.decodeUnknownEffect(StoredConnectionCompatibilityHint)({
+      yield* decodeUnknownEffectStoredConnectionCompatibilityHint({
         environmentId,
         routeBinding,
         kind: kind ?? "outdated-update",
@@ -242,3 +242,7 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
 
   return { read, update, compatibilityHints } satisfies CatalogStore;
 });
+
+const decodeUnknownEffectStoredConnectionCompatibilityHint = Schema.decodeUnknownEffect(
+  StoredConnectionCompatibilityHint,
+);

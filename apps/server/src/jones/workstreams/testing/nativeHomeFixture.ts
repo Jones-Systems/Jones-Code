@@ -7,6 +7,7 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeURL from "node:url";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import { AuthSessionId, WorkstreamsNativeBuild } from "@t3tools/contracts";
 import * as Net from "@t3tools/shared/Net";
 import * as Console from "effect/Console";
@@ -269,7 +270,7 @@ if (
           ),
         ),
         Effect.scoped,
-        Effect.provide(Layer.mergeAll(NodeServices.layer, Net.layer)),
+        Effect.provide(Layer.mergeAll(NodeServices.layer, Net.layer, EffectNodeCrypto.layer)),
         Effect.runPromise,
       )
       .catch(() => {

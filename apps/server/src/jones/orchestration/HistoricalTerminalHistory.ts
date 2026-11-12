@@ -64,25 +64,26 @@ export function retainHistoricalTerminalOnError<A, E, R, E2, R2>(
       >
     | undefined,
 ): Effect.Effect<ReadonlyArray<A>, E, R | R2> {
+  if (historicalWrite === undefined) return effect;
   return effect.pipe(
-    Effect.catchCause((cause) => {
-      if (historicalWrite === undefined || Cause.hasInterruptsOnly(cause))
-        return Effect.failCause(cause);
-      return historicalWrite.pipe(
-        Effect.catchCause((fallback) =>
-          Cause.hasInterruptsOnly(fallback)
-            ? Effect.failCause(
-                Cause.fromReasons<never>(fallback.reasons.filter(Cause.isInterruptReason)),
-              )
-            : Effect.failCause(cause),
+    Effect.catchCauseIf(
+      (cause) => !Cause.hasInterruptsOnly(cause),
+      (cause) =>
+        historicalWrite.pipe(
+          Effect.catchCause((fallback) =>
+            Cause.hasInterruptsOnly(fallback)
+              ? Effect.failCause(
+                  Cause.fromReasons<never>(fallback.reasons.filter(Cause.isInterruptReason)),
+                )
+              : Effect.failCause(cause),
+          ),
+          Effect.flatMap((result) =>
+            result.persisted === true || (result.handled && result.storedEvents.length > 0)
+              ? Effect.succeed(result.storedEvents)
+              : Effect.failCause(cause),
+          ),
         ),
-        Effect.flatMap((result) =>
-          result.persisted === true || (result.handled && result.storedEvents.length > 0)
-            ? Effect.succeed(result.storedEvents)
-            : Effect.failCause(cause),
-        ),
-      );
-    }),
+    ),
   );
 }
 

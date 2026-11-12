@@ -1,4 +1,5 @@
 import * as NativeGuard from "../nativeCreation/NativeCreationProviderGuard.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -345,7 +346,7 @@ export const fixture = Effect.gen(function* () {
     },
   };
   const platform = Layer.merge(
-    NodeServices.layer,
+    Layer.merge(NodeServices.layer, NodeCrypto.layer),
     Layer.mock(SourceControl.SourceControlProviderRegistry)({
       resolveLink: () => Effect.die("Unused title link"),
     }),

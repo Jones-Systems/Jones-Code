@@ -62,7 +62,7 @@
       "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
     },
     {
-      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
       "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
     },
     {
@@ -90,14 +90,6 @@
       "to": "apps/web/src/jones/pendingSends/composerRecovery.ts"
     },
     {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "apps/web/src/jones/pendingSends/composerRecovery.ts"
-    },
-    {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
-    },
-    {
       "from": "apps/web/src/components/chat/useThreadLifecycle.tsx",
       "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
     },
@@ -106,7 +98,7 @@
       "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
     },
     {
-      "from": "apps/mobile/src/state/use-thread-outbox-drain.permissions.test.ts",
+      "from": "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts",
       "to": "packages/client-runtime/src/jones/preparedThreadTurn.ts"
     },
     {
@@ -126,7 +118,7 @@
       "to": "packages/contracts/src/jones/deliveryEvidence.ts"
     },
     {
-      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
       "to": "apps/mobile/src/jones/threadConfiguration/legacyOutbox.ts"
     },
     {
@@ -168,10 +160,6 @@
     {
       "from": "apps/server/src/provider/EventNdjsonLogger.ts",
       "to": "apps/server/src/jones/provider/diagnosticLogging/SegmentBuffer.ts"
-    },
-    {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "packages/client-runtime/src/jones/planCreationOperation.ts"
     }
   ]
 }

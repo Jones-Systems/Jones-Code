@@ -32,6 +32,13 @@ export function titlePolicyApplies(command: {
   );
 }
 
+export function titleSeedFitsExistingTitle(
+  thread: Pick<OrchestrationV2ThreadProjection["thread"], "title" | "forkedFrom">,
+  seed: string | undefined,
+) {
+  return thread.forkedFrom != null || thread.title === "New thread" || thread.title === seed;
+}
+
 export interface TitleDecision {
   readonly state?: TitleState;
   readonly arm?: {

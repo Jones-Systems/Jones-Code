@@ -2,7 +2,7 @@ import * as PeerEffect from "./peerEffectEnvelope.ts";
 
 import { AuthOrchestrationReadScope, AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import { WorkstreamOperationOrigin } from "@t3tools/contracts/jones/workstreamOperations";
 import * as Context from "effect/Context";
@@ -442,11 +442,10 @@ export const wrapEffectIntent = Effect.fn("RecordedCaller.wrapEffectIntent")(fun
   yield* decodeJson(intentBody).pipe(
     Effect.mapError(() => new RecordedCallerFence({ code: "malformed" })),
   );
-  const crypto = yield* Crypto.Crypto;
-  const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(requestBody)).pipe(
-    Effect.map(Hex.encode),
-    Effect.mapError(() => new RecordedCallerFence({ code: "unavailable" })),
-  );
+  const crypto = yield* Digest.Digest;
+  const digest = yield* crypto
+    .digest(Digest.sha256, new TextEncoder().encode(requestBody))
+    .pipe(Effect.map(Hex.encode));
   if (digest !== requestSha256) return yield* new RecordedCallerFence({ code: "malformed" });
   return {
     format: "jones-native-effect-recovery/1" as const,
@@ -463,7 +462,7 @@ interface UnwrappedEffectIntent {
 }
 export const unwrapEffectIntent = Effect.fn("RecordedCaller.unwrapEffectIntent")(function* (
   stored: unknown,
-): Effect.fn.Return<UnwrappedEffectIntent, RecordedCallerFence, Crypto.Crypto> {
+): Effect.fn.Return<UnwrappedEffectIntent, RecordedCallerFence, Digest.Digest> {
   if (typeof stored !== "object" || stored === null || !("format" in stored))
     return { intent: stored, recovery: null };
   if (stored.format === "jones-native-effect-recovery/2") {

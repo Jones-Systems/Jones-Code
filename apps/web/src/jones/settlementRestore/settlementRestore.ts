@@ -23,7 +23,7 @@ import {
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 
-import * as ThreadUndo from "../../hooks/threadUndo";
+import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
 import { randomUUID } from "../../lib/utils";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentServerConfigsAtom } from "../../state/server";

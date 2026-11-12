@@ -25,6 +25,10 @@ import {
   prepareExecutionSession,
 } from "./prepareExecutionSession.ts";
 
+const isRevalidationUnavailable = Schema.is(ExecutionSessionRevalidationUnavailableError);
+const isRevalidationError = Schema.is(ExecutionSessionRevalidationError);
+const isEventSinkWriteError = Schema.is(Sink.EventSinkWriteError);
+
 it.effect(
   "retirement persists the released identity before returning for restart and handoff; retries keep event IDs",
   () =>
@@ -157,6 +161,8 @@ function makeFixture(
         }),
         Layer.mock(Sessions.ProviderSessionManagerV2)({
           awaitThreadRetirement: () => retirement?.wait ?? Effect.void,
+          // No live runtime reports background work, so released sessions detach.
+          get: () => Effect.succeedNone,
           hasRetiredWriter: () => Effect.succeed(retirement?.marked ?? false),
           detach: Effect.fn("PrepareExecutionSessionTest.detach")(function* ({
             providerSessionId,
@@ -230,7 +236,7 @@ it.effect("a failed read after retirement stays unavailable rather than a select
   Effect.gen(function* () {
     const fixture = makeFixture("restart_and_resume", "read");
     const error = yield* Effect.flip(fixture.start);
-    assert.isTrue(Schema.is(ExecutionSessionRevalidationUnavailableError)(error));
+    assert.isTrue(isRevalidationUnavailable(error));
     assert.notInclude(String(error), "selection changed");
     assert.notInclude(String(error), "private database read");
     assert.deepEqual(fixture.order, ["detach", "persist"]);
@@ -248,9 +254,7 @@ it.effect.each(["read-persist", "read-stale"] as const)(
       const fixture = makeFixture("restart_and_resume", fault);
       const error = yield* Effect.flip(fixture.start);
       assert.isTrue(
-        fault === "read-persist"
-          ? Schema.is(Sink.EventSinkWriteError)(error)
-          : Schema.is(ExecutionSessionRevalidationError)(error),
+        fault === "read-persist" ? isEventSinkWriteError(error) : isRevalidationError(error),
       );
       assert.deepEqual(fixture.order, ["detach", "persist"]);
       assert.equal(fixture.writes[0]!.expectedStatus, "starting");

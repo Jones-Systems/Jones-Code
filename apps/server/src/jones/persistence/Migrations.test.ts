@@ -476,6 +476,11 @@ it.effect(
           [145, "WorkstreamsForwardReceipts"],
           [146, "SettlementOriginRetention"],
           [147, "QueueHolds"],
+          [148, "NativeExecutionProcessCustody"],
+          [149, "OrdinaryCheckoutProcessCustody"],
+          [150, "AuthSessionClientMetadata"],
+          [151, "WorkspaceRuntimeUses"],
+          [152, "PeerLinksAdoption"],
         ],
       );
       assert.deepStrictEqual(
@@ -603,6 +608,10 @@ it.effect(
           { name: "jones_native_creation_execution_acceptances" },
           { name: "jones_native_creation_execution_confirmations" },
           { name: "jones_native_creation_execution_holds" },
+          { name: "jones_native_creation_execution_process_bindings" },
+          { name: "jones_native_creation_execution_process_claims" },
+          { name: "jones_native_creation_execution_process_confirmations" },
+          { name: "jones_native_creation_execution_process_holds" },
           { name: "jones_native_creation_execution_starts" },
         ],
       );
@@ -701,6 +710,11 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [145, "WorkstreamsForwardReceipts"],
       [146, "SettlementOriginRetention"],
       [147, "QueueHolds"],
+      [148, "NativeExecutionProcessCustody"],
+      [149, "OrdinaryCheckoutProcessCustody"],
+      [150, "AuthSessionClientMetadata"],
+      [151, "WorkspaceRuntimeUses"],
+      [152, "PeerLinksAdoption"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

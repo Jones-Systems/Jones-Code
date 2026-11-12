@@ -132,6 +132,10 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(SourceAttestation, make);
 export const unconfiguredLayer = Layer.succeed(SourceAttestation, {
-  context: () => Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
-  attest: () => Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
+  context: Effect.fn("SourceAttestation.context")(() =>
+    Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
+  ),
+  attest: Effect.fn("SourceAttestation.attest")(() =>
+    Effect.fail(new ProviderError({ code: "provider_unconfigured" })),
+  ),
 });

@@ -2,7 +2,7 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
 import { render } from "../../../test/render";
 import { makeThreadFixture } from "../../test-fixtures";
-import { childInputBannerItem } from "./ThreadActivityBanners";
+import { childInputNowItem as childInputBannerItem } from "./ThreadActivityBanners";
 
 it("opens each remote child's owning environment from its title and question or approval action", async () => {
   const question = makeThreadFixture({
@@ -24,7 +24,7 @@ it("opens each remote child's owning environment from its title and question or 
     const item = childInputBannerItem({
       childThreadInputs: children,
       parentAwaitingUser: false,
-      onOpenThread: openThread,
+      onOpenThread: (threadId, environmentId) => openThread({ environmentId, threadId }),
     });
     return (
       <>

@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSqlClient from "@t3tools/shared/nodeSqliteClient";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -127,7 +128,10 @@ const withRuntime = <A, E, R>(
       Effect.provide(ProcessRunner.layer),
       Effect.scoped,
     );
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(Layer.mergeAll(NodeServices.layer, EffectNodeCrypto.layer)),
+  );
 
 it.effect(
   "refuses actual ambient preparation before lookups and preserves observable outer rollback",

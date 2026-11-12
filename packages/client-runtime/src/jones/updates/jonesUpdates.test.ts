@@ -196,6 +196,8 @@ it.effect(
       } as unknown as EnvironmentRegistry["Service"]);
       const authorizations: Array<string | undefined> = [];
       const authorization = RemoteEnvironmentAuthorization.of({
+        renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
+        rememberCheckedDescriptor: () => Effect.void,
         authorizeBearer: () => Effect.die("Unexpected bearer authorization"),
         authorizeDpop: () => Effect.die("Polling must not replace the socket"),
         authorizeDpopHttp: (input) =>

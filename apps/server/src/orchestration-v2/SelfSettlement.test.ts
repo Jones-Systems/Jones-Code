@@ -31,10 +31,12 @@ const owner = {
 const runId = RunId.make("run-1");
 const threadId = ThreadId.make("thread-1");
 const commandId = CommandId.make("self-settle-1");
+const compiledDecodeSync1 = Schema.decodeSync(Schema.toCodecJson(OrchestrationV2ThreadProjection));
+
 function fixture(): OrchestrationV2ThreadProjection {
   const now = "2026-10-04T00:00:00.000Z";
   const selection = { instanceId: "codex", model: "test-model" };
-  return Schema.decodeSync(Schema.toCodecJson(OrchestrationV2ThreadProjection))({
+  return compiledDecodeSync1({
     thread: {
       createdBy: "user",
       creationSource: "web",
@@ -134,6 +136,11 @@ function wakeMessage(id: MessageId, wakeRunId: RunId): OrchestrationV2Conversati
     updatedAt: "2026-10-04T00:00:00.000Z",
   });
 }
+
+const compiledDecodeSync2 = Schema.decodeSync(
+  Schema.toCodecJson(OrchestrationV2ConversationMessage),
+);
+const compiledDecodeUnknownSync3 = Schema.decodeUnknownSync(OrchestrationV2Command);
 
 describe("self settlement lifecycle decisions", () => {
   it("accepts only the calling session's active run and leaves that run active", () => {
@@ -247,7 +254,7 @@ describe("self settlement lifecycle decisions", () => {
     const notification = {
       ...queuedProjection,
       messages: [
-        Schema.decodeSync(Schema.toCodecJson(OrchestrationV2ConversationMessage))({
+        compiledDecodeSync2({
           createdBy: "system",
           creationSource: "server",
           id: queued.userMessageId,
@@ -402,7 +409,7 @@ describe("self settlement lifecycle decisions", () => {
       "thread.archive",
       "thread.unarchive",
     ] as const) {
-      const command = Schema.decodeUnknownSync(OrchestrationV2Command)({
+      const command = compiledDecodeUnknownSync3({
         type,
         commandId,
         threadId,

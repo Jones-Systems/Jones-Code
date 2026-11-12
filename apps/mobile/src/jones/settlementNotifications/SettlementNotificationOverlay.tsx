@@ -51,7 +51,7 @@ function EnvironmentObserver(props: {
     () => (arrivals) => resolveSettlementOrigins(props.environmentId, arrivals),
     [props.environmentId],
   );
-  // oxlint-disable-next-line t3code/react-effect-budget -- Feed committed live thread observations and origin evidence to the settlement notification controller.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Feed committed live thread observations and origin evidence to the settlement notification controller.
   useEffect(() => {
     if (state.status === "live")
       controller.observe(props.environmentId, state, { resolveOrigins, families });
@@ -151,7 +151,7 @@ function SettlementBanner(props: { readonly entries: readonly SettlementEntry[] 
 export function SettlementNotificationOverlay() {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile the persisted notification catalog only after both catalog and persistence are ready.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile the persisted notification catalog only after both catalog and persistence are ready.
   useEffect(() => {
     if (catalog.isReady && snapshot.persistence !== "loading") {
       controller.noteCatalog([...catalog.entries.keys()]);

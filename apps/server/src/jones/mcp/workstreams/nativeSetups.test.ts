@@ -113,7 +113,7 @@ it.effect("registers the setup tools through the actual MCP server", () =>
             },
           }),
         ),
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(Server.layerInProcessMcpServer),
         Layer.provide(threads),
       ),
     ),

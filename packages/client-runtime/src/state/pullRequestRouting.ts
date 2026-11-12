@@ -537,12 +537,12 @@ export function createPullRequestRouter() {
           )
         : routed
     ).pipe(
-      Effect.catch((error) =>
-        !isRateLimited(error) &&
-        input.allowStale !== false &&
-        (tag === WS_METHODS.pullRequestsSummary || tag === WS_METHODS.pullRequestsDetail)
-          ? request(tag, input)
-          : Effect.fail(error),
+      Effect.catchIf(
+        (error) =>
+          !isRateLimited(error) &&
+          input.allowStale !== false &&
+          (tag === WS_METHODS.pullRequestsSummary || tag === WS_METHODS.pullRequestsDetail),
+        () => request(tag, input),
       ),
     );
   });

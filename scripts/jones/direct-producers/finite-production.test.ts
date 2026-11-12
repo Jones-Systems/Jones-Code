@@ -79,8 +79,10 @@ it.each([
       const root = executable ? NodePath.join(worktree, "apps/server/dist-exe") : dist;
       const handler = handlers.get(executable ? "build-exe" : "build")!;
       const copyFailure = new Error("partial-copy fixture");
-      let released = false;
+      let released = 0;
       let calls = 0;
+      // build-exe now runs two packs, the embedded CLI bundle then the executable, over one asset directory.
+      let cliAssetDir = "";
       for (const override of DEVELOPMENT_ICON_OVERRIDES) {
         const source = NodePath.join(worktree, override.sourceRelativePath);
         const web = NodePath.join(
@@ -97,7 +99,7 @@ it.each([
         Effect.gen(function* () {
           expect(command._tag).toBe("StandardCommand");
           if (command._tag !== "StandardCommand") return yield* Effect.die("unexpected pipeline");
-          calls++;
+          const call = ++calls;
           expect(command.command).toBe(executable ? "fixture-vp" : process.execPath);
           expect(command.args).toEqual(executable ? ["pack"] : ["--run", "build:bundle"]);
           expect(command.options.cwd).toBe(NodePath.join(worktree, "apps/server"));
@@ -106,26 +108,40 @@ it.each([
           expect(command.options.shell).toBe(false);
           expect(command.options.detached).toBe(nativePlatform !== "win32");
           if (executable) {
-            expect(command.options.env?.T3CODE_PACK_EXE).toBe("1");
+            expect(command.options.env?.T3CODE_PACK_EXE).toBe(call === 1 ? "bundle" : "1");
             expect(command.options.env?.T3CODE_PACK_EXE_TARGET).toBe("darwin-arm64");
+            const assetDir = command.options.env?.T3CODE_CLI_ASSET_DIR;
+            if (typeof assetDir !== "string" || assetDir === "")
+              throw new Error("expected a plain non-empty CLI asset directory");
+            if (call === 1) cliAssetDir = assetDir;
+            else expect(assetDir).toBe(cliAssetDir);
           }
           yield* Effect.acquireRelease(
             Effect.promise(async () => {
               const [active] = await records();
               expect(active?.status).toBe("active");
               expect(active?.roots).toEqual([root]);
-              expect(active?.holders?.spawns).toHaveLength(1);
-              expect(active?.holders?.spawns[0]?.state).toBe("pending");
+              // Each pack records its own intent; earlier packs are already bound to their session.
+              expect(active?.holders?.spawns).toHaveLength(call);
+              for (const earlier of active?.holders?.spawns.slice(0, call - 1) ?? [])
+                expect(earlier).toMatchObject({ state: "session", sid: 123 });
+              expect(active?.holders?.spawns[call - 1]?.state).toBe("pending");
               await NodeFSP.mkdir(root, { recursive: true });
-              await NodeFSP.writeFile(
-                NodePath.join(root, "bin.mjs"),
-                scenario === "validation-failure" ? 'import "fixture-external";\n' : "export {};\n",
-              );
+              if (executable && call === 1) {
+                await NodeFSP.writeFile(NodePath.join(cliAssetDir, "binMain.mjs"), "export {};\n");
+              } else {
+                await NodeFSP.writeFile(
+                  NodePath.join(root, "bin.mjs"),
+                  scenario === "validation-failure"
+                    ? 'import "fixture-external";\n'
+                    : "export {};\n",
+                );
+              }
             }),
             () =>
               Effect.promise(async () => {
                 expect((await records())[0]?.status).toBe("active");
-                released = true;
+                released++;
               }),
           );
           return ChildProcessSpawner.makeHandle({
@@ -170,8 +186,8 @@ it.each([
           );
         }).pipe(Effect.provide(NodeServices.layer)),
       );
-      expect(calls).toBe(1);
-      expect(released).toBe(true);
+      expect(calls).toBe(executable ? 2 : 1);
+      expect(released).toBe(calls);
       const stored = await records();
       expect(stored).toHaveLength(1);
       const succeeded = scenario === "build" || scenario === "build-exe";

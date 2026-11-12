@@ -79,6 +79,8 @@ export const offline = () =>
   new WorkstreamGatewayError({ reason: "unknown-effect", detail: "scripted unknown response" });
 
 /** Scripted CP: atomic replay precedes version/business decisions; reads are independent snapshots. */
+const compiledDecodeEffect1 = Schema.decodeEffect(Schema.fromJsonString(CommandSchema));
+
 export const fakeControlPlane = () => {
   const state = {
     availability: null as
@@ -275,9 +277,7 @@ export const fakeControlPlane = () => {
         );
       }),
     resubmit: Effect.fn("WorkstreamOperationFixture.resubmit")(function* (_id, body) {
-      const command = yield* Schema.decodeEffect(Schema.fromJsonString(CommandSchema))(body).pipe(
-        Effect.mapError(() => offline()),
-      );
+      const command = yield* compiledDecodeEffect1(body).pipe(Effect.mapError(() => offline()));
       state.writes.push(body);
       if (state.beforeSend) yield* state.beforeSend(command, body);
       if (state.offline) return yield* offline();

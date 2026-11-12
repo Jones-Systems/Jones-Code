@@ -7,6 +7,7 @@ import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Wire from "@t3tools/contracts";
 import * as Net from "@t3tools/shared/Net";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -52,7 +53,7 @@ vi.mock("../../../../package.json", () => ({
   },
 }));
 
-const platform = Layer.mergeAll(NodeServices.layer, Net.layer);
+const platform = Layer.mergeAll(NodeServices.layer, Net.layer, EffectNodeCrypto.layer);
 const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof platform> | Scope.Scope>) =>
   effect.pipe(Effect.scoped, Effect.provide(platform));
 const fresh = () => {

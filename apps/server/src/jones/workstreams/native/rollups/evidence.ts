@@ -88,8 +88,12 @@ export const unconfiguredLayer = Layer.succeed(RollupEvidenceProvider, {
         })),
       ),
   ),
-  readExtractionInputs: () => Effect.fail(new RollupError({ code: "provider_unconfigured" })),
-  verifyCurrentAuthorization: () => Effect.succeed(false),
+  readExtractionInputs: Effect.fn("RollupEvidenceProvider.readExtractionInputs")(() =>
+    Effect.fail(new RollupError({ code: "provider_unconfigured" })),
+  ),
+  verifyCurrentAuthorization: Effect.fn("RollupEvidenceProvider.verifyCurrentAuthorization")(() =>
+    Effect.succeed(false),
+  ),
 });
 export function immutable<T>(value: T): T {
   const copied = structuredClone(value);

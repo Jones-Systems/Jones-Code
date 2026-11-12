@@ -14,6 +14,10 @@
     {
       "from": "packages/client-runtime/src/state/shell.ts",
       "to": "packages/client-runtime/src/jones/shellPublication/batchedPublication.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/state/threadShell.ts",
+      "to": "packages/client-runtime/src/jones/shellPublication/batchedPublication.ts"
     }
   ]
 }

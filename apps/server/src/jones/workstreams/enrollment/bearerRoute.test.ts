@@ -1,3 +1,5 @@
+import * as ManagedPolicy from "../../../policy/ManagedPolicy.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off -- One cleanup-owned synthetic T3 home is shared by the CLI and server layers.
 import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -68,11 +70,12 @@ const encodeAttestation = Schema.encodeSync(
 const serverAuthLayer = (baseDir: string) => {
   const config = ServerConfig.layerTest(process.cwd(), baseDir);
   return EnvironmentAuth.layer.pipe(
+    Layer.provide(ManagedPolicy.layerTest()),
     Layer.provideMerge(SqlitePersistence.layerConfig),
     Layer.provide(ServerSecretStore.layer),
     Layer.provide(ServerEnvironment.layerIdentity),
     Layer.provideMerge(config),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 };
 
@@ -168,9 +171,13 @@ it.live(
             Layer.provide(AuthHttp.layerAuthenticatedAuth),
             Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, environmentAuth)),
             Layer.provide(workstreamResponseHeadersLayer),
-            Layer.provide(HttpPlatform.layer.pipe(Layer.provide(NodeServices.layer))),
+            Layer.provide(
+              HttpPlatform.layer.pipe(
+                Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+              ),
+            ),
             Layer.provide(Etag.layerWeak),
-            Layer.provide(NodeServices.layer),
+            Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
           ),
           { disableLogger: true },
         );

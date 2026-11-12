@@ -46,6 +46,9 @@ it.effect("result association digest matches the shared canonical registry fixtu
   }),
 );
 
+const compiledDecodeEffect1 = Schema.decodeEffect(WorkstreamsNativeContextResponse);
+const compiledDecodeEffect2 = Schema.decodeEffect(WorkstreamsNativeAttestationResponse);
+
 it.effect(
   "context and five-minute attestation are closed and come from the enrolled native tuple",
   () =>
@@ -54,10 +57,10 @@ it.effect(
       const provider = fixture.provider();
       const context = yield* provider.context(binding);
       assert.strictEqual(context.state, "ready");
-      yield* Schema.decodeEffect(WorkstreamsNativeContextResponse)(context);
+      yield* compiledDecodeEffect1(context);
       if (context.state === "ready") assert.deepEqual(context.context.build, binding.build);
       const result = yield* provider.attest(binding, attestationRequest);
-      yield* Schema.decodeEffect(WorkstreamsNativeAttestationResponse)(result);
+      yield* compiledDecodeEffect2(result);
       assert.strictEqual(result.state, "attested");
       if (result.state === "attested") {
         assert.strictEqual(
@@ -71,6 +74,8 @@ it.effect(
     }),
 );
 
+const compiledDecodeEffect3 = Schema.decodeEffect(WorkstreamsNativeSettlementResponse);
+
 it.effect("settles and unsettles once with durable start and receipt/event attribution", () =>
   Effect.gen(function* () {
     for (const action of ["settle", "unsettle"] as const) {
@@ -78,7 +83,7 @@ it.effect("settles and unsettles once with durable start and receipt/event attri
       const provider = fixture.provider();
       const input = { ...request, native_action: action };
       const first = yield* provider.settle(binding, input, requestBytesSha256);
-      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(first);
+      yield* compiledDecodeEffect3(first);
       assert.strictEqual(first.state, "terminal");
       if (first.state === "terminal") {
         assert.strictEqual(first.result.native_outcome, "committed");
@@ -435,6 +440,10 @@ it.effect("contradictory receipt or event attribution stays unknown", () =>
   }),
 );
 
+const compiledEncodeEffect4 = Schema.encodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeSettlementResponse),
+);
+
 it.effect("native rejected receipt maps to denied without exposing native error text", () =>
   Effect.gen(function* () {
     const fixture = makeProviderFixture();
@@ -462,15 +471,13 @@ it.effect("native rejected receipt maps to denied without exposing native error 
       },
     });
     const result = yield* provider.settle(binding, request, requestBytesSha256);
-    yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result);
+    yield* compiledDecodeEffect3(result);
     assert.strictEqual(result.state, "terminal");
     if (result.state === "terminal") {
       assert.strictEqual(result.result.native_outcome, "denied");
       assert.strictEqual(result.settlement_event, null);
     }
-    const encoded = yield* Schema.encodeEffect(
-      Schema.fromJsonString(WorkstreamsNativeSettlementResponse),
-    )(result);
+    const encoded = yield* compiledEncodeEffect4(result);
     assert.strictEqual(encoded.includes("private native error"), false);
     assert.strictEqual(fixture.events.size, 0);
   }),
@@ -515,12 +522,7 @@ const assertHistoricalEventId = (storedId: string) =>
     if (result.state !== "terminal") throw new Error("Expected committed raw historical evidence.");
     assert.strictEqual(result.result.native_outcome, "committed");
     assert.strictEqual(result.settlement_event!.eventId, storedId);
-    assert.strictEqual(
-      Exit.isFailure(
-        yield* Effect.exit(Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result)),
-      ),
-      true,
-    );
+    assert.strictEqual(Exit.isFailure(yield* Effect.exit(compiledDecodeEffect3(result))), true);
     assert.deepEqual(yield* provider.settle(binding, request, requestBytesSha256), result);
     assert.deepEqual(
       yield* makeWorkstreamsNativeProvider(fixture.ports).settle(
@@ -613,6 +615,10 @@ it.effect("legacy Effect serialization pins the enrollment digest and native com
   }),
 );
 
+const compiledDecodeEffect5 = Schema.decodeEffect(WorkstreamsNativeContextResponseV2);
+const compiledDecodeEffect6 = Schema.decodeEffect(WorkstreamsNativeAttestationResponseV2);
+const compiledDecodeEffect7 = Schema.decodeEffect(WorkstreamsNativeSettlementResponseV2);
+
 it.effect("v2 reports original enrollment at an upgraded build while v1 remains strict", () =>
   Effect.gen(function* () {
     const fixture = makeProviderFixture();
@@ -626,7 +632,7 @@ it.effect("v2 reports original enrollment at an upgraded build while v1 remains 
       reason: "contract_mismatch",
     });
     const context = yield* v2.context(binding);
-    yield* Schema.decodeEffect(WorkstreamsNativeContextResponseV2)(context);
+    yield* compiledDecodeEffect5(context);
     assert.strictEqual(context.state, "ready");
     if (context.state === "ready") {
       const {
@@ -639,7 +645,7 @@ it.effect("v2 reports original enrollment at an upgraded build while v1 remains 
       assert.deepEqual(context.observed_build, observed);
     }
     const attested = yield* v2.attest(binding, attestationRequest);
-    yield* Schema.decodeEffect(WorkstreamsNativeAttestationResponseV2)(attested);
+    yield* compiledDecodeEffect6(attested);
     assert.strictEqual(attested.state, "attested");
     if (attested.state === "attested")
       assert.strictEqual(
@@ -654,7 +660,7 @@ it.effect("v2 reports original enrollment at an upgraded build while v1 remains 
       );
       const input = { ...request, native_action };
       const result = yield* actionProvider.settle(binding, input, requestBytesSha256);
-      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponseV2)(result);
+      yield* compiledDecodeEffect7(result);
       assert.strictEqual(result.state, "terminal");
     }
   }),
@@ -700,22 +706,18 @@ it.effect("v2 preserves unavailable build, scope, identity and authority fences"
   }),
 );
 
+const compiledDecodeUnknownEffect8 = Schema.decodeUnknownEffect(NativeProviderEnrollmentBinding);
+const compiledDecodeUnknownEffect9 = Schema.decodeUnknownEffect(WorkstreamsNativeSettlementRequest);
+const compiledEncodeEffect10 = Schema.encodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeSettlementRequest),
+);
+
 it.effect("both native profiles retain the producer's legacy settlement golden vectors", () =>
   Effect.gen(function* () {
-    assert.deepEqual(
-      binding,
-      yield* Schema.decodeUnknownEffect(NativeProviderEnrollmentBinding)(golden.binding),
-    );
+    assert.deepEqual(binding, yield* compiledDecodeUnknownEffect8(golden.binding));
     for (const vector of golden.vectors) {
-      const input = yield* Schema.decodeUnknownEffect(WorkstreamsNativeSettlementRequest)(
-        vector.request,
-      );
-      assert.strictEqual(
-        yield* Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
-          input,
-        ),
-        vector.request_json,
-      );
+      const input = yield* compiledDecodeUnknownEffect9(vector.request);
+      assert.strictEqual(yield* compiledEncodeEffect10(input), vector.request_json);
       for (const upgrade of [false, true]) {
         const fixture = makeProviderFixture();
         const provider = upgrade

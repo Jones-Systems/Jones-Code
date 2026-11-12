@@ -3,6 +3,7 @@ import { canonicalWorkstreamsSnapshotJson } from "@t3tools/contracts/jones/works
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Mac from "effect/crypto/Mac";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -197,6 +198,7 @@ const make = Effect.gen(function* () {
     bindings = yield* Bindings.BindingStore,
     sql = yield* SqlClient.SqlClient,
     secrets = yield* Secrets.ServerSecretStore,
+    mac = yield* Mac.Mac,
     keys = yield* Keys.WorkstreamsKeyProvider;
   const owner = yield* Effect.serviceOption(SourceSetupOwner);
   const qualifyOwner = Effect.fn("NativeSourceEnrollments.qualifyOwner")(function* () {
@@ -220,6 +222,7 @@ const make = Effect.gen(function* () {
       yield* makeReservedBearerSessionMaterializer.pipe(
         Effect.provideService(AuthSessions.AuthSessionRepository, sessions),
         Effect.provideService(Secrets.ServerSecretStore, secrets),
+        Effect.provideService(Mac.Mac, mac),
         Effect.mapError(() => new SourceEnrollmentError({ code: "key_unavailable" })),
       );
     }
@@ -422,6 +425,7 @@ const make = Effect.gen(function* () {
     const sign = yield* makeReservedBearerSessionMaterializer.pipe(
       Effect.provideService(AuthSessions.AuthSessionRepository, sessions),
       Effect.provideService(Secrets.ServerSecretStore, secrets),
+      Effect.provideService(Mac.Mac, mac),
       Effect.mapError(failure),
     );
     const token = (yield* sign(deriveNativeEnrollmentSession(proof.value.request.enrollment)).pipe(
@@ -448,8 +452,9 @@ export const providerLayer = Layer.effect(
   NativeProviderEnrollment,
   Effect.map(NativeSourceEnrollments, (source) =>
     NativeProviderEnrollment.of({
-      getBySessionId: (id) =>
+      getBySessionId: Effect.fn("NativeProviderEnrollment.getBySessionId")((id) =>
         source.getBySessionId(id).pipe(Effect.mapError(() => new NativeProviderEnrollmentError())),
+      ),
     }),
   ),
 );

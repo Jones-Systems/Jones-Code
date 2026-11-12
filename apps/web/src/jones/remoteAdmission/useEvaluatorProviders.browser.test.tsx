@@ -70,7 +70,15 @@ vi.mock("../../state/server", async () => {
     Stream.concat(Stream.make({ source: "live", config: { providers } }), Stream.never),
   );
   return {
-    serverEnvironment: { configProjection: () => projection },
+    serverEnvironment: {
+      configProjection: () => projection,
+      // The model picker refreshes the catalog on open only when the server advertises it.
+      configValueAtom: () => Atom.make(null),
+      refreshProviders: {
+        label: "Refresh providers",
+        run: () => Promise.reject(new Error("The evaluator server cannot refresh its catalog.")),
+      },
+    },
     EMPTY_SERVER_PROVIDERS: [],
     primaryServerKeybindingsAtom: Atom.make(DEFAULT_RESOLVED_KEYBINDINGS),
   };

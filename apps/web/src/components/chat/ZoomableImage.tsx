@@ -1,14 +1,14 @@
+import { imageFit, type ImageView } from "~/jones/filePreview/imageView";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { observeResize } from "~/lib/observeResize";
 import {
-  useEffect,
-  useEffectEvent,
   useImperativeHandle,
   useRef,
   useState,
   useSyncExternalStore,
   type Ref,
+  type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
 
@@ -60,7 +60,7 @@ export function ZoomableImage({
   ref,
   layout = "dialog",
   controls = true,
-  onViewChange,
+  renderLayout,
 }: {
   src: string;
   name: string;
@@ -69,9 +69,7 @@ export function ZoomableImage({
   ref?: Ref<ZoomableImageHandle>;
   layout?: "dialog" | "panel";
   controls?: boolean;
-  onViewChange?:
-    | ((view: { width: number; height: number; zoom: number; fit: number }) => void)
-    | undefined;
+  renderLayout?: ((content: ReactNode, view: ImageView) => ReactNode) | undefined;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
@@ -99,16 +97,7 @@ export function ZoomableImage({
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
   const maxHeight = Math.max(1, Math.min(viewerSize.height * 0.86, viewerSize.height - 160));
-  const fit = Math.max(
-    0,
-    Math.min(
-      1,
-      (layout === "panel"
-        ? panelSize.width
-        : viewerSize.width * 0.92 - (viewerSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
-      (layout === "panel" ? panelSize.height : maxHeight) / (naturalSize.height || 1),
-    ),
-  );
+  const fit = imageFit({ naturalSize, viewerSize, panelSize, layout, mimeType, maxHeight });
   const width = naturalSize.width * fit * zoom;
   const height = naturalSize.height * fit * zoom;
 
@@ -134,7 +123,7 @@ export function ZoomableImage({
     viewport.scrollTop = anchorY * clamped - (clientY - resized.top);
   };
 
-  useImperativeHandle(ref, () => ({
+  const controller: ZoomableImageHandle = {
     zoomTo: (value) => changeZoom(value),
     actualSize: () => changeZoom(1 / (fit || 1)),
     pan(key) {
@@ -164,7 +153,8 @@ export function ZoomableImage({
       }
       return true;
     },
-  }));
+  };
+  useImperativeHandle(ref, () => controller);
 
   const attachSizing = (sizing: HTMLDivElement | null) => {
     if (!sizing || layout !== "panel") return;
@@ -199,14 +189,15 @@ export function ZoomableImage({
   const attachViewport = (viewport: HTMLDivElement | null) => {
     viewportRef.current = viewport;
     if (!viewport) return;
-    // React's wheel listener is passive; this listener must stop page scrolling.
+    // Trackpad pinch arrives as a ctrlKey wheel; plain wheels pan through native overflow scrolling.
+    // React's onWheel is passive and cannot stop the browser's own page zoom.
     const wheel = (event: WheelEvent) => {
-      if (event.deltaY === 0) return;
+      if (!event.ctrlKey || event.deltaY === 0) return;
       event.preventDefault();
       const delta =
         event.deltaY *
         (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1);
-      changeZoom(zoom * Math.exp(-delta * (event.ctrlKey ? 0.01 : 0.002)), {
+      changeZoom(zoom * Math.exp(-delta * 0.01), {
         x: event.clientX,
         y: event.clientY,
       });
@@ -218,14 +209,7 @@ export function ZoomableImage({
     };
   };
 
-  const reportView = useEffectEvent(
-    (view: { width: number; height: number; zoom: number; fit: number }) => onViewChange?.(view),
-  );
-  useEffect(() => {
-    reportView({ width: naturalSize.width, height: naturalSize.height, zoom, fit });
-  }, [naturalSize.width, naturalSize.height, zoom, fit]);
-
-  return (
+  const content = (
     <div
       className={
         layout === "panel"
@@ -297,7 +281,7 @@ export function ZoomableImage({
           ref={attachViewport}
           role="region"
           aria-label={`${name}, zoomable image`}
-          aria-description="Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to cycle zoom, plus or minus to zoom, and 0 to fit."
+          aria-description="Click to zoom in or return to fit. Pinch or Ctrl+scroll to zoom, scroll or drag to pan. Use Enter to cycle zoom, plus or minus to zoom, and 0 to fit."
           tabIndex={0}
           className={`${layout === "panel" ? "absolute inset-0 min-h-0 min-w-0" : "max-w-[var(--media-width)]"} overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring`}
           style={{
@@ -405,4 +389,7 @@ export function ZoomableImage({
       </span>
     </div>
   );
+  return renderLayout
+    ? renderLayout(content, { width: naturalSize.width, height: naturalSize.height, zoom, fit })
+    : content;
 }

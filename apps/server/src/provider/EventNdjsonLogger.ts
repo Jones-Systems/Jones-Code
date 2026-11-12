@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 /** Native and canonical views share write state to avoid races on the same thread file. */
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
@@ -18,7 +19,10 @@ import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
-import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
+import {
+  ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS,
+  toSafeThreadAttachmentSegment,
+} from "../attachmentStore.ts";
 import {
   SegmentBuffer,
   type LogBatch,
@@ -90,10 +94,6 @@ export interface EventNdjsonLogStoreOptions {
   readonly attribution?: ResourceAttribution.ResourceAttribution["Service"];
 }
 
-export interface EventNdjsonLoggerOptions extends EventNdjsonLogStoreOptions {
-  readonly stream: EventNdjsonStream;
-}
-
 export class EventNdjsonLogConfigurationError extends Schema.TaggedError<EventNdjsonLogConfigurationError>()(
   "EventNdjsonLogConfigurationError",
   {
@@ -158,8 +158,13 @@ function logWarning(message: string, context: Record<string, unknown>): Effect.E
 }
 
 function resolveThreadSegment(raw: string | null | undefined): string {
-  const normalized = typeof raw === "string" ? toSafeThreadAttachmentSegment(raw) : null;
-  return normalized ?? GLOBAL_THREAD_SEGMENT;
+  if (typeof raw !== "string") return GLOBAL_THREAD_SEGMENT;
+  const normalized = toSafeThreadAttachmentSegment(raw);
+  if (normalized === null) return GLOBAL_THREAD_SEGMENT;
+  // Delegated thread ids share a prefix longer than the segment, so ids that may be cut get a hash.
+  if (raw.length <= ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS) return normalized;
+  const hash = NodeCrypto.createHash("sha256").update(raw).digest("hex").slice(0, 16);
+  return `${normalized}-${hash}`;
 }
 
 function resolveStreamLabel(stream: EventNdjsonStream): string {
@@ -794,23 +799,4 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
   };
 
   return { filePath, logger, close } satisfies EventNdjsonLogStore;
-});
-
-export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
-  filePath: string,
-  options: EventNdjsonLoggerOptions,
-): Effect.fn.Return<
-  ProviderEventLoggers.EventNdjsonLogger | undefined,
-  never,
-  FileSystem.FileSystem | Path.Path
-> {
-  const store = yield* makeEventNdjsonLogStore(filePath, options).pipe(
-    Effect.catch((error) =>
-      logWarning(error.message, { error }).pipe(
-        Effect.as<EventNdjsonLogStore | undefined>(undefined),
-      ),
-    ),
-  );
-  if (!store) return undefined;
-  return { ...store.logger(options.stream), close: store.close };
 });

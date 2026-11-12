@@ -1,3 +1,6 @@
+import * as ServerSettings from "../../serverSettings.ts";
+import * as InFlight from "./InFlight.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -22,6 +25,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 const target = descriptorOf("coalesced-0", "Peer");
 const fixture = (http: HttpClient.HttpClient) =>
   PeerLinks.layer.pipe(
+    Layer.provide(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
     Layer.provideMerge(Sqlite.layerMemory),
     Layer.provide(
       Layer.mock(ServerSecretStore.ServerSecretStore)({
@@ -36,7 +40,7 @@ const fixture = (http: HttpClient.HttpClient) =>
     ),
     Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-lifecycle-" })),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     Layer.fresh,
   );
 
@@ -128,6 +132,43 @@ it.effect("both old-generation outcome writes are ignored after replacement or u
       yield* sql`DELETE FROM jones_peer_environment_links WHERE environment_id = ${environmentId}`;
       yield* links.recordOutcome(environmentId, "replacement", { error: "after unlink" });
       expect(yield* links.currentGeneration(environmentId)).toEqual(Option.none());
+    }),
+  ),
+);
+
+it.effect("read-only sharing cancels only after its final waiter and then opens a fresh read", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const reads = yield* InFlight.make<string, never>({ cancelWhenUnused: true });
+      const started = yield* Deferred.make<void>();
+      const interrupted = yield* Deferred.make<void>();
+      let opens = 0;
+      const open = Effect.gen(function* () {
+        opens++;
+        yield* Deferred.succeed(started, undefined);
+        return yield* Effect.never;
+      }).pipe(
+        Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined).pipe(Effect.asVoid)),
+      );
+      const first = yield* reads.run("origin", open).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      const second = yield* reads.run("origin", open).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(first);
+      expect(opens).toBe(1);
+      expect(yield* Deferred.isDone(interrupted)).toBe(false);
+      yield* Fiber.interrupt(second);
+      yield* Deferred.await(interrupted);
+      expect(
+        yield* reads.run(
+          "origin",
+          Effect.sync(() => {
+            opens++;
+            return "fresh";
+          }),
+        ),
+      ).toBe("fresh");
+      expect(opens).toBe(2);
     }),
   ),
 );

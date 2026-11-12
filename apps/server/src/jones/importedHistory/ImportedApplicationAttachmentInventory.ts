@@ -202,6 +202,14 @@ export type ImportedApplicationAttachmentPathsV1 =
       readonly carrierSetSha256: string;
     }
   | { readonly status: "unavailable"; readonly reason: string };
+const compiledIs1 = Schema.is(ImportedApplicationAttachmentCarrierV1);
+const compiledDecodeOption2 = Schema.decodeOption(
+  Schema.fromJsonString(Schema.Array(ChatAttachment)),
+);
+const compiledDecodeOption3 = Schema.decodeOption(
+  Schema.fromJsonString(UserInputAttachmentAnswerPayload),
+);
+
 export function collectImportedApplicationAttachmentPathsV1(
   carriers: ReadonlyArray<ImportedApplicationAttachmentCarrierV1>,
 ): ImportedApplicationAttachmentPathsV1 {
@@ -212,7 +220,7 @@ export function collectImportedApplicationAttachmentPathsV1(
   let answerCarrierCount = 0;
   let attachmentReferenceCount = 0;
   for (const carrier of ordered) {
-    if (!Schema.is(ImportedApplicationAttachmentCarrierV1)(carrier)) {
+    if (!compiledIs1(carrier)) {
       return { status: "unavailable", reason: "carrier_decode_unavailable" };
     }
     const identity = `${carrier.kind}:${importedApplicationAttachmentCarrierIdV1(carrier)}`;
@@ -224,9 +232,7 @@ export function collectImportedApplicationAttachmentPathsV1(
       const decoded =
         carrier.attachmentsJson === null
           ? Option.some([])
-          : Schema.decodeOption(Schema.fromJsonString(Schema.Array(ChatAttachment)))(
-              carrier.attachmentsJson,
-            );
+          : compiledDecodeOption2(carrier.attachmentsJson);
       if (
         Option.isNone(decoded) ||
         nativeCreationCanonicalJson(decoded.value) !==
@@ -237,9 +243,7 @@ export function collectImportedApplicationAttachmentPathsV1(
       attachments = carrier.attachments;
     } else {
       answerCarrierCount++;
-      const decoded = Schema.decodeOption(Schema.fromJsonString(UserInputAttachmentAnswerPayload))(
-        carrier.payloadJson,
-      );
+      const decoded = compiledDecodeOption3(carrier.payloadJson);
       if (
         Option.isNone(decoded) ||
         nativeCreationCanonicalJson(decoded.value) !== nativeCreationCanonicalJson(carrier.answer)
@@ -266,10 +270,14 @@ export function collectImportedApplicationAttachmentPathsV1(
     carrierSetSha256: importedApplicationAttachmentSha256V1(ordered),
   };
 }
+const compiledDecodeUnknownOption4 = Schema.decodeUnknownOption(
+  ImportedApplicationAttachmentSnapshotV1,
+);
+
 export function qualifyImportedApplicationAttachmentSnapshotV1(
   input: unknown,
 ): ImportedApplicationAttachmentQualificationV1 {
-  const decoded = Schema.decodeUnknownOption(ImportedApplicationAttachmentSnapshotV1)(input);
+  const decoded = compiledDecodeUnknownOption4(input);
   if (Option.isNone(decoded))
     return { status: "unavailable", reason: "inventory_decode_unavailable" };
   const inventory = decoded.value;
@@ -343,6 +351,9 @@ export function makeImportedApplicationAttachmentRetentionEvidenceV1(input: {
   };
 }
 
+const compiledIs5 = Schema.is(ImportedApplicationAttachmentBirthV1);
+const compiledIs6 = Schema.is(ImportedApplicationAttachmentForkBasisV1);
+
 export function visibleImportedApplicationAttachmentSegments(input: {
   readonly targetBirth: ImportedApplicationAttachmentBirthV1;
   readonly visibleImportedBirths: ReadonlyArray<ImportedApplicationAttachmentBirthV1>;
@@ -357,7 +368,7 @@ export function visibleImportedApplicationAttachmentSegments(input: {
       readonly segments: ReadonlyArray<ImportedApplicationAttachmentSegmentV1>;
     }
   | { readonly status: "unavailable"; readonly reason: string } {
-  if (!Schema.is(ImportedApplicationAttachmentBirthV1)(input.targetBirth)) {
+  if (!compiledIs5(input.targetBirth)) {
     return { status: "unavailable", reason: "application_birth_unavailable" };
   }
   const sameBirth = (
@@ -368,7 +379,7 @@ export function visibleImportedApplicationAttachmentSegments(input: {
   const paths = new Set<string>();
   const seen = new Set<string>();
   for (const birth of input.visibleImportedBirths) {
-    if (!Schema.is(ImportedApplicationAttachmentBirthV1)(birth)) {
+    if (!compiledIs5(birth)) {
       return { status: "unavailable", reason: "application_birth_unavailable" };
     }
     const identity = nativeCreationCanonicalJson(birth);
@@ -386,7 +397,7 @@ export function visibleImportedApplicationAttachmentSegments(input: {
     const forkBirths = new Set([nativeCreationCanonicalJson(currentBirth)]);
     for (const edge of candidate.forkBasis) {
       if (
-        !Schema.is(ImportedApplicationAttachmentForkBasisV1)(edge) ||
+        !compiledIs6(edge) ||
         !sameBirth(edge.targetBirth, currentBirth) ||
         edge.sourceRunEvent.sequence <= edge.sourceBirth.sequence ||
         edge.forkEvent.sequence <= edge.sourceRunEvent.sequence ||

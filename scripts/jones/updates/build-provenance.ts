@@ -41,11 +41,13 @@ export const decodeJonesDesktopBuildMetadata = (metadata: unknown) =>
     }),
   );
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(JonesDesktopBuildMetadata);
+
 export function verifyJonesPackagedStartupGate(
   metadata: unknown,
   expected: { readonly version: string; readonly source: JonesBuildSource },
 ): void {
-  const qualified = Schema.decodeUnknownSync(JonesDesktopBuildMetadata)(metadata);
+  const qualified = compiledDecodeUnknownSync1(metadata);
   const manifest = metadata as Record<string, unknown>;
   if (
     qualified.startupGateProtocol !== 1 ||

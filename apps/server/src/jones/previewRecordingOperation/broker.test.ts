@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -20,7 +22,9 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Broker from "../../mcp/PreviewAutomationBroker.ts";
 import { selectRecordingOperation } from "./projection.ts";
 
-const makeBroker = Broker.make.pipe(Effect.provide(NodeServices.layer));
+const makeBroker = Broker.make.pipe(
+  Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+);
 const scope = {
   environmentId: EnvironmentId.make("recording-environment"),
   thread: {

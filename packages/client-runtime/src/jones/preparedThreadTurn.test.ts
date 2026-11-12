@@ -11,7 +11,9 @@ import {
   type OrchestrationV2Command,
   type OrchestrationV2ThreadLaunchInput,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -45,12 +47,18 @@ const target = new PrimaryConnectionTarget({
   wsBaseUrl: "wss://environment.example.test",
 });
 
-const layerTestCrypto = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => new Uint8Array(size),
-    digest: (_algorithm, data) => Effect.succeed(data),
-  }),
+const layerTestCrypto = Layer.mergeAll(
+  Layer.succeed(
+    SecureRandom.SecureRandom,
+    SecureRandom.make((size) => new Uint8Array(size)),
+  ),
+  Layer.succeed(
+    Digest.Digest,
+    Digest.Digest.of({
+      digest: (_algorithm, data) => Effect.succeed(data),
+      digestHex: (_algorithm, data) => Effect.succeed(Hex.encode(data)),
+    }),
+  ),
 );
 
 const StoredPreparedTurn = Schema.Struct({
@@ -64,6 +72,8 @@ function expectDeeplyFrozen(value: unknown): void {
   expect(Object.isFrozen(value)).toBe(true);
   for (const child of Object.values(value)) expectDeeplyFrozen(child);
 }
+const encodeStoredPreparedTurn = Schema.encodeEffect(StoredPreparedTurn);
+const decodeStoredPreparedTurn = Schema.decodeUnknownEffect(StoredPreparedTurn);
 
 describe("durable prepared turn envelope", () => {
   it.effect.each([false, true])(
@@ -111,9 +121,10 @@ describe("durable prepared turn envelope", () => {
               },
             } as never;
           }),
-          subscribeServerConfig: (input) => client.subscribeServerConfig(input),
+          subscribeServerConfig: (input = {}) => client.subscribeServerConfig(input),
           ready: Effect.void,
           probe: Effect.void,
+          inboundFrames: Effect.succeed(0),
           closed: Effect.never,
         };
         const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
@@ -207,15 +218,15 @@ describe("durable prepared turn envelope", () => {
         expect(restored.payload).toEqual(originalPayload);
         expect(Object.isFrozen(restored.payload)).toBe(true);
         expectDeeplyFrozen(restored);
-        const encodedIssuance = yield* Schema.encodeEffect(StoredPreparedTurn)({
+        const encodedIssuance = yield* encodeStoredPreparedTurn({
           issuance: { state: "issued", prepared },
         });
         const persistedIssuance = JSON.stringify(encodedIssuance);
         const storedIssuance: unknown = JSON.parse(persistedIssuance);
-        const nested = yield* Schema.decodeUnknownEffect(StoredPreparedTurn)(storedIssuance);
+        const nested = yield* decodeStoredPreparedTurn(storedIssuance);
         expect(nested.issuance?.prepared).toEqual(restored);
         expectDeeplyFrozen(nested.issuance?.prepared);
-        const encodedNested = yield* Schema.encodeEffect(StoredPreparedTurn)(nested);
+        const encodedNested = yield* encodeStoredPreparedTurn(nested);
         expect(JSON.stringify(encodedNested)).toBe(persistedIssuance);
         if (restored.method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
           expect(restored.payload.workspaceStrategy).toEqual({

@@ -60,7 +60,7 @@ export function configureCompanionProduct(input: {
 export function companionLinuxIdentity(
   options: EarlyLinuxElectronOptions | null,
   companion: boolean,
-): EarlyLinuxElectronOptions | null {
+): (EarlyLinuxElectronOptions & { readonly linuxWmClass?: string }) | null {
   return options === null || !companion
     ? options
     : {

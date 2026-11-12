@@ -382,14 +382,16 @@ export const recordedThreadLookupLayer = Layer.effect(
   RecordedThreadLookup,
   Effect.map(Orchestrator.OrchestratorV2, (orchestrator) =>
     RecordedThreadLookup.of({
-      getThreadShell: (id) =>
+      getThreadShell: Effect.fn("RecordedThreadLookup.getThreadShell")((id) =>
         orchestrator
           .getThreadShell(id)
           .pipe(Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "not_granted" }))),
-      getThreadRecords: (id, fields, filter) =>
+      ),
+      getThreadRecords: Effect.fn("RecordedThreadLookup.getThreadRecords")((id, fields, filter) =>
         orchestrator
           .getThreadRecords(id, fields, filter)
           .pipe(Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "not_granted" }))),
+      ),
     }),
   ),
 );
@@ -648,18 +650,21 @@ const makeRecordedAuthority = Effect.fn("RecordedAuthority.make")(function* (pre
     ? yield* Effect.serviceOption(RecordedThreadLookup)
     : Option.map(yield* Effect.serviceOption(ThreadManagement.ThreadManagementService), (legacy) =>
         RecordedThreadLookup.of({
-          getThreadShell: (id) =>
+          getThreadShell: Effect.fn("RecordedThreadLookup.getThreadShell")((id) =>
             legacy
               .getThreadShell(id)
               .pipe(
                 Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "not_granted" })),
               ),
-          getThreadRecords: (id, fields, filter) =>
-            legacy
-              .getThreadRecords(id, fields, filter)
-              .pipe(
-                Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "not_granted" })),
-              ),
+          ),
+          getThreadRecords: Effect.fn("RecordedThreadLookup.getThreadRecords")(
+            (id, fields, filter) =>
+              legacy
+                .getThreadRecords(id, fields, filter)
+                .pipe(
+                  Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "not_granted" })),
+                ),
+          ),
         }),
       );
   const providers = yield* Effect.serviceOption(ProviderSessions.ProviderSessionManagerV2);

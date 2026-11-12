@@ -23,6 +23,8 @@ export class RemovalGate extends Context.Service<
     >;
   }
 >()("t3/jones/workspaceRetirement/RemovalGate") {}
+const compiledMain3acaCodec28 = Schema.is(RetirementError);
+
 export const layer = Layer.effect(
   RemovalGate,
   Effect.gen(function* () {
@@ -57,7 +59,7 @@ export const layer = Layer.effect(
           return { exitCode: 0, completion: "exited" as const };
         },
         Effect.mapError((cause) =>
-          Schema.is(RetirementError)(cause)
+          compiledMain3acaCodec28(cause)
             ? cause
             : new RetirementError({ target: "deletion", reason: "retirement_unavailable", cause }),
         ),

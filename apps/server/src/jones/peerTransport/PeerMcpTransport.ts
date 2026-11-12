@@ -146,6 +146,12 @@ const fromLinkError = (error: PeerLinkError) =>
     message: error.message,
   });
 
+const linkedEnvironmentsOffThere = new OrchestratorMcpFailure({
+  code: "orchestration_error",
+  message:
+    "The linked environment has Linked environments turned off. Turn it on in its Settings → Labs.",
+});
+
 const readEnvelope = Effect.fn("PeerMcpTransport.readEnvelope")(function* (
   response: { readonly headers: Readonly<Record<string, string>>; readonly text: string },
   id: number,
@@ -263,6 +269,7 @@ export const make = Effect.gen(function* () {
                   "The linked environment redirected the request. Verify its address before retrying.",
               }),
             );
+          if (response.status === 403) return Effect.fail(linkedEnvironmentsOffThere);
           if (response.status === 401)
             return Effect.fail(
               new OrchestratorMcpFailure({

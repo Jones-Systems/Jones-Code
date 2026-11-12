@@ -24,9 +24,58 @@ vi.mock("@tanstack/react-router", async (original) => ({
   useNavigate: () => state.navigate,
 }));
 import { ProviderUpdateEnvironmentRows, ProviderUpdateNotice } from "./ProviderUpdateNotice";
+import { UpdateEverythingDialog } from "~/components/sidebar/UpdateEverythingDialog";
+import { describeUpdateEverything } from "~/components/sidebar/updateEverything.logic";
 
 const wsl = EnvironmentId.make("ui-update-wsl");
 const laptop = EnvironmentId.make("ui-update-laptop");
+
+describe("Jones install handoff in the composed update dialog", () => {
+  it.each([
+    { mixed: false, label: "Jones-only" },
+    { mixed: true, label: "mixed provider and Jones" },
+  ])("keeps $label rows visible without starting an install", async ({ mixed }) => {
+    const confirm = vi.fn();
+    const description = describeUpdateEverything({
+      localVersion: null,
+      localMachines: [],
+      servers: [],
+      jonesMachines: [{ environmentId: laptop, label: "Laptop" }],
+      providerMachines: mixed
+        ? [{ environmentId: laptop, label: "Laptop", providers: ["Codex · personal"] }]
+        : [],
+      skipped: [],
+    });
+    await using _screen = await render(
+      <UpdateEverythingDialog
+        open
+        onOpenChange={() => {}}
+        {...description}
+        restarts={[]}
+        onConfirm={confirm}
+      />,
+    );
+    const dialog = page.getByRole("alertdialog");
+    await expect.element(dialog.getByRole("heading", { name: "Update 1 machine?" })).toBeVisible();
+    await expect.element(dialog.getByText("Laptop", { exact: true })).toBeVisible();
+    await expect.element(dialog.getByText("Install status", { exact: true })).toBeVisible();
+    await expect
+      .element(
+        dialog.getByText("Install status after Laptop verification; every install needs review"),
+      )
+      .toBeVisible();
+    if (mixed) {
+      await expect.element(dialog.getByText("Codex · personal", { exact: true })).toBeVisible();
+      await expect.element(dialog.getByText("1 provider update", { exact: true })).toBeVisible();
+    } else {
+      await expect
+        .element(dialog.getByText("Codex · personal", { exact: true }))
+        .not.toBeInTheDocument();
+    }
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+});
 function provider(id: string, manual = false): ServerProvider {
   return {
     instanceId: ProviderInstanceId.make(id),

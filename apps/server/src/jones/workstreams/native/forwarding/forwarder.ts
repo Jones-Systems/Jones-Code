@@ -6,7 +6,7 @@ import * as Wire from "@t3tools/contracts/jones/workstreamsForwarding";
 import type { WorkstreamsNativeSuppliedAttestation } from "@t3tools/contracts/jones/workstreamsNative";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -57,7 +57,7 @@ export const locksLayer = Layer.effect(
   Effect.sync(() => {
     const locks = new Map<string, { semaphore: Semaphore.Semaphore; users: number }>();
     return MemberForwardLocks.of({
-      run: (id, effect) =>
+      run: Effect.fn("MemberForwardLocks.run")((id, effect) =>
         Effect.suspend(() => {
           let lock = locks.get(id);
           if (!lock) {
@@ -77,6 +77,7 @@ export const locksLayer = Layer.effect(
               ),
             );
         }),
+      ),
     });
   }),
 );
@@ -167,7 +168,7 @@ const storeError = (cause: unknown) => {
 const make = Effect.gen(function* () {
   const store = yield* Store.OperationStore,
     home = yield* Home.HomeForwardClient;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const admission = yield* Admission.MemberAdmission,
     locks = yield* MemberForwardLocks;
   const targets = yield* Effect.serviceOption(MemberCommandTargets);
@@ -331,7 +332,7 @@ const make = Effect.gen(function* () {
                 request_sha256: digest,
                 kind,
                 attempt,
-              }).pipe(Effect.provideService(Crypto.Crypto, crypto), Effect.mapError(unavailable)),
+              }).pipe(Effect.provideService(Digest.Digest, crypto), Effect.mapError(unavailable)),
             );
         }
         if (decoded.kind !== "operation") children.push(decoded.id);

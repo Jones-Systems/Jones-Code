@@ -148,12 +148,12 @@ export function startInstallPlanController(
 export function InstallPlanController() {
   const { environments } = useEnvironments();
   const current = useRef(environments);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Event callbacks need the latest connection set without restarting the runner on every status push.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Event callbacks need the latest connection set without restarting the runner on every status push.
   useEffect(() => {
     current.current = environments;
   }, [environments]);
   const ids = JSON.stringify(environments.map((e) => e.environmentId).sort());
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the plan runner, observation subscriptions and their exact lifetimes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the plan runner, observation subscriptions and their exact lifetimes.
   useEffect(() => {
     const bridge = window.desktopBridge;
     if (bridge?.installPlan === undefined) return;

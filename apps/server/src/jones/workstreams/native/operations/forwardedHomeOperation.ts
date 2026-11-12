@@ -8,7 +8,7 @@ import {
   WorkstreamOperationRequest,
 } from "@t3tools/contracts/jones/workstreamOperations";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -59,7 +59,7 @@ export class ForwardedHomeOperation extends Context.Service<
 export const layer = Layer.effect(
   ForwardedHomeOperation,
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* Digest.Digest;
     const registry = yield* Registry.Registry,
       boundary = yield* Boundary.PeerWriteBoundary,
       supplied = yield* Supplied.SuppliedEvidence;
@@ -79,7 +79,7 @@ export const layer = Layer.effect(
         )
           return yield* new RegistryError({ code: "invalid_request" });
         const ids = yield* forwardChildIds(request).pipe(
-          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(Digest.Digest, crypto),
         );
         if (canonicalJson(ids) !== canonicalJson(i.command_ids))
           return yield* new RegistryError({ code: "invalid_child_ids" });

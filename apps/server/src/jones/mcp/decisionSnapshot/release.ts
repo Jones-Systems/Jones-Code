@@ -127,6 +127,8 @@ async function readBounded(path: string, maximum: number): Promise<Buffer> {
   }
 }
 
+const compiledDecodeSync1 = Schema.decodeSync(Schema.fromJsonString(ReleaseManifest));
+
 export async function verifyRelease(binding: CollectorBinding): Promise<VerifiedRelease> {
   if (
     binding.custody !== RELEASE_CUSTODY ||
@@ -146,10 +148,7 @@ export async function verifyRelease(binding: CollectorBinding): Promise<Verified
   const bytes = await readBounded(manifestPath, 262_144);
   if (NodeCrypto.createHash("sha256").update(bytes).digest("hex") !== binding.manifestSha256)
     throw new ReleaseMismatch();
-  const manifest = Schema.decodeSync(Schema.fromJsonString(ReleaseManifest))(
-    bytes.toString("utf8"),
-    { onExcessProperty: "error" },
-  );
+  const manifest = compiledDecodeSync1(bytes.toString("utf8"), { onExcessProperty: "error" });
   if (
     manifest.release_id !== binding.releaseId ||
     (binding.allowFixtureProvenance !== true &&

@@ -13,8 +13,10 @@ import * as Auth from "../../../auth/EnvironmentAuth.ts";
 import * as McpOAuth from "../../../auth/McpOAuth.ts";
 import * as Secrets from "../../../auth/ServerSecretStore.ts";
 import * as Config from "../../../config.ts";
+import * as ManagedPolicy from "../../../policy/ManagedPolicy.ts";
 import * as Authority from "../../../environment/NativeStoreAuthority.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpHttpServer from "../../../mcp/McpHttpServer.ts";
 import * as Mcp from "../../../mcp/McpInvocationContext.ts";
 import * as McpSessions from "../../../mcp/McpSessionRegistry.ts";
@@ -61,6 +63,12 @@ const services = Pins.layer.pipe(
   Layer.provideMerge(Records.layer),
   Layer.provideMerge(authority),
   Layer.provideMerge(Auth.layer.pipe(Layer.provide(signing))),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      ManagedPolicy.layerTest(),
+      ServerSettings.layerTest({ linkedEnvironmentsEnabled: true }),
+    ),
+  ),
   Layer.provideMerge(Test.testLayer()),
   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "nw-e2w-peer-middleware-" })),
   Layer.provideMerge(
@@ -116,8 +124,7 @@ const probes = McpAccess.toLayer(
 /** The real middleware, serving the probe, with `context` supplying every service it consults. */
 const serve = (context: Context.Context<Services>) =>
   HttpRouter.serve(
-    McpHttpServer.toolkitRegistration(probe, probes).pipe(
-      Layer.provideMerge(McpHttpServer.layerMcpTransport),
+    McpHttpServer.layerMcpTransport(McpHttpServer.toolkitRegistration(probe, probes)).pipe(
       Layer.provide(McpOAuth.layerMcpClientAuthenticator),
       Layer.provide(
         Layer.mock(McpSessions.McpSessionRegistry)({ resolve: () => Effect.undefined }),

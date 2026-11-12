@@ -249,10 +249,11 @@ export const readDesktopNativeOwnerRequest = <E>(
     ),
     Effect.mapError(unavailable),
   );
+const compiledEncodeSync1 = Schema.encodeSync(
+  Schema.fromJsonString(WorkstreamsNativeOwnerResponse),
+);
+
 export const renderDesktopNativeOwnerResponse = (response: WorkstreamsNativeOwnerResponse) =>
-  HttpServerResponse.text(
-    Schema.encodeSync(Schema.fromJsonString(WorkstreamsNativeOwnerResponse))(response),
-    {
-      headers: { "content-type": "application/json", "cache-control": "no-store" },
-    },
-  );
+  HttpServerResponse.text(compiledEncodeSync1(response), {
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
+  });

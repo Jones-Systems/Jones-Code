@@ -318,9 +318,13 @@ it.effect.each(["rejected", "silent"] as const)(
             ? CommandId.make(`command:system:start-queued:${admissionRun.id}`)
             : nextCommand,
         );
-        yield* outbox.awaitCompletion(admissionEffects.map((effect) => effect.id));
+        const replacementFailure = yield* outbox
+          .awaitCompletion(admissionEffects.map((effect) => effect.id))
+          .pipe(Effect.flip);
+        assert.equal(replacementFailure.operation, "await-completion");
+        assert.equal(replacementFailure.effectId, admissionEffects[0]!.id);
         const settledAdmission = Option.getOrThrow(yield* outbox.get(admissionEffects[0]!.id));
-        assert.equal(settledAdmission.status, "succeeded");
+        assert.equal(settledAdmission.status, "failed");
         assert.equal(settledAdmission.attemptCount, 1);
         assert.isNull(settledAdmission.leaseOwner);
         const admissionAttempt = (yield* orchestrator.getThreadProjection(threadId)).attempts.find(

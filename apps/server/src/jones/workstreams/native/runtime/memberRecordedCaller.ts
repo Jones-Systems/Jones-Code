@@ -713,7 +713,9 @@ const make = Effect.gen(function* () {
       return record;
     }),
     readmitWrite,
-    readmitWriteRetained: (record) => readmitWrite(record, true),
+    readmitWriteRetained: Effect.fn("MemberLocalCallers.readmitWriteRetained")((record) =>
+      readmitWrite(record, true),
+    ),
     captureOwnPlacement: Effect.fn("MemberLocalCallers.captureOwnPlacement")(
       function* (environmentId) {
         const record = yield* snapshot(environmentId);
@@ -729,7 +731,9 @@ const make = Effect.gen(function* () {
       return record;
     }),
     readmit,
-    readmitRetained: (record) => readmit(record, false, true),
+    readmitRetained: Effect.fn("MemberLocalCallers.readmitRetained")((record) =>
+      readmit(record, false, true),
+    ),
   });
 });
 /** @public Request-scoped adapter over authenticated invocation, session and exact run records. */

@@ -1,7 +1,9 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import { afterEach, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DEFAULT_SERVER_SETTINGS, DeviceHostId, type ServerSettings } from "@t3tools/contracts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Net from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -107,6 +109,11 @@ it.effect(
           issue: () => Effect.succeed(null),
           admit: () => Effect.succeed({ _tag: "Denied" as const }),
         }),
+        Effect.provideService(SecretResolver.SecretResolver, {
+          label: (provider) => Effect.succeed(provider),
+          read: (references) => Effect.succeed(references.map(() => undefined)),
+          invalidate: () => Effect.void,
+        }),
         Effect.provideService(ServerSettingsService, {
           getSettings: Effect.sync(() => settings),
           subscribeChanges: PubSub.subscribe(changes).pipe(Effect.map(Stream.fromSubscription)),
@@ -139,5 +146,5 @@ it.effect(
       expect((yield* instances[0]!.currentEndpoint)?.target).toBe("laptop-mini-b");
       expect((yield* instances[1]!.currentEndpoint)?.target).toBe("laptop-mini-b");
       expect(ensureCalls).toBe(0);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -26,7 +27,7 @@ const layerServerSessions = SessionStore.layer.pipe(
     }),
   ),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-native-bearer-test-" })),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 const expected = deriveNativeEnrollmentSession(enrollmentRequest);
 const atIssuance = TestClock.setTime(expected.issuedAt.epochMilliseconds);
@@ -50,7 +51,7 @@ it.effect(
       expect(verified.method).toBe("bearer-access-token");
       expect([...verified.scopes]).toEqual([...expected.scopes]);
       expect((yield* repository.listActive({ now: expected.issuedAt })).length).toBe(1);
-    }).pipe(Effect.provide(layerServerSessions), Effect.scoped),
+    }).pipe(Effect.provide(layerServerSessions), Effect.scoped, Effect.provide(NodeCrypto.layer)),
 );
 
 it.effect(
@@ -80,7 +81,7 @@ it.effect(
       yield* atIssuance;
       yield* repository.revoke({ sessionId: expected.sessionId, revokedAt: expected.issuedAt });
       expect((yield* Effect.flip(materialize(expected)))._tag).toBe("SessionCredentialIssueError");
-    }).pipe(Effect.provide(layerServerSessions), Effect.scoped),
+    }).pipe(Effect.provide(layerServerSessions), Effect.scoped, Effect.provide(NodeCrypto.layer)),
 );
 
 it.effect(
@@ -106,6 +107,11 @@ it.effect(
       expect(result._tag).toBe("Failure");
       expect(generated).toBe(0);
     }).pipe(
-      Effect.provide(AuthSessions.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory))),
+      Effect.provide(
+        AuthSessions.layer.pipe(
+          Layer.provideMerge(SqlitePersistence.layerMemory),
+          Layer.provideMerge(NodeCrypto.layer),
+        ),
+      ),
     ),
 );

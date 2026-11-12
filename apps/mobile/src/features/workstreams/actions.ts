@@ -49,11 +49,7 @@ export function mobileMembershipBlock(input: {
   return null;
 }
 
-export {
-  WORKSTREAM_TINT_PALETTE,
-  workstreamPaletteIndex,
-  workstreamTint,
-} from "@t3tools/client-runtime/state/workstreams";
+export { workstreamTint } from "@t3tools/client-runtime/state/workstreams";
 
 export function planNativeMembership(input: {
   readonly data: T3WorkstreamListResult;

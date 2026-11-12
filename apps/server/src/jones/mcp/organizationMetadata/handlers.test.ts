@@ -1,3 +1,6 @@
+import * as ServerSettings from "../../../serverSettings.ts";
+import * as McpSessionRegistry from "../../../mcp/McpSessionRegistry.ts";
+import * as InProcessMcp from "../../../mcp/McpHttpServer.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { expect, it } from "@effect/vitest";
@@ -12,7 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { McpProtocol, McpSchema, McpServer, Tool } from "effect/ai";
+import { McpSchema, McpServer, Tool } from "effect/ai";
 import {
   HttpBody,
   HttpClient,
@@ -334,7 +337,7 @@ it.effect(
     ).pipe(
       Effect.provide(
         OrganizationMetadataRegistrationLive.pipe(
-          Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
           Layer.provide(dependencies),
         ),
       ),
@@ -365,17 +368,27 @@ it.effect(
               }),
           ),
         ).layer;
-        const transport = McpServer.layerHttp({
-          name: "Metadata test",
-          version: "1.0.0",
-          path: "/mcp",
-          protocols: [McpProtocol.v2025_06_18],
-        }).pipe(Layer.provide(auth));
         const registration = OrganizationMetadataRegistrationLive.pipe(Layer.provide(dependencies));
-        yield* HttpRouter.serve(registration.pipe(Layer.provideMerge(transport)), {
-          disableListenLog: true,
-          disableLogger: true,
-        }).pipe(Layer.build);
+        const transport = InProcessMcp.layerMcpTransport(registration).pipe(
+          Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(
+            Layer.mock(McpSessionRegistry.McpSessionRegistry)({ resolve: () => Effect.undefined }),
+          ),
+          Layer.provide(
+            Layer.succeed(InProcessMcp.McpClientAuthenticator, {
+              authenticate: (request) =>
+                Effect.succeed(
+                  request.headers.authorization === "Bearer synthetic-test"
+                    ? invocation
+                    : undefined,
+                ),
+            }),
+          ),
+          Layer.provide(auth),
+        );
+        yield* HttpRouter.serve(transport, { disableListenLog: true, disableLogger: true }).pipe(
+          Layer.build,
+        );
         const httpClient = yield* HttpClient.HttpClient;
         const initialize = yield* httpClient.post("/mcp", {
           headers: {

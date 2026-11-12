@@ -152,7 +152,7 @@ export function JonesUpdateControls({
           ...observed,
           state: { ...observed.state, operation: retained },
         };
-  // oxlint-disable-next-line t3code/react-effect-budget -- Exact fresh receipts reconcile persisted duties; rendering never clears an unknown request.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Exact fresh receipts reconcile persisted duties; rendering never clears an unknown request.
   useEffect(() => {
     if (observed.freshness === "fresh" && observed.state?.operation !== undefined)
       void reconcileJonesExecution(environmentId, observed.state.operation).catch(() => undefined);

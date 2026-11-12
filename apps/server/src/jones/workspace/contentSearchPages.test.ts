@@ -241,10 +241,22 @@ it.effect("preserves the result limit and first regex fallback across empty page
       expect(result.matches).toHaveLength(2);
       expect(result.truncated).toBe(true);
       expect(result.regexFallbackError).toBe("first compile failure");
-      expect(grep).toHaveBeenCalledTimes(2);
-      expect(grep).toHaveBeenCalledWith(
+      // An invalid case-insensitive regex retries the same page literally, so `(?i)` is not searched.
+      expect(grep).toHaveBeenCalledTimes(3);
+      expect(grep).toHaveBeenNthCalledWith(
+        1,
         "(?i)[",
-        expect.objectContaining({ mode: "regex", smartCase: false }),
+        expect.objectContaining({ mode: "regex", smartCase: false, cursor: null }),
+      );
+      expect(grep).toHaveBeenNthCalledWith(
+        2,
+        "[",
+        expect.objectContaining({ mode: "plain", smartCase: true, cursor: null }),
+      );
+      expect(grep).toHaveBeenNthCalledWith(
+        3,
+        "[",
+        expect.objectContaining({ mode: "plain", smartCase: true, cursor: next }),
       );
     }),
   ),

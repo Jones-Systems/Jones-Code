@@ -2,6 +2,7 @@ import { RecordedCallerPreparation } from "./recordedCallerPreparationPort.ts";
 export { RecordedCallerPreparation } from "./recordedCallerPreparationPort.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Mac from "effect/crypto/Mac";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -41,6 +42,7 @@ const make = Effect.gen(function* () {
   const bindings = yield* Bindings.BindingStore;
   const db = yield* Database.NativeSql;
   const secrets = yield* Secrets.ServerSecretStore;
+  const mac = yield* Mac.Mac;
   const keys = yield* Keys.WorkstreamsKeyProvider;
   const home = yield* NativeHome;
   const startup = yield* Startup.Startup;
@@ -146,6 +148,7 @@ const make = Effect.gen(function* () {
                   Context.add(Registries.RegistryStore, registries),
                   Context.add(Bindings.BindingStore, bindings),
                   Context.add(Secrets.ServerSecretStore, secrets),
+                  Context.add(Mac.Mac, mac),
                   Context.add(Keys.WorkstreamsKeyProvider, keys),
                 );
                 // Providing an exact constructor context excludes an ambient SourceSetupOwner as well.
@@ -175,8 +178,10 @@ const make = Effect.gen(function* () {
                   return result;
                 });
                 const scopedCallers = Recorded.RecordedCallers.of({
-                  captureCaller: () => guarded(Effect.suspend(() => callers.captureCaller())),
-                  readmitRecorded: (input) =>
+                  captureCaller: Effect.fn("Recorded.RecordedCallers.captureCaller")(() =>
+                    guarded(Effect.suspend(() => callers.captureCaller())),
+                  ),
+                  readmitRecorded: Effect.fn("Recorded.RecordedCallers.readmitRecorded")((input) =>
                     guarded(
                       Effect.gen(function* () {
                         const caller = yield* callers.readmitRecorded(input);
@@ -191,10 +196,12 @@ const make = Effect.gen(function* () {
                         } satisfies Admission.CallerEvidence;
                       }),
                     ),
-                  visible: (record, threadId) =>
+                  ),
+                  visible: Effect.fn("Recorded.RecordedCallers.visible")((record, threadId) =>
                     guarded(callers.visible(record, threadId)).pipe(
                       Effect.orElseSucceed(() => false),
                     ),
+                  ),
                 });
                 return yield* guarded(Effect.suspend(() => use(scopedCallers))).pipe(
                   Effect.awaitAllChildren,

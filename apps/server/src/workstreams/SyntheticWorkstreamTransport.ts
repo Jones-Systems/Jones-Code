@@ -581,7 +581,7 @@ export const makeSyntheticWorkstreamTransport = (
     }
   };
 
-  const placements = (input: T3PlacementRequest) => {
+  const placements = Effect.fn("placements")((input: T3PlacementRequest) => {
     const requested = new Set(input.identities.map(t3PlacementIdentityKey));
     const nowMs = now();
     const items: T3ThreadPlacement[] = [];
@@ -630,7 +630,7 @@ export const makeSyntheticWorkstreamTransport = (
         ...slice,
       })),
     );
-  };
+  });
 
   return {
     getCapabilities: () => {
@@ -707,20 +707,20 @@ export const makeSyntheticWorkstreamTransport = (
           retry_after_seconds: 1,
         },
       ),
-    submitCommand: ({ body, command }) => {
-      if (options.offline === true) return unavailable("command");
+    submitCommand: Effect.fn("submitCommand")(function* ({ body, command }) {
+      if (options.offline === true) return yield* unavailable("command");
       const requestSha256 = sha256(body);
       const prior = receipts.get(command.command_id);
       // A command ID applies once: the same bytes observe the stored receipt, other bytes conflict.
       if (prior !== undefined)
-        return Effect.succeed(
+        return yield* Effect.succeed(
           prior.request_sha256 === requestSha256
             ? prior
             : rejected(command, requestSha256, iso(now()), "idempotency_conflict"),
         );
       const result = apply(command, requestSha256);
       receipts.set(command.command_id, result);
-      return Effect.succeed(result);
-    },
+      return result;
+    }),
   };
 };

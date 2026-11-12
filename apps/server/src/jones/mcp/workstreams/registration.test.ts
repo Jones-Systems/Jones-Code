@@ -1,3 +1,4 @@
+import * as InProcessMcp from "../../../mcp/McpHttpServer.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -48,7 +49,7 @@ it.effect(
       Layer.provide(NodeCrypto.layer),
     );
     const registration = McpHttpServer.layerWorkstreamToolkit.pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
       Layer.provide(
         Layer.mock(WorkstreamGateway)({
           purgeAuthorization: () => {},

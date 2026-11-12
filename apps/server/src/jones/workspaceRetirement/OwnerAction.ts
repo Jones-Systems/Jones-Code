@@ -19,6 +19,12 @@ import { withOperation } from "../workspaceLifecycle/NativeOperation.ts";
 import { RetirementError } from "./Receipts.ts";
 import { evaluate } from "./Runtime.ts";
 
+const compiledMain3acaCodec22 = Schema.is(ServerSettingsError);
+
+const compiledMain3acaCodec21 = Schema.is(RetirementError);
+
+const compiledMain3acaCodec20 = Schema.is(RetirementError);
+
 export const make = Effect.gen(function* () {
   const context = yield* Effect.context<
     SqlClient.SqlClient | Config.ServerConfig | Projections.ProjectionStoreV2
@@ -73,7 +79,7 @@ export const make = Effect.gen(function* () {
             });
         }).pipe(
           Effect.mapError((cause) =>
-            Schema.is(RetirementError)(cause)
+            compiledMain3acaCodec20(cause)
               ? cause
               : new RetirementError({
                   target: item.worktreePath,
@@ -126,7 +132,7 @@ export const make = Effect.gen(function* () {
         }).pipe(
           Effect.provide(context),
           Effect.catch((error) => {
-            const reason = Schema.is(RetirementError)(error)
+            const reason = compiledMain3acaCodec21(error)
               ? error.reason
               : "target_observation_unavailable";
             return Effect.succeed({
@@ -192,7 +198,7 @@ export const make = Effect.gen(function* () {
       } satisfies StorageCleanupReport;
     },
     Effect.mapError((cause) =>
-      Schema.is(ServerSettingsError)(cause)
+      compiledMain3acaCodec22(cause)
         ? cause
         : new ServerSettingsError({
             settingsPath: config.settingsPath,

@@ -41,7 +41,7 @@ export function ResponsiveHostStatusPills({ hosts }: { hosts: HostStatusDisplay[
     null,
   );
   const labels = [...new Set(HOST_DISPLAY_STAGES.flatMap((stage) => stage.names).filter(Boolean))];
-  // oxlint-disable-next-line t3code/react-effect-budget -- Fit live text and own width/font observation; the zero-basis slot cannot steal the breadcrumb's allocation.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fit live text and own width/font observation; the zero-basis slot cannot steal the breadcrumb's allocation.
   useLayoutEffect(() => {
     const container = containerRef.current;
     const measurement = measurementRef.current;

@@ -100,10 +100,16 @@ const v2RawFiles: Readonly<Record<string, string>> = {
   "fixtures/semantic-cases.json": v2SemanticsRaw,
   "schemas/registration-context.schema.json": v2SchemaRaw,
 };
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(
+  Context.WorkstreamsRegistrationContextRequest,
+);
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(
+  Context.WorkstreamsRegistrationContextV2Response,
+);
+
 const decodeV2 = (fixture: Fixture) => {
-  if (fixture.schema === "#/$defs/Request")
-    return Schema.decodeUnknownSync(Context.WorkstreamsRegistrationContextRequest)(fixture.value);
-  return Schema.decodeUnknownSync(Context.WorkstreamsRegistrationContextV2Response)(fixture.value);
+  if (fixture.schema === "#/$defs/Request") return compiledDecodeUnknownSync1(fixture.value);
+  return compiledDecodeUnknownSync2(fixture.value);
 };
 
 describe("workstreams-registration-context/2.0.0 pinned consumer", () => {
@@ -145,17 +151,18 @@ const v3RawFiles: Readonly<Record<string, string>> = {
   "fixtures/semantic-cases.json": v3SemanticsRaw,
   "schemas/registration-context.schema.json": v3SchemaRaw,
 };
+const compiledDecodeUnknownSync3 = Schema.decodeUnknownSync(
+  Context.WorkstreamsRegistrationContextV3Response,
+);
+
 const decodeV3 = (fixture: Fixture) => {
-  if (fixture.schema === "#/$defs/Request")
-    return Schema.decodeUnknownSync(Context.WorkstreamsRegistrationContextRequest)(fixture.value);
-  return Schema.decodeUnknownSync(Context.WorkstreamsRegistrationContextV3Response)(fixture.value);
+  if (fixture.schema === "#/$defs/Request") return compiledDecodeUnknownSync1(fixture.value);
+  return compiledDecodeUnknownSync3(fixture.value);
 };
 
 describe("workstreams-registration-context/3.0.0 pinned consumer", () => {
   it("accepts exactly the three ordered native profile policies on a closed T3 descriptor", () => {
-    const response = Schema.decodeUnknownSync(Context.WorkstreamsRegistrationContextV3Response)(
-      v3Conformance.cases[1]!.value,
-    );
+    const response = compiledDecodeUnknownSync3(v3Conformance.cases[1]!.value);
     const source = response.sources.find((entry) => entry.provider === "t3")!;
     const decodeSource = Schema.decodeUnknownSync(Context.WorkstreamsRegistrationContextV3T3Source);
     const v1 = "workstreams-t3-provider/1.0.0";

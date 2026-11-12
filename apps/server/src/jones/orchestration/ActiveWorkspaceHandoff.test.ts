@@ -1,6 +1,11 @@
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
+import * as Exit from "effect/Exit";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as Failure from "@t3tools/provider-core/server/failure";
+import * as Worker from "../../orchestration-v2/EffectWorker.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -26,7 +31,6 @@ import * as Legacy from "../../orchestration-v2/legacy/LegacyV1ThreadImporter.ts
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -46,7 +50,8 @@ import * as Setup from "../../project/ProjectSetupScriptRunner.ts";
 import * as VcsStatus from "../../vcs/VcsStatusBroadcaster.ts";
 import * as Conversation from "../conversationWorkspace/ConversationPolicy.ts";
 
-vi.mock("effect/Cause", { spy: true });
+vi.mock("@t3tools/provider-core/server/failure", { spy: true });
+vi.mock("effect/Layer", { spy: true });
 
 const threadId = ThreadId.make("thread:active-workspace-handoff");
 const projectId = ProjectId.make("project:active-workspace-handoff");
@@ -73,6 +78,7 @@ const request = JSON.stringify({
 it.live.each([
   "handoff",
   "handoff without terminal",
+  "handoff unresponsive",
   "settlement identity guards",
   "unexpected failure",
   "failure before planning",
@@ -95,125 +101,130 @@ it.live.each([
       yield* Queue.unbounded<
         Queue.Queue<Adapter.ProviderAdapterV2Event, Adapter.ProviderAdapterEventStreamError>
       >();
+    const unresponsiveFinished = yield* Deferred.make<void>();
     let starts = 0;
     const unused = () => Effect.die("Unexpected fake-provider operation");
     const adapter = Adapter.ProviderAdapterV2.of({
       instanceId: selection.instanceId,
       driver,
-      getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
-      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
-      openSession: (input) =>
-        Effect.gen(function* () {
-          yield* Effect.addFinalizer(() =>
-            Deferred.succeed(runtimeClosed, undefined).pipe(Effect.asVoid),
-          );
-          const events = yield* Queue.unbounded<
-            Adapter.ProviderAdapterV2Event,
-            Adapter.ProviderAdapterEventStreamError
-          >();
-          yield* Queue.offer(failures, events);
-          const now = yield* DateTime.now;
-          const generation =
-            input.runtimeLifecycle === undefined
-              ? "synthetic"
-              : yield* input.runtimeLifecycle.reserve(input.threadId);
-          if (input.runtimeLifecycle !== undefined)
-            yield* input.runtimeLifecycle.admit({
-              runtimeGeneration: generation,
-              threadId: input.threadId,
-            });
-          const bind = (providerThread: OrchestrationV2ProviderThread) => {
-            const identity = {
-              runtimeGeneration: generation,
-              requested: Adapter.requestedRuntimeIdentity(selection, driver),
-              observed: Adapter.unobservedRuntimeIdentity(),
-            };
-            return input.runtimeLifecycle === undefined
-              ? Effect.succeed({ ...providerThread, runtimeIdentity: identity })
-              : input.runtimeLifecycle.bind({ providerThread, ...identity });
+      getCapabilities: Effect.fn("ActiveWorkspaceHandoff.getCapabilities")(() =>
+        Effect.succeed(ClaudeProviderCapabilitiesV2),
+      ),
+      planSelectionTransition: Effect.fn("ActiveWorkspaceHandoff.planSelectionTransition")(() =>
+        Effect.succeed({ type: "apply_on_next_turn" } as const),
+      ),
+      openSession: Effect.fn("ActiveWorkspaceHandoff.openSession")(function* (input) {
+        yield* Effect.addFinalizer(() =>
+          Deferred.succeed(runtimeClosed, undefined).pipe(Effect.asVoid),
+        );
+        const events = yield* Queue.unbounded<
+          Adapter.ProviderAdapterV2Event,
+          Adapter.ProviderAdapterEventStreamError
+        >();
+        yield* Queue.offer(failures, events);
+        const now = yield* DateTime.now;
+        const generation =
+          input.runtimeLifecycle === undefined
+            ? "synthetic"
+            : yield* input.runtimeLifecycle.reserve(input.threadId);
+        if (input.runtimeLifecycle !== undefined)
+          yield* input.runtimeLifecycle.admit({
+            runtimeGeneration: generation,
+            threadId: input.threadId,
+          });
+        const bind = (providerThread: OrchestrationV2ProviderThread) => {
+          const identity = {
+            runtimeGeneration: generation,
+            requested: Adapter.requestedRuntimeIdentity(selection, driver),
+            observed: Adapter.unobservedRuntimeIdentity(),
           };
-          let active:
-            | Parameters<Adapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0]
-            | undefined;
-          const terminal = (
-            turn: NonNullable<typeof active>,
-            status: "completed" | "interrupted",
-          ) =>
-            Queue.offer(events, {
-              type: "turn.terminal",
-              driver,
-              providerThreadId: turn.providerThread.id,
-              providerTurnId: ProviderTurnId.make(`turn:${turn.runId}`),
-              runOrdinal: turn.runOrdinal,
-              status,
-              failure: null,
-              threadDisposition: "reusable",
-            }).pipe(Effect.asVoid);
-          return {
-            instanceId: selection.instanceId,
+          return input.runtimeLifecycle === undefined
+            ? Effect.succeed({ ...providerThread, runtimeIdentity: identity })
+            : input.runtimeLifecycle.bind({ providerThread, ...identity });
+        };
+        let active: Parameters<Adapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0] | undefined;
+        const terminal = (turn: NonNullable<typeof active>, status: "completed" | "interrupted") =>
+          Queue.offer(events, {
+            type: "turn.terminal",
             driver,
-            providerSessionId: input.providerSessionId,
-            providerSession: {
-              id: input.providerSessionId,
+            providerThreadId: turn.providerThread.id,
+            providerTurnId: ProviderTurnId.make(`turn:${turn.runId}`),
+            runOrdinal: turn.runOrdinal,
+            status,
+            failure: null,
+            threadDisposition: "reusable",
+          }).pipe(Effect.asVoid);
+        return {
+          instanceId: selection.instanceId,
+          driver,
+          providerSessionId: input.providerSessionId,
+          providerSession: {
+            id: input.providerSessionId,
+            driver,
+            providerInstanceId: selection.instanceId,
+            status: "ready",
+            cwd: input.runtimePolicy.cwd ?? process.cwd(),
+            model: selection.model,
+            capabilities: ClaudeProviderCapabilitiesV2,
+            createdAt: now,
+            updatedAt: now,
+            lastError: null,
+          },
+          events: Stream.fromQueue(events),
+          ensureThread: (value) =>
+            bind({
+              id:
+                value.existingProviderThread?.id ??
+                ProviderThreadId.make("provider-thread:active-handoff"),
               driver,
               providerInstanceId: selection.instanceId,
-              status: "ready",
-              cwd: input.runtimePolicy.cwd ?? process.cwd(),
-              model: selection.model,
-              capabilities: ClaudeProviderCapabilitiesV2,
+              providerSessionId: input.providerSessionId,
+              appThreadId: value.threadId,
+              ownerNodeId: null,
+              nativeThreadRef: { driver, nativeId: "synthetic-thread", strength: "strong" },
+              nativeConversationHeadRef: null,
+              status: "idle",
+              firstRunOrdinal: null,
+              lastRunOrdinal: null,
+              handoffIds: [],
+              contextUsage: null,
+              forkedFrom: null,
               createdAt: now,
               updatedAt: now,
-              lastError: null,
-            },
-            events: Stream.fromQueue(events),
-            ensureThread: (value) =>
-              bind({
-                id:
-                  value.existingProviderThread?.id ??
-                  ProviderThreadId.make("provider-thread:active-handoff"),
-                driver,
-                providerInstanceId: selection.instanceId,
-                providerSessionId: input.providerSessionId,
-                appThreadId: value.threadId,
-                ownerNodeId: null,
-                nativeThreadRef: { driver, nativeId: "synthetic-thread", strength: "strong" },
-                nativeConversationHeadRef: null,
-                status: "idle",
-                firstRunOrdinal: null,
-                lastRunOrdinal: null,
-                handoffIds: [],
-                contextUsage: null,
-                forkedFrom: null,
-                createdAt: now,
-                updatedAt: now,
-              }),
-            resumeThread: ({ providerThread }) =>
-              bind({ ...providerThread, providerSessionId: input.providerSessionId }),
-            startTurn: (turn) =>
-              Effect.gen(function* () {
-                starts += 1;
-                active = turn;
-                const time = yield* DateTime.now;
-                yield* Queue.offer(events, {
-                  type: "provider_turn.updated",
+            }),
+          resumeThread: ({ providerThread }) =>
+            bind({ ...providerThread, providerSessionId: input.providerSessionId }),
+          startTurn: Effect.fn("ActiveWorkspaceHandoff.startTurn")(function* (turn) {
+            starts += 1;
+            active = turn;
+            const time = yield* DateTime.now;
+            yield* Queue.offer(events, {
+              type: "provider_turn.updated",
+              driver,
+              providerTurn: {
+                id: ProviderTurnId.make(`turn:${turn.runId}`),
+                providerThreadId: turn.providerThread.id,
+                nodeId: turn.rootNodeId,
+                runAttemptId: turn.attemptId,
+                nativeTurnRef: null,
+                ordinal: turn.runOrdinal,
+                status: "running",
+                startedAt: time,
+                completedAt: null,
+              },
+            });
+            if (starts === 1) yield* Deferred.succeed(started, undefined);
+            else yield* terminal(turn, "completed");
+          }),
+          interruptTurn: (input) =>
+            scenario === "handoff unresponsive"
+              ? new Adapter.ProviderAdapterInterruptTimeoutError({
                   driver,
-                  providerTurn: {
-                    id: ProviderTurnId.make(`turn:${turn.runId}`),
-                    providerThreadId: turn.providerThread.id,
-                    nodeId: turn.rootNodeId,
-                    runAttemptId: turn.attemptId,
-                    nativeTurnRef: null,
-                    ordinal: turn.runOrdinal,
-                    status: "running",
-                    startedAt: time,
-                    completedAt: null,
-                  },
-                });
-                if (starts === 1) yield* Deferred.succeed(started, undefined);
-                else yield* terminal(turn, "completed");
-              }),
-            interruptTurn: () =>
-              scenario === "failure after lease" || scenario === "handoff without terminal"
+                  providerThreadId: input.providerThread.id,
+                  providerTurnId: input.providerTurnId,
+                  timeoutMs: 1,
+                })
+              : scenario === "failure after lease" || scenario === "handoff without terminal"
                 ? Effect.void
                 : scenario.startsWith("failure ")
                   ? Deferred.succeed(failureReached, undefined).pipe(
@@ -222,35 +233,44 @@ it.live.each([
                   : active === undefined
                     ? Effect.void
                     : terminal(active, "interrupted"),
-            steerTurn: unused,
-            compactThread: unused,
-            respondToRuntimeRequest: unused,
-            readThreadSnapshot: unused,
-            rollbackThread: unused,
-            forkThread: unused,
-          } satisfies Adapter.ProviderAdapterV2SessionRuntime;
-        }),
-    });
-    const config = Layer.effect(
-      ServerConfig.ServerConfig,
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const value = yield* Harness.makeReplayServerConfig("active-workspace-handoff").pipe(
-          Effect.orDie,
-        );
-        yield* Effect.addFinalizer(() =>
-          fs.remove(value.baseDir, { recursive: true }).pipe(Effect.orDie),
-        );
-        return value;
+          steerTurn: unused,
+          compactThread: unused,
+          respondToRuntimeRequest: unused,
+          readThreadSnapshot: unused,
+          rollbackThread: unused,
+          forkThread: unused,
+        } satisfies Adapter.ProviderAdapterV2SessionRuntime;
       }),
+    });
+    const fixtureConfig = Layer.effect(
+      ServerConfig.ServerConfig,
+      Harness.makeReplayServerConfig("active-workspace-handoff-fixture").pipe(Effect.orDie),
     ).pipe(Layer.provide(NodeServices.layer));
+    const actualConfigs: ServerConfig.ServerConfig["Service"][] = [];
+    const constructLayer = (yield* Effect.promise(() =>
+      vi.importActual<typeof Layer>("effect/Layer"),
+    )).effect;
+    const observeConfig = <I, S, E, R>(service: Context.Key<I, S>, build: Effect.Effect<S, E, R>) =>
+      constructLayer(
+        service,
+        build.pipe(
+          Effect.tap((value) =>
+            Effect.sync(() => {
+              if (service.key === ServerConfig.ServerConfig.key)
+                actualConfigs.push(value as ServerConfig.ServerConfig["Service"]);
+            }),
+          ),
+        ),
+      );
+    const configConstruction = vi
+      .spyOn(Layer, "effect")
+      .mockImplementation(observeConfig as typeof Layer.effect);
     const layer = Harness.layerWithRegistryAndServices(
       { name: "active-workspace-handoff" },
       Registry.layerFromAdapters([adapter]),
       {
-        serverConfigLayer: config,
-        beforeEffectExecution: (effect) =>
-          Effect.gen(function* () {
+        beforeEffectExecution: Effect.fn("ActiveWorkspaceHandoff.beforeEffectExecution")(
+          function* (effect) {
             if (
               effect.request.type === "provider-turn.interrupt" &&
               scenario === "failure after planning"
@@ -260,10 +280,12 @@ it.live.each([
             }
             if (effect.request.type === "provider-session.detach")
               yield* Deferred.succeed(detachStarted, undefined);
-          }),
+          },
+        ),
         onSessionDetached: () => Deferred.succeed(detached, undefined).pipe(Effect.asVoid),
       },
     );
+    configConstruction.mockRestore();
     yield* Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const sink = yield* EventSink.EventSinkV2;
@@ -285,11 +307,20 @@ it.live.each([
               ),
             ),
           );
-        const pretty = vi.mocked(Cause.pretty).getMockImplementation()!;
-        const failureSpy = vi.spyOn(Cause, "pretty").mockImplementation((cause) => {
-          if (injectedFailure !== undefined && Cause.squash(cause) === injectedFailure)
+        const projectFailure = (yield* Effect.promise(() =>
+          vi.importActual<typeof Failure>("@t3tools/provider-core/server/failure"),
+        )).makeProviderFailure;
+        const failureSpy = vi.spyOn(Failure, "makeProviderFailure").mockImplementation((input) => {
+          const result = projectFailure(input);
+          // The manager projects this failure after recording ownership and
+          // before release can wait on the captured handoff lease.
+          if (
+            injectedFailure !== undefined &&
+            Cause.isCause(input.cause) &&
+            Cause.squash(input.cause) === injectedFailure
+          )
             Deferred.doneUnsafe(streamFailureObserved, Effect.void);
-          return pretty(cause);
+          return result;
         });
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
@@ -299,6 +330,35 @@ it.live.each([
         );
       }
       const sql = yield* SqlClient.SqlClient;
+      if (scenario === "handoff unresponsive") {
+        const settle = vi.spyOn(sessions, "settleHandoff");
+        const executor = yield* Worker.OrchestrationEffectExecutorV2;
+        const execute = executor.execute;
+        const execution = vi.spyOn(executor, "execute").mockImplementation((effect, options) =>
+          execute(effect, options).pipe(
+            Effect.onExit((exit) =>
+              effect.request.type !== "provider-turn.interrupt"
+                ? Effect.void
+                : Effect.gen(function* () {
+                    assert.isTrue(Exit.isFailure(exit));
+                    assert.equal(settle.mock.calls.length, 0);
+                    const projection = yield* orchestrator
+                      .getThreadProjection(threadId)
+                      .pipe(Effect.orDie);
+                    assert.equal(projection.runs[0]?.status, "running");
+                    assert.equal(starts, 1);
+                    yield* Deferred.succeed(unresponsiveFinished, undefined);
+                  }),
+            ),
+          ),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            execution.mockRestore();
+            settle.mockRestore();
+          }),
+        );
+      }
       const threads = yield* ThreadManagement.ThreadManagementService.pipe(
         Effect.provide(
           ThreadManagement.layer.pipe(
@@ -315,18 +375,19 @@ it.live.each([
           ),
         ),
       );
-      const waitFor = (predicate: (value: OrchestrationV2ThreadProjection) => boolean) =>
-        Effect.gen(function* () {
-          const afterSequence = yield* sink.latestSequence();
-          const current = yield* orchestrator.getThreadProjection(threadId);
-          if (predicate(current)) return current;
-          return yield* sink.stream({ threadId, afterSequence }).pipe(
-            Stream.mapEffect(() => orchestrator.getThreadProjection(threadId)),
-            Stream.filter(predicate),
-            Stream.runHead,
-            Effect.map(Option.getOrThrow),
-          );
-        });
+      const waitFor = Effect.fn("ActiveWorkspaceHandoff.waitFor")(function* (
+        predicate: (value: OrchestrationV2ThreadProjection) => boolean,
+      ) {
+        const afterSequence = yield* sink.latestSequence();
+        const current = yield* orchestrator.getThreadProjection(threadId);
+        if (predicate(current)) return current;
+        return yield* sink.stream({ threadId, afterSequence }).pipe(
+          Stream.mapEffect(() => orchestrator.getThreadProjection(threadId)),
+          Stream.filter(predicate),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+      });
       yield* orchestrator.dispatch({
         type: "thread.create",
         commandId: CommandId.make("create"),
@@ -453,26 +514,29 @@ it.live.each([
         assert.equal(starts, 1);
         return;
       }
-      const failStream = () =>
-        Effect.gen(function* () {
-          const events = yield* Queue.take(failures);
-          yield* Queue.fail(
-            events,
-            new Adapter.ProviderAdapterEventStreamError({
-              driver,
-              providerSessionId: running.providerThreads[0]!.providerSessionId!,
-              cause: "Synthetic overlapping stream failure",
-            }),
-          );
-          yield* Deferred.await(failureReached);
-          assert.isFalse(yield* sessions.isLive(running.providerThreads[0]!.providerSessionId!));
-          assert.equal(
-            (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.status,
-            "running",
-          );
-        });
+      const failStream = Effect.fn("ActiveWorkspaceHandoff.failStream")(function* () {
+        const events = yield* Queue.take(failures);
+        yield* Queue.fail(
+          events,
+          new Adapter.ProviderAdapterEventStreamError({
+            driver,
+            providerSessionId: running.providerThreads[0]!.providerSessionId!,
+            cause: "Synthetic overlapping stream failure",
+          }),
+        );
+        yield* Deferred.await(failureReached);
+        assert.isFalse(yield* sessions.isLive(running.providerThreads[0]!.providerSessionId!));
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.status,
+          "running",
+        );
+      });
       if (scenario === "failure before planning") yield* failStream();
-      const cfg = yield* ServerConfig.ServerConfig.pipe(Effect.provide(config));
+      assert.equal(actualConfigs.length, 1);
+      assert.equal(actualConfigs[0]!.cwd, process.cwd());
+      assert.isTrue(actualConfigs[0]!.baseDir.startsWith(process.env.TMPDIR!));
+      const cfg = Context.get(yield* Layer.build(fixtureConfig), ServerConfig.ServerConfig);
+      assert.notEqual(cfg.baseDir, actualConfigs[0]!.baseDir);
       let record: Conversation.HandoffRecord = {
         revision: 1,
         members: [threadId],
@@ -524,6 +588,7 @@ it.live.each([
             Layer.mock(Setup.ProjectSetupScriptRunner)({}),
             Layer.mock(VcsStatus.VcsStatusBroadcaster)({}),
             NodeServices.layer,
+            NodeCrypto.layer,
           ),
         ),
       );
@@ -544,6 +609,10 @@ it.live.each([
       );
       assert.equal(result.continuation.status, "scheduled");
       assert.equal(record.phase, "done");
+      if (scenario === "handoff unresponsive") {
+        yield* Deferred.await(unresponsiveFinished);
+        return;
+      }
       if (scenario === "failure after lease") {
         yield* Deferred.await(leaseAcquired);
         const events = yield* Queue.take(failures);

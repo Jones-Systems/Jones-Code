@@ -42,7 +42,7 @@ function ExportAction({
   const job = useRef<AbortController | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- aborts an in-flight export when the component unmounts; no render or handler owns unmount.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- aborts an in-flight export when the component unmounts; no render or handler owns unmount.
   useLayoutEffect(
     () => () => {
       job.current?.abort();

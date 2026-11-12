@@ -65,9 +65,18 @@ const EmptyEnvelope = Schema.Struct({
   schemaVersion: Schema.Literal(DESKTOP_THREAD_MONITOR_PROTOCOL),
   payload: Schema.Null,
 });
-export const statePayload = (raw: unknown) =>
-  Schema.decodeUnknownSync(StateEnvelope, { onExcessProperty: "error" })(raw).payload;
-export const enabledPayload = (raw: unknown) =>
-  Schema.decodeUnknownSync(EnabledEnvelope, { onExcessProperty: "error" })(raw).payload;
-export const emptyPayload = (raw: unknown) =>
-  Schema.decodeUnknownSync(EmptyEnvelope, { onExcessProperty: "error" })(raw).payload;
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(StateEnvelope, {
+  onExcessProperty: "error",
+});
+
+export const statePayload = (raw: unknown) => compiledDecodeUnknownSync1(raw).payload;
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(EnabledEnvelope, {
+  onExcessProperty: "error",
+});
+
+export const enabledPayload = (raw: unknown) => compiledDecodeUnknownSync2(raw).payload;
+const compiledDecodeUnknownSync3 = Schema.decodeUnknownSync(EmptyEnvelope, {
+  onExcessProperty: "error",
+});
+
+export const emptyPayload = (raw: unknown) => compiledDecodeUnknownSync3(raw).payload;
