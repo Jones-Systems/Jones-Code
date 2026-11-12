@@ -148,18 +148,44 @@ export function makeDependencyStore(sql: SqlClient.SqlClient, tables: JonesTable
     sql<RequestRow>`SELECT * FROM jones_thread_result_requests WHERE origin_environment_id = ${origin} AND operation_id = ${operation}`.pipe(
       Effect.map((rows) => (rows[0] ? request(rows[0]) : undefined)),
     );
-  const duties = Effect.fn("DependencyStore.duties")(function* (threadId: ThreadId) {
+  // Shared by the named duty reads below; planning never changes persisted wake state.
+  const calculateDuties = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    cancelledRunIds: ReadonlySet<RunId>,
+  ) {
     const outgoing = yield* dependencies(threadId);
     const owed = yield* requests(threadId);
     const wakeRuns = new Map<string, { status: string }>();
     for (const item of outgoing) {
       if (item.state !== "delivered" || item.wakeMessageId === null) continue;
       const rows = yield* sql<{
+        run_id: string;
+        message_thread_id: string;
+        run_thread_id: string;
         status: string;
-      }>`SELECT r.status FROM orchestration_v2_projection_messages m JOIN orchestration_v2_projection_runs r ON r.run_id = m.run_id WHERE m.message_id = ${item.wakeMessageId}`;
-      if (rows[0]) wakeRuns.set(item.wakeMessageId, rows[0]);
+      }>`SELECT r.run_id, m.thread_id AS message_thread_id, r.thread_id AS run_thread_id, r.status
+        FROM orchestration_v2_projection_messages m JOIN orchestration_v2_projection_runs r ON r.run_id = m.run_id WHERE m.message_id = ${item.wakeMessageId}`;
+      const wake = rows[0];
+      if (wake)
+        wakeRuns.set(item.wakeMessageId, {
+          status:
+            wake.status === "queued" &&
+            wake.message_thread_id === threadId &&
+            wake.run_thread_id === threadId &&
+            cancelledRunIds.has(RunId.make(wake.run_id))
+              ? "cancelled"
+              : wake.status,
+        });
     }
     return forThread(outgoing, owed, wakeRuns);
+  });
+  const duties = Effect.fn("DependencyStore.duties")(function* (threadId: ThreadId) {
+    return yield* calculateDuties(threadId, new Set());
+  });
+  const dutiesAfterQueuedWakeCancellations = Effect.fn(
+    "DependencyStore.dutiesAfterQueuedWakeCancellations",
+  )(function* (threadId: ThreadId, cancelledRunIds: ReadonlySet<RunId>) {
+    return yield* calculateDuties(threadId, cancelledRunIds);
   });
   const changedThreads = Effect.fn("DependencyStore.changedThreads")(function* (
     afterSequence: number,
@@ -426,6 +452,7 @@ export function makeDependencyStore(sql: SqlClient.SqlClient, tables: JonesTable
     requests,
     get,
     duties,
+    dutiesAfterQueuedWakeCancellations,
     changedThreads,
     fenced,
     fence,

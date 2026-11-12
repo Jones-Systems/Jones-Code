@@ -2536,7 +2536,7 @@ export default function ChatView(props: ChatViewProps) {
       : null;
   const composerBannerItems = (() => {
     const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
-    const backgroundWorkItems = [childInputBanner, goalBanner, backgroundWorkBanner].filter(
+    const backgroundWorkItems = [childInputBanner, backgroundWorkBanner, goalBanner].filter(
       (item) => item !== null,
     );
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
