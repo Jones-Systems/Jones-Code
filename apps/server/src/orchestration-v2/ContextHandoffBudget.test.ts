@@ -696,7 +696,7 @@ describe("proved-unsent handoff restoration", () => {
           return value.id === originals[1]!.id ? Effect.fail(failure) : Effect.void;
         }),
         restore: (value) => Effect.suspend(() => {
-          if (restoreFails) return Effect.fail(new Error("Restoration unavailable"));
+          if (restoreFails) return Effect.fail({ _tag: "RestorationUnavailable" as const });
           durable.set(value.id, value);
           return Effect.void;
         }),
