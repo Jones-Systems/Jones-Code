@@ -44,8 +44,9 @@ existing history. A new empty registry is not a migration of an existing registr
 Do not select live keys, initialize live state or change authority as part of a
 source smoke test.
 
-The optional source session ID identifies an existing source-issued enrollment;
-it is not a token. Missing, expired or revoked enrollment stays unconfigured.
+The optional source session ID is the AuthSession ID in the source-setup request's
+`enrollment.session.session_id`; it identifies an existing source-issued enrollment
+and is not a token. Missing, expired or revoked enrollment stays unconfigured.
 Ordinary startup never reserves an enrollment or creates a source binding. New
 homes need an explicit source-binding/enrollment procedure before thread
 verification and settlement are available. Existing imported bindings must still
@@ -171,7 +172,11 @@ without a legacy fallback. Responses are private and not cacheable by HTTP cache
 
 A selected home or member publishes the optional native capability after its
 authorized read and placement-v2 services are composed. Configuration alone does
-not advertise support. A member's home-link status reflects fresh local link and
+not advertise support. Clients select legacy grouping when the native capability
+is absent or explicitly legacy. A native home preserves the legacy read shapes;
+valid current-generation headerless commands remain supported, stale-generation
+commands refuse without writes, and command response negotiation is request-local.
+A member's home-link status reflects fresh local link and
 bound-enrollment validation; missing, expired or unknown links block native client
 reads. An available link does not prove peer reachability or current home
 permission. Every request still requires current admission. Rollups are not
@@ -219,9 +224,18 @@ legacy fallback. The fixed result is bounded to 16 MiB plus the completion trail
 
 This sequence starts a fresh registry; it does not import legacy data. For an
 import, use [transitions](workstreams-native-transition.md). These steps are
-source-derived and have not been run against a live host.
+source-derived and have not been run against a live host. The isolated Linux
+[native-home fixture](../../apps/server/src/jones/workstreams/testing/nativeHomeFixture.ts)
+exercises the setup services with synthetic launcher metadata; it does not qualify
+an installed runtime or a complete UI journey.
 
 ### Native home
+
+Use a selected home with an established environment ID and qualified launcher
+runtime. Authority enrollment checks that runtime and its current build identity;
+an unstamped source checkout is insufficient. An isolated development candidate
+needs both a preview version and a matching `jonesSource` stamp. Synthetic fixture
+receipts must not be used to qualify a real installation.
 
 1. `t3 workstream authority enroll --base-dir <home>` records the home's native
    placement authority.
@@ -235,10 +249,15 @@ source-derived and have not been run against a live host.
    `T3_WORKSTREAM_*` control-plane variables. Either one fences native startup.
 5. Write `<home>/workstreams-native.json` with `"mode": "native-home"`, the
    registry from the init request and `bootstrap.home`, `bootstrap.database`
-   and `bootstrap.key_provider`. Restart the server.
-6. Run `t3 workstream registry source-setup plan`, `apply` and `readback` with
-   one saved `jones-code.native-source-setup/v1` request; see
-   [source setup](workstreams-native-source-setup.md).
+   and `bootstrap.key_provider`. Start the selected server so SessionStore
+   initializes its signing key before standalone source setup can issue a session.
+6. Stop the selected server before standalone source setup. Its `plan` and
+   `readback` require a separately quiesced rollback-journal database, with no
+   WAL/SHM sidecars; stopping a WAL-mode server alone does not establish that
+   condition. Run `t3 workstream registry source-setup plan`, `apply` and
+   `readback` with one saved `jones-code.native-source-setup/v1` request; see
+   [source setup](workstreams-native-source-setup.md). Preparing a live store
+   for this boundary remains unrehearsed.
 7. Set `bootstrap.source_session_id` to the AuthSession ID that source setup
    issued (the request's enrollment session ID) and restart.
 
@@ -255,11 +274,23 @@ A member has no registry or home keys copy. Before peer setup it needs:
   registry object the member's `workstreams-native.json` will name. It needs the
   member's existing `userdata/statev2.sqlite`, creates
   `userdata/secrets/workstreams-content-key-<id>.bin` from random bytes and the
-  active `local` key row, and prints only the key name. It refuses if that
-  database already holds the registry or any key row for it, or the key file
-  exists; a failed run removes only the file it created. Without this key,
-  member setup and startup stop with `key_unavailable`. Back the file up: the
-  row cannot be deleted, so a lost file is not replaced by rerunning.
+  active `local` key row, and prints only the key name. By default it refuses
+  an existing registry, key row or key file. Without this key, member setup and
+  startup stop with `key_unavailable`. Back the file up; never generate replacement
+  bytes under an existing key ID.
+
+If an interrupted attempt left a key file, repeat the exact `member-init` request
+with `--resume`. Resume validates the existing 32-byte key and either inserts its
+missing member row or confirms the matching row; it does not replace key bytes.
+A missing file for an existing row reports `key_file_missing`: restore the
+original file rather than rerunning initialization with a new key.
+
+When an attempt created a key file and its transaction reports failure, the
+command checks whether its row committed. A matching committed row succeeds and
+keeps the key. A confirmed rollback removes
+only a file created by that attempt. If readback cannot establish the outcome,
+`outcome_unknown` keeps the file; retain the exact registry and key ID and use
+`--resume` once the database is readable.
 
 Run peer setup on the member, against the member's own running server.
 `--source-environment-id` is the member and `--home-environment-id` is the home.
