@@ -23,6 +23,8 @@ import {
 } from "../../orchestration-v2/DispatchModeLimit.ts";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as SqlClient from "effect/sql/SqlClient";
+import { readEventLogPrunedThrough } from "../persistence/EventLogPruneBoundary.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Invocation from "../../mcp/McpInvocationContext.ts";
@@ -110,6 +112,7 @@ const make = Effect.gen(function* () {
   const crypto = yield* SecureRandom.SecureRandom;
   const events = yield* Effect.serviceOption(EventSink.EventSinkV2);
   const history = yield* EventStore.EventStoreV2;
+  const sql = yield* SqlClient.SqlClient;
   // MCP registrations are built once by layerHttp, outside individual invocation scopes.
   const serviceScope = yield* Effect.scope;
   type Disposition =
@@ -120,6 +123,7 @@ const make = Effect.gen(function* () {
     | "binding_or_access_changed"
     | "goal_changed"
     | "event_subscription_failed"
+    | "event_history_incomplete"
     | "dispatch_attempts_exhausted";
   const dispose = Effect.fn("GoalControl.disposeResume")(function* (
     binding: Binding,
@@ -502,18 +506,26 @@ const make = Effect.gen(function* () {
             }
           });
           // The replay mark is captured before the request projection. Subscribe-before-replay
-          // in EventSink closes the terminal-event/registration race. Read through the current
-          // high water before evaluating: projections may already include several queued events.
+          // in EventSink closes the terminal-event/registration race while history is retained.
+          // Prove the finite replay complete before evaluating projected state or moving its cursor.
           const sweep = Effect.fn("GoalControl.sweepResumeEvents")(function* () {
+            const checked = afterSequence;
             const highWater = yield* sink.latestSequence({ threadId: thread.id });
-            if (highWater <= afterSequence) return;
+            if (highWater < checked)
+              return yield* dispose(capturedBinding, "event_history_incomplete");
+            if (highWater === checked) return;
+            if (checked < (yield* readEventLogPrunedThrough(sql)))
+              return yield* dispose(capturedBinding, "event_history_incomplete");
             // The live stream omits private bootstrap events. Finite stored replay must
             // not wait for a public event to reach a private high-water mark.
             const stored = yield* historyStore
-              .read({ threadId: thread.id, afterSequence, throughSequence: highWater })
+              .read({ threadId: thread.id, afterSequence: checked, throughSequence: highWater })
               .pipe(Stream.runCollect);
-            for (const { event, sequence } of stored) {
-              afterSequence = sequence;
+            // The pruner publishes its global boundary before deleting. Compare with the original
+            // cursor again: retained later rows cannot prove an earlier Stop was absent.
+            if (checked < (yield* readEventLogPrunedThrough(sql)))
+              return yield* dispose(capturedBinding, "event_history_incomplete");
+            for (const { event } of stored) {
               if (
                 event.type === "turn-item.updated" &&
                 event.payload.type === "run_interrupt_request"
@@ -545,6 +557,7 @@ const make = Effect.gen(function* () {
               )
                 yield* dispose(capturedBinding, "binding_or_access_changed");
             }
+            afterSequence = highWater;
           });
           const evaluate = Effect.fn("GoalControl.consumeResume")(function* () {
             if (capturedBinding.intent !== intent) return;
@@ -719,4 +732,5 @@ const make = Effect.gen(function* () {
     );
   return GoalControl.of({ execute });
 });
-export const layer = Layer.effect(GoalControl, make).pipe(Layer.provide(EventStore.layer));
+export const layerFromEventStore = Layer.effect(GoalControl, make);
+export const layer = layerFromEventStore.pipe(Layer.provide(EventStore.layer));

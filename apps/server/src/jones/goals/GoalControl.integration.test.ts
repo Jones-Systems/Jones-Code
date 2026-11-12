@@ -20,11 +20,15 @@ import type {
   ProviderAdapterV2SessionRuntime,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
+import { pruneEventLogLikeUpstream } from "../persistence/prunedEventLog.testkit.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ServerConfig from "../../config.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
@@ -51,35 +55,41 @@ const adapter = {
   openSession: () => Effect.die("This fixture records starts without launching a provider"),
 } as ProviderAdapterV2Shape;
 const database = Sqlite.layerMemory;
-const replay = Replay.layerWithRegistry(
-  { name: "armed-goal-resume" },
-  Registry.layerFromAdapters([adapter]),
-  {
+const ResumeSubscription = Context.Reference<boolean>("test/ResumeSubscription", {
+  defaultValue: () => false,
+});
+const replayLayer = (
+  eventStoreLayer: Layer.Layer<EventStore.EventStoreV2, never, SqlClient.SqlClient>,
+) =>
+  Replay.layerWithRegistry({ name: "armed-goal-resume" }, Registry.layerFromAdapters([adapter]), {
     databaseLayer: database,
+    eventStoreLayer,
     runEffectWorker: false,
     serverConfigLayer: ServerConfig.layerTest(process.cwd(), { prefix: "armed-goal-resume-" }).pipe(
       Layer.provide(NodeServices.layer),
       Layer.orDie,
     ),
-  },
-);
-const threads = Layer.effect(
-  Threads.ThreadManagementService,
-  Effect.gen(function* () {
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    return Threads.ThreadManagementService.of({
-      getThreadShell: orchestrator.getThreadShell,
-      getThreadRecords: orchestrator.getThreadRecords,
-      getProjectThreadRecords: (
-        input: Parameters<Threads.ThreadManagementService["Service"]["getProjectThreadRecords"]>[0],
-        fields: Parameters<
-          Threads.ThreadManagementService["Service"]["getProjectThreadRecords"]
-        >[1],
-      ) => orchestrator.getThreadRecords(input.threadId, fields),
-      dispatch: orchestrator.dispatch,
-    } as unknown as Threads.ThreadManagementService["Service"]);
-  }),
-).pipe(Layer.provide(replay));
+  });
+const threadLayer = (replay: ReturnType<typeof replayLayer>) =>
+  Layer.effect(
+    Threads.ThreadManagementService,
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      return Threads.ThreadManagementService.of({
+        getThreadShell: orchestrator.getThreadShell,
+        getThreadRecords: orchestrator.getThreadRecords,
+        getProjectThreadRecords: (
+          input: Parameters<
+            Threads.ThreadManagementService["Service"]["getProjectThreadRecords"]
+          >[0],
+          fields: Parameters<
+            Threads.ThreadManagementService["Service"]["getProjectThreadRecords"]
+          >[1],
+        ) => orchestrator.getThreadRecords(input.threadId, fields),
+        dispatch: orchestrator.dispatch,
+      } as unknown as Threads.ThreadManagementService["Service"]);
+    }),
+  ).pipe(Layer.provide(replay));
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("synthetic"),
   capabilities: new Set(["orchestration"]),
@@ -101,6 +111,60 @@ function fixtureLayer(status: "paused" | "blocked" = "paused") {
   let observeCalls = 0;
   let afterRead: (() => void) | undefined;
   let loseObservation = false;
+  let beforeSubscription = Effect.void;
+  let afterRegistration: Effect.Effect<void> | undefined;
+  let beforeConsume: Effect.Effect<void> | undefined;
+  let beforeReplay: Effect.Effect<void> | undefined;
+  let afterReplay: Effect.Effect<void> | undefined;
+  let afterNativeRead: Effect.Effect<void> | undefined;
+  let registrationHighWater: number | undefined;
+  const observedHistory = Layer.effect(
+    EventStore.EventStoreV2,
+    Effect.gen(function* () {
+      const store = yield* EventStore.EventStoreV2;
+      return EventStore.EventStoreV2.of({
+        ...store,
+        latestSequence: (input) =>
+          store.latestSequence(input).pipe(
+            Effect.tap(
+              Effect.fnUntraced(function* (highWater) {
+                if (
+                  !(yield* ResumeSubscription) ||
+                  input?.threadId !== undefined ||
+                  afterRegistration === undefined
+                )
+                  return;
+                registrationHighWater = highWater;
+                const effect = afterRegistration;
+                afterRegistration = undefined;
+                yield* effect;
+              }),
+            ),
+          ),
+        read: (input) => {
+          // EventSink's registration replay has a page limit. These gates surround only
+          // GoalControl's finite stored replay, preserving real storage and event values.
+          if (input?.throughSequence === undefined || input.limit !== undefined)
+            return store.read(input);
+          return Stream.unwrap(
+            Effect.gen(function* () {
+              const before = beforeReplay;
+              const after = afterReplay;
+              beforeReplay = undefined;
+              afterReplay = undefined;
+              if (before !== undefined) yield* before;
+              return Stream.concat(
+                store.read(input),
+                Stream.fromEffect(after ?? Effect.void).pipe(Stream.drain),
+              );
+            }),
+          );
+        },
+      });
+    }),
+  ).pipe(Layer.provide(EventStore.layer));
+  const replay = replayLayer(observedHistory);
+  const threads = threadLayer(replay);
   type StartInput = Parameters<GoalStart.GoalStartDispatch["Service"]["start"]>[0];
   let beforeStart: Effect.Effect<void> | ((input: StartInput) => Effect.Effect<void>) = Effect.void;
   let readers = 0;
@@ -137,6 +201,9 @@ function fixtureLayer(status: "paused" | "blocked" = "paused") {
           const callback = afterRead;
           afterRead = undefined;
           callback?.();
+          const effect = afterNativeRead;
+          afterNativeRead = undefined;
+          if (effect !== undefined) yield* effect;
         }
         return {
           outcome: input.action === "read" ? ("observed" as const) : ("applied" as const),
@@ -163,7 +230,13 @@ function fixtureLayer(status: "paused" | "blocked" = "paused") {
         Stream.unwrap(
           Effect.sync(() => {
             readers++;
-            return sink.stream(input).pipe(
+            return Stream.unwrap(beforeSubscription.pipe(Effect.as(sink.stream(input)))).pipe(
+              Stream.provideService(ResumeSubscription, true),
+              Stream.tap(() => {
+                const effect = beforeConsume;
+                beforeConsume = undefined;
+                return effect ?? Effect.void;
+              }),
               Stream.ensuring(
                 Effect.sync(() => {
                   readers--;
@@ -209,8 +282,8 @@ function fixtureLayer(status: "paused" | "blocked" = "paused") {
       });
     }),
   ).pipe(Layer.provide(GoalStart.layer.pipe(Layer.provide(threads), Layer.provide(replay))));
-  const layer = GoalControl.layer.pipe(
-    Layer.provide(EventStore.layer.pipe(Layer.provide(database))),
+  const layer = GoalControl.layerFromEventStore.pipe(
+    Layer.provide(observedHistory),
     Layer.provide(observedStarts),
     Layer.provide(observedSink),
     Layer.provide(sessions),
@@ -229,6 +302,25 @@ function fixtureLayer(status: "paused" | "blocked" = "paused") {
     waitCapture: Effect.suspend(() => Queue.take(captures)),
     waitAttempt: Effect.suspend(() => Queue.take(attempts)),
     readers: () => readers,
+    afterRegistration: (effect: Effect.Effect<void>) => {
+      afterRegistration = effect;
+    },
+    registrationHighWater: () => registrationHighWater,
+    beforeConsume: (effect: Effect.Effect<void>) => {
+      beforeConsume = effect;
+    },
+    beforeReplay: (effect: Effect.Effect<void>) => {
+      beforeReplay = effect;
+    },
+    afterReplay: (effect: Effect.Effect<void>) => {
+      afterReplay = effect;
+    },
+    afterNextReadEffect: (effect: Effect.Effect<void>) => {
+      afterNativeRead = effect;
+    },
+    beforeSubscription: (effect: Effect.Effect<void>) => {
+      beforeSubscription = effect;
+    },
     goal: (value: OrchestrationV2ProviderGoal | null) => {
       goal = value;
     },
@@ -350,6 +442,22 @@ const setup = Effect.gen(function* () {
       ],
     });
   });
+  const stop = Effect.fn("test.stop")(function* () {
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("stop"),
+      threadId,
+    });
+    const sql = yield* SqlClient.SqlClient;
+    const markers = yield* sql<{
+      readonly sequence: number;
+    }>`SELECT sequence FROM orchestration_events
+      WHERE stream_id = ${threadId} AND event_type = 'turn-item.updated'
+        AND json_extract(payload_json, '$.type') = 'run_interrupt_request'`;
+    expect(markers).toHaveLength(1);
+    expect((yield* orchestrator.getThreadProjection(threadId)).runs[0]?.status).toBe("completed");
+    return markers[0]!.sequence;
+  });
   // Query a receipt without impersonating the ended foreground caller. The fixture shares
   // its namespace deliberately so the public idempotency result can be inspected.
   const receipt = (
@@ -382,11 +490,303 @@ const setup = Effect.gen(function* () {
     now,
     input,
     complete,
+    stop,
     nextStart,
     tick,
     receipt,
   };
 });
+const makeGate = Effect.gen(function* () {
+  const entered = yield* Deferred.make<void>();
+  const release = yield* Deferred.make<void>();
+  return {
+    entered: Deferred.await(entered),
+    release: Deferred.succeed(release, undefined),
+    hold: Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+  };
+});
+it.effect("pruned Stop before registration discards a completed owner's resume", () => {
+  const fixture = fixtureLayer();
+  return Effect.gen(function* () {
+    const f = yield* setup;
+    const release = yield* Deferred.make<void>();
+    fixture.beforeSubscription(Deferred.await(release));
+    yield* f.service.execute(scope, f.input);
+    yield* f.complete();
+    const marker = yield* f.stop();
+    yield* f.tick();
+    const head = yield* f.sink.latestSequence({ threadId });
+    // Deterministic keep-rule deletion bypasses the production retention delay.
+    expect(yield* pruneEventLogLikeUpstream(head)).toContain(marker);
+    expect(yield* f.sink.latestSequence({ threadId })).toBe(head);
+    yield* Deferred.succeed(release, undefined);
+    yield* fixture.waitClosed;
+    expect(fixture.starts()).toBe(0);
+    expect(fixture.readers()).toBe(0);
+    expect(yield* f.receipt()).toMatchObject({
+      outcome: "stale",
+      reason: "resume_discarded_event_history_incomplete",
+      replayed: true,
+    });
+  }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+});
+it.effect("pruning after registration high water discards replay at or below that water", () => {
+  const fixture = fixtureLayer();
+  return Effect.gen(function* () {
+    const f = yield* setup;
+    const subscribe = yield* makeGate;
+    const registered = yield* makeGate;
+    fixture.beforeSubscription(subscribe.hold);
+    fixture.afterRegistration(registered.hold);
+    yield* f.service.execute(scope, f.input);
+    yield* subscribe.entered;
+    yield* f.complete();
+    const marker = yield* f.stop();
+    yield* f.tick();
+    const head = yield* f.sink.latestSequence({ threadId });
+    yield* subscribe.release;
+    yield* registered.entered;
+    expect(fixture.registrationHighWater()).toBe(head);
+    expect(marker).toBeLessThanOrEqual(head);
+    expect(yield* pruneEventLogLikeUpstream(head)).toContain(marker);
+    yield* registered.release;
+    yield* fixture.waitClosed;
+    expect(fixture.starts()).toBe(0);
+    expect(fixture.readers()).toBe(0);
+    expect(yield* f.receipt()).toMatchObject({
+      outcome: "stale",
+      reason: "resume_discarded_event_history_incomplete",
+    });
+  }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+});
+
+it.effect.each(["before storage read", "after collection"] as const)(
+  "pruning during finite replay %s is checked before processing or cursor advance",
+  (stage) => {
+    const fixture = fixtureLayer();
+    return Effect.gen(function* () {
+      const f = yield* setup;
+      const subscribe = yield* makeGate;
+      const replaying = yield* makeGate;
+      fixture.beforeSubscription(subscribe.hold);
+      if (stage === "before storage read") fixture.beforeReplay(replaying.hold);
+      else fixture.afterReplay(replaying.hold);
+      yield* f.service.execute(scope, f.input);
+      yield* subscribe.entered;
+      yield* f.complete();
+      const marker = yield* f.stop();
+      yield* f.tick();
+      const head = yield* f.sink.latestSequence({ threadId });
+      yield* subscribe.release;
+      yield* replaying.entered;
+      expect(yield* pruneEventLogLikeUpstream(head)).toContain(marker);
+      yield* replaying.release;
+      yield* fixture.waitClosed;
+      expect(fixture.starts()).toBe(0);
+      expect(fixture.readers()).toBe(0);
+      // Even a collected Stop is processed only after the post-read completeness proof.
+      expect(yield* f.receipt()).toMatchObject({
+        outcome: "stale",
+        reason: "resume_discarded_event_history_incomplete",
+      });
+    }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+  },
+);
+
+it.effect("a buffered live Stop missing from the later sweep cannot authorize resume", () => {
+  const fixture = fixtureLayer();
+  return Effect.gen(function* () {
+    const f = yield* setup;
+    const registered = yield* makeGate;
+    const consuming = yield* makeGate;
+    fixture.afterRegistration(registered.hold);
+    yield* f.service.execute(scope, f.input);
+    yield* registered.entered;
+    fixture.beforeConsume(consuming.hold);
+    yield* registered.release;
+    yield* f.complete();
+    yield* consuming.entered;
+    const marker = yield* f.stop();
+    yield* f.tick();
+    expect(yield* pruneEventLogLikeUpstream(yield* f.sink.latestSequence({ threadId }))).toContain(
+      marker,
+    );
+    yield* consuming.release;
+    yield* fixture.waitClosed;
+    expect(fixture.starts()).toBe(0);
+    expect(fixture.readers()).toBe(0);
+    expect(yield* f.receipt()).toMatchObject({
+      outcome: "stale",
+      reason: "resume_discarded_event_history_incomplete",
+    });
+  }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+});
+
+it.effect("a pruning boundary equal to the original cursor allows complete replay", () => {
+  const fixture = fixtureLayer();
+  return Effect.gen(function* () {
+    const f = yield* setup;
+    const cursor = yield* f.sink.latestSequence({ threadId });
+    yield* pruneEventLogLikeUpstream(cursor);
+    yield* f.service.execute(scope, f.input);
+    const mark = yield* f.complete();
+    yield* f.nextStart(mark);
+    yield* fixture.waitClosed;
+    expect(fixture.starts()).toBe(1);
+    expect(yield* f.receipt()).toMatchObject({ outcome: "accepted" });
+  }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+});
+
+it.effect("an unchanged thread high water needs no replay despite a later global boundary", () => {
+  const fixture = fixtureLayer();
+  return Effect.gen(function* () {
+    const f = yield* setup;
+    const native = yield* makeGate;
+    yield* f.service.execute(scope, f.input);
+    fixture.afterNextReadEffect(native.hold);
+    const mark = yield* f.complete();
+    yield* native.entered;
+    const head = yield* f.sink.latestSequence({ threadId });
+    yield* f.orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("other"),
+      threadId: ThreadId.make("other"),
+      projectId: ProjectId.make("project"),
+      title: "Other",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const globalHead = yield* f.sink.latestSequence();
+    expect(globalHead).toBeGreaterThan(head);
+    yield* pruneEventLogLikeUpstream(globalHead);
+    expect(yield* f.sink.latestSequence({ threadId })).toBe(head);
+    yield* native.release;
+    yield* f.nextStart(mark);
+    yield* fixture.waitClosed;
+    expect(fixture.starts()).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+});
+
+it.effect("the second sweep catches history pruned during the fresh native read", () => {
+  const fixture = fixtureLayer();
+  return Effect.gen(function* () {
+    const f = yield* setup;
+    const native = yield* makeGate;
+    yield* f.service.execute(scope, f.input);
+    fixture.afterNextReadEffect(native.hold);
+    yield* f.complete();
+    yield* native.entered;
+    const marker = yield* f.stop();
+    yield* f.tick();
+    expect(yield* pruneEventLogLikeUpstream(yield* f.sink.latestSequence({ threadId }))).toContain(
+      marker,
+    );
+    yield* native.release;
+    yield* fixture.waitClosed;
+    expect(fixture.starts()).toBe(0);
+    expect(yield* f.receipt()).toMatchObject({
+      reason: "resume_discarded_event_history_incomplete",
+    });
+  }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+});
+
+it.effect("a regressed high water discards intent rather than assuming no new events", () => {
+  const fixture = fixtureLayer();
+  return Effect.gen(function* () {
+    const f = yield* setup;
+    const consuming = yield* makeGate;
+    const cursor = yield* f.sink.latestSequence({ threadId });
+    fixture.beforeConsume(consuming.hold);
+    yield* f.service.execute(scope, f.input);
+    yield* f.complete();
+    yield* consuming.entered;
+    const sql = yield* SqlClient.SqlClient;
+    // Deliberately model an out-of-band reset; normal pruning retains stream heads.
+    yield* sql`DELETE FROM orchestration_events WHERE stream_id = ${threadId} AND sequence >= ${cursor}`;
+    expect(yield* f.sink.latestSequence({ threadId })).toBeLessThan(cursor);
+    yield* consuming.release;
+    yield* fixture.waitClosed;
+    expect(fixture.starts()).toBe(0);
+    expect(yield* f.receipt()).toMatchObject({
+      reason: "resume_discarded_event_history_incomplete",
+    });
+  }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+});
+
+it.effect.each(["pre-read", "post-read"] as const)(
+  "%s boundary failure disposes intent",
+  (stage) => {
+    const fixture = fixtureLayer();
+    return Effect.gen(function* () {
+      const f = yield* setup;
+      const reading = yield* makeGate;
+      if (stage === "pre-read") fixture.beforeConsume(reading.hold);
+      else fixture.beforeReplay(reading.hold);
+      yield* f.service.execute(scope, f.input);
+      yield* f.complete();
+      yield* reading.entered;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP TABLE orchestration_v2_projection_metadata`;
+      yield* reading.release;
+      yield* fixture.waitClosed;
+      expect(fixture.starts()).toBe(0);
+      expect(fixture.readers()).toBe(0);
+      expect(yield* f.receipt()).toMatchObject({
+        reason: "resume_discarded_event_subscription_failed",
+      });
+    }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+  },
+);
+
+it.effect.each(["pruned", "boundary unavailable"] as const)(
+  "%s history after an unknown start preserves uncertainty and never resends",
+  (change) => {
+    const fixture = fixtureLayer();
+    return Effect.gen(function* () {
+      const f = yield* setup;
+      yield* f.service.execute(scope, f.input);
+      fixture.lose(true);
+      const mark = yield* f.complete();
+      yield* f.nextStart(mark);
+      expect(yield* f.receipt()).toMatchObject({ outcome: "unknown" });
+      const consuming = yield* makeGate;
+      fixture.beforeConsume(consuming.hold);
+      yield* f.tick();
+      yield* consuming.entered;
+      // A buffered post-start event may already have been swept. Add a later head so
+      // this evaluation must prove a nonempty interval, including the failing read.
+      yield* f.tick();
+      if (change === "pruned") {
+        yield* pruneEventLogLikeUpstream(yield* f.sink.latestSequence({ threadId }));
+      } else {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP TABLE orchestration_v2_projection_metadata`;
+      }
+      yield* consuming.release;
+      yield* fixture.waitClosed;
+      expect(yield* f.receipt()).toMatchObject({
+        outcome: "unknown",
+        reason:
+          change === "pruned"
+            ? "resume_discarded_event_history_incomplete"
+            : "resume_discarded_event_subscription_failed",
+      });
+      expect(yield* f.receipt({ ...f.input, clientRequestId: "new-key" })).toMatchObject({
+        outcome: "unknown",
+        reason: "prior_mutation_unresolved",
+      });
+      if (change === "pruned") yield* f.tick();
+      expect(fixture.starts()).toBe(1);
+      expect(fixture.readers()).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+  },
+);
+
 it.effect.each(["paused", "blocked"] as const)(
   "arms %s self-resume without native mutation and starts once at idle",
   (status) => {

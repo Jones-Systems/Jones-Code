@@ -34,6 +34,14 @@ interface Reader {
 }
 const readers: ReadonlyArray<Reader> = [
   {
+    file: "goals/GoalControl.ts",
+    classification: "tolerate",
+    after:
+      "Incomplete event history discards session-local resume intent before processing replay or advancing its cursor; an unresolved dispatch receipt and binding uncertainty stay unknown and never authorize resend.",
+    proof:
+      "goals/GoalControl.integration.test.ts (pruned Stop, registration and finite-replay races, boundary failure, unknown start)",
+  },
+  {
     file: "cleanup/DeletionAdmission.ts",
     classification: "tolerate",
     after:
