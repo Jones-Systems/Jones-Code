@@ -637,7 +637,10 @@ it("keeps a long remote title ellipsized and full on hover beside unknown enviro
     />,
   );
   await click(linkedToggle());
-  const label = container.querySelector<HTMLElement>("span.truncate")!;
+  // Section headers truncate their labels too, so find the row's title by its text.
+  const label = [...container.querySelectorAll<HTMLElement>("button span.truncate")].find(
+    (span) => span.textContent === title,
+  )!;
   expect(label.closest("button")?.getAttribute("aria-label")).toContain(title);
   state.showTooltips = true;
   await update();
