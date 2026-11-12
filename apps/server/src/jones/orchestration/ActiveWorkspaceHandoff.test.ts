@@ -1,6 +1,6 @@
-import * as NodeFS from "node:fs";
+import * as FileSystem from "effect/FileSystem";
 import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
+import * as Path from "effect/Path";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as Cause from "effect/Cause";
@@ -537,15 +537,17 @@ it.live.each([
       if (scenario === "failure before planning") yield* failStream();
       assert.equal(actualConfigs.length, 1);
       assert.equal(actualConfigs[0]!.cwd, process.cwd());
-      const relativeBaseDir = NodePath.relative(
-        NodeFS.realpathSync(NodeOS.tmpdir()),
-        NodeFS.realpathSync(actualConfigs[0]!.baseDir),
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const relativeBaseDir = path.relative(
+        yield* fs.realPath(NodeOS.tmpdir()),
+        yield* fs.realPath(actualConfigs[0]!.baseDir),
       );
       assert.isTrue(
         relativeBaseDir !== "" &&
           relativeBaseDir !== ".." &&
-          !relativeBaseDir.startsWith(`..${NodePath.sep}`) &&
-          !NodePath.isAbsolute(relativeBaseDir),
+          !relativeBaseDir.startsWith(`..${path.sep}`) &&
+          !path.isAbsolute(relativeBaseDir),
       );
       const cfg = Context.get(yield* Layer.build(fixtureConfig), ServerConfig.ServerConfig);
       assert.notEqual(cfg.baseDir, actualConfigs[0]!.baseDir);
@@ -689,6 +691,6 @@ it.live.each([
       assert.isFalse(
         complete.turnItems.some((item) => item.type === "error" && item.status === "failed"),
       );
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(layer), Effect.provide(NodeServices.layer));
   }).pipe(Effect.scoped),
 );
