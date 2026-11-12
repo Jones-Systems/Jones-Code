@@ -2772,6 +2772,7 @@
         "apps/server/src/jones/updates/JonesUpdater.test.ts",
         "apps/server/src/jones/updates/followerPolicy.test.ts",
         "apps/server/src/jones/updates/http.test.ts",
+        "apps/server/src/jones/updates/operations/cleanupReview.test.ts",
         "apps/server/src/jones/updates/operations/ledger.test.ts",
         "apps/server/src/jones/updates/operations/operations.test.ts",
         "apps/server/src/jones/updates/operations/recoveryPreflight.test.ts",
