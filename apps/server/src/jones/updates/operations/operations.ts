@@ -372,12 +372,11 @@ export function createTargetOperations(options: {
   const reconcile = () =>
     gate(async () => {
       try {
+        let unresolved: Set<string> | undefined;
         if (preparation.unreleasedJobs !== undefined) {
-          const unresolved = new Set(await preparation.unreleasedJobs());
-          for (const id of lifecycleHolds) if (!unresolved.has(id)) updater.releaseHeldJob(id);
-          lifecycleHolds.clear();
-          for (const id of unresolved) lifecycleHolds.add(id);
+          unresolved = new Set(await preparation.unreleasedJobs());
           updater.setHeldJobs([...unresolved]);
+          for (const id of unresolved) lifecycleHolds.add(id);
         }
         for await (const r of ledger.listUnsettled()) {
           if (active.has(r.operationId)) continue;
@@ -435,11 +434,23 @@ export function createTargetOperations(options: {
                 : "unreaped",
             ); // directory/receipt absence is never worker-exit proof
         }
+        // Apply release transitions only after the whole read succeeds. A failed reconcile
+        // preserves admission holds and cleanup demand for a later maintenance pass.
+        if (unresolved !== undefined) {
+          for (const id of lifecycleHolds)
+            if (!unresolved.has(id)) {
+              updater.releaseHeldJob(id);
+              preparation.requestSweep?.();
+            }
+          lifecycleHolds.clear();
+          for (const id of unresolved) lifecycleHolds.add(id);
+        }
         recoveryFailed = false;
         updater.releaseHeldJob("ledger-unreadable");
       } catch (cause) {
         recoveryFailed = true;
         updater.setHeldJobs(["ledger-unreadable"]);
+        preparation.requestSweep?.();
         throw cause;
       }
     });
@@ -686,12 +697,16 @@ export function createTargetOperations(options: {
         });
         lifecycleHolds.delete(jobId);
         updater.releaseHeldJob(jobId);
+        preparation.requestSweep?.();
         return { recoveredCleanup };
       }),
     reconcile,
     sweep: async () => {
+      await reconcile();
       try {
-        await preparation.sweep();
+        // Real supervisors consume demand; legacy test/adapter implementations retain their API.
+        if (preparation.sweepIfNeeded !== undefined) await preparation.sweepIfNeeded();
+        else await preparation.sweep();
       } finally {
         await reconcile();
       }

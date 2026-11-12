@@ -2,6 +2,7 @@ name: Jones update qualification
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     # Keep the macOS gate in qualify-mac-changes in step with these paths.
     paths:
       - .github/workflows/jones-update-qualification.yml
@@ -50,6 +51,8 @@ on:
       - scripts/jones/boundary/fragments/staged-selection-recovery.json
       - scripts/jones/boundary/fragments/launcher-commit-diagnostics.json
   workflow_dispatch:
+  schedule:
+    - cron: '23 8 * * *'
 
 permissions:
   contents: read
@@ -61,6 +64,7 @@ concurrency:
 jobs:
   qualify:
     name: Jones native startup qualification
+    if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -151,6 +155,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          INTERRUPTION_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'qualify-interrupted-staging') }}
         run: |
           set -uo pipefail
 
@@ -163,6 +170,15 @@ jobs:
           count_rows() {
             printf '%s\n' "$1" | grep -c . || true
           }
+
+          # Nightly and label runs exercise only the bounded interrupted-staging steps below.
+          if [[ "$EVENT_NAME" == schedule || "$INTERRUPTION_LABEL" == true ]]; then
+            run_macos "Interrupted-staging qualification selected."
+          fi
+          if [[ "$EVENT_ACTION" == labeled ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # A manual run qualifies every job, as it does for the renderer Preview.
           if [[ -z "${PR_NUMBER}" ]]; then
@@ -333,8 +349,10 @@ jobs:
           cache: true
           run-install: true
       - name: Ensure Electron runtime is installed
+        if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
         run: vp run --filter @t3tools/desktop ensure:electron
       - name: Qualify migration, launcher recovery and desktop snapshot cleanup
+        if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
         run: >-
           vp test run
           apps/server/src/jones/updates/migrationPlan.test.ts
@@ -348,8 +366,43 @@ jobs:
           apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
           --maxWorkers=1
 
+      - name: Exercise interrupted staging on Apple Silicon (synthetic regression only)
+        env:
+          INTERRUPTION_REPORT: ${{ runner.temp }}/interrupted-staging.json
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          node --test --test-concurrency=1 scripts/jones/updates/interrupted-staging-fixture.node-test.mjs
+          vp test run apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts --maxWorkers=1
+          node scripts/jones/updates/interrupted-staging-fixture.mjs "$INTERRUPTION_REPORT"
+          node --input-type=module - "$INTERRUPTION_REPORT" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.equal(report.syntheticTransfer.status, 'passed');
+          assert.equal(report.syntheticTransfer.packagedProof, false);
+          assert.equal(report.packagedQualification, 'unavailable');
+          assert.equal(report.packaged.length, 3);
+          for (const row of report.packaged) {
+            assert.equal(row.status, 'unavailable');
+            assert.equal(row.packagedProof, false);
+          }
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            'Interrupted staging: synthetic regression passed. Packaged 47cad979 transfer/native interruption and qualified native recovery remain **unavailable**, not passing native proof. See retained report prerequisites.\n');
+          NODE
+
+      - name: Retain interrupted-staging coverage limits
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: interrupted-staging-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/interrupted-staging.json
+          if-no-files-found: warn
+          retention-days: 7
+
   preview-changes:
     name: Detect renderer update changes
+    if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
     runs-on: ubuntu-24.04
     outputs:
       changed: ${{ steps.paths.outputs.changed }}

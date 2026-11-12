@@ -1168,23 +1168,26 @@ export const layer = Layer.effect(
       yield* Effect.tryPromise(() => targetOperations.reconcile()).pipe(
         Effect.catch(() => Effect.sync(() => updater.setHeldJobs(["ledger-unreadable"]))),
       );
+    }
+    const maintainPreparation = async () => {
+      if (targetOperations !== undefined) await targetOperations.sweep();
+      else if (preparation?.sweepIfNeeded !== undefined) await preparation.sweepIfNeeded();
+      else if (preparation !== undefined) await preparation.sweep();
+    };
+    if (preparation !== undefined) {
       yield* Effect.sleep("60 seconds").pipe(
-        Effect.andThen(Effect.tryPromise(() => targetOperations.sweep())),
+        // Reconcile every tick; only consumed cleanup demand may start a worker.
+        Effect.andThen(Effect.tryPromise(maintainPreparation)),
         Effect.catch(() => Effect.logWarning("Target operation sweep requires reconciliation.")),
         Effect.forever,
         Effect.forkScoped,
       );
-    }
-    if (preparation !== undefined)
       yield* Effect.sleep("10 seconds").pipe(
-        Effect.andThen(
-          Effect.tryPromise(async () => {
-            await (targetOperations === undefined ? preparation.sweep() : targetOperations.sweep());
-          }),
-        ),
+        Effect.andThen(Effect.tryPromise(maintainPreparation)),
         Effect.ignore,
         Effect.forkScoped,
       );
+    }
     const settleOperation = Effect.fn("JonesUpdates.settleOperation")(function* (
       input: JonesUpdateReconcileInput | JonesUpdateRecordRetiredInput,
     ) {

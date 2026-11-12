@@ -4,7 +4,11 @@ import * as NodeFS from "node:fs";
 import { T3_CONNECT_TROUBLESHOOTING_SECTIONS } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
-import { classifyReachability, type ReachabilityFacts } from "./ConnectReachability.ts";
+import {
+  classifyReachability,
+  formatReachabilityFailure,
+  type ReachabilityFacts,
+} from "./ConnectReachability.ts";
 
 const checkedAt = "2026-10-19T00:00:00.000Z";
 const connected = { readyConnections: 4, hostname: "env.example.test", protocol: "quic" };
@@ -19,6 +23,39 @@ const facts = (overrides: Partial<ReachabilityFacts>): ReachabilityFacts => ({
 });
 
 describe("classifyReachability", () => {
+  it("keeps an anonymous 403 separate from local health and signed-in reachability", () => {
+    const result = classifyReachability(
+      facts({
+        endpoint: { kind: "status", status: 403, rayId: "0123456789abcdef-IAD" },
+        local: "matching_environment",
+        edgeReachable: true,
+      }),
+      checkedAt,
+    );
+    expect(result).toMatchObject({ status: "unreachable", cause: "unexpected_response" });
+    if (result.status !== "unreachable") throw new Error("Expected host probe failure");
+    const text = formatReachabilityFailure(result);
+    expect(text).toContain("could not be confirmed from this host");
+    expect(text).toContain("HTTP 403");
+    expect(text).toContain("server answers locally");
+    expect(text).toContain("signed-in device is unverified");
+    expect(text).not.toContain("NOT reachable");
+    expect(text).not.toContain("Restart");
+  });
+
+  it("does not claim local health for an absent or mismatched descriptor", () => {
+    for (const local of [undefined, "unverified", "different_environment"] as const) {
+      const result = classifyReachability(
+        facts({
+          endpoint: { kind: "status", status: 403 },
+          ...(local === undefined ? {} : { local }),
+        }),
+        checkedAt,
+      );
+      expect(result.status === "unreachable" && result.reason).not.toContain("server answers locally");
+    }
+  });
+
   it.each([
     [{ kind: "status", status: 502 }, "origin_unreachable"],
     [{ kind: "status", status: 530 }, "no_connector"],

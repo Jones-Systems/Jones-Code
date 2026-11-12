@@ -18,6 +18,13 @@ import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import {
+  connectHttpEvidence,
+  probeConnectLoopback,
+  unexpectedConnectResponse,
+  type ConnectHttpEvidence,
+  type ConnectLocalEvidence,
+} from "../jones/cloud/connectProbeEvidence.ts";
 import { CLOUD_ENDPOINT_RUNTIME_CONFIG } from "./config.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 
@@ -33,7 +40,7 @@ const READINESS_CHANGE_DEBOUNCE = Duration.seconds(3);
 const RECHECK_INTERVAL = Duration.minutes(5);
 
 export type EndpointProbe =
-  | { readonly kind: "status"; readonly status: number }
+  | ({ readonly kind: "status" } & ConnectHttpEvidence)
   | { readonly kind: "dns_failed" | "timeout" | "network_error" };
 
 /** Everything one check learned. `null` means that step did not run. */
@@ -41,6 +48,7 @@ export interface ReachabilityFacts {
   readonly managedTunnelConfigured: boolean;
   readonly connector: ManagedEndpointRuntime.ConnectorFacts | null;
   readonly endpoint: EndpointProbe | null;
+  readonly local?: ConnectLocalEvidence | null;
   readonly edgeReachable: boolean | null;
   readonly exitNode: TailscaleExitNode | null;
 }
@@ -130,10 +138,15 @@ export function classifyReachability(
     );
   }
   if (status !== null) {
+    const explanation = unexpectedConnectResponse(
+      endpoint?.kind === "status" ? endpoint : { status },
+      facts.local,
+    );
     return fail(
       "unexpected_response",
-      `The T3 Connect address answered with HTTP ${status}.`,
-      restart,
+      explanation.reason,
+      explanation.fix,
+      explanation.hint,
     );
   }
   return endpoint.kind === "dns_failed"
@@ -154,7 +167,7 @@ export function classifyReachability(
 /** The loud diagnosis the CLI prints and the server logs. */
 export function formatReachabilityFailure(result: Unreachable): string {
   return [
-    "✕ T3 Connect is NOT reachable from other devices",
+    "✕ T3 Connect reachability from other devices could not be confirmed from this host",
     `  ${result.reason}`,
     ...(result.hint ? [`  ${result.hint}`] : []),
     `  Fix: ${result.fix}`,
@@ -214,7 +227,10 @@ const make = Effect.gen(function* () {
 
   const probeEndpoint = (hostname: string) =>
     httpClient.get(`https://${hostname}/.well-known/t3/environment`).pipe(
-      Effect.map((response): EndpointProbe => ({ kind: "status", status: response.status })),
+      Effect.map((response): EndpointProbe => ({
+        kind: "status",
+        ...connectHttpEvidence(response.status, response.headers),
+      })),
       Effect.scoped,
       Effect.timeoutOption(ENDPOINT_REQUEST_TIMEOUT),
       Effect.map(Option.getOrElse((): EndpointProbe => ({ kind: "timeout" }))),
@@ -238,6 +254,10 @@ const make = Effect.gen(function* () {
       managedTunnelConfigured,
       connector,
       endpoint,
+      local:
+        endpoint?.kind === "status" && endpoint.status !== 200
+          ? yield* probeConnectLoopback()
+          : null,
       edgeReachable: null,
       exitNode: null,
     };

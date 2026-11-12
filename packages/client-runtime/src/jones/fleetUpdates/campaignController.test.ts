@@ -5,7 +5,7 @@ import type {
   FleetHostStatus,
   FleetHostOperation,
 } from "@t3tools/contracts/jones/fleet-updates";
-import { advanceFleetCampaigns, type FleetCampaignDriver } from "./campaignController.ts";
+import { advanceFleetCampaigns, type FleetCampaignDriver, type FleetPublicationReport } from "./campaignController.ts";
 
 const source = "a".repeat(40);
 const installed = "b".repeat(40);
@@ -167,7 +167,7 @@ describe("fleet campaign driver", () => {
     f.setOperation(operation);
     await advanceFleetCampaigns(f.driver);
     expect(f.state().campaigns[0]?.members[0]?.phase).toBe("dispatching");
-    expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(["status"]);
+    expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(["status", "status"]);
     f.setOperation({ ...operation, phase: "committed" });
     await advanceFleetCampaigns(f.driver);
     expect(f.state().campaigns[0]?.members[0]?.phase).toBe("committed");
@@ -209,11 +209,9 @@ describe("fleet campaign driver", () => {
     expect(f.state().campaigns[0]?.members[0]?.reason).toBe(
       "Waits for the laptop update to commit.",
     );
-    expect(f.driver.host.mock.calls.map(([, input]) => input.action)).toEqual([
-      "status",
-      "status",
-      "status",
-    ]);
+    expect(f.driver.host.mock.calls.map(([, input]) => input.action)).toEqual(
+      Array.from({ length: 6 }, () => "status"),
+    );
     f.setState({
       ...f.state(),
       campaigns: f.state().campaigns.map((c) => ({
@@ -225,10 +223,7 @@ describe("fleet campaign driver", () => {
     await advanceFleetCampaigns(f.driver);
     expect(f.operation()?.input.targetSource).toBe(source);
     expect(f.driver.host.mock.calls.map(([, input]) => input.action)).toEqual([
-      "status",
-      "status",
-      "status",
-      "status",
+      ...Array.from({ length: 8 }, () => "status"),
       "stage",
       "activate",
     ]);
@@ -294,7 +289,9 @@ describe("fleet campaign driver", () => {
         })),
       });
       await advanceFleetCampaigns(f.driver);
-      expect(f.driver.host).not.toHaveBeenCalled();
+      expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(
+        revoked ? [] : ["status"],
+      );
     }
   });
 
@@ -315,7 +312,7 @@ describe("fleet campaign driver", () => {
     });
     await advanceFleetCampaigns(f.driver);
     expect(f.state().campaigns[0]?.members[0]?.phase).toBe("blocked");
-    expect(f.driver.host.mock.calls).toHaveLength(1);
+    expect(f.driver.host.mock.calls).toHaveLength(2);
   });
 });
 
@@ -362,6 +359,7 @@ it("retires an occupied old stage before driving a newer campaign, including aft
   await advanceFleetCampaigns(f.driver);
   expect(f.state().campaigns[0]?.members[0]?.phase).toBe("superseded");
   expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual([
+    "status",
     "status",
     "retire",
   ]);
@@ -415,7 +413,7 @@ it("keeps uncertain native acceptance occupying its host while observing it", as
     continueRunningThreads: false,
   });
   await advanceFleetCampaigns(f.driver);
-  expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(["status"]);
+  expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(["status", "status"]);
   expect(f.state().campaigns[1]?.members[0]?.phase).toBe("waiting");
 });
 
@@ -501,5 +499,245 @@ describe("hosts that follow the laptop themselves", () => {
     expect(older.driver.host.mock.calls.map(([, request]) => request.action)).not.toContain(
       "leader",
     );
+  });
+});
+
+describe("publication acknowledgement boundaries", () => {
+  const laptop = {
+    repository: "Jones-Systems/Jones-Code",
+    sha: "d".repeat(40),
+    tree: "e".repeat(40),
+  };
+  const directive = {
+    directiveId: "44444444-4444-4444-8444-444444444444",
+    targetSource: source,
+    targetTree: laptop.tree,
+    mode: "manual-review" as const,
+    issuedAt: "2026-11-12T11:00:00.000Z",
+  };
+  function followingFixture() {
+    const f = fixture(true);
+    const legacy = f.driver.host.getMockImplementation()!;
+    let follower: NonNullable<FleetHostStatus["follower"]> = {
+      protocol: 1,
+      leaderSource: installed,
+      leaderPublishedAt: "2026-11-11T11:00:00.000Z",
+      state: "current",
+    };
+    const respond: FleetCampaignDriver["host"] = async (id, request) => {
+      if (request.action === "leader") follower = {
+        ...follower,
+        leaderSource: request.input.committedSource,
+        leaderPublishedAt: "2026-11-12T11:00:00.000Z",
+      };
+      return { ...await legacy(id, request), follower };
+    };
+    f.driver.host.mockImplementation(respond);
+    return { ...f, respond, setFollower: (next: typeof follower) => { follower = next; } };
+  }
+  const actions = (f: ReturnType<typeof fixture>) =>
+    f.driver.host.mock.calls.map(([, request]) => request.action);
+
+  it.each(["environment", "enrollment", "disabled", "protocol", "source"] as const)(
+    "holds an invalid %s leader response until authoritative readback",
+    async (invalid) => {
+      const f = followingFixture();
+      f.driver.host.mockImplementation(async (id, request) => {
+        const status = await f.respond(id, request);
+        if (request.action !== "leader") return status;
+        switch (invalid) {
+          case "environment": return { ...status, environmentId: EnvironmentId.make("other") };
+          case "enrollment": return { ...status, enrollment: { ...enrollment, enrollmentId: directive.directiveId } };
+          case "disabled": return { ...status, enrollment: { ...enrollment, enabled: false } };
+          case "protocol": return { ...status, follower: undefined } as unknown as FleetHostStatus;
+          case "source": return { ...status, follower: { ...status.follower!, leaderSource: installed } };
+        }
+      });
+      const report = vi.fn<(value: FleetPublicationReport) => void>();
+      const driver = { ...f.driver, committedSource: async () => laptop, onPublication: report };
+      await advanceFleetCampaigns(driver);
+      expect(f.state().campaigns[0]!.members[0]!.phase).toBe("waiting");
+      expect(actions(f)).toEqual(["status", "leader", "status"]);
+      expect(report.mock.calls[0]?.[0].hosts[0]?.outcome).toBe("unknown");
+      await advanceFleetCampaigns(driver);
+      expect(f.state().campaigns[0]!.members[0]!.phase).toBe("superseded");
+      expect(actions(f).filter((action) => action === "leader")).toHaveLength(1);
+    },
+  );
+
+  it.each(["environment", "enrollment", "disabled", "protocol"] as const)(
+    "does not publish or supersede from an invalid prior %s status", async (invalid) => {
+      const f = followingFixture();
+      f.driver.host.mockImplementation(async (id, request) => {
+        const status = await f.respond(id, request);
+        if (invalid === "environment") return { ...status, environmentId: EnvironmentId.make("other") };
+        if (invalid === "enrollment") return { ...status, enrollment: { ...enrollment, enrollmentId: directive.directiveId } };
+        if (invalid === "disabled") return { ...status, enrollment: { ...enrollment, enabled: false } };
+        return { ...status, follower: { ...status.follower, protocol: 2 } } as unknown as FleetHostStatus;
+      });
+      await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop });
+      expect(actions(f).every((action) => action === "status")).toBe(true);
+      expect(f.state().campaigns[0]!.members[0]!.phase).not.toBe("superseded");
+    },
+  );
+
+  it("holds a lost acknowledgement, then observes the committed receipt without replaying publication", async () => {
+    const f = followingFixture();
+    f.driver.host.mockImplementation(async (id, request) => {
+      const status = await f.respond(id, request);
+      if (request.action === "leader") throw new Error("response lost after commit");
+      return status;
+    });
+    const driver = { ...f.driver, committedSource: async () => laptop };
+    await advanceFleetCampaigns(driver);
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("waiting");
+    expect(actions(f)).toEqual(["status", "leader", "status"]);
+    await advanceFleetCampaigns(driver);
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("superseded");
+    expect(actions(f).filter((action) => action === "leader")).toHaveLength(1);
+  });
+
+  it("holds campaigns under a directive while accepted operations still reconcile", async () => {
+    const f = followingFixture();
+    f.setFollower({ protocol: 1, leaderSource: laptop.sha, state: "waiting-for-leader", planDirective: directive });
+    const report = vi.fn<(value: FleetPublicationReport) => void>();
+    const driver = { ...f.driver, committedSource: async () => laptop, onPublication: report };
+    await advanceFleetCampaigns(driver);
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("waiting");
+    expect(report.mock.calls[0]?.[0].hosts[0]?.outcome).toBe("directive-held");
+    f.setState({ ...f.state(), campaigns: f.state().campaigns.map((campaign) => ({
+      ...campaign, members: campaign.members.map((member) => ({ ...member, phase: "reconciling" as const })),
+    })) });
+    f.setOperation({
+      input: { operationId, enrollmentId: enrollment.enrollmentId, environmentId,
+        targetSource: source, expectedInstalledSource: installed },
+      phase: "committed", continueRunningThreads: false, currentVersion: "old",
+    });
+    await advanceFleetCampaigns(driver);
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("committed");
+    expect(actions(f).every((action) => action === "status")).toBe(true);
+  });
+
+  it.each(["source-read", "status", "leader"] as const)("rechecks cancellation after %s", async (at) => {
+    const f = followingFixture();
+    let cancelled = false;
+    const report = vi.fn();
+    f.driver.host.mockImplementation(async (id, request) => {
+      const status = await f.respond(id, request);
+      if (request.action === at) cancelled = true;
+      return status;
+    });
+    await advanceFleetCampaigns({ ...f.driver, cancelled: () => cancelled, onPublication: report,
+      committedSource: async () => {
+        if (at === "source-read") cancelled = true;
+        return laptop;
+      },
+    });
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("waiting");
+    expect(actions(f)).toEqual(at === "source-read" ? [] : at === "status" ? ["status"] : ["status", "leader"]);
+    expect(report).not.toHaveBeenCalled();
+  });
+
+  it("discards an acknowledgement for an enrollment replaced while publication was in flight", async () => {
+    const f = followingFixture();
+    const report = vi.fn<(value: FleetPublicationReport) => void>();
+    f.driver.host.mockImplementation(async (id, request) => {
+      const status = await f.respond(id, request);
+      if (request.action === "leader") f.setState({ ...f.state(), enrollments: [{ ...enrollment, enrollmentId: directive.directiveId }] });
+      return status;
+    });
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop, onPublication: report });
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("waiting");
+    expect(report.mock.calls[0]?.[0].hosts).toEqual([]);
+    expect(actions(f)).toEqual(["status", "leader"]);
+  });
+
+  it("does not send a leader request after local enrollment is revoked during status observation", async () => {
+    const f = followingFixture();
+    f.driver.host.mockImplementation(async (id, request) => {
+      const status = await f.respond(id, request);
+      f.setState({ ...f.state(), enrollments: [{ ...enrollment, enabled: false }] });
+      return status;
+    });
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop });
+    expect(actions(f)).toEqual(["status"]);
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("waiting");
+  });
+
+  it("does not dispatch after cancellation while the durable member update was awaited", async () => {
+    const f = fixture(true);
+    const desktop = f.driver.desktop.getMockImplementation()!;
+    let cancelled = false;
+    f.driver.desktop.mockImplementation(async (request) => {
+      const state = await desktop(request);
+      if (request.action === "updateMember" && request.input.phase === "staging") cancelled = true;
+      return state;
+    });
+    await advanceFleetCampaigns({ ...f.driver, cancelled: () => cancelled });
+    expect(actions(f)).toEqual(["status", "status"]);
+    expect(f.operation()).toBeNull();
+  });
+
+  it("does not publish an old source when native proof changes during the status read", async () => {
+    const f = followingFixture();
+    let latest = laptop;
+    f.driver.host.mockImplementation(async (id, request) => {
+      const status = await f.respond(id, request);
+      latest = { ...laptop, sha: "f".repeat(40) };
+      return status;
+    });
+    const report = vi.fn();
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => latest, onPublication: report });
+    expect(actions(f)).toEqual(["status", "status"]);
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("waiting");
+    expect(report).toHaveBeenCalledWith({ publication: { kind: "committed", source: latest }, hosts: [] });
+  });
+
+  it("always observes enabled hosts when native publication is withheld, including an offline host", async () => {
+    const f = followingFixture();
+    const offline = { ...enrollment, environmentId: EnvironmentId.make("offline-host") };
+    f.setState({ ...f.state(), enrollments: [enrollment, offline], campaigns: [] });
+    f.driver.host.mockImplementation((id, request) => id === offline.environmentId
+      ? Promise.reject(new Error("offline")) : f.respond(id, request));
+    const report = vi.fn<(value: FleetPublicationReport) => void>();
+    const publication = { kind: "withheld", code: "plan-managed", message: "Plan owns source." } as const;
+    await advanceFleetCampaigns({ ...f.driver, publication: async () => publication, onPublication: report });
+    expect(actions(f)).toEqual(["status", "status"]);
+    expect(report.mock.calls[0]?.[0]).toMatchObject({ publication, hosts: [
+      { enrollment, outcome: "observed", follower: { leaderSource: installed, leaderPublishedAt: "2026-11-11T11:00:00.000Z" } },
+      { enrollment: offline, outcome: "unknown" },
+    ] });
+  });
+
+  it.each(["throw", "reject"])("does not let a diagnostic %s change a confirmed handoff", async (failure) => {
+    const f = followingFixture();
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop,
+      onPublication: () => {
+        if (failure === "reject") return Promise.reject(new Error("diagnostic failed"));
+        throw new Error("diagnostic failed");
+      },
+    });
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("superseded");
+    expect(actions(f)).toEqual(["status", "leader"]);
+  });
+
+  it("does not let an older concurrent pass replace a newer source report", async () => {
+    const f = followingFixture();
+    let release!: (status: FleetHostStatus) => void;
+    let captured!: () => void;
+    const waiting = new Promise<void>((resolve) => { captured = resolve; });
+    const held = new Promise<FleetHostStatus>((resolve) => { release = resolve; });
+    f.driver.host.mockImplementationOnce(async () => { captured(); return held; });
+    const oldReport = vi.fn();
+    const newReport = vi.fn<(value: FleetPublicationReport) => void>();
+    const first = advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop, onPublication: oldReport });
+    await waiting;
+    const newer = { ...laptop, sha: "f".repeat(40) };
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => newer, onPublication: newReport });
+    release(await f.respond(environmentId, { action: "status" }));
+    await first;
+    expect(oldReport).not.toHaveBeenCalled();
+    expect(newReport.mock.calls[0]?.[0].publication).toMatchObject({ source: { sha: newer.sha } });
+    expect(actions(f).filter((action) => action === "leader")).toHaveLength(1);
   });
 });

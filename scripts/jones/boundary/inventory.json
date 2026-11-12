@@ -2929,7 +2929,10 @@
     "scripts/jones/boundary/fragments/workstreams-native-home-fixture.json": "jones-owned",
     "scripts/jones/boundary/fragments/superseded-terminal-history.json": "jones-owned",
     "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.py": "jones-owned",
-    "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts": "jones-owned",
+    "apps/server/src/cloud/ConnectReachability.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/connection/diagnosis.test.ts": "jones-tests-in-upstream",
+    "docs/user/t3-connect-troubleshooting.md": "policy"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
