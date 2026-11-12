@@ -2,6 +2,8 @@ import { jonesBuildLabels, type JonesBuildRef } from "@t3tools/shared/jones/buil
 import { JonesBuildVersion } from "./JonesBuildVersion";
 import {
   jonesCandidatePresentation,
+  jonesStagedAlreadyRunning,
+  JONES_STAGED_ALREADY_RUNNING_MESSAGE,
   jonesAlternativePresentation,
   resolveJonesAlternativeAction,
   jonesFollowerHold,
@@ -25,7 +27,10 @@ import {
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
-import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/target-status";
+import {
+  jonesCheckOutcome,
+  jonesTargetStatus,
+} from "@t3tools/client-runtime/jones/updates/target-status";
 import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import {
@@ -122,6 +127,7 @@ export function JonesUpdateControls({
   );
   const observation = mobileJonesObservation(observed, saved);
   const state = observation.state;
+  const check = jonesCheckOutcome(state);
   const presentation = state === null ? undefined : jonesUpdatePresentation(state);
   const status = jonesTargetStatus(observation, {
     canOperate: allowed && state?.environmentId === environmentId,
@@ -190,8 +196,8 @@ export function JonesUpdateControls({
             {saved.fault ?? "Reading update request history…"}
           </Text>
         ) : null}
-        {status.check !== undefined ? (
-          <Text className="text-sm text-foreground-muted">{status.check.text}</Text>
+        {check !== undefined ? (
+          <Text className="text-sm text-foreground-muted">{check.text}</Text>
         ) : null}
         {displayedOperation !== undefined ? (
           <>
@@ -218,6 +224,13 @@ export function JonesUpdateControls({
             Not confirmed · {saved.uncertainty === "legacy" ? "Request" : "Operation"}{" "}
             {saved.request?.operationId ?? saved.receipt?.operationId ?? saved.operationId}. Nothing
             will be resent.
+          </Text>
+        ) : null}
+        {observation.freshness === "fresh" &&
+        state?.environmentId === environmentId &&
+        jonesStagedAlreadyRunning(state) ? (
+          <Text className="text-sm text-foreground-muted">
+            {JONES_STAGED_ALREADY_RUNNING_MESSAGE}
           </Text>
         ) : null}
         {followerSummary !== undefined ? (

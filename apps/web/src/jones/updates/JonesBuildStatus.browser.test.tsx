@@ -78,6 +78,33 @@ const precedes = (first: Node, second: Node) =>
   (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 
 describe("Jones build status", () => {
+  it("disables an already-running stage without dispatch and explains fresh bound proof", async () => {
+    const state = {
+      ...available,
+      phase: "staged" as const,
+      stagedHandle: "stage",
+      stagedAlreadyRunning: true as const,
+    };
+    const message = "The downloaded build is already running on this host. Nothing to install.";
+    await using screen = await renderStatus({ state });
+    const install = buttonNamed(screen.container, "Install");
+    expect(install.disabled).toBe(true);
+    await act(async () => install.click());
+    expect(screen.onRequest).not.toHaveBeenCalled();
+    expect(screen.container.querySelector('[role="status"]')?.textContent).toBe(message);
+    await screen.rerender(
+      statusUi({ state, check: { kind: "failure", text: "The update check failed." } }),
+    );
+    expect(screen.container.textContent).toContain("The update check failed.");
+    expect(screen.container.textContent).not.toContain(message);
+    await act(async () => buttonNamed(screen.container, "Details").click());
+    expect(screen.container.textContent).toContain(message);
+    await screen.rerender(statusUi({ state, freshness: "stale" }));
+    expect(screen.container.textContent).not.toContain(message);
+    await screen.rerender(statusUi({ state, environmentId: EnvironmentId.make("other-host") }));
+    expect(screen.container.textContent).not.toContain(message);
+  });
+
   it("shows retained and alternative builds at narrow width and replaces only after exact confirmation", async () => {
     const retained = {
       ...available,
