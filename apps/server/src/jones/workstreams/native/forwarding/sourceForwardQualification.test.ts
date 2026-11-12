@@ -34,7 +34,9 @@ import * as Links from "../../../../peer/PeerLinks.ts";
 import * as ServerSettings from "../../../../serverSettings.ts";
 import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import { runMigrations } from "../../../../persistence/Migrations.ts";
-import peerLinksMigration from "../../../persistence/Migrations/119_JonesPeerEnvironmentLinks.ts";
+// Peer links live in upstream's table since the Jones adoption migration.
+import peerLinksTable from "../../../../persistence/Migrations/070_PeerLinks.ts";
+import peerLinkFence from "../../../../persistence/Migrations/071_PeerLinkFence.ts";
 import { NativeHome } from "../mode/authorityMode.ts";
 import * as Pins from "../runtime/peerSessionPins.ts";
 import * as Supplied from "./suppliedEvidence.ts";
@@ -268,7 +270,8 @@ const fixture = Effect.gen(function* () {
   yield* TestClock.setTime(Date.parse(now));
   yield* runMigrations({ toMigrationInclusive: 54 });
   const sql = yield* SqlClient.SqlClient;
-  yield* peerLinksMigration;
+  yield* peerLinksTable;
+  yield* peerLinkFence;
   yield* sql.unsafe(
     "INSERT INTO peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('member:test','home-to-source-generation','synthetic-source','[\"https://source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
   );

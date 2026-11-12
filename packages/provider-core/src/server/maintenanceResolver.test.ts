@@ -1827,11 +1827,13 @@ it.layer(
           env: { PATH: "" },
         }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
 
+        // Jones: the native updater runs with the resolver's environment.
         expect(capabilities.update).toEqual({
           command: `${nativePath} update`,
           executable: nativePath,
           args: ["update"],
           lockKey: "nativePackageTool-native",
+          env: { PATH: "" },
         });
       }),
   );

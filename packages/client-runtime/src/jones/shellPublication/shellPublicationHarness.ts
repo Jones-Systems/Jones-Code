@@ -329,7 +329,22 @@ export const makeShellPublicationHarness = Effect.fn("TestShellPublication.make"
         const session = Option.getOrThrow(
           yield* SubscriptionRef.get(environment.supervisor.session),
         );
-        yield* SubscriptionRef.set(environment.supervisor.session, Option.some({ ...session }));
+        // A same-build reconnect resumes held rows from their cursor; a new server build
+        // reloads the HTTP snapshot, which is the replacement this helper publishes.
+        const config = yield* session.initialConfig;
+        yield* SubscriptionRef.set(
+          environment.supervisor.session,
+          Option.some({
+            ...session,
+            initialConfig: Effect.succeed({
+              ...config,
+              environment: {
+                ...config.environment,
+                serverVersion: `1.0.${snapshot.snapshotSequence}`,
+              },
+            }),
+          }),
+        );
         yield* Deferred.await(done);
       } finally {
         stop();

@@ -24,7 +24,8 @@ function deferred<T>() {
 }
 
 const state = vi.hoisted(() => ({
-  serverConfig: { shellThreadFamilies: false },
+  // A server config always carries its environment descriptor; this one advertises no Jones restore.
+  serverConfig: { shellThreadFamilies: false, environment: { capabilities: {} } },
   familyLookupFails: false,
   scopes: new Map<string, Set<string>>(),
   threads: [] as {

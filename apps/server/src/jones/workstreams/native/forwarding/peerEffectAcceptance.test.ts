@@ -20,7 +20,9 @@ import * as Links from "../../../../peer/PeerLinks.ts";
 import * as ServerSettings from "../../../../serverSettings.ts";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
-import migration from "../../../persistence/Migrations/119_JonesPeerEnvironmentLinks.ts";
+// Peer links live in upstream's table since the Jones adoption migration.
+import peerLinksTable from "../../../../persistence/Migrations/070_PeerLinks.ts";
+import peerLinkFence from "../../../../persistence/Migrations/071_PeerLinkFence.ts";
 import * as Fixture from "../runtime/peerEffectRecovery.testkit.ts";
 import * as Source from "./peerEffectSource.ts";
 import * as Recovery from "./peerEffectRecovery.ts";
@@ -255,7 +257,8 @@ const withHome = <A, E, R>(
   ) => Effect.Effect<Wire.WorkstreamReceipt | null, Session.RegistryError>,
 ) =>
   Effect.gen(function* () {
-    yield* migration;
+    yield* peerLinksTable;
+    yield* peerLinkFence;
     yield* f.sql.unsafe(
       "INSERT INTO peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('source:test','home-to-source:original','synthetic-source','[\"https://retained-source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
     );
