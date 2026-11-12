@@ -225,7 +225,21 @@ it.effect(
       const offers = yield* Fixture.Offers;
       const count = offers.requests.length;
       gate.allow = false;
-      const first = yield* f.witness("first");
+      const preack = yield* f.witness("first", false);
+      assert.equal(gate.calls, 0);
+      if (preack.event.type !== "provider-turn.updated")
+        return yield* Effect.die("Expected the synthetic provider turn");
+      const first = (yield* f.sink.write({
+        events: [
+          yield* f.event({
+            ...preack.event,
+            payload: {
+              ...preack.event.payload,
+              nativeTurnRef: { driver: Fixture.driver, nativeId: "first", strength: "strong" },
+            },
+          }),
+        ],
+      }))[0]!;
       yield* joinRelease(f.threadId);
       assert.equal((yield* f.read)[0]!.state, "held");
       gate.allow = true;
