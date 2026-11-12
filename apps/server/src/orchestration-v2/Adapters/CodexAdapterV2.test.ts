@@ -21,6 +21,7 @@ import { deliverWithHandoffRecovery } from "../../jones/provider/codex/ContextHa
 import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import { materializeCodexReplayAppIdentity } from "../../jones/runtimeIdentity/CodexReplayIdentity.ts";
 import * as NodeURL from "node:url";
+import { CONTINUITY_RELOAD_CUE } from "../../jones/goals/continuity/capsule.ts";
 
 import { historyResponseItems, selectHistory } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
@@ -8799,107 +8800,199 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("preserves T3 context on the wire and restores it after compaction", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const nativeThreadId = "context-thread";
-        const nativeTurnId = "context-turn";
-        const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
-          nativeThreadId,
-          codexInput: [{ type: "text", text: "work" }],
-          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
-          modelSelection: CODEX_TEST_MODEL_SELECTION,
-          hasT3Mcp: true,
-        });
-        assert.include(
-          params.additionalContext?.t3_code_orchestration_01?.value ?? "",
-          "delegate_task",
-        );
-        const entries = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "work" });
-        const transcript = makeCodexReplayTranscript({
-          scenario: "restore-context",
-          entries: [
-            ...entries.slice(0, 5),
-            {
-              type: "expect_outbound",
-              label: "context turn",
-              frame: { id: 3, method: "turn/start", params },
-            },
-            ...entries.slice(6),
-            {
-              type: "emit_inbound",
-              label: "compacted",
-              frame: {
-                method: "item/completed",
-                params: {
-                  threadId: nativeThreadId,
-                  turnId: nativeTurnId,
-                  item: { type: "contextCompaction", id: "compact-context" },
+  it.effect.each([0, 4000, 4001, 4096])(
+    "preserves all context on the wire and restores it after compaction at continuity bytes=%s",
+    (capsuleBytes) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = "context-thread";
+          const capsule =
+            '{"data":"' +
+            "界".repeat(Math.max(0, Math.floor((capsuleBytes - 207) / 3))) +
+            "x".repeat(Math.max(0, (capsuleBytes - 207) % 3)) +
+            '"}' +
+            CONTINUITY_RELOAD_CUE;
+          const continuityEntries =
+            capsuleBytes === 0
+              ? {}
+              : capsuleBytes <= 4000
+                ? { jones_goal_continuity: { kind: "untrusted" as const, value: capsule } }
+                : {
+                    jones_goal_continuity: {
+                      kind: "untrusted" as const,
+                      value: capsule.slice(0, -CONTINUITY_RELOAD_CUE.length),
+                    },
+                    jones_goal_continuity_reload: {
+                      kind: "untrusted" as const,
+                      value: CONTINUITY_RELOAD_CUE,
+                    },
+                  };
+          const nativeTurnId = "context-turn";
+          const baseParams = yield* CodexAdapterV2.buildCodexTurnStartParams({
+            nativeThreadId,
+            codexInput: [{ type: "text", text: "work" }],
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            hasT3Mcp: true,
+          });
+          const params: typeof baseParams = {
+            ...baseParams,
+            additionalContext: { ...baseParams.additionalContext, ...continuityEntries },
+          };
+          if (capsuleBytes !== 0)
+            assert.equal(new TextEncoder().encode(capsule).byteLength, capsuleBytes);
+          assert.include(
+            params.additionalContext?.t3_code_orchestration_01?.value ?? "",
+            "delegate_task",
+          );
+          const entries = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "work" });
+          const transcript = makeCodexReplayTranscript({
+            scenario: "restore-context",
+            entries: [
+              ...entries.slice(0, 5),
+              {
+                type: "expect_outbound",
+                label: "context turn",
+                frame: { id: 3, method: "turn/start", params },
+              },
+              ...entries.slice(6),
+              {
+                type: "emit_inbound",
+                label: "compacted",
+                frame: {
+                  method: "item/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turnId: nativeTurnId,
+                    item: { type: "contextCompaction", id: "compact-context" },
+                  },
                 },
               },
-            },
-            {
-              type: "expect_outbound",
-              label: "restore context",
-              frame: {
-                id: 4,
-                method: "thread/inject_items",
-                params: {
-                  threadId: nativeThreadId,
-                  items: Object.entries(params.additionalContext ?? {}).map(([key, entry]) => ({
-                    type: "message",
-                    role: "developer",
-                    content: [{ type: "input_text", text: `<${key}>${entry.value}</${key}>` }],
-                  })),
+              {
+                type: "expect_outbound",
+                label: "restore context",
+                frame: {
+                  id: 4,
+                  method: "thread/inject_items",
+                  params: {
+                    threadId: nativeThreadId,
+                    items: Object.entries(params.additionalContext ?? {}).map(([key, entry]) => ({
+                      type: "message",
+                      role: entry.kind === "untrusted" ? "user" : "developer",
+                      content: [
+                        {
+                          type: "input_text",
+                          text:
+                            entry.kind === "untrusted"
+                              ? `<external_${key}>${entry.value}</external_${key}>`
+                              : `<${key}>${entry.value}</${key}>`,
+                        },
+                      ],
+                    })),
+                  },
                 },
               },
-            },
-            { type: "emit_inbound", label: "restored", frame: { id: 4, result: {} } },
-            {
-              type: "emit_inbound",
-              label: "done",
-              frame: {
-                method: "turn/completed",
-                params: {
-                  threadId: nativeThreadId,
-                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+              { type: "emit_inbound", label: "restored", frame: { id: 4, result: {} } },
+              {
+                type: "emit_inbound",
+                label: "done",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                  },
                 },
               },
-            },
-          ],
-        });
-        const harness = yield* makeCodexReplayHarness(transcript);
-        yield* (yield* McpProviderSessions.McpProviderSessions).set({
-          environmentId: EnvironmentId.make("test"),
-          threadId: harness.threadId,
-          providerSessionId: "context-session",
-          providerInstanceId: ProviderInstanceId.make("codex"),
-          endpoint: "http://127.0.0.1:43123/mcp",
-          authorizationHeader: "Bearer test",
-          browserToolsAvailable: true,
-        });
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          yield* (yield* McpProviderSessions.McpProviderSessions).set({
+            environmentId: EnvironmentId.make("test"),
             threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("context-attempt"),
-            text: "work",
+            providerSessionId: "context-session",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            endpoint: "http://127.0.0.1:43123/mcp",
+            authorizationHeader: "Bearer test",
+            browserToolsAvailable: true,
+          });
+          yield* harness.runtime.startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("context-attempt"),
+              text: "work",
+            }),
+            ...(capsuleBytes === 0
+              ? {}
+              : {
+                  goalContinuityContext: {
+                    capability: {
+                      strongIdentity: true,
+                      turnStart: "fresh_context",
+                      compaction: "fresh_context_injection",
+                      strictPreResumptionBarrier: "unsupported",
+                    },
+                    prepareRecovery: () =>
+                      Effect.succeed({
+                        outcome: "context",
+                        goalId: "goal",
+                        revision: "1",
+                        generation: "1",
+                        snapshotDigest: "a".repeat(64),
+                        text: capsule,
+                      }),
+                    checkContinuation: (boundary) =>
+                      Effect.succeed({
+                        currentOwner: boundary.witness,
+                        requirement: {
+                          outcome: "required",
+                          owner: boundary.witness,
+                          target: {
+                            goalId: "goal",
+                            revision: "1",
+                            generation: "1",
+                            snapshotDigest: "a".repeat(64),
+                          },
+                          gate: { outcome: "clear", fenceRevision: "0" },
+                        },
+                      }),
+                    recordRecoveryTransition: () =>
+                      Effect.succeed({
+                        outcome: "absent",
+                        gate: { outcome: "clear", fenceRevision: "0" },
+                      }),
+                    beginDelivery: () => Effect.die("Unexpected continuity delivery"),
+                    markDispatching: () => Effect.die("Unexpected continuity dispatch"),
+                    settleDelivery: () => Effect.die("Unexpected continuity settlement"),
+                  } satisfies GoalContinuityContext,
+                }),
+          });
+          yield* harness.firstTerminal;
+          assert.equal(
+            harness.terminalEvents()[0]?.status,
+            "completed",
+            JSON.stringify(
+              harness.events.filter(
+                (event) => event.type === "turn_item.updated" && event.turnItem.type === "error",
+              ),
+            ),
+          );
+        }).pipe(
+          Effect.provideService(ServerEnvironmentIdentity, {
+            getEnvironmentId: Effect.succeed(EnvironmentId.make("test")),
           }),
-        );
-        yield* harness.firstTerminal;
-        assert.equal(harness.terminalEvents()[0]?.status, "completed");
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            layerNodeServicesWithCrypto,
-            NodeCrypto.layer,
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              layerNodeServicesWithCrypto,
+              NodeCrypto.layer,
+            ),
           ),
         ),
       ),
-    ),
   );
 
   it.effect.each(["before-admission", "before-send"] as const)(
