@@ -439,16 +439,14 @@ async function verifyExport(root, manifestPath, manifestSha256, commit, tree) {
       const bytes =
         file.mode === "120000"
           ? Buffer.from((NodeAssert.ok(stat.isSymbolicLink()), await NodeFSP.readlink(target)))
-          : (NodeAssert.ok(stat.isFile() && !stat.isSymbolicLink()), await NodeFSP.readFile(target));
+          : (NodeAssert.ok(stat.isFile() && !stat.isSymbolicLink()),
+            await NodeFSP.readFile(target));
       if (file.mode !== "120000")
         NodeAssert.equal(Boolean(stat.mode & 0o111), file.mode === "100755");
       total += bytes.length;
       NodeAssert.ok(total <= 512 * MiB);
       NodeAssert.equal(sha(bytes), file.sha256);
-      oid = NodeCrypto.createHash("sha1")
-        .update(`blob ${bytes.length}\0`)
-        .update(bytes)
-        .digest();
+      oid = NodeCrypto.createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest();
     }
     let parent = nodes;
     const segments = file.path.split("/"),
@@ -2420,7 +2418,7 @@ async function testNativeBindings() {
           mode: 0o755,
           size:
             file === binding.nativeExecutable.realPath
-              ? nativeBytes ?? files.get(file).length
+              ? (nativeBytes ?? files.get(file).length)
               : files.get(file).length,
           isFile: () => true,
           isSymbolicLink: () => false,
@@ -2537,11 +2535,15 @@ async function testSourceExports() {
         .toString()
         .trim();
     const treeFor = (entries) =>
-      NodeChildProcess.execFileSync("/usr/bin/git", ["--git-dir", repository, "mktree", "--missing"], {
-        input: entries.join("\n") + "\n",
-        maxBuffer: MiB,
-        timeout: 10000,
-      })
+      NodeChildProcess.execFileSync(
+        "/usr/bin/git",
+        ["--git-dir", repository, "mktree", "--missing"],
+        {
+          input: entries.join("\n") + "\n",
+          maxBuffer: MiB,
+          timeout: 10000,
+        },
+      )
         .toString()
         .trim();
     const regular = Buffer.from("source bytes\n"),
@@ -2592,7 +2594,11 @@ async function testSourceExports() {
       return verifyExport(source, manifestPath, sha(bytes), commit, expectedTree);
     };
     await NodeAssert.rejects(
-      verify({ ...manifest, schema: "jones.workspace-lifecycle-dev.source-files/v1", files: blobs }),
+      verify({
+        ...manifest,
+        schema: "jones.workspace-lifecycle-dev.source-files/v1",
+        files: blobs,
+      }),
     );
     const accepted = await verify(manifest);
     NodeAssert.equal(accepted.tree, tree);
@@ -2607,7 +2613,10 @@ async function testSourceExports() {
       },
       legacyTree,
     );
-    await NodeFSP.mkdir(NodePath.join(source, "modules/distilled"), { recursive: true, mode: 0o700 });
+    await NodeFSP.mkdir(NodePath.join(source, "modules/distilled"), {
+      recursive: true,
+      mode: 0o700,
+    });
     await verify(manifest);
     const bad = [
       (v) => {
