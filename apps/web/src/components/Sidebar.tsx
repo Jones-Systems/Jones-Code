@@ -908,7 +908,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     archiveThread,
     deleteThread,
   } = useThreadActions();
-  const stopThreadSession = useOrchestrationCommand(threadEnvironment.stopSession, {
+  const stopThread = useOrchestrationCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
@@ -2743,7 +2743,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           }
           case "stop-thread": {
-            const result = await stopThreadSession({
+            const result = await stopThread({
               environmentId: threadRef.environmentId,
               input: { threadId: threadRef.threadId },
             });
