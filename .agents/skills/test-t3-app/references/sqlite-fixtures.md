@@ -52,7 +52,10 @@ Use the app's commands or APIs for behavior tests. Use `node apps/server/src/bin
 
 On Linux, use `node apps/server/src/jones/workstreams/testing/nativeHomeFixture.ts
 <absolute-home>` from a disposable source copy stamped with the exact candidate's
-`jonesSource`. Create `<absolute-home>` as a new, empty, owned `0700` directory
+`jonesSource` and a preview package version. Set the copy's version with
+`node scripts/update-release-package-versions.ts <preview-version>` before source
+stamping; qualified receipts reject the unstamped `0.1.2` package version.
+Create `<absolute-home>` as a new, empty, owned `0700` directory
 outside `~/.t3`; the helper refuses nonempty, shared or symlinked targets. The
 caller owns that directory's lifetime and any partially prepared home after a
 failure. Stop all consumers before removing the caller's exact fixture directory.
