@@ -29,10 +29,7 @@ export function FleetEnrollmentControls(props: FleetEnrollmentControlsProps) {
   return <FleetEnrollmentControlsForHost key={props.environmentId} {...props} />;
 }
 
-function FleetEnrollmentControlsForHost({
-  environmentId,
-  label,
-}: FleetEnrollmentControlsProps) {
+function FleetEnrollmentControlsForHost({ environmentId, label }: FleetEnrollmentControlsProps) {
   const state = useAtomValue(fleetDesktopState);
   const storageError = useAtomValue(fleetStatusError);
   const publication = useAtomValue(fleetPublication);
