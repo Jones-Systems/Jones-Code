@@ -1,4 +1,6 @@
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
+import * as Cause from "effect/Cause";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -42,6 +44,8 @@ import * as Setup from "../../project/ProjectSetupScriptRunner.ts";
 import * as VcsStatus from "../../vcs/VcsStatusBroadcaster.ts";
 import * as Conversation from "../conversationWorkspace/ConversationPolicy.ts";
 
+vi.mock("effect/Cause", { spy: true });
+
 const threadId = ThreadId.make("thread:active-workspace-handoff");
 const projectId = ProjectId.make("project:active-workspace-handoff");
 const driver = ProviderDriverKind.make("claudeAgent");
@@ -69,6 +73,7 @@ it.live.each([
   "unexpected failure",
   "failure before planning",
   "failure after planning",
+  "failure after lease",
 ] as const)("active workspace transition: %s", (scenario) =>
   Effect.gen(function* () {
     const started = yield* Deferred.make<void>();
@@ -79,6 +84,9 @@ it.live.each([
     const handoffControlStarted = yield* Deferred.make<void>();
     const allowHandoffControl = yield* Deferred.make<void>();
     const detachStarted = yield* Deferred.make<void>();
+    const leaseAcquired = yield* Deferred.make<void>();
+    const streamFailureObserved = yield* Deferred.make<void>();
+    let injectedFailure: Adapter.ProviderAdapterEventStreamError | undefined;
     const failures =
       yield* Queue.unbounded<
         Queue.Queue<Adapter.ProviderAdapterV2Event, Adapter.ProviderAdapterEventStreamError>
@@ -201,13 +209,15 @@ it.live.each([
                 else yield* terminal(turn, "completed");
               }),
             interruptTurn: () =>
-              scenario.startsWith("failure ")
-                ? Deferred.succeed(failureReached, undefined).pipe(
-                    Effect.andThen(Deferred.await(allowFailureFinalization)),
-                  )
-                : active === undefined
-                  ? Effect.void
-                  : terminal(active, "interrupted"),
+              scenario === "failure after lease"
+                ? Effect.void
+                : scenario.startsWith("failure ")
+                  ? Deferred.succeed(failureReached, undefined).pipe(
+                      Effect.andThen(Deferred.await(allowFailureFinalization)),
+                    )
+                  : active === undefined
+                    ? Effect.void
+                    : terminal(active, "interrupted"),
             steerTurn: unused,
             compactThread: unused,
             respondToRuntimeRequest: unused,
@@ -256,6 +266,34 @@ it.live.each([
       const settings = yield* ServerSettings.ServerSettingsService;
       const sessions = yield* Sessions.ProviderSessionManagerV2;
       const executor = yield* Executor.ThreadCommandExecutor;
+      if (scenario === "failure after lease") {
+        const get = sessions.get;
+        const getSpy = vi
+          .spyOn(sessions, "get")
+          .mockImplementation((id, options) =>
+            get(id, options).pipe(
+              Effect.tap(() =>
+                options?.controlScope === undefined
+                  ? Effect.void
+                  : Deferred.succeed(leaseAcquired, undefined).pipe(
+                      Effect.andThen(Deferred.await(allowHandoffControl)),
+                    ),
+              ),
+            ),
+          );
+        const pretty = vi.mocked(Cause.pretty).getMockImplementation()!;
+        const failureSpy = vi.spyOn(Cause, "pretty").mockImplementation((cause) => {
+          if (injectedFailure !== undefined && Cause.squash(cause) === injectedFailure)
+            Deferred.doneUnsafe(streamFailureObserved, Effect.void);
+          return pretty(cause);
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            getSpy.mockRestore();
+            failureSpy.mockRestore();
+          }),
+        );
+      }
       const sql = yield* SqlClient.SqlClient;
       const threads = yield* ThreadManagement.ThreadManagementService.pipe(
         Effect.provide(
@@ -434,6 +472,23 @@ it.live.each([
       );
       assert.equal(result.continuation.status, "scheduled");
       assert.equal(record.phase, "done");
+      if (scenario === "failure after lease") {
+        yield* Deferred.await(leaseAcquired);
+        const events = yield* Queue.take(failures);
+        injectedFailure = new Adapter.ProviderAdapterEventStreamError({
+          driver,
+          providerSessionId: running.providerThreads[0]!.providerSessionId!,
+          cause: "Synthetic post-lease stream failure",
+        });
+        yield* Queue.fail(events, injectedFailure);
+        yield* Deferred.await(streamFailureObserved);
+        assert.isTrue(yield* sessions.isLive(running.providerThreads[0]!.providerSessionId!));
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.status,
+          "running",
+        );
+        yield* Deferred.succeed(allowHandoffControl, undefined);
+      }
       if (scenario === "failure after planning") {
         yield* Deferred.await(handoffControlStarted);
         yield* failStream();
@@ -443,7 +498,7 @@ it.live.each([
         if (scenario === "failure after planning") yield* Deferred.await(detachStarted);
         yield* Deferred.succeed(allowFailureFinalization, undefined);
         if (scenario === "failure after planning") yield* Deferred.await(detached);
-        else yield* Deferred.await(runtimeClosed);
+        else if (scenario !== "failure after lease") yield* Deferred.await(runtimeClosed);
         const finalized = yield* waitFor((p) =>
           p.runs.some(
             (r) =>

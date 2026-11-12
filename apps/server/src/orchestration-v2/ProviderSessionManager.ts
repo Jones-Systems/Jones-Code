@@ -37,6 +37,7 @@ import {
   ProviderSessionId,
   ThreadId,
   type ProviderThreadId,
+  type ProviderTurnId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -184,7 +185,18 @@ export const ProviderSessionManagerV2Error = Schema.Union([
 ]);
 export type ProviderSessionManagerV2Error = typeof ProviderSessionManagerV2Error.Type;
 
+interface HandoffSettlementInput<E, R> {
+  readonly runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
+  readonly threadId: ThreadId;
+  readonly providerThreadId: ProviderThreadId;
+  readonly providerTurnId: ProviderTurnId;
+  readonly settle: Effect.Effect<unknown, E, R>;
+}
+
 export interface ProviderSessionManagerV2Shape {
+  readonly settleHandoff?: <E, R>(
+    input: HandoffSettlementInput<E, R>,
+  ) => Effect.Effect<void, E | ProviderSessionLookupError, R>;
   /** Never opens or stops a runtime. Current reusable providers cannot issue writer permits. */
   readonly requestRuntimeOperationPermit?: (
     identity: RuntimeOperation.RuntimeOperationIdentity,
@@ -294,6 +306,10 @@ interface LiveSessionEntry {
   readonly exposedRuntime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
   readonly eventSubscribers: Ref.Ref<ReadonlyMap<number, ProviderSessionEventSubscriber>>;
   readonly requestEventPermit: Semaphore.Semaphore;
+  readonly failureOwnership: {
+    readonly permit: Semaphore.Semaphore;
+    failed: boolean;
+  };
   readonly scope: Scope.Closeable;
   readonly idleGeneration: number;
   readonly busyTurns: ReadonlySet<string>;
@@ -3000,6 +3016,12 @@ export const layerWithOptions = (
                         cause: "Provider event stream ended unexpectedly.",
                       }),
                     );
+              // Record genuine stream failure before release can wait on a handoff lease.
+              yield* entry.failureOwnership.permit.withPermits(1)(
+                Effect.sync(() => {
+                  entry.failureOwnership.failed = true;
+                }),
+              );
               yield* releaseEntry({
                 providerSessionId: entry.runtime.providerSessionId,
                 onlyIfRuntime: entry.runtime,
@@ -4118,6 +4140,7 @@ export const layerWithOptions = (
                 ReadonlyMap<number, ProviderSessionEventSubscriber>
               >(new Map());
               const requestEventPermit = yield* Semaphore.make(1);
+              const failureOwnership = { permit: yield* Semaphore.make(1), failed: false };
               const exposedRuntime = decorateRuntime(runtime, eventSubscribers, requestEventPermit);
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
@@ -4136,6 +4159,7 @@ export const layerWithOptions = (
                 exposedRuntime,
                 eventSubscribers,
                 requestEventPermit,
+                failureOwnership,
                 scope: sessionScope,
                 idleGeneration: 0,
                 busyTurns: new Set(),
@@ -4210,7 +4234,7 @@ export const layerWithOptions = (
                 entry.requestEventPermit.release(1),
               ).pipe(Scope.provide(options.controlScope));
               const current = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
-              if (current?.runtime !== entry.runtime)
+              if (current?.runtime !== entry.runtime || entry.failureOwnership.failed)
                 return Option.none<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
             }
             if (options?.touchActivity !== false) yield* touchActivity(providerSessionId);
@@ -4227,6 +4251,39 @@ export const layerWithOptions = (
               ),
             ),
         ),
+        settleHandoff: Effect.fn("ProviderSessionManager.settleHandoff")(function* <E, R>(
+          input: HandoffSettlementInput<E, R>,
+        ) {
+          const entry = (yield* Ref.get(sessions)).get(sessionKey(input.runtime.providerSessionId));
+          if (entry?.exposedRuntime !== input.runtime) return;
+          yield* entry.failureOwnership.permit.withPermits(1)(
+            Effect.gen(function* () {
+              if (entry.failureOwnership.failed) return;
+              const context = yield* projectionStore
+                .getProviderControlContext(input.threadId, input)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderSessionLookupError({
+                        providerSessionId: input.runtime.providerSessionId,
+                        cause,
+                      }),
+                  ),
+                );
+              if (
+                context.providerThread?.providerSessionId !== input.runtime.providerSessionId ||
+                context.providerTurn?.status !== "running" ||
+                context.providerTurn.runAttemptId === null ||
+                context.providerTurn.providerThreadId !== input.providerThreadId ||
+                context.providerTurn.runAttemptId !== context.run?.activeAttemptId ||
+                context.run?.status !== "running"
+              )
+                return;
+              // Outcome admission and durable settlement share this runtime/attempt gate.
+              yield* input.settle;
+            }),
+          );
+        }),
         close: (providerSessionId) =>
           releaseEntry({ providerSessionId, reason: "manual_shutdown" }).pipe(
             Effect.mapError(

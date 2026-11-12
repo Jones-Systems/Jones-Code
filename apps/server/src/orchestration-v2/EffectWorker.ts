@@ -288,6 +288,12 @@ export const layerExecutor: Layer.Layer<
                 ) {
                   return Effect.gen(function* () {
                     const controlScope = yield* Scope.Scope;
+                    const settleHandoff = providerSessions.settleHandoff;
+                    if (settleHandoff === undefined)
+                      return yield* new ProviderSessionManager.ProviderSessionLookupError({
+                        providerSessionId: request.providerSessionId,
+                        cause: "Handoff settlement ownership is unavailable.",
+                      });
                     const live = yield* providerSessions.get(request.providerSessionId, {
                       touchActivity: false,
                       controlScope,
@@ -299,12 +305,18 @@ export const layerExecutor: Layer.Layer<
                       providerThreadId: request.providerThreadId,
                       providerTurnId: request.providerTurnId,
                     });
-                    yield* threads.dispatch({
-                      type: "thread.background-work.settle",
-                      commandId: CommandId.make(`${effect.id}:background-work-settled`),
+                    yield* settleHandoff({
+                      runtime: live.value,
                       threadId: effect.threadId,
                       providerThreadId: request.providerThreadId,
                       providerTurnId: request.providerTurnId,
+                      settle: threads.dispatch({
+                        type: "thread.background-work.settle",
+                        commandId: CommandId.make(`${effect.id}:background-work-settled`),
+                        threadId: effect.threadId,
+                        providerThreadId: request.providerThreadId,
+                        providerTurnId: request.providerTurnId,
+                      }),
                     });
                   }).pipe(
                     Effect.scoped,
