@@ -144,12 +144,15 @@ interface Row {
   readonly created_at: string;
   readonly updated_at: string;
 }
+const decodeRemoteAdmissionEnvelopeJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionEnvelope),
+);
+const decodeRemoteAdmissionRecord = Schema.decodeUnknownEffect(RemoteAdmissionRecord);
+
 const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(
   function* (row: Row) {
-    const envelope = yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionEnvelope))(
-      row.envelope_json,
-    );
-    const record = yield* Schema.decodeUnknownEffect(RemoteAdmissionRecord)({
+    const envelope = yield* decodeRemoteAdmissionEnvelopeJson(row.envelope_json);
+    const record = yield* decodeRemoteAdmissionRecord({
       id: row.id,
       idempotencyKey: row.idempotency_key,
       requestDigest: row.request_digest,
@@ -171,6 +174,8 @@ const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(
   },
   Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })),
 );
+const decodeRemoteAdmissionRequest = Schema.decodeEffect(RemoteAdmissionRequest);
+const decodeRemoteAdmissionReceiverPolicy = Schema.decodeEffect(RemoteAdmissionReceiverPolicy);
 
 const make = Effect.fn("RemoteAdmission.make")(function* <E>(
   evaluate: RemoteAdmissionEvaluator<E>,
@@ -219,7 +224,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
 
   const request: RemoteAdmission["Service"]["request"] = Effect.fn("RemoteAdmission.request")(
     function* (input) {
-      const decoded = yield* Schema.decodeEffect(RemoteAdmissionRequest)(input).pipe(
+      const decoded = yield* decodeRemoteAdmissionRequest(input).pipe(
         Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })),
       );
       const snapshot = yield* Effect.try({
@@ -381,7 +386,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
       sql.withTransaction(
         Effect.gen(function* () {
           yield* validateIdentity(input.commandId);
-          const currentPolicy = yield* Schema.decodeEffect(RemoteAdmissionReceiverPolicy)(
+          const currentPolicy = yield* decodeRemoteAdmissionReceiverPolicy(
             input.currentPolicy,
           ).pipe(Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })));
           const record = yield* bound(input);
@@ -422,14 +427,23 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
     );
 
   return RemoteAdmission.of({
-    request: (input) => request(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    request: Effect.fn("RemoteAdmission.request")((input) =>
+      request(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    ),
     get,
-    resolve: (input) => resolve(input).pipe(Effect.tap(() => publishDependencyChanges)),
-    withdraw: (input) => withdraw(input).pipe(Effect.tap(() => publishDependencyChanges)),
-    claimDispatch: (input) => claimDispatch(input).pipe(Effect.tap(() => publishDependencyChanges)),
-    markDispatched: (input) =>
+    resolve: Effect.fn("RemoteAdmission.resolve")((input) =>
+      resolve(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    ),
+    withdraw: Effect.fn("RemoteAdmission.withdraw")((input) =>
+      withdraw(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    ),
+    claimDispatch: Effect.fn("RemoteAdmission.claimDispatch")((input) =>
+      claimDispatch(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    ),
+    markDispatched: Effect.fn("RemoteAdmission.markDispatched")((input) =>
       markDispatched(input).pipe(Effect.tap(() => publishDependencyChanges)),
-    listPending: () =>
+    ),
+    listPending: Effect.fn("RemoteAdmission.listPending")(() =>
       database(
         Effect.gen(function* () {
           const rows = yield* sql<Row>`SELECT * FROM jones_remote_admissions
@@ -437,6 +451,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
           return yield* Effect.forEach(rows, decodeRow);
         }),
       ),
+    ),
   });
 });
 

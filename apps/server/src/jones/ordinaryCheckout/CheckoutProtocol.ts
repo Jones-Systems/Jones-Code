@@ -82,6 +82,17 @@ export const Source = Schema.Union([
     attempt: ordinal,
     claimExpiresAt: Utc,
   }),
+  Schema.Struct({
+    kind: Schema.Literal("outbox_process_v2"),
+    effectId: id,
+    commandId: id,
+    threadId: id,
+    runId: Schema.NullOr(id),
+    workerId: id,
+    attempt: ordinal,
+    claimedAt: Utc,
+    requestDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  }),
   Schema.Struct({ kind: Schema.Literals(["prepared_run", "prepared_launch"]), producerId: id }),
 ]);
 export type Source = typeof Source.Type;
@@ -139,7 +150,7 @@ export const operationId = (admissionId: string, source: Source): string =>
   `checkout-use:${digest({
     admissionId,
     source:
-      source.kind === "outbox"
+      source.kind === "outbox" || source.kind === "outbox_process_v2"
         ? { kind: source.kind, effectId: source.effectId, attempt: source.attempt }
         : source,
   })}`;

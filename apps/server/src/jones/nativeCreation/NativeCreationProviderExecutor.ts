@@ -44,7 +44,9 @@ export const layer = Layer.effect(
             }),
         ),
       ),
-      executeWholeOperation: ({ effect, context }) => {
+      executeWholeOperation: Effect.fn(
+        "Execution.NativeCreationProviderExecutor.executeWholeOperation",
+      )(({ effect, context }) => {
         const runCaptured = Effect.fn("NativeCreationProviderExecutor.executeWholeOperation")(
           function* () {
             const reference = Authority.getNativeCreationExecutionReference(context);
@@ -132,7 +134,7 @@ export const layer = Layer.effect(
           ),
         );
         return runCaptured();
-      },
+      }),
     });
   }),
 );

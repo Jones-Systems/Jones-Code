@@ -129,6 +129,10 @@ export class NativeProviderSettlementProofError extends Schema.TaggedError<Nativ
 }
 
 // EventSink calls this inside its receipt/event transaction; a failure must roll back that commit.
+const compiledDecodeOption1 = Schema.decodeOption(SettlementProof);
+const compiledEncodeEffect2 = Schema.encodeEffect(SettlementProofJson);
+const compiledIs3 = Schema.is(NativeProviderSettlementProofError);
+
 export const captureNativeProviderSettlementProof = Effect.fn(
   "NativeProvider.captureSettlementProof",
 )(
@@ -146,7 +150,7 @@ export const captureNativeProviderSettlementProof = Effect.fn(
     WHERE native_command_id = ${input.receipt.commandId}`;
     const reservation = rows[0];
     if (reservation === undefined) return;
-    const decoded = Schema.decodeOption(SettlementProof)(input);
+    const decoded = compiledDecodeOption1(input);
     if (
       Option.isNone(decoded) ||
       !matchesSettlementProof(
@@ -157,7 +161,7 @@ export const captureNativeProviderSettlementProof = Effect.fn(
       )
     )
       return yield* new NativeProviderSettlementProofError({ reason: "invalid_proof" });
-    const encoded = yield* Schema.encodeEffect(SettlementProofJson)(decoded.value);
+    const encoded = yield* compiledEncodeEffect2(decoded.value);
     if (reservation.proof_json !== null) {
       if (reservation.proof_json !== encoded)
         return yield* new NativeProviderSettlementProofError({ reason: "invalid_proof" });
@@ -167,7 +171,7 @@ export const captureNativeProviderSettlementProof = Effect.fn(
     WHERE native_command_id = ${input.receipt.commandId} AND proof_json IS NULL`;
   },
   Effect.mapError((error) =>
-    Schema.is(NativeProviderSettlementProofError)(error)
+    compiledIs3(error)
       ? error
       : new NativeProviderSettlementProofError({ reason: "persistence_failed" }),
   ),

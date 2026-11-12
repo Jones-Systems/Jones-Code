@@ -70,7 +70,7 @@ function EnvironmentProviderRows<Row extends ProviderRow>({
     base: typeof providerInstances;
     next: typeof providerInstances;
   } | null>(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Fence asynchronous provider reorder responses to the lifetime of the mounted settings list.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fence asynchronous provider reorder responses to the lifetime of the mounted settings list.
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -223,6 +223,7 @@ function SortableProviderRow({
           ref={setActivatorNodeRef}
           {...attributes}
           {...listeners}
+          data-provider-reorder-handle=""
           aria-label={`Reorder ${label}`}
           className="absolute inset-y-0 left-0 z-10 flex w-3 cursor-grab touch-none items-center justify-center text-muted-foreground/50 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring active:cursor-grabbing sm:w-4"
         >

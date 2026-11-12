@@ -129,7 +129,7 @@ export function WorkstreamNativeSidebar({
         : false,
     };
   };
-  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed menu and drop handles for Sidebar's single pointer gesture owner.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed menu and drop handles for Sidebar's single pointer gesture owner.
   useLayoutEffect(() => {
     if (assignmentMenuRef) assignmentMenuRef.current = menu;
     if (externalDropRef)
@@ -147,7 +147,7 @@ export function WorkstreamNativeSidebar({
       if (externalDropRef) externalDropRef.current = null;
     };
   });
-  // oxlint-disable-next-line t3code/react-effect-budget -- Retire the owned pointer sensor on unmount.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Retire the owned pointer sensor on unmount.
   useLayoutEffect(() => () => sensor.current?.cancel(), []);
   const pointerDown = (event: ReactPointerEvent, thread: EnvironmentThreadShell) => {
     if (

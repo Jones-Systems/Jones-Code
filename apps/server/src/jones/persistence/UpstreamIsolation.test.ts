@@ -213,9 +213,36 @@ it.effect("Jones migrations leave upstream schema and ledger unchanged", () =>
         !upstreamObjects.some(({ type, name }) => type === object.type && name === object.name),
     );
     assert.isNotEmpty(added);
-    for (const { type, name, tbl_name } of added) {
-      assert.include(["table", "index", "trigger"], type, name);
-      assert.isTrue(isJonesTable(tbl_name), `${type} ${name} on ${tbl_name}`);
+    const expectedViews = {
+      jones_ordinary_checkout_all_events:
+        "CREATE VIEW jones_ordinary_checkout_all_events AS SELECT 'legacy' AS store,* FROM jones_ordinary_checkout_lifecycle_events UNION ALL SELECT 'process_v2' AS store,* FROM jones_ordinary_checkout_process_events",
+      jones_ordinary_checkout_all_uses:
+        "CREATE VIEW jones_ordinary_checkout_all_uses AS SELECT 'legacy' AS store,operation_id,admission_id,checkout_key,lease_id,owner_epoch,source_kind,effect_id,worker_id,attempt_count,claim_expires_at,producer_id,state,revision,last_event_ordinal,started_at,settled_at,NULL AS command_id,NULL AS thread_id,NULL AS run_id,NULL AS claimed_at,NULL AS request_digest FROM jones_ordinary_checkout_uses UNION ALL SELECT 'process_v2' AS store,operation_id,admission_id,checkout_key,lease_id,owner_epoch,source_kind,effect_id,worker_id,attempt_count,NULL AS claim_expires_at,NULL AS producer_id,state,revision,last_event_ordinal,started_at,settled_at,command_id,thread_id,run_id,claimed_at,request_digest FROM jones_ordinary_checkout_process_uses",
+    };
+    assert.deepStrictEqual(
+      added
+        .filter(({ type }) => type === "view")
+        .map(({ name }) => name)
+        .sort(),
+      Object.keys(expectedViews).sort(),
+    );
+    for (const { type, name, tbl_name, sql: definition } of added) {
+      if (type === "view") {
+        assert.isTrue(
+          name === "jones_ordinary_checkout_all_events" ||
+            name === "jones_ordinary_checkout_all_uses",
+        );
+        if (
+          name === "jones_ordinary_checkout_all_events" ||
+          name === "jones_ordinary_checkout_all_uses"
+        ) {
+          assert.equal(definition?.replace(/\s+/g, " ").trim(), expectedViews[name]);
+        }
+        assert.equal(tbl_name, name);
+      } else {
+        assert.include(["table", "index", "trigger"], type, name);
+        assert.isTrue(isJonesTable(tbl_name), `${type} ${name} on ${tbl_name}`);
+      }
     }
     for (const { name } of added.filter(({ type }) => type === "table")) {
       for (const reference of (yield* readShape(name)).foreignKeys)
@@ -225,6 +252,41 @@ it.effect("Jones migrations leave upstream schema and ledger unchanged", () =>
     // Reopening with an upstream-only migrator, as T3 Code does, is a no-op.
     assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: upstreamThrough }), []);
     assert.deepStrictEqual(yield* readObjects, objects);
+  }).pipe(Effect.provide(memory)),
+);
+
+it.effect("Jones migrations leave every upstream row unchanged with Jones links present", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: upstreamThrough });
+    // Run the Jones track to its links table, then seed a link the later entries could copy.
+    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 119));
+    yield* sql`INSERT INTO jones_peer_environment_links ${sql.insert({
+      environment_id: "synthetic-isolation-env",
+      secret_name: "peer-link-synthetic-isolation",
+      label: "Synthetic",
+      urls_json: '["https://synthetic-isolation.invalid"]',
+      access: "auto",
+      linked_at: "2026-10-01T00:00:00.000Z",
+      expires_at: "2027-10-01T00:00:00.000Z",
+      fenced: 1,
+    })}`;
+    const upstreamTables = (yield* readObjects).filter(
+      ({ type, name }) => type === "table" && !isJonesTable(name),
+    );
+    assert.isTrue(upstreamTables.some(({ name }) => name === "peer_environment_links"));
+    // Some upstream tables have no rowid, so compare each table's rows as a sorted multiset.
+    const rows = Effect.forEach(upstreamTables, ({ name }) =>
+      sql
+        .unsafe(`SELECT * FROM "${name}"`)
+        .pipe(Effect.map((found) => found.map((row) => JSON.stringify(row)).toSorted())),
+    );
+    const before = yield* rows;
+
+    yield* runMigrations();
+
+    // Schema and ledger checks alone let a Jones migration copy rows into upstream tables.
+    assert.deepStrictEqual(yield* rows, before);
   }).pipe(Effect.provide(memory)),
 );
 
@@ -348,7 +410,12 @@ it.effect(
         [145, "WorkstreamsForwardReceipts"],
         [146, "SettlementOriginRetention"],
         [147, "QueueHolds"],
-        [148, "PersonalWorkstreams"],
+        [148, "NativeExecutionProcessCustody"],
+        [149, "OrdinaryCheckoutProcessCustody"],
+        [150, "AuthSessionClientMetadata"],
+        [151, "WorkspaceRuntimeUses"],
+        [152, "PeerLinksAdoption"],
+        [153, "PersonalWorkstreams"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

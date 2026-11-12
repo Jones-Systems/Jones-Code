@@ -83,6 +83,8 @@ const decodeProvider = Schema.decodeUnknownEffect(
 );
 const storageError = (cause: unknown) =>
   new TaskContinuationError({ reason: "storage_unavailable", cause });
+const compiledIs1 = Schema.is(TaskContinuationError);
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const present = makeJonesTablePresence(sql);
@@ -177,7 +179,7 @@ const make = Effect.gen(function* () {
           }
           const root = continuationRoot(lineage, run);
           if (
-            Schema.is(TaskContinuationError)(root) ||
+            compiledIs1(root) ||
             root.id !== row.runId ||
             root.userMessageId !== row.messageId ||
             assertCurrentBinding(row, { thread, providerThreads: [provider] }) !== undefined
@@ -232,9 +234,7 @@ const make = Effect.gen(function* () {
         }),
       );
     },
-    Effect.mapError((cause) =>
-      Schema.is(TaskContinuationError)(cause) ? cause : storageError(cause),
-    ),
+    Effect.mapError((cause) => (compiledIs1(cause) ? cause : storageError(cause))),
   );
   return TaskContinuationStore.of({ get, insert, confirm, witnesses });
 });

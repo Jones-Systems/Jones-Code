@@ -1,5 +1,5 @@
 import { pinOrderKeyBetween } from "@t3tools/shared/jones/pinOrder";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import * as DateTime from "effect/DateTime";
 import type { SqlError } from "effect/sql/SqlError";
@@ -69,7 +69,7 @@ const storage = (error: unknown) =>
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
+  const digester = yield* Digest.Digest;
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const fs = yield* FileSystem.FileSystem;
   const config = yield* ServerConfig.ServerConfig;
@@ -281,7 +281,7 @@ const make = Effect.gen(function* () {
     if (!(yield* fs.exists(path))) return;
     const bytes = yield* fs.readFile(path);
     const file = yield* decodeImport(new TextDecoder().decode(bytes));
-    const digest = Hex.encode(yield* crypto.digest("SHA-256", bytes));
+    const digest = Hex.encode(yield* digester.digest(Digest.sha256, bytes));
     const issue = (reason: P.PersonalWorkstreamsImportIssue["reason"]) =>
       Effect.fail({ importId: file.importId, reason });
     yield* write(

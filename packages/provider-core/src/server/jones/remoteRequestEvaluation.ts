@@ -44,9 +44,11 @@ export const remoteRequestEvaluationUnsupported = (provider: string) =>
     detail: `${provider} does not support tool-less remote request evaluation. Choose a supported evaluator model.`,
   });
 
+const compiledDecodeUnknownEffect1 = Schema.decodeUnknownEffect(RequestText);
+
 export const buildRemoteRequestEvaluationPrompt = Effect.fn("buildRemoteRequestEvaluationPrompt")(
   function* (input: Pick<RemoteRequestEvaluationInput, "message" | "context">) {
-    const requestJson = yield* Schema.decodeUnknownEffect(RequestText)(input).pipe(
+    const requestJson = yield* compiledDecodeUnknownEffect1(input).pipe(
       Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(RequestText))),
       Effect.mapError(
         (cause) =>

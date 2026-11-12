@@ -1,3 +1,7 @@
+import * as ProjectCloneTracker from "../../../../../project/ProjectCloneTracker.ts";
+import * as PeerLinks from "../../../../../peer/PeerLinks.ts";
+import * as PeerLinkRequests from "../../../../../peer/PeerLinkRequests.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ConversationPolicy from "../../../../conversationWorkspace/ConversationPolicy.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -34,6 +38,7 @@ import * as RemoteAdmissionIntake from "../../../../remoteAdmissionIntegration/R
 import * as ServerSettings from "../../../../../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../../../../../vcs/VcsStatusBroadcaster.ts";
 import * as ServerSecretStore from "../../../../../auth/ServerSecretStore.ts";
+import * as AssetSigner from "../../../../../assets/AssetSigner.ts";
 import * as ManagedProjectFolders from "../../../../../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../../../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadSearch from "../../../../../orchestration-v2/ThreadSearch.ts";
@@ -58,6 +63,9 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
       ownsPath: () => false,
       registerTurnAttachment: (attach) => Effect.sync(() => onAttachment(attach)),
     }),
+    Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
+    Layer.mock(PeerLinks.PeerLinks)({}),
+    Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
     McpProviderSessions.layer,
     NodeSqliteClient.layer({ filename: ":memory:" }),
     Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
@@ -87,6 +95,7 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
     Layer.mock(PreviewManager.PreviewManager)({}),
     Layer.mock(ServerSecretStore.ServerSecretStore)({}),
+    Layer.mock(AssetSigner.AssetSigner)({}),
     Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
     Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
     Layer.mock(ThreadSearch.ThreadSearch)({}),
@@ -215,9 +224,9 @@ it.effect("production mcp layer lists worktree tools over http", () =>
       Layer.mergeAll(
         NodeHttpServer.layerTest,
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-worktree-mcp-" }).pipe(
-          Layer.provide(NodeServices.layer),
+          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         ),
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
       ),
     ),
   ),

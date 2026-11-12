@@ -13,6 +13,9 @@ import {
   type SettlementIntent,
 } from "./Receipts.ts";
 
+const decodeSettlementHolder = Schema.decodeEffect(SettlementHolderJson);
+const decodeDutyIdentity = Schema.decodeEffect(DutyIdentityJson);
+
 export const held = (
   intent: SettlementIntent,
   reason: string,
@@ -57,7 +60,7 @@ export const make = Effect.fn("WorkspaceRetirement.makeSettlementRecovery")(func
         const holder =
           intent.holder_json === null
             ? null
-            : yield* Schema.decodeEffect(SettlementHolderJson)(intent.holder_json).pipe(
+            : yield* decodeSettlementHolder(intent.holder_json).pipe(
                 Effect.orElseSucceed(() => null),
               );
         if (intent.script_state === "running") {
@@ -129,7 +132,7 @@ export const make = Effect.fn("WorkspaceRetirement.makeSettlementRecovery")(func
           const prior =
             intent.identity_json === null
               ? null
-              : yield* Schema.decodeEffect(DutyIdentityJson)(intent.identity_json).pipe(
+              : yield* decodeDutyIdentity(intent.identity_json).pipe(
                   Effect.orElseSucceed(() => null),
                 );
           const native = yield* Effect.promise(() => dutyIdentity(intent.worktree));

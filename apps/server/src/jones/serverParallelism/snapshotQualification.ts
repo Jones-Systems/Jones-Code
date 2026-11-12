@@ -10,6 +10,8 @@ import * as Fixture from "../threadResultDependencies/testkit.ts";
 /** Snapshot offload is not enabled here. This measures the real capture/decode
  * and existing wire schema before root decides whether to activate that slice.
  */
+const compiledEncodeEffect1 = Schema.encodeEffect(OrchestrationV2ShellSnapshotJson);
+
 export async function measureSnapshotPipeline(threadCount = 2_000) {
   if (!Number.isSafeInteger(threadCount) || threadCount < 100 || threadCount > 10_000)
     throw new Error("Bounded snapshot fixture requires 100..10000 threads");
@@ -45,7 +47,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
             shell = yield* decode;
           const decodeMs = performance.now() - decodedAt;
           const projectedAt = performance.now();
-          const projected = yield* Schema.encodeEffect(OrchestrationV2ShellSnapshotJson)({
+          const projected = yield* compiledEncodeEffect1({
             ...shell,
             projects: [],
           });

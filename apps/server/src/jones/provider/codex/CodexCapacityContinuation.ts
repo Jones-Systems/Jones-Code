@@ -1,3 +1,102 @@
+/**
+ * Jones hooks for `CodexAdapterV2.retryCapacityFailure`, the only capacity
+ * retry chain: retry policy, classifier, native retry ownership, failover
+ * exhaustion signal and the start owner that fences each native turn/start.
+ */
+
+export type CodexCapacityRetryProfile = "upstream" | "jones";
+
+/**
+ * Selects the capacity retry policy. "upstream" keeps T3 Code's 5 retries
+ * with a 2 s delay doubling to 30 s. "jones" restores the earlier Jones
+ * policy of 12 retries at a fixed 5 s. Switching this constant changes only
+ * the count and delay; the lifecycle stays upstream's.
+ */
+export const CODEX_CAPACITY_RETRY_PROFILE: CodexCapacityRetryProfile = "upstream";
+
+export interface CodexCapacityRetryPolicy {
+  readonly maxRetries: number;
+  /** Delay before the given 1-based retry attempt. */
+  readonly delayMs: (attempt: number) => number;
+}
+
+export const codexCapacityRetryPolicies: Readonly<
+  Record<CodexCapacityRetryProfile, CodexCapacityRetryPolicy>
+> = Object.freeze({
+  upstream: Object.freeze({
+    maxRetries: 5,
+    delayMs: (attempt: number) => Math.min(2_000 * 2 ** (attempt - 1), 30_000),
+  }),
+  jones: Object.freeze({ maxRetries: 12, delayMs: () => 5_000 }),
+});
+
+export const codexCapacityRetryPolicy: CodexCapacityRetryPolicy =
+  codexCapacityRetryPolicies[CODEX_CAPACITY_RETRY_PROFILE];
+
+export interface CodexCapacityErrorFacts {
+  readonly code: string | null;
+  readonly message?: string | undefined;
+}
+
+export interface CodexCapacityNativeError extends CodexCapacityErrorFacts {
+  readonly willRetry: boolean;
+}
+
+const CODEX_CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model.";
+
+/**
+ * Codex reports overload as `serverOverloaded`, but some app-server builds
+ * report the same condition with a null, `other` or `internalServerError`
+ * code and only the exact capacity message.
+ */
+export function isCodexCapacityError(error: CodexCapacityErrorFacts): boolean {
+  return (
+    error.code === "serverOverloaded" ||
+    ((error.code === null || error.code === "other" || error.code === "internalServerError") &&
+      error.message?.trim() === CODEX_CAPACITY_MESSAGE)
+  );
+}
+
+/**
+ * True when the adapter, not Codex, must retry this overload. A native
+ * `willRetry` keeps recovery with Codex; a completion error only fills missing
+ * evidence or replaces an earlier overload with a different failure.
+ */
+export function codexCapacityFailureRetryable(input: {
+  readonly nativeError?: CodexCapacityNativeError | undefined;
+  readonly completionError?: CodexCapacityErrorFacts | undefined;
+}): boolean {
+  const error =
+    input.completionError !== undefined &&
+    (input.nativeError === undefined || !isCodexCapacityError(input.completionError))
+      ? { ...input.completionError, willRetry: false }
+      : input.nativeError;
+  return error !== undefined && !error.willRetry && isCodexCapacityError(error);
+}
+
+/**
+ * Per-turn facts the adapter keeps beside upstream's lifecycle. Keys are the
+ * adapter's turn contexts, so entries disappear with the turn.
+ */
+export function makeCodexCapacityRetryFacts<Turn extends object>() {
+  const nativeErrors = new WeakMap<Turn, CodexCapacityNativeError>();
+  const exhausted = new WeakSet<Turn>();
+  return {
+    observeNativeError: (turn: Turn, error: CodexCapacityNativeError) => {
+      nativeErrors.set(turn, Object.freeze({ ...error }));
+    },
+    retryable: (turn: Turn, completionError: CodexCapacityErrorFacts | undefined) =>
+      codexCapacityFailureRetryable({ nativeError: nativeErrors.get(turn), completionError }),
+    /** Marks a retryable overload that reached the retry limit. */
+    markExhausted: (turn: Turn) => {
+      exhausted.add(turn);
+    },
+    /** Returns the exhaustion mark once, so failover is raised at most once per turn. */
+    takeExhausted: (turn: Turn) => exhausted.delete(turn),
+  };
+}
+
+/** Start-owner state for one native turn/start dispatch. */
 export interface CodexCapacityContinuationBinding {
   readonly runId: string;
   readonly attemptId: string;
@@ -6,26 +105,17 @@ export interface CodexCapacityContinuationBinding {
   readonly runtimeGeneration: string;
 }
 
-export type CodexCapacityTerminalStatus = "completed" | "failed" | "interrupted";
 export type CodexCapacityCancellationReason = "stop" | "superseded" | "closed" | "runtime_changed";
-
-interface CodexCapacityNativeFacts {
-  readonly error?: {
-    readonly code: string | null;
-    readonly message?: string;
-    readonly willRetry: boolean;
-  };
-  readonly completion?: CodexCapacityTerminalStatus;
-}
 
 export interface CodexCapacityContinuationState {
   readonly binding: CodexCapacityContinuationBinding;
-  readonly phase: "awaiting_start" | "running" | "waiting_retry" | "terminal";
+  readonly phase: "awaiting_start" | "running" | "terminal";
+  /** 0 for the prompt; the retry attempt for a promptless continuation. */
   readonly retryOrdinal: number;
   readonly nativeTurnId: string | null;
-  readonly nativeFacts: CodexCapacityNativeFacts;
-  readonly pendingNativeTurns: Readonly<Record<string, CodexCapacityNativeFacts>>;
+  /** Native turns of earlier attempts. Their replies and notifications never bind this start. */
   readonly retiredNativeTurnIds: ReadonlyArray<string>;
+  readonly terminalReason?: CodexCapacityCancellationReason | "start_unknown";
 }
 
 export type CodexCapacityContinuationSignal = {
@@ -36,88 +126,23 @@ export type CodexCapacityContinuationSignal = {
       readonly retryOrdinal: number;
       readonly nativeTurnId: string;
     }
-  | {
-      readonly type: "nativeError";
-      readonly nativeTurnId: string;
-      readonly code: string | null;
-      readonly message?: string;
-      readonly willRetry: boolean;
-    }
-  | {
-      readonly type: "nativeCompleted";
-      readonly nativeTurnId: string;
-      readonly status: CodexCapacityTerminalStatus;
-      readonly error?: { readonly code: string | null; readonly message?: string };
-    }
-  | {
-      readonly type: "nativeSuccessorAcknowledged";
-      readonly nativeTurnId: string;
-      readonly startDispatched: false;
-    }
-  | { readonly type: "retryReady"; readonly retryOrdinal: number }
   | { readonly type: "cancel"; readonly reason: CodexCapacityCancellationReason }
   | { readonly type: "startUnknown"; readonly retryOrdinal: number }
 );
 
-// These actions describe the logical request. Cancellation and unknown starts
-// do not confirm native interruption; the adapter owns native operations.
-export type CodexCapacityContinuationAction =
-  | { readonly type: "scheduleRetry"; readonly retryOrdinal: number; readonly delayMs: number }
-  | { readonly type: "retry"; readonly retryOrdinal: number; readonly promptless: true }
-  | {
-      readonly type: "terminal";
-      readonly status: CodexCapacityTerminalStatus | "unknown";
-      readonly nativeTurnId: string | null;
-      readonly reason?: CodexCapacityCancellationReason | "start_unknown";
-    };
-
-export interface CodexCapacityContinuationReduction {
-  readonly state: CodexCapacityContinuationState;
-  readonly actions: ReadonlyArray<CodexCapacityContinuationAction>;
-}
-
-const emptyFacts: CodexCapacityNativeFacts = Object.freeze({});
-const emptyPending: Readonly<Record<string, CodexCapacityNativeFacts>> = Object.freeze({});
-const noActions: ReadonlyArray<CodexCapacityContinuationAction> = Object.freeze([]);
-export const codexCapacityRetryPolicy = Object.freeze({ maxRetries: 12, delayMs: 5000 });
-
-function isCapacityError(error: {
-  readonly code: string | null;
-  readonly message?: string;
-}): boolean {
-  return (
-    error.code === "serverOverloaded" ||
-    ((error.code === null || error.code === "other" || error.code === "internalServerError") &&
-      error.message?.trim() === "Selected model is at capacity. Please try a different model.")
-  );
-}
-
-export function codexCapacityRetriesExhausted(state: CodexCapacityContinuationState): boolean {
-  return (
-    state.phase === "terminal" &&
-    state.nativeTurnId !== null &&
-    !state.retiredNativeTurnIds.includes(state.nativeTurnId) &&
-    state.nativeFacts.completion === "failed" &&
-    state.nativeFacts.error !== undefined &&
-    isCapacityError(state.nativeFacts.error) &&
-    state.nativeFacts.error.willRetry === false &&
-    state.retryOrdinal >= codexCapacityRetryPolicy.maxRetries
-  );
-}
-
-// The adapter retains the effective settings for this logical request; retries
-// only request another promptless send and never resolve settings themselves.
 export function makeCodexCapacityContinuation(
   binding: CodexCapacityContinuationBinding,
+  continuation?: {
+    readonly retryOrdinal: number;
+    readonly retiredNativeTurnIds: ReadonlyArray<string>;
+  },
 ): CodexCapacityContinuationState {
   return Object.freeze<CodexCapacityContinuationState>({
     binding: Object.freeze({ ...binding }),
     phase: "awaiting_start",
-    retryOrdinal: 0,
+    retryOrdinal: continuation?.retryOrdinal ?? 0,
     nativeTurnId: null,
-    nativeFacts: emptyFacts,
-    pendingNativeTurns: emptyPending,
-    retiredNativeTurnIds: Object.freeze([]),
+    retiredNativeTurnIds: Object.freeze([...(continuation?.retiredNativeTurnIds ?? [])]),
   });
 }
 
@@ -134,191 +159,39 @@ function matchesBinding(
   );
 }
 
-function unchanged(state: CodexCapacityContinuationState): CodexCapacityContinuationReduction {
-  return { state, actions: noActions };
-}
-
-function terminal(
-  state: CodexCapacityContinuationState,
-  status: CodexCapacityTerminalStatus | "unknown",
-  reason?: CodexCapacityCancellationReason | "start_unknown",
-): CodexCapacityContinuationReduction {
-  return {
-    state: Object.freeze<CodexCapacityContinuationState>({
-      ...state,
-      phase: "terminal",
-      pendingNativeTurns: emptyPending,
-    }),
-    actions: Object.freeze([
-      Object.freeze<CodexCapacityContinuationAction>({
-        type: "terminal",
-        status,
-        nativeTurnId: state.nativeTurnId,
-        ...(reason === undefined ? {} : { reason }),
-      }),
-    ]),
-  };
-}
-
-function reduceCompletion(
-  state: CodexCapacityContinuationState,
-): CodexCapacityContinuationReduction {
-  const status = state.nativeFacts.completion;
-  if (status === undefined) return unchanged(state);
-  if (
-    status === "failed" &&
-    state.nativeFacts.error !== undefined &&
-    isCapacityError(state.nativeFacts.error) &&
-    state.nativeFacts.error.willRetry === false &&
-    state.retryOrdinal < codexCapacityRetryPolicy.maxRetries
-  ) {
-    const retryOrdinal = state.retryOrdinal + 1;
-    return {
-      state: Object.freeze<CodexCapacityContinuationState>({
-        ...state,
-        phase: "waiting_retry",
-        retryOrdinal,
-        retiredNativeTurnIds: Object.freeze([...state.retiredNativeTurnIds, state.nativeTurnId!]),
-      }),
-      actions: Object.freeze([
-        Object.freeze<CodexCapacityContinuationAction>({
-          type: "scheduleRetry",
-          retryOrdinal,
-          delayMs: codexCapacityRetryPolicy.delayMs,
-        }),
-      ]),
-    };
-  }
-  return terminal(state, status);
-}
-
-function updateFacts(
-  facts: CodexCapacityNativeFacts,
-  signal: Extract<CodexCapacityContinuationSignal, { type: "nativeError" | "nativeCompleted" }>,
-): CodexCapacityNativeFacts {
-  return signal.type === "nativeError"
-    ? Object.freeze({
-        ...facts,
-        error: Object.freeze({
-          code: signal.code,
-          ...(signal.message === undefined ? {} : { message: signal.message }),
-          willRetry: signal.willRetry,
-        }),
-      })
-    : Object.freeze({
-        ...facts,
-        // Completion can supply missing failure evidence, but cannot take
-        // retry ownership away from an earlier native capacity notification.
-        ...(signal.error !== undefined &&
-        (facts.error === undefined || !isCapacityError(signal.error))
-          ? { error: Object.freeze({ ...signal.error, willRetry: false }) }
-          : {}),
-        completion: facts.completion ?? signal.status,
-      });
-}
-
 // Wakeups carry the freshly checked current binding. Replaying the request's
 // frozen binding alone cannot establish that its delayed target is still current.
 export function reduceCodexCapacityContinuation(
   state: CodexCapacityContinuationState,
   signal: CodexCapacityContinuationSignal,
-): CodexCapacityContinuationReduction {
-  if (!matchesBinding(state.binding, signal.binding) || state.phase === "terminal") {
-    return unchanged(state);
-  }
+): CodexCapacityContinuationState {
+  if (!matchesBinding(state.binding, signal.binding) || state.phase === "terminal") return state;
   switch (signal.type) {
     case "cancel":
-      return terminal(state, "interrupted", signal.reason);
+      return Object.freeze<CodexCapacityContinuationState>({
+        ...state,
+        phase: "terminal",
+        terminalReason: signal.reason,
+      });
     case "startUnknown":
       return state.phase === "awaiting_start" && signal.retryOrdinal === state.retryOrdinal
-        ? terminal(state, "unknown", "start_unknown")
-        : unchanged(state);
-    case "nativeSuccessorAcknowledged":
-      if (
-        (state.phase !== "waiting_retry" && state.phase !== "awaiting_start") ||
-        state.retryOrdinal === 0 ||
-        state.retiredNativeTurnIds.includes(signal.nativeTurnId)
-      )
-        return unchanged(state);
-      return {
-        state: Object.freeze<CodexCapacityContinuationState>({
-          ...state,
-          phase: "running",
-          nativeTurnId: signal.nativeTurnId,
-          nativeFacts: emptyFacts,
-          pendingNativeTurns: emptyPending,
-        }),
-        actions: noActions,
-      };
-    case "retryReady":
-      if (state.phase !== "waiting_retry" || signal.retryOrdinal !== state.retryOrdinal) {
-        return unchanged(state);
-      }
-      return {
-        state: Object.freeze<CodexCapacityContinuationState>({
-          ...state,
-          phase: "awaiting_start",
-          nativeTurnId: null,
-          nativeFacts: emptyFacts,
-          pendingNativeTurns: emptyPending,
-        }),
-        actions: Object.freeze([
-          Object.freeze<CodexCapacityContinuationAction>({
-            type: "retry",
-            retryOrdinal: state.retryOrdinal,
-            promptless: true,
-          }),
-        ]),
-      };
-    case "startAcknowledged": {
+        ? Object.freeze<CodexCapacityContinuationState>({
+            ...state,
+            phase: "terminal",
+            terminalReason: "start_unknown",
+          })
+        : state;
+    case "startAcknowledged":
       if (
         state.phase !== "awaiting_start" ||
         signal.retryOrdinal !== state.retryOrdinal ||
         state.retiredNativeTurnIds.includes(signal.nativeTurnId)
-      ) {
-        return unchanged(state);
-      }
-      const nativeFacts = Object.hasOwn(state.pendingNativeTurns, signal.nativeTurnId)
-        ? state.pendingNativeTurns[signal.nativeTurnId]!
-        : emptyFacts;
-      return reduceCompletion(
-        Object.freeze<CodexCapacityContinuationState>({
-          ...state,
-          phase: "running",
-          nativeTurnId: signal.nativeTurnId,
-          nativeFacts,
-          pendingNativeTurns: emptyPending,
-        }),
-      );
-    }
-    case "nativeError":
-    case "nativeCompleted": {
-      if (
-        state.phase === "waiting_retry" ||
-        state.retiredNativeTurnIds.includes(signal.nativeTurnId)
-      ) {
-        return unchanged(state);
-      }
-      if (state.phase === "awaiting_start") {
-        // Early notifications are facts, not a start acknowledgement. Only the
-        // matching reply selects which native turn may advance this request.
-        const previous = Object.hasOwn(state.pendingNativeTurns, signal.nativeTurnId)
-          ? state.pendingNativeTurns[signal.nativeTurnId]!
-          : emptyFacts;
-        return {
-          state: Object.freeze<CodexCapacityContinuationState>({
-            ...state,
-            pendingNativeTurns: Object.freeze({
-              ...state.pendingNativeTurns,
-              [signal.nativeTurnId]: updateFacts(previous, signal),
-            }),
-          }),
-          actions: noActions,
-        };
-      }
-      if (signal.nativeTurnId !== state.nativeTurnId) return unchanged(state);
-      const next = Object.freeze({ ...state, nativeFacts: updateFacts(state.nativeFacts, signal) });
-      return signal.type === "nativeCompleted" ? reduceCompletion(next) : unchanged(next);
-    }
+      )
+        return state;
+      return Object.freeze<CodexCapacityContinuationState>({
+        ...state,
+        phase: "running",
+        nativeTurnId: signal.nativeTurnId,
+      });
   }
 }

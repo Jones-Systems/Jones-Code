@@ -17,7 +17,6 @@ import {
   DecisionSnapshotNativeCountsLive,
   DecisionSnapshotNativeCounts,
   DecisionSnapshotToolkitHandlersLive,
-  NativeCountReadError,
 } from "./handlers.ts";
 import { DecisionSnapshot, DecisionSnapshotToolkit } from "./tools.ts";
 
@@ -295,6 +294,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       let launches = 0;
+      let collectorError: unknown;
       const collector: DecisionSnapshotCollector["Service"] = {
         collect: (purpose, input) =>
           Effect.gen(function* () {
@@ -304,7 +304,8 @@ it.effect(
                 new Promise<string>((resolve, reject) => {
                   launches++;
                   NodeChildProcess.execFile(
-                    "/usr/bin/python3",
+                    // The immutable collector requires asyncio.timeout (Python3.11+).
+                    process.env.PYTHON ?? "python3",
                     [
                       "-I",
                       "-S",
@@ -338,10 +339,14 @@ print(json.dumps(asyncio.run(module.compose({}, purpose=sys.argv[2], native=pack
                       packet,
                     ],
                     { signal, timeout: 5_000, maxBuffer: 262_144 },
-                    (error, stdout) => (error ? reject(error) : resolve(stdout)),
+                    (error, stdout, stderr) =>
+                      error ? reject(new Error(stderr, { cause: error })) : resolve(stdout),
                   );
                 }),
-              catch: () => new CollectorFailure("collector_failed"),
+              catch: (cause) => {
+                collectorError = cause;
+                return new CollectorFailure("collector_failed");
+              },
             });
           }),
       };
@@ -365,6 +370,7 @@ print(json.dumps(asyncio.run(module.compose({}, purpose=sys.argv[2], native=pack
       );
       const result = yield* h.call(["decision-snapshot"]);
       expect(launches).toBe(1);
+      expect(collectorError).toBeUndefined();
       expect(result.sources.threads).toMatchObject({
         status: "observed",
         values: { total: 4, operating: 2 },

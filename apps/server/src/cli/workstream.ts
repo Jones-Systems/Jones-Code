@@ -1,4 +1,4 @@
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -39,7 +39,7 @@ const commands = [
         Effect.gen(function* () {
           const chosen = Option.isSome(flags.id)
             ? flags.id.value
-            : yield* (yield* Crypto.Crypto).randomUUIDv4();
+            : yield* (yield* SecureRandom.SecureRandom).uuidV4();
           if (Option.isNone(flags.id)) yield* Console.error(`Workstream id: ${chosen}`);
           return yield* tools
             .call(

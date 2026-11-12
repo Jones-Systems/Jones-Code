@@ -41,6 +41,21 @@ const readers: ReadonlyArray<Reader> = [
     proof: "cleanup/DeletionAdmission.test.ts",
   },
   {
+    file: "cleanup/DeletionGroupWitness.ts",
+    classification: "tolerate",
+    after:
+      "Capture and revalidation read the deletion event, the group's births and its newest edge, run, attempt and session rows; a pruned one fails closed (original_group_deletion_boundary_unavailable, a native_edge/parent_execution/parent_session _unavailable reason, or original_group_generation_changed), never as a smaller group.",
+    proof: "cleanup/DeletionGroupWitness.test.ts (pruned group rows)",
+  },
+  {
+    file: "orchestration/QueueHoldProvenance.ts",
+    classification: "tolerate",
+    after:
+      "The result names only holds the history proves automatic; a pruned event can only shrink that set, so an unproven hold stays held.",
+    proof:
+      "orchestration/QueueHoldProvenance.test.ts (history pruned the way the upstream pruner does)",
+  },
+  {
     file: "ordinaryCheckout/OrdinaryCheckoutSqlite.ts",
     classification: "tolerate",
     after:
@@ -132,6 +147,20 @@ const readers: ReadonlyArray<Reader> = [
     after:
       "A pruned boundary event reads as uncommitted, then the generation guard fails the retry; the retry state lives in process memory only.",
     proof: "none: needs the full provider fixture, reasoned from code",
+  },
+  {
+    file: "cleanup/RuntimeUseInstallation.ts",
+    classification: "unaffected",
+    after:
+      "Records the global maximum sequence once, inside the installing migration; the newest event is its stream's head, which the pruner always keeps.",
+    proof: "persistence/EventLogPruning.test.ts (high-water readers)",
+  },
+  {
+    file: "testing/SyntheticPresentation.ts",
+    classification: "unaffected",
+    after:
+      "Private presentation fixture installer; its collision check also reads the projection tables, and a pruned event only frees an id it would have refused. Not a production reader.",
+    proof: "n/a",
   },
   {
     file: "importedHistory/ApplicationBirth.ts",
@@ -458,11 +487,20 @@ it.effect("high-water readers read the same retained stream-head maximum after p
     });
     const dependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
     const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
+    // The global maximum the runtime-use installation records inside its migration.
+    const globalMaximum = Effect.map(
+      sql<{
+        readonly maximum: number | null;
+      }>`SELECT max(sequence) AS maximum FROM orchestration_events`,
+      (rows) => rows[0]?.maximum,
+    );
     assert.strictEqual(yield* dependencies.sequence, 6);
     assert.strictEqual((yield* metadata.list()).snapshotSequence, 5);
+    assert.strictEqual(yield* globalMaximum, 6);
     assert.deepEqual(yield* pruneEventLogLikeUpstream(6), [2]);
     assert.strictEqual(yield* dependencies.sequence, 6);
     assert.strictEqual((yield* metadata.list()).snapshotSequence, 5);
+    assert.strictEqual(yield* globalMaximum, 6);
   }).pipe(Effect.provide(Layer.provideMerge(ThreadMetadataReads.layer, database))),
 );
 

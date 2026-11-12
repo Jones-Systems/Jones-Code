@@ -37,10 +37,11 @@ export const layer = Layer.effect(
       },
       isSending: (id) => sending.has(id),
       subscribe: PubSub.subscribe(changes),
-      publish: (change) =>
+      publish: Effect.fn("DependencyChanges.publish")((change) =>
         Effect.sync(() => {
           for (const id of change.threadIds) generations.set(id, (generations.get(id) ?? 0) + 1);
         }).pipe(Effect.andThen(PubSub.publish(changes, change)), Effect.asVoid),
+      ),
     });
   }),
 );

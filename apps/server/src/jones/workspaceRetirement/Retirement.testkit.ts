@@ -83,6 +83,18 @@ async function fixtureSql(
   ) as unknown as SqlClient.SqlClient;
   return { sql, db, close: () => db.close() };
 }
+const compiledMain3acaCodec14 = Schema.decodeSync(RetirementReceiptJson);
+
+const compiledMain3acaCodec13 = Schema.decodeEffect(NativeDutyOwnerJson);
+
+const compiledMain3acaCodec12 = Schema.decodeEffect(DutyIdentityJson);
+
+const compiledMain3acaCodec11 = Schema.decodeEffect(RetirementReceiptJson);
+
+const compiledMain3acaCodec10 = Schema.decodeEffect(RetirementReceiptJson);
+
+const compiledMain3acaCodec9 = Schema.encodeEffect(RetirementReceiptJson);
+
 export const retirementCases: Record<string, () => Promise<void>> = {
   "receipt codecs retain absent hold/unknown qualification evidence and reject invalid authority fields":
     () =>
@@ -112,19 +124,13 @@ export const retirementCases: Record<string, () => Promise<void>> = {
             limits: [],
             bytes: { logical: null, allocated: null, statvfs_delta: null },
           };
-          const encoded = await Effect.runPromise(
-            Schema.encodeEffect(RetirementReceiptJson)(receipt),
-          );
-          const decoded = await Effect.runPromise(
-            Schema.decodeEffect(RetirementReceiptJson)(encoded),
-          );
+          const encoded = await Effect.runPromise(compiledMain3acaCodec9(receipt));
+          const decoded = await Effect.runPromise(compiledMain3acaCodec10(encoded));
           NodeAssert.deepEqual(decoded, receipt);
           NodeAssert.equal(Object.hasOwn(decoded.qualification, "binding"), false);
           NodeAssert.equal(Object.hasOwn(decoded.qualification, "head"), false);
           await NodeAssert.rejects(
-            Effect.runPromise(
-              Schema.decodeEffect(RetirementReceiptJson)(canonical({ ...receipt, binding: null })),
-            ),
+            Effect.runPromise(compiledMain3acaCodec11(canonical({ ...receipt, binding: null }))),
           );
         }
       }),
@@ -511,12 +517,11 @@ export const retirementCases: Record<string, () => Promise<void>> = {
                 )
                 .get()!;
               NodeAssert.equal(
-                (yield* Schema.decodeEffect(DutyIdentityJson)(String(facts.identity_json))).status,
+                (yield* compiledMain3acaCodec12(String(facts.identity_json))).status,
                 "bound",
               );
               NodeAssert.equal(
-                (yield* Schema.decodeEffect(NativeDutyOwnerJson)(String(facts.native_owner_json)))
-                  .type,
+                (yield* compiledMain3acaCodec13(String(facts.native_owner_json))).type,
                 "unresolved",
               );
               const rejected = yield* store
@@ -688,10 +693,9 @@ export const retirementCases: Record<string, () => Promise<void>> = {
           const saved = f.db
             .prepare("SELECT receipt_json FROM jones_workspace_retirement_receipts")
             .get();
-          NodeAssert.deepEqual(
-            Schema.decodeSync(RetirementReceiptJson)(String(saved?.receipt_json)).reasons,
-            ["reservation_ownership_lost"],
-          );
+          NodeAssert.deepEqual(compiledMain3acaCodec14(String(saved?.receipt_json)).reasons, [
+            "reservation_ownership_lost",
+          ]);
           NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true);
           NodeAssert.equal(
             f.db.prepare("SELECT COUNT(*) n FROM jones_workspace_disposal_journal").get()?.n,

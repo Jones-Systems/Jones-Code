@@ -1,3 +1,4 @@
+import * as InProcessMcp from "../../../mcp/McpHttpServer.ts";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -42,7 +43,7 @@ it.effect(
     };
     let reads = 0;
     const registration = McpHttpServer.layerWorkstreamToolkit.pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
       Layer.provide(
         Layer.mock(Personal.PersonalWorkstreams)({
           snapshot: () =>

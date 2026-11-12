@@ -28,6 +28,8 @@ import {
   provisionDesktopSshEnvironment,
   secondaryRegistrationsToRetainAfterTopologyRead,
 } from "./platform.ts";
+import { Persistence } from "@t3tools/client-runtime/platform";
+import { monitorStore } from "../jones/threadMonitor/store";
 import { APP_VERSION } from "../branding.ts";
 
 const TARGET: DesktopSshEnvironmentTarget = {
@@ -68,6 +70,8 @@ function makeBridge(
   },
 ): DesktopBridge {
   return {
+    getClientPlatform: () => "linux",
+    getLocalEnvironmentEnabled: () => true,
     ensureSshEnvironment: async (
       target: DesktopSshEnvironmentTarget,
       ensureOptions?: { issuePairingToken?: boolean },
@@ -447,4 +451,59 @@ describe("primary topology cache", () => {
       }),
     ).toBe(cached);
   });
+});
+
+describe("environment-owned monitor retirement", () => {
+  it.effect("awaits the monitor lifetime acknowledgment when clearing an environment", () =>
+    Effect.gen(function* () {
+      const storage = new Map<string, string>();
+      const localStorage = {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          storage.set(key, value);
+        },
+        removeItem: (key: string) => {
+          storage.delete(key);
+        },
+      };
+      vi.stubGlobal("window", Object.assign(new EventTarget(), { localStorage }));
+      vi.stubGlobal("localStorage", localStorage);
+      const environmentId = EnvironmentId.make("monitor-retirement-fixture");
+      let started!: () => void;
+      let release!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const acknowledgment = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const retire = vi.spyOn(monitorStore, "retire").mockImplementation(() => {
+        started();
+        return acknowledgment;
+      });
+      const cleanup = yield* Persistence.EnvironmentOwnedDataCleanup.pipe(Effect.provide(layer));
+      let completed = false;
+      const clearing = yield* Effect.forkChild(
+        cleanup.clear(environmentId).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              completed = true;
+            }),
+          ),
+        ),
+        { startImmediately: true },
+      );
+      try {
+        yield* Effect.promise(() => entered);
+        expect(retire).toHaveBeenCalledExactlyOnceWith(environmentId);
+        expect(completed).toBe(false);
+        release();
+        yield* Fiber.join(clearing);
+        expect(completed).toBe(true);
+      } finally {
+        release();
+        yield* Fiber.join(clearing);
+      }
+    }).pipe(Effect.scoped),
+  );
 });

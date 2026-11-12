@@ -535,3 +535,142 @@ describe("Codex startup caller budget", () => {
       }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
   );
 });
+
+describe("ownerless resume metadata completion", () => {
+  const targetFor = (generation: string): ControlAdmission.ControlAdmissionTarget => ({
+    instanceId: "codex-a",
+    threadId: "original-adapter-owner",
+    nativeThreadId: "native-a",
+    producer: {
+      instanceId: "codex-a",
+      providerSessionId: "session-a",
+      runtimeGeneration: generation,
+    },
+  });
+  it.effect.each(["success", "replacement", "wrong-native", "retained-publication"] as const)(
+    "completes only the captured live unheld resume (%s)",
+    (mode) =>
+      Effect.gen(function* () {
+        const admission = yield* ControlAdmission.ControlAdmission;
+        const producer = yield* makeProducer();
+        const startup = makeCodexStartup(50, admission);
+        const target = targetFor(producer.generation);
+        let current = true;
+        let requests = 0;
+        const metadata = { appThreadId: null, nativeId: "native-a" };
+        const result = yield* startup
+          .run(
+            "resume",
+            startup.withinPermit(
+              Effect.gen(function* () {
+                const complete = yield* startup.captureUnmanagedResume(
+                  producer,
+                  "native-a",
+                  () => current,
+                );
+                const reply = yield* startup.observe(
+                  producer,
+                  Effect.sync(() => {
+                    requests++;
+                    return { thread: { id: mode === "wrong-native" ? "native-b" : "native-a" } };
+                  }),
+                  "binding",
+                  "thread/resume",
+                );
+                if (mode === "replacement") current = false;
+                if (mode === "retained-publication") yield* startup.retainValidated(target);
+                return yield* complete(reply.thread.id, metadata);
+              }),
+            ),
+            target,
+          )
+          .pipe(Effect.result);
+        assert.equal(requests, 1);
+        if (mode === "success") {
+          assert.equal(result._tag, "Success");
+          if (result._tag === "Success") assert.strictEqual(result.success, metadata);
+          assert.isFalse(startup.isUncertain(producer));
+          yield* admission.assertOpen(target);
+        } else {
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure")
+            assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(result.failure));
+          assert.isTrue(startup.isUncertain(producer));
+          yield* admission.assertOpen(target).pipe(Effect.flip);
+        }
+      }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
+  );
+  it.effect.each(["cancel", "deadline"] as const)(
+    "late ownerless metadata cannot clear a %s uncertainty or admit a resend",
+    (mode) =>
+      Effect.gen(function* () {
+        const admission = yield* ControlAdmission.ControlAdmission;
+        const producer = yield* makeProducer();
+        const startup = makeCodexStartup(10, admission);
+        const target = targetFor(producer.generation);
+        const sent = yield* Deferred.make<void>();
+        const reply = yield* Deferred.make<{ thread: { id: string } }>();
+        const observed = yield* Deferred.make<void>();
+        let requests = 0;
+        let completions = 0;
+        const caller = yield* startup
+          .run(
+            "resume",
+            startup.withinPermit(
+              Effect.gen(function* () {
+                const complete = yield* startup.captureUnmanagedResume(
+                  producer,
+                  "native-a",
+                  () => true,
+                );
+                const response = yield* startup.observe(
+                  producer,
+                  Effect.sync(() => requests++).pipe(
+                    Effect.andThen(Deferred.succeed(sent, undefined)),
+                    Effect.andThen(Deferred.await(reply)),
+                    Effect.tap(() => Deferred.succeed(observed, undefined)),
+                  ),
+                  "binding",
+                  "thread/resume",
+                );
+                const result = yield* complete(response.thread.id, { appThreadId: null });
+                completions++;
+                return result;
+              }),
+            ),
+            target,
+          )
+          .pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(sent);
+        if (mode === "cancel") yield* Fiber.interrupt(caller);
+        else {
+          yield* TestClock.adjust(10);
+          const expired = yield* Fiber.join(caller);
+          assert.equal(expired._tag, "Failure");
+          if (expired._tag === "Failure")
+            assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(expired.failure));
+        }
+        assert.isTrue(startup.isUncertain(producer));
+        yield* admission.assertOpen(target).pipe(Effect.flip);
+        yield* Deferred.succeed(reply, { thread: { id: "native-a" } });
+        yield* Deferred.await(observed);
+        yield* TestClock.adjust(0);
+        assert.equal(completions, 0);
+        assert.isTrue(startup.isUncertain(producer));
+        const retry = yield* startup
+          .run(
+            "resume",
+            startup.withinPermit(
+              startup
+                .captureUnmanagedResume(producer, "native-a", () => true)
+                .pipe(Effect.andThen(Effect.sync(() => requests++))),
+            ),
+            target,
+          )
+          .pipe(Effect.result);
+        assert.equal(retry._tag, "Failure");
+        assert.equal(requests, 1);
+        yield* admission.assertOpen(target).pipe(Effect.flip);
+      }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
+  );
+});

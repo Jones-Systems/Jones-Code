@@ -19,7 +19,7 @@ export function SettlementNotificationCoordinator() {
   const environmentIds = useEnvironmentIds();
   const navigate = useNavigate();
   const navigateRef = useRef(navigate);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed navigation to notification callbacks retained by the toast manager.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed navigation to notification callbacks retained by the toast manager.
   useEffect(() => {
     navigateRef.current = navigate;
   }, [navigate]);
@@ -27,7 +27,7 @@ export function SettlementNotificationCoordinator() {
   const generation = useRef(0);
   const collapsedIds = useRef(new Set<string>());
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the settlement controller subscription and close its toast when the mounted coordinator retires.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the settlement controller subscription and close its toast when the mounted coordinator retires.
   useEffect(() => {
     const currentGeneration = ++generation.current;
     let active = true;
@@ -120,7 +120,7 @@ export function SettlementNotificationCoordinator() {
     };
   }, [controller]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile the notification controller with the committed enabled-environment catalog.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile the notification controller with the committed enabled-environment catalog.
   useEffect(() => controller.noteCatalog(environmentIds), [controller, environmentIds]);
   return environmentIds.map((environmentId) => (
     <EnvironmentObserver
@@ -167,7 +167,7 @@ function EnvironmentObserver({
       .sort(),
   ]);
   const families = useAtomValue(notificationFamiliesAtom(key));
-  // oxlint-disable-next-line t3code/react-effect-budget -- Feed committed shell and family evidence into settlement detection without treating pending family reads as empty.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Feed committed shell and family evidence into settlement detection without treating pending family reads as empty.
   useEffect(() => {
     const resolveOrigins: SettlementOriginResolver = (arrivals) =>
       resolveSettlementOrigins(environmentId, arrivals);

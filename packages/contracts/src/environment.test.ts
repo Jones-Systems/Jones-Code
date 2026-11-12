@@ -13,6 +13,8 @@ const descriptor = {
   capabilities: { repositoryIdentity: true },
 } as const;
 
+const compiledDecodeSync1 = Schema.decodeSync(ExecutionEnvironmentCapabilities);
+
 describe("ExecutionEnvironmentDescriptor", () => {
   it("keeps personal Workstreams absent on old descriptors and decodes the advertised contract", () => {
     expect(decodeDescriptor(descriptor)).toEqual(descriptor);
@@ -48,7 +50,7 @@ describe("ExecutionEnvironmentDescriptor", () => {
       ...descriptor.capabilities,
       workstreamsPersonal: { version: 1 },
     });
-    expect(Schema.decodeSync(ExecutionEnvironmentCapabilities)({})).toEqual({
+    expect(compiledDecodeSync1({})).toEqual({
       repositoryIdentity: false,
     });
   });

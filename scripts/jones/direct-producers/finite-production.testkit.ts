@@ -205,8 +205,8 @@ export const finiteProductionCases: Record<string, () => Promise<void>> = {
                 input(worktree, root),
                 (evidence) =>
                   Effect.gen(function* () {
+                    yield* fixtureSpawn(evidence);
                     yield* Effect.promise(async () => {
-                      await Effect.runPromise(fixtureSpawn(evidence));
                       await NodeFSP.mkdir(root, { recursive: true });
                       await NodeFSP.writeFile(NodePath.join(root, "partial"), stage);
                       evidence.leaderExited();

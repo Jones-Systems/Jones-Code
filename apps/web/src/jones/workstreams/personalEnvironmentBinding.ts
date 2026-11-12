@@ -66,7 +66,7 @@ function usePersonalWorkstreamsEnvironmentBinding() {
     capturedSessionsAtom(environmentIdsKey(environments.map((entry) => entry.environmentId))),
   );
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Synchronize the external controller after committed catalog, session and permission changes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Synchronize the external controller after committed catalog, session and permission changes.
   useEffect(() => {
     const connections: PersonalConnection[] = environments.map((entry, index) => {
       const capture = capturedSessions[index];
@@ -85,7 +85,7 @@ function usePersonalWorkstreamsEnvironmentBinding() {
     });
   }, [environments, capturedSessions, writableEnvironments]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Release the external controller subscriptions when the app coordinator unmounts.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Release the external controller subscriptions when the app coordinator unmounts.
   useEffect(() => () => bindPersonalWorkstreams([], () => undefined), []);
 }
 

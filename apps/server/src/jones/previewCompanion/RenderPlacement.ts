@@ -36,6 +36,7 @@ export class RenderPlacement extends Context.Service<
   }
 >()("t3/jones/previewCompanion/RenderPlacement") {}
 const make = Effect.gen(function* () {
+  const runSync = Effect.runSyncWith(yield* Effect.context<never>());
   const selection = yield* RenderHostSelection.RenderHostSelection;
   const registry = yield* CompanionHostRegistry.CompanionHostRegistry;
   const channel = yield* CompanionBrowserChannel.CompanionBrowserChannel;
@@ -43,12 +44,12 @@ const make = Effect.gen(function* () {
   return RenderPlacement.of({
     channel,
     bindAtOpen: (key, opener) =>
-      Effect.runSync(
+      runSync(
         selection.bind(
           key,
           opener === undefined
             ? undefined
-            : (Effect.runSync(selection.binding(opener)) ?? { _tag: "server" }),
+            : (runSync(selection.binding(opener)) ?? { _tag: "server" }),
         ),
       ),
     place: Effect.fn("RenderPlacement.place")(function* (snapshot) {

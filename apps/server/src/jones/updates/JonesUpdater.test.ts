@@ -192,6 +192,8 @@ describe("installed Jones build time", () => {
   );
 });
 
+const compiledDecodeSync1 = Schema.decodeSync(JonesUpdateState);
+
 describe("host-owned Jones updater", () => {
   it.each([undefined, { pendingUpstream: [], pendingJones: [122, 123] }])(
     "shows only the offered candidate's migration plan: %j",
@@ -289,7 +291,7 @@ describe("host-owned Jones updater", () => {
     expect(f.effects).toEqual(["stage"]);
   });
   it("decodes older update state without inventing installed source identity", () => {
-    const decoded = Schema.decodeSync(JonesUpdateState)(fixture().updater.snapshot());
+    const decoded = compiledDecodeSync1(fixture().updater.snapshot());
     expect(decoded.installedSource).toBeUndefined();
   });
   it("keeps authenticated installed source separate from offered and staged candidates", async () => {
@@ -300,9 +302,7 @@ describe("host-owned Jones updater", () => {
     };
     const original = fixture().updater.snapshot();
     const f = fixture({ initialState: { ...original, installedSource } });
-    expect(Schema.decodeSync(JonesUpdateState)(f.updater.snapshot()).installedSource).toEqual(
-      installedSource,
-    );
+    expect(compiledDecodeSync1(f.updater.snapshot()).installedSource).toEqual(installedSource);
     await f.updater.check();
     expect(f.updater.snapshot().installedSource).toEqual(installedSource);
     expect(f.updater.snapshot().provenance?.sourceSha).toBe(candidate.source);

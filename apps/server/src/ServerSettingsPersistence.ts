@@ -3,6 +3,7 @@ import {
   ProjectId,
   ProjectSettingsOverrides,
   ResponseStreamingMode,
+  keepUnknownOverrideKeys,
   ServerSettings,
 } from "@t3tools/contracts";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
@@ -24,22 +25,23 @@ const PersistedResponseStreamingMode = Schema.Union([
     }),
   ),
 );
-const ServerSettingsJson = fromLenientJson(
-  Schema.Struct({
-    ...ServerSettings.fields,
-    responseStreamingMode: PersistedResponseStreamingMode.pipe(
-      Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
-    ),
-    projectSettingsOverrides: Schema.Record(
-      ProjectId,
+const PersistedServerSettings = Schema.Struct({
+  ...ServerSettings.fields,
+  responseStreamingMode: PersistedResponseStreamingMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
+  ),
+  projectSettingsOverrides: Schema.Record(
+    ProjectId,
+    keepUnknownOverrideKeys(
       Schema.Struct({
         ...ProjectSettingsOverrides.fields,
         responseStreamingMode: Schema.optionalKey(PersistedResponseStreamingMode),
       }),
-    ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-  }),
-);
-const decodeServerSettingsJsonExit = Schema.decodeUnknownExit(ServerSettingsJson);
+    ),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+});
+const decodeSettingsJsonExit = Schema.decodeUnknownExit(fromLenientJson(Schema.Unknown));
+const decodeServerSettingsExit = Schema.decodeUnknownExit(PersistedServerSettings);
 /**
  * The retired `providers.<kind>` map, read without its old schemas. Before
  * `providerInstances` existed each built-in driver had one blob there; it
@@ -62,23 +64,37 @@ export const UNTRUSTED_SERVER_SETTINGS: ServerSettings = {
   continueThreadsAfterServerUpdate: false,
 };
 
-export function decodePersistedServerSettings(raw: string | undefined) {
+export function decodePersistedServerSettings(
+  raw: string | undefined,
+  managed?: {
+    readonly defaults: ServerSettings;
+    readonly withDefaults: (value: unknown) => unknown;
+  },
+) {
   if (raw === undefined) {
     return {
-      settings: DEFAULT_SERVER_SETTINGS,
+      settings: managed?.defaults ?? DEFAULT_SERVER_SETTINGS,
       legacy: {} as PersistedLegacySettings,
       settingsFileTrusted: true,
       cause: undefined,
     };
   }
-  const decoded = decodeServerSettingsJsonExit(raw);
+  const parsed = decodeSettingsJsonExit(raw);
+  const decoded =
+    parsed._tag === "Failure"
+      ? parsed
+      : decodeServerSettingsExit(
+          managed === undefined ? parsed.value : managed.withDefaults(parsed.value),
+        );
   const legacy = decodeLegacySettingsJsonExit(raw);
   const settingsFileTrusted = decoded._tag === "Success" && legacy._tag === "Success";
   return {
     settings:
       decoded._tag === "Success" && legacy._tag === "Success"
         ? decoded.value
-        : UNTRUSTED_SERVER_SETTINGS,
+        : managed === undefined
+          ? UNTRUSTED_SERVER_SETTINGS
+          : { ...managed.defaults, continueThreadsAfterServerUpdate: false },
     legacy: legacy._tag === "Success" ? legacy.value : ({} as PersistedLegacySettings),
     settingsFileTrusted,
     cause:

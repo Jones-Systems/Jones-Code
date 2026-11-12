@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
+import { withRuntimeUseInstallationAdmission } from "../cleanup/RuntimeUseInstallation.ts";
 
 const originalNames = [
   "WorktreeOwnershipLeases",
@@ -99,12 +100,15 @@ export const runJonesMigrations = Effect.fn("runJonesMigrations")(function* (
 
       // Migrator uses the maximum applied ID. The prefix checks above must precede
       // even its tracking-table creation, or a gap could silently skip an effect.
-      return yield* Migrator.make({})({
+      const migrate = Migrator.make({})({
         table: "jones_sql_migrations",
         loader: Migrator.fromRecord(
           Object.fromEntries(manifest.map(([id, name, migration]) => [`${id}_${name}`, migration])),
         ),
       });
+      return yield* manifest.some(([id]) => id === 139)
+        ? withRuntimeUseInstallationAdmission(migrate)
+        : migrate;
     }),
   );
 });

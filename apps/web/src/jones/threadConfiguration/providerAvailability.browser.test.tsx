@@ -31,6 +31,33 @@ import {
 } from "../../../test/fakeEnvironment";
 import { pendingSends } from "../pendingSends/store";
 
+// Admit primary discovery only after this fixture installs its descriptor and transport.
+const primaryFixtureAdmission = vi.hoisted(() => {
+  let admit!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    admit = resolve;
+  });
+  return { ready, admit };
+});
+vi.mock(import("~/environments/primary/httpLayer"), async (original) => {
+  const [actual, Effect, Layer] = await Promise.all([
+    original(),
+    import("effect/Effect"),
+    import("effect/Layer"),
+  ]);
+  return {
+    ...actual,
+    layer: Layer.unwrap(
+      Effect.promise(() => primaryFixtureAdmission.ready).pipe(
+        Effect.map(() => actual.layerForCurrentOrigin()),
+      ),
+    ),
+  };
+});
+
+// Preload the actual routed view module before the scenario owns its isolated environment.
+import "../../components/ThreadRouteView";
+
 function disabledSavedProvider(config: ServerConfig): ServerConfig {
   const codex = { ...config.providers[0]!, continuation: { groupKey: "synthetic-shared" } };
   return {
@@ -183,6 +210,7 @@ it("shows saved disabled A as unavailable, retains the draft, and sends to B onl
   using _draftCleanup = { [Symbol.dispose]: () => useComposerDraftStore.setState(previous, true) };
   const thread = threadWithHistory("disabled-saved-account", 1);
   using _environment = installFakeEnvironment([thread]);
+  primaryFixtureAdmission.admit();
   using delivery = deferFakeSends();
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
@@ -233,6 +261,8 @@ it("shows saved disabled A as unavailable, retains the draft, and sends to B onl
       modelSelectionExplicit: true,
     }),
   );
+  // The docked picker persists after selection; dismiss it before returning to the editor.
+  await userEvent.keyboard("{Escape}");
   await userEvent.click(page.getByTestId("composer-editor"));
   await userEvent.keyboard("{Enter}");
   await vi.waitFor(() => expect(delivery.requests).toHaveLength(1));

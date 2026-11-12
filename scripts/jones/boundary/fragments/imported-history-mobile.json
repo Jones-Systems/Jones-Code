@@ -3,6 +3,7 @@
   "feature": "imported-history-mobile",
   "jonesOwnedPaths": ["apps/mobile/src/jones/importedHistory/"],
   "hookPaths": [
+    "apps/mobile/src/features/threads/ThreadComposer.tsx",
     "apps/mobile/src/features/threads/ThreadQueueControl.tsx",
     "apps/mobile/src/state/use-composer-drafts.ts",
     "apps/mobile/src/state/use-thread-composer-state.ts"

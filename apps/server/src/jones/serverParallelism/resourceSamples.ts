@@ -51,11 +51,90 @@ function resourceEmitter(diagnostic: ResourceDiagnostics | undefined, pid?: numb
 const statStart = (text: string) => text.slice(text.lastIndexOf(")") + 2).split(" ")[19];
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 let clockTicks: Promise<number> | undefined;
+export interface LinuxThreadScheduling {
+  readonly startTimeTicks: string;
+  readonly nice: number;
+  readonly cpusAllowed: readonly number[];
+}
+/** Captured thread identity/readback only; neither scheduling nor disappearance proves retirement. */
+export function parseLinuxThreadScheduling(
+  tid: string,
+  before: string,
+  statusBefore: string,
+  after: string,
+  statusAfter: string,
+): LinuxThreadScheduling {
+  const stat = (text: string) => {
+    if (!/^[1-9][0-9]*$/.test(tid) || text.slice(0, text.indexOf(" ")) !== tid)
+      throw new Error("Wrong captured thread");
+    const end = text.lastIndexOf(") ");
+    if (text.indexOf(" (") !== tid.length || end <= tid.length + 1)
+      throw new Error("Malformed captured thread stat");
+    const fields = text
+      .slice(end + 2)
+      .trim()
+      .split(/\s+/);
+    const niceText = fields[16],
+      startTimeTicks = fields[19];
+    if (
+      !niceText ||
+      !/^(?:0|-?[1-9][0-9]*)$/.test(niceText) ||
+      !startTimeTicks ||
+      !/^[1-9][0-9]*$/.test(startTimeTicks)
+    )
+      throw new Error("Unavailable thread scheduling");
+    const nice = Number(niceText);
+    if (!Number.isInteger(nice) || nice < -20 || nice > 19)
+      throw new Error("Invalid thread nice value");
+    return { nice, startTimeTicks };
+  };
+  const mask = (text: string) => {
+    const rows = [...text.matchAll(/^Cpus_allowed_list:\s*([^\r\n]+)$/gm)];
+    const value = rows[0]?.[1]?.trim();
+    if (rows.length !== 1 || !value || !/^[0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*$/.test(value))
+      throw new Error("Unavailable thread affinity");
+    const cpus: number[] = [];
+    for (const part of value.split(",")) {
+      const [first, last = first] = part.split("-").map(Number);
+      if (
+        first === undefined ||
+        last === undefined ||
+        !Number.isSafeInteger(first) ||
+        !Number.isSafeInteger(last) ||
+        first < 0 ||
+        last < first ||
+        last >= 4096
+      )
+        throw new Error("Invalid thread affinity");
+      for (let cpu = first; cpu <= last; cpu++) cpus.push(cpu);
+    }
+    if (
+      new Set(cpus).size !== cpus.length ||
+      cpus.some((cpu, index) => index > 0 && cpu <= cpus[index - 1]!)
+    )
+      throw new Error("Ambiguous thread affinity");
+    return cpus;
+  };
+  const first = stat(before),
+    second = stat(after),
+    cpusAllowed = mask(statusBefore);
+  if (
+    first.startTimeTicks !== second.startTimeTicks ||
+    first.nice !== second.nice ||
+    JSON.stringify(cpusAllowed) !== JSON.stringify(mask(statusAfter))
+  )
+    throw new Error("Captured thread identity/scheduling changed");
+  return { ...first, cpusAllowed };
+}
 export interface NativePoolObservation {
   readonly pid: number;
   readonly method: "linux-proc-task-comm" | "macos-sample";
   readonly status: "complete" | "unavailable";
-  readonly threads: readonly { readonly tid: string; readonly name: string }[];
+  readonly threads: readonly {
+    readonly tid: string;
+    readonly name: string;
+    readonly scheduling?: LinuxThreadScheduling;
+  }[];
   readonly raw: string;
   readonly error?: string;
 }
@@ -125,9 +204,22 @@ export async function sampleNativePools(pid: number): Promise<NativePoolObservat
       const threads = await Promise.all(
         tids.map(async (tid) => {
           if (!/^[1-9][0-9]*$/.test(tid)) throw new Error("Invalid task ID");
+          const base = `/proc/${pid}/task/${tid}`;
+          const statBefore = await NodeFSP.readFile(`${base}/stat`, "utf8");
+          const statusBefore = await NodeFSP.readFile(`${base}/status`, "utf8");
+          const name = (await NodeFSP.readFile(`${base}/comm`, "utf8")).trimEnd();
+          const statAfter = await NodeFSP.readFile(`${base}/stat`, "utf8");
+          const statusAfter = await NodeFSP.readFile(`${base}/status`, "utf8");
           return {
             tid,
-            name: (await NodeFSP.readFile(`/proc/${pid}/task/${tid}/comm`, "utf8")).trimEnd(),
+            name,
+            scheduling: parseLinuxThreadScheduling(
+              tid,
+              statBefore,
+              statusBefore,
+              statAfter,
+              statusAfter,
+            ),
           };
         }),
       );
@@ -174,6 +266,11 @@ export interface ProcessResources {
   readonly threads?: number;
   readonly inotifyDescriptors?: number;
   readonly inotifyWatches?: number;
+  readonly fdinfo?: {
+    readonly attempted: number;
+    readonly completed: number;
+    readonly errors: number;
+  };
 }
 export interface ProcessResourceSample {
   readonly requestedPids: readonly number[];
@@ -260,6 +357,7 @@ export function resourcePredicates(
 export async function sampleProcesses(
   pids: readonly number[],
   diagnostic?: ResourceDiagnostics,
+  trackRead?: (pending: Promise<unknown>) => void,
 ): Promise<ProcessResourceSample> {
   if (!pids.every((pid) => Number.isSafeInteger(pid) && pid > 0))
     throw new Error("Invalid captured PID");
@@ -279,7 +377,11 @@ export async function sampleProcesses(
         const emit = resourceEmitter(diagnostic, pid);
         const counts = { attempted: 0, completed: 0, errors: 0 };
         const read = <T>(stage: ResourceStage, run: () => Promise<T>): Promise<T> => {
-          if (!diagnostic) return run();
+          if (!diagnostic) {
+            const pending = run();
+            observeSafely(trackRead)(pending);
+            return pending;
+          }
           counts.attempted++;
           emit(stage, "begin", { attempted: 1 });
           const pending = run().then(
@@ -307,6 +409,7 @@ export async function sampleProcesses(
             },
           );
           observeSafely(diagnostic.trackPending)(pending);
+          observeSafely(trackRead)(pending);
           return pending;
         };
         emit("pid", "begin");
@@ -324,33 +427,45 @@ export async function sampleProcesses(
           let completed = 0,
             errors = 0;
           emit("fdinfo", "begin", { attempted: descriptors.length });
-          for (const descriptor of descriptors) {
-            counts.attempted++;
-            try {
-              const info = await NodeFSP.readFile(`/proc/${pid}/fdinfo/${descriptor}`, "utf8");
-              completed++;
-              counts.completed++;
-              if (info.includes("inotify")) inotifyDescriptors++;
-              inotifyWatches += [...info.matchAll(/^inotify wd:/gm)].length;
-            } catch (cause) {
-              errors++;
-              counts.errors++;
-              emit("fdinfo", "error", {
-                attempted: 1,
-                completed: 0,
-                errors: 1,
-                ...diagnosticError(cause),
-              });
-              watchesKnown = false;
-            }
+          // Bounded batches preserve every field/read/error while avoiding one awaited syscall per FD.
+          for (let offset = 0; offset < descriptors.length; offset += 8) {
+            await Promise.all(
+              descriptors.slice(offset, offset + 8).map(async (descriptor) => {
+                counts.attempted++;
+                try {
+                  const pending = NodeFSP.readFile(`/proc/${pid}/fdinfo/${descriptor}`, "utf8");
+                  observeSafely(diagnostic?.trackPending)(pending);
+                  observeSafely(trackRead)(pending);
+                  const info = await pending;
+                  completed++;
+                  counts.completed++;
+                  if (info.includes("inotify")) inotifyDescriptors++;
+                  inotifyWatches += [...info.matchAll(/^inotify wd:/gm)].length;
+                } catch (cause) {
+                  errors++;
+                  counts.errors++;
+                  emit("fdinfo", "error", {
+                    attempted: 1,
+                    completed: 0,
+                    errors: 1,
+                    ...diagnosticError(cause),
+                  });
+                  watchesKnown = false;
+                }
+              }),
+            );
           }
           emit("fdinfo", "end", { attempted: descriptors.length, completed, errors });
+          const after = await read("stat", () => NodeFSP.readFile(`/proc/${pid}/stat`, "utf8"));
+          if (!statStart(text) || statStart(text) !== statStart(after))
+            throw new Error("PID identity changed");
           const rss = /^VmRSS:\s+(\d+)/m.exec(status)?.[1];
           rows.push({
             pid,
             cpuMs: ((Number(fields[11]) + Number(fields[12])) * 1000) / hz,
             rssBytes: rss === undefined ? NaN : Number(rss) * 1024,
             threads: tasks.length,
+            fdinfo: { attempted: descriptors.length, completed, errors },
             ...(watchesKnown ? { inotifyDescriptors, inotifyWatches } : {}),
           });
         } catch (cause) {

@@ -37,6 +37,8 @@ it("keeps ordinary send contracts decodable and adds an optional result dependen
   ).toBe("sending");
 });
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(ThreadResultRequestDescriptor);
+
 it("bounds answers, tokens and observation holds and rejects unsupported protocol versions", () => {
   const fulfill = Schema.decodeUnknownSync(ThreadRequestFulfillInput);
   expect(
@@ -52,12 +54,14 @@ it("bounds answers, tokens and observation holds and rejects unsupported protoco
     expect(() => observe({ operationId: "operation", timeoutMs })).toThrow();
   expect(() => observe({ operationId: "operation", afterToken: "x".repeat(4097) })).toThrow();
   expect(() =>
-    Schema.decodeUnknownSync(ThreadResultRequestDescriptor)({
+    compiledDecodeUnknownSync1({
       operationId: "operation",
       schemaVersion: "v2",
     }),
   ).toThrow();
 });
+
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(OrchestrationV2ShellStreamItem);
 
 it("negotiates shell refresh without requiring older subscribers to send the flag", () => {
   const subscribe = Schema.decodeUnknownSync(OrchestrationV2SubscribeShellInput);
@@ -66,5 +70,5 @@ it("negotiates shell refresh without requiring older subscribers to send the fla
     true,
   );
   const item = { kind: "thread.omitted", sequence: 12, location: "active", threadId: "child" };
-  expect(Schema.decodeUnknownSync(OrchestrationV2ShellStreamItem)(item)).toEqual(item);
+  expect(compiledDecodeUnknownSync2(item)).toEqual(item);
 });

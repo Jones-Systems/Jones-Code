@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -64,6 +65,7 @@ const emptyOptions = {
   capabilities: createModelCapabilities({ optionDescriptors: [] }),
 };
 const previous = { ...providerSnapshot(), models: [modelWithVariant] };
+const decodeOpenCodeSettings = Schema.decodeEffect(OpenCodeSettings);
 
 describe("OpenCode completed option discovery (Audit 4.5 / R5)", () => {
   it("clears completed explicit empty options and retains absent, incomplete, error and Cursor metadata", () => {
@@ -92,7 +94,7 @@ describe("OpenCode completed option discovery (Audit 4.5 / R5)", () => {
     "real OpenCode discovery retains partial options and the public resolver refuses a completed removal without changing saved intent",
     () =>
       Effect.gen(function* () {
-        const settings = yield* Schema.decodeEffect(OpenCodeSettings)({
+        const settings = yield* decodeOpenCodeSettings({
           enabled: true,
           binaryPath: "synthetic-opencode",
         });
@@ -293,6 +295,6 @@ describe("OpenCode completed option discovery (Audit 4.5 / R5)", () => {
           assert.strictEqual(parentProjection.thread.modelSelection, savedSelection);
           assert.deepStrictEqual(savedSelection.options, [{ id: "variant", value: "high" }]);
         }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 });

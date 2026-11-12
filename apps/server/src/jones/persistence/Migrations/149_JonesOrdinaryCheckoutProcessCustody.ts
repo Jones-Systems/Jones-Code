@@ -1,0 +1,70 @@
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+import { SqlError, UnknownError } from "effect/sql/SqlError";
+
+// Exact released trigger text is a provenance precondition, not a name-only check.
+// runJonesMigrations encloses DDL, replacement and ledger insertion in one transaction.
+export const releasedOwnerTrigger =
+  "CREATE TRIGGER jones_ordinary_checkout_owner_identity BEFORE UPDATE ON jones_ordinary_checkout_owners\n    WHEN NEW.checkout_key IS NOT OLD.checkout_key\n      OR NEW.directory_identity_json IS NOT OLD.directory_identity_json OR NEW.git_common_directory IS NOT OLD.git_common_directory\n      OR NEW.revision != OLD.revision+1 OR NEW.target_revision<OLD.target_revision\n      OR (OLD.state='released' AND NEW.state!='released' AND NEW.owner_epoch=OLD.owner_epoch)\n      OR (NEW.state='released' AND OLD.state!='released' AND NOT EXISTS(\n        SELECT 1 FROM jones_ordinary_checkout_lifecycle_events e JOIN jones_ordinary_checkout_uses u ON u.operation_id=e.operation_id\n        WHERE u.checkout_key=OLD.checkout_key AND u.owner_epoch=OLD.owner_epoch AND u.state IN ('completed','no_effect')\n          AND e.ordinal=u.last_event_ordinal AND e.event_kind='release'))\n      OR (NEW.branch IS NOT OLD.branch AND (NEW.target_revision!=OLD.target_revision+1 OR NOT EXISTS(\n        SELECT 1 FROM jones_ordinary_checkout_lifecycle_events e JOIN jones_ordinary_checkout_uses u ON u.operation_id=e.operation_id\n        WHERE u.checkout_key=OLD.checkout_key AND u.owner_epoch=OLD.owner_epoch AND u.state IN ('completed','no_effect')\n          AND e.ordinal=u.last_event_ordinal AND e.event_kind='target_transition'\n          AND json_extract(e.evidence_json,'$.transition.beforeBranch') IS OLD.branch\n          AND json_extract(e.evidence_json,'$.transition.afterBranch') IS NEW.branch)))\n      OR (NEW.owner_epoch=OLD.owner_epoch AND (\n        NEW.lease_id IS NOT OLD.lease_id OR NEW.owner_thread_id IS NOT OLD.owner_thread_id\n        OR NEW.birth_event_id IS NOT OLD.birth_event_id OR NEW.birth_sequence IS NOT OLD.birth_sequence\n        OR NEW.acquired_at IS NOT OLD.acquired_at OR NEW.project_root IS NOT OLD.project_root\n        OR NEW.renewed_at<OLD.renewed_at OR NEW.expires_at<OLD.expires_at))\n      OR (NEW.owner_epoch!=OLD.owner_epoch AND (NEW.owner_epoch!=OLD.owner_epoch+1 OR OLD.state!='released'\n        OR NEW.state!='owned' OR NEW.lease_id=OLD.lease_id OR NOT EXISTS(\n          SELECT 1 FROM jones_ordinary_checkout_lifecycle_events e JOIN jones_ordinary_checkout_uses u ON u.operation_id=e.operation_id\n          WHERE u.checkout_key=OLD.checkout_key AND u.owner_epoch=OLD.owner_epoch AND e.event_kind='handoff'\n            AND json_extract(e.evidence_json,'$.transition.afterEpoch')=NEW.owner_epoch\n            AND json_extract(e.evidence_json,'$.transition.afterLease')=NEW.lease_id\n            AND json_extract(e.evidence_json,'$.transition.afterThread')=NEW.owner_thread_id\n            AND json_extract(e.evidence_json,'$.transition.afterBirth')=NEW.birth_event_id)))\n    BEGIN SELECT RAISE(ABORT,'checkout owner identity or revision changed'); END";
+export const processOwnerTrigger =
+  "CREATE TRIGGER jones_ordinary_checkout_owner_identity BEFORE UPDATE ON jones_ordinary_checkout_owners\n    WHEN NEW.checkout_key IS NOT OLD.checkout_key\n      OR NEW.directory_identity_json IS NOT OLD.directory_identity_json OR NEW.git_common_directory IS NOT OLD.git_common_directory\n      OR NEW.revision != OLD.revision+1 OR NEW.target_revision<OLD.target_revision\n      OR (OLD.state='released' AND NEW.state!='released' AND NEW.owner_epoch=OLD.owner_epoch)\n      OR (NEW.state='released' AND OLD.state!='released' AND NOT EXISTS(\n        SELECT 1 FROM jones_ordinary_checkout_all_events e JOIN jones_ordinary_checkout_all_uses u ON u.store=e.store AND u.operation_id=e.operation_id\n        WHERE u.checkout_key=OLD.checkout_key AND u.owner_epoch=OLD.owner_epoch AND u.state IN ('completed','no_effect')\n          AND e.ordinal=u.last_event_ordinal AND e.event_kind='release'))\n      OR (NEW.branch IS NOT OLD.branch AND (NEW.target_revision!=OLD.target_revision+1 OR NOT EXISTS(\n        SELECT 1 FROM jones_ordinary_checkout_all_events e JOIN jones_ordinary_checkout_all_uses u ON u.store=e.store AND u.operation_id=e.operation_id\n        WHERE u.checkout_key=OLD.checkout_key AND u.owner_epoch=OLD.owner_epoch AND u.state IN ('completed','no_effect')\n          AND e.ordinal=u.last_event_ordinal AND e.event_kind='target_transition'\n          AND json_extract(e.evidence_json,'$.transition.beforeBranch') IS OLD.branch\n          AND json_extract(e.evidence_json,'$.transition.afterBranch') IS NEW.branch)))\n      OR (NEW.owner_epoch=OLD.owner_epoch AND (\n        NEW.lease_id IS NOT OLD.lease_id OR NEW.owner_thread_id IS NOT OLD.owner_thread_id\n        OR NEW.birth_event_id IS NOT OLD.birth_event_id OR NEW.birth_sequence IS NOT OLD.birth_sequence\n        OR NEW.acquired_at IS NOT OLD.acquired_at OR NEW.project_root IS NOT OLD.project_root\n        OR NEW.renewed_at<OLD.renewed_at OR NEW.expires_at<OLD.expires_at))\n      OR (NEW.owner_epoch!=OLD.owner_epoch AND (NEW.owner_epoch!=OLD.owner_epoch+1 OR OLD.state!='released'\n        OR NEW.state!='owned' OR NEW.lease_id=OLD.lease_id OR NOT EXISTS(\n          SELECT 1 FROM jones_ordinary_checkout_all_events e JOIN jones_ordinary_checkout_all_uses u ON u.store=e.store AND u.operation_id=e.operation_id\n          WHERE u.checkout_key=OLD.checkout_key AND u.owner_epoch=OLD.owner_epoch AND e.event_kind='handoff'\n            AND json_extract(e.evidence_json,'$.transition.afterEpoch')=NEW.owner_epoch\n            AND json_extract(e.evidence_json,'$.transition.afterLease')=NEW.lease_id\n            AND json_extract(e.evidence_json,'$.transition.afterThread')=NEW.owner_thread_id\n            AND json_extract(e.evidence_json,'$.transition.afterBirth')=NEW.birth_event_id)))\n    BEGIN SELECT RAISE(ABORT,'checkout owner identity or revision changed'); END";
+
+export default Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const prior = yield* sql<{
+    readonly sql: string;
+  }>`SELECT sql FROM sqlite_master WHERE type='trigger' AND name='jones_ordinary_checkout_owner_identity'`;
+  if (prior.length !== 1 || prior[0]!.sql !== releasedOwnerTrigger) {
+    return yield* new SqlError({
+      reason: new UnknownError({ cause: "Unexpected ordinary checkout owner trigger definition" }),
+    });
+  }
+  yield* sql.unsafe(
+    "CREATE TABLE jones_ordinary_checkout_process_uses (\n    operation_id TEXT PRIMARY KEY NOT NULL CHECK(length(operation_id)>0),\n    admission_id TEXT NOT NULL REFERENCES jones_ordinary_checkout_admissions(admission_id),\n    checkout_key TEXT NOT NULL REFERENCES jones_ordinary_checkout_owners(checkout_key),\n    lease_id TEXT NOT NULL CHECK(length(lease_id)>0), owner_epoch INTEGER NOT NULL CHECK(typeof(owner_epoch)='integer' AND owner_epoch>=0),\n    source_kind TEXT NOT NULL CHECK(source_kind='outbox_process_v2'),\n    effect_id TEXT NOT NULL CHECK(length(effect_id)>0), worker_id TEXT NOT NULL CHECK(length(worker_id)>0),\n    attempt_count INTEGER NOT NULL CHECK(typeof(attempt_count)='integer' AND attempt_count>0),\n    command_id TEXT NOT NULL CHECK(length(command_id)>0), thread_id TEXT NOT NULL CHECK(length(thread_id)>0),\n    run_id TEXT CHECK(run_id IS NULL OR length(run_id)>0),\n    claimed_at TEXT NOT NULL CHECK(strftime('%Y-%m-%dT%H:%M:%fZ',claimed_at) IS claimed_at),\n    request_digest TEXT NOT NULL CHECK(length(request_digest)=64 AND request_digest NOT GLOB '*[^a-f0-9]*'),\n    state TEXT NOT NULL CHECK(state IN ('reserved','started','draining','completed','no_effect','unknown')),\n    revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision>=0), last_event_ordinal INTEGER NOT NULL CHECK(typeof(last_event_ordinal)='integer' AND last_event_ordinal>=0),\n    started_at TEXT CHECK(started_at IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ',started_at) IS started_at),\n    settled_at TEXT CHECK(settled_at IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ',settled_at) IS settled_at),\n    CHECK((state IN ('completed','no_effect')) = (settled_at IS NOT NULL))\n  )",
+  );
+  yield* sql.unsafe(
+    "CREATE TABLE jones_ordinary_checkout_process_events (\n    operation_id TEXT NOT NULL REFERENCES jones_ordinary_checkout_process_uses(operation_id),\n    ordinal INTEGER NOT NULL CHECK(typeof(ordinal)='integer' AND ordinal>0), predecessor_ordinal INTEGER NOT NULL CHECK(typeof(predecessor_ordinal)='integer' AND predecessor_ordinal=ordinal-1),\n    association_id TEXT NOT NULL CHECK(length(association_id)=64 AND association_id NOT GLOB '*[^a-f0-9]*'),\n    event_kind TEXT NOT NULL CHECK(event_kind IN ('bind','activate','join','renew','retire','unknown','target_transition','release','handoff')),\n    binding_json TEXT NOT NULL CHECK(json_valid(binding_json) AND length(binding_json)<=8192),\n    evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json) AND length(evidence_json)<=8192),\n    recorded_at TEXT NOT NULL CHECK(strftime('%Y-%m-%dT%H:%M:%fZ',recorded_at) IS recorded_at), PRIMARY KEY(operation_id,ordinal)\n  )",
+  );
+  yield* sql.unsafe(
+    "CREATE VIEW jones_ordinary_checkout_all_uses AS SELECT 'legacy' AS store,operation_id,admission_id,checkout_key,lease_id,owner_epoch,source_kind,effect_id,worker_id,attempt_count,claim_expires_at,producer_id,state,revision,last_event_ordinal,started_at,settled_at,NULL AS command_id,NULL AS thread_id,NULL AS run_id,NULL AS claimed_at,NULL AS request_digest FROM jones_ordinary_checkout_uses UNION ALL SELECT 'process_v2' AS store,operation_id,admission_id,checkout_key,lease_id,owner_epoch,source_kind,effect_id,worker_id,attempt_count,NULL AS claim_expires_at,NULL AS producer_id,state,revision,last_event_ordinal,started_at,settled_at,command_id,thread_id,run_id,claimed_at,request_digest FROM jones_ordinary_checkout_process_uses",
+  );
+  yield* sql.unsafe(
+    "CREATE VIEW jones_ordinary_checkout_all_events AS SELECT 'legacy' AS store,* FROM jones_ordinary_checkout_lifecycle_events UNION ALL SELECT 'process_v2' AS store,* FROM jones_ordinary_checkout_process_events",
+  );
+  yield* sql`CREATE UNIQUE INDEX jones_ordinary_checkout_process_outbox ON jones_ordinary_checkout_process_uses(effect_id,attempt_count,admission_id)`;
+  yield* sql`CREATE INDEX jones_ordinary_checkout_process_recovery ON jones_ordinary_checkout_process_uses(state,operation_id)`;
+  yield* sql`CREATE INDEX jones_ordinary_checkout_process_association ON jones_ordinary_checkout_process_events(operation_id,association_id,ordinal)`;
+  yield* sql`CREATE TRIGGER jones_ordinary_checkout_process_predecessor BEFORE INSERT ON jones_ordinary_checkout_process_events
+    WHEN NEW.predecessor_ordinal != COALESCE((SELECT MAX(ordinal) FROM jones_ordinary_checkout_process_events WHERE operation_id=NEW.operation_id),0)
+    BEGIN SELECT RAISE(ABORT,'checkout event predecessor mismatch'); END`;
+  // Both directions include terminal history. A terminal operation never frees an identity.
+  for (const [table, other] of [
+    ["jones_ordinary_checkout_uses", "jones_ordinary_checkout_process_uses"],
+    ["jones_ordinary_checkout_process_uses", "jones_ordinary_checkout_uses"],
+  ] as const) {
+    yield* sql.unsafe(`CREATE TRIGGER ${table}_cross_store_identity BEFORE INSERT ON ${table}
+      WHEN EXISTS(SELECT 1 FROM ${other} WHERE operation_id=NEW.operation_id
+        OR (effect_id=NEW.effect_id AND attempt_count=NEW.attempt_count AND admission_id=NEW.admission_id))
+      BEGIN SELECT RAISE(ABORT,'checkout cross-store identity collision'); END`);
+  }
+  for (const table of [
+    "jones_ordinary_checkout_process_uses",
+    "jones_ordinary_checkout_process_events",
+  ]) {
+    yield* sql.unsafe(
+      `CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN SELECT RAISE(ABORT,'checkout history is permanent'); END`,
+    );
+    const key = table.endsWith("_uses")
+      ? "operation_id=NEW.operation_id OR (effect_id=NEW.effect_id AND attempt_count=NEW.attempt_count AND admission_id=NEW.admission_id)"
+      : "operation_id=NEW.operation_id AND ordinal=NEW.ordinal";
+    yield* sql.unsafe(
+      `CREATE TRIGGER ${table}_no_replace BEFORE INSERT ON ${table} WHEN EXISTS(SELECT 1 FROM ${table} WHERE ${key}) BEGIN SELECT RAISE(ABORT,'checkout identity cannot be replaced'); END`,
+    );
+  }
+  yield* sql`CREATE TRIGGER jones_ordinary_checkout_process_events_immutable BEFORE UPDATE ON jones_ordinary_checkout_process_events BEGIN SELECT RAISE(ABORT,'checkout history is immutable'); END`;
+  yield* sql.unsafe(
+    "CREATE TRIGGER jones_ordinary_checkout_process_identity BEFORE UPDATE ON jones_ordinary_checkout_process_uses\n    WHEN NEW.operation_id IS NOT OLD.operation_id OR NEW.admission_id IS NOT OLD.admission_id\n      OR NEW.checkout_key IS NOT OLD.checkout_key OR NEW.lease_id IS NOT OLD.lease_id OR NEW.owner_epoch IS NOT OLD.owner_epoch\n      OR NEW.source_kind IS NOT OLD.source_kind OR NEW.effect_id IS NOT OLD.effect_id OR NEW.worker_id IS NOT OLD.worker_id\n      OR NEW.attempt_count IS NOT OLD.attempt_count OR NEW.command_id IS NOT OLD.command_id OR NEW.thread_id IS NOT OLD.thread_id OR NEW.run_id IS NOT OLD.run_id\n      OR NEW.claimed_at IS NOT OLD.claimed_at OR NEW.request_digest IS NOT OLD.request_digest\n      OR NEW.revision != OLD.revision+1 OR NEW.last_event_ordinal<OLD.last_event_ordinal\n      OR NEW.last_event_ordinal!=COALESCE((SELECT MAX(ordinal) FROM jones_ordinary_checkout_process_events WHERE operation_id=OLD.operation_id),0)\n      OR (OLD.started_at IS NOT NULL AND NEW.started_at IS NOT OLD.started_at)\n      OR (OLD.state IN ('completed','no_effect') AND (NEW.state IS NOT OLD.state OR NEW.settled_at IS NOT OLD.settled_at OR NEW.last_event_ordinal!=OLD.last_event_ordinal+1))\n    BEGIN SELECT RAISE(ABORT,'checkout use identity or revision changed'); END",
+  );
+  yield* sql`DROP TRIGGER jones_ordinary_checkout_owner_identity`;
+  yield* sql.unsafe(processOwnerTrigger);
+});

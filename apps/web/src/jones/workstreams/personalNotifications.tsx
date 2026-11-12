@@ -128,7 +128,7 @@ export function reconcilePersonalConditions(state: PersonalWorkstreamsState) {
 export function PersonalWorkstreamsNotifications() {
   const { state } = usePersonalWorkstreams();
   const { environments } = useEnvironments();
-  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile owned notification conditions after authoritative connection changes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile owned notification conditions after authoritative connection changes.
   useEffect(() => {
     for (const environment of environments)
       labels.set(environment.environmentId, environment.label);

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Agent from "./agentService.ts";
 import * as Access from "../../../mcp/McpToolAccess.ts";
 import * as Invocation from "../../../mcp/McpInvocationContext.ts";
@@ -22,7 +23,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Config from "../../../config.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
-import migration from "../../persistence/Migrations/148_JonesPersonalWorkstreams.ts";
+import migration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
 import * as Personal from "./service.ts";
 
 const environmentId = EnvironmentId.make("synthetic-personal-server");
@@ -49,7 +50,7 @@ const dependencies = Layer.mergeAll(
   Layer.succeed(Environment.ServerEnvironmentIdentity, {
     getEnvironmentId: Effect.succeed(environmentId),
   }),
-).pipe(Layer.provideMerge(NodeServices.layer));
+).pipe(Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)));
 const fixture = Personal.layer.pipe(Layer.provideMerge(dependencies));
 const fresh = Personal.PersonalWorkstreams.pipe(Effect.provide(Personal.layer));
 
@@ -337,7 +338,7 @@ it.effect(
           Layer.succeed(Environment.ServerEnvironmentIdentity, {
             getEnvironmentId: Effect.succeed(environmentId),
           }),
-        ).pipe(Layer.provideMerge(NodeServices.layer)),
+        ).pipe(Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
       ),
     ),
 );

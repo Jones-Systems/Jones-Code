@@ -51,10 +51,12 @@ export const DecisionSnapshotNativeCountsLive = Layer.effect(
   Effect.gen(function* () {
     const census = yield* RuntimeCensus.RuntimeCensus;
     return DecisionSnapshotNativeCounts.of({
-      readOperatingCounts: (projectId) =>
-        census
-          .readOperatingCounts(projectId)
-          .pipe(Effect.mapError(() => new NativeCountReadError({ source: "threads" }))),
+      readOperatingCounts: Effect.fn("DecisionSnapshotNativeCounts.readOperatingCounts")(
+        (projectId) =>
+          census
+            .readOperatingCounts(projectId)
+            .pipe(Effect.mapError(() => new NativeCountReadError({ source: "threads" }))),
+      ),
     });
   }),
 ).pipe(Layer.provide(RuntimeCensus.layer));

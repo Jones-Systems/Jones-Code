@@ -1,3 +1,4 @@
+import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
@@ -110,6 +111,7 @@ const lifetime = <A, E>(
     const launches = yield* Queue.unbounded<LaunchInput>();
     const sources: Array<Effect.Effect<void>> = [];
     const dependencies = Layer.mergeAll(
+      ManagedPolicy.layerTest(),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/unused",
         isScratchProject: () => Effect.succeed(false),

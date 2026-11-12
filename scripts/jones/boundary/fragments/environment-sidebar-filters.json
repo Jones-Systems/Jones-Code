@@ -10,7 +10,7 @@
     "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.sizing.browser.test.tsx"
   ],
   "hookPaths": [],
-  "tombstones": [],
+  "tombstones": ["apps/web/src/components/LegacySidebar.tsx"],
   "allowedImports": [
     {
       "from": "apps/web/src/components/Sidebar.tsx",
@@ -18,14 +18,6 @@
     },
     {
       "from": "apps/web/src/components/Sidebar.tsx",
-      "to": "apps/web/src/jones/environmentFilters/useSidebarEnvironmentFilter.ts"
-    },
-    {
-      "from": "apps/web/src/components/LegacySidebar.tsx",
-      "to": "apps/web/src/jones/environmentFilters/model.ts"
-    },
-    {
-      "from": "apps/web/src/components/LegacySidebar.tsx",
       "to": "apps/web/src/jones/environmentFilters/useSidebarEnvironmentFilter.ts"
     },
     {

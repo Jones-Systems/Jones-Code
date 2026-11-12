@@ -9,6 +9,8 @@
     "apps/mobile/src/features/workstreams/personalBinding.ts",
     "apps/mobile/src/features/workstreams/personalPresentation.test.ts",
     "apps/mobile/src/features/workstreams/personalPresentation.ts",
+    "apps/mobile/src/features/workstreams/personalStorage.test.ts",
+    "apps/mobile/src/features/workstreams/personalStorage.ts",
     "apps/mobile/src/features/workstreams/useWorkstreams.tsx",
     "apps/mobile/src/jones/workstreamAppearance/WorkstreamColorPicker.tsx",
     "apps/server/src/cli/workstream.ts",
@@ -78,7 +80,6 @@
     "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.testkit.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.ts",
     "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
-    "apps/server/src/serverOwnership.ts",
     "apps/server/src/serverRuntimeState.test.ts",
     "apps/server/src/serverRuntimeState.ts",
     "apps/server/src/serviceLauncher.test.ts",
@@ -136,6 +137,8 @@
     "apps/server/src/jones/workstreams/DesktopNativeOwner.ts",
     "apps/server/src/jones/workstreams/activation.test.ts",
     "apps/server/src/jones/workstreams/activation.ts",
+    "apps/server/src/jones/workstreams/deferredShellActivation.test.ts",
+    "apps/server/src/jones/workstreams/deferredShellActivation.ts",
     "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts",
     "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
     "apps/server/src/jones/workstreams/enrollment/cli.ts",
@@ -646,6 +649,7 @@
     "packages/contracts/src/jones/workstreamAppearance.ts",
     "packages/contracts/src/jones/workstreamOperations.test.ts",
     "packages/contracts/src/jones/workstreamOperations.ts",
+    "packages/contracts/src/jones/workstreamShellActivation.ts",
     "packages/contracts/src/jones/workstreamsForwardQualification.test.ts",
     "packages/contracts/src/jones/workstreamsForwardQualification.ts",
     "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
@@ -703,6 +707,7 @@
     "packages/contracts/src/workstreams.conformance.test.ts",
     "packages/contracts/src/workstreams.test.ts",
     "packages/contracts/src/workstreams.ts",
+    "packages/shared/src/jones/workstreamShellActivation.ts",
     "packages/shared/src/jones/workstreamsRegistryBinding.test.ts",
     "packages/shared/src/jones/workstreamsRegistryBinding.ts",
     "packages/shared/src/jones/workstreamsRegistryBinding/contract/binding.schema.json.raw",
@@ -863,6 +868,14 @@
     {
       "from": "packages/contracts/src/rpc.ts",
       "to": "packages/contracts/src/jones/workstreamsPersonalRpc.ts"
+    },
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/workstreams/personal/service.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "packages/client-runtime/src/jones/workstreams/personal/index.ts"
     }
   ]
 }

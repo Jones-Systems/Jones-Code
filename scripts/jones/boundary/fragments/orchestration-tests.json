@@ -4,5 +4,18 @@
   "jonesOwnedPaths": ["apps/server/src/jones/orchestration/"],
   "hookPaths": [],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
+      "to": "apps/server/src/jones/orchestration/MemoryProjectionStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ShellStream.ts",
+      "to": "apps/server/src/jones/orchestration/archivedShellItem.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/QueueHoldProvenance.ts"
+    }
+  ]
 }

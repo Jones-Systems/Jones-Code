@@ -6,9 +6,8 @@ import {
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { PersonalWorkstreamsSnapshot } from "@t3tools/contracts/jones/workstreamsPersonal";
 import * as Schema from "effect/Schema";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
-import { layer as browserCryptoLayer } from "../cloud/dpop";
 import type { WsRpcProtocolClient } from "@t3tools/client-runtime/rpc";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 
@@ -16,8 +15,8 @@ const clients = new Map<string, { generation: string | number; client: WsRpcProt
 const randomUUID = () =>
   Effect.runSync(
     Effect.provide(
-      Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
-      browserCryptoLayer,
+      SecureRandom.SecureRandom.pipe(Effect.flatMap((random) => random.uuidV4())),
+      SecureRandom.layerWebCrypto,
     ),
   );
 function writerOrigin() {

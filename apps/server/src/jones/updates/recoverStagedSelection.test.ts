@@ -369,6 +369,11 @@ describe("orphan staged-selection recovery", () => {
             mode: kind === "mode" ? 0o644 : 0o600,
           });
       }
+      // Make the malformed mode independent of the host umask.
+      if (kind === "mode") {
+        await NodeFSP.chmod(path, 0o644);
+        expect((await NodeFSP.stat(path)).mode & 0o777).toBe(0o644);
+      }
       const bytes = await NodeFSP.readFile(path);
       expect((await apply(f)).status).toBe("refused");
       expect(await NodeFSP.readFile(path)).toEqual(bytes);

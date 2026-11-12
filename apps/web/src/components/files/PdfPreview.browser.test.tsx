@@ -22,8 +22,25 @@ const engine = vi.hoisted(() => ({
   scales: vi.fn(),
   finds: vi.fn(),
 }));
+const workspaceAssets = vi.hoisted(() => ({
+  value: {
+    _tag: "Success",
+    url: "/workspace.pdf",
+    expiresAt: 0,
+    fileRevision: "one",
+  } satisfies import("~/assets/assetUrls").AssetUrlState,
+  refresh: vi.fn<() => Promise<string | null>>(),
+}));
+vi.mock(import("~/assets/assetUrls"), async (original) => ({
+  ...(await original()),
+  useAssetUrlState: () => workspaceAssets.value,
+  useAssetUrlRefresh: () => workspaceAssets.refresh,
+}));
 vi.mock("pdfjs-dist", () => ({
   GlobalWorkerOptions: { workerSrc: "" },
+  PDFWorker: class {
+    readonly fixture = "shared-pdf-worker";
+  },
   getDocument: (options: object) => {
     engine.loads(options);
     let resolve!: (document: object) => void;
@@ -116,6 +133,8 @@ vi.mock("pdfjs-dist/web/pdf_viewer.mjs", () => ({
   },
 }));
 import PdfPreview from "./PdfPreview";
+import { WorkspaceBrowserPreview } from "./FilePreviewPanel";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 describe("PDF zoom and lifetime", () => {
   let container: HTMLDivElement;
@@ -453,4 +472,141 @@ describe("PDF zoom and lifetime", () => {
     await key(search, "Escape");
     expect(container.querySelector('[role="search"]')).toBeNull();
   });
+  it.each([
+    [
+      "same URL",
+      "/workspace.pdf",
+      "/workspace.pdf",
+      ["/workspace.pdf?file-revision=one", "/workspace.pdf?file-revision=one"],
+    ],
+    [
+      "renewed URL without original query",
+      "/workspace.pdf?grant=old",
+      "/workspace.pdf",
+      ["/workspace.pdf?grant=old&file-revision=one", "/workspace.pdf?file-revision=one"],
+    ],
+    [
+      "renewed URL with new query",
+      "/workspace.pdf",
+      "/workspace.pdf?grant=new",
+      ["/workspace.pdf?file-revision=one", "/workspace.pdf?grant=new&file-revision=one"],
+    ],
+  ] as const)(
+    "reloads a workspace PDF after successful %s renewal without sharing documents",
+    async (_label, originalUrl, renewedUrl, expectedUrls) => {
+      await using _fixture = await setupTest();
+      engine.failed = true;
+      workspaceAssets.value = {
+        _tag: "Success",
+        url: originalUrl,
+        expiresAt: 0,
+        fileRevision: "one",
+      };
+      workspaceAssets.refresh.mockReset();
+      workspaceAssets.refresh.mockResolvedValue(renewedUrl);
+      const view = (
+        <WorkspaceBrowserPreview
+          environmentId={EnvironmentId.make("test")}
+          threadRef={{
+            environmentId: EnvironmentId.make("test"),
+            threadId: ThreadId.make("same-retry"),
+          }}
+          draft={false}
+          workspaceRoot="/repo"
+          absolutePath="/repo/same.pdf"
+          title="Workspace"
+          workspaceMutationId="one"
+        />
+      );
+      await root.rerender(view);
+      await vi.waitFor(() => expect(container.querySelector('[role="alert"]')).not.toBeNull());
+      const task = engine.tasks[0]!;
+      engine.failed = false;
+      await click(
+        Array.from(container.querySelectorAll("button")).find(
+          (button) => button.textContent === "Retry",
+        )!,
+      );
+      expect(workspaceAssets.refresh).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(engine.loads.mock.calls.map(([options]) => options.url)).toEqual(expectedUrls),
+      );
+      expect(task.destroy).toHaveBeenCalledOnce();
+      expect(engine.tasks.at(-1)).not.toBe(task);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    },
+  );
+
+  it.each(["replacement", "disposal"] as const)(
+    "fences a pending workspace renewal after %s",
+    async (ending) => {
+      await using _fixture = await setupTest();
+      engine.failed = true;
+      workspaceAssets.value = {
+        _tag: "Success",
+        url: "/expired.pdf",
+        expiresAt: 0,
+        fileRevision: "one",
+      };
+      let release!: (url: string) => void;
+      workspaceAssets.refresh.mockReset();
+      workspaceAssets.refresh.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      const view = (path: string) => (
+        <WorkspaceBrowserPreview
+          environmentId={EnvironmentId.make("test")}
+          threadRef={{
+            environmentId: EnvironmentId.make("test"),
+            threadId: ThreadId.make("late-retry"),
+          }}
+          draft={false}
+          workspaceRoot="/repo"
+          absolutePath={path}
+          title="Workspace"
+          workspaceMutationId="one"
+        />
+      );
+      try {
+        await root.rerender(view("/repo/expired.pdf"));
+        expect(container.querySelector('[role="alert"]')).not.toBeNull();
+        await click(
+          Array.from(container.querySelectorAll("button")).find(
+            (button) => button.textContent === "Retry",
+          )!,
+        );
+        expect(workspaceAssets.refresh).toHaveBeenCalledOnce();
+        const first = engine.tasks[0]!;
+        engine.failed = false;
+        if (ending === "replacement") {
+          workspaceAssets.value = {
+            _tag: "Success",
+            url: "/replacement.pdf",
+            expiresAt: 0,
+            fileRevision: "one",
+          };
+          await root.rerender(view("/repo/replacement.pdf"));
+          expect(container.querySelector('[role="alert"]')).toBeNull();
+        } else await root.unmount();
+        const urls = engine.loads.mock.calls.map(([options]) => options.url);
+        const latest = viewer();
+        const document = latest.document;
+        await act(() => release("/late-original.pdf"));
+        expect(engine.loads.mock.calls.map(([options]) => options.url)).toEqual(urls);
+        expect(urls).toHaveLength(ending === "replacement" ? 2 : 1);
+        if (ending === "replacement") {
+          expect(viewer()).toBe(latest);
+          expect(latest.document).toBe(document);
+          expect(urls[1]).toContain("/replacement.pdf");
+        }
+        expect(first.destroy).toHaveBeenCalledOnce();
+      } finally {
+        release?.("/late-original.pdf");
+        workspaceAssets.refresh.mockReset();
+      }
+    },
+  );
 });

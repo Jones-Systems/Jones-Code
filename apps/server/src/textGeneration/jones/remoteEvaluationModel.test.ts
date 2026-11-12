@@ -1,3 +1,4 @@
+import * as ServerSettings from "../../serverSettings.ts";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId, type ModelSelection, type ServerProvider } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -6,6 +7,7 @@ import * as Layer from "effect/Layer";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import { resolveRemoteEvaluationModel } from "./remoteEvaluationModel.ts";
 import * as TextGeneration from "../TextGeneration.ts";
+import * as TextGenerators from "../TextGenerators.ts";
 import * as SourceControlProviderRegistry from "../../sourceControl/SourceControlProviderRegistry.ts";
 
 const instanceId = ProviderInstanceId.make("second-account");
@@ -89,6 +91,12 @@ it.effect(
           ),
       } as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"];
       const generation = yield* TextGeneration.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ServerSettings.layerTest(),
+            Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),
+          ),
+        ),
         Effect.provideService(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
         Effect.provideService(
           SourceControlProviderRegistry.SourceControlProviderRegistry,

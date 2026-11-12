@@ -5,7 +5,7 @@ import {
 } from "@t3tools/client-runtime/platform";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Base64 from "effect/encoding/Base64";
 import * as Hex from "effect/encoding/Hex";
@@ -19,6 +19,7 @@ import type * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
 
 const MAX_ENCRYPTED_BYTES = 131_072;
 const HintJson = Schema.fromJsonString(StoredConnectionCompatibilityHint);
+const decodeStoredHint = Schema.decodeEffect(StoredConnectionCompatibilityHint);
 const encodeHint = Schema.encodeEffect(HintJson);
 const decodeHint = Schema.decodeUnknownOption(HintJson, { onExcessProperty: "error" });
 const encodeKey = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
@@ -42,14 +43,14 @@ export const make = Effect.fn("desktop.connectionCompatibilityHintStore.make")(f
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const filename = path.join(input.directory, "connection-compatibility-hints-v1.sqlite");
   const keyFor = Effect.fn("desktop.connectionCompatibilityHintStore.key")(function* (
     environmentId: EnvironmentId,
     routeBinding: string,
   ) {
     const encoded = yield* encodeKey([environmentId, routeBinding]);
-    return Hex.encode(yield* crypto.digest("SHA-256", new TextEncoder().encode(encoded)));
+    return Hex.encode(yield* crypto.digest(Digest.sha256, new TextEncoder().encode(encoded)));
   });
   const withDatabase = <A, E>(
     operation: "read" | "write",
@@ -113,7 +114,7 @@ export const make = Effect.fn("desktop.connectionCompatibilityHintStore.make")(f
       routeBinding: string,
       kind: StoredConnectionCompatibilityHint["kind"] | null,
     ) {
-      const hint = yield* Schema.decodeEffect(StoredConnectionCompatibilityHint)({
+      const hint = yield* decodeStoredHint({
         environmentId,
         routeBinding,
         kind: kind ?? "outdated-update",

@@ -70,9 +70,13 @@ export interface PlanCreationOperation extends PlanCreationSlot {
 const PLAN_CREATION_OPERATION_MAX_BYTES = 256 * 1024;
 
 // Admit only this action's command intent; uploads and unrelated commands are held.
+const compiledMainSchema13 = Schema.decodeUnknownSync(PreparedThreadTurnJson);
+
+const compiledMainSchema12 = Schema.decodeUnknownSync(Envelope);
+
 export function decodePlanCreationOperation(value: unknown): PlanCreationOperation {
-  const envelope = Schema.decodeUnknownSync(Envelope)(value, { onExcessProperty: "error" });
-  const prepared = Schema.decodeUnknownSync(PreparedThreadTurnJson)(envelope.prepared, {
+  const envelope = compiledMainSchema12(value, { onExcessProperty: "error" });
+  const prepared = compiledMainSchema13(envelope.prepared, {
     onExcessProperty: "error",
   });
   if (

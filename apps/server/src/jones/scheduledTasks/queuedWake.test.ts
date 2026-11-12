@@ -1,3 +1,4 @@
+import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import { ScheduledTaskUpsertInput, ThreadId } from "@t3tools/contracts";
@@ -21,6 +22,7 @@ it.effect("coalesces timer wakes by task and thread until the queued run clears"
     const deliveries: Array<{ threadId: string; scheduledTaskId?: string; messageId: string }> = [];
     const runs: Array<{ id: string; threadId: string; userMessageId: string; status: string }> = [];
     const dependencies = Layer.mergeAll(
+      ManagedPolicy.layerTest(),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/unused",
         isScratchProject: () => Effect.succeed(false),
@@ -37,6 +39,9 @@ it.effect("coalesces timer wakes by task and thread until the queued run clears"
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(SecretRequests.SecretRequests)({}),
       Layer.mock(ThreadManagementService.ThreadManagementService)({
+        // Upstream requires a live destination thread in the task's project.
+        getThreadShell: () =>
+          Effect.succeed({ projectId: "project:test", archivedAt: null, deletedAt: null } as never),
         getThreadRecords: (threadId, _fields, filter) =>
           Effect.sync(
             () =>

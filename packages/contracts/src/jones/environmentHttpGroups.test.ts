@@ -47,6 +47,7 @@ describe("Jones environment HTTP registration", () => {
       "pullRequests",
       "workstreams",
       "projects",
+      "voice",
       "connect",
       "conversationLibrary",
       "jonesUpdates",

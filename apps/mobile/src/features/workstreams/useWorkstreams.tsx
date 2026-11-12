@@ -7,9 +7,9 @@ import {
   type PersonalResult,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { Atom } from "effect/reactivity";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { personalMobileStorage } from "./personalStorage";
 import { useEnvironments } from "../../state/environments";
 import { Toast } from "../../components/ui/Toast";
 import { MobileWorkstreamControls } from "./Controls";
@@ -38,7 +38,7 @@ export function useMobileWorkstreams(threads: readonly PersonalThreadRef[]) {
   const [collapsedKeys, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<{ key: string; text: string } | null>(null);
   const seen = useRef(new Set<string>());
-  // oxlint-disable-next-line t3code/react-effect-budget -- Attach the shared controller to mounted native screens and release its connection subscriptions on unmount.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Attach the shared controller to mounted native screens and release its connection subscriptions on unmount.
   useEffect(() => {
     let active = true;
     let release: (() => void) | undefined;
@@ -59,10 +59,11 @@ export function useMobileWorkstreams(threads: readonly PersonalThreadRef[]) {
       release?.();
     };
   }, [idsKey]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Read persisted native collapse preferences once, cancelling delivery to an unmounted screen.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read persisted native collapse preferences once, cancelling delivery to an unmounted screen.
   useEffect(() => {
     let active = true;
-    void AsyncStorage.getItem(COLLAPSE)
+    void personalMobileStorage
+      .getItem(COLLAPSE)
       .then((raw) => {
         const keys: unknown = raw ? JSON.parse(raw) : [];
         if (active && Array.isArray(keys) && keys.every((key) => typeof key === "string"))
@@ -73,7 +74,7 @@ export function useMobileWorkstreams(threads: readonly PersonalThreadRef[]) {
       active = false;
     };
   }, []);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own and cancel the native notification dismissal timer for the displayed notice.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own and cancel the native notification dismissal timer for the displayed notice.
   useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => {
@@ -83,7 +84,7 @@ export function useMobileWorkstreams(threads: readonly PersonalThreadRef[]) {
     return () => clearTimeout(timer);
   }, [notice]);
   const state = useAtomValue(binding?.controller.state ?? empty);
-  const grouped = useMemo(() => groupPersonalThreads(state, threads), [state, threads]);
+  const grouped = groupPersonalThreads(state, threads);
   const groups = grouped.groups.map(({ workstream, threads: members }) => ({
     key: workstream.id,
     name: workstream.name,
@@ -129,7 +130,7 @@ export function useMobileWorkstreams(threads: readonly PersonalThreadRef[]) {
         const next = new Set(previous);
         if (next.has(key)) next.delete(key);
         else next.add(key);
-        void AsyncStorage.setItem(COLLAPSE, JSON.stringify([...next])).catch(() => {});
+        void personalMobileStorage.setItem(COLLAPSE, JSON.stringify([...next])).catch(() => {});
         return next;
       }),
     openThread: (thread: PersonalThreadRef) => setSelection({ thread }),

@@ -1,3 +1,5 @@
+import * as InProcessMcp from "../../mcp/McpHttpServer.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -51,13 +53,13 @@ const client = McpSchema.McpServerClient.of({
 
 // Registration needs the stop tool's services; this read must never use them.
 const layer = McpHttpServer.layerPreviewToolkit.pipe(
-  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
   Layer.provideMerge(
     ServerConfig.layerTest(process.cwd(), { prefix: "t3-recording-operation-test-" }),
   ),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 const call = (
   args: Record<string, unknown>,

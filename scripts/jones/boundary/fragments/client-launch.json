@@ -7,11 +7,13 @@
     "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.ts",
     "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
     "apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts",
-    "apps/server/src/jones/mcp/clientLaunch/launchDefaults.ts"
+    "apps/server/src/jones/mcp/clientLaunch/launchDefaults.ts",
+    "apps/server/src/jones/mcp/clientLaunch/ClientLaunch.testkit.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/toolkits/project/handlers.ts",
-    "apps/server/src/mcp/McpToolAccess.ts"
+    "apps/server/src/mcp/McpToolAccess.ts",
+    "apps/server/src/mcp/toolkits/project/handlers.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -46,6 +48,10 @@
     {
       "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
       "to": "apps/server/src/jones/mcp/clientLaunch/launchDefaults.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+      "to": "apps/server/src/jones/mcp/clientLaunch/ClientLaunch.testkit.ts"
     }
   ]
 }

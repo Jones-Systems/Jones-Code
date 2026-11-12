@@ -22,12 +22,12 @@ export class PromptNotApplied extends Schema.TaggedError<PromptNotApplied>()("Pr
   }
 }
 
+const isCodexRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+const isHistoryNotApplied = Schema.is(HistoryNotApplied);
+const isPromptNotApplied = Schema.is(PromptNotApplied);
+
 export const historyInjectionRejection = (error: unknown) => {
-  if (
-    !Schema.is(CodexErrors.CodexAppServerRequestError)(error) ||
-    error.method !== "thread/inject_items"
-  )
-    return "ambiguous";
+  if (!isCodexRequestError(error) || error.method !== "thread/inject_items") return "ambiguous";
   if (error.operation === "encode-payload") return "not_applied";
   if (error.operation !== "receive-response") return "ambiguous";
   if (error.code === -32601) return "unsupported";
@@ -39,7 +39,7 @@ export const historyWasNotApplied = (error: unknown): boolean => {
   let current = error;
   while (typeof current === "object" && current !== null && !seen.has(current)) {
     seen.add(current);
-    if (Schema.is(HistoryNotApplied)(current)) return true;
+    if (isHistoryNotApplied(current)) return true;
     current = "cause" in current ? current.cause : undefined;
   }
   return false;
@@ -51,13 +51,10 @@ export const promptWasNotApplied = (error: unknown): boolean => {
   let current = error;
   while (typeof current === "object" && current !== null && !seen.has(current)) {
     seen.add(current);
-    if (
-      Schema.is(PromptNotApplied)(current) ||
-      Predicate.isTagged(current, "CodexStartupNotDispatched")
-    )
+    if (isPromptNotApplied(current) || Predicate.isTagged(current, "CodexStartupNotDispatched"))
       return true;
     if (
-      Schema.is(CodexErrors.CodexAppServerRequestError)(current) &&
+      isCodexRequestError(current) &&
       current.method === "turn/start" &&
       (current.operation === "encode-payload" ||
         (current.operation === "receive-response" &&

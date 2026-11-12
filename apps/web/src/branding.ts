@@ -7,7 +7,7 @@ function readInjectedDesktopAppBranding(): DesktopAppBranding | null {
     return null;
   }
 
-  return window.desktopBridge?.getAppBranding?.() ?? null;
+  return window.desktopBridge?.getAppBranding() ?? null;
 }
 
 const injectedDesktopAppBranding = readInjectedDesktopAppBranding();
@@ -30,5 +30,7 @@ export const APP_SOURCE_SHA = /^[a-f0-9]{40}$/.test(import.meta.env.APP_SOURCE_S
   ? import.meta.env.APP_SOURCE_SHA
   : undefined;
 export const DESKTOP_DOWNLOAD_URL = "https://github.com/Jones-Systems/Jones-Code/releases";
+// Redirects to the App Store or Google Play to match the phone that opens it.
+export const MOBILE_APP_URL = "https://t3.codes/mobile";
 
 export const APP_BUILD_STARTED_AT = parseJonesBuildStartedAt(import.meta.env.APP_BUILD_STARTED_AT);

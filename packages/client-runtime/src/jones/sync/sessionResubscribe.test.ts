@@ -41,9 +41,10 @@ function session(client: WsRpcProtocolClient): RpcSession.RpcSession {
   return {
     client,
     initialConfig: Effect.never,
-    subscribeServerConfig: (input) => client.subscribeServerConfig(input),
+    subscribeServerConfig: (input = {}) => client.subscribeServerConfig(input),
     ready: Effect.void,
     probe: Effect.void,
+    inboundFrames: Effect.succeed(0),
     closed: Effect.never,
   };
 }
@@ -75,7 +76,7 @@ const settle = Effect.fn("TestSessionResubscribe.settle")(function* () {
 const terminalClient = (serve: (subscription: number) => Stream.Stream<unknown, unknown>) => {
   const counter = { subscriptions: 0 };
   const client = {
-    [WS_METHODS.subscribeTerminalEvents]: () => {
+    [WS_METHODS.subscribeTerminalMetadata]: () => {
       counter.subscriptions += 1;
       return serve(counter.subscriptions);
     },
@@ -99,7 +100,7 @@ describe("same-session resubscribe", () => {
       const { activeSession, retryCount, supervisor } = yield* makeHarness();
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      const subscriptionFiber = yield* subscribe(WS_METHODS.subscribeTerminalEvents, {}).pipe(
+      const subscriptionFiber = yield* subscribe(WS_METHODS.subscribeTerminalMetadata, {}).pipe(
         Stream.runDrain,
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.forkChild,
@@ -138,7 +139,7 @@ describe("same-session resubscribe", () => {
 
         yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
         const subscriptionFiber = yield* subscribe(
-          WS_METHODS.subscribeTerminalEvents,
+          WS_METHODS.subscribeTerminalMetadata,
           {},
           {
             onDefect: () =>
@@ -187,7 +188,7 @@ describe("same-session resubscribe", () => {
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
       const subscriptionFiber = yield* subscribe(
-        WS_METHODS.subscribeTerminalEvents,
+        WS_METHODS.subscribeTerminalMetadata,
         {},
         { resubscribeWhileSessionCurrent: "1 second" },
       ).pipe(
@@ -221,7 +222,7 @@ describe("same-session resubscribe", () => {
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
       const subscriptionFiber = yield* subscribe(
-        WS_METHODS.subscribeTerminalEvents,
+        WS_METHODS.subscribeTerminalMetadata,
         {},
         { resubscribeWhileSessionCurrent: "1 second" },
       ).pipe(
@@ -248,13 +249,13 @@ describe("same-session resubscribe", () => {
     Effect.gen(function* () {
       const subscriptions: string[] = [];
       const firstClient = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
+        [WS_METHODS.subscribeTerminalMetadata]: () => {
           subscriptions.push("first");
           return Stream.empty;
         },
       } as unknown as WsRpcProtocolClient;
       const secondClient = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
+        [WS_METHODS.subscribeTerminalMetadata]: () => {
           subscriptions.push("second");
           return Stream.never;
         },
@@ -263,7 +264,7 @@ describe("same-session resubscribe", () => {
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
       const subscriptionFiber = yield* subscribe(
-        WS_METHODS.subscribeTerminalEvents,
+        WS_METHODS.subscribeTerminalMetadata,
         {},
         { resubscribeWhileSessionCurrent: "1 second" },
       ).pipe(

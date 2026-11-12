@@ -14,6 +14,8 @@ export interface PersistedDuty {
   holder_json: string;
   native_owner_json: string | null;
 }
+const compiledMain3acaCodec17 = Schema.decodeEffect(NativeDutyOwnerJson);
+
 export class ClaimAbsence extends Context.Reference<{
   readonly observe: (
     claim: PersistedDuty,
@@ -23,9 +25,7 @@ export class ClaimAbsence extends Context.Reference<{
     observe: Effect.fn("WorkspaceRetirement.observeClaimAbsence")(function* (claim: PersistedDuty) {
       if (claim.native_owner_json === null)
         return { holder: claim.holder_json, status: "unknown" as const };
-      const owner = yield* Schema.decodeEffect(NativeDutyOwnerJson)(claim.native_owner_json).pipe(
-        Effect.result,
-      );
+      const owner = yield* compiledMain3acaCodec17(claim.native_owner_json).pipe(Effect.result);
       // Invalid durable facts remain unknown; a decode failure never proves absence.
       if (owner._tag === "Failure")
         return { holder: claim.holder_json, status: "unknown" as const };

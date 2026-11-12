@@ -47,8 +47,10 @@ const StoredQueueState = Schema.Union([
     attempts: Schema.Array(LegacyAttempt),
   }),
 ]);
+const compiledDecodeEffect1 = Schema.decodeEffect(Schema.fromJsonString(StoredQueueState));
+
 export const decodeProviderQueueState = Effect.fnUntraced(function* (contents: string) {
-  const state = yield* Schema.decodeEffect(Schema.fromJsonString(StoredQueueState))(contents);
+  const state = yield* compiledDecodeEffect1(contents);
   if (state.version === 2) return state;
   return {
     version: 2 as const,
@@ -108,6 +110,8 @@ export interface ProviderQueueStorage {
 }
 const iso = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
 
+const compiledEncodeEffect2 = Schema.encodeEffect(Schema.fromJsonString(QueueState));
+
 export const makeProviderQueueStorage = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -124,7 +128,7 @@ export const makeProviderQueueStorage = Effect.gen(function* () {
     }).pipe(Effect.mapError(failure)),
     write: Effect.fn("ProviderQueue.write")(
       function* (state: QueueState) {
-        const contents = yield* Schema.encodeEffect(Schema.fromJsonString(QueueState))(state);
+        const contents = yield* compiledEncodeEffect2(state);
         if (Buffer.byteLength(contents) > MAX_STATE_BYTES) return yield* failure();
         yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
         yield* fs.chmod(directory, 0o700);

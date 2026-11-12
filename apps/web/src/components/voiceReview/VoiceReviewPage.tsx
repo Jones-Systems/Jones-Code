@@ -56,7 +56,7 @@ export function EnvironmentVoiceReview({
   const { fetchList, transport, review } = useVoiceReview(environmentId);
   const [tab, setTab] = useState<"review" | "routing">("review");
   const [recent, setRecent] = useState<VoiceReviewRecentList | null>(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Notify the containing screen when asynchronous recent-review metadata changes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Notify the containing screen when asynchronous recent-review metadata changes.
   useEffect(() => {
     onRecentChange?.(recent);
   }, [recent, onRecentChange]);
@@ -82,7 +82,7 @@ export function EnvironmentVoiceReview({
     setMetadataError(failed);
     if (failed) throw new Error("Metadata unavailable");
   };
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own metadata polling and visibility listeners, fencing responses when the review page unmounts.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own metadata polling and visibility listeners, fencing responses when the review page unmounts.
   useEffect(() => {
     const refresh = () => {
       if (document.visibilityState === "visible") void refreshMetadata().catch(() => undefined);
@@ -101,7 +101,7 @@ export function EnvironmentVoiceReview({
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(() => performance.now());
   const refreshing = useRef(false);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the visible pending-draft refresh subscription and ignore late results after unmount.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the visible pending-draft refresh subscription and ignore late results after unmount.
   useEffect(() => {
     let active = true;
     const refresh = async () => {
@@ -287,7 +287,7 @@ function VoiceReviewRow({
 }) {
   const [actions] = useState(() => new VoiceReviewActions(draft, transport));
   useSyncExternalStore(actions.subscribe, actions.snapshot);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Apply committed server draft observations to the external review action controller.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Apply committed server draft observations to the external review action controller.
   useEffect(() => {
     actions.receive(draft);
   }, [actions, draft]);
@@ -301,7 +301,7 @@ function VoiceReviewRow({
   const seconds = remainingSeconds(current, Math.max(0, now - actions.observedAt));
   const validText = actions.text.trim().length > 0 && actions.text.length <= 100000;
   const dirty = actions.editHandle !== null || actions.busy || actions.uncertain;
-  // oxlint-disable-next-line t3code/react-effect-budget -- Register this draft's dirty state with the page leave guard and clear it when the row unmounts.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Register this draft's dirty state with the page leave guard and clear it when the row unmounts.
   useEffect(() => {
     onDirtyChange?.(draft.id, dirty);
     return () => onDirtyChange?.(draft.id, false);

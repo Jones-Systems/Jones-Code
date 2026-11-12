@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { type AssetResource, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useEffect } from "react";
 import { act, render, stubGlobal, type Screen } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -6,6 +6,13 @@ import { describe, expect, it, vi } from "vite-plus/test";
 const { refresh, pdfLoads } = vi.hoisted(() => ({
   refresh: vi.fn<() => Promise<string | null>>(),
   pdfLoads: vi.fn(),
+}));
+
+// This component fixture supplies its own remote resources/grants; no local primary
+// environment belongs to the scenario. Keep unrelated bootstrap polling out of its clock/HTTP oracle.
+vi.mock(import("~/localEnvironment"), async (original) => ({
+  ...(await original()),
+  isLocalEnvironmentDisabled: () => true,
 }));
 
 vi.mock(import("~/assets/assetUrls"), async (original) => ({
@@ -83,14 +90,20 @@ describe("attachment HTML and PDF preview recovery", () => {
       ),
     );
 
-  const openRemotePdf = async () => {
+  const openRemotePdf = async (
+    resource?: Extract<AssetResource, { _tag: "media-file" | "draft-workspace-file" }>,
+  ) => {
     await act(async () =>
       screen.rerender(
         <AttachmentFilePreview
           name="document.pdf"
           mimeType="application/pdf"
           sizeBytes={100}
-          asset={{ environmentId: EnvironmentId.make("test-environment"), attachmentId: "pdf" }}
+          asset={
+            resource
+              ? { environmentId: EnvironmentId.make("test-environment"), resource }
+              : { environmentId: EnvironmentId.make("test-environment"), attachmentId: "pdf" }
+          }
         />,
       ),
     );
@@ -140,6 +153,41 @@ describe("attachment HTML and PDF preview recovery", () => {
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(container.querySelector("a")?.getAttribute("href")).toBe(renewedUrl);
     expect(pdfLoads.mock.calls.map(([src]) => src)).toEqual([originalUrl, renewedUrl]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reloads the accepted attachment attempt even when authorization returns the same URL", async () => {
+    await using _fixture = await setup();
+    await openRemotePdf();
+    refresh.mockResolvedValue(originalUrl);
+    await retryPdf();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(originalUrl);
+    expect(pdfLoads.mock.calls.map(([src]) => src)).toEqual([originalUrl, originalUrl]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "thread workspace",
+      resource: {
+        _tag: "media-file",
+        threadId: ThreadId.make("pdf-thread"),
+        path: "/repo/report.pdf",
+      },
+    },
+    {
+      label: "draft workspace",
+      resource: { _tag: "draft-workspace-file", cwd: "/repo", path: "/repo/report.pdf" },
+    },
+  ] as const)("renews the accepted same-URL $label PDF attempt", async ({ resource }) => {
+    await using _fixture = await setup();
+    await openRemotePdf(resource);
+    refresh.mockResolvedValue(originalUrl);
+    await retryPdf();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(originalUrl);
+    expect(pdfLoads.mock.calls.map(([src]) => src)).toEqual([originalUrl, originalUrl]);
     expect(fetch).not.toHaveBeenCalled();
   });
 

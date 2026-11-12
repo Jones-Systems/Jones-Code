@@ -196,11 +196,13 @@ const decodeNativeRetirementResult = Schema.decodeUnknownSync(
 const decodeBuildMetadata = Schema.decodeUnknownSync(BuildMetadata);
 const decodeActiveInstall = Schema.decodeUnknownSync(JonesActiveInstall);
 const decodeStagedApp = Schema.decodeUnknownSync(JonesStagedMacApp);
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(ActivationJournal);
+
 const decodeActivationJournal = (value: unknown) => {
   requireWarmJonesInstallIntent(
     typeof value === "object" && value !== null && "intent" in value ? value.intent : undefined,
   );
-  return Schema.decodeUnknownSync(ActivationJournal)(value);
+  return compiledDecodeUnknownSync1(value);
 };
 const decodeEnvironmentId = Schema.decodeUnknownSync(EnvironmentId);
 const decodeStageSelection = Schema.decodeUnknownSync(StageSelection);
@@ -504,6 +506,35 @@ type DesktopDownloadWork = {
 };
 
 /** One host-owned checker. Downloads retain a fixed candidate; later checks cannot replace Install. */
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(
+  Schema.Struct({
+    protocol: Schema.Literal(1),
+    status: Schema.Literals(["reconciled", "refused"]),
+    active: Schema.optionalKey(JonesActiveInstall),
+    reason: Schema.optionalKey(Schema.String),
+  }),
+);
+
+const decodeIncomingRecovery4 = Schema.decodeUnknownSync(
+  Schema.Struct({
+    protocol: Schema.Literal(1),
+    operation: Schema.Literal("manual-install"),
+    phase: Schema.Literal("launched"),
+    automaticContinuationRequested: Schema.Literal(false),
+    transactionId: Schema.String,
+    nextActive: JonesActiveInstall,
+    candidate: Schema.Struct({
+      appPath: Schema.String,
+      executablePath: Schema.String,
+      sourceSha: Schema.String,
+      sourceTree: Schema.String,
+      version: Schema.String,
+      appDigest: Schema.String,
+      bundleIdentifier: Schema.optionalKey(Schema.String),
+    }),
+  }),
+);
+
 export class JonesDesktopUpdateController {
   readonly #recoveryPreflights = new NativeRecoveryPreflights();
   #recoveryInspectorReady = false;
@@ -719,25 +750,7 @@ export class JonesDesktopUpdateController {
       const manifest = JSON.parse(manifestRaw.toString("utf8"));
       const active = decodeActiveInstall(manifest);
       const receiptRaw = await read(path);
-      const receipt = Schema.decodeUnknownSync(
-        Schema.Struct({
-          protocol: Schema.Literal(1),
-          operation: Schema.Literal("manual-install"),
-          phase: Schema.Literal("launched"),
-          automaticContinuationRequested: Schema.Literal(false),
-          transactionId: Schema.String,
-          nextActive: JonesActiveInstall,
-          candidate: Schema.Struct({
-            appPath: Schema.String,
-            executablePath: Schema.String,
-            sourceSha: Schema.String,
-            sourceTree: Schema.String,
-            version: Schema.String,
-            appDigest: Schema.String,
-            bundleIdentifier: Schema.optionalKey(Schema.String),
-          }),
-        }),
-      )(JSON.parse(receiptRaw.toString("utf8")));
+      const receipt = decodeIncomingRecovery4(JSON.parse(receiptRaw.toString("utf8")));
       const hash = (raw: NodeCrypto.BinaryLike) =>
         NodeCrypto.createHash("sha256").update(raw).digest("hex");
       const manifestSha256 = hash(JSON.stringify(manifest));
@@ -1477,14 +1490,7 @@ export class JonesDesktopUpdateController {
       )
         throw cause;
     }
-    const result = Schema.decodeUnknownSync(
-      Schema.Struct({
-        protocol: Schema.Literal(1),
-        status: Schema.Literals(["reconciled", "refused"]),
-        active: Schema.optionalKey(JonesActiveInstall),
-        reason: Schema.optionalKey(Schema.String),
-      }),
-    )(
+    const result = compiledDecodeUnknownSync2(
       JSON.parse(
         await runNativeCommand("/usr/bin/python3", [
           await this.#helperPath(),

@@ -8,7 +8,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 
-import { bufferLiveStream } from "../../orchestration-v2/LiveStreamBudget.ts";
+import { bufferLatestLiveStream } from "../../orchestration-v2/LiveStreamBudget.ts";
 
 const stages = ["live", "grouped", "buffered", "merged"] as const;
 
@@ -33,17 +33,20 @@ it.live.each(stages)("shell failure propagates through %s", (stage) =>
         Stream.ensuring(Deferred.succeed(upstreamClosed, undefined)),
       );
       const grouped = live.pipe(Stream.groupedWithin(512, "50 millis"), capture("grouped"));
-      const buffered = bufferLiveStream(grouped).pipe(capture("buffered"));
+      const buffered = bufferLatestLiveStream(
+        grouped.pipe(Stream.map((items) => ({ sequence: 0, items }))),
+        () => "synthetic-shell",
+      ).pipe(capture("buffered"));
       const merged = Stream.merge(buffered, Stream.never).pipe(capture("merged"));
       const stream =
         stage === "live"
-          ? live
+          ? live.pipe(Stream.map(() => undefined))
           : stage === "grouped"
-            ? grouped
+            ? grouped.pipe(Stream.map(() => undefined))
             : stage === "buffered"
-              ? buffered
-              : merged;
-      const fiber = yield* Effect.forkChild(Effect.exit(Stream.runCollect(stream)));
+              ? buffered.pipe(Stream.map(() => undefined))
+              : merged.pipe(Stream.map(() => undefined));
+      const fiber = yield* Effect.forkChild(Effect.exit(Stream.runDrain(stream)));
       yield* Effect.addFinalizer(() => Fiber.interrupt(fiber).pipe(Effect.asVoid));
       const upstreamExit = yield* Effect.exit(
         Deferred.await(upstreamClosed).pipe(Effect.timeout("5 seconds")),
@@ -99,7 +102,14 @@ it.live("failed live queue finalization preserves the defect and releases enrich
         }),
       );
       const fiber = yield* Effect.forkChild(
-        Effect.exit(Stream.runCollect(Stream.merge(bufferLiveStream(source), enrichment))),
+        Effect.exit(
+          Stream.runCollect(
+            Stream.merge(
+              bufferLatestLiveStream(source, () => "synthetic-shell"),
+              enrichment,
+            ),
+          ),
+        ),
       );
       yield* Effect.addFinalizer(() => Fiber.interrupt(fiber).pipe(Effect.asVoid));
       yield* Deferred.await(enrichmentStarted).pipe(Effect.timeout("5 seconds"));

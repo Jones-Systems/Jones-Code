@@ -16,7 +16,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import * as Crypto from "expo-crypto";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { personalMobileStorage } from "./personalStorage";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { environmentCatalog } from "../../connection/catalog";
 import { environmentSession } from "../../state/session";
@@ -64,9 +64,9 @@ export function personalMobileAccess(input: {
 }
 
 async function makeBinding() {
-  const stored = await AsyncStorage.getItem(ORIGIN);
+  const stored = await personalMobileStorage.getItem(ORIGIN);
   const origin = stored && /^[0-9a-f-]{36}$/i.test(stored) ? stored : Crypto.randomUUID();
-  if (origin !== stored) await AsyncStorage.setItem(ORIGIN, origin);
+  if (origin !== stored) await personalMobileStorage.setItem(ORIGIN, origin);
   const clients = new Map<
     EnvironmentId,
     { generation: string; client: import("@t3tools/client-runtime/rpc").WsRpcProtocolClient }
@@ -87,10 +87,9 @@ async function makeBinding() {
           (snapshot) => {
             onSnapshot(snapshot);
             if (clients.get(connection.environmentId)?.generation !== connection.generation) return;
-            void AsyncStorage.setItem(
-              CACHE + snapshot.environmentId,
-              JSON.stringify(snapshot),
-            ).catch(() => {});
+            void personalMobileStorage
+              .setItem(CACHE + snapshot.environmentId, JSON.stringify(snapshot))
+              .catch(() => {});
           },
           onError,
         ),
@@ -162,7 +161,8 @@ export async function mountPersonalMobile(ids: readonly EnvironmentId[]) {
     };
     release = appAtomRegistry.subscribe(atom, update, { immediate: true });
     for (const id of ids) {
-      void AsyncStorage.getItem(CACHE + id)
+      void personalMobileStorage
+        .getItem(CACHE + id)
         .then((raw) => {
           if (raw) {
             const snapshot = decodeSnapshot(JSON.parse(raw));

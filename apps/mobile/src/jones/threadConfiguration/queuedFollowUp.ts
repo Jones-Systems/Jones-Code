@@ -39,5 +39,6 @@ export function buildQueuedFollowUpStartTurnInput(input: {
     interactionMode: settings.interactionMode,
     createdAt: message.createdAt,
     dispatchMode: message.dispatchMode ?? "start",
+    ...(message.freshContext ? { freshContext: true } : {}),
   };
 }

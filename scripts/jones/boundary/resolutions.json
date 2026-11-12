@@ -3,7 +3,7 @@
   "cases": [
     {
       "from": "apps/mobile/metro.config.js",
-      "sourceSha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489",
+      "sourceSha256": "1156ce9900c8d9a7a365173f1db645e081f3a6d6c8d33662fdd6109bee0dbca0",
       "expression": "`${pathToFileURL(licenseGeneratorSource).href}?version=${String(generatorVersion)}`",
       "reason": "Metro imports the pinned license generator through a cache-busted file URL; expression evaluation is unsupported.",
       "anchors": [],
@@ -11,7 +11,7 @@
     },
     {
       "from": "apps/mobile/metro.config.js",
-      "sourceSha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489",
+      "sourceSha256": "1156ce9900c8d9a7a365173f1db645e081f3a6d6c8d33662fdd6109bee0dbca0",
       "expression": "pathToFileURL(path.join(__dirname, \"scripts\", \"generate-device-stream.mts\")).href",
       "reason": "Metro imports its pinned local device-stream generator through a file URL; expression evaluation is unsupported.",
       "anchors": [],
@@ -25,24 +25,24 @@
       "anchors": [
         {
           "path": "apps/mobile/metro.config.js",
-          "sha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489"
+          "sha256": "1156ce9900c8d9a7a365173f1db645e081f3a6d6c8d33662fdd6109bee0dbca0"
         },
         {
           "path": "scripts/lib/third-party-licenses.ts",
-          "sha256": "7d61eedf82bfc014e79513d8cf72cabd739dfdc7e4924b903e796262aca30a9c"
+          "sha256": "43d0ff922466dbe8556082c95d6468dbe84f52fe9f59a40e5c5c998cc4d859ed"
         }
       ],
       "targets": ["scripts/lib/third-party-licenses.ts"]
     },
     {
       "from": "apps/mobile/src/features/devices/DeviceStreamWebView.tsx",
-      "sourceSha256": "2f2d0b32054cf37477157c13df9daba95977f6f848efb3eb462c90773cff746d",
+      "sourceSha256": "6d1b7bb4ea68d0d2652cd521da725ef826e28426c3a1f56d1f6a6b949707135d",
       "expression": "\"@t3tools/mobile-device-stream\"",
       "reason": "Metro supplies this generated browser-script module from the pinned generator; generated output is not read or claimed verified.",
       "anchors": [
         {
           "path": "apps/mobile/metro.config.js",
-          "sha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489"
+          "sha256": "1156ce9900c8d9a7a365173f1db645e081f3a6d6c8d33662fdd6109bee0dbca0"
         },
         {
           "path": "apps/mobile/scripts/generate-device-stream.mts",
@@ -50,7 +50,7 @@
         },
         {
           "path": "apps/mobile/src/features/devices/device-stream.browser.ts",
-          "sha256": "30371dd71bc7e6d680415ecfbd9edc5bc9fff9295eb2ed28e3ec968a0cc6db80"
+          "sha256": "9e06f68c6f460151c2a72a0025cd933571b510858f715d10e1b7a1618724b80a"
         }
       ],
       "targets": [
@@ -60,20 +60,20 @@
     },
     {
       "from": "apps/server/src/jones/platformCompatibility/testkit/RpcInitialMemory.fixture.mjs",
-      "sourceSha256": "31059aef05a3c0a9dabed6c3c11823f62988479004fe0b400e437e7a75415a87",
+      "sourceSha256": "71e61ba30792cb27a2e53cedd2546ce0d23279ea9c6977e55be81c403cb5ec89",
       "expression": "NodeURL.pathToFileURL(require.resolve(\"effect/\" + name))",
       "reason": "Jones-restored subprocess fixture resolves Effect modules from its caller-supplied synthetic workspace; external dependency loader is unsupported.",
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "8b8865cff0ea00cec2fc5c6b5271f8b7dc4b9be4340aec431e9a81f297b09180"
+          "sha256": "e42503772bcbbfa6dc661f405f1875b9a52f43b43dc46ac0041752cd5f0bbcdc"
         }
       ],
       "targets": []
     },
     {
       "from": "apps/server/src/jones/platformCompatibility/testkit/RpcInitialMemory.fixture.mjs",
-      "sourceSha256": "31059aef05a3c0a9dabed6c3c11823f62988479004fe0b400e437e7a75415a87",
+      "sourceSha256": "71e61ba30792cb27a2e53cedd2546ce0d23279ea9c6977e55be81c403cb5ec89",
       "expression": "NodeURL.pathToFileURL(root + \"/apps/server/src/\" + file + \".ts\")",
       "reason": "Jones-restored subprocess fixture loads a finite local module list from a caller-supplied root. Source-byte binding fixes that list; each listed target still receives boundary checking.",
       "anchors": [],
@@ -85,27 +85,14 @@
       ]
     },
     {
-      "from": "apps/web/src/components/files/fileEditorVirtualization.test.ts",
-      "sourceSha256": "57eb21d81b49c87599e1bf81b5b6c6ba63cf651946f4123d37f79cf7194089a9",
-      "expression": "renderingManagerUrl.href",
-      "reason": "Upstream synthetic editor test loads a Pierre dependency-internal module URL; external dependency loader is unsupported.",
-      "anchors": [
-        {
-          "path": "apps/web/package.json",
-          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
-        }
-      ],
-      "targets": []
-    },
-    {
       "from": "apps/mobile/src/features/browser/PreviewStreamWebView.tsx",
-      "sourceSha256": "fd7e0c431133aa3cb974aaff158ff99da81cae5f193a89ba8b6747b454253012",
+      "sourceSha256": "ff29478046a265c3944e99505130415ed58037c17b69a9d263433265a9c67cc9",
       "expression": "\"@t3tools/mobile-preview-stream\"",
       "reason": "Metro supplies this generated browser-script module from the pinned generator; generated output is not read or claimed verified.",
       "anchors": [
         {
           "path": "apps/mobile/metro.config.js",
-          "sha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489"
+          "sha256": "1156ce9900c8d9a7a365173f1db645e081f3a6d6c8d33662fdd6109bee0dbca0"
         },
         {
           "path": "apps/mobile/scripts/generate-device-stream.mts",
@@ -122,35 +109,18 @@
       ]
     },
     {
-      "from": "apps/web/src/components/diffs/codeViewSearch.test.ts",
-      "sourceSha256": "5e12e1d7bf27b8611eda2489a80d0b252a4c0959a5ee255d92ce84eeb0f51564",
-      "expression": "searchUrl.href",
-      "reason": "Upstream synthetic search test loads the pinned patched Pierre dependency-internal module URL; external dependency loader is unsupported.",
-      "anchors": [
-        {
-          "path": "apps/web/package.json",
-          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
-        },
-        {
-          "path": "patches/@pierre%2Fdiffs@1.6.1.patch",
-          "sha256": "4645364ddf113e48e8827f3b4966b3b1ff745317011e5a3d904e2d8672dee7dc"
-        }
-      ],
-      "targets": []
-    },
-    {
       "from": "apps/mobile/src/features/files/SourceFileSurface.tsx",
-      "sourceSha256": "c10deb3ea4ba977727d810fe01e0571fa8ae7a7abfb8f4e478c00968a06e7e69",
+      "sourceSha256": "9a1e78f4cf0e43e577215fc2d2721f228239f55e607cf19baf5a0284464c73a1",
       "expression": "\"@t3tools/mobile-source-text\"",
       "reason": "Metro resolves this checked-in native package through the mobile manifest file dependency and the package main/types/react-native index.ts entry. The boundary resolver supports exports maps only; exact source and manifest hashes bind this entry, which still receives boundary checking.",
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "18b82eadd4a83812976776464651a493991f757e3cca7efe26ff70b5dcb3ceca"
+          "sha256": "650eb71117360b062ec68090628b86a9e84cd5589f43ce5960b052b1f334934a"
         },
         {
           "path": "apps/mobile/metro.config.js",
-          "sha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489"
+          "sha256": "1156ce9900c8d9a7a365173f1db645e081f3a6d6c8d33662fdd6109bee0dbca0"
         },
         {
           "path": "apps/mobile/modules/t3-source-text/package.json",
@@ -167,41 +137,41 @@
       "anchors": [
         {
           "path": "scripts/build-npm-launcher.ts",
-          "sha256": "9d39975c060aa2856a8fb8a7bb52e9ff4cde63652ebc8af3960980d9fbdda011"
+          "sha256": "22d556eb9fcc06b174db396faf7979276a756ca0cf43a111ea726a44a80df447"
         }
       ],
       "targets": ["scripts/npm-launcher/t3.mjs"]
     },
     {
       "from": "apps/mobile/scripts/sync-context-chip-icons.mjs",
-      "sourceSha256": "74ab3084e08f5341b581d09756a3e5fd925fe2f7b6a34d372ddee0750e935029",
+      "sourceSha256": "87ebf89de9e06de35cca1648e9f68a34eb7274ae48f8e6c4eb9711665836d055",
       "expression": "NodeURL.pathToFileURL(NodePath.join(lucideIconsDirectory, `${name}.js`)).href",
       "reason": "The upstream icon generator loads the finite checked-in lucideIcons name list from the lucide-react external dependency resolved through the web manifest. Dependency-internal file-URL loading is unsupported; exact source and manifest hashes bind the loader and icon list. Generated assets are not read or claimed verified.",
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
+          "sha256": "dbb36df535c09bae5a43f8c48cb7e1fc4687b1b50dec729e59e17b26ed83e859"
         },
         {
           "path": "scripts/package.json",
-          "sha256": "52c7ed9edb80b5bbd60bbbb344831c0a2230f2677bcce30db1bfc521090964c9"
+          "sha256": "b0efc0c1f0d4b1910a7b5f7fca219b31e8e171388efbcd13e6855232ffb664ef"
         }
       ],
       "targets": []
     },
     {
       "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
-      "sourceSha256": "b1ecf3b86acc0956f004dadbc216e02efdd9d1533c669d4e03eb8f830334a197",
+      "sourceSha256": "f77c76d7242647e011197a3c757378991527e5ef5ce3198b132d8711c0bbc9f7",
       "expression": "\"../../../node_modules/@betteroffice/fonts/assets/Carlito-Regular.ttf?url\"",
       "reason": "Upstream document-rendering fixture loads a real installed external font through a relative node_modules URL. Dependency asset bytes are outside the source boundary; exact test and manifest/catalog hashes bind this unsupported loader, not generated or runtime verification.",
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
+          "sha256": "dbb36df535c09bae5a43f8c48cb7e1fc4687b1b50dec729e59e17b26ed83e859"
         },
         {
           "path": "pnpm-workspace.yaml",
-          "sha256": "be158ebdde6f8bc9914646dc1b0bcc15cc37ed202905e7408b2a1f6c87201b81"
+          "sha256": "f38c3601ebdf430bedbbbbb48608e0e41f946289fde92d5a8b7b9506f3a0c802"
         }
       ],
       "targets": []
@@ -214,14 +184,102 @@
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "18b82eadd4a83812976776464651a493991f757e3cca7efe26ff70b5dcb3ceca"
+          "sha256": "650eb71117360b062ec68090628b86a9e84cd5589f43ce5960b052b1f334934a"
         },
         {
           "path": "pnpm-workspace.yaml",
-          "sha256": "be158ebdde6f8bc9914646dc1b0bcc15cc37ed202905e7408b2a1f6c87201b81"
+          "sha256": "f38c3601ebdf430bedbbbbb48608e0e41f946289fde92d5a8b7b9506f3a0c802"
         }
       ],
       "targets": []
+    },
+    {
+      "from": "scripts/lib/server-compile-cache.ts",
+      "sourceSha256": "841e581e009b5fc1e938aee211735fe60a1d652b48fa504243d630c828244c3c",
+      "expression": "NodeURL.pathToFileURL(NodePath.join(dist, cli)).href",
+      "reason": "Upstream packaged-engine cache generator selects the single hashed binCli-*.mjs bundle from the qualified ASAR dist directory. The loader target exists only in generated artifact layout; exact generator, server bundler and CLI source hashes bind this unsupported computed import. Targets are source inputs only; this disposition does not claim generated artifacts or native runtime qualification.",
+      "anchors": [
+        {
+          "path": "apps/server/vite.config.ts",
+          "sha256": "1cdc2bd97cf2fbed68ce3324363ac87fde5cd8961aaa0d2b184ccca53efce9fe"
+        },
+        {
+          "path": "apps/server/src/binCli.ts",
+          "sha256": "c4fc5fb438d931d85953edbaf566a8c13f6f5f8d0e4284f2fe6bfd6addf905df"
+        },
+        {
+          "path": "scripts/prepare-server-compile-cache.cjs",
+          "sha256": "f21af29fdc35c811542bda4356eceb00d2658ac61b9f7eefc3c40e6167951cfb"
+        }
+      ],
+      "targets": ["apps/server/src/binCli.ts"]
+    },
+    {
+      "from": "apps/mobile/scripts/sync-context-chip-icons.mjs",
+      "sourceSha256": "87ebf89de9e06de35cca1648e9f68a34eb7274ae48f8e6c4eb9711665836d055",
+      "expression": "NodeURL.pathToFileURL(\n        NodePath.join(repositoryRoot, `packages/provider-${name}/src/client.ts`),\n      ).href",
+      "reason": "The upstream icon generator loads each provider client module from a finite checked-in provider name list. File-URL loading is unsupported; exact source bytes bind the list and the targets name every loaded client source. Generated assets are not read or claimed verified.",
+      "anchors": [],
+      "targets": [
+        "packages/provider-cursor/src/client.ts",
+        "packages/provider-fx/src/client.ts",
+        "packages/provider-grok/src/client.ts",
+        "packages/provider-kiro/src/client.ts",
+        "packages/provider-muse/src/client.ts",
+        "packages/provider-opencode/src/client.ts",
+        "packages/provider-pi/src/client.ts"
+      ]
+    },
+    {
+      "from": "scripts/lib/server-compile-cache.ts",
+      "sourceSha256": "841e581e009b5fc1e938aee211735fe60a1d652b48fa504243d630c828244c3c",
+      "expression": "NodeURL.pathToFileURL(NodePath.join(dist, server)).href",
+      "reason": "Upstream packaged-engine cache generator selects the single hashed server-*.mjs bundle from the qualified ASAR dist directory after the CLI bundle. The loader target exists only in generated artifact layout; exact generator, server bundler and server source hashes bind this unsupported computed import. Targets are source inputs only; this disposition does not claim generated artifacts or native runtime qualification.",
+      "anchors": [
+        {
+          "path": "apps/server/vite.config.ts",
+          "sha256": "1cdc2bd97cf2fbed68ce3324363ac87fde5cd8961aaa0d2b184ccca53efce9fe"
+        },
+        {
+          "path": "apps/server/src/server.ts",
+          "sha256": "bdfcfa41a591907f0f0f30e28277e5e6be765869462c7a9380651b8182c4d6d5"
+        },
+        {
+          "path": "scripts/prepare-server-compile-cache.cjs",
+          "sha256": "f21af29fdc35c811542bda4356eceb00d2658ac61b9f7eefc3c40e6167951cfb"
+        }
+      ],
+      "targets": ["apps/server/src/server.ts"]
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "sourceSha256": "bfd166e85864948da79bee79bb7ba36eae5f6d3ab4871eb07dcaf8f6870b0598",
+      "expression": "process.execPath",
+      "reason": "Upstream single-executable launch loads the CLI graph embedded in the running executable through require(process.execPath). The target exists only in the packaged executable; exact bin and bundler hashes bind this unsupported computed require, and the target names the embedded CLI source. Packaged executables are not read or claimed verified.",
+      "anchors": [
+        {
+          "path": "apps/server/vite.config.ts",
+          "sha256": "1cdc2bd97cf2fbed68ce3324363ac87fde5cd8961aaa0d2b184ccca53efce9fe"
+        }
+      ],
+      "targets": ["apps/server/src/binMain.ts"]
+    },
+    {
+      "from": "apps/mobile/src/lib/highlights.ts",
+      "sourceSha256": "aee7af642c6727c903fda364d2b6521c46c6df59d4ce67a86ceebcd88cd8cded",
+      "expression": "\"@t3tools/mobile-highlights-native\"",
+      "reason": "Upstream type-only import of the local Nitro module package installed through file:./modules/t3-highlights. The package declares only a types entry, which this boundary does not resolve; exact source and manifest hashes bind the declared type source.",
+      "anchors": [
+        {
+          "path": "apps/mobile/package.json",
+          "sha256": "650eb71117360b062ec68090628b86a9e84cd5589f43ce5960b052b1f334934a"
+        },
+        {
+          "path": "apps/mobile/modules/t3-highlights/package.json",
+          "sha256": "e671f8a8bb3ea844d4e19d67cb13a8c3b65e9054d1da54f52b0834bebab2641d"
+        }
+      ],
+      "targets": ["apps/mobile/modules/t3-highlights/src/T3Highlights.nitro.ts"]
     }
   ]
 }

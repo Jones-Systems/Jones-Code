@@ -1,3 +1,4 @@
+import { isArrayNonEmpty } from "effect/Array";
 import * as Schema from "effect/Schema";
 // @effect-diagnostics nodeBuiltinImport:off -- Opt-in synthetic diagnostic; no application state or product telemetry.
 import * as NodeConsole from "node:console";
@@ -133,113 +134,119 @@ const seed = Effect.fn("shellCost.seedM1")(function* (dimensions: Dimensions) {
         (_, i) => offset + i,
       );
       yield* sql`INSERT INTO orchestration_v2_projection_runs ${sql.insert(
-        indexes.map((index) => {
-          const state = index === itemsPerThread - 1 ? status : "completed";
-          return {
-            run_id: runId(thread, index),
-            thread_id: id,
-            ordinal: index + 1,
-            provider: instanceId,
-            provider_instance_id: instanceId,
-            provider_thread_id: null,
-            status: state,
-            requested_at: iso,
-            completed_at: state === "running" ? null : iso,
-            payload_json: encodeJson({
-              id: runId(thread, index),
-              threadId: id,
+        requireNonEmptyBatch(
+          indexes.map((index) => {
+            const state = index === itemsPerThread - 1 ? status : "completed";
+            return {
+              run_id: runId(thread, index),
+              thread_id: id,
               ordinal: index + 1,
-              providerInstanceId: instanceId,
-              modelSelection,
-              providerThreadId: null,
-              userMessageId: `${id}:message:${index}`,
-              rootNodeId: `${id}:node:${index}`,
-              activeAttemptId: null,
+              provider: instanceId,
+              provider_instance_id: instanceId,
+              provider_thread_id: null,
               status: state,
-              requestedAt: iso,
-              startedAt: iso,
-              completedAt: state === "running" ? null : iso,
-              checkpointId: null,
-              contextHandoffId: null,
-            }),
-          };
-        }),
+              requested_at: iso,
+              completed_at: state === "running" ? null : iso,
+              payload_json: encodeJson({
+                id: runId(thread, index),
+                threadId: id,
+                ordinal: index + 1,
+                providerInstanceId: instanceId,
+                modelSelection,
+                providerThreadId: null,
+                userMessageId: `${id}:message:${index}`,
+                rootNodeId: `${id}:node:${index}`,
+                activeAttemptId: null,
+                status: state,
+                requestedAt: iso,
+                startedAt: iso,
+                completedAt: state === "running" ? null : iso,
+                checkpointId: null,
+                contextHandoffId: null,
+              }),
+            };
+          }),
+        ),
       )}`;
       yield* sql`INSERT INTO orchestration_v2_projection_turn_items ${sql.insert(
-        indexes.map((index) => {
-          const failed = status === "failed" && index === itemsPerThread - 1;
-          const type = failed ? "error" : "assistant_message";
-          const itemStatus = failed ? "failed" : "completed";
-          return {
-            turn_item_id: `${id}:item:${index}`,
-            thread_id: id,
-            run_id: runId(thread, index),
-            node_id: `${id}:node:${index}`,
-            provider_thread_id: null,
-            provider_turn_id: null,
-            parent_item_id: null,
-            ordinal: index + 1,
-            type,
-            status: itemStatus,
-            updated_at: iso,
-            payload_json: encodeJson({
-              id: `${id}:item:${index}`,
-              threadId: id,
-              runId: runId(thread, index),
-              nodeId: `${id}:node:${index}`,
-              providerThreadId: null,
-              providerTurnId: null,
-              nativeItemRef: null,
-              parentItemId: null,
+        requireNonEmptyBatch(
+          indexes.map((index) => {
+            const failed = status === "failed" && index === itemsPerThread - 1;
+            const type = failed ? "error" : "assistant_message";
+            const itemStatus = failed ? "failed" : "completed";
+            return {
+              turn_item_id: `${id}:item:${index}`,
+              thread_id: id,
+              run_id: runId(thread, index),
+              node_id: `${id}:node:${index}`,
+              provider_thread_id: null,
+              provider_turn_id: null,
+              parent_item_id: null,
               ordinal: index + 1,
-              status: itemStatus,
-              title: null,
-              startedAt: iso,
-              completedAt: iso,
-              updatedAt: iso,
               type,
-              ...(failed
-                ? {
-                    failure: {
-                      class: "provider_error",
-                      message: "synthetic M1 failure",
-                      code: null,
-                      retryable: false,
-                    },
-                  }
-                : { messageId: `${id}:message:${index}`, text: "synthetic", streaming: false }),
-            }),
-          };
-        }),
+              status: itemStatus,
+              updated_at: iso,
+              payload_json: encodeJson({
+                id: `${id}:item:${index}`,
+                threadId: id,
+                runId: runId(thread, index),
+                nodeId: `${id}:node:${index}`,
+                providerThreadId: null,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: index + 1,
+                status: itemStatus,
+                title: null,
+                startedAt: iso,
+                completedAt: iso,
+                updatedAt: iso,
+                type,
+                ...(failed
+                  ? {
+                      failure: {
+                        class: "provider_error",
+                        message: "synthetic M1 failure",
+                        code: null,
+                        retryable: false,
+                      },
+                    }
+                  : { messageId: `${id}:message:${index}`, text: "synthetic", streaming: false }),
+              }),
+            };
+          }),
+        ),
       )}`;
       yield* sql`INSERT INTO orchestration_v2_projection_messages ${sql.insert(
-        indexes.map((index) => {
-          const at = index === 0 ? humanIso : iso;
-          return {
-            message_id: `${id}:message:${index}`,
-            thread_id: id,
-            run_id: runId(thread, index),
-            node_id: null,
-            role: "user",
-            streaming: 0,
-            created_at: at,
-            updated_at: at,
-            payload_json: encodeJson({
-              id: `${id}:message:${index}`,
-              threadId: id,
-              runId: runId(thread, index),
-              nodeId: null,
+        requireNonEmptyBatch(
+          indexes.map((index) => {
+            const at = index === 0 ? humanIso : iso;
+            return {
+              message_id: `${id}:message:${index}`,
+              thread_id: id,
+              run_id: runId(thread, index),
+              node_id: null,
               role: "user",
-              createdBy: index === 0 ? "user" : "agent",
-              creationSource: "web",
-              text: "synthetic M1 input",
-              attachments: [],
-              streaming: false,
-              createdAt: at,
-              updatedAt: at,
-            }),
-          };
-        }),
+              streaming: 0,
+              created_at: at,
+              updated_at: at,
+              payload_json: encodeJson({
+                id: `${id}:message:${index}`,
+                threadId: id,
+                runId: runId(thread, index),
+                nodeId: null,
+                role: "user",
+                createdBy: index === 0 ? "user" : "agent",
+                creationSource: "web",
+                text: "synthetic M1 input",
+                attachments: [],
+                streaming: false,
+                createdAt: at,
+                updatedAt: at,
+              }),
+            };
+          }),
+        ),
       )}`;
     }
     for (let index = 0; index < providerHistory; index++) {
@@ -635,4 +642,9 @@ export function fileBackedScenario(large: boolean) {
       }).pipe(Effect.provide(ProjectionStore.layer.pipe(Layer.provideMerge(database))));
     }),
   ).pipe(Effect.provide(NodeServices.layer));
+}
+
+function requireNonEmptyBatch<A>(rows: Array<A>): [A, ...Array<A>] {
+  if (!isArrayNonEmpty(rows)) throw new Error("Synthetic diagnostic batch must contain rows");
+  return rows;
 }

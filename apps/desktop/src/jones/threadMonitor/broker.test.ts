@@ -119,7 +119,7 @@ function harness() {
 }
 
 describe("native monitor broker", () => {
-  it("authenticates minimal Restore replay against the surviving correlation after repeated peer loss", async () => {
+  it.each(["main", "broker"])("recovers Restore after a %s timeout", async (first) => {
     const h = harness();
     const publish = (frame: unknown) => h.broker.publish(publisherPayload(envelope(frame)));
     const intent = (frame: unknown) => h.broker.intent(peerPayload(envelope(frame)));
@@ -162,7 +162,14 @@ describe("native monitor broker", () => {
       status: "unknown",
       reason: null,
     };
-    publish(unknown);
+    if (first === "broker") {
+      h.fire(15_000);
+      expect(h.peer).toHaveBeenLastCalledWith(
+        expect.objectContaining({ ...unknown, reason: expect.any(String) }),
+      );
+    } else {
+      publish(unknown);
+    }
     h.broker.peerLost();
     h.broker.ready();
     h.broker.publish(view({ revision: 3, upserts: [] }));
@@ -171,8 +178,13 @@ describe("native monitor broker", () => {
       ...unknown,
       restoreIdentity: { type: "restore", settleCommandId: settle.commandId },
     };
-    publish(replay);
-    expect(h.peer).toHaveBeenLastCalledWith(unknown);
+    if (first === "broker") {
+      publish({ ...replay, status: "pending" });
+      expect(h.peer).not.toHaveBeenCalled();
+    } else {
+      publish(replay);
+      expect(h.peer).toHaveBeenLastCalledWith(unknown);
+    }
     const request = {
       type: "requestSnapshot",
       restoreIdentityReplay: { publisherGeneration: lifetime.publisherGeneration },
@@ -182,7 +194,15 @@ describe("native monitor broker", () => {
     expect(() =>
       intent({ ...request, restoreIdentityReplay: { publisherGeneration: "forged-generation" } }),
     ).toThrow("Stale restore replay request");
-    publish(replay);
+    if (first === "broker") {
+      // Main is still pending at replay time. Do not regress the broker's outcome.
+      publish({ ...replay, status: "pending" });
+      expect(h.peer).not.toHaveBeenCalled();
+      // Main's later live timeout does not carry the optional replay metadata.
+      publish(unknown);
+    } else {
+      publish(replay);
+    }
     expect(h.peer).toHaveBeenLastCalledWith(replay);
     h.peer.mockClear();
     publish({ ...replay, commandId: "forged-command" });

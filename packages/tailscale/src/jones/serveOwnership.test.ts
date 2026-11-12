@@ -26,7 +26,7 @@ const config = (target = claim.expectedTarget) => ({
 const exact = JSON.stringify(config());
 const statusArgs = ["serve", "status", "--json"];
 const writeArgs = ["serve", "--bg", "--https=8443", claim.expectedTarget];
-const offArgs = ["serve", "--https=8443", "off"];
+const offArgs = ["serve", "--https=8443", "--set-path=/", "off"];
 const encoder = new TextEncoder();
 const encodeErrorJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 

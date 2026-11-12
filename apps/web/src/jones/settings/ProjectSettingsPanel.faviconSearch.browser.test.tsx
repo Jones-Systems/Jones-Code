@@ -51,6 +51,13 @@ const state = vi.hoisted(() => ({
     >(),
 }));
 
+// This component fixture supplies its own remote resources/grants; no local primary
+// environment belongs to the scenario. Keep unrelated bootstrap polling out of its clock/HTTP oracle.
+vi.mock(import("~/localEnvironment"), async (original) => ({
+  ...(await original()),
+  isLocalEnvironmentDisabled: () => true,
+}));
+
 vi.mock(import("@t3tools/client-runtime/state/session"), async (original) => {
   const actual = await original();
   return {
@@ -74,6 +81,8 @@ vi.mock(import("~/state/environments"), async (original) => ({
     ),
   }),
   usePrimaryEnvironmentId: () => primaryId,
+  readEnvironment: (id: EnvironmentId) =>
+    environments.find((environment) => environment.environmentId === id) ?? null,
 }));
 vi.mock(import("~/state/presentation"), async (original) => ({
   ...(await original()),
@@ -281,12 +290,16 @@ function setup() {
   });
   searchAtoms.clear();
   searchSources.clear();
-  state.sessions.clear();
   for (const id of [primaryId, remoteId]) {
-    state.sessions.set(
-      id,
-      Atom.make<SessionResult>(AsyncResult.success(session(grants))).pipe(Atom.keepAlive),
-    );
+    // Session-list atoms retain these family members across mounts. Reset their
+    // values rather than replacing the identity underneath existing selectors.
+    const existing = state.sessions.get(id);
+    if (existing) appAtomRegistry.set(existing, AsyncResult.success(session(grants)));
+    else
+      state.sessions.set(
+        id,
+        Atom.make<SessionResult>(AsyncResult.success(session(grants))).pipe(Atom.keepAlive),
+      );
   }
   state.projects = [primaryId, remoteId].map((environmentId) => ({
     id: ProjectId.make(`project-${environmentId}`),

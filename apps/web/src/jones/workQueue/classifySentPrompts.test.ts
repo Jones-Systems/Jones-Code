@@ -69,6 +69,8 @@ const voice = (): VoiceReviewRecentEntry => ({
   },
 });
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(WorkQueueMetadata);
+
 describe("native handoff classification", () => {
   it.each([
     ["v1", "vps", runtimeV1Raw],
@@ -76,7 +78,7 @@ describe("native handoff classification", () => {
   ])(
     "correlates exact runtime %s producer bytes without a queued voice duplicate",
     (_version, hostId, raw) => {
-      const sample = Schema.decodeUnknownSync(WorkQueueMetadata)(JSON.parse(raw));
+      const sample = compiledDecodeUnknownSync1(JSON.parse(raw));
       if (sample.schema !== "codex.t3-work-queue-metadata/v2") throw new Error("fixture");
       const item = sample.items[0]!;
       expect(sample.source.host_id).toBe(hostId);
@@ -289,7 +291,7 @@ describe.each(["v3", "v4"] as const)("%s recorded pre-start handoffs", (version)
       )
         throw new Error("fixture");
       for (const turn_state of ["pending", terminalState] as const) {
-        const observed = Schema.decodeUnknownSync(WorkQueueMetadata)({
+        const observed = compiledDecodeUnknownSync1({
           ...sample,
           items: sample.items.map((item) => ({
             ...item,
@@ -402,13 +404,13 @@ describe("v4 assignment and handoff independence", () => {
         updated_at: 1500,
       },
     ]) {
-      const sample = Schema.decodeUnknownSync(WorkQueueMetadata)({
+      const sample = compiledDecodeUnknownSync1({
         ...previous,
         schema: "codex.t3-work-queue-metadata/v4",
         items: previous.items.map((item) => ({ ...item, assignment })),
       });
       expect(classifySentPrompts(sample, [voice()], "native-env")).toEqual(expected);
-      const unconfirmed = Schema.decodeUnknownSync(WorkQueueMetadata)({
+      const unconfirmed = compiledDecodeUnknownSync1({
         ...sample,
         items: sample.items.map((item) => ({ ...item, native_handoff: null })),
       });

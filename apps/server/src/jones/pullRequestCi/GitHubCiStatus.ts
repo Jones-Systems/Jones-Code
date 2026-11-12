@@ -41,9 +41,11 @@ const CiRunner = Schema.Struct({
   labels: Schema.Array(Schema.Struct({ name: Schema.String })),
 });
 
+const compiledIs1 = Schema.is(PullRequestProviderError);
+
 function ciReadReason(error: unknown): string {
   const tag = typeof error === "object" && error !== null && "_tag" in error ? error._tag : "";
-  const reason = Schema.is(PullRequestProviderError)(error) ? error.reason : null;
+  const reason = compiledIs1(error) ? error.reason : null;
   if (reason === "rate-limited" || tag === "SourceControlRateLimitPausedError")
     return "GitHub API rate limit reached; reads are paused.";
   if (reason === "unauthenticated") return "GitHub authentication is unavailable.";

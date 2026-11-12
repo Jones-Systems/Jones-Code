@@ -48,6 +48,8 @@ describe("WebSocket RPC contracts", () => {
 
 describe("legacy queue compatibility on the existing dispatch RPC", () => {
   const rpc = WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.dispatchCommand)!;
+  const decodeLegacyDispatch = Schema.decodeSync(rpc.payloadSchema);
+  const decodeLegacyDispatchExit = Schema.decodeExit(rpc.payloadSchema);
   const payload = {
     type: "thread.turn.start",
     commandId: "legacy:C",
@@ -67,12 +69,12 @@ describe("legacy queue compatibility on the existing dispatch RPC", () => {
     },
   };
   it("preserves the complete closed legacy command and final guard without changing method identity", () => {
-    expect(Schema.decodeSync(rpc.payloadSchema)(payload)).toEqual(payload);
+    expect(decodeLegacyDispatch(payload)).toEqual(payload);
   });
   it("rejects undeclared bootstrap fields while preserving native V2 excess-field behavior", () => {
     expect(
       Exit.isFailure(
-        Schema.decodeExit(rpc.payloadSchema)({
+        decodeLegacyDispatchExit({
           ...payload,
           bootstrap: { ...payload.bootstrap, transport: "legacy_websocket" },
         }),
@@ -80,7 +82,7 @@ describe("legacy queue compatibility on the existing dispatch RPC", () => {
     ).toBe(true);
     expect(
       Exit.isSuccess(
-        Schema.decodeExit(rpc.payloadSchema)({
+        decodeLegacyDispatchExit({
           type: "checkpoint.rollback",
           commandId: "native:rollback",
           threadId: "native:T",
@@ -94,9 +96,7 @@ describe("legacy queue compatibility on the existing dispatch RPC", () => {
   it.each(["transport", "unsupported", "legacyBootstrap"])(
     "rejects a caller-controlled %s field instead of discarding it",
     (key) => {
-      expect(
-        Exit.isFailure(Schema.decodeExit(rpc.payloadSchema)({ ...payload, [key]: "forged" })),
-      ).toBe(true);
+      expect(Exit.isFailure(decodeLegacyDispatchExit({ ...payload, [key]: "forged" }))).toBe(true);
     },
   );
 });

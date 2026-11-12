@@ -62,6 +62,8 @@ it.effect("authenticates relay status reads and target-bound plan directive PUTs
       rejectedAccessToken?: string;
     }> = [];
     const remote = RemoteEnvironmentAuthorization.of({
+      renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
+      rememberCheckedDescriptor: () => Effect.void,
       authorizeBearer: () => Effect.die("Unexpected bearer authorization"),
       authorizeDpop: () => Effect.die("Status reads must not replace the socket"),
       authorizeDpopHttp: (input) =>
@@ -169,6 +171,8 @@ it.effect("authenticates relay status reads and target-bound plan directive PUTs
       "https://fleet.example.test/api/jones-fleet-updates",
       "https://fleet.example.test/api/jones-fleet-updates/plan-directive",
     ]);
-    expect(authorizations).toEqual(Array(3).fill({ expectedEnvironmentId: target.environmentId }));
+    expect(authorizations).toEqual(
+      Array.from({ length: 3 }, () => ({ expectedEnvironmentId: target.environmentId })),
+    );
   }),
 );

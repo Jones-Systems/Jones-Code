@@ -242,7 +242,7 @@ const routingFixture = (callerThreads = threads) =>
     });
     const forwarding = PeerForwarding.layer.pipe(
       Layer.provide(Layer.succeed(PeerMcpClient.PeerMcpClient, { call })),
-      Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+      Layer.provide(Layer.mock(PeerLinks.PeerLinks)({ enabled: Effect.succeed(true) })),
       Layer.provide(
         Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
       ),
