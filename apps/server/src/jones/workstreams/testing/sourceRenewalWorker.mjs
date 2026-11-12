@@ -18,6 +18,16 @@ export function makeWorkerClose(finalizers) {
     })());
 }
 
+export function makeWorkerClock(Effect, liveClock, currentMillis) {
+  // Keep prototype methods such as sleep and monotonic reads while controlling wall time.
+  return Object.assign(Object.create(liveClock), {
+    currentTimeMillisUnsafe: currentMillis,
+    currentTimeMillis: Effect.sync(currentMillis),
+    currentTimeNanosUnsafe: () => BigInt(currentMillis()) * 1000000n,
+    currentTimeNanos: Effect.sync(() => BigInt(currentMillis()) * 1000000n),
+  });
+}
+
 async function main() {
   // This adapter runs in a separate immutable native module graph for each source artifact.
   const root = NodeFS.realpathSync(process.argv[2]);
@@ -51,13 +61,7 @@ async function main() {
   const decodeSession = Schema.decodeUnknownSync(Sessions.CreateAuthSessionInput);
   const liveClock = Effect.runSync(Clock.Clock);
   let millis = Date.parse("2026-01-01T00:00:00.000Z");
-  const clock = {
-    ...liveClock,
-    currentTimeMillisUnsafe: () => millis,
-    currentTimeMillis: Effect.sync(() => millis),
-    currentTimeNanosUnsafe: () => BigInt(millis) * 1000000n,
-    currentTimeNanos: Effect.sync(() => BigInt(millis) * 1000000n),
-  };
+  const clock = makeWorkerClock(Effect, liveClock, () => millis);
   const scope = Effect.runSync(Scope.make());
   const run = async (effect) => {
     const result = await Effect.runPromise(
