@@ -3141,6 +3141,8 @@
     "apps/server/src/jones/updates/operations/cleanupReview.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.py": "jones-owned",
     "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/active-workspace-handoff.json": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/peerSetupCli.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/read/exportCli.test.ts": "jones-owned",
