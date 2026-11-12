@@ -2,6 +2,7 @@ import * as NodeURL from "node:url";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import { assert, it } from "@effect/vitest";
+import { EnvironmentId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -111,7 +112,8 @@ it.effect("fresh startup keeps peer links in the Jones table and leaves upstream
     yield* assertJonesPeerSchema;
     assert.deepStrictEqual(yield* jonesLinks, []);
     assert.deepStrictEqual(yield* upstreamLinks, []);
-    assert.isFalse((yield* jonesLedger).some(([, name]) => name === "PeerLinksAdoption"));
+    // Identity 152 is recorded with no effect: upstream's table stays empty.
+    assert.deepInclude(yield* jonesLedger, [152, "PeerLinksAdoption"]);
     assert.deepStrictEqual(yield* runMigrations(), []);
   }).pipe(Effect.provide(memory)),
 );
@@ -144,6 +146,82 @@ it.effect("upgrading a main database keeps every Jones link and writes no upstre
       JonesMigrations.jonesMigrationEntries.map(([id]) => id).filter((id) => id > mainJonesId),
     );
     assert.isTrue(added.every(([id]) => id > mainJonesId));
+  }).pipe(Effect.provide(memory)),
+);
+
+// Replica of the unreleased adoption body that 152 ran before it became a no-op. Synthetic
+// databases use it to reproduce a ledger and upstream residue such a build left behind.
+const unreleasedAdoption = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT OR IGNORE INTO peer_environment_links (
+      environment_id, secret_name, label, urls_json, access, linked_at, expires_at,
+      last_reached_at, last_error, fenced
+    )
+    SELECT
+      environment_id, secret_name, label, urls_json, access, linked_at, expires_at,
+      last_reached_at, last_error, fenced
+    FROM jones_peer_environment_links
+  `;
+});
+
+it.effect(
+  "a database that recorded the unreleased adoption starts and its upstream copies stay untouched",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: lastUpstreamId });
+      yield* runJonesMigrations(JonesMigrations.jonesMigrationEntries.filter(([id]) => id <= 151));
+      const legacy = [linkRow("synthetic-env-a"), linkRow("synthetic-env-b", { fenced: 0 })];
+      for (const row of legacy) {
+        yield* sql`INSERT INTO ${sql(peerEnvironmentLinksTable)} ${sql.insert(row)}`;
+      }
+      yield* runJonesMigrations([
+        ...JonesMigrations.jonesMigrationEntries.filter(([id]) => id <= 151),
+        [152, "PeerLinksAdoption", unreleasedAdoption],
+      ]);
+      // That build then wrote new links only to upstream's table.
+      yield* sql`INSERT INTO ${sql(upstreamTable)} ${sql.insert(linkRow("synthetic-env-after-adoption"))}`;
+      const upstreamBefore = yield* upstreamLinks;
+      assert.strictEqual(upstreamBefore.length, 3);
+      const ledgerBefore = yield* jonesLedger;
+      assert.deepInclude(ledgerBefore, [152, "PeerLinksAdoption"]);
+
+      assert.deepStrictEqual(yield* runMigrations(), []);
+
+      assert.deepStrictEqual(yield* jonesLedger, ledgerBefore);
+      assert.deepStrictEqual(yield* jonesLinks, legacy);
+      // No cleanup or repair: residue is neither read, rewritten nor removed.
+      assert.deepStrictEqual(yield* upstreamLinks, upstreamBefore);
+    }).pipe(Effect.provide(memory)),
+);
+
+it.effect("a database from the earlier unreleased 147-151 numbering is refused unchanged", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: lastUpstreamId });
+    const effectOf = (name: string) =>
+      JonesMigrations.jonesMigrationEntries.find(([, entry]) => entry === name)![2];
+    // Builds before d35c6b7d75 ran these identities before main's 147 QueueHolds existed.
+    const earlier = [
+      ...JonesMigrations.jonesMigrationEntries.filter(([id]) => id <= 146),
+      [147, "NativeExecutionProcessCustody", effectOf("NativeExecutionProcessCustody")],
+      [148, "OrdinaryCheckoutProcessCustody", effectOf("OrdinaryCheckoutProcessCustody")],
+      [149, "AuthSessionClientMetadata", effectOf("AuthSessionClientMetadata")],
+      [150, "WorkspaceRuntimeUses", effectOf("WorkspaceRuntimeUses")],
+      [151, "PeerLinksAdoption", unreleasedAdoption],
+    ] as const;
+    yield* runJonesMigrations(earlier.filter(([id]) => id <= 146));
+    yield* sql`INSERT INTO ${sql(peerEnvironmentLinksTable)} ${sql.insert(linkRow("synthetic-env-a"))}`;
+    yield* runJonesMigrations(earlier);
+    assert.strictEqual((yield* upstreamLinks).length, 1);
+    const upstreamBefore = yield* upstreamLinks;
+    const ledgerBefore = yield* jonesLedger;
+
+    const refused = yield* Effect.flip(JonesMigrations.runMigrations());
+    assert.include(String(refused), "unrecognized 147_NativeExecutionProcessCustody");
+    assert.deepStrictEqual(yield* jonesLedger, ledgerBefore);
+    assert.deepStrictEqual(yield* upstreamLinks, upstreamBefore);
   }).pipe(Effect.provide(memory)),
 );
 
@@ -263,6 +341,36 @@ it.effect("released schema 63 keeps its rows and Jones links through upstream ca
     yield* assertJonesPeerSchema;
     assert.deepStrictEqual(yield* jonesLinks, [legacy]);
   }).pipe(Effect.provide(memory)),
+);
+
+it.effect("links left in upstream's table by an unreleased build are never read", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const context = yield* Layer.build(
+        layerLinkingEnvironment(descriptorOf("environment-laptop", "Laptop")),
+      );
+      const links = Context.get(context, PeerLinks.PeerLinks);
+      const sql = Context.get(context, SqlClient.SqlClient);
+      const residue = linkRow("environment-residue", { fenced: 0 });
+      const residueId = EnvironmentId.make(residue.environment_id);
+      yield* sql`INSERT INTO ${sql(upstreamTable)} ${sql.insert(residue)}`;
+      const upstreamBefore = yield* upstreamLinks.pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+
+      assert.deepStrictEqual(yield* links.list, []);
+      assert.isTrue(Option.isNone(yield* links.get(residueId)));
+      assert.strictEqual(
+        (yield* links.resolve(residueId).pipe(Effect.flip)).reason,
+        "unknown_link",
+      );
+      assert.isFalse(yield* links.unlink(residueId));
+      assert.deepStrictEqual(
+        yield* upstreamLinks.pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        upstreamBefore,
+      );
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("every link lifecycle write lands in the Jones table and none in upstream's", () =>
