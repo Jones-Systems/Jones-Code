@@ -1,3 +1,4 @@
+import { makeHistoryDeliveryOutcome } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import type {
   OrchestrationV2ContextHandoff,
   OrchestrationV2ProviderThread,
@@ -12,7 +13,7 @@ import {
   selectHistory,
 } from "@t3tools/provider-core/server/handoffBudget";
 
-/** Persist around injection; ambiguous delivery requires a fresh native thread. Call unsent if refused before prompt consumption. */
+/** Persist around injection; retain ambiguous delivery. Call unsent only on proof of no prompt consumption. */
 export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextHandoffs")(
   function* <InjectError = never, PersistError = never, BudgetError = never>(input: {
     readonly handoffs: ReadonlyArray<OrchestrationV2ContextHandoff>;
@@ -24,6 +25,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       history: ProviderAdapter.ProviderAdapterV2HistoricalContext,
     ) => Effect.Effect<boolean, InjectError>;
     readonly persist: (handoff: OrchestrationV2ContextHandoff) => Effect.Effect<void, PersistError>;
+    readonly restore?: (handoff: OrchestrationV2ContextHandoff) => Effect.Effect<void, PersistError>;
   }) {
     const nativeThreadId = input.providerThread.nativeThreadRef?.nativeId ?? undefined;
     const pending = input.handoffs.filter(
@@ -75,11 +77,12 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       return yield* new ContextHandoffBudgetError();
     }
     const omittedItemIds = new Set(selected.omittedItemIds);
+    const outcome = makeHistoryDeliveryOutcome(input.restore ?? input.persist);
     const persist = (status: "pending" | "injected" | "inline") =>
       Effect.forEach(
         pending,
-        (handoff) =>
-          input.persist({
+        (handoff) => {
+          const write = input.persist({
             ...handoff,
             ...(nativeThreadId === undefined
               ? {}
@@ -102,41 +105,45 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
                       .map((message) => message.itemId),
                   },
                 }),
-          }),
+          });
+          return status === "pending" ? outcome.pending(handoff, write) : write;
+        },
         { discard: true },
       );
-    if (input.inject !== undefined && nativeThreadId !== undefined) {
-      if (
-        pending.some(
-          (handoff) =>
-            handoff.delivery?.nativeThreadId === nativeThreadId &&
-            handoff.delivery.status === "pending",
-        )
-      ) {
-        return yield* new ContextHandoffDeliveryUncertainError();
+    return yield* outcome.protect(Effect.gen(function* () {
+      if (input.inject !== undefined && nativeThreadId !== undefined) {
+        if (
+          pending.some(
+            (handoff) =>
+              handoff.delivery?.nativeThreadId === nativeThreadId &&
+              handoff.delivery.status === "pending",
+          )
+        ) {
+          return yield* new ContextHandoffDeliveryUncertainError();
+        }
+        yield* persist("pending");
+        const injected = yield* outcome.inject(input.inject({
+          messages: selected.messages,
+          context: selected.context,
+        }));
+        if (injected) {
+          yield* persist("injected");
+          return { context: "", delivered: Effect.void, unsent: Effect.void };
+        }
+      } else {
+        yield* persist("pending");
       }
-      yield* persist("pending");
-      const injected = yield* input.inject({
-        messages: selected.messages,
-        context: selected.context,
-      });
-      if (injected) {
-        yield* persist("injected");
+      if (input.deferInline) {
+        // Compaction cannot carry inline transcripts; retain for the next turn if native injection is unsupported.
+        yield* outcome.unsent;
         return { context: "", delivered: Effect.void, unsent: Effect.void };
       }
-    } else {
-      yield* persist("pending");
-    }
-    if (input.deferInline) {
-      // Compaction cannot carry inline transcripts; retain for the next turn if native injection is unsupported.
-      yield* Effect.forEach(pending, input.persist, { discard: true });
-      return { context: "", delivered: Effect.void, unsent: Effect.void };
-    }
-    return {
-      context: renderHistory(selected.messages, selected.context),
-      delivered: persist("inline"),
-      unsent: Effect.forEach(pending, input.persist, { discard: true }),
-    };
+      return {
+        context: renderHistory(selected.messages, selected.context),
+        delivered: persist("inline"),
+        unsent: outcome.unsent,
+      };
+    }));
   },
 );
 
@@ -145,6 +152,6 @@ export class ContextHandoffDeliveryUncertainError extends Schema.TaggedError<Con
   {},
 ) {
   override get message() {
-    return "Historical context delivery is uncertain; replace the native thread before retrying.";
+    return "Historical context delivery is uncertain; preserve this conversation and continue in a new thread.";
   }
 }
