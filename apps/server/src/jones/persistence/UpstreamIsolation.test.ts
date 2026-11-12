@@ -261,10 +261,12 @@ it.effect("upstream pruning and deletes are not blocked by Jones evidence", () =
     yield* runMigrations();
     yield* seedReferencedRows;
     yield* sql`INSERT INTO jones_workstreams_settlement_proofs VALUES ('command', 'thread', 'settle', '{}')`;
+    yield* sql`INSERT INTO jones_queue_holds VALUES ('run', 'thread', 'stop', '2026-11-10T00:00:00.000Z')`;
     const retainedTables = [
       ...rebuiltTables,
       ...rebuiltChildren,
       "jones_workstreams_settlement_proofs",
+      "jones_queue_holds",
     ];
     const jones = yield* Effect.forEach(retainedTables, readTable);
 
@@ -372,11 +374,12 @@ it.effect(
         [144, "WorkstreamsMemberBindings"],
         [145, "WorkstreamsForwardReceipts"],
         [146, "SettlementOriginRetention"],
-        [147, "NativeExecutionProcessCustody"],
-        [148, "OrdinaryCheckoutProcessCustody"],
-        [149, "AuthSessionClientMetadata"],
-        [150, "WorkspaceRuntimeUses"],
-        [151, "PeerLinksAdoption"],
+        [147, "QueueHolds"],
+        [148, "NativeExecutionProcessCustody"],
+        [149, "OrdinaryCheckoutProcessCustody"],
+        [150, "AuthSessionClientMetadata"],
+        [151, "WorkspaceRuntimeUses"],
+        [152, "PeerLinksAdoption"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

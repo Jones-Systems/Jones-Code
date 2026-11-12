@@ -22,9 +22,9 @@ import * as JonesMigrations from "../persistence/JonesMigrations.ts";
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 
 // Jones kept links in this table (migration 119) before upstream gained its own.
-// Migration 151 copies them across and leaves this table for rollback.
+// Migration 152 copies them across and leaves this table for rollback.
 const legacyTable = "jones_peer_environment_links";
-const adoptionId = 151;
+const adoptionId = 152;
 const lastUpstreamId = Math.max(...migrationManifest.map(([id]) => id));
 
 const jonesEntriesBeforeAdoption = JonesMigrations.jonesMigrationEntries.filter(

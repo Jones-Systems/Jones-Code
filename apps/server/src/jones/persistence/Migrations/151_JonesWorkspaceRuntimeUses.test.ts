@@ -7,10 +7,10 @@ import { SqlError, UnknownError } from "effect/sql/SqlError";
 import { migrationManifest, runMigrations } from "../../../persistence/Migrations.ts";
 import { runJonesMigrations } from "../JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../JonesMigrations.ts";
-import upgrade from "./150_JonesWorkspaceRuntimeUses.ts";
+import upgrade from "./151_JonesWorkspaceRuntimeUses.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
-const prior = jonesMigrationEntries.filter(([id]) => id < 150);
+const prior = jonesMigrationEntries.filter(([id]) => id < 151);
 const prepare = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
@@ -25,7 +25,7 @@ const objects = Effect.gen(function* () {
 });
 
 it.effect(
-  "150 installs only the independent journal, preserves populated preimages and is idempotent",
+  "151 installs only the independent journal, preserves populated preimages and is idempotent",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -34,7 +34,7 @@ it.effect(
       const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       const released = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-        [150, "WorkspaceRuntimeUses"],
+        [151, "WorkspaceRuntimeUses"],
       ]);
       assert.deepStrictEqual(
         (yield* objects).filter(({ name }) => !name.startsWith("jones_workspace_runtime_")),
@@ -45,7 +45,7 @@ it.effect(
         ledger,
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id<150 ORDER BY migration_id`,
+        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id<151 ORDER BY migration_id`,
         released,
       );
       assert.deepStrictEqual(yield* sql`SELECT * FROM synthetic_upgrade_preimage`, [
@@ -99,7 +99,7 @@ it.effect(
       assert.deepStrictEqual(yield* objects, after);
     }).pipe(Effect.provide(memory)),
 );
-it.effect("150 schema and ledger insertion share the actual migration runner transaction", () =>
+it.effect("151 schema and ledger insertion share the actual migration runner transaction", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* prepare;
@@ -117,7 +117,7 @@ it.effect("150 schema and ledger insertion share the actual migration runner tra
     assert.isTrue(
       Exit.isFailure(
         yield* Effect.exit(
-          runJonesMigrations([...prior, [150, "WorkspaceRuntimeUses", failAfterDDL]]),
+          runJonesMigrations([...prior, [151, "WorkspaceRuntimeUses", failAfterDDL]]),
         ),
       ),
     );
@@ -129,7 +129,7 @@ it.effect("150 schema and ledger insertion share the actual migration runner tra
   }).pipe(Effect.provide(memory)),
 );
 it.effect(
-  "150 refuses unexpected object definitions without advancing its ledger or leaving partial objects",
+  "151 refuses unexpected object definitions without advancing its ledger or leaving partial objects",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -139,14 +139,14 @@ it.effect(
       assert.isTrue(Exit.isFailure(yield* Effect.exit(runJonesMigrations(jonesMigrationEntries))));
       assert.deepStrictEqual(yield* objects, before);
       assert.deepStrictEqual(
-        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id=150`,
+        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id=151`,
         [],
       );
     }).pipe(Effect.provide(memory)),
 );
 
 it.effect(
-  "150 rejects an unexpected predecessor definition before adding its reciprocal fences",
+  "151 rejects an unexpected predecessor definition before adding its reciprocal fences",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -156,7 +156,7 @@ it.effect(
       assert.isTrue(Exit.isFailure(yield* Effect.exit(runJonesMigrations(jonesMigrationEntries))));
       assert.deepStrictEqual(yield* objects, before);
       assert.deepStrictEqual(
-        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id=150`,
+        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id=151`,
         [],
       );
     }).pipe(Effect.provide(memory)),

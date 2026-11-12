@@ -13,6 +13,12 @@ import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResul
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
 import { acceptEvents as acceptDependencyEvents } from "../jones/threadResultDependencies/TransactionHooks.ts";
+import {
+  acceptQueueHoldEvents,
+  makeQueueHoldStore,
+  type QueueHoldIntent,
+  type QueueHoldOrigin,
+} from "../jones/orchestration/QueueHoldStore.ts";
 import type {
   OpenRequest,
   WakeCommit,
@@ -344,6 +350,8 @@ export interface EventSinkV2Shape {
     >;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
+    /** Jones: records why these events hold the named queued runs. */
+    readonly queueHold?: QueueHoldIntent;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
@@ -662,6 +670,7 @@ const layerBase: Layer.Layer<
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
     const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);
     const ownerSelections = makeOwnerSelectionStore(sql, jonesTables);
+    const queueHolds = makeQueueHoldStore(sql, jonesTables);
     const codexFailoverStore = yield* CodexFailoverStore.make;
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublishNow = <A, E, R>(
@@ -977,6 +986,7 @@ const layerBase: Layer.Layer<
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(function* (
         storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+        queueHoldOrigin?: QueueHoldOrigin,
       ) {
         // The raw session owner freezes its expected target/caller before any
         // attachment work. Revalidate in this owning transaction before publish.
@@ -1027,10 +1037,12 @@ const layerBase: Layer.Layer<
               updated_at = excluded.updated_at
           `;
         }
-        yield* acceptDependencyEvents(
-          dependencies,
-          storedEvents.filter(isPublicStoredOrchestrationEvent).map((stored) => stored.event),
-        );
+        const publicEvents = storedEvents
+          .filter(isPublicStoredOrchestrationEvent)
+          .map((stored) => stored.event);
+        yield* acceptDependencyEvents(dependencies, publicEvents);
+        // Jones: hold reasons live in a sparse Jones table, written in this transaction.
+        yield* acceptQueueHoldEvents(queueHolds, publicEvents, queueHoldOrigin);
         // Read lineage here, on the connection this transaction holds; see makeRunOutcomeRecorder.
         return yield* runOutcomes.prepare(storedEvents.filter(isPublicStoredOrchestrationEvent));
       });
@@ -1116,7 +1128,7 @@ const layerBase: Layer.Layer<
                   : normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          const outcomes = yield* applyStoredEvents(committed);
+          const outcomes = yield* applyStoredEvents(committed, { queueHold: input.queueHold });
           if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           if (Option.isSome(checkoutIntent))
@@ -1557,7 +1569,9 @@ const layerBase: Layer.Layer<
               new Error(`Command ${input.commandId} produced no orchestration events.`),
             );
           }
-          const outcomes = yield* applyStoredEvents(storedEvents);
+          const outcomes = yield* applyStoredEvents(storedEvents, {
+            commandType: input.commandType,
+          });
           if (input.resultRequest) yield* dependencies.open(input.resultRequest);
           if (input.dependencyWake) yield* dependencies.admitWake(input.dependencyWake);
           yield* acceptDependencyEvents(

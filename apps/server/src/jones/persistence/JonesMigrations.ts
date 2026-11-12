@@ -60,11 +60,6 @@ import JonesMigration0134 from "./Migrations/134_JonesGoalContinuity.ts";
 import JonesMigration0135 from "./Migrations/135_JonesIdleWorktreeAdmission.ts";
 import JonesMigration0136 from "./Migrations/136_JonesWorkspaceProvenance.ts";
 import JonesMigration0137 from "./Migrations/137_JonesNativeCreationLeaseRenewal.ts";
-import JonesMigration0147 from "./Migrations/147_JonesNativeExecutionProcessCustody.ts";
-import JonesMigration0148 from "./Migrations/148_JonesOrdinaryCheckoutProcessCustody.ts";
-import JonesMigration0149 from "./Migrations/149_JonesAuthSessionClientMetadata.ts";
-import JonesMigration0150 from "./Migrations/150_JonesWorkspaceRuntimeUses.ts";
-import JonesMigration0151 from "./Migrations/151_JonesPeerLinksAdoption.ts";
 
 import JonesMigration0138 from "./Migrations/138_JonesWorkspaceRetirement.ts";
 import JonesMigration0139 from "./Migrations/139_JonesConversationWorkspace.ts";
@@ -79,6 +74,12 @@ import JonesMigration0144 from "./Migrations/129_JonesWorkstreamsMemberBindings.
 import JonesMigration0145 from "./Migrations/130_JonesWorkstreamsForwardReceipts.ts";
 
 import JonesMigration0146 from "./Migrations/146_JonesSettlementOriginRetention.ts";
+import JonesMigration0147 from "./Migrations/147_JonesQueueHolds.ts";
+import JonesMigration0148 from "./Migrations/148_JonesNativeExecutionProcessCustody.ts";
+import JonesMigration0149 from "./Migrations/149_JonesOrdinaryCheckoutProcessCustody.ts";
+import JonesMigration0150 from "./Migrations/150_JonesAuthSessionClientMetadata.ts";
+import JonesMigration0151 from "./Migrations/151_JonesWorkspaceRuntimeUses.ts";
+import JonesMigration0152 from "./Migrations/152_JonesPeerLinksAdoption.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -128,11 +129,12 @@ export const jonesMigrationEntries = [
   [144, "WorkstreamsMemberBindings", JonesMigration0144],
   [145, "WorkstreamsForwardReceipts", JonesMigration0145],
   [146, "SettlementOriginRetention", JonesMigration0146],
-  [147, "NativeExecutionProcessCustody", JonesMigration0147],
-  [148, "OrdinaryCheckoutProcessCustody", JonesMigration0148],
-  [149, "AuthSessionClientMetadata", JonesMigration0149],
-  [150, "WorkspaceRuntimeUses", JonesMigration0150],
-  [151, "PeerLinksAdoption", JonesMigration0151],
+  [147, "QueueHolds", JonesMigration0147],
+  [148, "NativeExecutionProcessCustody", JonesMigration0148],
+  [149, "OrdinaryCheckoutProcessCustody", JonesMigration0149],
+  [150, "AuthSessionClientMetadata", JonesMigration0150],
+  [151, "WorkspaceRuntimeUses", JonesMigration0151],
+  [152, "PeerLinksAdoption", JonesMigration0152],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {

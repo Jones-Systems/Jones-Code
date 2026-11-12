@@ -680,8 +680,8 @@
     "apps/server/src/jones/persistence/Migrations/134_JonesGoalContinuity.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.ts": "jones-owned",
-    "apps/server/src/jones/persistence/Migrations/150_JonesWorkspaceRuntimeUses.test.ts": "jones-owned",
-    "apps/server/src/jones/persistence/Migrations/150_JonesWorkspaceRuntimeUses.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/151_JonesWorkspaceRuntimeUses.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/151_JonesWorkspaceRuntimeUses.ts": "jones-owned",
     "apps/server/src/jones/persistence/UpstreamIsolation.test.ts": "jones-owned",
     "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts": "jones-owned",
     "apps/server/src/jones/platformCompatibility/mcp/ThreadMetadataMcpService.test.ts": "jones-owned",
@@ -3092,7 +3092,16 @@
     "apps/server/src/jones/updates/progress.test.ts": "jones-owned",
     "apps/server/src/jones/updates/progress.ts": "jones-owned",
     "apps/server/src/jones/git/listRefsTelemetry.ts": "jones-owned",
-    "apps/server/src/jones/git/listRefsTelemetry.test.ts": "jones-owned"
+    "apps/server/src/jones/git/listRefsTelemetry.test.ts": "jones-owned",
+    "apps/web/src/jones/installStatus/finishPlan.test.ts": "jones-owned",
+    "apps/web/src/jones/installStatus/finishPlan.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/QueueHold.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/QueueHoldReasons.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/HeldQueueExpiry.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/QueueHoldStore.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/147_JonesQueueHolds.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/held-queue-expiry.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

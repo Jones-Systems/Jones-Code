@@ -21,6 +21,7 @@ import type {
 } from "@t3tools/contracts/jones/fleet-updates";
 import * as Schema from "effect/Schema";
 import type { JonesUpdateObservation } from "../updates/jonesUpdates.ts";
+import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 
 const terminal = new Set<JonesOperationReceipt["phase"]>([
   "completed",
@@ -453,6 +454,43 @@ export function isPlanComplete(plan: JonesInstallPlan): boolean {
         !d.operations.some(outstanding) && (d.membership === "removed" || deviceSettled(plan, d)),
     )
   );
+}
+
+export function matchesPlanTarget(
+  plan: JonesInstallPlan,
+  device: JonesInstallPlanDevice,
+  state: JonesUpdateState | null | undefined,
+): boolean {
+  return (
+    state?.environmentId === device.environmentId &&
+    state.installedSource?.repository === plan.target.repository &&
+    state.installedSource.sha === plan.target.sourceSha &&
+    state.installedSource.tree === plan.target.sourceTree
+  );
+}
+
+/** Fresh proof can finish retained stages; completion itself remains ledger-only. */
+export function planCompletion(
+  plan: JonesInstallPlan,
+  observations: ReadonlyMap<EnvironmentId, JonesUpdateObservation>,
+) {
+  const candidates = plan.devices.filter((device) => {
+    const observation = observations.get(device.environmentId);
+    return (
+      device.membership === "selected" &&
+      deviceState(plan, device) === "staged" &&
+      !device.operations.some(outstanding) &&
+      observation?.freshness === "fresh" &&
+      matchesPlanTarget(plan, device, observation.state)
+    );
+  });
+  const completable = isPlanComplete({
+    ...plan,
+    devices: plan.devices.map((device) =>
+      candidates.includes(device) ? { ...device, ended: { at: plan.createdAt } } : device,
+    ),
+  });
+  return { candidates, completable };
 }
 
 export function canSupersede(plan: JonesInstallPlan): boolean {

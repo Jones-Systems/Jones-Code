@@ -35,6 +35,8 @@ import { sendPendingTurn } from "./send";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { readThreadShell } from "../../state/entities";
 import { threadEnvironment } from "../../state/threads";
+// Load the lazy chat UI during collection so module loading doesn't consume the recovery deadline.
+import "../../components/ChatView";
 
 // The shared fake leaves unknown-thread subscriptions empty. Release this one only after
 // commit so it reads the actual synthetic projection without inventing acceptance evidence.

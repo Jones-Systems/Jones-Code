@@ -1717,7 +1717,7 @@
         "apps/server/src/jones/cleanup/RuntimeUseStore.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseInvocation.test.ts",
         "apps/server/src/jones/cleanup/WorkspaceLeaseProof.test.ts",
-        "apps/server/src/jones/persistence/Migrations/150_JonesWorkspaceRuntimeUses.test.ts",
+        "apps/server/src/jones/persistence/Migrations/151_JonesWorkspaceRuntimeUses.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseClaim.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseManager.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseLifetime.test.ts",
@@ -1727,7 +1727,7 @@
         "apps/server/src/jones/cleanup/RuntimeUseCreation.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/cleanup/CheckedRuntimeOwner.test.ts apps/server/src/jones/cleanup/DeletionGroupWitness.test.ts apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts apps/server/src/jones/cleanup/DeletionAdmission.test.ts apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts apps/server/src/storageCleanup.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/cleanup/RuntimeUseStore.test.ts apps/server/src/jones/cleanup/RuntimeUseInvocation.test.ts apps/server/src/jones/cleanup/WorkspaceLeaseProof.test.ts apps/server/src/jones/persistence/Migrations/150_JonesWorkspaceRuntimeUses.test.ts apps/server/src/jones/cleanup/RuntimeUseClaim.test.ts apps/server/src/jones/cleanup/RuntimeUseManager.test.ts apps/server/src/jones/cleanup/RuntimeUseLifetime.test.ts apps/server/src/jones/cleanup/RuntimeUseTerminal.test.ts apps/server/src/terminal/Manager.test.ts apps/server/src/jones/cleanup/DeletionWriterFence.test.ts apps/server/src/jones/cleanup/RuntimeUseInstallation.test.ts apps/server/src/jones/cleanup/RuntimeUseCreation.test.ts",
+        "vp test run apps/server/src/jones/cleanup/CheckedRuntimeOwner.test.ts apps/server/src/jones/cleanup/DeletionGroupWitness.test.ts apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts apps/server/src/jones/cleanup/DeletionAdmission.test.ts apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts apps/server/src/storageCleanup.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/cleanup/RuntimeUseStore.test.ts apps/server/src/jones/cleanup/RuntimeUseInvocation.test.ts apps/server/src/jones/cleanup/WorkspaceLeaseProof.test.ts apps/server/src/jones/persistence/Migrations/151_JonesWorkspaceRuntimeUses.test.ts apps/server/src/jones/cleanup/RuntimeUseClaim.test.ts apps/server/src/jones/cleanup/RuntimeUseManager.test.ts apps/server/src/jones/cleanup/RuntimeUseLifetime.test.ts apps/server/src/jones/cleanup/RuntimeUseTerminal.test.ts apps/server/src/terminal/Manager.test.ts apps/server/src/jones/cleanup/DeletionWriterFence.test.ts apps/server/src/jones/cleanup/RuntimeUseInstallation.test.ts apps/server/src/jones/cleanup/RuntimeUseCreation.test.ts",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
       ]
@@ -3243,9 +3243,12 @@
     },
     {
       "id": "jones-ci-dependency-setup",
-      "tests": ["scripts/jones/ci/chromium-setup.node-test.mjs"],
+      "tests": [
+        "scripts/jones/ci/chromium-setup.node-test.mjs",
+        "scripts/jones/ci/apt-setup.node-test.mjs"
+      ],
       "commands": [
-        "node --test scripts/jones/ci/chromium-setup.node-test.mjs",
+        "node --test --test-concurrency=1 scripts/jones/ci/chromium-setup.node-test.mjs scripts/jones/ci/apt-setup.node-test.mjs",
         "node scripts/jones/check-boundary.ts --strict --json"
       ]
     },
@@ -4399,6 +4402,7 @@
         "apps/web/src/jones/fleetUpdates/FleetController.test.tsx",
         "apps/web/src/jones/installStatus/InstallStatusPanel.browser.test.tsx",
         "apps/web/src/jones/installStatus/entrypoints.test.ts",
+        "apps/web/src/jones/installStatus/finishPlan.test.ts",
         "apps/web/src/jones/installStatus/execution.test.ts",
         "apps/web/src/jones/installStatus/executionJournal.test.ts",
         "apps/web/src/jones/installStatus/panelUi.test.ts",
@@ -4410,12 +4414,12 @@
         "apps/web/src/jones/updates/productionReview.browser.test.tsx"
       ],
       "commands": [
-        "vp test run --root apps/web --config vite.config.ts --project unit src/components/sidebar/updateEverything.logic.test.ts src/jones/fleetUpdates/FleetController.test.tsx src/jones/installStatus/entrypoints.test.ts src/jones/installStatus/panelUi.test.ts src/jones/updates/SidebarUpdatePill.test.tsx src/jones/updates/localDesktopUpdate.test.ts src/jones/installStatus/execution.test.ts src/jones/installStatus/executionJournal.test.ts src/jones/installStatus/webReviewAuthority.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project browser src/jones/installStatus/InstallStatusPanel.browser.test.tsx src/jones/installStatus/recoveryReview.browser.test.tsx src/jones/updates/ExactSourceUpdateAction.browser.test.tsx src/jones/updates/productionReview.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "vp run knip --workspace apps/web",
-        "vp lint apps/web/src/AppRoot.tsx apps/web/src/components/sidebar/SidebarChrome.tsx apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/components/sidebar/SidebarChrome.tsx apps/web/src/components/sidebar/SidebarUpdatePill.tsx apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/web/src/components/sidebar/updateEverything.logic.ts apps/web/src/components/sidebar/updateEverythingRun.tsx apps/web/src/components/sidebar/useUpdateEverything.ts apps/web/src/jones/fleetUpdates/FleetController.test.tsx apps/web/src/jones/fleetUpdates/FleetController.tsx apps/web/src/jones/installStatus/InstallPlanController.tsx apps/web/src/jones/installStatus/InstallStatusPanel.browser.test.tsx apps/web/src/jones/installStatus/InstallStatusPanel.tsx apps/web/src/jones/installStatus/actions.ts apps/web/src/jones/installStatus/bulkUpdates.ts apps/web/src/jones/installStatus/checkFeedback.ts apps/web/src/jones/installStatus/connectionHost.ts apps/web/src/jones/installStatus/copy.ts apps/web/src/jones/installStatus/entrypoints.test.ts apps/web/src/jones/installStatus/entrypoints.ts apps/web/src/jones/installStatus/execution.ts apps/web/src/jones/installStatus/panelUi.test.ts apps/web/src/jones/installStatus/panelUi.ts apps/web/src/jones/installStatus/presentation.ts apps/web/src/jones/installStatus/production.ts apps/web/src/jones/installStatus/recoveryReview.browser.test.tsx apps/web/src/jones/installStatus/recoveryReview.tsx apps/web/src/jones/installStatus/services.ts apps/web/src/jones/installStatus/useInstallPlan.ts apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx apps/web/src/jones/updates/ExactSourceUpdateAction.tsx apps/web/src/jones/updates/JonesUpdateControls.tsx apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx apps/web/src/jones/updates/SidebarUpdatePill.test.tsx apps/web/src/jones/updates/fixtures/InstallPreview.tsx apps/web/src/jones/updates/fixtures/install-preview-bridge.ts apps/web/src/jones/updates/fixtures/install-preview-plan.ts apps/web/src/jones/updates/localDesktopUpdate.ts apps/web/src/jones/installStatus/execution.test.ts apps/web/src/jones/installStatus/executionJournal.test.ts apps/web/src/jones/installStatus/executionJournal.ts apps/web/src/jones/installStatus/webReviewAuthority.test.ts apps/web/src/jones/installStatus/webReviewAuthority.ts apps/web/src/jones/updates/productionReview.browser.test.tsx",
-        "vp fmt --check apps/web/src/AppRoot.tsx apps/web/src/components/sidebar/SidebarChrome.tsx apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/components/sidebar/SidebarChrome.tsx apps/web/src/components/sidebar/SidebarUpdatePill.tsx apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/web/src/components/sidebar/updateEverything.logic.ts apps/web/src/components/sidebar/updateEverythingRun.tsx apps/web/src/components/sidebar/useUpdateEverything.ts apps/web/src/jones/fleetUpdates/FleetController.test.tsx apps/web/src/jones/fleetUpdates/FleetController.tsx apps/web/src/jones/installStatus/InstallPlanController.tsx apps/web/src/jones/installStatus/InstallStatusPanel.browser.test.tsx apps/web/src/jones/installStatus/InstallStatusPanel.tsx apps/web/src/jones/installStatus/actions.ts apps/web/src/jones/installStatus/bulkUpdates.ts apps/web/src/jones/installStatus/checkFeedback.ts apps/web/src/jones/installStatus/connectionHost.ts apps/web/src/jones/installStatus/copy.ts apps/web/src/jones/installStatus/entrypoints.test.ts apps/web/src/jones/installStatus/entrypoints.ts apps/web/src/jones/installStatus/execution.ts apps/web/src/jones/installStatus/panelUi.test.ts apps/web/src/jones/installStatus/panelUi.ts apps/web/src/jones/installStatus/presentation.ts apps/web/src/jones/installStatus/production.ts apps/web/src/jones/installStatus/recoveryReview.browser.test.tsx apps/web/src/jones/installStatus/recoveryReview.tsx apps/web/src/jones/installStatus/services.ts apps/web/src/jones/installStatus/useInstallPlan.ts apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx apps/web/src/jones/updates/ExactSourceUpdateAction.tsx apps/web/src/jones/updates/JonesUpdateControls.tsx apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx apps/web/src/jones/updates/SidebarUpdatePill.test.tsx apps/web/src/jones/updates/fixtures/InstallPreview.tsx apps/web/src/jones/updates/fixtures/install-preview-bridge.ts apps/web/src/jones/updates/fixtures/install-preview-plan.ts apps/web/src/jones/updates/localDesktopUpdate.ts apps/web/src/jones/installStatus/execution.test.ts apps/web/src/jones/installStatus/executionJournal.test.ts apps/web/src/jones/installStatus/executionJournal.ts apps/web/src/jones/installStatus/webReviewAuthority.test.ts apps/web/src/jones/installStatus/webReviewAuthority.ts apps/web/src/jones/updates/productionReview.browser.test.tsx"
+        "vp lint apps/web/src/AppRoot.tsx apps/web/src/components/sidebar/SidebarChrome.tsx apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/components/sidebar/SidebarChrome.tsx apps/web/src/components/sidebar/SidebarUpdatePill.tsx apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/web/src/components/sidebar/updateEverything.logic.ts apps/web/src/components/sidebar/updateEverythingRun.tsx apps/web/src/components/sidebar/useUpdateEverything.ts apps/web/src/jones/fleetUpdates/FleetController.test.tsx apps/web/src/jones/fleetUpdates/FleetController.tsx apps/web/src/jones/installStatus/InstallPlanController.tsx apps/web/src/jones/installStatus/InstallStatusPanel.browser.test.tsx apps/web/src/jones/installStatus/InstallStatusPanel.tsx apps/web/src/jones/installStatus/actions.ts apps/web/src/jones/installStatus/bulkUpdates.ts apps/web/src/jones/installStatus/checkFeedback.ts apps/web/src/jones/installStatus/connectionHost.ts apps/web/src/jones/installStatus/copy.ts apps/web/src/jones/installStatus/entrypoints.test.ts apps/web/src/jones/installStatus/entrypoints.ts apps/web/src/jones/installStatus/finishPlan.ts apps/web/src/jones/installStatus/finishPlan.test.ts apps/web/src/jones/installStatus/execution.ts apps/web/src/jones/installStatus/panelUi.test.ts apps/web/src/jones/installStatus/panelUi.ts apps/web/src/jones/installStatus/presentation.ts apps/web/src/jones/installStatus/production.ts apps/web/src/jones/installStatus/recoveryReview.browser.test.tsx apps/web/src/jones/installStatus/recoveryReview.tsx apps/web/src/jones/installStatus/services.ts apps/web/src/jones/installStatus/useInstallPlan.ts apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx apps/web/src/jones/updates/ExactSourceUpdateAction.tsx apps/web/src/jones/updates/JonesUpdateControls.tsx apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx apps/web/src/jones/updates/SidebarUpdatePill.test.tsx apps/web/src/jones/updates/fixtures/InstallPreview.tsx apps/web/src/jones/updates/fixtures/install-preview-bridge.ts apps/web/src/jones/updates/fixtures/install-preview-plan.ts apps/web/src/jones/updates/localDesktopUpdate.ts apps/web/src/jones/installStatus/execution.test.ts apps/web/src/jones/installStatus/executionJournal.test.ts apps/web/src/jones/installStatus/executionJournal.ts apps/web/src/jones/installStatus/webReviewAuthority.test.ts apps/web/src/jones/installStatus/webReviewAuthority.ts apps/web/src/jones/updates/productionReview.browser.test.tsx",
+        "vp fmt --check apps/web/src/AppRoot.tsx apps/web/src/components/sidebar/SidebarChrome.tsx apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/components/sidebar/SidebarChrome.tsx apps/web/src/components/sidebar/SidebarUpdatePill.tsx apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/web/src/components/sidebar/updateEverything.logic.ts apps/web/src/components/sidebar/updateEverythingRun.tsx apps/web/src/components/sidebar/useUpdateEverything.ts apps/web/src/jones/fleetUpdates/FleetController.test.tsx apps/web/src/jones/fleetUpdates/FleetController.tsx apps/web/src/jones/installStatus/InstallPlanController.tsx apps/web/src/jones/installStatus/InstallStatusPanel.browser.test.tsx apps/web/src/jones/installStatus/InstallStatusPanel.tsx apps/web/src/jones/installStatus/actions.ts apps/web/src/jones/installStatus/bulkUpdates.ts apps/web/src/jones/installStatus/checkFeedback.ts apps/web/src/jones/installStatus/connectionHost.ts apps/web/src/jones/installStatus/copy.ts apps/web/src/jones/installStatus/entrypoints.test.ts apps/web/src/jones/installStatus/entrypoints.ts apps/web/src/jones/installStatus/finishPlan.ts apps/web/src/jones/installStatus/finishPlan.test.ts apps/web/src/jones/installStatus/execution.ts apps/web/src/jones/installStatus/panelUi.test.ts apps/web/src/jones/installStatus/panelUi.ts apps/web/src/jones/installStatus/presentation.ts apps/web/src/jones/installStatus/production.ts apps/web/src/jones/installStatus/recoveryReview.browser.test.tsx apps/web/src/jones/installStatus/recoveryReview.tsx apps/web/src/jones/installStatus/services.ts apps/web/src/jones/installStatus/useInstallPlan.ts apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx apps/web/src/jones/updates/ExactSourceUpdateAction.tsx apps/web/src/jones/updates/JonesUpdateControls.tsx apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx apps/web/src/jones/updates/SidebarUpdatePill.test.tsx apps/web/src/jones/updates/fixtures/InstallPreview.tsx apps/web/src/jones/updates/fixtures/install-preview-bridge.ts apps/web/src/jones/updates/fixtures/install-preview-plan.ts apps/web/src/jones/updates/localDesktopUpdate.ts apps/web/src/jones/installStatus/execution.test.ts apps/web/src/jones/installStatus/executionJournal.test.ts apps/web/src/jones/installStatus/executionJournal.ts apps/web/src/jones/installStatus/webReviewAuthority.test.ts apps/web/src/jones/installStatus/webReviewAuthority.ts apps/web/src/jones/updates/productionReview.browser.test.tsx",
+        "vp test run --root apps/web --config vite.config.ts --project unit src/components/sidebar/updateEverything.logic.test.ts src/jones/fleetUpdates/FleetController.test.tsx src/jones/installStatus/entrypoints.test.ts src/jones/installStatus/finishPlan.test.ts src/jones/installStatus/panelUi.test.ts src/jones/updates/SidebarUpdatePill.test.tsx src/jones/updates/localDesktopUpdate.test.ts src/jones/installStatus/execution.test.ts src/jones/installStatus/executionJournal.test.ts src/jones/installStatus/webReviewAuthority.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -5640,6 +5644,47 @@
         "vp test run apps/server/src/jones/persistence/EventLogPruning.test.ts apps/server/src/jones/cleanup/DeletionAdmission.test.ts apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts apps/server/src/jones/settlementOrigins/ apps/server/src/jones/codexFailover/CodexFailoverStore.test.ts apps/server/src/jones/persistence/Migrations/146_JonesSettlementOriginRetention.test.ts apps/server/src/jones/settlementRestore/ apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts --maxWorkers=1",
         "vp run --filter t3 typecheck",
         "vp lint apps/server/src/jones/persistence apps/server/src/jones/settlementOrigins apps/server/src/jones/settlementRestore apps/server/src/jones/threadConfiguration/selectionRevision.ts",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-orphaned-run-records",
+      "tests": [
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.test.ts",
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.integration.test.ts",
+        "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+        "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/OrphanedRunRecords.test.ts apps/server/src/jones/orchestration/OrphanedRunRecords.integration.test.ts apps/server/src/jones/updates/plannedContinuityPolicy.test.ts apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/orchestration/OrphanedRunRecords.ts apps/server/src/jones/orchestration/OrphanedRunRecords.test.ts apps/server/src/jones/orchestration/OrphanedRunRecords.integration.test.ts apps/server/src/jones/orchestration/OrphanedRunRecords.testkit.ts apps/server/src/jones/updates/plannedContinuityPolicy.ts apps/server/src/jones/updates/plannedContinuityPolicy.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts apps/server/src/orchestration-v2/runtimeLayer.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
+      "id": "jones-held-queue-expiry",
+      "tests": [
+        "apps/server/src/jones/orchestration/QueueHoldReasons.test.ts",
+        "apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts",
+        "apps/server/src/jones/orchestration/QueueHold.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/QueueHoldReasons.test.ts apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts apps/server/src/jones/orchestration/QueueHold.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/orchestration/QueueHold.ts apps/server/src/jones/orchestration/QueueHoldStore.ts apps/server/src/jones/orchestration/HeldQueueExpiry.ts apps/server/src/jones/orchestration/QueueHoldReasons.test.ts apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts apps/server/src/jones/persistence/Migrations/147_JonesQueueHolds.ts apps/server/src/orchestration-v2/EventSink.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/server.ts",
+        "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

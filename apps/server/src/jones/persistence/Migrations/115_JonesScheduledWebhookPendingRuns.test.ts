@@ -46,11 +46,12 @@ it.effect("115 adds the pending webhook run table to a ledger already recorded t
       [144, "WorkstreamsMemberBindings"],
       [145, "WorkstreamsForwardReceipts"],
       [146, "SettlementOriginRetention"],
-      [147, "NativeExecutionProcessCustody"],
-      [148, "OrdinaryCheckoutProcessCustody"],
-      [149, "AuthSessionClientMetadata"],
-      [150, "WorkspaceRuntimeUses"],
-      [151, "PeerLinksAdoption"],
+      [147, "QueueHolds"],
+      [148, "NativeExecutionProcessCustody"],
+      [149, "OrdinaryCheckoutProcessCustody"],
+      [150, "AuthSessionClientMetadata"],
+      [151, "WorkspaceRuntimeUses"],
+      [152, "PeerLinksAdoption"],
     ]);
     assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
     assert.deepStrictEqual(

@@ -475,11 +475,12 @@ it.effect(
           [144, "WorkstreamsMemberBindings"],
           [145, "WorkstreamsForwardReceipts"],
           [146, "SettlementOriginRetention"],
-          [147, "NativeExecutionProcessCustody"],
-          [148, "OrdinaryCheckoutProcessCustody"],
-          [149, "AuthSessionClientMetadata"],
-          [150, "WorkspaceRuntimeUses"],
-          [151, "PeerLinksAdoption"],
+          [147, "QueueHolds"],
+          [148, "NativeExecutionProcessCustody"],
+          [149, "OrdinaryCheckoutProcessCustody"],
+          [150, "AuthSessionClientMetadata"],
+          [151, "WorkspaceRuntimeUses"],
+          [152, "PeerLinksAdoption"],
         ],
       );
       assert.deepStrictEqual(
@@ -708,11 +709,12 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [144, "WorkstreamsMemberBindings"],
       [145, "WorkstreamsForwardReceipts"],
       [146, "SettlementOriginRetention"],
-      [147, "NativeExecutionProcessCustody"],
-      [148, "OrdinaryCheckoutProcessCustody"],
-      [149, "AuthSessionClientMetadata"],
-      [150, "WorkspaceRuntimeUses"],
-      [151, "PeerLinksAdoption"],
+      [147, "QueueHolds"],
+      [148, "NativeExecutionProcessCustody"],
+      [149, "OrdinaryCheckoutProcessCustody"],
+      [150, "AuthSessionClientMetadata"],
+      [151, "WorkspaceRuntimeUses"],
+      [152, "PeerLinksAdoption"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

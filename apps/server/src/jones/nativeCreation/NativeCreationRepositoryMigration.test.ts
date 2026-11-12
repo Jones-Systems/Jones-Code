@@ -95,10 +95,11 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 144, name: "WorkstreamsMemberBindings" },
         { migration_id: 145, name: "WorkstreamsForwardReceipts" },
         { migration_id: 146, name: "SettlementOriginRetention" },
-        { migration_id: 147, name: "NativeExecutionProcessCustody" },
-        { migration_id: 148, name: "OrdinaryCheckoutProcessCustody" },
-        { migration_id: 149, name: "AuthSessionClientMetadata" },
-        { migration_id: 150, name: "WorkspaceRuntimeUses" },
+        { migration_id: 147, name: "QueueHolds" },
+        { migration_id: 148, name: "NativeExecutionProcessCustody" },
+        { migration_id: 149, name: "OrdinaryCheckoutProcessCustody" },
+        { migration_id: 150, name: "AuthSessionClientMetadata" },
+        { migration_id: 151, name: "WorkspaceRuntimeUses" },
       ],
     );
     assert.deepEqual(

@@ -205,10 +205,11 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 144, name: "WorkstreamsMemberBindings" },
           { id: 145, name: "WorkstreamsForwardReceipts" },
           { id: 146, name: "SettlementOriginRetention" },
-          { id: 147, name: "NativeExecutionProcessCustody" },
-          { id: 148, name: "OrdinaryCheckoutProcessCustody" },
-          { id: 149, name: "AuthSessionClientMetadata" },
-          { id: 150, name: "WorkspaceRuntimeUses" },
+          { id: 147, name: "QueueHolds" },
+          { id: 148, name: "NativeExecutionProcessCustody" },
+          { id: 149, name: "OrdinaryCheckoutProcessCustody" },
+          { id: 150, name: "AuthSessionClientMetadata" },
+          { id: 151, name: "WorkspaceRuntimeUses" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

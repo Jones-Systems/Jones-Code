@@ -27,8 +27,8 @@ export const runtimeUseCoverageSource = {
 export const RuntimeUseInstallation = Schema.Struct({
   schema: Schema.Literal("jones.workspace-runtime-installation/v1"),
   migration: Schema.Struct({
-    // Ledger id of 150_JonesWorkspaceRuntimeUses.ts.
-    id: Schema.Literal(150),
+    // Ledger id of 151_JonesWorkspaceRuntimeUses.ts.
+    id: Schema.Literal(151),
     name: Schema.Literal("WorkspaceRuntimeUses"),
   }),
   coverageSourceSha256: hash,
@@ -104,7 +104,7 @@ export const withRuntimeUseInstallationAdmission = Effect.fn(
   const prior =
     ledger.length === 0
       ? []
-      : yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id>=150`;
+      : yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id>=151`;
   if (prior.length !== 0) return yield* effect;
   const fiberId = yield* Effect.fiberId;
   let active = true;
@@ -165,7 +165,7 @@ export const createRuntimeUseInstallation = Effect.gen(function* () {
     basis_json TEXT NOT NULL CHECK(json_valid(basis_json)),
     basis_sha256 TEXT NOT NULL CHECK(length(basis_sha256)=64 AND basis_sha256 NOT GLOB '*[^a-f0-9]*'),
     CHECK(json_extract(basis_json,'$.schema') IS 'jones.workspace-runtime-installation/v1'
-      AND json_extract(basis_json,'$.migration.id') IS 150
+      AND json_extract(basis_json,'$.migration.id') IS 151
       AND json_extract(basis_json,'$.migration.name') IS 'WorkspaceRuntimeUses'
       AND ((json_extract(basis_json,'$.globalEventWatermark.kind') IS 'empty'
         AND json_type(basis_json,'$.globalEventWatermark.sequence') IS NULL)
@@ -185,7 +185,7 @@ export const createRuntimeUseInstallation = Effect.gen(function* () {
     BEGIN SELECT RAISE(ABORT,'runtime coverage installation cannot be replaced'); END`;
   const basis: RuntimeUseInstallation = {
     schema: "jones.workspace-runtime-installation/v1",
-    migration: { id: 150, name: "WorkspaceRuntimeUses" },
+    migration: { id: 151, name: "WorkspaceRuntimeUses" },
     coverageSourceSha256: digest(runtimeUseCoverageSource),
     journalSchemaSha256: yield* schemaIdentity(true),
     globalEventWatermark:

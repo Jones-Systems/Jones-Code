@@ -305,7 +305,7 @@
         },
         {
           "path": "apps/server/src/server.ts",
-          "sha256": "46aa48db3feec83c79fae7efd3dd069f548e3289fdeabc5036b6b25e0a4e8dc8"
+          "sha256": "8ee212a57d99ef7e3904656e4eca2b59a02886c4f85a9770b5c5c70b85d6913d"
         },
         {
           "path": "scripts/prepare-server-compile-cache.cjs",

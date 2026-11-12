@@ -20,7 +20,7 @@ import {
   runtimeUseCoverageSource,
 } from "./RuntimeUseInstallation.ts";
 
-const prior = jonesMigrationEntries.filter(([id]) => id < 150);
+const prior = jonesMigrationEntries.filter(([id]) => id < 151);
 const fixture = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.gen(function* () {
     yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
@@ -144,7 +144,7 @@ it.effect(
         const basis = yield* readRuntimeUseInstallation();
         assert.isNotNull(basis);
         assert.deepStrictEqual(basis?.globalEventWatermark, { kind: "empty" });
-        assert.deepStrictEqual(basis?.migration, { id: 150, name: "WorkspaceRuntimeUses" });
+        assert.deepStrictEqual(basis?.migration, { id: 151, name: "WorkspaceRuntimeUses" });
         assert.strictEqual(basis?.coverageSourceSha256, digest(runtimeUseCoverageSource));
         const rows =
           yield* sql`SELECT id,basis_json,basis_sha256 FROM jones_workspace_runtime_installation`;
@@ -263,7 +263,7 @@ it.effect("unexpected journal-prefix objects abort the entire original migration
         before,
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=150`,
+        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=151`,
         [],
       );
     }),

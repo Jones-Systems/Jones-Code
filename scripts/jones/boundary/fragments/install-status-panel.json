@@ -38,6 +38,8 @@
     "apps/web/src/jones/installStatus/connectionHost.ts",
     "apps/web/src/jones/installStatus/copy.ts",
     "apps/web/src/jones/installStatus/entrypoints.test.ts",
+    "apps/web/src/jones/installStatus/finishPlan.test.ts",
+    "apps/web/src/jones/installStatus/finishPlan.ts",
     "apps/web/src/jones/installStatus/entrypoints.ts",
     "apps/web/src/jones/installStatus/execution.test.ts",
     "apps/web/src/jones/installStatus/execution.ts",

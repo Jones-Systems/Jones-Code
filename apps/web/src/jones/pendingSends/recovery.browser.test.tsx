@@ -37,6 +37,8 @@ import {
   type FakeDriver,
 } from "../../../test/fakeEnvironment";
 import { pendingSends } from "./store";
+// Load the lazy chat UI during collection so module loading doesn't consume the recovery deadline.
+import "../../components/ChatView";
 
 // Supply exact server error facts at the RPC boundary; commit/rejection remains
 // controlled by the synthetic transport, never inferred from the displayed shell.
