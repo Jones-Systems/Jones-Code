@@ -16,6 +16,8 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import type { JonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import type { McpThreadInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import type { OpenRequest, WakeCommit } from "./DependencyCommit.ts";
+import { makeWakeObligations, wakeEligible, type WakeHoldState } from "./WakeObligations.ts";
+import type { StartRefusals } from "../startRefusal/Store.ts";
 import { forThread } from "./DependencyDuties.ts";
 
 export type IntentScope = Pick<
@@ -30,6 +32,7 @@ export type Dependency = ThreadResultDependency & {
   readonly forwardedRequestKey: string | null;
   readonly wakeMessageId: MessageId | null;
   readonly notified: boolean;
+  readonly wakeHold?: WakeHoldState;
 };
 interface DependencyRow {
   dependency_id: string;
@@ -111,7 +114,16 @@ const conflict = () =>
 const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
 /** SQL facts only. Callers own transactions and publish changes strictly after commit. */
-export function makeDependencyStore(sql: SqlClient.SqlClient, tables: JonesTablePresence) {
+export function makeDependencyStore(
+  sql: SqlClient.SqlClient,
+  tables: JonesTablePresence,
+  establish?: StartRefusals["Service"]["establish"],
+) {
+  const wakes = makeWakeObligations(sql, tables);
+  const hydrate = Effect.fnUntraced(function* (row: DependencyRow) {
+    const wakeHold = yield* wakes.holdState(row.dependency_id, row.generation);
+    return { ...dependency(row), ...(wakeHold === undefined ? {} : { wakeHold }) };
+  });
   const available = tables("jones_thread_result_dependencies");
   // Shell cursors include project events. The legacy V2 ledger is not the
   // application high-water mark and cannot qualify quiet reconnect refreshes.
@@ -128,10 +140,11 @@ export function makeDependencyStore(sql: SqlClient.SqlClient, tables: JonesTable
     );
   const dependencies = Effect.fn("DependencyStore.dependencies")(function* (threadId?: ThreadId) {
     if (!(yield* available)) return [];
-    return (yield* threadId === undefined
-      ? sql<DependencyRow>`SELECT d.* FROM jones_thread_result_dependencies d WHERE state != 'released' AND EXISTS (SELECT 1 FROM orchestration_v2_projection_threads t WHERE t.thread_id = d.waiter_thread_id)`
-      : sql<DependencyRow>`SELECT d.* FROM jones_thread_result_dependencies d WHERE waiter_thread_id = ${threadId} AND EXISTS (SELECT 1 FROM orchestration_v2_projection_threads t WHERE t.thread_id = d.waiter_thread_id)`).map(
-      dependency,
+    return yield* Effect.forEach(
+      yield* threadId === undefined
+        ? sql<DependencyRow>`SELECT d.* FROM jones_thread_result_dependencies d WHERE state != 'released' AND EXISTS (SELECT 1 FROM orchestration_v2_projection_threads t WHERE t.thread_id = d.waiter_thread_id)`
+        : sql<DependencyRow>`SELECT d.* FROM jones_thread_result_dependencies d WHERE waiter_thread_id = ${threadId} AND EXISTS (SELECT 1 FROM orchestration_v2_projection_threads t WHERE t.thread_id = d.waiter_thread_id)`,
+      hydrate,
     );
   });
   const requests = Effect.fn("DependencyStore.requests")(function* (threadId: ThreadId) {
@@ -142,7 +155,8 @@ export function makeDependencyStore(sql: SqlClient.SqlClient, tables: JonesTable
   });
   const get = (id: string) =>
     sql<DependencyRow>`SELECT * FROM jones_thread_result_dependencies WHERE dependency_id = ${id}`.pipe(
-      Effect.map((rows) => (rows[0] ? dependency(rows[0]) : undefined)),
+      Effect.flatMap((rows) => Effect.forEach(rows, hydrate)),
+      Effect.map((rows) => rows[0]),
     );
   const requestByOperation = (origin: string, operation: string) =>
     sql<RequestRow>`SELECT * FROM jones_thread_result_requests WHERE origin_environment_id = ${origin} AND operation_id = ${operation}`.pipe(
@@ -166,7 +180,7 @@ export function makeDependencyStore(sql: SqlClient.SqlClient, tables: JonesTable
       }>`SELECT r.run_id, m.thread_id AS message_thread_id, r.thread_id AS run_thread_id, r.status
         FROM orchestration_v2_projection_messages m JOIN orchestration_v2_projection_runs r ON r.run_id = m.run_id WHERE m.message_id = ${item.wakeMessageId}`;
       const wake = rows[0];
-      if (wake)
+      if (wake && wake.message_thread_id === threadId && wake.run_thread_id === threadId)
         wakeRuns.set(item.wakeMessageId, {
           status:
             wake.status === "queued" &&
@@ -339,6 +353,7 @@ export function makeDependencyStore(sql: SqlClient.SqlClient, tables: JonesTable
       request_id: string | null;
     }>`UPDATE jones_thread_result_dependencies SET state = 'released', generation = generation + 1, outcome = 'released', changed_sequence = ${stamp}, updated_at = ${time}
       WHERE waiter_thread_id = ${threadId} AND (${id ?? null} IS NULL OR dependency_id = ${id ?? null}) AND state IN ('sending','awaiting','resolved') RETURNING request_id`;
+    yield* wakes.voidReleased(threadId);
     if (rows.length > 0) yield* changed(threadId);
     for (const row of rows)
       if (row.request_id !== null) {
@@ -425,10 +440,18 @@ export function makeDependencyStore(sql: SqlClient.SqlClient, tables: JonesTable
     const live =
       yield* sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${input.waiterThreadId} AND archived_at IS NULL AND deleted_at IS NULL`;
     if (live.length === 0) return yield* conflict();
+    const current = yield* get(input.dependencyId);
+    if (!current || !wakeEligible(current)) return yield* conflict();
     const accepted =
       yield* sql`UPDATE jones_thread_result_dependencies SET state = 'delivered', wake_message_id = ${input.messageId}, notified = 1, changed_sequence = ${yield* sequence}, updated_at = ${yield* now}
       WHERE dependency_id = ${input.dependencyId} AND waiter_thread_id = ${input.waiterThreadId} AND generation = ${input.generation} AND state = 'resolved' RETURNING dependency_id`;
     if (accepted.length !== 1) return yield* conflict();
+    yield* wakes.bind(
+      input,
+      yield* waiterGeneration(input.waiterThreadId),
+      yield* sequence,
+      establish,
+    );
     yield* changed(input.waiterThreadId);
   });
   const prune = Effect.gen(function* () {
@@ -436,14 +459,40 @@ export function makeDependencyStore(sql: SqlClient.SqlClient, tables: JonesTable
     const cutoff = (yield* sequence) - 1000;
     // Remote answers/fences have no delivery acknowledgment and must survive offline senders.
     // Only fully consumed local facts can be retired beyond the shell replay window.
-    yield* sql`DELETE FROM jones_thread_result_requests WHERE origin_kind = 'local' AND state != 'pending' AND changed_sequence < ${cutoff}
-      AND NOT EXISTS (SELECT 1 FROM jones_thread_result_dependencies d WHERE d.request_id = jones_thread_result_requests.request_id AND d.state IN ('sending','awaiting','resolved'))`;
-    yield* sql`DELETE FROM jones_thread_result_dependencies WHERE changed_sequence < ${cutoff} AND (state = 'released' OR (state = 'delivered' AND EXISTS (
-      SELECT 1 FROM orchestration_v2_projection_messages m JOIN orchestration_v2_projection_runs r ON r.run_id = m.run_id
-      WHERE m.message_id = jones_thread_result_dependencies.wake_message_id AND r.status IN ('completed','failed','cancelled','interrupted','rolled_back')
-    )))`;
+    // Select first so ancillary evidence is retired only with its dependency.
+    const protectedHolds = yield* wakes.available;
+    const retired = yield* sql<{
+      dependency_id: string;
+    }>`SELECT d.dependency_id FROM jones_thread_result_dependencies d
+      WHERE d.changed_sequence < ${cutoff}
+      ${protectedHolds ? sql`AND NOT EXISTS (SELECT 1 FROM jones_peer_wake_holds h WHERE h.dependency_id = d.dependency_id AND h.state IN ('held','armed'))` : sql``}
+      AND (d.state = 'released' OR (d.state = 'delivered' AND EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_messages m JOIN orchestration_v2_projection_runs r ON r.run_id = m.run_id
+        WHERE m.message_id = d.wake_message_id AND m.thread_id = d.waiter_thread_id AND r.thread_id = d.waiter_thread_id AND r.status IN ('completed','failed','cancelled','interrupted','rolled_back')
+      )))`;
+    for (const row of retired) {
+      if (protectedHolds) {
+        yield* sql`DELETE FROM jones_peer_wake_bindings WHERE dependency_id = ${row.dependency_id}`;
+        yield* sql`DELETE FROM jones_peer_wake_holds WHERE dependency_id = ${row.dependency_id}`;
+      }
+      yield* sql`DELETE FROM jones_thread_result_dependencies WHERE dependency_id = ${row.dependency_id}`;
+    }
+    const requests = yield* sql<{
+      request_id: string;
+    }>`SELECT r.request_id FROM jones_thread_result_requests r
+      WHERE r.origin_kind = 'local' AND r.state != 'pending' AND r.changed_sequence < ${cutoff}
+      ${protectedHolds ? sql`AND NOT EXISTS (SELECT 1 FROM jones_peer_wake_holds h JOIN jones_thread_result_dependencies held ON held.dependency_id = h.dependency_id WHERE held.request_id = r.request_id AND h.state IN ('held','armed'))` : sql``}
+      AND NOT EXISTS (SELECT 1 FROM jones_thread_result_dependencies d WHERE d.request_id = r.request_id AND
+        (d.state IN ('sending','awaiting','resolved') OR (d.state = 'delivered' AND NOT EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_messages m JOIN orchestration_v2_projection_runs wake ON wake.run_id = m.run_id
+          WHERE m.message_id = d.wake_message_id AND m.thread_id = d.waiter_thread_id AND wake.thread_id = d.waiter_thread_id AND wake.status IN ('completed','failed','cancelled','interrupted','rolled_back')
+        ))))`;
+    for (const row of requests) {
+      yield* sql`DELETE FROM jones_thread_result_requests WHERE request_id = ${row.request_id}`;
+    }
   });
   return {
+    wakes,
     available,
     sequence,
     waiterGeneration,

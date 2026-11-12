@@ -678,7 +678,11 @@ const layerBase: Layer.Layer<
     // Publication never waits, so a transaction waiting for the lane blocks only briefly.
     const startRefusals = yield* Effect.serviceOption(StartRefusal.StartRefusals);
     const jonesTables = makeJonesTablePresence(sql);
-    const dependencies = makeDependencyStore(sql, jonesTables);
+    const dependencies = makeDependencyStore(
+      sql,
+      jonesTables,
+      Option.isSome(startRefusals) ? startRefusals.value.establish : undefined,
+    );
     const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
     const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);
@@ -1062,6 +1066,7 @@ const layerBase: Layer.Layer<
           .map((stored) => stored.event);
         if (Option.isSome(startRefusals))
           yield* startRefusals.value.events(storedEvents.filter(isPublicStoredOrchestrationEvent));
+        yield* dependencies.wakes.events(storedEvents.filter(isPublicStoredOrchestrationEvent));
         yield* acceptDependencyEvents(dependencies, publicEvents);
         // Jones: hold reasons live in a sparse Jones table, written in this transaction.
         yield* acceptQueueHoldEvents(queueHolds, publicEvents, queueHoldOrigin);
@@ -1253,6 +1258,7 @@ const layerBase: Layer.Layer<
                 { threadId: input.threadId, runId: input.runId, attemptId: input.activeAttemptId },
                 input.startRefusalReason,
                 storedEvents,
+                { certified: dependencies.wakes.certified },
               );
             yield* effectOutbox.enqueue(input.effects ?? []);
             if (Option.isSome(checkoutIntent))

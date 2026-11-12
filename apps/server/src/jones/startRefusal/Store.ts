@@ -80,6 +80,7 @@ const make = Effect.gen(function* () {
     key: AttemptKey,
     reason: RefusalReason,
     events: ReadonlyArray<OrchestrationV2StoredEvent>,
+    consumer?: CertificationObserver["Service"],
   ) {
     if (!(yield* attemptsPresent)) return;
     const settlement = events.find(
@@ -110,8 +111,11 @@ const make = Effect.gen(function* () {
       WHERE thread_id = ${key.threadId} AND run_id = ${key.runId}
         AND attempt_id = ${key.attemptId} AND state = 'eligible'
       RETURNING scope`;
-    if (changed[0] !== undefined && Option.isSome(observer))
-      yield* observer.value.certified({ ...key, scope: changed[0].scope, reason, settlement });
+    if (changed[0] !== undefined) {
+      const input = { ...key, scope: changed[0].scope, reason, settlement };
+      if (Option.isSome(observer)) yield* observer.value.certified(input);
+      if (consumer !== undefined) yield* consumer.certified(input);
+    }
   });
 
   const qualifies = Effect.fn("StartRefusal.qualifies")(function* (

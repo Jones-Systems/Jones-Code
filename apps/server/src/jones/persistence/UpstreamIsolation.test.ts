@@ -416,6 +416,7 @@ it.effect(
         [151, "WorkspaceRuntimeUses"],
         [152, "PeerLinksAdoption"],
         [154, "StartRefusals"],
+        [155, "PeerWakeObligations"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

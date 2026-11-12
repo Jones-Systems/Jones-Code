@@ -3754,6 +3754,21 @@
         "apps/server/src/jones/updates/migrationPlan.test.ts"
       ],
       "scope": "ETS-B v4 retains complete positively certified delegated-result refusals in sparse Jones attempt and successor-hold tables. Atomic EventSink hooks bind attempt eligibility and closed refusal reasons to settlement, enforce admission, reserve successors, void superseded holds and arm only source-proved Codex acceptance. An irreversible prefix crossing covers repeated outbox execution of an attempt. All five offer callers and restart recovery share the held/armed guard. Fresh accepted starts supply single-use retry eligibility; the read-only continuity/control probe and authoritative start prefix preserve existing fences. Silent gate clearance stays a visible manual hold. Small shared service and runtime/harness edits preserve the upstream transaction/lock owners; the four-site assertions in ProviderTurnStartService.test.ts are a harness-bound test exception. No wire/adapters/upstream schema or history-policy changes."
+    },
+    {
+      "id": "peer-wake-obligations",
+      "tests": [
+        "apps/server/src/jones/threadResultDependencies/WakeObligations.test.ts",
+        "apps/server/src/jones/threadResultDependencies/WakeObligations.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/DependencyStore.test.ts",
+        "apps/server/src/jones/threadResultDependencies/DependencyReactor.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Orchestrator.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Settlement.test.ts",
+        "apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts"
+      ],
+      "scope": "ETS-P v5: immutable notification wake/attempt/epoch binding, atomic post-certification peer hold, query-level retention, single-use accepted Codex witness/probe release, lifecycle fences and counted held duty. Shared EventSink and B certification edits only connect the Jones consumer. No wire enum, provider-start or linked-origin ownership changes."
     }
   ]
 }
