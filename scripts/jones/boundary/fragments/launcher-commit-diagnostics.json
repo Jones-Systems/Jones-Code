@@ -1,0 +1,20 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "launcher-commit-diagnostics",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts",
+    "apps/server/src/jones/cloud/qualifiedCommitAttempt.ts"
+  ],
+  "hookPaths": ["apps/server/src/cli/serviceLauncher.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedCommitAttempt.ts"
+    },
+    {
+      "from": "apps/server/src/cli/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedCommitAttempt.ts"
+    }
+  ]
+}

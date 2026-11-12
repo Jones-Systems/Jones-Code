@@ -1,4 +1,4 @@
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeAssert from "node:assert/strict";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - These cases need real Node temporary paths, symlinks, and mode bits to exercise filesystem safety.
 import * as NodeFS from "node:fs";
@@ -52,7 +52,7 @@ export const libraryOpenCases = [
         } finally {
           store.close();
         }
-        if (HostProcessPlatform.defaultValue() !== "win32") {
+        if (HostProcess.Platform.defaultValue() !== "win32") {
           NodeAssert.equal(
             NodeFS.statSync(NodePath.join(root, "conversation-library")).mode & 0o077,
             0,

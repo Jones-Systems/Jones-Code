@@ -1,10 +1,15 @@
+import type {
+  WorkstreamCommand,
+  WorkstreamReceipt,
+  WorkstreamPrObservation,
+} from "@t3tools/contracts";
+import { reference as nativeReference } from "./nativeWorkstreamActions.fixtures";
 import { isValidElement, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { visitElements } from "../../test/reactElementTree";
 import { reactHookHarness as hooks } from "../../test/reactHookHarness";
 import type { WorkstreamDetailView, WorkstreamListView } from "../../state/workstreams";
-import type { WorkstreamPrObservation, WorkstreamReferenceDetail } from "@t3tools/contracts";
 
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
@@ -25,6 +30,10 @@ vi.mock("react/compiler-runtime", async () => {
 
 vi.mock("../../hooks/useLocalStorage", () => ({
   useLocalStorage: (_key: string, initial: unknown) => hooks.useState(initial),
+}));
+
+vi.mock("../../jones/workstreamAppearance/useWorkstreamAppearance", () => ({
+  useWorkstreamAppearance: () => ({ writable: false, colors: new Map(), save: vi.fn() }),
 }));
 
 import { WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
@@ -111,28 +120,6 @@ const detailWithReference = {
   },
 } as unknown as WorkstreamDetailView;
 
-function observedReference(state: "open" | "merged" = "open"): WorkstreamReferenceDetail {
-  const latest_observation: typeof WorkstreamPrObservation.Type = {
-    native_reference_id: "reference-a",
-    observation_version: 1,
-    attempted_at: "2026-09-12T12:00:00Z",
-    outcome: "observed",
-    retry_after_seconds: null,
-    last_success: {
-      state,
-      draft: false,
-      observed_at: "2026-09-12T12:00:00Z",
-      provider_updated_at: null,
-    },
-    command_id: "observation-command",
-  };
-  return {
-    context: detailWithReference.detail.context,
-    reference: detailWithReference.references.items[0]!,
-    latest_observation,
-  };
-}
-
 const completedDetail = {
   ...detailWithReference,
   detail: {
@@ -198,6 +185,85 @@ function findElement(
 describe("Workstream sidebar binding cancellation", () => {
   afterEach(() => hooks.reset());
 
+  it("closes a pending detail request and ignores its late response", async () => {
+    let resolveDetail!: (value: WorkstreamDetailView) => void;
+    const controller = {
+      data,
+      placementInventory: { identities: [], totalIdentities: 0, coverage: "complete", json: "[]" },
+      loading: false,
+      loadDetail: vi.fn(
+        () =>
+          new Promise<WorkstreamDetailView>((resolve) => {
+            resolveDetail = resolve;
+          }),
+      ),
+      loadReference: vi.fn(),
+      refresh: vi.fn(),
+    } as unknown as WorkstreamListView;
+    const render = () => {
+      hooks.beginRender();
+      return WorkstreamSidebarSection({ controller });
+    };
+    const click = (tree: unknown, label: string) => {
+      const button = findElement(
+        tree,
+        (el) =>
+          containsText(el.props.children, label) &&
+          (el.type === "button" || el.props.onClick !== undefined),
+      );
+      expect(button).toBeTruthy();
+      (button!.props.onClick as () => void)();
+    };
+    click(render(), "Alpha");
+    click(render(), "Close");
+    resolveDetail(detailWithReference);
+    await Promise.resolve();
+    expect(containsText(render(), "Alpha detail")).toBe(false);
+    click(render(), "Alpha");
+    click(render(), "Alpha");
+    resolveDetail(detailWithReference);
+    await Promise.resolve();
+    expect(containsText(render(), "Alpha detail")).toBe(false);
+  });
+
+  it("keeps management collapsed and closes only unhandled Escape in the panel", async () => {
+    const controller = {
+      data,
+      placementInventory: { identities: [], totalIdentities: 0, coverage: "complete", json: "[]" },
+      loading: false,
+      loadDetail: vi.fn(async () => detailWithReference),
+      loadReference: vi.fn(async () => ({ latest_observation: null })),
+      refresh: vi.fn(),
+    } as unknown as WorkstreamListView;
+    const render = () => {
+      hooks.beginRender();
+      return WorkstreamSidebarSection({ controller, memberLabel: () => "Friendly member" });
+    };
+    const initial = render();
+    const title = findElement(
+      initial,
+      (el) => el.type === "button" && containsText(el.props.children, "Alpha"),
+    )!;
+    (title.props.onClick as () => void)();
+    await Promise.resolve();
+    const opened = render();
+    expect(containsText(opened, "Friendly member")).toBe(true);
+    const disclosure = findElement(opened, (el) => el.type === "details")!;
+    expect(disclosure.props.open).not.toBe(true);
+    expect(containsText(disclosure, "Record member completed")).toBe(true);
+    const panel = findElement(opened, (el) => el.props.id === "workstream-detail-panel")!;
+    const key = panel.props.onKeyDown as (event: unknown) => void;
+    key({ key: "Escape", defaultPrevented: true });
+    expect(findElement(render(), (el) => el.props.id === "workstream-detail-panel")).toBeTruthy();
+    key({
+      key: "Escape",
+      defaultPrevented: false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    });
+    expect(findElement(render(), (el) => el.props.id === "workstream-detail-panel")).toBeFalsy();
+  });
+
   it("presents owner completion separately from member, PR, and settlement evidence", async () => {
     const controller = {
       placementInventory: {
@@ -213,11 +279,6 @@ describe("Workstream sidebar binding cancellation", () => {
       },
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -283,11 +344,6 @@ describe("Workstream sidebar binding cancellation", () => {
       },
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -349,11 +405,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data: writableData,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit,
       loadDetail,
@@ -418,7 +469,7 @@ describe("Workstream sidebar binding cancellation", () => {
     await Promise.resolve();
     hooks.beginRender();
     const unverified = WorkstreamSidebarSection({ controller: unverifiedController });
-    expect(containsText(unverified, "T3 settlement unavailable: reference is ")).toBe(true);
+    expect(containsText(unverified, "T3 settlement unavailable:")).toBe(true);
     expect(containsText(unverified, "expired")).toBe(true);
     expect(containsText(unverified, "Request T3 thread settlement")).toBe(false);
   });
@@ -435,11 +486,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data: readOnlyData,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -484,6 +530,50 @@ describe("Workstream sidebar binding cancellation", () => {
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
+  it("keeps membership details read-only while the hook shows a stale snapshot", async () => {
+    // The hook marks its retained list stale when a later read fails.
+    const controller = {
+      placementInventory: {
+        coverage: "complete" as const,
+        identities: [],
+        json: "[]",
+        totalIdentities: 0,
+      },
+      placements: null,
+      data: { ...writableData, stale: true },
+      stale: true,
+      error: "Connection interrupted",
+      loading: false,
+      refresh: vi.fn(),
+      submit: vi.fn(),
+      runBindingOperation: vi.fn(),
+      loadDetail: vi.fn(async () => detailWithReference),
+      loadReference: vi.fn(async () => ({
+        context: detailWithReference.detail.context,
+        reference: detailWithReference.references.items[0]!,
+        latest_observation: null,
+      })),
+    } as WorkstreamListView;
+
+    hooks.beginRender();
+    const initial = WorkstreamSidebarSection({ controller });
+    const alpha = visitElements(
+      initial,
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
+    ) as ReactElement<{ onClick: () => void }> | undefined;
+    alpha?.props.onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    hooks.beginRender();
+    const current = WorkstreamSidebarSection({ controller });
+    expect(containsText(current, "Alpha detail")).toBe(true);
+    for (const action of ["Move", "Remove", "Link"])
+      expect(containsText(current, action)).toBe(false);
+    expect(controller.submit).not.toHaveBeenCalled();
+    expect(controller.runBindingOperation).not.toHaveBeenCalled();
+  });
+
   it("removes an open rename control when write authority is revoked", () => {
     let controller = {
       placementInventory: {
@@ -496,11 +586,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data: writableData,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -556,11 +641,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -610,11 +690,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -677,11 +752,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -708,14 +778,16 @@ describe("Workstream sidebar binding cancellation", () => {
     };
     hooks.beginRender();
     WorkstreamSidebarSection({ controller });
-    resolveStaleReference(observedReference("merged"));
+    resolveStaleReference({
+      latest_observation: { last_success: { state: "STALE STATUS" } },
+    });
     await staleReference;
     await Promise.resolve();
-    expect(JSON.stringify(hooks.snapshot())).not.toContain("merged · current");
+    expect(JSON.stringify(hooks.snapshot())).not.toContain("STALE STATUS");
 
     hooks.beginRender();
     const afterStaleResolution = WorkstreamSidebarSection({ controller });
-    expect(containsText(afterStaleResolution, "merged · current")).toBe(false);
+    expect(containsText(afterStaleResolution, "STALE STATUS")).toBe(false);
 
     hooks.beginRender();
     const rebound = WorkstreamSidebarSection({ controller });
@@ -724,11 +796,18 @@ describe("Workstream sidebar binding cancellation", () => {
       (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     reboundAlpha?.props.onClick();
+    hooks.beginRender();
+    const closed = WorkstreamSidebarSection({ controller });
+    const reopenAlpha = findElement(
+      closed,
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
+    )!;
+    (reopenAlpha.props.onClick as () => void)();
     await Promise.resolve();
 
     hooks.beginRender();
     const current = WorkstreamSidebarSection({ controller });
-    expect(containsText(current, "merged · current")).toBe(false);
+    expect(containsText(current, "STALE STATUS")).toBe(false);
     expect(containsText(current, "loading")).toBe(true);
     expect(loadReference).toHaveBeenCalledTimes(2);
   });
@@ -738,18 +817,13 @@ describe("Workstream sidebar binding cancellation", () => {
     const pendingReference = new Promise((resolve) => {
       resolveReference = resolve;
     });
-    let referenceStarted!: () => void;
-    const manualReferenceStarted = new Promise<void>((resolve) => {
-      referenceStarted = resolve;
-    });
     const loadDetail = vi.fn(async () => detailWithReference);
     const loadReference = vi
       .fn()
-      .mockResolvedValueOnce(observedReference())
-      .mockImplementationOnce(() => {
-        referenceStarted();
-        return pendingReference;
-      });
+      .mockResolvedValueOnce({
+        latest_observation: { observation_version: 1, last_success: { state: "OPEN" } },
+      })
+      .mockImplementationOnce(() => pendingReference);
     const submit = vi.fn();
     let controller = {
       placementInventory: {
@@ -762,19 +836,9 @@ describe("Workstream sidebar binding cancellation", () => {
       data,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(async () => ({
-        data,
-        references: { context: detailWithReference.detail.context, items: [], next_cursor: null },
-        placements: null,
-        registrationContext: null,
-      })),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit,
-      runBindingOperation: (operation) => operation(submit),
+      runBindingOperation: vi.fn(),
       loadDetail,
       loadReference,
     } as WorkstreamListView;
@@ -799,7 +863,6 @@ describe("Workstream sidebar binding cancellation", () => {
     expect(refreshStatus).toBeDefined();
     const automaticSignal = loadReference.mock.calls[0]?.[1]?.signal;
     refreshStatus?.props.onClick();
-    await manualReferenceStarted;
     const signal = loadReference.mock.calls
       .map((call) => call[1]?.signal)
       .find((candidate) => candidate !== undefined && candidate !== automaticSignal);
@@ -817,14 +880,12 @@ describe("Workstream sidebar binding cancellation", () => {
     WorkstreamSidebarSection({ controller });
     expect(signal?.aborted).toBe(true);
 
-    resolveReference(observedReference());
+    resolveReference({
+      latest_observation: { observation_version: 1, last_success: { state: "OPEN" } },
+    });
     await pendingReference;
     await Promise.resolve();
-    await Promise.resolve();
     expect(submit).not.toHaveBeenCalled();
-    expect(controller.loadActionSnapshot).toHaveBeenCalledOnce();
-    expect(loadReference).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(hooks.snapshot())).not.toContain("observation-command");
   });
 
   it("does not commit command UI after its binding is replaced", async () => {
@@ -844,11 +905,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(() => pendingSubmit),
       runBindingOperation: vi.fn(),
@@ -1036,5 +1092,130 @@ describe("Workstream sidebar binding cancellation", () => {
       action: { workstream_id: "ws-b", expected_version: 9 },
     });
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("Workstream Sidebar PR action snapshot integration", () => {
+  afterEach(() => hooks.reset());
+  it("refreshes through the current snapshot and reads the committed observation without a legacy submission", async () => {
+    let version = 11;
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const context = () => ({ owner_id: "owner", server_generation: 7, registry_version: version });
+    const registrationContext = () => ({
+      protocol: "workstreams-registration-context/1.0.0" as const,
+      state: "ready" as const,
+      ...context(),
+      principal_id: "principal",
+      grant_id: "grant",
+      authorization_revision: 1,
+      sources: [
+        {
+          provider: "github" as const,
+          source_instance_id: "github-owner",
+          authority_namespace: "github-authority",
+          store_generation: 1,
+          resource_kind: "pull_request" as const,
+          id_kind: "external" as const,
+          account_provenance: { kind: "not_account_scoped" as const },
+        },
+      ],
+    });
+    const observation = (): typeof WorkstreamPrObservation.Type => ({
+      native_reference_id: "reference-a",
+      observation_version: version === 11 ? 2 : 3,
+      attempted_at: "2026-09-30T12:00:00Z",
+      outcome: "observed",
+      retry_after_seconds: null,
+      last_success: {
+        state: version === 11 ? "open" : "merged",
+        draft: false,
+        observed_at: "2026-09-30T12:00:00Z",
+        provider_updated_at: null,
+      },
+      command_id: "refresh-command-001",
+    });
+    const reference = {
+      ...nativeReference,
+      native_reference_id: "reference-a",
+      identity: {
+        ...nativeReference.identity,
+        provider: "github" as const,
+        source_instance_id: "github-owner",
+        resource_kind: "pull_request" as const,
+        id_kind: "external" as const,
+        native_id: "jones-systems/t3code#5",
+      },
+      pr_locator: detailWithReference.references.items[0]!.pr_locator,
+    };
+    const submit = vi.fn();
+    const submitStep = vi.fn(async (_command: WorkstreamCommand): Promise<WorkstreamReceipt> => {
+      version = 12;
+      return { state: "committed", registry_version: version } as WorkstreamReceipt;
+    });
+    const controller: WorkstreamListView = {
+      data,
+      loading: false,
+      error: null,
+      placements: null,
+      placementInventory: { coverage: "complete", identities: [], json: "[]", totalIdentities: 0 },
+      registrationContext: registrationContext(),
+      retry: vi.fn(async () => {}),
+      refresh: vi.fn(),
+      submit,
+      runBindingOperation: async (operation) => {
+        const result = await operation(submitStep);
+        finish();
+        return result;
+      },
+      loadActionSnapshot: vi.fn(async () => ({
+        data: { ...data, binding: { ...binding, registryVersion: version } },
+        references: { context: context(), items: [reference], next_cursor: null },
+        placements: null,
+        registrationContext: registrationContext(),
+      })),
+      loadDetail: vi.fn(async () => ({
+        ...detailWithReference,
+        detail: { ...detailWithReference.detail, context: context() },
+      })),
+      loadReference: vi.fn(async () => {
+        return { context: context(), reference, latest_observation: observation() };
+      }),
+    };
+    hooks.beginRender();
+    const initial = WorkstreamSidebarSection({ controller });
+    const alpha = visitElements(
+      initial,
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
+    ) as ReactElement<{ onClick: () => void }>;
+    alpha.props.onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+    hooks.beginRender();
+    const detailed = WorkstreamSidebarSection({ controller });
+    const refresh = visitElements(
+      detailed,
+      (element) => element.props.children === "Refresh status",
+    ) as ReactElement<{ onClick: () => void }>;
+    refresh.props.onClick();
+    await finished;
+    await Promise.resolve();
+    await Promise.resolve();
+    hooks.beginRender();
+    const refreshed = WorkstreamSidebarSection({ controller });
+    expect(containsText(refreshed, "merged · current")).toBe(true);
+    expect(submit).not.toHaveBeenCalled();
+    expect(submitStep).toHaveBeenCalledOnce();
+    expect(submitStep.mock.calls[0]?.[0]).toMatchObject({
+      expected_registry_version: 11,
+      action: {
+        operation: "refresh_linked_pr",
+        membership_id: "membership-a",
+        expected_observation_version: 2,
+      },
+    });
+    expect(controller.loadActionSnapshot).toHaveBeenCalledTimes(2);
   });
 });

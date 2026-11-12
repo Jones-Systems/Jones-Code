@@ -1,0 +1,298 @@
+{
+  "schema": "workstreams-registry-binding-vectors/1",
+  "synthetic_secret_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "binding": {
+    "protocol": "workstreams-registry-binding/1.0.0",
+    "manifest_sha256": "15ce45061966ce9c247192d6ef43724b6638bb0e7ccf7bbe9eae4afdd576f30c",
+    "registry_instance_id": "11111111-1111-4111-8111-111111111111",
+    "canonical_origin": "https://registry.synthetic.test",
+    "owner_id": "owner.synthetic",
+    "principal_id": "22222222-2222-4222-8222-222222222222",
+    "authorization_revision": 1
+  },
+  "token": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+  "requests": [
+    {
+      "name": "registry",
+      "input": {
+        "contractVersion": "workstreams/1.0.0",
+        "requestId": "33333333-3333-4333-8333-333333333333",
+        "idempotencyKey": "",
+        "sentAt": "2026-10-22T18:00:00.000Z",
+        "nonce": "synthetic_nonce_0123456789",
+        "principalId": "22222222-2222-4222-8222-222222222222",
+        "keyId": "synthetic.key",
+        "method": "GET",
+        "target": "/workstreams/v1/workstreams",
+        "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contractManifest": "02d17ec73ecd375f2d52b0879fc77913561d28c71760355db5d9004c365ff925",
+        "registryBinding": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0"
+      },
+      "body": "",
+      "canonical_utf8": "hmac-sha256-workstreams-registry-v1\nworkstreams/1.0.0\n33333333-3333-4333-8333-333333333333\n\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nGET\n/workstreams/v1/workstreams\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n02d17ec73ecd375f2d52b0879fc77913561d28c71760355db5d9004c365ff925\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+      "signature": "g9hKDRWAbQA2kPnElJuZnOe-OEw69hrvSXfaGwYyUHk",
+      "legacy_canonical_utf8": "hmac-sha256-v1\nworkstreams/1.0.0\n33333333-3333-4333-8333-333333333333\n\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nGET\n/workstreams/v1/workstreams\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "legacy_signature": "W--l8mTv7zTGK9ZV6_onvb4AwqBmMeGwa6oBUvpN10k"
+    },
+    {
+      "name": "command",
+      "input": {
+        "contractVersion": "workstreams/1.0.0",
+        "requestId": "33333333-3333-4333-8333-333333333333",
+        "idempotencyKey": "synthetic-command-001",
+        "sentAt": "2026-10-22T18:00:00.000Z",
+        "nonce": "synthetic_nonce_0123456789",
+        "principalId": "22222222-2222-4222-8222-222222222222",
+        "keyId": "synthetic.key",
+        "method": "POST",
+        "target": "/workstreams/v1/commands",
+        "contentSha256": "beaa1348f209fd70d455e3e6d8611217b3a5635bef21e8af471129c334514646",
+        "contractManifest": "02d17ec73ecd375f2d52b0879fc77913561d28c71760355db5d9004c365ff925",
+        "registryBinding": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0"
+      },
+      "body": "{\"command_id\":\"synthetic-command-001\"}",
+      "canonical_utf8": "hmac-sha256-workstreams-registry-v1\nworkstreams/1.0.0\n33333333-3333-4333-8333-333333333333\nsynthetic-command-001\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nPOST\n/workstreams/v1/commands\nbeaa1348f209fd70d455e3e6d8611217b3a5635bef21e8af471129c334514646\n02d17ec73ecd375f2d52b0879fc77913561d28c71760355db5d9004c365ff925\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+      "signature": "7fsXm56lx7PllsJEVx7F5TH2Bx01ETBMs5kmdrNd09o",
+      "legacy_canonical_utf8": "hmac-sha256-v1\nworkstreams/1.0.0\n33333333-3333-4333-8333-333333333333\nsynthetic-command-001\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nPOST\n/workstreams/v1/commands\nbeaa1348f209fd70d455e3e6d8611217b3a5635bef21e8af471129c334514646",
+      "legacy_signature": "OcRVVG0mcSln6Ad5nReVVWUaVdM4twjifd_42zMTgIQ"
+    },
+    {
+      "name": "receipt",
+      "input": {
+        "contractVersion": "workstreams/1.0.0",
+        "requestId": "33333333-3333-4333-8333-333333333333",
+        "idempotencyKey": "",
+        "sentAt": "2026-10-22T18:00:00.000Z",
+        "nonce": "synthetic_nonce_0123456789",
+        "principalId": "22222222-2222-4222-8222-222222222222",
+        "keyId": "synthetic.key",
+        "method": "GET",
+        "target": "/workstreams/v1/commands/synthetic-command-001",
+        "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contractManifest": "02d17ec73ecd375f2d52b0879fc77913561d28c71760355db5d9004c365ff925",
+        "registryBinding": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0"
+      },
+      "body": "",
+      "canonical_utf8": "hmac-sha256-workstreams-registry-v1\nworkstreams/1.0.0\n33333333-3333-4333-8333-333333333333\n\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nGET\n/workstreams/v1/commands/synthetic-command-001\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n02d17ec73ecd375f2d52b0879fc77913561d28c71760355db5d9004c365ff925\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+      "signature": "KDty9QzzbkQ-5DssaxeV7ouday30HMM6TR3G4SjCcFk",
+      "legacy_canonical_utf8": "hmac-sha256-v1\nworkstreams/1.0.0\n33333333-3333-4333-8333-333333333333\n\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nGET\n/workstreams/v1/commands/synthetic-command-001\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "legacy_signature": "YDcN4uMb_tHcBOjRWrFqqr--B7BWrit0ICd_TIPUf6k"
+    },
+    {
+      "name": "placements",
+      "input": {
+        "contractVersion": "workstreams-t3-placement/1.0.0",
+        "requestId": "33333333-3333-4333-8333-333333333333",
+        "idempotencyKey": "synthetic-command-001",
+        "sentAt": "2026-10-22T18:00:00.000Z",
+        "nonce": "synthetic_nonce_0123456789",
+        "principalId": "22222222-2222-4222-8222-222222222222",
+        "keyId": "synthetic.key",
+        "method": "POST",
+        "target": "/workstreams/internal/v1/t3-thread-placements",
+        "contentSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "contractManifest": "1529444d1b8bb2fc4e3691844adb59b32a845fd8957efb54c4ef4d39bbec76ac",
+        "registryBinding": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0"
+      },
+      "body": "{}",
+      "canonical_utf8": "hmac-sha256-workstreams-registry-v1\nworkstreams-t3-placement/1.0.0\n33333333-3333-4333-8333-333333333333\nsynthetic-command-001\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nPOST\n/workstreams/internal/v1/t3-thread-placements\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n1529444d1b8bb2fc4e3691844adb59b32a845fd8957efb54c4ef4d39bbec76ac\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+      "signature": "BrNlwN-Feqx2KgioRFn7AJSw2G0pDPqqYIf86xhQ3KI",
+      "legacy_canonical_utf8": "hmac-sha256-v1\nworkstreams-t3-placement/1.0.0\n33333333-3333-4333-8333-333333333333\nsynthetic-command-001\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nPOST\n/workstreams/internal/v1/t3-thread-placements\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "legacy_signature": "I8gD6zECECYP9gEwTsuS_SNrKwjLZgHxlg-wvHd02dg"
+    },
+    {
+      "name": "appearance-read",
+      "input": {
+        "contractVersion": "workstream-appearance/1.0.0",
+        "requestId": "33333333-3333-4333-8333-333333333333",
+        "idempotencyKey": "synthetic-command-001",
+        "sentAt": "2026-10-22T18:00:00.000Z",
+        "nonce": "synthetic_nonce_0123456789",
+        "principalId": "22222222-2222-4222-8222-222222222222",
+        "keyId": "synthetic.key",
+        "method": "POST",
+        "target": "/workstream-appearance/v1/read",
+        "contentSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "contractManifest": "50b5aa14993573c99f4fe44cee0eb4b4c8184c50db77893f0d64e36601bac9ba",
+        "registryBinding": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0"
+      },
+      "body": "{}",
+      "canonical_utf8": "hmac-sha256-workstreams-registry-v1\nworkstream-appearance/1.0.0\n33333333-3333-4333-8333-333333333333\nsynthetic-command-001\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nPOST\n/workstream-appearance/v1/read\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n50b5aa14993573c99f4fe44cee0eb4b4c8184c50db77893f0d64e36601bac9ba\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+      "signature": "WllN-MDe4MqHG9Z8XThjXCHxwvB61Tr9ymXWVWFF3zc",
+      "legacy_canonical_utf8": "hmac-sha256-v1\nworkstream-appearance/1.0.0\n33333333-3333-4333-8333-333333333333\nsynthetic-command-001\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nPOST\n/workstream-appearance/v1/read\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "legacy_signature": "ekvhmfsaB2xsZkp6m2Q-jVg7Itz0mEpKF6vnGiJoXdg"
+    },
+    {
+      "name": "appearance-write",
+      "input": {
+        "contractVersion": "workstream-appearance/1.0.0",
+        "requestId": "33333333-3333-4333-8333-333333333333",
+        "idempotencyKey": "synthetic-command-001",
+        "sentAt": "2026-10-22T18:00:00.000Z",
+        "nonce": "synthetic_nonce_0123456789",
+        "principalId": "22222222-2222-4222-8222-222222222222",
+        "keyId": "synthetic.key",
+        "method": "POST",
+        "target": "/workstream-appearance/v1/write",
+        "contentSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "contractManifest": "50b5aa14993573c99f4fe44cee0eb4b4c8184c50db77893f0d64e36601bac9ba",
+        "registryBinding": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0"
+      },
+      "body": "{}",
+      "canonical_utf8": "hmac-sha256-workstreams-registry-v1\nworkstream-appearance/1.0.0\n33333333-3333-4333-8333-333333333333\nsynthetic-command-001\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nPOST\n/workstream-appearance/v1/write\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n50b5aa14993573c99f4fe44cee0eb4b4c8184c50db77893f0d64e36601bac9ba\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+      "signature": "v7-xFsj26mYn4QxdcXnA5ubXugC0WwCqo_l3fAlCGt4",
+      "legacy_canonical_utf8": "hmac-sha256-v1\nworkstream-appearance/1.0.0\n33333333-3333-4333-8333-333333333333\nsynthetic-command-001\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nPOST\n/workstream-appearance/v1/write\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "legacy_signature": "jyPdd_wD7g_S7DGM5qL4vmtb2Zv0JxWUMUyCZJu79Io"
+    },
+    {
+      "name": "registration-v1",
+      "input": {
+        "contractVersion": "workstreams-registration-context/1.0.0",
+        "requestId": "33333333-3333-4333-8333-333333333333",
+        "idempotencyKey": "",
+        "sentAt": "2026-10-22T18:00:00.000Z",
+        "nonce": "synthetic_nonce_0123456789",
+        "principalId": "22222222-2222-4222-8222-222222222222",
+        "keyId": "synthetic.key",
+        "method": "GET",
+        "target": "/workstreams/v1/t3/registration-context",
+        "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contractManifest": "1aa49d8cb4440eb40c877464dd1388a0a5071d65290c6490099db14d60b7789d",
+        "registryBinding": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0"
+      },
+      "body": "",
+      "canonical_utf8": "hmac-sha256-workstreams-registry-v1\nworkstreams-registration-context/1.0.0\n33333333-3333-4333-8333-333333333333\n\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nGET\n/workstreams/v1/t3/registration-context\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1aa49d8cb4440eb40c877464dd1388a0a5071d65290c6490099db14d60b7789d\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+      "signature": "XvK2kkBhCmewnXrTdwPNfE4U-ytntbYm0UkBk2zbFJM",
+      "legacy_canonical_utf8": "hmac-sha256-v1\nworkstreams-registration-context/1.0.0\n33333333-3333-4333-8333-333333333333\n\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nGET\n/workstreams/v1/t3/registration-context\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "legacy_signature": "gkaV0OrJsrJbJcy-nBT3NDKFXfVbG0wONRyD-opOCBE"
+    },
+    {
+      "name": "registration-v2",
+      "input": {
+        "contractVersion": "workstreams-registration-context/2.0.0",
+        "requestId": "33333333-3333-4333-8333-333333333333",
+        "idempotencyKey": "",
+        "sentAt": "2026-10-22T18:00:00.000Z",
+        "nonce": "synthetic_nonce_0123456789",
+        "principalId": "22222222-2222-4222-8222-222222222222",
+        "keyId": "synthetic.key",
+        "method": "GET",
+        "target": "/workstreams/v1/t3/registration-context",
+        "contentSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contractManifest": "9a8c1d320713cd3d9fcc010b635a172b241e04bf34236a6d022322f2c0fcd765",
+        "registryBinding": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0"
+      },
+      "body": "",
+      "canonical_utf8": "hmac-sha256-workstreams-registry-v1\nworkstreams-registration-context/2.0.0\n33333333-3333-4333-8333-333333333333\n\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nGET\n/workstreams/v1/t3/registration-context\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n9a8c1d320713cd3d9fcc010b635a172b241e04bf34236a6d022322f2c0fcd765\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+      "signature": "c8a6061q3yYjjadHdq6y0PJmVB0JE5owx2KYoOwR1xk",
+      "legacy_canonical_utf8": "hmac-sha256-v1\nworkstreams-registration-context/2.0.0\n33333333-3333-4333-8333-333333333333\n\n2026-10-22T18:00:00.000Z\nsynthetic_nonce_0123456789\n22222222-2222-4222-8222-222222222222\nsynthetic.key\nGET\n/workstreams/v1/t3/registration-context\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "legacy_signature": "jltKVmqNUcjhj6buXdXvwKyUTpkym1G2SpUL9b2_vYk"
+    }
+  ],
+  "responses": [
+    {
+      "name": "grant-changed-before-post",
+      "input": {
+        "requestSignature": "7fsXm56lx7PllsJEVx7F5TH2Bx01ETBMs5kmdrNd09o",
+        "status": 409,
+        "contractVersion": "",
+        "contractManifest": "",
+        "token": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+        "dispatch": "not-dispatched"
+      },
+      "body": "{\"code\":\"registry_binding_not_current\"}",
+      "canonical_utf8": "workstreams-registry-response/1.0.0\n7fsXm56lx7PllsJEVx7F5TH2Bx01ETBMs5kmdrNd09o\n409\n\n\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0\nnot-dispatched\n007904d2ee45502e69af4b32e8316ae6f84325d08d276532a7cc1459a751348b",
+      "mac": "1pBITlPME3Yp70_vd1lhz356KxTDTi2zj1CtHF5MkWc"
+    },
+    {
+      "name": "dispatched-success",
+      "input": {
+        "requestSignature": "7fsXm56lx7PllsJEVx7F5TH2Bx01ETBMs5kmdrNd09o",
+        "status": 200,
+        "contractVersion": "",
+        "contractManifest": "",
+        "token": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+        "dispatch": "dispatched"
+      },
+      "body": "{\"synthetic\":\"committed\"}",
+      "canonical_utf8": "workstreams-registry-response/1.0.0\n7fsXm56lx7PllsJEVx7F5TH2Bx01ETBMs5kmdrNd09o\n200\n\n\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0\ndispatched\n1fa5bbee86e086dd0d40a3d689e7c325ca92f996c2b8987609a2f984a6023049",
+      "mac": "ugmiJLY3vfQKqO15epjbgn4k_xb10ufCPrqTwJPduKQ"
+    },
+    {
+      "name": "dispatched-failure",
+      "input": {
+        "requestSignature": "7fsXm56lx7PllsJEVx7F5TH2Bx01ETBMs5kmdrNd09o",
+        "status": 503,
+        "contractVersion": "",
+        "contractManifest": "",
+        "token": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+        "dispatch": "dispatched"
+      },
+      "body": "{\"code\":\"unavailable\"}",
+      "canonical_utf8": "workstreams-registry-response/1.0.0\n7fsXm56lx7PllsJEVx7F5TH2Bx01ETBMs5kmdrNd09o\n503\n\n\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0\ndispatched\n75b52840b8da6a7905ac1b59e385d792b0dd0fce1e39de0e2ea9f3646ebc0593",
+      "mac": "c2I-s4oRmNyrZTcESl9rPVvZct1JSJuaFmeoIqEHc6Q"
+    },
+    {
+      "name": "receipt-get-reconciled",
+      "input": {
+        "requestSignature": "KDty9QzzbkQ-5DssaxeV7ouday30HMM6TR3G4SjCcFk",
+        "status": 200,
+        "contractVersion": "",
+        "contractManifest": "",
+        "token": "eyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0",
+        "dispatch": "dispatched"
+      },
+      "body": "{\"synthetic\":\"receipt\"}",
+      "canonical_utf8": "workstreams-registry-response/1.0.0\nKDty9QzzbkQ-5DssaxeV7ouday30HMM6TR3G4SjCcFk\n200\n\n\neyJwcm90b2NvbCI6IndvcmtzdHJlYW1zLXJlZ2lzdHJ5LWJpbmRpbmcvMS4wLjAiLCJtYW5pZmVzdF9zaGEyNTYiOiIxNWNlNDUwNjE5NjZjZTljMjQ3MTkyZDZlZjQzNzI0YjY2MzhiYjBlN2NjZjdiYmU5ZWFlNGFmZGQ1NzZmMzBjIiwicmVnaXN0cnlfaW5zdGFuY2VfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJjYW5vbmljYWxfb3JpZ2luIjoiaHR0cHM6Ly9yZWdpc3RyeS5zeW50aGV0aWMudGVzdCIsIm93bmVyX2lkIjoib3duZXIuc3ludGhldGljIiwicHJpbmNpcGFsX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiYXV0aG9yaXphdGlvbl9yZXZpc2lvbiI6MX0\ndispatched\n175a700943766e51e9c6c6f0b78ca36cea4737fbb8c9afe98023db06dee748c8",
+      "mac": "iIaAqCUN3DyXHwE5hDBLplHL4UkTmdcQW8zUiKk_lNc"
+    }
+  ],
+  "negative": [
+    {
+      "name": "alter-body",
+      "outcome": "unknown-effect"
+    },
+    {
+      "name": "replay-proof-for-new-signature",
+      "outcome": "unknown-effect"
+    },
+    {
+      "name": "remove-proof-after-dispatch",
+      "outcome": "unknown-effect"
+    },
+    {
+      "name": "alter-dispatch",
+      "outcome": "unknown-effect"
+    },
+    {
+      "name": "remove-request-binding",
+      "outcome": "unauthenticated"
+    },
+    {
+      "name": "algorithm-downgrade",
+      "outcome": "unauthenticated"
+    }
+  ],
+  "compatibility": [
+    [
+      "old-producer",
+      "old-client",
+      "legacy"
+    ],
+    [
+      "new-producer",
+      "old-client",
+      "legacy-unless-required"
+    ],
+    [
+      "old-producer",
+      "bound-client",
+      "reject-before-business"
+    ],
+    [
+      "new-producer",
+      "bound-client",
+      "matching-durable-authority-required"
+    ]
+  ]
+}

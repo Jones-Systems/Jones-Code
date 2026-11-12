@@ -7,7 +7,7 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadDetailWindow,
-} from "./orchestration.ts";
+} from "./legacyOrchestrationCompatibility.ts";
 import { QUEUE_DISPATCH_CAPABILITY } from "./queueProtocol.ts";
 import { THREAD_CORPUS_CAPABILITY, ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
 
@@ -70,10 +70,13 @@ const detail = {
   },
 };
 
+const compiledEncodeSync1 = Schema.encodeSync(ThreadCorpusCapability);
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(OrchestrationThreadDetailSnapshot);
+
 describe("thread corpus capability", () => {
   it("round-trips the five-field fixture and shares the existing auth contract", () => {
     const decoded = decodeCapability(capabilityFixture);
-    expect(Schema.encodeSync(ThreadCorpusCapability)(decoded)).toEqual(capabilityFixture);
+    expect(compiledEncodeSync1(decoded)).toEqual(capabilityFixture);
     expect(THREAD_CORPUS_CAPABILITY).toEqual(capabilityFixture);
     expect(decoded.authSession).toBe(QUEUE_DISPATCH_CAPABILITY.authSession);
     expect(Object.keys(decoded)).toHaveLength(5);
@@ -146,7 +149,7 @@ describe("thread corpus capability", () => {
       expect(() => decodeWindow({ turnLimit })).toThrow();
     }
     expect(() => decodeWindow({ turnLimit: 2, beforeCursor: "" })).toThrow();
-    const decodeDetail = Schema.decodeUnknownSync(OrchestrationThreadDetailSnapshot);
+    const decodeDetail = compiledDecodeUnknownSync2;
     expect(decodeDetail(detail).page).toBeUndefined();
     const page = {
       beforeCursor: window.beforeCursor,
@@ -162,7 +165,7 @@ describe("thread corpus capability", () => {
 
   it("preserves message text beyond consumer budgets without inventing native truncation", () => {
     const text = "x".repeat(24001);
-    const decoded = Schema.decodeUnknownSync(OrchestrationThreadDetailSnapshot)({
+    const decoded = compiledDecodeUnknownSync2({
       ...detail,
       thread: { ...detail.thread, messages: [{ ...message, text }] },
     });

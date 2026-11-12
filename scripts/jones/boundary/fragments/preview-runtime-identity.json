@@ -1,0 +1,63 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "preview-runtime-identity",
+  "jonesOwnedPaths": [
+    "apps/desktop/src/preview/AutomationResult.ts",
+    "apps/server/src/jones/previewRecordingOperation/projection.ts",
+    "apps/server/src/jones/previewRecordingOperation/broker.test.ts",
+    "apps/server/src/jones/previewRecordingOperation/mcp.ts",
+    "apps/server/src/jones/previewRecordingOperation/mcp.test.ts",
+    "apps/server/src/jones/previewTabAffinity/tabAffinity.ts",
+    "apps/server/src/jones/previewTabAffinity/tabAffinity.test.ts",
+    "apps/server/src/jones/previewRecordingOperation/recordingAttempt.ts",
+    "apps/server/src/jones/previewRecordingOperation/recordingAttempt.test.ts"
+  ],
+  "hookPaths": [
+    "apps/desktop/src/preview/DesktopBrowserHost.ts",
+    "apps/server/src/preview/DesktopBrowserChannel.ts",
+    "apps/server/src/mcp/PreviewAutomationBroker.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "packages/contracts/src/desktopBrowser.ts",
+    "packages/contracts/src/previewAutomation.ts",
+    "apps/server/src/mcp/toolkits/preview/tools.ts",
+    "apps/server/src/mcp/toolkits/preview/handlers.ts"
+  ],
+  "tombstones": [
+    "apps/web/src/components/preview/PreviewAutomationHosts.tsx",
+    "apps/web/src/components/preview/PreviewAutomationHosts.test.tsx"
+  ],
+  "allowedImports": [
+    {
+      "from": "apps/desktop/src/ipc/methods/preview.test.ts",
+      "to": "apps/desktop/src/preview/AutomationResult.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/previewRecordingOperation.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/PreviewAutomationBroker.ts",
+      "to": "apps/server/src/jones/previewRecordingOperation/projection.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/preview/tools.ts",
+      "to": "apps/server/src/jones/previewRecordingOperation/mcp.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/preview/handlers.ts",
+      "to": "apps/server/src/jones/previewRecordingOperation/mcp.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/PreviewAutomationBroker.ts",
+      "to": "apps/server/src/jones/previewTabAffinity/tabAffinity.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowser.ts",
+      "to": "apps/server/src/jones/previewRecordingOperation/recordingAttempt.ts"
+    },
+    {
+      "from": "packages/contracts/src/previewAutomation.ts",
+      "to": "packages/contracts/src/jones/previewRecordingState.ts"
+    }
+  ]
+}

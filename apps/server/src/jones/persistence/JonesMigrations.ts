@@ -1,0 +1,147 @@
+import * as Effect from "effect/Effect";
+import { runJonesMigrations } from "./JonesMigrationGuard.ts";
+
+import JonesMigration0001 from "./Migrations/001_JonesWorktreeOwnershipLeases.ts";
+import JonesMigration0002 from "./Migrations/002_JonesProjectionThreadRuntimeIdentity.ts";
+import JonesMigration0003 from "./Migrations/003_JonesNativeCreationIntents.ts";
+import JonesMigration0004 from "./Migrations/004_JonesNativeCreationCommandIdentities.ts";
+import JonesMigration0005 from "./Migrations/005_JonesWorkstreamsNativeAttempts.ts";
+import JonesMigration0006 from "./Migrations/006_JonesWorkstreamsProviderEnrollments.ts";
+
+import JonesMigration0100 from "./Migrations/100_JonesNativeCreationExecution.ts";
+import JonesMigration0101 from "./Migrations/101_JonesNativeWorkspacePreparation.ts";
+import JonesMigration0104 from "./Migrations/104_JonesDeletionAdmission.ts";
+
+import JonesMigration0103 from "./Migrations/103_JonesRuntimeStop.ts";
+
+// Preserve the released Jones identities. New Jones migrations start at 100;
+// IDs 7–99 belong to known foreign histories, never to this rebuild's loader.
+import JonesMigration0102 from "./Migrations/102_JonesImportedHistoryChoices.ts";
+import JonesMigration0105 from "./Migrations/105_JonesUpstreamReferenceIsolation.ts";
+
+import JonesMigration0106 from "./Migrations/106_JonesPlannedUpdateContinuity.ts";
+
+import JonesMigration0107 from "./Migrations/107_JonesWorkstreamsSettlementProofs.ts";
+
+import JonesMigration0108 from "./Migrations/108_JonesPhysicalProcessEvidence.ts";
+
+import JonesMigration0109 from "./Migrations/109_JonesOrdinaryCheckoutLifecycle.ts";
+
+import JonesMigration0110 from "./Migrations/110_JonesThreadLookupIndexes.ts";
+import JonesMigration0111 from "./Migrations/111_JonesClientSettlementCommands.ts";
+
+import JonesMigration0112 from "./Migrations/112_JonesClientLaunchRequests.ts";
+
+import JonesMigration0114 from "./Migrations/114_JonesSelfSettlementProjectItems.ts";
+import JonesMigration0115 from "./Migrations/115_JonesScheduledWebhookPendingRuns.ts";
+
+import JonesMigration0116 from "./Migrations/116_JonesRemoteAdmission.ts";
+
+import JonesMigration0117 from "./Migrations/117_JonesRemoteDelegationIntents.ts";
+
+import JonesMigration0118 from "./Migrations/118_JonesRemoteAdmissionIntegration.ts";
+
+import JonesMigration0119 from "./Migrations/119_JonesPeerEnvironmentLinks.ts";
+
+import JonesMigration0120 from "./Migrations/120_JonesSettlementRestores.ts";
+import JonesMigration0121 from "./Migrations/121_JonesRemoteTaskObservations.ts";
+
+import JonesMigration0122 from "./Migrations/122_JonesThreadLinks.ts";
+
+import JonesMigration0123 from "./Migrations/123_JonesWorkspaceLifecycle.ts";
+import JonesMigration0124 from "./Migrations/124_JonesTaskContinuations.ts";
+import JonesMigration0129 from "./Migrations/129_JonesCodexFailover.ts";
+
+import JonesMigration0130 from "./Migrations/130_JonesThreadTitleRefinement.ts";
+
+import JonesMigration0132 from "./Migrations/132_JonesOwnerSelections.ts";
+import JonesMigration0133 from "./Migrations/133_JonesThreadResultDependencies.ts";
+import JonesMigration0134 from "./Migrations/134_JonesGoalContinuity.ts";
+import JonesMigration0135 from "./Migrations/135_JonesIdleWorktreeAdmission.ts";
+import JonesMigration0136 from "./Migrations/136_JonesWorkspaceProvenance.ts";
+import JonesMigration0137 from "./Migrations/137_JonesNativeCreationLeaseRenewal.ts";
+
+import JonesMigration0138 from "./Migrations/138_JonesWorkspaceRetirement.ts";
+import JonesMigration0139 from "./Migrations/139_JonesConversationWorkspace.ts";
+
+// These unpublished allocations follow canonical main. Keep the original
+// effect-module paths and bytes so the native transition fixtures stay pinned.
+import JonesMigration0140 from "./Migrations/125_JonesWorkstreamsNative.ts";
+import JonesMigration0141 from "./Migrations/126_JonesWorkstreamsSourceEnrollments.ts";
+import JonesMigration0142 from "./Migrations/127_JonesWorkstreamsRollupAttempts.ts";
+import JonesMigration0143 from "./Migrations/128_JonesWorkstreamsPeerSessionPins.ts";
+import JonesMigration0144 from "./Migrations/129_JonesWorkstreamsMemberBindings.ts";
+import JonesMigration0145 from "./Migrations/130_JonesWorkstreamsForwardReceipts.ts";
+
+import JonesMigration0146 from "./Migrations/146_JonesSettlementOriginRetention.ts";
+import JonesMigration0147 from "./Migrations/147_JonesQueueHolds.ts";
+import JonesMigration0148 from "./Migrations/148_JonesNativeExecutionProcessCustody.ts";
+import JonesMigration0149 from "./Migrations/149_JonesOrdinaryCheckoutProcessCustody.ts";
+import JonesMigration0150 from "./Migrations/150_JonesAuthSessionClientMetadata.ts";
+import JonesMigration0151 from "./Migrations/151_JonesWorkspaceRuntimeUses.ts";
+import JonesMigration0152 from "./Migrations/152_JonesPeerLinksAdoption.ts";
+
+export const jonesMigrationEntries = [
+  [1, "WorktreeOwnershipLeases", JonesMigration0001],
+  [2, "ProjectionThreadRuntimeIdentity", JonesMigration0002],
+  [3, "NativeCreationIntents", JonesMigration0003],
+  [4, "NativeCreationCommandIdentities", JonesMigration0004],
+  [5, "WorkstreamsNativeAttempts", JonesMigration0005],
+  [6, "WorkstreamsProviderEnrollments", JonesMigration0006],
+  [100, "NativeCreationExecution", JonesMigration0100],
+  [101, "NativeWorkspacePreparation", JonesMigration0101],
+  [102, "ImportedHistoryChoices", JonesMigration0102],
+  [103, "RuntimeStop", JonesMigration0103],
+  [104, "DeletionAdmission", JonesMigration0104],
+  [105, "UpstreamReferenceIsolation", JonesMigration0105],
+  [106, "PlannedUpdateContinuity", JonesMigration0106],
+  [107, "WorkstreamsSettlementProofs", JonesMigration0107],
+  [108, "PhysicalProcessEvidence", JonesMigration0108],
+  [109, "OrdinaryCheckoutLifecycle", JonesMigration0109],
+  [110, "ThreadLookupIndexes", JonesMigration0110],
+  [111, "ClientSettlementCommands", JonesMigration0111],
+  [112, "ClientLaunchRequests", JonesMigration0112],
+  [114, "SelfSettlementProjectItems", JonesMigration0114],
+  [115, "ScheduledWebhookPendingRuns", JonesMigration0115],
+  [116, "RemoteAdmission", JonesMigration0116],
+  [117, "RemoteDelegationIntents", JonesMigration0117],
+  [118, "RemoteAdmissionIntegration", JonesMigration0118],
+  [119, "PeerEnvironmentLinks", JonesMigration0119],
+  [120, "SettlementRestores", JonesMigration0120],
+  [121, "RemoteTaskObservations", JonesMigration0121],
+  [122, "ThreadLinks", JonesMigration0122],
+  [123, "WorkspaceLifecycle", JonesMigration0123],
+  [124, "TaskContinuations", JonesMigration0124],
+  [129, "CodexFailover", JonesMigration0129],
+  [130, "ThreadTitleRefinement", JonesMigration0130],
+  [132, "OwnerSelections", JonesMigration0132],
+  [133, "ThreadResultDependencies", JonesMigration0133],
+  [134, "GoalContinuity", JonesMigration0134],
+  [135, "IdleWorktreeAdmission", JonesMigration0135],
+  [136, "WorkspaceProvenance", JonesMigration0136],
+  [137, "NativeCreationLeaseRenewal", JonesMigration0137],
+  [138, "WorkspaceRetirement", JonesMigration0138],
+  [139, "ConversationWorkspace", JonesMigration0139],
+  [140, "WorkstreamsNative", JonesMigration0140],
+  [141, "WorkstreamsSourceEnrollments", JonesMigration0141],
+  [142, "WorkstreamsRollupAttempts", JonesMigration0142],
+  [143, "WorkstreamsPeerSessionPins", JonesMigration0143],
+  [144, "WorkstreamsMemberBindings", JonesMigration0144],
+  [145, "WorkstreamsForwardReceipts", JonesMigration0145],
+  [146, "SettlementOriginRetention", JonesMigration0146],
+  [147, "QueueHolds", JonesMigration0147],
+  [148, "NativeExecutionProcessCustody", JonesMigration0148],
+  [149, "OrdinaryCheckoutProcessCustody", JonesMigration0149],
+  [150, "AuthSessionClientMetadata", JonesMigration0150],
+  [151, "WorkspaceRuntimeUses", JonesMigration0151],
+  [152, "PeerLinksAdoption", JonesMigration0152],
+] as const;
+
+export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {
+  const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
+  if (jonesMigrations.length > 0) {
+    yield* Effect.log("Jones migrations ran successfully").pipe(
+      Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),
+    );
+  }
+});

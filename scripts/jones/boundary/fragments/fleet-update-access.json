@@ -1,0 +1,160 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "fleet-update-access",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/fleetUpdates/blockedHostCommand.ts",
+    "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
+    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx",
+    "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
+    "apps/web/src/jones/fleetUpdates/sourceCurrency.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/index.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/updateBridge.ts",
+    "apps/desktop/src/jones/fleetUpdates/store.test.ts",
+    "apps/desktop/src/jones/fleetUpdates/store.ts",
+    "apps/server/src/jones/fleetUpdates/http.ts",
+    "apps/server/src/jones/fleetUpdates/service.test.ts",
+    "apps/server/src/jones/fleetUpdates/service.ts",
+    "apps/server/src/jones/fleetUpdates/store.test.ts",
+    "apps/server/src/jones/fleetUpdates/store.ts",
+    "apps/web/src/jones/fleetUpdates/FleetController.tsx",
+    "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.test.tsx",
+    "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.tsx",
+    "apps/web/src/jones/fleetUpdates/FleetEnrollmentStatus.tsx",
+    "apps/web/src/jones/fleetUpdates/runtime.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/campaignController.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/hostBridge.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts",
+    "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts",
+    "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
+    "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
+    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.browser.test.tsx",
+    "apps/desktop/src/app/DesktopConnectionCustody.testFixtures.ts",
+    "apps/server/src/jones/fleetUpdates/quietSignals.ts",
+    "apps/server/src/jones/updates/followerPolicy.ts",
+    "apps/server/src/jones/updates/followerPolicy.test.ts",
+    "apps/server/src/jones/updates/hostWork.ts",
+    "apps/server/src/jones/updates/hostWork.test.ts",
+    "apps/server/src/jones/updates/UpdateAdmissionFence.ts",
+    "apps/server/src/jones/updates/UpdateAdmissionFence.test.ts",
+    "apps/server/src/jones/updates/UpdateAdmissionFence.webhook.test.ts",
+    "apps/server/src/jones/updates/handoffOutcome.ts",
+    "apps/server/src/jones/updates/handoffOutcome.test.ts",
+    "apps/web/src/jones/fleetUpdates/followerStatus.ts",
+    "apps/web/src/jones/fleetUpdates/followerStatus.test.ts",
+    "apps/server/src/jones/updates/preparation/protocol.ts",
+    "apps/server/src/jones/updates/preparation/protocol.test.ts",
+    "apps/server/src/jones/updates/preparation/stageArtifact.ts",
+    "apps/server/src/jones/updates/preparation/sweep.ts",
+    "apps/server/src/jones/updates/preparation/sweep.test.ts",
+    "apps/server/src/jones/updates/preparation/worker.ts",
+    "apps/server/src/jones/updates/preparation/supervisor.ts",
+    "apps/server/src/jones/updates/preparation/supervisor.test.ts",
+    "apps/server/src/jones/updates/preparation/rebind.ts",
+    "apps/server/src/jones/updates/preparation/stage.test.ts",
+    "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
+    "apps/server/src/jones/updates/preparation/Preparation.testkit.ts",
+    "apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts",
+    "apps/server/src/jones/updates/preparation/packagedDarwinStageRepro.ts",
+    "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx",
+    "apps/web/src/jones/fleetUpdates/publicationState.ts",
+    "apps/web/src/jones/fleetUpdates/publicationStatus.ts",
+    "apps/web/src/jones/fleetUpdates/publicationStatus.test.ts"
+  ],
+  "hookPaths": [
+    "apps/web/vite.config.ts",
+    "apps/web/src/components/settings/SavedEnvironmentRows.tsx"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/index.ts"
+    },
+    {
+      "from": "apps/web/vite.config.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/index.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/source.ts"
+    },
+    {
+      "from": "apps/web/src/versionSkew.ts",
+      "to": "apps/web/src/jones/fleetUpdates/sourceCurrency.ts"
+    },
+    {
+      "from": "apps/web/src/components/ServerUpdateAction.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx"
+    },
+    {
+      "from": "apps/desktop/src/ipc/methods/updates.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/index.ts"
+    },
+    {
+      "from": "apps/desktop/src/ipc/methods/updates.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/index.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/fleetUpdates/store.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/fleetUpdates/service.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/fleetUpdates/http.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/web/src/AppRoot.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/FleetController.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/ConnectionsSettings.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.tsx"
+    },
+    {
+      "from": "packages/contracts/src/ipc.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/campaign.ts"
+    },
+    {
+      "from": "apps/desktop/src/ipc/methods/connectionCatalog.ts",
+      "to": "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/ConnectionsSettings.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/updates/preparation/worker.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/SavedEnvironmentRows.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx"
+    }
+  ]
+}

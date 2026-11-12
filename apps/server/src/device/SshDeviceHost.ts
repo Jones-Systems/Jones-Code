@@ -1,4 +1,3 @@
-import * as NodeCrypto from "node:crypto";
 import {
   type DeviceHostSummary,
   DevicePlatformAvailability,
@@ -7,8 +6,11 @@ import {
   type SshDeviceHostConfig,
 } from "@t3tools/contracts";
 import { runSshCommand, baseSshArgs, resolveSshCommand } from "@t3tools/ssh/command";
+import { SshCommandError } from "@t3tools/ssh/errors";
 import * as NetService from "@t3tools/shared/Net";
 import { waitForHttpReady } from "@t3tools/shared/httpReadiness";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -17,12 +19,31 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as ChildProcess from "effect/unstable/process/ChildProcess";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as Hex from "effect/encoding/Hex";
+import * as HttpClient from "effect/http/HttpClient";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as ServerConfig from "../config.ts";
+import { releaseAgentDeviceSession } from "./AgentDeviceTarget.ts";
 import * as DeviceHost from "./DeviceHost.ts";
+import { DeviceDirectGrants } from "../jones/device/DeviceDirectGrants.ts";
+import { registerDirectRetirement, directGatewayHealth } from "../jones/device/directLifecycle.ts";
+import { openDirectAdmission } from "../jones/device/DeviceDirectAdmission.ts";
+import { makeDeviceHubOperations } from "./DeviceHubOperations.ts";
 import { quoteRemoteArg, remoteDeviceEnvironment, remoteDeviceScript } from "./sshDeviceScript.ts";
+
+const UNHEALTHY_PROBE_LIMIT = 3;
+
+/** The host bootstrap failed on a host identified as Windows. */
+export class SshWindowsHostError extends Schema.TaggedError<SshWindowsHostError>()(
+  "SshWindowsHostError",
+  { cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "Connected over SSH, but this host runs Windows, and SSH device hosts currently need macOS or Linux. To use this machine's devices, run T3 Code on it and connect to that environment.";
+  }
+}
+export const isSshWindowsHostError = Schema.is(SshWindowsHostError);
 
 const Probe = Schema.Struct({
   nodePath: Schema.String,
@@ -32,6 +53,13 @@ const Probe = Schema.Struct({
 const Started = Schema.Struct({
   ...Probe.fields,
   hubPort: Schema.Int,
+  directMedia: Schema.optionalKey(
+    Schema.Struct({
+      gatewayPort: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
+      admissionPort: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
+      generation: Schema.String,
+    }),
+  ),
   daemonPort: Schema.optionalKey(Schema.Int),
   token: Schema.optionalKey(Schema.String),
   entryPath: Schema.optionalKey(Schema.String),
@@ -58,14 +86,19 @@ const commandArgs = (script: string) => [
 const bootstrap = (
   config: SshDeviceHostConfig,
   owner: string,
-  mode: "probe" | "start" | "agent-start" | "stop-agent" | "stop",
+  mode: "probe" | "start" | "agent-start" | "stop-agent" | "stop" | "stop-direct",
+  generation?: string,
 ) =>
   runSshCommand(targetFor(config), {
     preHostArgs: identityArgs(config),
     remoteCommandArgs: commandArgs(
       'command -v node >/dev/null 2>&1 || { echo "Node is missing from the non-interactive SSH PATH" >&2; exit 1; }; exec node',
     ),
-    stdin: remoteDeviceScript(owner, mode),
+    stdin: remoteDeviceScript(
+      owner,
+      mode,
+      generation ? { hostId: config.id, generation } : undefined,
+    ),
     timeoutMs: mode === "start" || mode === "agent-start" ? 1_300_000 : 45_000,
   }).pipe(
     Effect.mapError(
@@ -73,23 +106,72 @@ const bootstrap = (
     ),
   );
 
+const isSshCommandError = Schema.is(SshCommandError);
+
+// cmd expands only %OS% and PowerShell only $env:OS; POSIX shells expand neither to Windows_NT.
+const explainWindowsHost = Effect.fn("SshDeviceHost.explainWindowsHost")(function* (
+  config: SshDeviceHostConfig,
+  error: DeviceHost.DeviceHostError,
+) {
+  const cause = error.cause;
+  // Windows ssh.exe preserves full remote exit statuses such as 9009.
+  if (
+    !isSshCommandError(cause) ||
+    cause.exitCode === null ||
+    cause.exitCode < 1 ||
+    (cause.exitCode > 254 && cause.exitCode !== 9009)
+  )
+    return yield* error;
+  let windows = yield* runSshCommand(targetFor(config), {
+    preHostArgs: identityArgs(config),
+    remoteCommandArgs: ["echo %OS% $env:OS"],
+    timeoutMs: 15_000,
+  }).pipe(
+    Effect.map(({ stdout }) => /(?:^|\s)Windows_NT(?:\s|$)/u.test(stdout)),
+    Effect.orElseSucceed(() => false),
+  );
+  if (!windows) {
+    // Git Bash does not expand Windows shell variables, but its Node still reports win32.
+    windows = yield* runSshCommand(targetFor(config), {
+      preHostArgs: identityArgs(config),
+      remoteCommandArgs: ["node", "-p", "process.platform"],
+      timeoutMs: 15_000,
+    }).pipe(
+      Effect.map(({ stdout }) => stdout.trim() === "win32"),
+      Effect.orElseSucceed(() => false),
+    );
+  }
+  if (!windows) return yield* error;
+  return yield* new DeviceHost.DeviceHostError({
+    hostId: config.id,
+    step: error.step,
+    cause: new SshWindowsHostError({ cause }),
+  });
+});
+
 const ownerFor = Effect.fn("SshDeviceHost.ownerFor")(function* (hostId: string) {
   const fs = yield* FileSystem.FileSystem;
   const server = yield* ServerConfig.ServerConfig;
   const environmentId = yield* fs
     .readFileString(server.environmentIdPath)
     .pipe(Effect.orElseSucceed(() => server.stateDir));
-  return NodeCrypto.createHash("sha256")
-    .update(`${environmentId}\0${server.stateDir}\0${hostId}`)
-    .digest("hex")
-    .slice(0, 24);
+  const digest = yield* Digest.Digest;
+  const owner = yield* digest
+    .digest(
+      Digest.sha256,
+      new TextEncoder().encode(`${environmentId}\0${server.stateDir}\0${hostId}`),
+    )
+    .pipe(Effect.map(Hex.encode), Effect.orDie);
+  return owner.slice(0, 24);
 });
 
 export const probe = Effect.fn("SshDeviceHost.probe")(function* (
   config: SshDeviceHostConfig,
   owner?: string,
 ) {
-  const result = yield* bootstrap(config, owner ?? (yield* ownerFor(config.id)), "probe");
+  const result = yield* bootstrap(config, owner ?? (yield* ownerFor(config.id)), "probe").pipe(
+    Effect.catchTags({ DeviceHostError: (error) => explainWindowsHost(config, error) }),
+  );
   const value = yield* decodeProbe(result.stdout.trim()).pipe(
     Effect.mapError(
       (cause) =>
@@ -109,6 +191,10 @@ export const probe = Effect.fn("SshDeviceHost.probe")(function* (
   } satisfies DeviceHostSummary;
 });
 
+type SshDeviceHostReady = DeviceHost.DeviceHostReady & {
+  readonly agentDevice?: DeviceHost.DeviceHostAgentReady["agentDevice"];
+};
+
 export const make = Effect.fn("SshDeviceHost.make")(function* (
   config: SshDeviceHostConfig,
   onReady: (
@@ -118,13 +204,17 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
     status: "starting" | "ready" | "failed",
     detail?: string,
   ) => Effect.Effect<void> = () => Effect.void,
+  currentEndpoint?: Effect.Effect<DeviceHost.DeviceDirectMediaEndpoint | null>,
 ) {
+  const grants = yield* DeviceDirectGrants;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const server = yield* ServerConfig.ServerConfig;
   const net = yield* NetService.NetService;
   const http = yield* HttpClient.HttpClient;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const digest = yield* Digest.Digest;
+  const random = yield* SecureRandom.SecureRandom;
   const parentScope = yield* Scope.Scope;
   const ssh = yield* resolveSshCommand;
   const owner = yield* ownerFor(config.id);
@@ -135,6 +225,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       | FileSystem.FileSystem
       | Path.Path
       | ChildProcessSpawner.ChildProcessSpawner
+      | Digest.Digest
       | ServerConfig.ServerConfig
     >,
   ) =>
@@ -143,17 +234,16 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig.ServerConfig, server),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(Digest.Digest, digest),
     );
   const lock = yield* Semaphore.make(1);
   let stopped = false;
   let activated = false;
   let wantsAgent = false;
-  let ready:
-    | (DeviceHost.DeviceHostReady & {
-        agentDevice?: DeviceHost.DeviceHostAgentReady["agentDevice"];
-      })
-    | null = null;
+  let ready: SshDeviceHostReady | null = null;
   let connectionScope: Scope.Closeable | null = null;
+  let retirementFailure: DeviceHost.DeviceHostError | null = null;
+  const currentRetirementFailure = (): DeviceHost.DeviceHostError | null => retirementFailure;
   let summary: DeviceHostSummary = {
     id: config.id,
     label: config.label,
@@ -167,7 +257,11 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
     provide(
       runSshCommand(targetFor(config), {
         preHostArgs: identityArgs(config),
-        remoteCommandArgs: commandArgs(`exec ${[command, ...args].map(quoteRemoteArg).join(" ")}`),
+        // Match the hub cwd so relative executables and PATH entries resolve identically.
+        remoteCommandArgs: commandArgs(
+          `cd "$HOME/.t3/device/hosts/${owner}" && exec ${[command, ...args].map(quoteRemoteArg).join(" ")}`,
+        ),
+        keepErrorOutputTail: true,
         ...(options?.stdin === undefined ? {} : { stdin: options.stdin }),
         ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       }),
@@ -182,187 +276,337 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       ),
     );
 
-  const connectOnce = Effect.fn("SshDeviceHost.connectOnce")(function* (): Effect.fn.Return<
-    DeviceHost.DeviceHostReady & { agentDevice?: DeviceHost.DeviceHostAgentReady["agentDevice"] },
-    DeviceHost.DeviceHostError
-  > {
+  const platformAvailability: DeviceHost.DeviceHost["Service"]["platformAvailability"] = (
+    platform,
+  ) =>
+    provide(probe(config, owner)).pipe(
+      Effect.map((value) => {
+        summary = { ...summary, platforms: value.platforms };
+        return value.platforms.find((p) => p.platform === platform)!;
+      }),
+      Effect.orElseSucceed(() => ({
+        platform,
+        available: false,
+        reason: "Cannot reach device host. Test its SSH connection in Settings.",
+      })),
+    );
+
+  const retire = Effect.fn("SshDeviceHost.retire")(function* (scope: Scope.Closeable) {
+    if (connectionScope === scope) {
+      connectionScope = null;
+      ready = null;
+    }
+    yield* Scope.close(scope, Exit.void);
+  });
+  const connectOnce = Effect.fn("SshDeviceHost.connectOnce")(function* (
+    direct: boolean,
+  ): Effect.fn.Return<SshDeviceHostReady, DeviceHost.DeviceHostError> {
     activated = true;
-    const result = yield* provide(bootstrap(config, owner, wantsAgent ? "agent-start" : "start"));
-    yield* onStatus("starting");
-    const remote = yield* decodeStarted(result.stdout.trim()).pipe(
-      Effect.mapError(
-        (cause) =>
-          new DeviceHost.DeviceHostError({
-            hostId: config.id,
-            step: "reading host endpoints",
-            cause,
-          }),
-      ),
-    );
-    summary = {
-      ...summary,
-      platforms: remote.platforms,
-      tools: remote.tools,
-      hubInstalled: true,
-      agentDeviceInstalled: wantsAgent || summary.agentDeviceInstalled,
-    };
-    const hubPort = yield* net.reserveLoopbackPort("127.0.0.1").pipe(
-      Effect.mapError(
-        (cause) =>
-          new DeviceHost.DeviceHostError({
-            hostId: config.id,
-            step: "reserving hub port",
-            cause,
-          }),
-      ),
-    );
-    const daemonPort = yield* net.reserveLoopbackPort("127.0.0.1").pipe(
-      Effect.mapError(
-        (cause) =>
-          new DeviceHost.DeviceHostError({
-            hostId: config.id,
-            step: "reserving daemon port",
-            cause,
-          }),
-      ),
-    );
     const scope = yield* Scope.make();
     connectionScope = scope;
-    const child = yield* spawner
-      .spawn(
-        ChildProcess.make(
-          ssh,
-          [
-            ...baseSshArgs(targetFor(config), { batchMode: "yes" }),
-            ...identityArgs(config),
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-o",
-            "ServerAliveInterval=10",
-            "-o",
-            "ServerAliveCountMax=3",
-            "-N",
-            "-L",
-            `127.0.0.1:${hubPort}:127.0.0.1:${remote.hubPort}`,
-            ...(remote.daemonPort === undefined
-              ? []
-              : ["-L", `127.0.0.1:${daemonPort}:127.0.0.1:${remote.daemonPort}`]),
-            config.target,
-          ],
-          { stdin: "ignore", stdout: "ignore", stderr: "pipe" },
-        ),
-      )
-      .pipe(
-        Effect.provideService(Scope.Scope, scope),
-        Effect.mapError(
-          (cause) =>
-            new DeviceHost.DeviceHostError({ hostId: config.id, step: "forwarding ports", cause }),
+    const generation = yield* random.uuidV4().pipe(Effect.orDie);
+    let active = true;
+    yield* registerDirectRetirement({
+      scope,
+      direct,
+      retire: provide(bootstrap(config, owner, "stop-direct", generation)),
+      deactivate: () => {
+        active = false;
+      },
+      onFailure: (cause) => {
+        retirementFailure = new DeviceHost.DeviceHostError({
+          hostId: config.id,
+          step: "retiring direct gateway",
+          cause,
+        });
+      },
+    });
+    return yield* Effect.gen(function* () {
+      const result = yield* provide(
+        bootstrap(
+          config,
+          owner,
+          wantsAgent ? "agent-start" : "start",
+          direct ? generation : undefined,
         ),
       );
-    let stderr = "";
-    yield* child.stderr.pipe(
-      Stream.decodeText(),
-      Stream.runForEach((chunk) =>
-        Effect.sync(() => {
-          stderr = (stderr + chunk).slice(-2000);
-        }),
-      ),
-      Effect.forkIn(scope),
-    );
-    const next = {
-      nodePath: remote.nodePath,
-      hub: { origin: `http://127.0.0.1:${hubPort}` },
-      ...(remote.daemonPort !== undefined &&
-      remote.token !== undefined &&
-      remote.entryPath !== undefined
-        ? {
-            agentDevice: {
-              baseUrl: `http://127.0.0.1:${daemonPort}`,
-              token: remote.token,
-              entryPath: remote.entryPath,
-            },
-          }
-        : {}),
-      helpers: remote.helpers,
-      run,
-    };
-    for (const [baseUrl, route] of [
-      [next.hub.origin, "/readyz"],
-      ...(next.agentDevice ? [[next.agentDevice.baseUrl, "/health"]] : []),
-    ]) {
-      yield* waitForHttpReady({
-        baseUrl: baseUrl!,
-        path: route!,
-        timeoutMs: 15000,
-        makeError: () =>
-          new DeviceHost.DeviceHostError({
-            hostId: config.id,
-            step: "waiting for SSH forward",
-            cause: new Error(stderr || "Forwarded endpoint did not answer."),
-          }),
-      }).pipe(Effect.provideService(HttpClient.HttpClient, http));
-    }
-    if (next.agentDevice) yield* onReady({ ...next, agentDevice: next.agentDevice });
-    ready = next;
-    yield* onStatus("ready");
-    // Reconnect also repairs helpers that died while SSH itself stayed connected.
-    const unhealthy = Effect.gen(function* () {
-      while (true) {
-        yield* Effect.sleep("10 seconds");
-        const alive = yield* http.get(`${next.hub.origin}/readyz`).pipe(
-          Effect.timeout("5 seconds"),
-          Effect.map((r) => r.status === 200),
-          Effect.orElseSucceed(() => false),
-        );
-        const daemonAlive = next.agentDevice
-          ? yield* http.get(`${next.agentDevice!.baseUrl}/health`).pipe(
-              Effect.timeout("5 seconds"),
-              Effect.map((r) => r.status === 200),
-              Effect.orElseSucceed(() => false),
+      yield* onStatus("starting");
+      const remote = yield* decodeStarted(result.stdout.trim()).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DeviceHost.DeviceHostError({
+              hostId: config.id,
+              step: "reading host endpoints",
+              cause,
+            }),
+        ),
+      );
+      summary = {
+        ...summary,
+        platforms: remote.platforms,
+        tools: remote.tools,
+        hubInstalled: true,
+        agentDeviceInstalled: wantsAgent || summary.agentDeviceInstalled,
+      };
+      const reserve = (step: string) =>
+        net
+          .reserveLoopbackPort("127.0.0.1")
+          .pipe(
+            Effect.mapError(
+              (cause) => new DeviceHost.DeviceHostError({ hostId: config.id, step, cause }),
+            ),
+          );
+      const hubPort = yield* reserve("reserving hub port");
+      const daemonPort =
+        remote.daemonPort === undefined ? undefined : yield* reserve("reserving daemon port");
+      if (direct && (!currentEndpoint || remote.directMedia?.generation !== generation))
+        return yield* new DeviceHost.DeviceHostError({
+          hostId: config.id,
+          step: "reading direct gateway endpoints",
+          cause: new Error("Missing direct gateway descriptor or readiness callback."),
+        });
+      const endpoint =
+        direct && remote.directMedia && config.directSshTarget
+          ? {
+              target: config.directSshTarget,
+              gatewayPort: remote.directMedia.gatewayPort,
+              owner,
+              generation,
+            }
+          : undefined;
+      const gatewayProbePort = endpoint ? yield* reserve("reserving gateway port") : undefined;
+      const admission =
+        endpoint && currentEndpoint
+          ? yield* openDirectAdmission({
+              hostId: config.id,
+              owner,
+              generation,
+              gatewayPort: endpoint.gatewayPort,
+              currentEndpoint,
+              isActive: () => active && !stopped && connectionScope === scope,
+            }).pipe(
+              Effect.provideService(DeviceDirectGrants, grants),
+              Effect.provideService(Scope.Scope, scope),
             )
-          : true;
-        if (!alive || !daemonAlive) return;
-      }
-    });
-    yield* Effect.gen(function* () {
-      yield* Effect.raceFirst(child.exitCode.pipe(Effect.ignore), unhealthy);
-      if (stopped || connectionScope !== scope) return;
-      ready = null;
-      yield* onStatus("starting", "Reconnecting to device host…");
-      yield* Scope.close(scope, Exit.void);
-      let delay = 1000;
-      while (true) {
+          : undefined;
+      const child = yield* spawner
+        .spawn(
+          ChildProcess.make(
+            ssh,
+            [
+              ...baseSshArgs(targetFor(config), { batchMode: "yes" }),
+              ...identityArgs(config),
+              "-o",
+              "ControlMaster=no",
+              "-o",
+              "ControlPath=none",
+              "-o",
+              "ControlPersist=no",
+              "-o",
+              "ExitOnForwardFailure=yes",
+              "-o",
+              "ServerAliveInterval=10",
+              "-o",
+              "ServerAliveCountMax=3",
+              "-T",
+              "-L",
+              `127.0.0.1:${hubPort}:127.0.0.1:${remote.hubPort}`,
+              ...(remote.daemonPort !== undefined
+                ? ["-L", `127.0.0.1:${daemonPort}:127.0.0.1:${remote.daemonPort}`]
+                : []),
+              ...(endpoint && remote.directMedia && admission && gatewayProbePort !== undefined
+                ? [
+                    "-R",
+                    `127.0.0.1:${remote.directMedia.admissionPort}:127.0.0.1:${admission.port}`,
+                    "-L",
+                    `127.0.0.1:${gatewayProbePort}:127.0.0.1:${endpoint.gatewayPort}`,
+                  ]
+                : []),
+              config.target,
+              // The server owns stdin's write end. On exit the remote cat sees EOF,
+              // and ssh exits once its forwarded connections close.
+              "sh",
+              "-c",
+              quoteRemoteArg("exec cat >/dev/null"),
+            ],
+            { stdin: "pipe", stdout: "ignore", stderr: "pipe" },
+          ),
+        )
+        .pipe(
+          Effect.provideService(Scope.Scope, scope),
+          Effect.mapError(
+            (cause) =>
+              new DeviceHost.DeviceHostError({
+                hostId: config.id,
+                step: "forwarding ports",
+                cause,
+              }),
+          ),
+        );
+      let stderr = "";
+      yield* child.stderr.pipe(
+        Stream.decodeText(),
+        Stream.runForEach((chunk) =>
+          Effect.sync(() => {
+            stderr = (stderr + chunk).slice(-2000);
+          }),
+        ),
+        Effect.forkIn(scope),
+      );
+      const hubOrigin = `http://127.0.0.1:${hubPort}`;
+      const next = {
+        nodePath: remote.nodePath,
+        hub: { origin: hubOrigin },
+        devices: makeDeviceHubOperations({
+          hostId: config.id,
+          origin: hubOrigin,
+          http,
+          run,
+          // Keep probing negative reports so tooling installed after connecting is still found.
+          platformAvailable: (platform) =>
+            Effect.suspend(() =>
+              summary.platforms.some((p) => p.platform === platform && p.available)
+                ? Effect.succeed(true)
+                : platformAvailability(platform).pipe(
+                    Effect.map((availability) => availability.available),
+                  ),
+            ),
+        }),
+        ...(endpoint ? { directMedia: endpoint } : {}),
+        ...(remote.daemonPort !== undefined &&
+        remote.token !== undefined &&
+        remote.entryPath !== undefined
+          ? {
+              agentDevice: {
+                baseUrl: `http://127.0.0.1:${daemonPort}`,
+                token: remote.token,
+                entryPath: remote.entryPath,
+              },
+            }
+          : {}),
+        helpers: remote.helpers,
+        run,
+      };
+      const gatewayHealth = directGatewayHealth(
+        http,
+        gatewayProbePort,
+        owner,
+        generation,
+        config.id,
+      );
+      for (const [baseUrl, route] of [
+        [next.hub.origin, "/readyz"],
+        ...(gatewayProbePort !== undefined
+          ? [[`http://127.0.0.1:${gatewayProbePort}`, "/readyz"]]
+          : []),
+        ...(next.agentDevice ? [[next.agentDevice.baseUrl, "/health"]] : []),
+      ])
+        yield* waitForHttpReady({
+          baseUrl: baseUrl!,
+          path: route!,
+          timeoutMs: 15000,
+          makeError: () =>
+            new DeviceHost.DeviceHostError({
+              hostId: config.id,
+              step: "waiting for SSH forward",
+              cause: new Error(stderr || "Forwarded endpoint did not answer."),
+            }),
+        }).pipe(Effect.provideService(HttpClient.HttpClient, http));
+      if (!(yield* gatewayHealth))
+        return yield* new DeviceHost.DeviceHostError({
+          hostId: config.id,
+          step: "checking direct gateway generation",
+          cause: new Error("Gateway owner or generation mismatch."),
+        });
+      if (next.agentDevice) yield* onReady({ ...next, agentDevice: next.agentDevice });
+      ready = next.agentDevice
+        ? { ...next, releaseAgentSession: releaseAgentDeviceSession(http, next.agentDevice) }
+        : next;
+      yield* onStatus("ready");
+      // A loaded host can miss a probe or two while still working, and reconnecting
+      // then drops the forward in use, so only consecutive misses count.
+      const unhealthy = Effect.gen(function* () {
+        let misses = 0;
+        while (true) {
+          yield* Effect.sleep("10 seconds");
+          const alive = yield* http.get(`${next.hub.origin}/readyz`).pipe(
+            Effect.timeout("5 seconds"),
+            Effect.map((r) => r.status === 200),
+            Effect.orElseSucceed(() => false),
+          );
+          const daemonAlive = next.agentDevice
+            ? yield* http.get(`${next.agentDevice.baseUrl}/health`).pipe(
+                Effect.timeout("5 seconds"),
+                Effect.map((r) => r.status === 200),
+                Effect.orElseSucceed(() => false),
+              )
+            : true;
+          const gatewayAlive = yield* gatewayHealth;
+          misses = alive && daemonAlive && gatewayAlive ? 0 : misses + 1;
+          if (misses >= UNHEALTHY_PROBE_LIMIT) return;
+        }
+      });
+      yield* Effect.gen(function* () {
+        yield* Effect.raceFirst(child.exitCode.pipe(Effect.ignore), unhealthy);
         if (stopped || connectionScope !== scope) return;
-        yield* Effect.sleep(delay);
-        const result = yield* lock
-          .withPermit(
-            Effect.suspend(() => (stopped || ready ? Effect.void : connect().pipe(Effect.asVoid))),
-          )
-          .pipe(Effect.result);
-        if (result._tag === "Success") return;
-        yield* onStatus("failed", result.failure.message);
-        if (connectionScope && connectionScope !== scope)
-          yield* Scope.close(connectionScope, Exit.void);
-        connectionScope = scope;
-        delay = Math.min(delay * 2, 30000);
-      }
-    }).pipe(Effect.forkIn(parentScope));
-    return next;
+        yield* lock.withPermit(
+          Effect.gen(function* () {
+            if (stopped || connectionScope !== scope) return;
+            active = false;
+            yield* retire(scope);
+            yield* onStatus("starting", "Reconnecting to device host…");
+          }),
+        );
+        let delay = 1000;
+        const needsReconnect = () => !stopped && !ready;
+        while (needsReconnect()) {
+          yield* Effect.sleep(delay);
+          const result = yield* lock
+            .withPermit(
+              Effect.suspend(() =>
+                stopped || ready ? Effect.void : connect().pipe(Effect.asVoid),
+              ),
+            )
+            .pipe(Effect.result);
+          if (result._tag === "Success") return;
+          yield* onStatus("failed", result.failure.message);
+          if (retirementFailure) return;
+          delay = Math.min(delay * 2, 30000);
+        }
+      }).pipe(Effect.forkIn(parentScope));
+      return next;
+    }).pipe(
+      Effect.onExit((exit) =>
+        exit._tag === "Failure"
+          ? Effect.gen(function* () {
+              active = false;
+              yield* retire(scope);
+            })
+          : Effect.void,
+      ),
+    );
   });
 
-  const connect = Effect.fn("SshDeviceHost.connect")(function* () {
+  const connect = Effect.fn("SshDeviceHost.connect")(function* (): Effect.fn.Return<
+    SshDeviceHostReady,
+    DeviceHost.DeviceHostError
+  > {
+    const direct = Boolean(config.directSshTarget && currentEndpoint);
+    const previousRetirementFailure = currentRetirementFailure();
+    if (previousRetirementFailure) return yield* previousRetirementFailure;
     for (let attempt = 0; ; attempt++) {
-      const result = yield* connectOnce().pipe(Effect.result);
+      const result = yield* connectOnce(direct).pipe(Effect.result);
       if (result._tag === "Success") return result.success;
-      const failedScope = connectionScope;
-      connectionScope = null;
-      if (failedScope) yield* Scope.close(failedScope, Exit.void);
-      // SSH binds after the reservation is released, so a competing bind needs fresh ports.
+      const failedRetirement = currentRetirementFailure();
+      if (failedRetirement) return yield* failedRetirement;
+      // Reservation races can retry only after the captured generation is confirmed retired.
       if (
-        attempt >= 2 ||
-        !["forwarding ports", "waiting for SSH forward"].includes(result.failure.step)
+        attempt < 2 &&
+        ["forwarding ports", "waiting for SSH forward"].includes(result.failure.step)
       )
-        return yield* result.failure;
+        continue;
+      if (direct) return yield* connectOnce(false);
+      return yield* result.failure;
     }
   });
 
@@ -379,9 +623,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
             : deviceToolInstallMessage("device hub", summary.tools?.hub),
         );
         return yield* connect().pipe(
-          Effect.tapError(() =>
-            connectionScope ? Scope.close(connectionScope, Exit.void) : Effect.void,
-          ),
+          Effect.tapError(() => (connectionScope ? retire(connectionScope) : Effect.void)),
         );
       }),
     );
@@ -389,7 +631,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
     Effect.gen(function* () {
       stopped = true;
       ready = null;
-      if (connectionScope) yield* Scope.close(connectionScope, Exit.void);
+      if (connectionScope) yield* retire(connectionScope);
       connectionScope = null;
       if (activated) yield* provide(bootstrap(config, owner, "stop")).pipe(Effect.ignore);
       activated = false;
@@ -405,14 +647,14 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
         ready = null;
         const previousScope = connectionScope;
         connectionScope = null;
-        if (previousScope) yield* Scope.close(previousScope, Exit.void);
+        if (previousScope) yield* retire(previousScope);
         if (!enabled) yield* provide(bootstrap(config, owner, "stop-agent"));
         return yield* connect().pipe(
           Effect.onError(() =>
             Effect.gen(function* () {
               const failedScope = connectionScope;
               connectionScope = null;
-              if (failedScope) yield* Scope.close(failedScope, Exit.void);
+              if (failedScope) yield* retire(failedScope);
               if (enabled)
                 yield* provide(bootstrap(config, owner, "stop-agent")).pipe(Effect.ignore);
             }),
@@ -421,8 +663,9 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       }),
     );
   yield* Effect.addFinalizer(() => stop);
-  return {
+  const host: DeviceHost.DeviceHost["Service"] = {
     id: config.id,
+    label: config.label,
     summary: Effect.sync(() => summary),
     inspect: provide(probe(config, owner)).pipe(
       Effect.tap((value) =>
@@ -458,17 +701,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       ),
     stopAgent: changeAgent(false).pipe(Effect.asVoid, Effect.ignore),
     stop,
-    platformAvailability: (platform) =>
-      provide(probe(config, owner)).pipe(
-        Effect.map((value) => {
-          summary = { ...summary, platforms: value.platforms };
-          return value.platforms.find((p) => p.platform === platform)!;
-        }),
-        Effect.orElseSucceed(() => ({
-          platform,
-          available: false,
-          reason: "Cannot reach device host. Test its SSH connection in Settings.",
-        })),
-      ),
-  } satisfies DeviceHost.DeviceHost["Service"];
+    platformAvailability,
+  };
+  return host;
 });

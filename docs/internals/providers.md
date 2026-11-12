@@ -2,25 +2,39 @@
 
 Orchestration records intent and state without knowing which provider runs a thread. Provider
 protocols, account ownership, permissions, and capabilities belong at the
-[adapter boundary](../../apps/server/src/provider/Services/ProviderAdapter.ts). Normalize there
-instead of spreading provider checks through reactors and clients.
+[adapter boundary](../../packages/provider-core/src/server/ProviderAdapter.ts). Normalize there
+instead of spreading provider checks through orchestration and clients.
 
 A driver kind identifies an integration; an instance identifies one configuration and account
 lifecycle. Route work by instance, so two accounts using the same driver do not share mutable
-session or catalog state.
+session or catalog state. For a new driver, start with [adding a provider](./adding-a-provider.md).
 
 ## Process and account isolation
 
-T3-managed OpenCode chat uses one server per thread. Its MCP registrations are directory-scoped, while
-T3's MCP connection is thread-scoped. Sharing a chat server between threads in one directory would
-let them replace each other's connection. Catalog and text-generation work can share the
-[instance-owned helper](../../apps/server/src/provider/OpenCodeServerOwner.ts), which closes
-after an idle period. External OpenCode servers remain externally owned and can require an
-external restart to pick up configuration changes.
+The `opencode` driver probes the installed version and runs the 1.x or 2.x runtime. OpenCode's MCP
+registrations are directory-scoped, while T3's MCP connection is thread-scoped, so threads in one
+directory must not share one T3 MCP entry.
 
-OpenCode also stores persistent approval grants per directory. Automatic full-access replies use
-`once` so they cannot widen a supervised thread's permissions on a shared external server.
-See the [adapter](../../apps/server/src/provider/Layers/OpenCodeAdapter.ts).
+- **1.x** uses one T3-managed chat server per thread, so threads cannot replace each other's
+  connection. Catalog and text-generation work can share the
+  [instance-owned helper](../../packages/provider-opencode/src/server/OpenCodeServerOwner.ts), which closes
+  after an idle period. See the [1.x adapter](../../packages/provider-opencode/src/server/adapter.ts).
+- **2.x** serves every directory from one
+  [server per instance](../../packages/provider-opencode/src/server/v2/OpenCode2Server.ts). Each thread
+  registers its own `t3-code-<thread>` MCP entry, and session permission rules deny every other
+  thread's entry. See the [2.x adapter](../../packages/provider-opencode/src/server/v2/adapter.ts).
+
+External OpenCode servers remain externally owned and can require an external restart to pick up
+configuration changes. OpenCode stores "always" approval grants for the whole project. Automatic
+full-access replies use `once` so they cannot widen a supervised thread's permissions on a shared
+server. On 2.x, a session-wide approval also replies `once` and becomes T3's own rule on that session.
+
+Pi runs the user's own `pi` install in RPC mode and owns native extension, package, and project
+trust discovery. T3 injects only its namespaced MCP bridge, so a Pi session behaves as it does in
+the Pi TUI. Pi session files back native resume, rollback, and same-instance thread forks.
+Forks use Pi's CLI in the destination directory because RPC session switching retains the source
+session's cwd. Provider switches still use portable handoff summaries.
+See the [adapter](../../packages/provider-pi/src/server/adapter.ts).
 
 Antigravity separates account profiles per instance while sharing installed executables across the
 environment. It forces file-based credential storage because the native macOS keychain entry would
@@ -35,10 +49,63 @@ client connections and provider-instance rebuilds. Releases are immutable, with 
 selecting the version for new processes. Running processes hold leases on their version. Updates
 and removal must respect those leases instead of replacing executables under a running agent.
 
+## Codex account failover
+
+An attributed native usage-limit or availability failure can continue on another enabled,
+compatible Codex instance. Compatibility must prove shared native history; a matching driver
+alone is insufficient. Saved thread defaults and the failed run's captured model/options have
+separate ownership: the switch preserves the former, while the continuation preserves the
+latter. Neither changes Claude behavior.
+
+The durable evidence and switch step bridge crashes between the failure, saved-selection
+change and continuation. The continuation's transaction revalidates selection revision and
+live admission before committing queue overrides. Only queued sends with recorded proof of
+inherited intent follow the switch; explicit selections and older unmarked runs remain fixed.
+A refused continuation leaves the saved target visible and applies the existing failure hold.
+
+Account runtimes keep separate provider-thread records while sharing the native conversation,
+so explicitly returning to an earlier account preserves its runtime-generation ownership.
+Detaching a Codex session interrupts native children, so failover waits for its owned native
+descendants to settle, including descendants of completed parents. Final turn-item updates
+wake deferred ancestors. The same pending decision holds delegated-child result delivery until continuation or
+exhaustion, preventing a transient failure from finalizing its parent. Startup reconciles these
+decisions after native runtime recovery and before delegated-result recovery and effect workers;
+evidence older than 24 hours cannot start an automatic continuation. Rejected command receipts
+are terminal and never become retry permission.
+
+Loaded Codex account transfers must retain the previous writer until its exact producer exits
+or its thread closes; an unsubscribe acknowledgement alone does not prove release. The detach
+outbox effect finishes after capturing that obligation, so unrelated destinations can proceed;
+normal preparation and manager admission still fence destinations sharing the native history
+(and unknown destinations). A retired runtime remains unusable for that thread even after
+cancellation, so returning to that account requires a fresh logical session behind the same
+proof barrier. Sources already idle-unloaded keep the existing ordinary rejoin behavior; this
+mechanism neither identifies nor clears a foreign writer.
+
+Codex control and startup uncertainty belongs to the affected conversation.
+Known native conversations remain fenced across account and runtime changes;
+unidentified creation also retains the original app thread and issuing process.
+Independent conversations can continue on the same account and process. A
+confirmed native open whose local binding failed retains its original result
+for local publication recovery; recovery does not repeat the native resume or
+the failed prompt. A refusal before dispatch or a proved non-applying protocol
+rejection does not create an unknown native effect.
+Completed publication proof survives a cancelled manager handoff. A later send
+can finish recording the original load without repeating publication or native
+work; a changed model or policy still takes the normal loading path.
+
+Captured runtime Stop and writer retirement retain their original completion
+observers after the caller stops waiting. They never retarget a replacement or
+send the same stop again. Exact retirement and manager cleanup complete the
+receipt; an ordinary subsequent send selects a fresh logical session while
+preserving its saved native conversation. An unavailable observer or an old
+completed-unknown receipt remains unknown. Shared-process thread retirement
+uses its own exact closure proof without stopping healthy sibling conversations.
+
 ## Setup must not happen as a health-check side effect
 
 Opening a provider session can start MCP servers, run hooks, or launch a login browser.
-[Grok probes](../../apps/server/src/provider/Layers/GrokProvider.ts) avoid authentication and
+[Grok probes](../../packages/provider-grok/src/server/status.ts) avoid authentication and
 session creation for this reason. Antigravity likewise reserves authenticated catalog sessions for
 explicit setup or model refresh; background checks use initialization only.
 
@@ -66,19 +133,32 @@ See [helper constraints](../../apps/server/src/textGeneration/AntigravityTextGen
 
 ## Provider updates run only through the owning installer
 
-A one-click update is offered only when the resolved executable's path proves which installer owns
-it. Homebrew and npm are proven by the real path (symlinks followed): a versioned keg or cask under
+A package manager runs only when the resolved executable's path proves it owns the install. Homebrew
+and npm are proven by the real path (symlinks followed): a versioned keg or cask under
 `brew --prefix`, or `<prefix>/lib/node_modules/<pkg>/` (Windows: the shim beside `node_modules`).
-Native installer layouts and the global bin directories of pnpm, Bun, and Vite+ may match on either
-the resolved path or its real target, since those installers place real files or their own symlinks
-there. Cursor and Grok are the exception: their only updater is the CLI itself, which detects its
-own installer, so any resolved executable runs `<binary> update`. Anything unproven stays
-manual-only but still reports the version gap. npm updates pin
-`--prefix` because the `npm` on `PATH` can belong to a different Node than the one that owns the
-provider. Homebrew
+Native installer layouts and the global directories of pnpm, Bun, Yarn, and Vite+ may match on
+either the resolved path or its real target, since those installers place real files or their own
+symlinks there. Volta is proven by its `volta-shim` link plus the package's image directory. When
+nothing is proven, the provider's own updater (`claude update`, `codex update`, `opencode upgrade`,
+`pi update --self`, `grok update`) runs instead, because each one detects its installer itself;
+the runner's version check catches an updater that exits 0 without updating. Mise is checked
+first, since a `mise x` wrapper can sit at a native installer's path, and `MISE_DATA_DIR` can put
+installs anywhere, so `mise which` is asked whenever mise is on `PATH`. Each driver names its fixed
+mise tool; mise must resolve the binary and list it in an active install of that tool requested as
+`latest`, which gets `mise upgrade <tool>`. T3 Code keeps launching the configured path, so that
+path must be a shim or under the tool's `latest` link, which the upgrade repoints: a version
+directory (including one `mise activate` put on `PATH`) would keep running the old binary until mise
+prunes it. Everything else mise touches (fixed version paths, pinned tools, wrappers, OpenCode 1.x,
+whose mise tool crosses into 2.x) stays manual-only, so T3 Code never edits mise config. `mise latest` supplies the version, because settings such as
+`minimum_release_age` can hold mise behind npm. A Grok cask whose Homebrew prefix
+cannot be verified also stays manual-only: `grok update` would install a second copy. npm updates pin `--prefix` because the
+`npm` on `PATH` can belong to a different Node than the one that owns the provider. Homebrew
 compares against `brew info` since casks trail npm by hours; native installs share npm's version
-train, so the registry stays authoritative for them.
-See the [resolver](../../apps/server/src/provider/providerMaintenance.ts).
+train, so the registry stays authoritative for them. A Chocolatey install of Claude stays
+manual-only: its package directory is writable only by administrators, and `claude update` through
+the shim installs a native copy elsewhere. The latest version comes from `choco search`, and the
+card shows `choco upgrade claude-code` without running it.
+See the [resolver](../../apps/server/src/provider/providerMaintenanceRunner.ts).
 
 Ownership is cached per instance and re-read immediately before an update runs. The
 [runner](../../apps/server/src/provider/providerMaintenanceRunner.ts) refuses when the lock key
@@ -88,14 +168,36 @@ with a readable, current version.
 ## Protocol traps
 
 Codex async questions arrive as notifications and are answered with a new user message. There is
-no pending RPC response to send. Blocking questions still use the request/response path. The
-[adapter](../../apps/server/src/provider/Layers/CodexAdapter.ts) distinguishes them; the
-[decider](../../apps/server/src/orchestration/decider.ts) records an async answer and its user
-message together.
+no pending RPC response to send. The
+[adapter](../../apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts) persists them as
+`user_input_request` turn items and runtime requests with `responseCapability: { type: "message" }`.
+Their execution nodes do not block the run. Web, desktop, and mobile use their normal question
+panels, and requests remain pending after a turn finishes, a provider exits, or the server restarts.
 
-An async question can outlive the turn or a server restart. The engine reads that request's
-durable activity before resolving it because the in-memory command snapshot omits old activities.
-Do not infer that a request has disappeared merely because it is outside the recent window.
+`runtime-request.respond` reads the persisted request and question item, validates required
+answers, and commits the resolution and a user message in one transaction. Repeating the same
+command returns its receipt without posting the answer twice. The normal message path starts or
+resumes a run, queues behind active work, or steers when the adapter supports it. Blocking questions
+retain the provider's live response path. Do not infer that a request has disappeared merely because
+it is outside the recent history window.
+
+Native `/goal` state belongs to the provider and is mirrored on the provider thread. Codex starts
+the next goal turn on its own milliseconds after the last one completes, so the
+[adapter](../../apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts) keeps the run open
+and adds that turn to it. One run can therefore own several native turns. `/goal` commands that
+start no Codex turn settle on a provider turn without a native ref, which native rollback must
+not count. Claude's SDK mode emits no goal events; its adapter reads goal state from the
+synthetic command output and Stop hook feedback in the transcript.
+
+Jones [goal continuity](../../apps/server/src/jones/goals/continuity/GoalContinuity.ts)
+stores semantic progress separately from native goal lifecycle. Its durable owner names the exact
+environment and provider conversation; a live execution witness authorizes agent writes, while
+authenticated owner administration can work without starting a provider. Recovery delivery history
+fences continuation even after the current record is detached or retired. A prepared capsule grants
+no send authority: dispatch requires a durably committed, single-use permit for the captured producer.
+Compaction recovery reads fresh persisted state and injects it as untrusted context. Injection and
+bound pause/interrupt remain asynchronous; they do not establish a strict barrier before every
+post-compaction token or tool. Native successors need the same continuity check as ordinary starts.
 
 Capabilities must describe what the provider can actually do. Antigravity can capture workspace
 checkpoints but cannot roll back its conversation. The [checkpoint boundary](./overview.md#turn-completion-and-checkpoints)
@@ -104,8 +206,9 @@ also survive normalization; a display label is not necessarily a valid reply.
 
 ## Attachments and stored history
 
-Attachments live outside the project workspace. [ProviderService](../../apps/server/src/provider/Layers/ProviderService.ts)
-puts their environment-local paths in turn input and lets adapters choose native input formats.
+Attachments live outside the project workspace. The
+[attachment boundary](../../apps/server/src/orchestration-v2/AttachmentClaims.ts) validates and claims
+uploads for a thread; adapters choose native input formats for those environment-local files.
 A path in the prompt does not grant filesystem access. Keep provider sandbox and approval rules
 in force; copying uploads into the project to bypass them changes that boundary.
 
@@ -114,41 +217,41 @@ file-bearing messages, and an image-only server can fail the entire environment'
 replaying one such event. Rollouts and downgrades must account for persisted history as well as
 current client support.
 
+## Provider diagnostics
+
+Native event logs retain lifecycle events, responses, and failures. Token deltas and duplicate raw
+frames are filtered before adapters copy or redact payloads. The filter accepts both legacy native
+events and v2 protocol envelopes; decode failures remain visible through diagnostic frames.
+
+Log payloads have a 64 KiB encoded budget. Large or deeply nested payloads become structural
+summaries that retain routing identifiers, methods, status, and error fields. Traversal is bounded
+before redaction and serialization, so logging a large response does not require several full
+copies. These limits apply to diagnostics; provider event handling is unchanged.
+
+Codex resumes with metadata-only reads when it needs a thread's identity and update time. Its
+initialization capabilities opt out of `turn/diff/updated`: T3 derives diffs from checkpoints.
+The logger filters those notifications before traversal when an older provider still sends them.
+
 Model classification has its own [manifest constraints](./model-manifest.md). Assistant-reference
 handling is documented under [citations](./assistant-citations.md).
 
-## Session and turn lifecycle invariants
+## Provider response settlement and checkpoint completion
 
-Session availability and turn outcome are separate facts. Provider adapters emit both, and
-ingestion preserves that distinction in the `thread.session-set` event:
+A run attempt's optional `providerSettlement` distinguishes old history (field absent),
+new work without attributed terminal evidence (`null`), and an accepted provider outcome
+with its attempt ID, provider turn ID, status and fixed completion time. Adapters forward
+existing normalized terminal facts and distinguish provider results, attributed aborts,
+and local execution failures. An unknown native reference remains unknown.
 
-New events always carry `turnSettlement`: an attributed outcome object or explicit `null`. Its
-absence is reserved for replaying events written before this invariant existed.
+Session readiness, finalized assistant text, interrupt intent and checkpoint capture do
+not supply provider settlement. A terminal received before its start can recover only
+when its normalized snapshot matches the current attempt, provider thread, driver and
+run ordinal. An unbound interruption also requires an attributed abort; a local start or
+stream failure can fail operational work without claiming a provider result.
 
-- `session.started`, `thread.started`, and `session.state.changed` update session availability.
-  A `ready`, `stopped`, or `error` session status does not by itself complete a turn.
-- `turn.completed` is trusted only when it names the active turn, or names a turn while no active
-  turn is tracked. Its exact outcome becomes the event's `turnSettlement` (`completed`,
-  `interrupted`, or `error`). `turn.aborted` settles the active named turn as interrupted; stale aborts without an active turn remain ignored.
-- While a session is `starting`, assistant or checkpoint evidence for a new turn may recover a lost
-  `turn.started` notification and replace an older latest turn. A terminal event accepted through
-  that path carries the same durable recovery marker in `turnSettlement`, so projector order cannot
-  change the result. Outside that bounded recovery state, late evidence for an older turn cannot
-  displace the current latest turn.
-- `session.exited` stops the session. When it names the active turn, that turn is interrupted. An
-  exit with no turn ID remains unattributed and cannot change turn outcome; an exit naming a
-  different turn is stale and cannot stop or settle the active turn.
-- Starting a new active turn interrupts any older still-running turn on the thread. Supersession is
-  not successful completion.
-- A finalized assistant message proves only that the text is durable. Providers can finalize
-  commentary messages before continuing the turn.
-- A checkpoint proves only that a workspace snapshot was attempted or captured. Provider diff
-  notifications can create checkpoints before turn completion, and a `ready`, `missing`, or
-  `error` checkpoint status is not a turn outcome, including when a revert makes that checkpoint's
-  turn current again. A late checkpoint for an older turn cannot replace a newer latest turn. When
-  a revert restores an older checkpoint, terminal evidence recorded after that restored point is
-  rewound and the restored turn remains running until new attributed settlement arrives.
-
-The persistent projection, replay projector, and live client reducer all apply these rules. UI
-completion signals therefore come from the attributed turn settlement, never from session status,
-message finalization, or checkpoint timing.
+Successful provider work can leave the run `waiting` while checkpoint capture finishes.
+Response copy, folding and duration use provider settlement; queue, Stop and background
+work retain their existing run lifecycle. Checkpoint completion does not extend the
+provider response's duration. Rolling back from newer visible work clears only the
+restored older response's presentation settlement; its native turn and run history stay
+intact. A current-target rollback keeps the marker. Imported V1 messages remain runless.

@@ -1,0 +1,36 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "composer-thread-query",
+  "jonesOwnedPaths": [
+    "packages/shared/src/jones/composerThreadQuery.ts",
+    "apps/web/src/jones/composer/threadMentionTrigger.test.ts",
+    "packages/client-runtime/src/jones/composerThreadMatching.ts",
+    "packages/client-runtime/src/jones/composerThreadMatching.test.ts"
+  ],
+  "hookPaths": [
+    "packages/shared/src/composerTrigger.ts",
+    "apps/web/src/composer-logic.ts",
+    "apps/web/src/composer-editor-mentions.ts",
+    "apps/web/src/components/ComposerPromptEditorTiptap.tsx",
+    "packages/client-runtime/src/composerThreadItems.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/shared/src/composerTrigger.ts",
+      "to": "packages/shared/src/jones/composerThreadQuery.ts"
+    },
+    {
+      "from": "apps/web/src/composer-logic.ts",
+      "to": "packages/shared/src/jones/composerThreadQuery.ts"
+    },
+    {
+      "from": "apps/web/src/composer-editor-mentions.ts",
+      "to": "packages/shared/src/jones/composerThreadQuery.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/composerThreadItems.ts",
+      "to": "packages/client-runtime/src/jones/composerThreadMatching.ts"
+    }
+  ]
+}

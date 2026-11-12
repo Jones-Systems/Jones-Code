@@ -9,7 +9,9 @@ describe this repository.
 
 Before source writes, verify the repository, physical worktree, branch, HEAD,
 status, task scope, and Git owner against the assignment. Use the declared
-non-main task branch. Stop on `main` or `master`, detached HEAD, stale identity,
+non-main task branch in an isolated linked worktree. Follow
+[development state and ports](docs/operations/development.md#state-and-ports)
+for runtime isolation. Stop on `main` or `master`, detached HEAD, stale identity,
 unowned changes, overlapping write scope, or an unknown prior effect. Preserve
 unrelated work. One owner controls Git mutations in each physical worktree.
 
@@ -22,6 +24,17 @@ starting a development process, using test data, or sharing a development server
 Source changes do not update an installed application, adopt a runtime, publish
 a release, or authorize deployment. Report source and operational results
 separately.
+
+## Jones-owned changes
+
+Before adding or changing Jones-specific behavior, follow the
+[extraction rules](docs/operations/contributor-guidance.md#keep-jones-changes-separate-from-upstream).
+Keep Jones logic and tests in Jones-owned modules, with small recorded hooks
+into T3-owned files. This reduces recurring conflicts when importing T3 Code;
+it does not eliminate compatibility work. Explain necessary shared-file edits.
+Database changes follow the [Jones database boundary](docs/operations/contributor-guidance.md#jones-database-boundary):
+never change upstream schema, ledgers or rows; keep Jones metadata in sparse
+Jones-owned tables keyed by upstream IDs, without references to upstream tables.
 
 ## Boundaries that apply throughout
 
@@ -42,8 +55,10 @@ separately.
 - Never start a development server against live `~/.t3/userdata`, open that
   state read-write, or clean it up. Reading or copying private state requires
   exact authorization; its presence on this machine is not permission.
-- Browser and computer use require the user's authorization for that
-  verification. Existing authorization carries forward within its scope.
+- M Jones grants standing browser and computer-use permission for behavioral
+  testing of owner-built local apps, including Jones Code and T3 Code. Do not
+  ask again per task; follow [local app testing permission](docs/operations/contributor-guidance.md#local-app-testing-permission)
+  for isolated test state and protected-effect boundaries.
 - Keep `VITE_HTTP_URL` and `VITE_WS_URL` unset for browser development.
   The dev runner owns desktop's loopback configuration.
 - Do not commit implementation plans, research notes, or agent scratch.
@@ -53,7 +68,8 @@ separately.
   Do not invoke automated PR review services or reviewer bots for Jones-Systems
   pull requests.
 - These instructions do not authorize credential access, shared route changes,
-  process termination outside the task, privileged operations, or publication.
+  process termination outside the task, privileged operations, release, or
+  deployment. Ordinary PR publication and merge follow the contract below.
 
 ## Load architecture guidance when it applies
 
@@ -66,20 +82,43 @@ separately.
   [glossary](docs/internals/glossary.md). A runtime test receipt is distinct
   from a durable command receipt.
 - For provider identity or launch/recovery changes, read
-  [provider runtime identity](docs/internals/provider-runtime-identity.md).
+  [provider constraints](docs/internals/providers.md).
   Requested configuration is not observed identity; absent evidence stays
   unknown or unavailable.
-- For connection, retry, authentication renewal, subscription, or cache changes,
+- For connection, request scheduling, concurrency limits, retry, authentication
+  renewal, subscription, or cache changes,
   read [connection runtime](docs/internals/connection-runtime.md). Preserve one
   transport retry owner and distinguish transport health from data freshness.
-- For checkout ownership or native mutation lifecycle changes, read
-  [worktree ownership leases](docs/internals/worktree-ownership-leases.md).
-  Lease expiry does not authorize takeover or prove a process stopped.
-  Leases do not fence external filesystem writers.
 - Before adding server code, read
   [Effect services](docs/internals/effect-services.md). Keep capabilities in
   domain services and transports thin. Use `.repos/effect-smol/LLMS.md` for
   Effect library guidance when needed; vendored references are read-only.
+
+## Pull request merge qualification
+
+Ordinary scoped implementation includes PR publication, current-head CI repair
+and watching, and qualifying merge unless the owner sets an earlier finish line
+or review hold. Do not ask separately for each covered delivery step. Follow
+[the standing delivery and merge contract](docs/operations/contributor-guidance.md#standing-delivery-and-merge-contract)
+for `Jones-Systems/Jones-Code` targeting `main` with normal merge commits.
+Release, deployment, sudo, branch/worktree deletion, and bypasses are excluded.
+
+Ordinary PR merges require the required `Check` job to pass on the current
+head; other checks are advisory and never hold a merge. `Check` rejects failed
+classifiers and unexplained skips; a job may skip only when its successful
+classifier explicitly selects it out. Main pushes and unknown or complete-stack
+changes retain full Linux qualification. Keep the macOS enrollment path gates.
+Native E2E and artifact workflows are advisory and use their declared nightly,
+label, manual or packaging-path triggers. Every retained test must run on a
+suitable trigger. See
+[required and advisory checks](docs/operations/contributor-guidance.md#required-and-advisory-checks).
+For an atomically selected, contiguous complete stack, follow the standing
+[atomic stack qualification policy](docs/operations/contributor-guidance.md#atomic-stack-qualification).
+A qualified current top may cover lower failures repaired higher in that group;
+record their repair evidence instead of making every intermediate layer green
+or requesting a new exception for each eligible stack. Broken prefixes cannot
+merge independently. Merge authority, required reviews and thread resolution
+still apply; the policy does not authorize bypasses or ruleset changes.
 
 ## Test data
 

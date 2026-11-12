@@ -1,0 +1,72 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-title-refinement",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/threadTitle/",
+    "packages/provider-core/src/server/jones/ThreadTitleAssessment.ts",
+    "packages/provider-core/src/server/jones/ThreadTitleAssessment.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.ts",
+    "packages/provider-core/src/server/textGenerationPrompts.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadTitle/automaticTitles.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadTitle/policy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadTitle/commitContext.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/threadTitle/commitContext.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.ts",
+      "to": "apps/server/src/jones/threadTitle/store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.ts",
+      "to": "apps/server/src/jones/threadTitle/evidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.ts",
+      "to": "apps/server/src/jones/threadTitle/commitContext.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.ts",
+      "to": "packages/provider-core/src/server/jones/ThreadTitleAssessment.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/textGenerationPrompts.ts",
+      "to": "packages/provider-core/src/server/jones/ThreadTitleAssessment.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/textGenerationOperations.ts",
+      "to": "packages/provider-core/src/server/jones/ThreadTitleAssessment.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/textGeneration.ts",
+      "to": "packages/provider-core/src/server/jones/ThreadTitleAssessment.ts"
+    },
+    {
+      "from": "packages/provider-muse/src/server/textGeneration.ts",
+      "to": "packages/provider-core/src/server/jones/ThreadTitleAssessment.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/threadTitle/store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.test.ts",
+      "to": "apps/server/src/jones/threadTitle/store.ts"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "provider-update-trust",
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/jones/providerUpdates/index.ts",
+    "packages/client-runtime/src/jones/providerUpdates/index.test.ts",
+    "apps/server/src/jones/provider/providerUpdateVerification.ts",
+    "apps/server/src/jones/provider/providerUpdateVerification.test.ts",
+    "apps/web/src/jones/updates/ProviderUpdateEnvironmentRows.test.tsx",
+    "apps/web/src/jones/updates/ProviderUpdateNotice.browser.test.tsx",
+    "apps/web/src/jones/updates/ProviderUpdateNotice.tsx",
+    "apps/web/src/jones/updates/providerUpdateController.test.ts",
+    "apps/web/src/jones/updates/providerUpdateController.ts",
+    "apps/web/src/jones/updates/useProviderUpdates.tsx"
+  ],
+  "hookPaths": [
+    "packages/provider-core/src/server/maintenanceResolver.ts",
+    "packages/provider-core/src/server/maintenanceResolver.test.ts",
+    "apps/server/src/provider/CodexInstallation.ts",
+    "apps/server/src/provider/CodexInstallation.test.ts",
+    "apps/web/src/components/ProviderUpdateLaunchNotification.logic.ts",
+    "apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts",
+    "apps/web/src/components/ProviderUpdateLaunchNotification.tsx",
+    "apps/web/src/components/ProviderUpdatePrimaryNotification.tsx",
+    "apps/web/src/components/ProviderUpdateLaunchNotification.environments.ts",
+    "apps/web/src/components/ProviderUpdateEnvironmentRows.tsx",
+    "apps/server/src/provider/providerMaintenanceRunner.ts",
+    "apps/server/src/provider/providerMaintenanceRunner.test.ts",
+    "apps/web/src/components/sidebar/useUpdateEverything.ts"
+  ],
+  "tombstones": ["apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx"],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ProviderUpdateLaunchNotification.logic.ts",
+      "to": "packages/client-runtime/src/jones/providerUpdates/index.ts"
+    },
+    {
+      "from": "apps/server/src/provider/providerMaintenanceRunner.ts",
+      "to": "apps/server/src/jones/provider/providerUpdateVerification.ts"
+    },
+    {
+      "from": "apps/web/src/components/ProviderUpdatesAction.tsx",
+      "to": "apps/web/src/jones/updates/useProviderUpdates.tsx"
+    },
+    {
+      "from": "apps/web/src/routes/__root.tsx",
+      "to": "apps/web/src/jones/updates/ProviderUpdateNotice.tsx"
+    }
+  ]
+}

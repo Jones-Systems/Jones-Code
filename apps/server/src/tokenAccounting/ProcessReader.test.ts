@@ -10,7 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { afterEach, expect, it, vi } from "@effect/vitest";
 
 import {
@@ -239,7 +239,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it.layer(Layer.succeed(HostProcessPlatform, "linux"))(
+it.layer(Layer.succeed(HostProcess.Platform, "linux"))(
   "fixed canonical accounting subprocess reader",
   (it) => {
     it.effect("defaults unconfigured with zero verification, files, timers or subprocesses", () =>
@@ -329,7 +329,7 @@ it.layer(Layer.succeed(HostProcessPlatform, "linux"))(
             savedUid: 42,
           });
           const identify = vi.mocked(input.verify).mock.calls[0]![2];
-          const signal = new AbortController().signal;
+          const signal = yield* Effect.abortSignal;
           yield* Effect.promise(() => identify(signal));
           expect(input.runtime.identity).toHaveBeenCalledExactlyOnceWith(signal, "linux");
           expect(input.runtime.spawn).toHaveBeenCalledExactlyOnceWith(

@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "runtime-operation-permit",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/runtime/RuntimeOperationPermit.ts",
+    "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeOperationPermit.ts"
+    }
+  ]
+}

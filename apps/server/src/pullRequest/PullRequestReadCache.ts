@@ -1,25 +1,41 @@
+import { makePullRequestScopeLocks } from "../jones/pullRequest/pullRequestScopeLocks.ts";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Equal from "effect/Equal";
 import * as Hash from "effect/Hash";
 import { PullRequestOperationError, PullRequestUnavailableError } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
-import * as Encoding from "effect/Encoding";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Hex from "effect/encoding/Hex";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore";
-import * as Persistable from "effect/unstable/persistence/Persistable";
-import * as PersistedCache from "effect/unstable/persistence/PersistedCache";
-import * as Persistence from "effect/unstable/persistence/Persistence";
-import { ServerConfig } from "../config.ts";
+import * as KeyValueStore from "effect/persistence/KeyValueStore";
+import * as Persistable from "effect/persistence/Persistable";
+import * as PersistedCache from "effect/persistence/PersistedCache";
+import * as Persistence from "effect/persistence/Persistence";
+import * as ServerConfig from "../config.ts";
+import { detachStackFrame } from "../git/detachStackFrame.ts";
+import { forkParked } from "../serverActivation.ts";
 
 const CONCURRENT_READS = 512;
+// Entry filenames are the URI-encoded `<storeId>:<key>`; the scope revisions file has
+// no store id. Effect before 4.1 wrote `<storeId><key>`, still pruned here.
+const STORE_ID = "pr-v2";
+const ENTRY_FILE_NAME = new RegExp(`^${STORE_ID}(?:%3A)?[0-9a-f]{64}$`);
+/**
+ * A file untouched for a day is long expired; the day only leaves slack for
+ * clock changes.
+ */
+const ENTRY_FILE_MAX_AGE = Duration.days(1);
 type ReadError = PullRequestOperationError | PullRequestUnavailableError;
 const revisionCodec = Schema.fromJsonString(
   Schema.Record(
@@ -65,19 +81,33 @@ export class PullRequestReadCache extends Context.Service<
   }
 >()("t3/pullRequest/PullRequestReadCache") {}
 
+const decodeEffectRevisionCodec = Schema.decodeEffect(revisionCodec);
+const encodeEffectRevisionCodec = Schema.encodeEffect(revisionCodec);
+
 export const make = Effect.gen(function* () {
   const backing = yield* KeyValueStore.KeyValueStore;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
+  const digester = yield* Digest.Digest;
   const clock = yield* Clock.Clock;
   let enabled = true;
-  const lock = yield* Semaphore.make(CONCURRENT_READS);
+  const readPermits = yield* Semaphore.make(CONCURRENT_READS);
+  const scopeLocks = yield* makePullRequestScopeLocks;
+  const revisionMutex = yield* Semaphore.make(1);
   const digest = (key: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(key)).pipe(Effect.map(Encoding.encodeHex));
+    digester.digest(Digest.sha256, new TextEncoder().encode(key)).pipe(Effect.map(Hex.encode));
   const revisions = yield* Cache.makeWith(
     () =>
-      backing
-        .get("revisions")
-        .pipe(Effect.flatMap((raw) => Schema.decodeEffect(revisionCodec)(raw ?? "{}"))),
+      backing.get("revisions").pipe(
+        Effect.flatMap((raw) => decodeEffectRevisionCodec(raw ?? "{}")),
+        Effect.catchTags({
+          SchemaError: Effect.fn("PullRequestReadCache.recoverRevisions")(function* () {
+            // Without scope revisions, persisted PR entries cannot be trusted.
+            yield* backing.clear;
+            yield* Effect.logWarning("PR cache reset after invalid scope revisions");
+            return yield* decodeEffectRevisionCodec("{}");
+          }),
+        }),
+      ),
     {
       capacity: 1,
       timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
@@ -97,7 +127,7 @@ export const make = Effect.gen(function* () {
         })),
       ),
     {
-      storeId: "pr-v2",
+      storeId: STORE_ID,
       timeToLive,
       inMemoryTTL: timeToLive,
       inMemoryCapacity: CONCURRENT_READS,
@@ -112,13 +142,18 @@ export const make = Effect.gen(function* () {
     }),
     { capacity: CONCURRENT_READS, timeToLive: () => Duration.zero },
   );
+  // A cache entry keeps the fiber that filled it, whose lazy stack frames would keep the caller's
+  // data (e.g. a whole sync sweep) alive until eviction.
   return PullRequestReadCache.of({
     get: Effect.fn("PullRequestReadCache.get")(function* (key, lookup, scopes = []) {
       if (!enabled) return yield* lookup;
       const read = yield* Effect.cached(lookup);
       return yield* Effect.gen(function* () {
-        const current = yield* Cache.get(revisions, undefined);
+        // An invalidation may disable caching while this read waits for its scopes.
+        if (!enabled) return yield* read;
+        const current = yield* Cache.get(revisions, undefined).pipe(revisionMutex.withPermit);
         const now = clock.currentTimeMillisUnsafe();
+        // Scope locks sort acquisition only; the persisted vector follows caller order.
         const revision = scopes
           .map((scope) => {
             const value = current[scope];
@@ -132,45 +167,91 @@ export const make = Effect.gen(function* () {
         ).payload;
       }).pipe(
         Effect.catchTags({
-          PlatformError: () => read,
           KeyValueStoreError: () => read,
           PersistenceError: () => read,
           SchemaError: () => read,
         }),
-        lock.withPermits(1),
+        // A read stores its result under the revisions it started with, so an invalidation of
+        // one of its scopes must wait for it; reads of other scopes run on.
+        scopeLocks.withReadScopes(scopes),
+        readPermits.withPermits(1),
       );
-    }),
-    invalidate: (scope) =>
-      Effect.gen(function* () {
+    }, detachStackFrame),
+    invalidate: Effect.fn("PullRequestReadCache.invalidate")(
+      function* (scope) {
         const now = clock.currentTimeMillisUnsafe();
         const current = yield* Cache.get(revisions, undefined);
         const next = Object.fromEntries(
           Object.entries(current).filter(([, value]) => value.expiresAt > now),
         );
-        next[scope] = { revision: yield* crypto.randomUUIDv4, expiresAt: now + 60_000 };
-        const encoded = yield* Schema.encodeEffect(revisionCodec)(next);
+        next[scope] = { revision: yield* random.uuidV4(), expiresAt: now + 60_000 };
+        const encoded = yield* encodeEffectRevisionCodec(next);
         yield* backing.set("revisions", encoded);
         yield* Cache.set(revisions, undefined, next);
-      }).pipe(
-        Effect.catch(() => {
-          enabled = false;
-          return Effect.logWarning("PR cache disabled after clearing failed");
-        }),
-        Effect.uninterruptible,
-        lock.withPermits(CONCURRENT_READS),
-      ),
+      },
+      Effect.catch(() => {
+        enabled = false;
+        return Effect.logWarning("PR cache disabled after clearing failed");
+      }),
+      Effect.uninterruptible,
+      revisionMutex.withPermit,
+      (effect, scope) => scopeLocks.withWriteScope(scope)(effect),
+      detachStackFrame,
+    ),
   });
 });
 
+/**
+ * The persisted cache drops an expired entry only when it is read again, so
+ * files for PRs nobody reopens would otherwise stay forever.
+ */
+export const pruneExpiredEntryFiles = Effect.fn("PullRequestReadCache.pruneExpiredEntryFiles")(
+  function* (directory: string) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const cutoff = (yield* Clock.currentTimeMillis) - Duration.toMillis(ENTRY_FILE_MAX_AGE);
+    const entries = (yield* fileSystem.readDirectory(directory)).filter((name) =>
+      ENTRY_FILE_NAME.test(name),
+    );
+    const [, failures] = yield* Effect.partition(entries, (name) => {
+      const entryPath = path.join(directory, name);
+      return fileSystem.stat(entryPath).pipe(
+        Effect.flatMap((info) =>
+          Option.exists(info.mtime, (mtime) => mtime.getTime() < cutoff)
+            ? fileSystem.remove(entryPath)
+            : Effect.void,
+        ),
+        Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
+      );
+    });
+    if (failures.length > 0) {
+      yield* Effect.logWarning("Failed to prune some PR cache files", {
+        failed: failures.length,
+        cause: failures[0],
+      });
+    }
+  },
+);
+
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
-    const config = yield* ServerConfig;
+    const config = yield* ServerConfig.ServerConfig;
     const path = yield* Path.Path;
+    const directory = path.join(config.providerStatusCacheDir, "pull-requests");
     return Layer.effect(PullRequestReadCache, make).pipe(
       Layer.provide(
-        KeyValueStore.layerFileSystem(
-          path.join(config.providerStatusCacheDir, "pull-requests"),
+        // Memoize cleanup acquisition with the store; Layer.tap runs per consumer.
+        Layer.effectDiscard(
+          forkParked(
+            pruneExpiredEntryFiles(directory).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Failed to prune PR cache files", { cause }),
+              ),
+              Effect.repeat(Schedule.spaced(Duration.hours(1))),
+            ),
+          ),
         ).pipe(
+          Layer.provideMerge(KeyValueStore.layerFileSystem(directory)),
           Layer.catch(() =>
             Layer.effectDiscard(
               Effect.logWarning("PR cache directory unavailable; using memory cache"),

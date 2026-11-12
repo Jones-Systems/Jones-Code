@@ -10,18 +10,29 @@ export function RoutingDiagnostics({
   fetchDiagnostics: (id: string) => Promise<VoiceReviewDiagnostics>;
 }) {
   const [selected, setSelected] = useState("");
+  const id = drafts.some((draft) => draft.id === selected) ? selected : (drafts[0]?.id ?? "");
   const [data, setData] = useState<VoiceReviewDiagnostics | null>(null);
   const [error, setError] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(Boolean(id));
   const [refresh, setRefresh] = useState(0);
-  const id = drafts.some((draft) => draft.id === selected) ? selected : (drafts[0]?.id ?? "");
-  useEffect(() => {
-    let active = true;
+
+  const [request, setRequest] = useState({ id, refresh, fetchDiagnostics });
+  if (
+    request.id !== id ||
+    request.refresh !== refresh ||
+    request.fetchDiagnostics !== fetchDiagnostics
+  ) {
+    setRequest({ id, refresh, fetchDiagnostics });
     setData(null);
     setError(false);
-    if (!id) return;
-    setLoading(true);
-    void fetchDiagnostics(id)
+    setLoading(Boolean(id));
+  }
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Load routing diagnostics for this request and ignore responses after its viewer retires.
+  useEffect(() => {
+    let active = true;
+    if (!request.id) return;
+    void request
+      .fetchDiagnostics(request.id)
       .then(
         (value) => {
           if (active) setData(value);
@@ -36,7 +47,7 @@ export function RoutingDiagnostics({
     return () => {
       active = false;
     };
-  }, [id, fetchDiagnostics, refresh]);
+  }, [request]);
   return (
     <section className="flex flex-col gap-4" aria-label="Routing diagnostics">
       <div className="flex flex-wrap items-center gap-3">

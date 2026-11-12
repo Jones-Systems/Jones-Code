@@ -1,0 +1,1630 @@
+import * as PlannedUpdateContinuity from "../updates/PlannedUpdateContinuity.ts";
+import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import {
+  CheckpointId,
+  CheckpointRef,
+  CheckpointScopeId,
+  CommandId,
+  EventId,
+  MessageId,
+  NodeId,
+  ProviderThreadId,
+  ProviderTurnId,
+  RunAttemptId,
+  RunId,
+  ThreadId,
+  type OrchestrationV2DomainEvent,
+  type OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts";
+import { WORK_MODE_INTERVAL_MS, WORK_MODE_SENTINEL } from "@t3tools/shared/jones/workMode";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
+import * as TestClock from "effect/testing/TestClock";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as ServerSettings from "../../serverSettings.ts";
+import * as Scheduler from "../../scheduling/Scheduler.ts";
+import * as CheckpointService from "../../orchestration-v2/CheckpointService.ts";
+import * as CheckpointCapture from "../../orchestration-v2/CheckpointCaptureService.ts";
+import * as CommandPolicy from "../../orchestration-v2/CommandPolicy.ts";
+import * as CommandReceipts from "../../orchestration-v2/CommandReceiptStore.ts";
+import * as ContextHandoff from "../../orchestration-v2/ContextHandoffService.ts";
+import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
+import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapters from "../../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager.ts";
+import * as ProviderRuntimeRecovery from "../../orchestration-v2/ProviderRuntimeRecoveryService.ts";
+import * as ProviderSwitch from "../../orchestration-v2/ProviderSwitchService.ts";
+import * as RuntimePolicy from "../../orchestration-v2/RuntimePolicy.ts";
+import * as ThreadFork from "../../orchestration-v2/ThreadForkService.ts";
+import * as ThreadCommands from "../../orchestration-v2/ThreadCommandExecutor.ts";
+import * as TurnItemPositions from "../../orchestration-v2/TurnItemPositionStore.ts";
+import { workModeFixture } from "./Fixtures.testkit.ts";
+import {
+  workModeCandidate,
+  workModeCommand,
+  type WorkModeAdmissionResult,
+  type WorkModeCandidate,
+} from "./Policy.ts";
+import * as WorkMode from "./WorkMode.ts";
+
+const fixture = workModeFixture();
+const session = fixture.providerSessions[0]!;
+const unexpected = () => Effect.die("Unexpected provider operation in admission test");
+const runtime: ProviderAdapterV2SessionRuntime = {
+  instanceId: session.providerInstanceId,
+  driver: session.driver,
+  providerSessionId: session.id,
+  providerSession: session,
+  events: Stream.empty,
+  ensureThread: unexpected,
+  resumeThread: unexpected,
+  startTurn: unexpected,
+  steerTurn: unexpected,
+  interruptTurn: unexpected,
+  respondToRuntimeRequest: unexpected,
+  readThreadSnapshot: unexpected,
+  rollbackThread: unexpected,
+  forkThread: unexpected,
+};
+
+const database = SqlitePersistence.layerMemory;
+const stores = Layer.mergeAll(
+  EventStore.layer,
+  ProjectionStore.layer,
+  ProjectStore.layer,
+  CommandReceipts.layer,
+  EffectOutbox.layer,
+  TurnItemPositions.layer,
+).pipe(Layer.provideMerge(database));
+const sink = EventSink.layerFromStores.pipe(Layer.provide(stores));
+const dependencies = Layer.mergeAll(
+  stores,
+  sink,
+  IdAllocator.layer,
+  CommandPolicy.layer,
+  RuntimePolicy.layer,
+  ServerSettings.layerTest({ workModeEnabled: true }).pipe(Layer.orDie),
+  Layer.mock(ContextHandoff.ContextHandoffServiceV2)({}),
+  Layer.mock(ProviderSwitch.ProviderSwitchServiceV2)({}),
+  Layer.mock(ThreadFork.ThreadForkServiceV2)({}),
+  Layer.mock(CheckpointService.CheckpointServiceV2)({
+    prepareRootRunScope: (input) =>
+      Effect.succeed({
+        id: CheckpointScopeId.make(`scope:${input.runId}`),
+        threadId: input.threadId,
+        runId: input.runId,
+        nodeId: input.rootNodeId,
+        parentScopeId: null,
+        providerThreadId: input.providerThreadId,
+        kind: "root_run" as const,
+        ordinalWithinParent: 0,
+        advancesAppRunCount: true,
+        cwd: input.cwd,
+        createdAt: input.createdAt,
+      }),
+  }),
+  ProviderAdapters.layerFromAdapters([
+    {
+      instanceId: session.providerInstanceId,
+      driver: session.driver,
+      getCapabilities: () => Effect.succeed(session.capabilities),
+      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+      openSession: unexpected,
+    },
+  ]),
+  Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
+    get: () => Effect.succeedSome(runtime),
+  }),
+  Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
+  NodeServices.layer,
+);
+const orchestratorLayer = Orchestrator.layer.pipe(Layer.provideMerge(dependencies));
+const testLayer = WorkMode.layer.pipe(Layer.provideMerge(orchestratorLayer));
+// The planned-update recovery test keeps its pre-restart orchestrator alive beside the
+// post-restart one. Production has one orchestrator, and it always has planned continuity,
+// so this test's original orchestrator shares the continuity the restarted one uses.
+const plannedContinuityLayer = PlannedUpdateContinuity.layer.pipe(
+  Layer.provide(ThreadCommands.layer),
+  Layer.provide(dependencies),
+);
+const plannedTestLayer = WorkMode.layer.pipe(
+  Layer.provideMerge(
+    Orchestrator.layer.pipe(
+      Layer.provide(plannedContinuityLayer),
+      Layer.provideMerge(dependencies),
+    ),
+  ),
+  Layer.provideMerge(plannedContinuityLayer),
+);
+
+const plannedBinding = {
+  baseDir: "/synthetic",
+  dbPath: "/synthetic/userdata/statev2.sqlite",
+  environmentId: "synthetic-environment",
+  currentVersion: "0.0.0-preview.20261010.1.1",
+  targetVersion: "0.0.0-preview.20261010.2.1",
+  expectedInstalledSource: "a".repeat(40),
+  targetSource: "b".repeat(40),
+  stagedHandle: "synthetic-staged-handle",
+};
+const plannedOperationId = "12345678-1234-4234-8234-123456789abc";
+const plannedProof: PlannedUpdateContinuity.PlannedUpdateProof = {
+  operationId: plannedOperationId,
+  binding: plannedBinding,
+  outcome: "committed",
+  current: {
+    baseDir: plannedBinding.baseDir,
+    dbPath: plannedBinding.dbPath,
+    environmentId: plannedBinding.environmentId,
+    activeVersion: plannedBinding.targetVersion,
+    activeSourceSha: plannedBinding.targetSource,
+  },
+};
+const capturePlannedUpdate = Effect.gen(function* () {
+  const continuity = yield* PlannedUpdateContinuity.make.pipe(Effect.provide(ThreadCommands.layer));
+  return yield* captureWith(continuity);
+});
+const captureWith = Effect.fn("WorkModeTest.captureWith")(function* (
+  continuity: PlannedUpdateContinuity.PlannedUpdateContinuity["Service"],
+) {
+  const settings = yield* ServerSettings.ServerSettingsService;
+  yield* settings.updateSettings({ continueThreadsAfterServerUpdate: true });
+  yield* continuity.capture({
+    operationId: plannedOperationId,
+    binding: plannedBinding,
+    continueRunningThreads: false,
+  });
+  return continuity;
+});
+
+// Watermark fixtures commit the log and projections together, as EventSink does.
+const applyCommitted = Effect.fn("WorkModeTest.applyCommitted")(function* (
+  event: OrchestrationV2DomainEvent,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const events = yield* EventStore.EventStoreV2;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const sequence = yield* events.latestSequence();
+      const committed = { ...event, id: EventId.make(`${event.id}:${sequence}`) };
+      yield* events.append({ events: [committed] });
+      yield* projections.apply(committed);
+    }),
+  );
+});
+
+const seedProjection = (source: OrchestrationV2ThreadProjection, prefix: string) =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const at = (value: OrchestrationV2ThreadProjection) => ({
+      ...value,
+      thread: { ...value.thread, createdAt: now, updatedAt: now },
+      runs: value.runs.map((run) => ({
+        ...run,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: now,
+      })),
+      messages: value.messages.map((message) => ({ ...message, createdAt: now, updatedAt: now })),
+      providerTurns: value.providerTurns.map((turn) => ({
+        ...turn,
+        tokenUsage:
+          turn.tokenUsage === undefined
+            ? undefined
+            : {
+                ...turn.tokenUsage,
+                updatedAt:
+                  Date.parse(turn.tokenUsage.updatedAt) === 0
+                    ? DateTime.formatIso(now)
+                    : turn.tokenUsage.updatedAt,
+              },
+      })),
+    });
+    const value = at(source);
+    const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
+      {
+        id: EventId.make(`${prefix}:thread`),
+        type: "thread.created",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.thread,
+      },
+      {
+        id: EventId.make(`${prefix}:run`),
+        type: "run.created",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.runs[0]!,
+      },
+      {
+        id: EventId.make(`${prefix}:message`),
+        type: "message.updated",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.messages[0]!,
+      },
+      {
+        id: EventId.make(`${prefix}:session`),
+        type: "provider-session.attached",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.providerSessions[0]!,
+      },
+      {
+        id: EventId.make(`${prefix}:context`),
+        type: "provider-thread.updated",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.providerThreads[0]!,
+      },
+      {
+        id: EventId.make(`${prefix}:turn`),
+        type: "provider-turn.updated",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.providerTurns[0]!,
+      },
+    ];
+    for (const event of events) yield* applyCommitted(event);
+    return value.thread.id;
+  });
+const seed = seedProjection(workModeFixture(), "seed");
+
+const observeDiscovery = Effect.fn("WorkModeTest.observeDiscovery")(function* (
+  options: {
+    readonly admit?: (candidate: WorkModeCandidate) => Effect.Effect<WorkModeAdmissionResult>;
+    readonly snapshot?: ProjectionStore.ProjectionStoreV2["Service"]["getShellSnapshot"];
+    readonly latestSequence?: EventStore.EventStoreV2["Service"]["latestSequence"];
+  } = {},
+) {
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const events = yield* EventStore.EventStoreV2;
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const counts = { snapshots: 0, timings: 0, probes: 0 };
+  const requests: WorkModeCandidate[] = [];
+  const observedProjections = Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+    ...projections,
+    getShellSnapshot: (input) =>
+      Effect.suspend(() => {
+        counts.snapshots++;
+        return (options.snapshot ?? projections.getShellSnapshot)(input);
+      }),
+    getThreadRecords: (...args) =>
+      Effect.suspend(() => {
+        counts.timings++;
+        return projections.getThreadRecords(...args);
+      }),
+  });
+  const observedEvents = Layer.succeed(EventStore.EventStoreV2, {
+    ...events,
+    latestSequence: (input) =>
+      Effect.suspend(() => {
+        counts.probes++;
+        return (options.latestSequence ?? events.latestSequence)(input);
+      }),
+  });
+  const observedOrchestrator = Layer.succeed(Orchestrator.OrchestratorV2, {
+    ...orchestrator,
+    requestWorkMode: (candidate) =>
+      Effect.suspend(() => {
+        requests.push(candidate);
+        return options.admit?.(candidate) ?? Effect.succeed("dispatched" as const);
+      }),
+  });
+  const workMode = yield* WorkMode.WorkMode.pipe(
+    Effect.provide(
+      Layer.fresh(WorkMode.layer).pipe(
+        Layer.provide(observedProjections),
+        Layer.provide(observedEvents),
+        Layer.provide(observedOrchestrator),
+      ),
+    ),
+  );
+  return { workMode, counts, requests };
+});
+
+function completeLatestRun<E = never, R = never>(
+  checkpoint = false,
+  beforeCheckpoint?: () => Effect.Effect<unknown, E, R>,
+  withUsage = true,
+) {
+  return Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const projection = yield* projections.getThreadProjection(fixture.thread.id);
+    const run = projection.runs.toSorted((a, b) => b.ordinal - a.ordinal)[0]!;
+    const owner = projection.providerThreads.find((thread) => thread.id === run.providerThreadId)!;
+    const existingTurn = projection.providerTurns.find(
+      (turn) => turn.runAttemptId === run.activeAttemptId,
+    );
+    const now = yield* DateTime.now;
+    yield* applyCommitted({
+      id: EventId.make(`complete:${run.id}`),
+      type: "run.updated",
+      threadId: fixture.thread.id,
+      occurredAt: now,
+      payload: {
+        ...run,
+        status: checkpoint ? "waiting" : "completed",
+        startedAt: now,
+        completedAt: checkpoint ? null : now,
+      },
+    });
+    yield* applyCommitted({
+      id: EventId.make(`turn:${run.id}`),
+      type: "provider-turn.updated",
+      threadId: fixture.thread.id,
+      occurredAt: now,
+      payload: {
+        ...fixture.providerTurns[0]!,
+        id: existingTurn?.id ?? ProviderTurnId.make(`turn:${run.id}`),
+        providerThreadId: owner.id,
+        nodeId: run.rootNodeId!,
+        runAttemptId: run.activeAttemptId,
+        ordinal: run.ordinal,
+        status: "completed",
+        startedAt: now,
+        completedAt: now,
+        tokenUsage: withUsage
+          ? { usedTokens: 1, inputTokens: 1, updatedAt: DateTime.formatIso(now) }
+          : undefined,
+      },
+    });
+    yield* applyCommitted({
+      id: EventId.make(`idle:${run.id}`),
+      type: "provider-thread.updated",
+      threadId: fixture.thread.id,
+      occurredAt: now,
+      payload: { ...owner, status: "idle", updatedAt: now },
+    });
+    if (checkpoint) {
+      if (beforeCheckpoint !== undefined) yield* beforeCheckpoint();
+      const scope = projection.checkpointScopes.find((row) => row.runId === run.id)!;
+      const materialize = (
+        input: Parameters<CheckpointService.CheckpointServiceV2["Service"]["capture"]>[0],
+      ) => ({
+        id: CheckpointId.make(`checkpoint:${input.scope.id}:${input.ordinalWithinScope}`),
+        threadId: fixture.thread.id,
+        scopeId: input.scope.id,
+        runId: input.runId,
+        nodeId: input.nodeId,
+        parentCheckpointId: null,
+        ordinalWithinScope: input.ordinalWithinScope,
+        appRunOrdinal: input.appRunOrdinal,
+        ref: CheckpointRef.make(`refs/synthetic/${input.scope.id}/${input.ordinalWithinScope}`),
+        status: "ready" as const,
+        files: [],
+        capturedAt: input.capturedAt,
+      });
+      const nativeCheckpoint = Layer.mock(CheckpointService.CheckpointServiceV2)({
+        capture: (input) => Effect.succeed(materialize(input)),
+        materializeBaselineCheckpoint: (input) =>
+          Effect.succeed(
+            materialize({
+              ...input,
+              runId: null,
+              nodeId: input.scope.nodeId,
+              appRunOrdinal: null,
+              capturedAt: now,
+            }),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const capture = yield* CheckpointCapture.CheckpointCaptureServiceV2;
+        yield* capture.execute({ threadId: fixture.thread.id, runId: run.id, scopeId: scope.id });
+      }).pipe(Effect.provide(CheckpointCapture.layer.pipe(Layer.provide(nativeCheckpoint))));
+    }
+  });
+}
+
+it.effect(
+  "sweeps nine virtual 55-minute rounds without per-thread timers or duplicate dispatch",
+  () =>
+    Effect.gen(function* () {
+      const threadId = yield* seed;
+      const workMode = yield* WorkMode.WorkMode;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      yield* workMode.sweep;
+      assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 1);
+      for (let round = 1; round <= 9; round++) {
+        yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+        yield* workMode.sweep;
+        yield* workMode.sweep;
+        const projection = yield* projections.getThreadProjection(threadId);
+        assert.lengthOf(projection.runs, round + 1);
+        assert.equal(projection.runs.at(-1)!.status, "starting");
+        const sent = projection.messages.find(
+          (message) => message.id === projection.runs.at(-1)!.userMessageId,
+        )!;
+        assert.equal(sent.text, WORK_MODE_SENTINEL);
+        assert.equal(sent.createdBy, "system");
+        assert.equal(sent.creationSource, "server");
+        yield* completeLatestRun();
+      }
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("real provider usage resets sweep timing and disabling stops later sweeps", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const workMode = yield* WorkMode.WorkMode;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    yield* workMode.sweep;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS - 1);
+    yield* completeLatestRun();
+    yield* TestClock.adjust(1);
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 1);
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS - 1);
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+    yield* completeLatestRun();
+    yield* settings.updateSettings({ workModeEnabled: false });
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+    yield* settings.updateSettings({ workModeEnabled: true });
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 3);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a message update without model usage does not postpone a due refresh", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const workMode = yield* WorkMode.WorkMode;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* workMode.sweep;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS - 1);
+    const now = yield* DateTime.now;
+    yield* applyCommitted({
+      id: EventId.make("regular:message"),
+      type: "message.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        ...fixture.messages[0]!,
+        id: MessageId.make("regular-message"),
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* TestClock.adjust(1);
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([
+  { ageMs: 90 * 60_000, expectedRuns: 2 },
+  { ageMs: 90 * 60_000 + 1, expectedRuns: 1 },
+])("initial age $ageMs milliseconds permits $expectedRuns total runs", ({ ageMs, expectedRuns }) =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    yield* TestClock.adjust(ageMs);
+    yield* WorkMode.WorkMode.pipe(Effect.flatMap((service) => service.sweep));
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, expectedRuns);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("run completion forty minutes after usage does not postpone the model deadline", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* TestClock.adjust("40 minutes");
+    const now = yield* DateTime.now;
+    const projection = yield* projections.getThreadProjection(threadId);
+    yield* applyCommitted({
+      id: EventId.make("late-run-completion"),
+      type: "run.updated",
+      threadId,
+      occurredAt: now,
+      payload: { ...projection.runs[0]!, completedAt: now },
+    });
+    const workMode = yield* WorkMode.WorkMode;
+    yield* workMode.sweep;
+    yield* TestClock.adjust("15 minutes");
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("an established successful Work chain remains eligible beyond ninety minutes", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const workMode = yield* WorkMode.WorkMode;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* workMode.sweep;
+    yield* completeLatestRun();
+    yield* TestClock.adjust("91 minutes");
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 3);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("missing provider usage never admits a refresh", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seedProjection(
+      {
+        ...fixture,
+        providerTurns: fixture.providerTurns.map((turn) => ({ ...turn, tokenUsage: undefined })),
+      },
+      "missing-usage",
+    );
+    const workMode = yield* WorkMode.WorkMode;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    for (let round = 0; round < 3; round++) {
+      yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+      yield* workMode.sweep;
+      yield* workMode.sweep;
+    }
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 1);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a usage-less Work completion does not create a five-second retry loop", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const workMode = yield* WorkMode.WorkMode;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* workMode.sweep;
+    yield* completeLatestRun(false, undefined, false);
+    yield* TestClock.adjust("5 seconds");
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([{ withUsage: true }, { withUsage: false }])(
+  "caches timing records between ticks with provider usage=$withUsage",
+  ({ withUsage }) =>
+    Effect.gen(function* () {
+      const threadId = yield* seedProjection(
+        {
+          ...fixture,
+          providerTurns: fixture.providerTurns.map((turn) => ({
+            ...turn,
+            tokenUsage: withUsage ? turn.tokenUsage : undefined,
+          })),
+        },
+        "cached-timing",
+      );
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      let reads = 0;
+      const getThreadRecords: ProjectionStore.ProjectionStoreV2["Service"]["getThreadRecords"] = (
+        ...args
+      ) => {
+        reads++;
+        return projections.getThreadRecords(...args);
+      };
+      const observed = Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+        ...projections,
+        getThreadRecords,
+      });
+      const workMode = yield* WorkMode.WorkMode.pipe(
+        Effect.provide(Layer.fresh(WorkMode.layer).pipe(Layer.provide(observed))),
+      );
+      yield* workMode.sweep;
+      yield* TestClock.adjust("5 seconds");
+      yield* workMode.sweep;
+      assert.equal(reads, 1);
+      yield* settings.updateSettings({ workModeEnabled: false });
+      yield* workMode.sweep;
+      yield* settings.updateSettings({ workModeEnabled: true });
+      yield* workMode.sweep;
+      assert.equal(reads, 2);
+      assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 1);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "reconciles persisted acceptance after rebuilding the actual orchestrator, even after disable",
+  () =>
+    Effect.gen(function* () {
+      const threadId = yield* seed;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+      const candidate = workModeCandidate(
+        (yield* projections.getThreadShell(threadId))!,
+        DateTime.toEpochMillis(yield* DateTime.now),
+      )!;
+      assert.equal(yield* orchestrator.requestWorkMode(candidate), "dispatched");
+      yield* settings.updateSettings({ workModeEnabled: false });
+      const replay = Effect.gen(function* () {
+        const restarted = yield* Orchestrator.OrchestratorV2;
+        return yield* restarted.requestWorkMode(candidate);
+      }).pipe(Effect.provide(Orchestrator.layer));
+      assert.equal(yield* replay, "acknowledged");
+      assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+      const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+      assert.isTrue(
+        Option.isSome(yield* receipts.getByCommandId(workModeCommand(candidate).commandId)),
+      );
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a concurrent ordinary start wins the lock and keepwarm skips without queueing", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    const candidate = workModeCandidate(
+      (yield* projections.getThreadShell(threadId))!,
+      DateTime.toEpochMillis(yield* DateTime.now),
+    )!;
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    // Hold the ordinary command inside the actual lock through a checkpoint boundary.
+    const checkpoint = yield* CheckpointService.CheckpointServiceV2;
+    const guardedCheckpoint = Layer.succeed(CheckpointService.CheckpointServiceV2, {
+      ...checkpoint,
+      prepareRootRunScope: (input) =>
+        Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(checkpoint.prepareRootRunScope(input)),
+        ),
+    });
+    const race = Effect.gen(function* () {
+      const fresh = yield* Orchestrator.OrchestratorV2;
+      const normal = yield* Effect.forkChild(
+        fresh.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("ordinary-start"),
+          messageId: MessageId.make("ordinary-start"),
+          threadId,
+          text: "Do regular work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        }),
+      );
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Fiber.join(normal).pipe(
+          Effect.andThen(
+            Effect.die("Ordinary start completed before reaching its checkpoint barrier."),
+          ),
+        ),
+      );
+      const keepwarm = yield* Effect.forkChild(fresh.requestWorkMode(candidate));
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(normal);
+      assert.equal(yield* Fiber.join(keepwarm), "skipped");
+    }).pipe(Effect.provide(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(guardedCheckpoint))));
+    yield* race;
+    const projection = yield* projections.getThreadProjection(threadId);
+    assert.lengthOf(projection.runs, 2);
+    assert.isFalse(projection.runs.some((run) => run.status === "queued"));
+    assert.isFalse(projection.messages.some((message) => message.text === WORK_MODE_SENTINEL));
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a busy thread does not hold up another due Work thread and is reconsidered later", () =>
+  Effect.gen(function* () {
+    const threadA = yield* seed;
+    const threadB = ThreadId.make("thread-work-mode-b");
+    const runB = RunId.make("run-work-mode-b");
+    const messageB = MessageId.make("message-work-mode-b");
+    const nodeB = NodeId.make("node-work-mode-b");
+    const attemptB = RunAttemptId.make("attempt-work-mode-b");
+    const ownerB = ProviderThreadId.make("provider-thread-work-mode-b");
+    yield* seedProjection(
+      {
+        ...fixture,
+        thread: {
+          ...fixture.thread,
+          id: threadB,
+          activeProviderThreadId: ownerB,
+          lineage: { ...fixture.thread.lineage, rootThreadId: threadB },
+        },
+        runs: [
+          {
+            ...fixture.runs[0]!,
+            id: runB,
+            threadId: threadB,
+            providerThreadId: ownerB,
+            userMessageId: messageB,
+            rootNodeId: nodeB,
+            activeAttemptId: attemptB,
+          },
+        ],
+        messages: [
+          { ...fixture.messages[0]!, id: messageB, threadId: threadB, runId: runB, nodeId: nodeB },
+        ],
+        providerThreads: [
+          {
+            ...fixture.providerThreads[0]!,
+            id: ownerB,
+            appThreadId: threadB,
+            nativeThreadRef: {
+              ...fixture.providerThreads[0]!.nativeThreadRef!,
+              nativeId: "native-work-mode-b",
+            },
+          },
+        ],
+        providerTurns: [
+          {
+            ...fixture.providerTurns[0]!,
+            id: ProviderTurnId.make("turn-work-mode-b"),
+            providerThreadId: ownerB,
+            nodeId: nodeB,
+            runAttemptId: attemptB,
+          },
+        ],
+      },
+      "seed-b",
+    );
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+    const ordinaryCommandId = CommandId.make("ordinary:held-a");
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const orderedProjections = Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+      ...projections,
+      // Ensure the held thread is visited first, independently of sidebar sorting.
+      getShellSnapshot: (input) =>
+        projections.getShellSnapshot(input).pipe(
+          Effect.map((snapshot) => ({
+            ...snapshot,
+            threads: snapshot.threads.toSorted((a, b) =>
+              a.id === threadA ? -1 : b.id === threadA ? 1 : 0,
+            ),
+          })),
+        ),
+    });
+    const guardedReceipts = Layer.succeed(CommandReceipts.CommandReceiptStoreV2, {
+      ...receipts,
+      // Ordinary dispatch owns the thread lock before this lookup and has not planned any events.
+      getByCommandId: (commandId) =>
+        (commandId === ordinaryCommandId
+          ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void
+        ).pipe(Effect.andThen(receipts.getByCommandId(commandId))),
+    });
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const admissionEntered = yield* Deferred.make<void>();
+      const admissionTimedOut = yield* Ref.make(false);
+      const observedOrchestrator = Layer.succeed(Orchestrator.OrchestratorV2, {
+        ...orchestrator,
+        requestWorkMode: (candidate) =>
+          candidate.threadId === threadA
+            ? Effect.gen(function* () {
+                // Start admission and register its deadline before the test can advance the clock.
+                const admission = yield* orchestrator
+                  .requestWorkMode(candidate)
+                  .pipe(Effect.forkChild({ startImmediately: true }));
+                const deadline = yield* Effect.sleep("1 second").pipe(
+                  Effect.as("timed-out" as const),
+                  Effect.forkChild({ startImmediately: true }),
+                );
+                yield* Deferred.succeed(admissionEntered, undefined);
+                // A is held before dispatch can begin; cancellation cannot hide an accepted command.
+                const result = yield* Effect.raceFirst(
+                  Fiber.join(admission),
+                  Fiber.join(deadline),
+                ).pipe(
+                  Effect.ensuring(Fiber.interrupt(admission)),
+                  Effect.ensuring(Fiber.interrupt(deadline)),
+                );
+                if (result === "timed-out") {
+                  yield* Ref.set(admissionTimedOut, true);
+                  return "skipped" as const;
+                }
+                return result;
+              })
+            : orchestrator.requestWorkMode(candidate),
+      });
+      // Bind the sweep to this observer even when the outer test layer is already memoized.
+      const workMode = yield* WorkMode.WorkMode.pipe(
+        Effect.provide(
+          Layer.fresh(WorkMode.layer).pipe(
+            Layer.provide(observedOrchestrator),
+            Layer.provide(orderedProjections),
+          ),
+        ),
+      );
+      const ordinary = yield* orchestrator
+        .dispatch({
+          type: "message.dispatch",
+          commandId: ordinaryCommandId,
+          messageId: MessageId.make("ordinary:held-a"),
+          threadId: threadA,
+          text: "Ordinary work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Fiber.join(ordinary).pipe(
+          Effect.andThen(Effect.die("Ordinary command missed its receipt lookup barrier.")),
+        ),
+      );
+      const heldSnapshot = yield* projections.getShellSnapshot({
+        location: "active",
+        unsettledOnly: true,
+      });
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+      for (const threadId of [threadA, threadB]) {
+        const shell = heldSnapshot.threads.find((thread) => thread.id === threadId);
+        assert.isDefined(shell, `Due thread ${threadId} is absent from the Work snapshot`);
+        assert.isNotNull(
+          workModeCandidate(shell!, nowMs),
+          `Thread ${threadId} must remain due while the ordinary command holds A's lock`,
+        );
+      }
+      const sweep = yield* workMode.sweep.pipe(Effect.forkChild);
+      yield* Effect.raceFirst(
+        Deferred.await(admissionEntered),
+        Fiber.join(sweep).pipe(
+          Effect.andThen(Effect.die("Work sweep did not visit due thread A.")),
+        ),
+      );
+      yield* TestClock.adjust("1 second");
+      yield* Fiber.join(sweep);
+      const timedOut = yield* Ref.get(admissionTimedOut);
+      const busy = yield* projections.getThreadProjection(threadA);
+      const ready = yield* projections.getThreadProjection(threadB);
+      // Capture contention outcomes while A is held, then release it before any assertion can fail.
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(ordinary);
+      assert.isFalse(timedOut, "Work admission waited behind busy thread A");
+      assert.isFalse(busy.messages.some((message) => message.text === WORK_MODE_SENTINEL));
+      assert.isFalse(busy.runs.some((run) => run.status === "queued"));
+      assert.lengthOf(ready.runs, 2);
+      assert.isTrue(ready.messages.some((message) => message.text === WORK_MODE_SENTINEL));
+      yield* completeLatestRun();
+      yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+      yield* WorkMode.WorkMode.pipe(Effect.flatMap((service) => service.sweep));
+      const retried = yield* projections.getThreadProjection(threadA);
+      assert.lengthOf(retried.runs, 3);
+      assert.lengthOf(
+        retried.messages.filter((message) => message.text === WORK_MODE_SENTINEL),
+        1,
+      );
+    }).pipe(
+      Effect.ensuring(Deferred.succeed(release, undefined)),
+      Effect.provide(
+        Layer.fresh(WorkMode.layer).pipe(
+          Layer.provideMerge(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(guardedReceipts))),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("disable is serialized against admission through durable dispatch", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const checkpoint = yield* CheckpointService.CheckpointServiceV2;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    const candidate = workModeCandidate(
+      (yield* projections.getThreadShell(threadId))!,
+      DateTime.toEpochMillis(yield* DateTime.now),
+    )!;
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const disabling = yield* Deferred.make<void>();
+    const guardedCheckpoint = Layer.succeed(CheckpointService.CheckpointServiceV2, {
+      ...checkpoint,
+      prepareRootRunScope: (input) =>
+        Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(checkpoint.prepareRootRunScope(input)),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const admission = yield* Effect.forkChild(orchestrator.requestWorkMode(candidate));
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Fiber.join(admission).pipe(
+          Effect.andThen(
+            Effect.die("Work Mode admission completed before reaching its checkpoint barrier."),
+          ),
+        ),
+      );
+      const disable = yield* Effect.forkChild(
+        Deferred.succeed(disabling, undefined).pipe(
+          Effect.andThen(settings.updateSettings({ workModeEnabled: false })),
+        ),
+      );
+      yield* Deferred.await(disabling);
+      assert.isTrue((yield* settings.getSettings).workModeEnabled);
+      yield* Deferred.succeed(release, undefined);
+      assert.equal(yield* Fiber.join(admission), "dispatched");
+      assert.isFalse((yield* Fiber.join(disable)).workModeEnabled);
+      yield* completeLatestRun();
+      yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+      const next = workModeCandidate(
+        (yield* projections.getThreadShell(threadId))!,
+        DateTime.toEpochMillis(yield* DateTime.now),
+      )!;
+      assert.equal(yield* orchestrator.requestWorkMode(next), "skipped");
+    }).pipe(Effect.provide(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(guardedCheckpoint))));
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a completed persisted context without a live session never starts a run", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    const candidate = workModeCandidate(
+      (yield* projections.getThreadShell(threadId))!,
+      DateTime.toEpochMillis(yield* DateTime.now),
+    )!;
+    const cold = Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
+      get: () => Effect.succeedNone,
+    });
+    assert.equal(
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        return yield* orchestrator.requestWorkMode(candidate);
+      }).pipe(Effect.provide(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(cold)))),
+      "skipped",
+    );
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 1);
+    const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+    assert.isTrue(
+      Option.isNone(yield* receipts.getByCommandId(workModeCommand(candidate).commandId)),
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([
+  { trigger: "shutdown", stop: false },
+  { trigger: "startup", stop: false },
+  { trigger: "shutdown", stop: true },
+] as const)(
+  "planned queue survives real $trigger recovery and respects later Stop=$stop",
+  ({ trigger, stop }) =>
+    Effect.gen(function* () {
+      const threadId = yield* seed;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const current = yield* Orchestrator.OrchestratorV2;
+      const initial = yield* projections.getThreadProjection(threadId);
+      const source = initial.runs[0]!;
+      const now = yield* DateTime.now;
+      yield* applyCommitted({
+        id: EventId.make("planned:running"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...source, status: "running", completedAt: null },
+      });
+      yield* applyCommitted({
+        id: EventId.make("planned:active"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...initial.providerThreads[0]!, status: "active" },
+      });
+      yield* applyCommitted({
+        id: EventId.make("planned:turn"),
+        type: "provider-turn.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...initial.providerTurns[0]!, status: "running", completedAt: null },
+      });
+      yield* current.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("planned-queued"),
+        messageId: MessageId.make("planned-queued-message"),
+        threadId,
+        text: "Queued work",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const queued = (yield* projections.getThreadProjection(threadId)).runs.find(
+        (run) => run.status === "queued",
+      )!;
+      assert.deepEqual(yield* projections.getRecoveryThreadIds("queued-runs"), []);
+      assert.deepEqual(yield* projections.getRecoveryThreadIds("planned-update-queued-runs"), [
+        threadId,
+      ]);
+      const continuity = yield* captureWith(yield* PlannedUpdateContinuity.PlannedUpdateContinuity);
+      const recovery = yield* ProviderRuntimeRecovery.make;
+      if (trigger === "shutdown") yield* recovery.prepareForShutdown;
+      yield* recovery.reconcile(trigger);
+      const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+      const recoveryReceipt = yield* receipts.getByCommandId(
+        CommandId.make(
+          `command:runtime-reconcile:${trigger}:${threadId}:${DateTime.formatIso(now)}`,
+        ),
+      );
+      assert.isTrue(Option.isSome(recoveryReceipt));
+      if (Option.isSome(recoveryReceipt))
+        assert.equal(recoveryReceipt.value.commandType, "provider-runtime.reconcile");
+      const reconciled = yield* projections.getThreadProjection(threadId);
+      assert.equal(reconciled.runs.find((run) => run.id === source.id)?.status, "cancelled");
+      assert.isTrue(reconciled.runs.find((run) => run.id === queued.id)?.queueHeld);
+      yield* continuity.activate(plannedProof);
+      assert.deepEqual(yield* continuity.queueThreadIds, [threadId]);
+      assert.isUndefined(yield* continuity.queueCommand(reconciled));
+      const planned = Layer.succeed(PlannedUpdateContinuity.PlannedUpdateContinuity, continuity);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`command:restart-continuation:${source.id}`),
+          messageId: MessageId.make(`message:restart-continuation:${source.id}`),
+          threadId,
+          text: "Continue where you left off.",
+          attachments: [],
+          createdBy: "agent",
+          creationSource: "server",
+          modelSelection: source.modelSelection,
+          dispatchMode: { type: "start_immediately" },
+          restartContinuationOfRunId: source.id,
+        });
+        // Checkpoint completion can release the queue synchronously. The negative
+        // case records Stop before that release becomes eligible.
+        yield* completeLatestRun(
+          true,
+          stop
+            ? () =>
+                orchestrator.dispatch({
+                  type: "thread.stop",
+                  commandId: CommandId.make("planned:later-stop"),
+                  threadId,
+                })
+            : undefined,
+        );
+        const continued = (yield* projections.getThreadProjection(threadId)).runs.find(
+          (run) => run.restartContinuationOfRunId === source.id,
+        )!;
+        assert.equal(continued.status, "completed");
+        assert.isTrue(
+          Option.isSome(
+            yield* receipts.getByCommandId(
+              CommandId.make(`command:effect:checkpoint.capture:${continued.id}`),
+            ),
+          ),
+        );
+        yield* orchestrator.recoverPlannedUpdateQueues!;
+        yield* orchestrator.recoverPlannedUpdateQueues!;
+      }).pipe(Effect.provide(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(planned))));
+      const after = yield* projections.getThreadProjection(threadId);
+      assert.equal(
+        after.runs.find((run) => run.id === queued.id)?.status,
+        stop ? "queued" : "starting",
+      );
+      assert.lengthOf(after.runs, 3);
+      const releaseReceipt = yield* receipts.getByCommandId(
+        CommandId.make(`command:planned-update-queue:${plannedOperationId}:${threadId}`),
+      );
+      assert.equal(Option.isSome(releaseReceipt), !stop);
+      if (stop) assert.isTrue(after.runs.find((run) => run.id === queued.id)?.queueHeld);
+      else assert.deepEqual(yield* continuity.queueThreadIds, []);
+    }).pipe(Effect.provide(plannedTestLayer)),
+);
+
+it.effect.each([
+  { trigger: "shutdown", stop: false },
+  { trigger: "startup", stop: false },
+  { trigger: "startup", stop: true },
+] as const)(
+  "cold planned Work keeps its original due time through real $trigger recovery and Stop=$stop",
+  ({ trigger, stop }) =>
+    Effect.gen(function* () {
+      const threadId = yield* seed;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const elapsed = 20 * 60 * 1000;
+      yield* TestClock.adjust(elapsed);
+      const continuity = yield* capturePlannedUpdate;
+      const now = yield* DateTime.now;
+      const recovery = yield* ProviderRuntimeRecovery.make;
+      yield* recovery.reconcile(trigger);
+      const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+      assert.isTrue(
+        Option.isSome(
+          yield* receipts.getByCommandId(
+            CommandId.make(
+              `command:runtime-reconcile:${trigger}:${threadId}:${DateTime.formatIso(now)}`,
+            ),
+          ),
+        ),
+      );
+      assert.equal(
+        (yield* projections.getThreadProjection(threadId)).providerSessions[0]?.status,
+        "stopped",
+      );
+      yield* continuity.activate(plannedProof);
+      const candidate = workModeCandidate(
+        (yield* projections.getThreadShell(threadId))!,
+        DateTime.toEpochMillis(now),
+        { ignoreInterval: true },
+      )!;
+      const cold = Layer.mergeAll(
+        Layer.succeed(PlannedUpdateContinuity.PlannedUpdateContinuity, continuity),
+        Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
+          get: () => Effect.succeedNone,
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* TestClock.adjust(WORK_MODE_INTERVAL_MS - elapsed - 1);
+        assert.equal(yield* orchestrator.requestWorkMode(candidate), "skipped");
+        if (stop)
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("planned:cold-stop"),
+            threadId,
+          });
+        yield* TestClock.adjust(1);
+        assert.equal(
+          yield* orchestrator.requestWorkMode(candidate),
+          stop ? "skipped" : "dispatched",
+        );
+        assert.equal(
+          Option.isSome(yield* receipts.getByCommandId(workModeCommand(candidate).commandId)),
+          !stop,
+        );
+        assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, stop ? 1 : 2);
+        if (!stop) {
+          assert.equal(yield* orchestrator.requestWorkMode(candidate), "acknowledged");
+          yield* completeLatestRun();
+          yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+          const next = workModeCandidate(
+            (yield* projections.getThreadShell(threadId))!,
+            DateTime.toEpochMillis(yield* DateTime.now),
+          )!;
+          assert.equal(yield* orchestrator.requestWorkMode(next), "skipped");
+          assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+        }
+      }).pipe(Effect.provide(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(cold))));
+    }).pipe(Effect.provide(testLayer)),
+);
+
+const updateDiscoveryThread = Effect.fn("WorkModeTest.updateDiscoveryThread")(function* (
+  patch: Partial<OrchestrationV2ThreadProjection["thread"]>,
+) {
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const current = yield* projections.getThreadProjection(fixture.thread.id);
+  const now = yield* DateTime.now;
+  yield* applyCommitted({
+    id: EventId.make("discovery:thread"),
+    type: "thread.metadata-updated",
+    threadId: fixture.thread.id,
+    occurredAt: now,
+    payload: { ...current.thread, ...patch, updatedAt: now },
+  });
+});
+
+it.effect.each(["dispatched", "acknowledged"] as const)(
+  "unchanged watermarks avoid snapshots and suppress %s across identical generations",
+  (result) =>
+    Effect.gen(function* () {
+      yield* seed;
+      const { workMode, counts, requests } = yield* observeDiscovery({
+        admit: () => Effect.succeed(result),
+      });
+      yield* workMode.sweep;
+      for (let tick = 0; tick < 3; tick++) {
+        yield* TestClock.adjust("5 seconds");
+        yield* workMode.sweep;
+      }
+      assert.deepEqual(counts, { snapshots: 1, timings: 1, probes: 4 });
+      assert.lengthOf(requests, 0);
+      yield* TestClock.adjust(WORK_MODE_INTERVAL_MS - 15_000);
+      yield* workMode.sweep;
+      yield* workMode.sweep;
+      // A real event forces a refresh but leaves the admission generation unchanged.
+      yield* updateDiscoveryThread({ title: "Same generation" });
+      yield* workMode.sweep;
+      yield* workMode.sweep;
+      assert.lengthOf(requests, 1);
+      assert.deepEqual(counts, { snapshots: 2, timings: 1, probes: 8 });
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("cached snoozed shells become due on the clock without an event or snapshot", () =>
+  Effect.gen(function* () {
+    yield* seedProjection(
+      {
+        ...fixture,
+        thread: {
+          ...fixture.thread,
+          snoozedUntil: DateTime.makeUnsafe(WORK_MODE_INTERVAL_MS + 5_000),
+        },
+      },
+      "snoozed-discovery",
+    );
+    const { workMode, counts, requests } = yield* observeDiscovery();
+    yield* workMode.sweep;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* workMode.sweep;
+    assert.lengthOf(requests, 0);
+    assert.equal(counts.timings, 0);
+    yield* TestClock.adjust("5 seconds");
+    yield* workMode.sweep;
+    assert.lengthOf(requests, 1);
+    assert.deepEqual(counts, { snapshots: 1, timings: 1, probes: 3 });
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([
+  { sustained: false, lateMs: 0 },
+  { sustained: true, lateMs: 0 },
+  { sustained: false, lateMs: 1 },
+  { sustained: true, lateMs: 1 },
+])(
+  "blocker clearing just before initial expiry: sustained=$sustained lateMs=$lateMs",
+  ({ sustained, lateMs }) =>
+    Effect.gen(function* () {
+      yield* seedProjection(
+        {
+          ...fixture,
+          thread: { ...fixture.thread, threadMessagesBlocked: true },
+        },
+        "blocked-discovery",
+      );
+      const { workMode, counts, requests } = yield* observeDiscovery();
+      yield* TestClock.adjust(90 * 60_000 - 15_000);
+      yield* workMode.sweep;
+      if (sustained) {
+        for (let tick = 0; tick < 2; tick++) {
+          yield* TestClock.adjust("5 seconds");
+          yield* updateDiscoveryThread({ title: `Activity ${tick}` });
+          yield* workMode.sweep;
+        }
+      } else {
+        yield* TestClock.adjust("10 seconds");
+      }
+      yield* TestClock.adjust(4_999);
+      yield* updateDiscoveryThread({ threadMessagesBlocked: false });
+      yield* TestClock.adjust(1 + lateMs);
+      yield* workMode.sweep;
+      assert.lengthOf(requests, lateMs === 0 ? 1 : 0);
+      assert.equal(counts.snapshots, sustained ? 4 : 2);
+      assert.equal(counts.snapshots, counts.probes);
+      assert.equal(counts.timings, 1);
+      yield* workMode.sweep;
+      assert.equal(counts.snapshots, sustained ? 4 : 2);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("new candidates and changed generations are discovered on the next sweep", () =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const { workMode, counts, requests } = yield* observeDiscovery();
+    yield* workMode.sweep;
+    assert.equal(counts.snapshots, 1);
+    yield* seed;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* workMode.sweep;
+    assert.lengthOf(requests, 1);
+    const now = yield* DateTime.now;
+    const current = yield* projections.getThreadProjection(fixture.thread.id);
+    yield* applyCommitted({
+      id: EventId.make("discovery:new-generation"),
+      type: "message.updated",
+      threadId: fixture.thread.id,
+      occurredAt: now,
+      payload: { ...current.messages[0]!, updatedAt: now },
+    });
+    yield* workMode.sweep;
+    assert.lengthOf(requests, 2);
+    assert.notEqual(requests[0]!.generation, requests[1]!.generation);
+    assert.deepEqual(counts, { snapshots: 3, timings: 2, probes: 3 });
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("disable clears discovery, timing and admission state; enabling fills afresh", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const { workMode, counts, requests } = yield* observeDiscovery();
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* workMode.sweep;
+    assert.lengthOf(requests, 1);
+    yield* settings.updateSettings({ workModeEnabled: false });
+    yield* workMode.sweep;
+    yield* workMode.sweep;
+    assert.deepEqual(counts, { snapshots: 1, timings: 1, probes: 1 });
+    yield* settings.updateSettings({ workModeEnabled: true });
+    yield* workMode.sweep;
+    assert.deepEqual(counts, { snapshots: 2, timings: 2, probes: 2 });
+    assert.lengthOf(requests, 2);
+    assert.equal(requests[0]!.generation, requests[1]!.generation);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each(["skipped", "error"] as const)(
+  "%s admission retries deterministic commands at an unchanged watermark",
+  (result) =>
+    Effect.gen(function* () {
+      yield* seed;
+      let retry = true;
+      const { workMode, counts, requests } = yield* observeDiscovery({
+        admit: () =>
+          retry
+            ? result === "skipped"
+              ? Effect.succeed("skipped" as const)
+              : Effect.die("Admission failed")
+            : Effect.succeed("acknowledged" as const),
+      });
+      yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+      yield* workMode.sweep;
+      yield* TestClock.adjust("5 seconds");
+      yield* workMode.sweep;
+      retry = false;
+      yield* workMode.sweep;
+      yield* workMode.sweep;
+      assert.lengthOf(requests, 3);
+      assert.deepEqual(
+        requests.map((candidate) => workModeCommand(candidate).commandId),
+        Array(3).fill(workModeCommand(requests[0]!).commandId),
+      );
+      assert.deepEqual(counts, { snapshots: 1, timings: 3, probes: 4 });
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "cached eligibility rejects a backward clock and reevaluates the unchanged snapshot",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(60_000);
+      yield* seed;
+      const { workMode, counts, requests } = yield* observeDiscovery();
+      yield* workMode.sweep;
+      yield* TestClock.setTime(0);
+      yield* workMode.sweep;
+      assert.lengthOf(requests, 0);
+      yield* TestClock.setTime(60_000 + WORK_MODE_INTERVAL_MS);
+      yield* workMode.sweep;
+      assert.lengthOf(requests, 1);
+      assert.deepEqual(counts, { snapshots: 1, timings: 1, probes: 3 });
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each(["read", "decode", "cancel"] as const)(
+  "%s refresh retains the previous pair and retries on the next admitted sweep",
+  (failure) =>
+    Effect.gen(function* () {
+      yield* seedProjection(
+        {
+          ...fixture,
+          thread: { ...fixture.thread, threadMessagesBlocked: true },
+        },
+        "refresh-failure",
+      );
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const events = yield* EventStore.EventStoreV2;
+      const oldSequence = yield* events.latestSequence();
+      const entered = yield* Deferred.make<void>();
+      let failRefresh = false;
+      let useOldProbe = false;
+      const { workMode, counts, requests } = yield* observeDiscovery({
+        latestSequence: () => (useOldProbe ? Effect.succeed(oldSequence) : events.latestSequence()),
+        snapshot: (input) =>
+          Effect.gen(function* () {
+            if (failRefresh && failure === "read") {
+              return yield* new ProjectionStore.ProjectionStoreReadError({
+                threadId: fixture.thread.id,
+              });
+            }
+            const snapshot = yield* projections.getShellSnapshot(input);
+            if (failRefresh) {
+              if (failure === "decode") {
+                return yield* new ProjectionStore.ProjectionStoreReadError({
+                  threadId: fixture.thread.id,
+                  cause: "Synthetic decode failure after rows were read",
+                });
+              }
+              yield* Deferred.succeed(entered, undefined);
+              return yield* Effect.never;
+            }
+            return snapshot;
+          }),
+      });
+      yield* workMode.sweep;
+      yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+      yield* updateDiscoveryThread({ threadMessagesBlocked: false });
+      failRefresh = true;
+      if (failure === "cancel") {
+        const sweep = yield* workMode.sweep.pipe(Effect.forkChild);
+        yield* Effect.raceFirst(
+          Deferred.await(entered),
+          Fiber.join(sweep).pipe(Effect.andThen(Effect.die("Refresh missed cancellation barrier"))),
+        );
+        yield* Fiber.interrupt(sweep);
+      } else {
+        yield* workMode.sweep;
+      }
+      assert.lengthOf(requests, 0);
+      assert.deepEqual(counts, { snapshots: 2, timings: 0, probes: 2 });
+      failRefresh = false;
+      // Even equality with the retained watermark cannot clear a pending refresh.
+      useOldProbe = true;
+      yield* workMode.sweep;
+      assert.lengthOf(requests, 1);
+      assert.deepEqual(counts, { snapshots: 3, timings: 1, probes: 3 });
+      useOldProbe = false;
+      yield* workMode.sweep;
+      assert.deepEqual(counts, { snapshots: 3, timings: 1, probes: 4 });
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "a failed watermark probe leaves refresh pending even when the next watermark is unchanged",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const events = yield* EventStore.EventStoreV2;
+      let failProbe = false;
+      const { workMode, counts } = yield* observeDiscovery({
+        latestSequence: () =>
+          failProbe
+            ? Effect.fail(new EventStore.EventStoreReadEventsError({}))
+            : events.latestSequence(),
+      });
+      yield* workMode.sweep;
+      failProbe = true;
+      yield* workMode.sweep;
+      assert.deepEqual(counts, { snapshots: 1, timings: 1, probes: 2 });
+      failProbe = false;
+      yield* workMode.sweep;
+      assert.deepEqual(counts, { snapshots: 2, timings: 1, probes: 3 });
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each(["after-probe", "during-snapshot"] as const)(
+  "WAL writer commit %s preserves shell/watermark coherence and returned-sequence caching",
+  (commitAt) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // The scope closes the reader and writer before removing this small synthetic database.
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-work-mode-wal-" });
+      const walStores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer).pipe(
+        Layer.provideMerge(SqlitePersistence.layerFromPath(path.join(directory, "state.sqlite"))),
+      );
+      const walDependencies = Layer.mergeAll(
+        walStores,
+        ServerSettings.layerTest({ workModeEnabled: true }).pipe(Layer.orDie),
+        Layer.mock(Orchestrator.OrchestratorV2)({}),
+        Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
+      );
+      yield* Effect.gen(function* () {
+        yield* seedProjection(
+          {
+            ...fixture,
+            thread: { ...fixture.thread, threadMessagesBlocked: true },
+          },
+          "wal-discovery",
+        );
+        yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+        const events = yield* EventStore.EventStoreV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const firstSequence = yield* events.latestSequence();
+        const sql = yield* SqlClient.SqlClient;
+        const ready = yield* Deferred.make<void>();
+        const committed = yield* Deferred.make<void, Error>();
+        // This fiber is created outside the sweep's reader context.
+        const writer = yield* Effect.forkChild(
+          Effect.gen(function* () {
+            yield* Deferred.await(ready);
+            // The new projection reader route must not make the independent writer
+            // wait for the deliberately paused reader transaction.
+            const sequence = yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* updateDiscoveryThread({ threadMessagesBlocked: false });
+                return yield* events.latestSequence();
+              }),
+            );
+            yield* Deferred.succeed(committed, undefined);
+            return sequence;
+          }).pipe(
+            Effect.onExit((exit) =>
+              Exit.isFailure(exit)
+                ? Deferred.fail(
+                    committed,
+                    new Error("Synthetic writer commit failed", { cause: exit.cause }),
+                  )
+                : Effect.void,
+            ),
+          ),
+        );
+        let gated = false;
+        const gate = Effect.gen(function* () {
+          gated = true;
+          yield* Deferred.succeed(ready, undefined);
+          yield* Deferred.await(committed).pipe(Effect.orDie);
+        });
+        const capture: Statement.Transformer = (statement) =>
+          Effect.gen(function* () {
+            // The shell row SELECT already fixed the reader snapshot before its watermark query.
+            if (
+              commitAt === "during-snapshot" &&
+              !gated &&
+              statement.compile()[0].includes("MAX(sequence)")
+            ) {
+              yield* gate;
+            }
+            return statement;
+          });
+        const observed: Array<{ sequence: number; blocked: boolean }> = [];
+        const { workMode, counts, requests } = yield* observeDiscovery({
+          latestSequence: () =>
+            Effect.gen(function* () {
+              const sequence = yield* events.latestSequence();
+              if (commitAt === "after-probe" && !gated) yield* gate;
+              return sequence;
+            }),
+          snapshot: (input) =>
+            projections.getShellSnapshot(input).pipe(
+              Effect.provideService(Statement.CurrentTransformer, capture),
+              Effect.tap((snapshot) =>
+                Effect.sync(() => {
+                  observed.push({
+                    sequence: snapshot.snapshotSequence,
+                    blocked: snapshot.threads[0]!.threadMessagesBlocked ?? false,
+                  });
+                }),
+              ),
+            ),
+        });
+        yield* workMode.sweep;
+        const nextSequence = yield* Fiber.join(writer);
+        assert.isAbove(nextSequence, firstSequence);
+        assert.isTrue(gated);
+        assert.deepEqual(observed, [
+          {
+            sequence: commitAt === "after-probe" ? nextSequence : firstSequence,
+            blocked: commitAt === "during-snapshot",
+          },
+        ]);
+        assert.lengthOf(requests, commitAt === "after-probe" ? 1 : 0);
+        yield* workMode.sweep;
+        assert.lengthOf(requests, 1);
+        assert.equal(counts.snapshots, commitAt === "after-probe" ? 1 : 2);
+        if (commitAt === "during-snapshot") {
+          assert.deepEqual(observed[1], { sequence: nextSequence, blocked: false });
+        }
+        yield* workMode.sweep;
+        assert.equal(counts.snapshots, commitAt === "after-probe" ? 1 : 2);
+        assert.equal(counts.timings, 1);
+        assert.equal(counts.probes, 3);
+      }).pipe(Effect.provide(walDependencies));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

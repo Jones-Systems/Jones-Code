@@ -1,0 +1,12 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "desktop-stage-attempts",
+  "jonesOwnedPaths": [
+    "apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts",
+    "packages/shared/src/jones/jonesActionsStage.test.ts",
+    "packages/shared/src/jones/jonesActionsStage.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

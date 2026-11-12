@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.jones.systems/workstream-operations/1.0.0/setup-status.schema.json",
+  "title": "workstream-operations/1.0.0 setup-status",
+  "$ref": "#/$defs/SetupStatus",
+  "$defs": {
+    "Availability": {
+      "enum": [
+        "descriptor_absent",
+        "build_unavailable",
+        "contract_mismatch",
+        "source_mismatch",
+        "authority_mismatch",
+        "generation_mismatch",
+        "authority_fenced",
+        "authority_unavailable"
+      ]
+    },
+    "Id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "SetupStatus": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "workstream-operations/1.0.0"
+        },
+        "environment_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "authority_effect": {
+          "const": "none"
+        },
+        "activation": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": ["enabled", "disabled", "invalid"]
+            },
+            "missing_keys": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "T3_WORKSTREAM_CONTROL_PLANE_URL",
+                  "T3_WORKSTREAM_OWNER_ID",
+                  "T3_WORKSTREAM_PRINCIPAL_ID",
+                  "T3_WORKSTREAM_KEY_ID",
+                  "T3_WORKSTREAM_SIGNING_SECRET",
+                  "T3_WORKSTREAM_AUTHORIZATION_REVISION",
+                  "T3_WORKSTREAM_REGISTRY_BINDING",
+                  "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION"
+                ]
+              },
+              "maxItems": 8
+            }
+          },
+          "required": ["state", "missing_keys"],
+          "additionalProperties": false
+        },
+        "registry": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "const": "ready"
+                },
+                "registry_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "owner_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "can_write": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["state", "registry_id", "owner_id", "can_write"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "enum": ["not_configured", "unavailable"]
+                },
+                "registry_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Id"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "owner_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Id"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "can_write": {
+                  "const": false
+                }
+              },
+              "required": ["state", "registry_id", "owner_id", "can_write"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "t3_source": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "const": "ready"
+                },
+                "reason": {
+                  "type": "null"
+                }
+              },
+              "required": ["state", "reason"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "const": "unavailable"
+                },
+                "reason": {
+                  "$ref": "#/$defs/Availability"
+                }
+              },
+              "required": ["state", "reason"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "placements": {
+          "type": "object",
+          "properties": {
+            "readiness": {
+              "enum": ["ready", "trust-provider-required", "unavailable"]
+            }
+          },
+          "required": ["readiness"],
+          "additionalProperties": false
+        },
+        "operations": {
+          "type": "object",
+          "properties": {
+            "open": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": ["open"],
+          "additionalProperties": false
+        },
+        "next_steps": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "const": "configure_activation"
+                  },
+                  "doc": {
+                    "const": "docs/operations/workstreams-activation.md"
+                  }
+                },
+                "required": ["code", "doc"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "const": "enroll_native_source"
+                  },
+                  "doc": {
+                    "const": "docs/operations/workstreams-native-enrollment.md"
+                  }
+                },
+                "required": ["code", "doc"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "const": "verify_reference"
+                  },
+                  "doc": {
+                    "const": "docs/operations/workstreams-verification.md"
+                  }
+                },
+                "required": ["code", "doc"],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "maxItems": 3
+        }
+      },
+      "required": [
+        "contract",
+        "environment_id",
+        "observed_at",
+        "authority_effect",
+        "activation",
+        "registry",
+        "t3_source",
+        "placements",
+        "operations",
+        "next_steps"
+      ],
+      "additionalProperties": false
+    },
+    "Timestamp": {
+      "type": "string",
+      "maxLength": 27,
+      "pattern": "^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.\\d{1,6})?Z$"
+    }
+  }
+}

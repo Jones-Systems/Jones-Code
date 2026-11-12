@@ -24,9 +24,10 @@ export type DeviceHostCheck =
 const decodeDeviceHostDraft = Schema.decodeUnknownOption(SshDeviceHostConfig);
 
 export function parseDeviceHostDraft(host: SshDeviceHostConfig) {
-  const { identityFile, ...rest } = host;
+  const { identityFile, directSshTarget, ...rest } = host;
   return decodeDeviceHostDraft({
     ...rest,
+    ...(directSshTarget?.trim() ? { directSshTarget: directSshTarget.trim() } : {}),
     ...(identityFile?.trim() ? { identityFile: identityFile.trim() } : {}),
   });
 }
@@ -35,7 +36,6 @@ export function deviceHostConnectionKey(host: SshDeviceHostConfig) {
   return JSON.stringify([host.target.trim(), host.port, host.identityFile?.trim() || undefined]);
 }
 
-/** Each environment settles independently so one failure cannot hide the other results. */
 export async function checkDeviceHostConnections(
   targets: ReadonlyArray<DeviceHostCheckTarget>,
   host: SshDeviceHostConfig,

@@ -1,0 +1,417 @@
+import * as DateTime from "effect/DateTime";
+import { describe, expect, it } from "vite-plus/test";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { threadKey } from "@t3tools/client-runtime/state/entities";
+import { makeThreadFixture } from "../../test-fixtures";
+import {
+  filterSidebarV2VisibleThreads,
+  resolveThreadLastVisitedAt,
+} from "../../components/Sidebar.logic";
+import { filterSidebarEnvironmentThreads } from "../environmentFilters/model";
+import {
+  classifyThreadStatus,
+  threadIsInActivityWindow,
+  threadActivityWindowMs,
+  nextThreadStatusFilter,
+  nextThreadStatusWakeAt,
+  selectThreadStatus,
+  type StatusThread,
+  type ThreadStatusFilter,
+} from "./model";
+
+const completed = "2026-10-17T12:00:00.000Z";
+const visited = "2026-10-17T11:00:00.000Z";
+const latestRun = {
+  runId: "run" as never,
+  status: "completed" as const,
+  assistantMessageId: null,
+  requestedAt: visited,
+  startedAt: visited,
+  completedAt: completed,
+};
+const base: StatusThread = {
+  hasPendingApprovals: false,
+  hasPendingUserInput: false,
+  hasActionableProposedPlan: false,
+  interactionMode: "default",
+  latestRun: null,
+  runtime: null,
+};
+const runtime = (status: NonNullable<StatusThread["runtime"]>["status"]) => ({
+  status,
+  providerName: "Codex",
+  providerInstanceId: ProviderInstanceId.make("codex"),
+  activeRunId: null,
+  lastError: null,
+  updatedAt: visited,
+});
+
+describe("sidebar status filter", () => {
+  it("schedules the earliest scoped wake even when its status is filtered out", () => {
+    const now = Date.parse(visited);
+    const roster = [
+      { status: "done", snoozedUntil: completed },
+      { status: "working", snoozedUntil: "2026-10-17T13:00:00.000Z" },
+      { status: null, snoozedUntil: visited },
+      { status: null, snoozedUntil: "invalid" },
+      { status: null, snoozedUntil: null },
+    ];
+    expect(nextThreadStatusWakeAt(roster, now)).toBe(Date.parse(completed));
+    expect(nextThreadStatusWakeAt(roster, Date.parse(completed))).toBe(
+      Date.parse("2026-10-17T13:00:00.000Z"),
+    );
+    expect(nextThreadStatusWakeAt(roster, Date.parse("2026-10-17T13:00:00.000Z"))).toBeNull();
+    expect(nextThreadStatusWakeAt([], now)).toBeNull();
+  });
+
+  it.each(["current", "legacy"] as const)(
+    "hides only working threads in %s and returns directly to all",
+    (layout) => {
+      const working = { ...base, runtime: runtime("running") };
+      const input = { ...base, hasPendingUserInput: true };
+      const done = { ...base, latestRun, lastVisitedAt: visited };
+      const idle = { ...base };
+      const roster = [working, input, done, idle];
+      expect(
+        selectThreadStatus(roster, "hide-working", (row) => classifyThreadStatus(row, layout)),
+      ).toEqual({ counts: { working: 1, input: 1, done: 1 }, threads: [input, done, idle] });
+      expect(nextThreadStatusFilter("hide-working")).toBe("all");
+    },
+  );
+
+  it.each(["current", "legacy"] as const)(
+    "requires an explicit request despite a stale proposed plan in %s",
+    (layout) => {
+      const stalePlan = {
+        ...base,
+        interactionMode: "plan" as const,
+        hasActionableProposedPlan: true,
+        latestRun,
+        runtime: runtime("completed"),
+      };
+      for (const lastVisitedAt of [undefined, null, completed]) {
+        expect(classifyThreadStatus({ ...stalePlan, lastVisitedAt }, layout)).toBeNull();
+      }
+      expect(classifyThreadStatus({ ...stalePlan, lastVisitedAt: visited }, layout)).toBe("done");
+      for (const request of [
+        { hasPendingUserInput: true },
+        { hasPendingApprovals: true },
+        { pendingSubagentRequest: "user_input" as const },
+        { pendingSubagentRequest: "approval" as const },
+      ]) {
+        expect(classifyThreadStatus({ ...stalePlan, ...request }, layout)).toBe("input");
+      }
+    },
+  );
+
+  it.each(["current", "legacy"] as const)(
+    "includes background Waiting in Working while preserving requests and order in %s",
+    (layout) => {
+      const waiting: StatusThread = {
+        ...base,
+        runtime: runtime("idle"),
+        latestRun,
+        lastVisitedAt: visited,
+        pendingBackgroundTasks: [{ taskId: "monitor", kind: "monitor" }],
+      };
+      const working = { ...base, runtime: runtime("running") };
+      const requests: StatusThread[] = [
+        { ...waiting, hasPendingUserInput: true },
+        { ...waiting, hasPendingApprovals: true },
+        { ...waiting, pendingSubagentRequest: "user_input" },
+        { ...waiting, pendingSubagentRequest: "approval" },
+      ];
+      const roster = [requests[0]!, waiting, base, working, ...requests.slice(1)];
+      const classify = (row: StatusThread) => classifyThreadStatus(row, layout);
+      expect(classify(waiting)).toBe("working");
+      for (const request of requests) expect(classify(request)).toBe("input");
+      const selected = selectThreadStatus(roster, nextThreadStatusFilter("all"), classify);
+      expect(selected).toEqual({
+        counts: { working: 2, input: 4, done: 0 },
+        threads: [waiting, working],
+      });
+      expect(selectThreadStatus(roster, "hide-working", classify).threads).toEqual([
+        requests[0],
+        base,
+        ...requests.slice(1),
+      ]);
+      expect(
+        selectThreadStatus(roster, nextThreadStatusFilter("hide-working"), classify).threads,
+      ).toBe(roster);
+    },
+  );
+
+  it("includes guest-only requests in the default current Needs input roster and count", () => {
+    const guest = { ...base, pendingGuestMessageCount: 1 };
+    const classify = (row: StatusThread) => classifyThreadStatus(row, "current");
+    expect(classify(guest)).toBe("input");
+    expect(selectThreadStatus([base, guest], "input", classify)).toEqual({
+      counts: { working: 0, input: 1, done: 0 },
+      threads: [guest],
+    });
+    expect(
+      classifyThreadStatus(guest, "current", false, {
+        threadActivityWindowEnabled: false,
+        threadActivityWindowAmount: 3,
+        threadActivityWindowUnit: "hours",
+      }),
+    ).toBe("input");
+  });
+
+  it("cycles every state, including empty states, back to all", () => {
+    let filter: ThreadStatusFilter = "all";
+    const seen = [];
+    for (let i = 0; i < 4; i++) {
+      filter = nextThreadStatusFilter(filter);
+      seen.push(filter);
+      expect(selectThreadStatus([], filter, () => null)).toEqual({
+        counts: { working: 0, input: 0, done: 0 },
+        threads: [],
+      });
+    }
+    expect(seen).toEqual(["working", "input", "done", "all"]);
+  });
+
+  it.each(["current", "legacy"] as const)(
+    "preserves request precedence and connecting work in %s",
+    (layout) => {
+      for (const status of ["preparing", "queued", "starting", "running", "waiting"] as const) {
+        const working = { ...base, runtime: runtime(status), latestRun, lastVisitedAt: visited };
+        expect(classifyThreadStatus(working, layout)).toBe("working");
+        expect(classifyThreadStatus({ ...working, hasPendingApprovals: true }, layout)).toBe(
+          "input",
+        );
+        expect(classifyThreadStatus({ ...working, hasPendingUserInput: true }, layout)).toBe(
+          "input",
+        );
+        expect(
+          classifyThreadStatus({ ...working, pendingSubagentRequest: "approval" }, layout),
+        ).toBe("input");
+        expect(
+          classifyThreadStatus({ ...working, pendingSubagentRequest: "user_input" }, layout),
+        ).toBe("input");
+      }
+      expect(
+        classifyThreadStatus(
+          { ...base, interactionMode: "plan", latestRun, hasActionableProposedPlan: true },
+          layout,
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it("keeps Waiting, failures, and acknowledged or never-visited completions out of Done", () => {
+    expect(classifyThreadStatus({ ...base, runtime: runtime("idle") }, "current")).toBe("working");
+    expect(
+      classifyThreadStatus(
+        { ...base, runtime: runtime("idle"), latestRun, lastVisitedAt: visited },
+        "current",
+      ),
+    ).toBe("working");
+    for (const status of ["failed"] as const) {
+      expect(
+        classifyThreadStatus(
+          { ...base, runtime: runtime(status), latestRun, lastVisitedAt: visited },
+          "current",
+        ),
+      ).toBeNull();
+    }
+    for (const layout of ["current", "legacy"] as const) {
+      expect(classifyThreadStatus({ ...base, latestRun }, layout)).toBeNull();
+      expect(
+        classifyThreadStatus({ ...base, latestRun, lastVisitedAt: completed }, layout),
+      ).toBeNull();
+      expect(classifyThreadStatus({ ...base, latestRun, lastVisitedAt: visited }, layout)).toBe(
+        "done",
+      );
+      expect(classifyThreadStatus({ ...base, latestRun, lastVisitedAt: "invalid" }, layout)).toBe(
+        "done",
+      );
+    }
+    expect(
+      classifyThreadStatus({ ...base, latestRun, lastVisitedAt: visited }, "current", true),
+    ).toBeNull();
+  });
+
+  it("honors server mark-unread over local visit and local fallback on older servers", () => {
+    for (const [server, local, expected] of [
+      [visited, completed, "done"],
+      [completed, visited, null],
+      [null, visited, null],
+      [undefined, visited, "done"],
+    ] as const) {
+      expect(
+        classifyThreadStatus(
+          { ...base, latestRun, lastVisitedAt: resolveThreadLastVisitedAt(server, local) },
+          "current",
+        ),
+      ).toBe(expected);
+    }
+  });
+
+  it("counts the scoped roster before status filtering and updates to zero after a status changes", () => {
+    const environmentId = EnvironmentId.make("included");
+    const projectId = ProjectId.make("included");
+    const working = makeThreadFixture({ environmentId, projectId, runtime: runtime("running") });
+    const input = makeThreadFixture({ environmentId, projectId, hasPendingUserInput: true });
+    const done = makeThreadFixture({
+      environmentId,
+      projectId,
+      latestRun,
+      lastVisitedAt: visited,
+      runtime: null,
+    });
+    const others = [
+      makeThreadFixture({ ...working, archivedAt: completed }),
+      makeThreadFixture({
+        ...working,
+        lineage: {
+          rootThreadId: working.id,
+          parentThreadId: ThreadId.make("parent"),
+          relationshipToParent: "subagent",
+        },
+      }),
+      makeThreadFixture({ ...working, id: ThreadId.make("remote-task") }),
+      makeThreadFixture({ ...working, projectId: ProjectId.make("other") }),
+      makeThreadFixture({ ...working, environmentId: EnvironmentId.make("excluded") }),
+    ];
+    const scoped = filterSidebarV2VisibleThreads(
+      filterSidebarEnvironmentThreads(
+        [working, input, done, ...others],
+        new Set([EnvironmentId.make("excluded")]),
+      ),
+      new Set([`${environmentId}:${projectId}`]),
+      new Set([threadKey({ environmentId, threadId: ThreadId.make("remote-task") })]),
+    );
+    for (const filter of ["all", "working", "input", "done"] as const) {
+      const selected = selectThreadStatus(scoped, filter, (thread) =>
+        classifyThreadStatus(thread, "current"),
+      );
+      expect(selected.counts).toEqual({ working: 1, input: 1, done: 1 });
+      expect(selected.threads).toEqual(
+        filter === "all"
+          ? [working, input, done]
+          : filter === "working"
+            ? [working]
+            : filter === "input"
+              ? [input]
+              : [done],
+      );
+    }
+    expect(
+      selectThreadStatus([input, { ...done, lastVisitedAt: completed }], "working", (thread) =>
+        classifyThreadStatus(thread, "current"),
+      ),
+    ).toEqual({ counts: { working: 0, input: 1, done: 0 }, threads: [] });
+  });
+});
+
+const window = {
+  threadActivityWindowEnabled: true,
+  threadActivityWindowAmount: 3,
+  threadActivityWindowUnit: "hours" as const,
+};
+const recent = {
+  ...base,
+  latestRun,
+  source: { latestRunCompletedAt: DateTime.makeUnsafe(completed) } as unknown as NonNullable<
+    StatusThread["source"]
+  >,
+};
+describe("thread activity window", () => {
+  it("converts every unit and includes the exact cutoff", () => {
+    for (const [unit, milliseconds] of [
+      ["minutes", 60_000],
+      ["hours", 3_600_000],
+      ["days", 86_400_000],
+      ["weeks", 604_800_000],
+    ] as const) {
+      const settings = { ...window, threadActivityWindowUnit: unit };
+      expect(threadActivityWindowMs(settings)).toBe(3 * milliseconds);
+      const cutoff = Date.parse(completed) + 3 * milliseconds;
+      expect(threadIsInActivityWindow(recent, settings, cutoff)).toBe(true);
+      expect(threadIsInActivityWindow(recent, settings, cutoff + 1)).toBe(false);
+    }
+  });
+  it.each(["current", "legacy"] as const)(
+    "includes read completions and preserves precedence in %s",
+    (layout) => {
+      const now = Date.parse(completed);
+      for (const lastVisitedAt of [undefined, null, visited, completed]) {
+        expect(classifyThreadStatus({ ...recent, lastVisitedAt }, layout, false, window, now)).toBe(
+          "done",
+        );
+      }
+      expect(
+        classifyThreadStatus(
+          { ...recent, runtime: runtime("running") },
+          layout,
+          false,
+          window,
+          now,
+        ),
+      ).toBe("working");
+      expect(
+        classifyThreadStatus({ ...recent, runtime: runtime("idle") }, layout, false, window, now),
+      ).toBe("working");
+      expect(
+        classifyThreadStatus(
+          { ...recent, runtime: runtime("preparing") },
+          layout,
+          false,
+          window,
+          now,
+        ),
+      ).toBe("working");
+      expect(
+        classifyThreadStatus({ ...recent, hasPendingUserInput: true }, layout, false, window, now),
+      ).toBe("input");
+      expect(
+        classifyThreadStatus({ ...recent, runtime: runtime("failed") }, layout, false, window, now),
+      ).toBeNull();
+      expect(
+        classifyThreadStatus(
+          { ...recent, latestRun: { ...latestRun, status: "failed" } },
+          layout,
+          false,
+          window,
+          now,
+        ),
+      ).toBeNull();
+      expect(
+        classifyThreadStatus({ ...recent, source: undefined }, layout, false, window, now),
+      ).toBeNull();
+    },
+  );
+  it("ignores metadata and synthetic completion dates, but accepts genuine user and run activity", () => {
+    const now = Date.parse(completed) + 4 * 3_600_000;
+    const old = { ...recent, lastVisitedAt: new Date(now).toISOString() };
+    expect(threadIsInActivityWindow(old, window, now)).toBe(false);
+    const synthetic = {
+      ...old,
+      source: undefined,
+      latestRun: { ...latestRun, completedAt: new Date(now).toISOString() },
+    };
+    expect(threadIsInActivityWindow(synthetic, window, now)).toBe(false);
+    expect(
+      threadIsInActivityWindow(
+        { ...synthetic, latestUserMessageAt: new Date(now).toISOString() },
+        window,
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      threadIsInActivityWindow(
+        { ...synthetic, latestRun: { ...latestRun, requestedAt: new Date(now).toISOString() } },
+        window,
+        now,
+      ),
+    ).toBe(true);
+    expect(threadIsInActivityWindow({ ...base, latestUserMessageAt: "invalid" }, window, now)).toBe(
+      false,
+    );
+    expect(
+      threadIsInActivityWindow(base, { ...window, threadActivityWindowEnabled: false }, now),
+    ).toBe(true);
+  });
+});

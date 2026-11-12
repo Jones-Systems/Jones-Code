@@ -1,0 +1,23 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "pr-read-efficiency",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/pullRequestReads/",
+    "packages/source-control-github/src/jones/"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx",
+    "packages/source-control-github/src/server/GitHubSourceControlProvider.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx",
+      "to": "apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.tsx"
+    },
+    {
+      "from": "packages/source-control-github/src/server/GitHubSourceControlProvider.ts",
+      "to": "packages/source-control-github/src/jones/qualifiedHeadDiscovery.ts"
+    }
+  ]
+}

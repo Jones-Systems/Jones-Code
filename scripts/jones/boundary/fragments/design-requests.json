@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "design-requests",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/designRequests/",
+    "packages/client-runtime/src/jones/designRequests/"
+  ],
+  "hookPaths": ["apps/web/src/routes/design-requests.tsx"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/routes/design-requests.tsx",
+      "to": "apps/web/src/jones/designRequests/DesignRequestsPage.tsx"
+    }
+  ]
+}

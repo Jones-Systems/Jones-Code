@@ -1,4 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { VoiceReviewPage } from "../components/voiceReview/VoiceReviewPage";
+import { WorkQueuePage } from "../components/workQueue/WorkQueuePage";
 
-export const Route = createFileRoute("/voice-review")({ component: VoiceReviewPage });
+export const Route = createFileRoute("/voice-review")({ component: WorkQueuePage });

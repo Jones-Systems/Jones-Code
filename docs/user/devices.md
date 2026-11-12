@@ -31,7 +31,15 @@ macOS with Xcode. Android needs the SDK Platform-Tools, Android Emulator,
 and Command-line Tools (latest), plus a virtual device created in Android
 Studio's Device Manager. T3 Code detects standard SDK locations; set
 `ANDROID_HOME` for a custom location. The panel explains missing dependencies.
-After installing them, restart the environment server and refresh devices.
+After installing SDK tools, restart the environment server and refresh devices.
+
+Android emulator video also needs `ffmpeg` with the libx264 encoder on the device
+host's PATH, or an executable selected by `SERVE_EMU_FFMPEG` on that host. If
+opening an emulator reports an ffmpeg problem, install or fix the executable
+and retry opening it. After changing PATH or `SERVE_EMU_FFMPEG`, restart the
+environment server for local devices, or turn device support off and on for SSH
+devices, so the running tools inherit the new environment. Physical Android
+devices and iOS do not need ffmpeg.
 
 The screen is interactive: click and drag to touch, type while the screen is
 focused, and use the toolbar for Home, Back, and Recents on Android, rotate on
@@ -65,6 +73,8 @@ connected to the thread, the same way an agent-driven browser does. Turn off
 **Auto-show floating preview** in **Settings → Integrations → Browser** to open a
 right-panel tab instead. In the mobile app, open the agent's thread and tap the
 device button above the composer to watch the live screen and control it.
+On iOS layouts with an inspector, the device opens beside the thread. Maximize
+it to fill the screen; closing the full-screen view returns to the inspector.
 If the thread has several devices open, choose one in the viewer. Closing the
 viewer stops streaming and leaves the device available to the agent. Device
 activity also appears in the thread timeline.
@@ -98,9 +108,13 @@ not supported.
 anything, with a result for each selected environment. Targets that resolve to
 the environment’s own machine are skipped, since its devices are already local.
 The first device listing installs pinned device tools on the host.
+SSH device hosts currently need macOS or Linux. To use devices on a Windows
+machine, run T3 Code on that machine and connect to its environment.
 Node 22 or newer and npm must be available to non-interactive SSH commands.
 T3 checks common Homebrew and Android SDK locations; custom installations need
-the appropriate PATH and ANDROID_HOME on the host.
+the appropriate PATH and ANDROID_HOME on the host. Android emulator video needs
+`ffmpeg` with libx264 on that host; physical Android devices use scrcpy and do
+not need ffmpeg.
 
 The picker identifies devices by host when several hosts are configured.
 Connections recover after interruptions. Removing a host closes its device
@@ -110,6 +124,25 @@ T3 provides discovery, streaming, and control. Arrange app builds,
 installation, and connectivity to development servers such as Metro separately.
 A simulator on another machine cannot reach Metro through your environment's
 localhost without forwarding or another reachable address.
+
+## Direct desktop connection
+
+For an SSH device host near your desktop, edit the host in **Settings →
+Integrations → Devices → Device hosts** and enter a **Direct desktop SSH
+target**. Enter an SSH alias or hostname; the desktop resolves it using
+its SSH configuration and keys. Leave the field empty to keep streaming
+through the environment server. The desktop must already trust the host and
+be able to connect without a password prompt.
+
+With compatible desktop and environment versions, the panel automatically
+prefers a direct connection after authenticating it. Its connection label
+shows the selected route. If that connection fails, the panel reconnects
+through the environment server and reports the reason. Pending touches and
+keys are discarded during the switch; repeat the gesture once connected.
+
+The selected environment keeps running your agents and managing devices.
+The direct connection carries the screen and live gestures. Web, mobile, and
+older desktop clients continue through the environment server.
 
 ## Device tool updates
 

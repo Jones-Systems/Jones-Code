@@ -7,6 +7,8 @@ import {
   assertLoopbackEndpoint,
   loadScenario,
   pngDimensions,
+  requestLocalBackend,
+  createScenarioContext,
   validateCaptureName,
 } from "./scenario-api.mjs";
 import { sha256 } from "./provenance.mjs";
@@ -56,3 +58,483 @@ NodeTest.test("PNG metadata uses encoded physical dimensions", () => {
   NodeAssert.deepEqual(pngDimensions(bytes), { width: 1280, height: 800 });
   NodeAssert.throws(() => pngDimensions(Buffer.from("not a PNG")));
 });
+
+const endpoint = {
+  id: "primary",
+  httpBaseUrl: "http://127.0.0.1:43773",
+  wsBaseUrl: "ws://127.0.0.1:43773/",
+};
+const threadCommand = {
+  type: "thread.create",
+  commandId: "fixture-command",
+  threadId: "fixture-thread",
+  projectId: "fixture-project",
+  title: "Synthetic",
+  createdBy: "user",
+  creationSource: "web",
+  modelSelection: { instanceId: "codex", model: "gpt-5" },
+  runtimeMode: "approval-required",
+  interactionMode: "default",
+  branch: null,
+  worktreePath: null,
+};
+function backendFixture({
+  httpStatus = 200,
+  rpcExit = { _tag: "Success", value: { sequence: 1 } },
+  malformed = false,
+  socketError = false,
+} = {}) {
+  const calls = [],
+    sockets = [];
+  const dependencies = {
+    setTimeout,
+    clearTimeout,
+    desktopBridge: { getLocalEnvironmentBearerToken: async () => "synthetic-bearer" },
+    fetch: async (url, options) => {
+      calls.push({ url: String(url), options });
+      return {
+        ok: httpStatus === 200,
+        status: httpStatus,
+        json: async () =>
+          String(url).endsWith("websocket-ticket")
+            ? { ticket: "synthetic-ticket" }
+            : { threads: [{ id: "fixture-thread", title: "Renamed" }] },
+      };
+    },
+    WebSocket: class {
+      listeners = new Map();
+      messages = [];
+      closed = false;
+      constructor(url) {
+        this.url = url;
+        sockets.push(this);
+        queueMicrotask(() => this.emit(socketError ? "error" : "open"));
+      }
+      addEventListener(type, listener) {
+        this.listeners.set(type, listener);
+      }
+      emit(type, event) {
+        this.listeners.get(type)?.(event);
+      }
+      send(data) {
+        this.messages.push(JSON.parse(data));
+        if (this.messages.at(-1)._tag !== "Request") return;
+        queueMicrotask(() => {
+          this.emit("message", {
+            data: JSON.stringify({ _tag: "Exit", requestId: "unrelated", exit: rpcExit }),
+          });
+          this.emit("message", { data: JSON.stringify({ _tag: "Ping" }) });
+          this.emit("message", {
+            data: malformed
+              ? "bad JSON"
+              : JSON.stringify({ _tag: "Exit", requestId: "0", exit: rpcExit }),
+          });
+        });
+      }
+      close() {
+        this.closed = true;
+        this.emit("close");
+      }
+    },
+  };
+  return { dependencies, calls, sockets };
+}
+NodeTest.test(
+  "V2 fixture snapshot authenticates with bearer, omits cookies, and negotiates protocol",
+  async () => {
+    const fixture = backendFixture();
+    const value = await requestLocalBackend({ endpoint, method: "snapshot" }, fixture.dependencies);
+    NodeAssert.equal(value.threads[0].title, "Renamed");
+    NodeAssert.equal(fixture.calls[0].url, "http://127.0.0.1:43773/api/orchestration/shell");
+    NodeAssert.deepEqual(fixture.calls[0].options.headers, {
+      authorization: "Bearer synthetic-bearer",
+      "x-t3-orchestration-protocol": "2",
+    });
+    NodeAssert.equal(fixture.calls[0].options.credentials, "omit");
+    NodeAssert.equal(fixture.sockets.length, 0);
+  },
+);
+NodeTest.test(
+  "V2 project fixtures use project mutation HTTP rather than legacy orchestration dispatch",
+  async () => {
+    const fixture = backendFixture();
+    const command = {
+      type: "project.create",
+      commandId: "c",
+      projectId: "p",
+      title: "Synthetic",
+      workspaceRoot: "/scratch/workspace",
+    };
+    await requestLocalBackend(
+      { endpoint, method: "dispatch", payload: command },
+      fixture.dependencies,
+    );
+    NodeAssert.equal(fixture.calls[0].url, "http://127.0.0.1:43773/api/projects/mutate");
+    NodeAssert.equal(fixture.calls[0].options.method, "POST");
+    NodeAssert.deepEqual(JSON.parse(fixture.calls[0].options.body), command);
+    NodeAssert.equal(fixture.calls[0].options.credentials, "omit");
+    NodeAssert.equal(fixture.sockets.length, 0);
+  },
+);
+NodeTest.test(
+  "V2 thread fixture RPC negotiates a private ticket, handles ping, and closes on success",
+  async () => {
+    const fixture = backendFixture();
+    NodeAssert.deepEqual(
+      await requestLocalBackend(
+        { endpoint, method: "dispatch", payload: threadCommand },
+        fixture.dependencies,
+      ),
+      { sequence: 1 },
+    );
+    NodeAssert.equal(fixture.calls[0].url, "http://127.0.0.1:43773/api/auth/websocket-ticket");
+    NodeAssert.equal(fixture.calls[0].options.credentials, "omit");
+    const socket = fixture.sockets[0];
+    const url = new URL(socket.url);
+    NodeAssert.equal(url.pathname, "/ws");
+    NodeAssert.equal(url.searchParams.get("orchestrationProtocol"), "2");
+    NodeAssert.equal(url.searchParams.get("wsTicket"), "synthetic-ticket");
+    NodeAssert.deepEqual(socket.messages[0], {
+      _tag: "Request",
+      id: "0",
+      tag: "orchestration.dispatchCommand",
+      payload: threadCommand,
+      headers: [],
+    });
+    NodeAssert.deepEqual(socket.messages[1], { _tag: "Pong" });
+    NodeAssert.equal(socket.closed, true);
+  },
+);
+NodeTest.test("V2 fixture HTTP failures reject before opening a socket", async () => {
+  for (const method of ["snapshot", "dispatch"]) {
+    const fixture = backendFixture({ httpStatus: 401 });
+    await NodeAssert.rejects(
+      requestLocalBackend({ endpoint, method, payload: threadCommand }, fixture.dependencies),
+      /HTTP status 401/,
+    );
+    NodeAssert.equal(fixture.sockets.length, 0);
+  }
+});
+NodeTest.test(
+  "V2 fixture RPC failures preserve rejection and close only the owned socket",
+  async () => {
+    for (const { options, expected } of [
+      {
+        options: { rpcExit: { _tag: "Failure", cause: "synthetic-ticket" } },
+        expected: /rejected metadata command/,
+      },
+      { options: { malformed: true }, expected: /Invalid fixture RPC response/ },
+      { options: { socketError: true }, expected: /connection failed/ },
+    ]) {
+      const fixture = backendFixture(options);
+      await NodeAssert.rejects(
+        requestLocalBackend(
+          { endpoint, method: "dispatch", payload: threadCommand },
+          fixture.dependencies,
+        ),
+        (error) => expected.test(error.message) && !error.message.includes("synthetic-ticket"),
+      );
+      NodeAssert.equal(fixture.sockets[0].closed, true);
+    }
+  },
+);
+NodeTest.test(
+  "V2 fixture scope rejects provider effects and nonloopback endpoints before credentials",
+  async () => {
+    const fixture = backendFixture();
+    fixture.dependencies.desktopBridge.getLocalEnvironmentBearerToken = () => {
+      throw new Error("credentials reached");
+    };
+    for (const payload of [
+      { type: "thread.turn.start" },
+      { type: "thread.meta.update" },
+      { type: "thread.metadata.update", commandId: "c", threadId: "t", regenerateTitle: true },
+      { ...threadCommand, worktreePath: "/live/worktree" },
+    ])
+      await NodeAssert.rejects(
+        requestLocalBackend({ endpoint, method: "dispatch", payload }, fixture.dependencies),
+        /metadata|private project/,
+      );
+    await NodeAssert.rejects(
+      requestLocalBackend(
+        { endpoint: { ...endpoint, wsBaseUrl: "ws://example.test/ws" }, method: "snapshot" },
+        fixture.dependencies,
+      ),
+      /private loopback/,
+    );
+    NodeAssert.equal(fixture.calls.length, 0);
+  },
+);
+NodeTest.test("scenario context restricts project fixtures to its owned workspace", async () => {
+  const fixture = backendFixture();
+  const page = { evaluate: (fn, input) => (input ? fn(input, fixture.dependencies) : [endpoint]) };
+  const ctx = createScenarioContext({ page, workspace: "/scratch/workspace" });
+  await NodeAssert.rejects(
+    ctx.dispatch({ type: "project.create", workspaceRoot: "/app" }),
+    /private workspace/,
+  );
+  await ctx.dispatch({
+    type: "thread.metadata.update",
+    commandId: "c",
+    threadId: "t",
+    title: "Renamed",
+  });
+  NodeAssert.equal(fixture.sockets[0].messages[0].payload.title, "Renamed");
+});
+
+NodeTest.test(
+  "V2 fixture RPC timeout rejects and closes its owned socket without waiting on wall time",
+  async () => {
+    const fixture = backendFixture();
+    fixture.dependencies.setTimeout = (fn, milliseconds) => {
+      NodeAssert.equal(milliseconds, 15000);
+      queueMicrotask(fn);
+      return "synthetic-timer";
+    };
+    let cleared;
+    fixture.dependencies.clearTimeout = (timer) => {
+      cleared = timer;
+    };
+    await NodeAssert.rejects(
+      requestLocalBackend(
+        { endpoint, method: "dispatch", payload: threadCommand },
+        fixture.dependencies,
+      ),
+      /timed out/,
+    );
+    NodeAssert.equal(fixture.sockets[0].closed, true);
+    NodeAssert.equal(cleared, "synthetic-timer");
+  },
+);
+
+NodeTest.test(
+  "synthetic registration fixes executable/account and uses create-only settings RPC",
+  async () => {
+    for (const [instanceId, letter] of [
+      ["native-fixture-a", "A"],
+      ["native-fixture-b", "B"],
+    ]) {
+      const fixture = backendFixture();
+      await requestLocalBackend(
+        { endpoint, method: "registerSyntheticProvider", payload: { instanceId } },
+        fixture.dependencies,
+      );
+      const request = fixture.sockets[0].messages[0];
+      NodeAssert.equal(request.tag, "server.updateSettings");
+      NodeAssert.deepEqual(request.payload, {
+        patch: {},
+        providerInstanceMutation: {
+          operation: "create",
+          instanceId,
+          instance: {
+            driver: "codex",
+            displayName: "Synthetic " + letter,
+            enabled: true,
+            config: {
+              binaryPath: "/scratch/home/native-self-config/codex-" + letter,
+              homePath: "/scratch/home/native-self-config/account",
+            },
+          },
+        },
+      });
+      NodeAssert.equal(fixture.sockets[0].closed, true);
+    }
+  },
+);
+NodeTest.test(
+  "fixture thread readback uses authenticated V2 HTTP within its namespace",
+  async () => {
+    const fixture = backendFixture();
+    await requestLocalBackend(
+      { endpoint, method: "fixtureThread", payload: { threadId: "native-self-config-control" } },
+      fixture.dependencies,
+    );
+    NodeAssert.equal(
+      fixture.calls[0].url,
+      endpoint.httpBaseUrl + "/api/orchestration/threads/native-self-config-control",
+    );
+    NodeAssert.equal(fixture.calls[0].options.headers["x-t3-orchestration-protocol"], "2");
+    NodeAssert.equal(fixture.calls[0].options.credentials, "omit");
+  },
+);
+NodeTest.test(
+  "native hooks reject arbitrary providers, paths, methods and thread reads before authentication",
+  async () => {
+    const fixture = backendFixture();
+    fixture.dependencies.desktopBridge.getLocalEnvironmentBearerToken = () => {
+      throw new Error("authentication reached");
+    };
+    for (const [method, payload] of [
+      ["registerSyntheticProvider", { instanceId: "codex" }],
+      [
+        "registerSyntheticProvider",
+        { instanceId: "native-fixture-a", binaryPath: "/usr/bin/codex" },
+      ],
+      ["registerSyntheticProvider", { instanceId: "native-fixture-a", patch: {} }],
+      ["fixtureThread", { threadId: "live-thread" }],
+      ["fixtureThread", { threadId: "native-self-config-../escape" }],
+      ["fixtureThread", { threadId: "native-self-config-valid", arbitrary: true }],
+      ["arbitrary", {}],
+      ["dispatch", { type: "message.dispatch" }],
+      ["dispatch", { type: "thread.model-selection.update" }],
+    ])
+      await NodeAssert.rejects(
+        requestLocalBackend({ endpoint, method, payload }, fixture.dependencies),
+        (error) => !error.message.includes("authentication reached"),
+      );
+    NodeAssert.equal(fixture.calls.length, 0);
+  },
+);
+
+NodeTest.test(
+  "fixture RPC accepts the already-normalized /ws endpoint without duplicating its path",
+  async () => {
+    const fixture = backendFixture();
+    await requestLocalBackend(
+      {
+        endpoint: { ...endpoint, wsBaseUrl: "ws://127.0.0.1:43773/ws" },
+        method: "dispatch",
+        payload: threadCommand,
+      },
+      fixture.dependencies,
+    );
+    const url = new URL(fixture.sockets[0].url);
+    NodeAssert.equal(url.pathname, "/ws");
+    NodeAssert.equal(url.searchParams.get("orchestrationProtocol"), "2");
+    NodeAssert.equal(url.searchParams.get("wsTicket"), "synthetic-ticket");
+    NodeAssert.equal(fixture.sockets[0].closed, true);
+  },
+);
+
+NodeTest.test("linked checkpoint metadata admits only the exact synthetic fixture", async () => {
+  const payload = {
+    ...threadCommand,
+    threadId: "native-self-config-linked",
+    modelSelection: { instanceId: "native-fixture-a", model: "native-model-a" },
+    branch: "native-self-config-execution",
+    worktreePath: "/scratch/workspace/native-self-config-execution",
+  };
+  const accepted = backendFixture();
+  await requestLocalBackend({ endpoint, method: "dispatch", payload }, accepted.dependencies);
+  NodeAssert.equal(accepted.sockets[0].messages[0].payload.worktreePath, payload.worktreePath);
+  for (const mutation of [
+    { worktreePath: "/scratch/workspace/native-self-config-execution/../other" },
+    { worktreePath: "/scratch/workspace/.git" },
+    { branch: "other" },
+    { threadId: "live-thread" },
+    { modelSelection: { instanceId: "codex", model: "gpt-5" } },
+  ]) {
+    const rejected = backendFixture();
+    rejected.dependencies.desktopBridge.getLocalEnvironmentBearerToken = () => {
+      throw new Error("authentication reached");
+    };
+    await NodeAssert.rejects(
+      requestLocalBackend(
+        { endpoint, method: "dispatch", payload: { ...payload, ...mutation } },
+        rejected.dependencies,
+      ),
+      /exact synthetic linked worktree/,
+    );
+    NodeAssert.equal(rejected.calls.length, 0);
+  }
+});
+
+for (const [name, wsBaseUrl, expectedPath] of [
+  ["root bootstrap URL", "ws://127.0.0.1:43773", "/ws"],
+  ["explicit root path", "ws://127.0.0.1:43773/", "/ws"],
+  ["explicit nonroot path", "ws://127.0.0.1:43773/custom/ws", "/custom/ws"],
+]) {
+  NodeTest.test(
+    `V2 fixture RPC routes ${name} and preserves authorization and cleanup`,
+    async () => {
+      const fixture = backendFixture();
+      const result = await requestLocalBackend(
+        { endpoint: { ...endpoint, wsBaseUrl }, method: "dispatch", payload: threadCommand },
+        fixture.dependencies,
+      );
+      NodeAssert.deepEqual(result, { sequence: 1 });
+      NodeAssert.equal(fixture.sockets.length, 1);
+      const socket = fixture.sockets[0];
+      const url = new URL(socket.url);
+      NodeAssert.equal(url.pathname, expectedPath);
+      NodeAssert.equal(url.searchParams.get("orchestrationProtocol"), "2");
+      NodeAssert.equal(url.searchParams.get("wsTicket"), "synthetic-ticket");
+      NodeAssert.equal(fixture.calls[0].url, "http://127.0.0.1:43773/api/auth/websocket-ticket");
+      NodeAssert.equal(fixture.calls[0].options.credentials, "omit");
+      NodeAssert.equal(socket.closed, true);
+    },
+  );
+}
+
+NodeTest.test(
+  "restart rebinds scenario operations to the new page and app while retaining evidence",
+  async () => {
+    const calls = [];
+    const makePage = (name) => ({
+      evaluate: async (fn, input) => {
+        calls.push([name, input?.method ?? "topology"]);
+        return input ? { threads: [] } : [endpoint];
+      },
+      reload: async () => {
+        calls.push([name, "reload"]);
+      },
+      waitForFunction: async () => {},
+    });
+    const firstPage = makePage("first");
+    const secondPage = makePage("second");
+    const secondApp = {};
+    const evidence = { oldProcessesClosed: true };
+    const ctx = createScenarioContext({
+      electronApp: {},
+      page: firstPage,
+      workspace: "/scratch/workspace",
+      size: { width: 1280, height: 800 },
+      theme: "light",
+      restartApplication: async () => ({
+        electronApp: secondApp,
+        page: secondPage,
+        evidence,
+        restoreConnectivity: async () => {
+          calls.push(["second", "connectivity"]);
+        },
+      }),
+    });
+    ctx.setWindowSize = async () => {};
+    ctx.setTheme = async () => {};
+    ctx.fixture.threadId = "preserved";
+    ctx.assert(true, "Before restart");
+    NodeAssert.deepEqual(await ctx.restart(), evidence);
+    NodeAssert.equal(ctx.page, secondPage);
+    NodeAssert.equal(ctx.electronApp, secondApp);
+    await ctx.readSnapshot();
+    await ctx.reload();
+    NodeAssert.deepEqual(calls, [
+      ["second", "topology"],
+      ["second", "topology"],
+      ["second", "snapshot"],
+      ["second", "reload"],
+      ["second", "connectivity"],
+    ]);
+    NodeAssert.equal(ctx.results().fixture.threadId, "preserved");
+    NodeAssert.deepEqual(ctx.results().restarts, [evidence]);
+    NodeAssert.equal(ctx.results().assertions[0].name, "Before restart");
+  },
+);
+
+NodeTest.test(
+  "failed restart preserves original failure and never substitutes a new page",
+  async () => {
+    const page = {};
+    const failure = new Error("Old server process still exists");
+    const ctx = createScenarioContext({
+      electronApp: {},
+      page,
+      restartApplication: async () => {
+        throw failure;
+      },
+    });
+    await NodeAssert.rejects(ctx.restart(), (error) => error === failure);
+    NodeAssert.equal(ctx.page, page);
+    NodeAssert.equal(ctx.results().restarts, undefined);
+  },
+);

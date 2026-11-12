@@ -1,0 +1,65 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-metadata-reads-efficiency",
+  "jonesOwnedPaths": [],
+  "hookPaths": ["apps/server/src/project/ProjectService.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectService.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectService.test.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectService.deletion.test.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.test.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadPullRequestService.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/thread/tools.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    }
+  ]
+}

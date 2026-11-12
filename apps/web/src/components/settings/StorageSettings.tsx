@@ -1,7 +1,29 @@
-import type { StorageCleanupSettings, WorktreeCleanupRules } from "@t3tools/contracts";
+import { requestConfirmDialog } from "~/confirmDialog";
+import type {
+  StorageCleanupReport,
+  StorageCleanupSettings,
+  WorktreeCleanupRules,
+} from "@t3tools/contracts";
+import { resolvePastedPath } from "@t3tools/shared/path";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { useAtomValue } from "@effect/atom-react";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import { formatBytes } from "../../lib/formatBytes";
+import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { useNowMinute } from "../../hooks/useNowMinute";
+import { useDebouncedValue } from "../../state/queries";
+import { AnimatedHeight } from "../AnimatedHeight";
+import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
 
+import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import {
@@ -11,24 +33,93 @@ import {
   NumberFieldIncrement,
   NumberFieldInput,
 } from "../ui/number-field";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
+import { DatabaseStorageNotice } from "./DatabaseStorageNotice";
+import { AdvancedSettings } from "./AdvancedSettings";
+import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { SettingsScopeNotice } from "./SettingsScopeNotice";
+import { SettingsGroup } from "./SettingsGroup";
 import type { ScopedSettingsTarget } from "./scopedSettings";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { searchableSetting } from "./settingsSearch";
 import {
   useClearScopedSettings,
   useScopedSettings,
+  useScopedSettingsMixed,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
+import { settingsScopeEnvironmentLabel } from "./settingsScopeAxis";
+
+export function WorktreesDirectoryRow() {
+  const { connectedEnvironments, targets } = useSettingsScope();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixed = useScopedSettingsMixed(["worktreesDirectory"]);
+  const edited = useRef(false);
+  const draft = useRef("");
+  if (
+    connectedEnvironments.some(
+      (environment) =>
+        environment.serverConfig?.environment.capabilities.worktreesDirectory !== true,
+    )
+  )
+    return null;
+  const scopeKey = targets.map((target) => target.environmentId).join(",");
+
+  return (
+    <SettingsRow
+      {...searchableSetting("storage-worktrees-location")}
+      description={
+        "Folder where new worktrees are created, on any drive, such as D:\\worktrees or ~/worktrees. Existing worktrees stay where they are. Leave empty to use the T3 home folder."
+      }
+      serverScoped
+      settingKeys={["worktreesDirectory"]}
+      resetAction={
+        mixed || settings.worktreesDirectory !== "" ? (
+          <SettingResetButton
+            label="worktree location"
+            onClick={() => updateSettings({ worktreesDirectory: "" })}
+          />
+        ) : null
+      }
+      control={
+        <Input
+          key={`${scopeKey}:${mixed}:${settings.worktreesDirectory}`}
+          aria-label="Worktree location"
+          autoCapitalize="none"
+          spellCheck={false}
+          placeholder={mixed ? "Mixed" : "Default"}
+          defaultValue={mixed ? "" : settings.worktreesDirectory}
+          onFocus={(event) => {
+            draft.current = event.target.value;
+          }}
+          onChange={(event) => {
+            edited.current = true;
+            draft.current = resolvePastedPath(draft.current, event.target.value);
+            event.target.value = draft.current;
+          }}
+          onBlur={(event) => {
+            const value = event.target.value.trim();
+            if (edited.current && (mixed || value !== settings.worktreesDirectory))
+              updateSettings({ worktreesDirectory: value });
+            edited.current = false;
+          }}
+        />
+      }
+    />
+  );
+}
 
 function RetentionControl({
   label,
   value,
   onChange,
+  minimum = 1,
 }: {
   label: string;
   value: number | null;
   onChange: (value: number | null) => void;
+  minimum?: number;
 }) {
   const [draft, setDraft] = useState(value);
   const [savedValue, setSavedValue] = useState(value);
@@ -42,7 +133,7 @@ function RetentionControl({
       {value !== null ? (
         <NumberField
           value={draft}
-          min={1}
+          min={minimum}
           max={3650}
           step={1}
           size="sm"
@@ -51,7 +142,7 @@ function RetentionControl({
           onValueCommitted={(next) => {
             if (next === null) setDraft(value);
             else {
-              const days = Math.min(3650, Math.max(1, Math.round(next)));
+              const days = Math.min(3650, Math.max(minimum, Math.round(next)));
               setDraft(days);
               onChange(days);
             }
@@ -61,8 +152,8 @@ function RetentionControl({
             <NumberFieldDecrement aria-label={`Decrease ${label}`} />
             <NumberFieldInput
               aria-label={`${label} in days`}
-              size={new Intl.NumberFormat().format(draft ?? value).length}
-              className="field-sizing-content w-auto min-w-[1ch] grow-0 text-right"
+              size={5}
+              className="w-auto grow-0 text-right"
             />
             <span aria-hidden="true" className="self-center pr-2 text-xs">
               days
@@ -82,8 +173,479 @@ function RetentionControl({
   );
 }
 
-export function StorageSettingsPanel() {
-  const { scope, connectedEnvironments, targets, target } = useSettingsScope();
+const KEEP_WHEN_LABELS = {
+  "any-local-files": "Any local files",
+  "uncommitted-changes": "Uncommitted changes",
+  "tracked-changes": "Edited tracked files",
+} as const;
+
+function lastRunSummary(
+  entries: readonly { readonly label: string; readonly counts: string }[],
+  machineCount: number,
+) {
+  const first = entries[0];
+  if (!first) return "";
+  if (machineCount <= 1) return first.counts;
+  if (entries.length === machineCount && entries.every((entry) => entry.counts === first.counts)) {
+    return `${first.counts} on every machine`;
+  }
+  return entries.map((entry) => `${entry.label}: ${entry.counts}`).join(" · ");
+}
+
+const COVERAGE_LABEL = {
+  declared_cache: "Discard declared caches",
+  dependency_reproduction: "Discard reproducible dependencies",
+  format_recognized: "Discard recognized format files",
+} as const;
+
+function factsWithKeys<A>(values: readonly A[], identity: (value: A) => string) {
+  const occurrences = new Map<string, number>();
+  return values.map((value) => {
+    const fact = identity(value);
+    const occurrence = occurrences.get(fact) ?? 0;
+    occurrences.set(fact, occurrence + 1);
+    return { value, key: `${fact}:${occurrence}` };
+  });
+}
+
+function lineageIdentity(lineage: Readonly<Record<string, string>>) {
+  return JSON.stringify(
+    Object.entries(lineage).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function CleanupResults({
+  report,
+  environmentLabel,
+  onRetire,
+}: {
+  report: StorageCleanupReport;
+  environmentLabel: string;
+  onRetire?: (entry: StorageCleanupReport["entries"][number]) => void;
+}) {
+  return (
+    <>
+      {report.entries.map((entry, index) => {
+        const name =
+          entry.kind === "worktree"
+            ? ((entry.threadId === null
+                ? entry.path
+                : entry.path?.split(/[\\/]/).findLast(Boolean)) ?? "Worktrees")
+            : entry.kind === "logs"
+              ? "Rotated logs"
+              : "Browser artifacts";
+        return (
+          <SettingsRow
+            key={`${entry.path ?? entry.kind}:${entry.threadId ?? index}`}
+            title={<span className="wrap-anywhere select-text">{name}</span>}
+            description={
+              <span className="block space-y-2 wrap-anywhere select-text">
+                <span className={`block ${entry.outcome === "failed" ? "text-destructive" : ""}`}>
+                  {entry.reason}
+                </span>
+                <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-border/60 pl-3">
+                  <span>Machine</span>
+                  <span className="text-foreground/80">{environmentLabel}</span>
+                  {entry.projectPath && (
+                    <>
+                      <span>Project</span>
+                      <code className="text-foreground/80">{entry.projectPath}</code>
+                    </>
+                  )}
+                  {entry.path && (
+                    <>
+                      <span>Folder</span>
+                      <code className="text-foreground/80">{entry.path}</code>
+                    </>
+                  )}
+                  {entry.threadTitle && (
+                    <>
+                      <span>Thread</span>
+                      <span>{entry.threadTitle}</span>
+                    </>
+                  )}
+                </span>
+              </span>
+            }
+            control={
+              <>
+                {onRetire &&
+                  entry.threadId &&
+                  entry.path &&
+                  entry.retirement?.fingerprint &&
+                  entry.retirement.paths.length <= 200 &&
+                  entry.retirement.reasonCodes.every((reason) =>
+                    ["unattested_ignored", "sensitive_ignored", "untracked"].includes(reason),
+                  ) &&
+                  entry.retirement.state !== "retired" && (
+                    <Button variant="outline" size="sm" onClick={() => onRetire(entry)}>
+                      Retire
+                    </Button>
+                  )}
+                {(entry.outcome === "removed" ||
+                  (entry.outcome === "kept" && entry.bytes !== null)) && (
+                  <span className="text-xs text-muted-foreground">
+                    {[
+                      entry.kind !== "worktree" && entry.files !== null
+                        ? `${entry.files.toLocaleString()} ${entry.files === 1 ? "file" : "files"}`
+                        : null,
+                      entry.bytes !== null ? formatBytes(entry.bytes) : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                )}
+              </>
+            }
+          >
+            {entry.retirement &&
+              (entry.retirement.receiptId ||
+                entry.retirement.details.length > 0 ||
+                entry.retirement.outputObligations.length > 0) && (
+                <details className="pb-2 text-xs text-muted-foreground wrap-anywhere select-text">
+                  <summary className="cursor-pointer">Retirement details</summary>
+                  <span className="mt-1 block space-y-1">
+                    {entry.retirement.receiptId && (
+                      <span className="block">
+                        Receipt: {entry.retirement.receiptId} · {entry.retirement.state}
+                      </span>
+                    )}
+                    {factsWithKeys(entry.retirement.details, (detail) =>
+                      JSON.stringify([
+                        detail.target,
+                        detail.root,
+                        detail.reason,
+                        detail.fact,
+                        detail.missingFact,
+                        detail.nextAction,
+                        detail.lineage.map(lineageIdentity),
+                      ]),
+                    ).map(({ value: detail, key }) => (
+                      <span key={key} className="block">
+                        <code>{detail.root}</code>: {detail.fact}{" "}
+                        {detail.missingFact ? `Missing: ${detail.missingFact}. ` : ""}
+                        {detail.nextAction}
+                        {factsWithKeys(detail.lineage, lineageIdentity).map(
+                          ({ value: lineage, key }) => (
+                            <span key={key} className="block">
+                              {Object.entries(lineage)
+                                .map(([key, value]) => `${key}: ${value}`)
+                                .join(" · ")}
+                            </span>
+                          ),
+                        )}
+                      </span>
+                    ))}
+                    {entry.retirement.outputObligations.map((output) => (
+                      <span key={output.id} className="block">
+                        Output {output.id}: <code>{output.path}</code> · Owner {output.owner} ·{" "}
+                        {output.state}
+                      </span>
+                    ))}
+                  </span>
+                </details>
+              )}
+          </SettingsRow>
+        );
+      })}
+      {report.omittedCount > 0 && (
+        <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
+          {environmentLabel}: {report.omittedCount.toLocaleString()} more results.
+        </p>
+      )}
+      {report.entries.length === 0 && report.omittedCount === 0 && (
+        <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
+          {environmentLabel}: Nothing needed cleanup.
+        </p>
+      )}
+    </>
+  );
+}
+
+const storageCleanupReportsAtom = environmentAtomList(
+  "web-storage-cleanup-reports",
+  (environmentId) => serverEnvironment.storageCleanupReport({ environmentId, input: {} }),
+);
+const storageCleanupPermissionsAtom = environmentAtomList(
+  "web-storage-cleanup-permissions",
+  serverEnvironment.runStorageCleanup.permissionAtom,
+);
+
+function CleanupSection() {
+  const nowMinute = useNowMinute();
+  const nowMs = Date.parse(`${nowMinute}:00.000Z`);
+  const { connectedEnvironments } = useSettingsScope();
+  const [pending, setPending] = useState(false);
+  const run = useAtomCommand(serverEnvironment.runStorageCleanup);
+  const supported = connectedEnvironments.filter(
+    (environment) => environment.serverConfig?.environment.capabilities.storageCleanupRun === true,
+  );
+  const supportedIds = supported.map(({ environmentId }) => environmentId);
+  const reports = useAtomValue(storageCleanupReportsAtom(environmentIdsKey(supportedIds)));
+  const permissions = useAtomValue(storageCleanupPermissionsAtom(environmentIdsKey(supportedIds)));
+  const state = supportedIds.map((environmentId, index) => {
+    const query = reports[index]!;
+    return {
+      environmentId,
+      allowed: permissions[index]!,
+      report: query._tag === "Success" ? query.value : null,
+      loading: query.waiting,
+      failed: query._tag === "Failure",
+    };
+  });
+  const hasRules = supported.some((environment) => {
+    const settings = environment.serverConfig?.settings;
+    if (!settings) return false;
+    const enabled = (rules: WorktreeCleanupRules) =>
+      rules.worktreeAfterDays !== null ||
+      rules.worktreeSettledAfterDays !== null ||
+      rules.worktreeOnMerge ||
+      rules.worktreeOnDelete ||
+      rules.worktreeUnchanged;
+    return (
+      settings.storageCleanup.browserArtifactsAfterDays !== null ||
+      settings.storageCleanup.logsAfterDays !== null ||
+      enabled(resolveWorktreeCleanup(settings, null)) ||
+      Object.values(settings.projectSettingsOverrides).some(
+        (override) =>
+          override.worktreeCleanup?.mode === "custom" && enabled(override.worktreeCleanup.rules),
+      )
+    );
+  });
+  if (supported.length === 0) return null;
+  const summaries = supported.map((environment) => {
+    const query = state.find((entry) => entry.environmentId === environment.environmentId);
+    const report = query?.report ?? null;
+    return {
+      environment,
+      report,
+      label: settingsScopeEnvironmentLabel(environment, connectedEnvironments),
+      counts: report
+        ? `${report.counts.removed} removed, ${report.counts.kept} kept${report.counts.failed > 0 ? `, ${report.counts.failed} failed` : ""}`
+        : "",
+      description: report
+        ? `Last run ${formatRelativeTimeLabel(report.finishedAt, nowMs)}. ${report.entries.some((entry) => entry.retirement && entry.bytes === null) ? "Recovered bytes unavailable" : `${formatBytes(report.bytesFreed)} recovered`}.${report.counts.failed > 0 ? ` ${report.counts.failed} ${report.counts.failed === 1 ? "item" : "items"} couldn't be removed.` : ""}`
+        : query?.failed
+          ? "Could not load the last run."
+          : query?.loading
+            ? "Loading last run…"
+            : "Cleanup hasn't run yet.",
+    };
+  });
+  const propose = async () => {
+    if (pending) return;
+    setPending(true);
+    try {
+      for (const environment of supported.filter(
+        (e) =>
+          e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true &&
+          state.some((s) => s.environmentId === e.environmentId && s.allowed),
+      )) {
+        const result = await run({
+          environmentId: environment.environmentId,
+          input: { retirement: { action: "propose" } },
+        });
+        if (result._tag === "Failure" && !isAtomCommandInterrupted(result))
+          toastManager.add({
+            type: "error",
+            title: `Could not propose retirements on ${environment.label}`,
+            description: String(squashAtomCommandFailure(result)),
+          });
+      }
+    } catch (error) {
+      setPending(false);
+      toastManager.add({
+        type: "error",
+        title: "Could not propose checkout retirements",
+        description: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    setPending(false);
+  };
+  const retireTarget = async (
+    environmentId: (typeof supportedIds)[number],
+    entry: StorageCleanupReport["entries"][number],
+  ) => {
+    if (pending || !entry.threadId || !entry.path || !entry.retirement?.fingerprint) return;
+    const coveredPaths = entry.retirement.paths;
+    const confirmed = await (requestConfirmDialog(
+      `Retire ${entry.path}? Branches and recovery references are kept. This authorizes disposal only of these exact selections, including additions within the listed roots:
+${coveredPaths.length ? coveredPaths.join("\n") : "No local content selected."}
+Live consumers, tracked edits, nested repositories and other protections still hold.`,
+      { variant: "destructive" },
+    ) ?? Promise.resolve(false));
+    if (!confirmed) return;
+    setPending(true);
+    try {
+      const result = await run({
+        environmentId,
+        input: {
+          retirement: {
+            action: "retire",
+            threadId: entry.threadId,
+            worktreePath: entry.path,
+            expectedFingerprint: entry.retirement.fingerprint,
+            coveredPaths,
+          },
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result))
+        toastManager.add({
+          type: "error",
+          title: "Checkout retirement failed",
+          description: String(squashAtomCommandFailure(result)),
+        });
+    } catch (error) {
+      setPending(false);
+      toastManager.add({
+        type: "error",
+        title: "Checkout retirement failed",
+        description: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    setPending(false);
+  };
+  const deleteNow = async () => {
+    if (pending) return;
+    setPending(true);
+    await Promise.all(
+      supported
+        .filter((environment) =>
+          state.some((entry) => entry.environmentId === environment.environmentId && entry.allowed),
+        )
+        .map(async (environment) => {
+          const result = await run({ environmentId: environment.environmentId, input: {} });
+          if (result._tag === "Success") {
+            const failures = result.value.entries.filter((entry) => entry.outcome === "failed");
+            if (failures.length > 0)
+              toastManager.add({
+                type: "error",
+                title: `Cleanup failed on ${environment.label}`,
+                description: failures[0]!.reason,
+              });
+          } else if (!isAtomCommandInterrupted(result)) {
+            toastManager.add({
+              type: "error",
+              title: `Could not run cleanup on ${environment.label}`,
+              description: String(squashAtomCommandFailure(result)),
+            });
+          }
+        }),
+    ).finally(() => setPending(false));
+  };
+  return (
+    <SettingsSection id="storage-cleanup" title="Cleanup" variant="plain">
+      <SettingsGroup>
+        <SettingsRow
+          {...searchableSetting("storage-delete-now")}
+          description={
+            <span>
+              {!hasRules
+                ? "Turn on a cleanup rule to use this."
+                : summaries.map(({ environment, label, description }) => (
+                    <span key={environment.environmentId} className="block">
+                      {supported.length > 1 ? `${label}: ` : ""}
+                      {description}
+                    </span>
+                  ))}
+            </span>
+          }
+          control={
+            <>
+              {supported.some(
+                (e) => e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true,
+              ) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={pending || !state.some((e) => e.allowed)}
+                  onClick={() => void propose()}
+                >
+                  Propose retirements
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pending || !hasRules || !state.some((entry) => entry.allowed)}
+                onClick={() => void deleteNow()}
+              >
+                {pending ? "Working…" : "Delete now"}
+              </Button>
+            </>
+          }
+        />
+      </SettingsGroup>
+      {summaries.some(({ report }) => report !== null) && (
+        <FoldedSettingsSection
+          id="storage-cleanup-last-run"
+          title="Last run"
+          headerPlacement="inside"
+          summary={lastRunSummary(
+            summaries.filter(({ report }) => report !== null),
+            connectedEnvironments.length,
+          )}
+        >
+          {summaries.map(
+            ({ environment, label, report }) =>
+              report && (
+                <CleanupResults
+                  key={environment.environmentId}
+                  report={report}
+                  environmentLabel={label}
+                  {...(!pending &&
+                  environment.serverConfig?.environment.capabilities.settledWorktreeRetirement ===
+                    true &&
+                  state.some((e) => e.environmentId === environment.environmentId && e.allowed)
+                    ? {
+                        onRetire: (entry: StorageCleanupReport["entries"][number]) =>
+                          void retireTarget(environment.environmentId, entry),
+                      }
+                    : {})}
+                />
+              ),
+          )}
+        </FoldedSettingsSection>
+      )}
+    </SettingsSection>
+  );
+}
+
+function supportsStorageCleanup(
+  environments: ReadonlyArray<{
+    readonly serverConfig: {
+      readonly environment: { readonly capabilities: { readonly storageCleanup?: boolean } };
+    } | null;
+  }>,
+) {
+  return environments.every(
+    (environment) => environment.serverConfig?.environment.capabilities.storageCleanup === true,
+  );
+}
+
+/** Narrows a mixed selection to the machines that support cleanup. */
+function StorageCleanupScopeNotice() {
+  const { connectedEnvironments } = useSettingsScope();
+  return (
+    <SettingsScopeNotice
+      inline
+      target="environment"
+      eligibleEnvironmentIds={connectedEnvironments
+        .filter(
+          (environment) =>
+            environment.serverConfig?.environment.capabilities.storageCleanup === true,
+        )
+        .map((environment) => environment.environmentId)}
+    >
+      Update the selected environments to use storage cleanup, or choose a machine that supports it.
+    </SettingsScopeNotice>
+  );
+}
+
+export function WorktreeCleanupSection() {
+  const { scope, environments, connectedEnvironments, targets, target } = useSettingsScope();
   const scopedSettings = useScopedSettings();
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
   const settings = {
@@ -101,12 +663,17 @@ export function StorageSettingsPanel() {
   const ruleStatus = (key: keyof StorageCleanupSettings) =>
     targets.some(
       (target) =>
-        ({ ...target.settings.storageCleanup, ...resolveWorktreeCleanup(target.settings, null) })[
-          key
-        ] !== settings[key],
+        JSON.stringify(
+          { ...target.settings.storageCleanup, ...resolveWorktreeCleanup(target.settings, null) }[
+            key
+          ],
+        ) !== JSON.stringify(settings[key]),
     )
       ? "Mixed across selected machines"
       : undefined;
+  // A policy locks these through worktreeCleanup, which also reaches each project's own rules.
+  const lockablePath = (key: keyof WorktreeCleanupRules) =>
+    isProjectScope ? ["worktreeCleanup"] : ["worktreeCleanup", `storageCleanup.${key}`];
   const update = (patch: Partial<StorageCleanupSettings>) =>
     updateSettings({ storageCleanup: patch });
   const updateWorktree = (patch: Partial<WorktreeCleanupRules>) =>
@@ -122,36 +689,24 @@ export function StorageSettingsPanel() {
     )
   ) {
     return (
-      <SettingsScopeNotice target="all">
-        Update the selected machines to configure project worktree cleanup.
-      </SettingsScopeNotice>
+      <SettingsSection id="storage-worktrees" title="Cleanup" variant="plain">
+        <SettingsScopeNotice inline target="all">
+          Update the selected machines to configure project worktree cleanup.
+        </SettingsScopeNotice>
+      </SettingsSection>
     );
   }
-
-  if (
-    connectedEnvironments.some(
-      (environment) => environment.serverConfig?.environment.capabilities.storageCleanup !== true,
-    )
-  ) {
+  if (!supportsStorageCleanup(connectedEnvironments)) {
     return (
-      <SettingsScopeNotice
-        target="environment"
-        eligibleEnvironmentIds={connectedEnvironments
-          .filter(
-            (environment) =>
-              environment.serverConfig?.environment.capabilities.storageCleanup === true,
-          )
-          .map((environment) => environment.environmentId)}
-      >
-        Update the selected environments to use storage cleanup, or choose a machine that supports
-        it.
-      </SettingsScopeNotice>
+      <SettingsSection id="storage-worktrees" title="Cleanup" variant="plain">
+        <StorageCleanupScopeNotice />
+      </SettingsSection>
     );
   }
 
   return (
-    <SettingsPageContainer>
-      <SettingsSection id="storage-worktrees" title="Worktrees">
+    <SettingsSection id="storage-worktrees" title="Cleanup">
+      <>
         {isProjectScope && (
           <SettingsRow
             title="Automatic worktree cleanup"
@@ -200,6 +755,7 @@ export function StorageSettingsPanel() {
             <SettingsRow
               title="Delete worktrees with deleted threads"
               status={ruleStatus("worktreeOnDelete")}
+              managedPaths={lockablePath("worktreeOnDelete")}
               description="Remove unused worktrees when active or archived threads are deleted. Worktrees with local changes are kept."
               serverScoped={!isProjectScope}
               control={
@@ -211,21 +767,9 @@ export function StorageSettingsPanel() {
               }
             />
             <SettingsRow
-              title="Delete inactive worktrees"
-              status={ruleStatus("worktreeAfterDays")}
-              description="Remove worktrees after their threads have been inactive for this many days. Branches and thread history are kept."
-              serverScoped={!isProjectScope}
-              control={
-                <RetentionControl
-                  label="Delete inactive worktrees"
-                  value={settings.worktreeAfterDays}
-                  onChange={(worktreeAfterDays) => updateWorktree({ worktreeAfterDays })}
-                />
-              }
-            />
-            <SettingsRow
               title="Delete merged worktrees"
               status={ruleStatus("worktreeOnMerge")}
+              managedPaths={lockablePath("worktreeOnMerge")}
               description="Remove worktrees whose pull request is merged and whose commits are included in the default branch."
               serverScoped={!isProjectScope}
               control={
@@ -237,27 +781,271 @@ export function StorageSettingsPanel() {
               }
             />
             <SettingsRow
-              title="Delete unchanged worktrees"
-              status={ruleStatus("worktreeUnchanged")}
-              description="Remove worktrees with no commits beyond the default branch."
+              title="Delete inactive worktrees"
+              status={ruleStatus("worktreeAfterDays")}
+              managedPaths={lockablePath("worktreeAfterDays")}
+              description="Remove worktrees after their threads have been inactive for this many days. Branches and thread history are kept."
               serverScoped={!isProjectScope}
               control={
-                <Switch
-                  aria-label="Delete unchanged worktrees"
-                  checked={settings.worktreeUnchanged}
-                  onCheckedChange={(worktreeUnchanged) => updateWorktree({ worktreeUnchanged })}
+                <RetentionControl
+                  label="Delete inactive worktrees"
+                  value={settings.worktreeAfterDays}
+                  onChange={(worktreeAfterDays) => updateWorktree({ worktreeAfterDays })}
                 />
               }
             />
+            <AdvancedSettings
+              // The keep-when search result lands on this section, not its row.
+              targetIds={["storage-worktrees", searchableSetting("storage-worktree-keep-when").id]}
+            >
+              {connectedEnvironments.length > 0 &&
+                connectedEnvironments.every(
+                  (environment) =>
+                    environment.serverConfig?.environment.capabilities.settledWorktreeCleanup ===
+                    true,
+                ) && (
+                  <SettingsRow
+                    title="Delete settled worktrees"
+                    managedPaths={lockablePath("worktreeSettledAfterDays")}
+                    status={[
+                      ruleStatus("worktreeSettledAfterDays"),
+                      environments.length > connectedEnvironments.length
+                        ? "Offline machines will not get this setting"
+                        : undefined,
+                    ]
+                      .filter(Boolean)
+                      .join(". ")}
+                    description="Remove worktrees this many days after their thread settles and its final checkpoint completes. Branches and history are kept."
+                    serverScoped={!isProjectScope}
+                    control={
+                      <RetentionControl
+                        label="Delete settled worktrees"
+                        value={settings.worktreeSettledAfterDays}
+                        minimum={0}
+                        onChange={(worktreeSettledAfterDays) =>
+                          updateWorktree({ worktreeSettledAfterDays })
+                        }
+                      />
+                    }
+                  />
+                )}
+              {connectedEnvironments.length > 0 &&
+                connectedEnvironments.every(
+                  (e) =>
+                    e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true,
+                ) && (
+                  <>
+                    <SettingsRow
+                      title="Settled checkout scope"
+                      managedPaths={lockablePath("worktreeSettledScope")}
+                      description="Contained requires every commit to be reachable elsewhere. Branch retained also accepts the saved branch."
+                      serverScoped={!isProjectScope}
+                      control={
+                        <Select
+                          value={settings.worktreeSettledScope}
+                          onValueChange={(value) => {
+                            if (value === "contained" || value === "branch-retained")
+                              updateWorktree({ worktreeSettledScope: value });
+                          }}
+                        >
+                          <SelectTrigger size="sm" aria-label="Settled checkout scope">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectPopup>
+                            <SelectItem value="contained">Contained</SelectItem>
+                            <SelectItem value="branch-retained">Branch retained</SelectItem>
+                          </SelectPopup>
+                        </Select>
+                      }
+                    />
+                    {(
+                      ["declared_cache", "dependency_reproduction", "format_recognized"] as const
+                    ).map((coverage) => (
+                      <SettingsRow
+                        key={coverage}
+                        managedPaths={lockablePath("worktreeCoveredDiscard")}
+                        title={COVERAGE_LABEL[coverage]}
+                        description="Ignored content only. Sensitive files and nested repositories stay protected."
+                        serverScoped={!isProjectScope}
+                        control={
+                          <Switch
+                            aria-label={COVERAGE_LABEL[coverage]}
+                            checked={settings.worktreeCoveredDiscard.includes(coverage)}
+                            onCheckedChange={(checked) =>
+                              updateWorktree({
+                                worktreeCoveredDiscard: checked
+                                  ? [...settings.worktreeCoveredDiscard, coverage]
+                                  : settings.worktreeCoveredDiscard.filter((c) => c !== coverage),
+                              })
+                            }
+                          />
+                        }
+                      />
+                    ))}
+                  </>
+                )}
+              <SettingsRow
+                title="Delete unchanged worktrees"
+                status={ruleStatus("worktreeUnchanged")}
+                managedPaths={lockablePath("worktreeUnchanged")}
+                description="Remove worktrees with no commits beyond the default branch."
+                serverScoped={!isProjectScope}
+                control={
+                  <Switch
+                    aria-label="Delete unchanged worktrees"
+                    checked={settings.worktreeUnchanged}
+                    onCheckedChange={(worktreeUnchanged) => updateWorktree({ worktreeUnchanged })}
+                  />
+                }
+              />
+              {connectedEnvironments.every(
+                (environment) =>
+                  environment.serverConfig?.environment.capabilities.storageCleanupRun === true,
+              ) && (
+                <SettingsRow
+                  {...searchableSetting("storage-worktree-keep-when")}
+                  status={ruleStatus("worktreeKeepWhen")}
+                  managedPaths={lockablePath("worktreeKeepWhen")}
+                  description={
+                    settings.worktreeKeepWhen === "any-local-files"
+                      ? "Keeps any untracked or ignored content."
+                      : settings.worktreeKeepWhen === "tracked-changes"
+                        ? "Keeps tracked edits. Removes untracked and ignored files; sensitive paths need confirmation."
+                        : "Keeps edits and untracked files. Removes only ignored files that are safe to discard."
+                  }
+                  serverScoped={!isProjectScope}
+                  control={
+                    <Select
+                      value={ruleStatus("worktreeKeepWhen") ? null : settings.worktreeKeepWhen}
+                      onValueChange={(next) => {
+                        if (
+                          next === "any-local-files" ||
+                          next === "uncommitted-changes" ||
+                          next === "tracked-changes"
+                        )
+                          updateWorktree({ worktreeKeepWhen: next });
+                      }}
+                    >
+                      <SelectTrigger size="sm" aria-label="Keep worktrees with local changes">
+                        <SelectValue>
+                          {ruleStatus("worktreeKeepWhen")
+                            ? "Mixed"
+                            : KEEP_WHEN_LABELS[settings.worktreeKeepWhen]}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup align="end" alignItemWithTrigger={false}>
+                        <SelectItem value="any-local-files">Any local files</SelectItem>
+                        <SelectItem value="uncommitted-changes">Uncommitted changes</SelectItem>
+                        <SelectItem value="tracked-changes">Edited tracked files</SelectItem>
+                      </SelectPopup>
+                    </Select>
+                  }
+                />
+              )}
+            </AdvancedSettings>
           </>
         )}
-      </SettingsSection>
+      </>
+    </SettingsSection>
+  );
+}
 
-      {!isProjectScope && (
-        <SettingsSection id="storage-artifacts" title="Artifacts and logs">
+/** Retention for logs and captures, and the manual cleanup run, which covers worktrees too. */
+export function StorageCleanupSections() {
+  const { scope, connectedEnvironments, targets } = useSettingsScope();
+  const scopedSettings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const settings = scopedSettings.storageCleanup;
+  const installRetentionMixed = targets.some(
+    (target) => target.settings.storageCleanup.installRetention !== settings.installRetention,
+  );
+  const targetIdsKey = environmentIdsKey(targets.map((target) => target.environmentId).sort());
+  const artifactsMixed =
+    targets.length > 1 &&
+    targets.some(
+      (target) =>
+        target.settings.storageCleanup.browserArtifactsAfterDays !==
+        settings.browserArtifactsAfterDays,
+    );
+  const logsMixed =
+    targets.length > 1 &&
+    targets.some(
+      (target) => target.settings.storageCleanup.logsAfterDays !== settings.logsAfterDays,
+    );
+  const settledArtifactsStatus = useDebouncedValue(`${targetIdsKey}:${artifactsMixed}`, 300);
+  const settledLogsStatus = useDebouncedValue(`${targetIdsKey}:${logsMixed}`, 300);
+  const artifactsStatus =
+    targets.length > 1 && settledArtifactsStatus === `${targetIdsKey}:true`
+      ? "Mixed across selected machines"
+      : undefined;
+  const logsStatus =
+    targets.length > 1 && settledLogsStatus === `${targetIdsKey}:true`
+      ? "Mixed across selected machines"
+      : undefined;
+  if (scope.kind === "project" || scope.kind === "checkout") return null;
+  const update = (patch: Partial<StorageCleanupSettings>) =>
+    updateSettings({ storageCleanup: patch });
+  const databaseStorageNotice = (
+    <DatabaseStorageNotice
+      environments={connectedEnvironments.filter(
+        (environment) =>
+          environment.serverConfig?.environment.capabilities.databaseStorage === true,
+      )}
+    />
+  );
+  if (!supportsStorageCleanup(connectedEnvironments)) {
+    return (
+      <>
+        {databaseStorageNotice}
+        <SettingsSection id="storage-artifacts" title="Artifacts and logs" variant="plain">
+          <StorageCleanupScopeNotice />
+        </SettingsSection>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {databaseStorageNotice}
+      <SettingsSection id="storage-artifacts" title="Artifacts and logs">
+        <AnimatedHeight>
+          {connectedEnvironments.every(
+            (environment) =>
+              environment.serverConfig?.environment.capabilities.installRetention === true,
+          ) && (
+            <SettingsRow
+              title="Install retention"
+              status={installRetentionMixed}
+              description="Propose keeps old installs. Retire allows approved cleanup; recovery installs stay protected."
+              serverScoped
+              control={
+                <Select
+                  value={installRetentionMixed ? null : settings.installRetention}
+                  onValueChange={(next) => {
+                    if (next === "propose" || next === "retire") update({ installRetention: next });
+                  }}
+                >
+                  <SelectTrigger size="sm" aria-label="Install retention">
+                    <SelectValue>
+                      {installRetentionMixed
+                        ? "Mixed"
+                        : settings.installRetention === "retire"
+                          ? "Retire"
+                          : "Propose"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem value="propose">Propose</SelectItem>
+                    <SelectItem value="retire">Retire</SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
+            />
+          )}
           <SettingsRow
             title="Delete old browser artifacts"
-            status={ruleStatus("browserArtifactsAfterDays")}
+            status={artifactsStatus}
+            managedPaths={["storageCleanup.browserArtifactsAfterDays"]}
             description="Delete saved browser captures after this many days. Older capture links will no longer open."
             serverScoped
             control={
@@ -268,9 +1056,12 @@ export function StorageSettingsPanel() {
               />
             }
           />
+        </AnimatedHeight>
+        <AnimatedHeight>
           <SettingsRow
             title="Delete old rotated logs"
-            status={ruleStatus("logsAfterDays")}
+            status={logsStatus}
+            managedPaths={["storageCleanup.logsAfterDays"]}
             description="Delete inactive rotated log files after this many days. Current logs are kept."
             serverScoped
             control={
@@ -281,8 +1072,9 @@ export function StorageSettingsPanel() {
               />
             }
           />
-        </SettingsSection>
-      )}
-    </SettingsPageContainer>
+        </AnimatedHeight>
+      </SettingsSection>
+      <CleanupSection />
+    </>
   );
 }

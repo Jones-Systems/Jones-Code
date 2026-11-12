@@ -21,12 +21,20 @@ import {
   SshConnectionTarget,
 } from "../connection/model.ts";
 import {
-  GitHubRoutingPermissions,
-  makeGitHubRoutingPermissions,
-} from "../connection/githubRoutingPermissions.ts";
+  PullRequestRoutingPermissions,
+  makePullRequestRoutingPermissions,
+} from "../connection/pullRequestRoutingPermissions.ts";
 import {
   ConnectionCatalogDocument,
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
+  catalogRoutes,
+  connectionCompatibilityRouteBinding,
+  decodeConnectionCompatibilityHints,
+  listConnectionCompatibilityHints,
+  setConnectionCompatibilityHintInRecords,
+  putConnectionProfileInCatalog,
+  removeConnectionProfileFromCatalog,
+  setRoutesInCatalog,
   putRemoteDpopTokenInCatalog,
   registerConnectionInCatalog,
   removeConnectionFromCatalog,
@@ -85,10 +93,10 @@ describe("ConnectionCatalogDocument", () => {
             }).pipe(Effect.orDie);
           }),
       };
-      const permissions = yield* makeGitHubRoutingPermissions(storage);
+      const permissions = yield* makePullRequestRoutingPermissions(storage);
       expect(yield* permissions.get(entry)).toBe("off");
       yield* permissions.set(entry, "read");
-      const restarted = yield* makeGitHubRoutingPermissions(storage);
+      const restarted = yield* makePullRequestRoutingPermissions(storage);
       expect(yield* restarted.get(entry)).toBe("read");
 
       const changedEndpoint = {
@@ -119,19 +127,19 @@ describe("ConnectionCatalogDocument", () => {
       expect(yield* restarted.get(entry)).toBe("read-write");
       yield* restarted.forget(ENVIRONMENT_ID);
       expect(yield* restarted.get(entry)).toBe("off");
-      const afterRemoval = yield* makeGitHubRoutingPermissions(storage);
+      const afterRemoval = yield* makePullRequestRoutingPermissions(storage);
       expect(yield* afterRemoval.get(entry)).toBe("off");
 
       yield* permissions.set(entry, "read");
-      document = removeConnectionFromCatalog(document, BEARER_TARGET);
-      const afterCatalogRemoval = yield* makeGitHubRoutingPermissions(storage);
+      document = removeConnectionFromCatalog(document, ENVIRONMENT_ID);
+      const afterCatalogRemoval = yield* makePullRequestRoutingPermissions(storage);
       expect(yield* afterCatalogRemoval.get(entry)).toBe("off");
     }),
   );
 
   it.effect("requires explicit trust for primary, relay, and SSH connections independently", () =>
     Effect.gen(function* () {
-      const permissions = yield* makeGitHubRoutingPermissions({
+      const permissions = yield* makePullRequestRoutingPermissions({
         read: Effect.succeed([]),
         write: () => Effect.void,
       });
@@ -177,8 +185,8 @@ describe("ConnectionCatalogDocument", () => {
   it.effect("does not enable GitHub routing when permission persistence fails", () =>
     Effect.gen(function* () {
       const entry = { target: BEARER_TARGET, profile: Option.some(BEARER_PROFILE), enabled: true };
-      expect(yield* (yield* GitHubRoutingPermissions).get(entry)).toBe("off");
-      const permissions = yield* makeGitHubRoutingPermissions({
+      expect(yield* (yield* PullRequestRoutingPermissions).get(entry)).toBe("off");
+      const permissions = yield* makePullRequestRoutingPermissions({
         read: Effect.succeed([]),
         write: () =>
           Effect.fail(
@@ -192,46 +200,6 @@ describe("ConnectionCatalogDocument", () => {
       expect(yield* permissions.get(entry)).toBe("off");
     }),
   );
-
-  it.each([
-    { name: "legacy", accountId: undefined },
-    { name: "account-bound", accountId: "account-1" },
-  ])("round-trips a catalog containing a $name DPoP token", ({ accountId }) => {
-    const token = new TokenStore.RemoteDpopAccessToken({
-      ...REMOTE_TOKEN,
-      ...(accountId === undefined ? {} : { accountId }),
-    });
-    const document = {
-      ...EMPTY_CONNECTION_CATALOG_DOCUMENT,
-      targets: [RELAY_TARGET],
-      remoteDpopTokens: [token],
-    };
-    const schema = Schema.fromJsonString(ConnectionCatalogDocument);
-    const restored = Schema.decodeSync(schema)(Schema.encodeSync(schema)(document));
-
-    expect(restored).toEqual(document);
-    expect(restored.remoteDpopTokens[0]?.accountId).toBe(accountId);
-  });
-
-  it("registers a bearer connection as one catalog mutation", () => {
-    const document = registerConnectionInCatalog(
-      EMPTY_CONNECTION_CATALOG_DOCUMENT,
-      new BearerConnectionRegistration({
-        target: BEARER_TARGET,
-        profile: BEARER_PROFILE,
-        credential: BEARER_CREDENTIAL,
-      }),
-    );
-
-    expect(document.targets).toEqual([BEARER_TARGET]);
-    expect(document.profiles).toEqual([BEARER_PROFILE]);
-    expect(document.credentials).toEqual([
-      {
-        connectionId: BEARER_TARGET.connectionId,
-        credential: BEARER_CREDENTIAL,
-      },
-    ]);
-  });
 
   it("replaces obsolete connection metadata without discarding a reusable DPoP token", () => {
     const bearer = registerConnectionInCatalog(
@@ -273,7 +241,7 @@ describe("ConnectionCatalogDocument", () => {
       }),
     );
 
-    expect(removeConnectionFromCatalog(registered, BEARER_TARGET)).toEqual(
+    expect(removeConnectionFromCatalog(registered, ENVIRONMENT_ID)).toEqual(
       EMPTY_CONNECTION_CATALOG_DOCUMENT,
     );
   });
@@ -295,21 +263,9 @@ describe("ConnectionCatalogDocument", () => {
       EMPTY_CONNECTION_CATALOG_DOCUMENT,
       new RelayConnectionRegistration({ target: RELAY_TARGET }),
     );
-    const removed = removeConnectionFromCatalog(registered, RELAY_TARGET);
+    const removed = removeConnectionFromCatalog(registered, ENVIRONMENT_ID);
 
     expect(putRemoteDpopTokenInCatalog(removed, REMOTE_TOKEN)).toEqual(
-      EMPTY_CONNECTION_CATALOG_DOCUMENT,
-    );
-  });
-
-  it("removes a DPoP token stored before the environment is removed", () => {
-    const registered = registerConnectionInCatalog(
-      EMPTY_CONNECTION_CATALOG_DOCUMENT,
-      new RelayConnectionRegistration({ target: RELAY_TARGET }),
-    );
-    const refreshed = putRemoteDpopTokenInCatalog(registered, REMOTE_TOKEN);
-
-    expect(removeConnectionFromCatalog(refreshed, RELAY_TARGET)).toEqual(
       EMPTY_CONNECTION_CATALOG_DOCUMENT,
     );
   });
@@ -363,7 +319,6 @@ describe("ConnectionCatalogDocument", () => {
     expect(disabled.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
     expect(disabled.targets).toEqual(registered.targets);
     expect(disabled.credentials).toEqual(registered.credentials);
-    // Idempotent: switching off twice stores the id once.
     expect(
       setConnectionEnabledInCatalog(disabled, ENVIRONMENT_ID, false).disabledEnvironmentIds,
     ).toEqual([ENVIRONMENT_ID]);
@@ -371,7 +326,6 @@ describe("ConnectionCatalogDocument", () => {
     expect(
       setConnectionEnabledInCatalog(disabled, ENVIRONMENT_ID, true).disabledEnvironmentIds,
     ).toEqual([]);
-    // Re-registering (editing label or URL) keeps the flag.
     expect(
       registerConnectionInCatalog(
         disabled,
@@ -382,10 +336,12 @@ describe("ConnectionCatalogDocument", () => {
         }),
       ).disabledEnvironmentIds,
     ).toEqual([ENVIRONMENT_ID]);
-    expect(removeConnectionFromCatalog(disabled, BEARER_TARGET).disabledEnvironmentIds).toEqual([]);
+    expect(removeConnectionFromCatalog(disabled, ENVIRONMENT_ID).disabledEnvironmentIds).toEqual(
+      [],
+    );
   });
 
-  it("persists the normalized SSH profile beside its target", () => {
+  it("persists the normalized SSH profile and its paired token beside its target", () => {
     const target = new SshConnectionTarget({
       environmentId: ENVIRONMENT_ID,
       label: "SSH",
@@ -404,11 +360,302 @@ describe("ConnectionCatalogDocument", () => {
     });
     const document = registerConnectionInCatalog(
       EMPTY_CONNECTION_CATALOG_DOCUMENT,
-      new SshConnectionRegistration({ target, profile }),
+      new SshConnectionRegistration({ target, profile, credential: BEARER_CREDENTIAL }),
     );
 
     expect(document.targets).toEqual([target]);
     expect(document.profiles).toEqual([profile]);
-    expect(document.credentials).toEqual([]);
+    expect(document.credentials).toEqual([
+      { connectionId: target.connectionId, credential: BEARER_CREDENTIAL },
+    ]);
+    // Removing the route forgets its token too.
+    expect(removeConnectionFromCatalog(document, ENVIRONMENT_ID).credentials).toEqual([]);
+  });
+
+  it("keeps every route of an environment and drops only a removed route's records", () => {
+    const withBearer = registerConnectionInCatalog(
+      { ...EMPTY_CONNECTION_CATALOG_DOCUMENT, remoteDpopTokens: [REMOTE_TOKEN] },
+      new BearerConnectionRegistration({
+        target: BEARER_TARGET,
+        profile: BEARER_PROFILE,
+        credential: BEARER_CREDENTIAL,
+      }),
+    );
+    const withRelay = registerConnectionInCatalog(
+      withBearer,
+      new RelayConnectionRegistration({ target: RELAY_TARGET }),
+      [BEARER_TARGET, RELAY_TARGET],
+    );
+    expect(catalogRoutes(withRelay, ENVIRONMENT_ID)).toEqual([BEARER_TARGET, RELAY_TARGET]);
+    expect(withRelay.credentials).toHaveLength(1);
+
+    const relayOnly = setRoutesInCatalog(withRelay, ENVIRONMENT_ID, [RELAY_TARGET]);
+    expect(relayOnly.targets).toEqual([RELAY_TARGET]);
+    expect(relayOnly.profiles).toEqual([]);
+    expect(relayOnly.credentials).toEqual([]);
+    expect(relayOnly.remoteDpopTokens).toEqual([REMOTE_TOKEN]);
+
+    const bearerOnly = setRoutesInCatalog(withRelay, ENVIRONMENT_ID, [BEARER_TARGET]);
+    expect(bearerOnly.credentials).toHaveLength(1);
+    expect(bearerOnly.remoteDpopTokens).toEqual([]);
+  });
+
+  it("keeps an environment's position in the catalog when its routes change", () => {
+    const other = new RelayConnectionTarget({
+      environmentId: EnvironmentId.make("environment-2"),
+      label: "Other",
+    });
+    const document = {
+      ...EMPTY_CONNECTION_CATALOG_DOCUMENT,
+      targets: [RELAY_TARGET, other],
+    };
+    expect(
+      setRoutesInCatalog(document, ENVIRONMENT_ID, [BEARER_TARGET, RELAY_TARGET]).targets,
+    ).toEqual([BEARER_TARGET, RELAY_TARGET, other]);
+  });
+});
+
+describe("saved compatibility hints", () => {
+  const bearerRoute = { target: BEARER_TARGET, profile: Option.some(BEARER_PROFILE) };
+  const relayRoute = { target: RELAY_TARGET, profile: Option.none() };
+  const binding = connectionCompatibilityRouteBinding([bearerRoute])!;
+  const hint = {
+    environmentId: ENVIRONMENT_ID,
+    routeBinding: binding,
+    kind: "outdated-update",
+  } as const;
+  const registration = new BearerConnectionRegistration({
+    target: BEARER_TARGET,
+    profile: BEARER_PROFILE,
+    credential: BEARER_CREDENTIAL,
+  });
+  const savedOff = setConnectionEnabledInCatalog(
+    registerConnectionInCatalog(EMPTY_CONNECTION_CATALOG_DOCUMENT, registration),
+    ENVIRONMENT_ID,
+    false,
+  );
+
+  it("round-trips independent presentation without changing an Off catalog", () => {
+    const records = setConnectionCompatibilityHintInRecords([], ENVIRONMENT_ID, binding, hint.kind);
+    const restored = decodeConnectionCompatibilityHints(JSON.parse(JSON.stringify(records)));
+    expect(listConnectionCompatibilityHints(savedOff, restored)).toEqual([hint]);
+    expect(savedOff.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
+    expect(Object.keys(restored[0]!).sort()).toEqual(["environmentId", "kind", "routeBinding"]);
+    expect(JSON.stringify(restored)).not.toContain(BEARER_CREDENTIAL.token);
+    expect(
+      setConnectionCompatibilityHintInRecords(restored, ENVIRONMENT_ID, binding, null),
+    ).toEqual([]);
+    expect("compatibilityHints" in savedOff).toBe(false);
+  });
+
+  it("drops malformed hint records without changing a valid catalog", () => {
+    const records = decodeConnectionCompatibilityHints([
+      null,
+      { ...hint, kind: "connected" },
+      { ...hint, credential: { token: "secret" } },
+      { ...hint, routeBinding: "x".repeat(16_385) },
+      hint,
+      hint,
+    ]);
+    expect(records).toEqual([hint]);
+    for (const invalid of [null, {}, "bad", Array(129).fill(hint), undefined]) {
+      expect(decodeConnectionCompatibilityHints(invalid)).toEqual([]);
+      expect(decodeCatalogDocument({ ...savedOff, compatibilityHints: invalid })).toEqual(savedOff);
+    }
+  });
+
+  it("joins only exact current routes and never reads an embedded hint fallback", () => {
+    expect(
+      listConnectionCompatibilityHints(savedOff, [
+        { ...hint, routeBinding: "different-route" },
+        { ...hint, environmentId: EnvironmentId.make("unknown") },
+      ]),
+    ).toEqual([]);
+    const old = decodeCatalogDocument({ ...savedOff, compatibilityHints: [hint] });
+    expect(listConnectionCompatibilityHints(old, [])).toEqual([]);
+  });
+
+  it("invalidates reorder, replacement, removal and dropped routes in the fresh join", () => {
+    const pair = setRoutesInCatalog(savedOff, ENVIRONMENT_ID, [BEARER_TARGET, RELAY_TARGET]);
+    const pairHint = {
+      ...hint,
+      routeBinding: connectionCompatibilityRouteBinding([bearerRoute, relayRoute])!,
+    };
+    expect(listConnectionCompatibilityHints(pair, [pairHint])).toEqual([pairHint]);
+    for (const routes of [[RELAY_TARGET, BEARER_TARGET], [BEARER_TARGET], [RELAY_TARGET], []]) {
+      expect(
+        listConnectionCompatibilityHints(setRoutesInCatalog(pair, ENVIRONMENT_ID, routes), [
+          pairHint,
+        ]),
+      ).toEqual([]);
+    }
+    expect(
+      listConnectionCompatibilityHints(removeConnectionFromCatalog(savedOff, ENVIRONMENT_ID), [
+        hint,
+      ]),
+    ).toEqual([]);
+    const replacement = new BearerConnectionRegistration({
+      ...registration,
+      target: new BearerConnectionTarget({ ...BEARER_TARGET, connectionId: "replacement" }),
+      profile: new BearerConnectionProfile({ ...BEARER_PROFILE, connectionId: "replacement" }),
+    });
+    expect(
+      listConnectionCompatibilityHints(registerConnectionInCatalog(savedOff, replacement), [hint]),
+    ).toEqual([]);
+  });
+
+  it("retains a new binding when an old binding is cleared", () => {
+    const changed = new BearerConnectionProfile({
+      ...BEARER_PROFILE,
+      httpBaseUrl: "https://replacement.example.test",
+    });
+    const edited = putConnectionProfileInCatalog(savedOff, changed);
+    expect(listConnectionCompatibilityHints(edited, [hint])).toEqual([]);
+    expect(
+      listConnectionCompatibilityHints(
+        removeConnectionProfileFromCatalog(savedOff, BEARER_TARGET.connectionId),
+        [hint],
+      ),
+    ).toEqual([]);
+    const freshBinding = connectionCompatibilityRouteBinding([
+      { target: BEARER_TARGET, profile: Option.some(changed) },
+    ])!;
+    const records = setConnectionCompatibilityHintInRecords(
+      [hint],
+      ENVIRONMENT_ID,
+      freshBinding,
+      hint.kind,
+    );
+    const cleared = setConnectionCompatibilityHintInRecords(records, ENVIRONMENT_ID, binding, null);
+    expect(listConnectionCompatibilityHints(edited, cleared)).toEqual([
+      { ...hint, routeBinding: freshBinding },
+    ]);
+    expect(edited.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
+  });
+
+  it("normalizes URL identity while excluding labels and credentials", () => {
+    const renamed = new BearerConnectionProfile({
+      ...BEARER_PROFILE,
+      label: "Renamed",
+      httpBaseUrl: "https://REMOTE.example.test:443/",
+    });
+    expect(
+      connectionCompatibilityRouteBinding([
+        {
+          target: new BearerConnectionTarget({ ...BEARER_TARGET, label: "Renamed" }),
+          profile: Option.some(renamed),
+        },
+      ]),
+    ).toBe(binding);
+    const refreshed = registerConnectionInCatalog(
+      savedOff,
+      new BearerConnectionRegistration({
+        ...registration,
+        profile: renamed,
+        credential: new BearerConnectionCredential({ token: "replacement-secret" }),
+      }),
+    );
+    expect(listConnectionCompatibilityHints(refreshed, [hint])).toEqual([hint]);
+    expect(JSON.stringify(hint)).not.toContain("replacement-secret");
+    for (const fields of [
+      { wsBaseUrl: "wss://replacement.example.test" },
+      { learned: true as const },
+      { authorization: "t3-connect" as const },
+    ]) {
+      expect(
+        connectionCompatibilityRouteBinding([
+          {
+            target: BEARER_TARGET,
+            profile: Option.some(new BearerConnectionProfile({ ...BEARER_PROFILE, ...fields })),
+          },
+        ]),
+      ).not.toBe(binding);
+    }
+  });
+
+  it.each([
+    "https://user:secret@example.test",
+    "https://example.test?token=secret",
+    "https://example.test#secret",
+    "file:///tmp/not-an-endpoint",
+    "not-a-url",
+  ])("does not persist unsafe endpoint identity: %s", (httpBaseUrl) => {
+    expect(
+      connectionCompatibilityRouteBinding([
+        {
+          target: BEARER_TARGET,
+          profile: Option.some(new BearerConnectionProfile({ ...BEARER_PROFILE, httpBaseUrl })),
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it("binds every saved SSH configuration field", () => {
+    const target = new SshConnectionTarget({
+      environmentId: ENVIRONMENT_ID,
+      label: "SSH",
+      connectionId: "ssh-1",
+    });
+    const profile = new SshConnectionProfile({
+      environmentId: ENVIRONMENT_ID,
+      connectionId: target.connectionId,
+      label: "SSH",
+      target: { alias: "mini", hostname: "mini.example.test", username: "user", port: 22 },
+    });
+    const original = connectionCompatibilityRouteBinding([
+      { target, profile: Option.some(profile) },
+    ]);
+    expect(original).not.toBeNull();
+    for (const fields of [
+      { alias: "other" },
+      { hostname: "other.example.test" },
+      { username: "other" },
+      { port: 2222 },
+    ]) {
+      expect(
+        connectionCompatibilityRouteBinding([
+          {
+            target,
+            profile: Option.some(
+              new SshConnectionProfile({ ...profile, target: { ...profile.target, ...fields } }),
+            ),
+          },
+        ]),
+      ).not.toBe(original);
+    }
+  });
+
+  it("refuses missing, duplicate, primary, cross-environment and oversized route bindings", () => {
+    expect(connectionCompatibilityRouteBinding([])).toBeNull();
+    expect(
+      connectionCompatibilityRouteBinding([{ target: BEARER_TARGET, profile: Option.none() }]),
+    ).toBeNull();
+    expect(connectionCompatibilityRouteBinding([bearerRoute, bearerRoute])).toBeNull();
+    expect(connectionCompatibilityRouteBinding(Array(17).fill(relayRoute))).toBeNull();
+    expect(
+      connectionCompatibilityRouteBinding([
+        bearerRoute,
+        {
+          target: new RelayConnectionTarget({
+            environmentId: EnvironmentId.make("other"),
+            label: "Other",
+          }),
+          profile: Option.none(),
+        },
+      ]),
+    ).toBeNull();
+    expect(
+      connectionCompatibilityRouteBinding([
+        {
+          target: new PrimaryConnectionTarget({
+            environmentId: ENVIRONMENT_ID,
+            label: "Primary",
+            httpBaseUrl: "http://localhost",
+            wsBaseUrl: "ws://localhost",
+          }),
+          profile: Option.none(),
+        },
+      ]),
+    ).toBeNull();
   });
 });

@@ -10,20 +10,32 @@ import {
   workstreamBindingKey,
   resolveWorkstreamCompletionAuthority,
 } from "@t3tools/client-runtime/state/workstreams";
-import { useDroppable } from "@dnd-kit/core";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type DragEvent } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode, type DragEvent } from "react";
+
+import { WorkstreamExportButton } from "../../jones/workstreams/WorkstreamExportButton";
+import { WorkstreamAddPrDialog } from "../../jones/workstreams/WorkstreamAddPrDialog";
+import {
+  refreshWorkstreamPr,
+  workstreamPrObservationLabel,
+} from "../../jones/workstreams/workstreamReferenceActions";
+import {
+  workstreamFailureMessage,
+  type WorkstreamReferenceController,
+} from "../../jones/workstreams/workstreamActionSnapshot";
+
+import { useWorkstreamAppearance } from "../../jones/workstreamAppearance/useWorkstreamAppearance";
+import { WorkstreamColorDialog } from "../../jones/workstreamAppearance/WorkstreamColorDialog";
+import { workstreamAppearanceBorder } from "@t3tools/client-runtime/state/workstreams";
 
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { canEditWorkstreams, workstreamTint } from "./nativeWorkstreamActions";
 
 import { runtime } from "../../lib/runtime";
-import { workstreamFailureMessage, type WorkstreamListView } from "../../state/workstreams";
-import { WorkstreamAddPrDialog } from "./WorkstreamAddPrDialog";
-import { refreshWorkstreamPr, workstreamPrObservationLabel } from "./workstreamReferenceActions";
+import type { WorkstreamListView } from "../../state/workstreams";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -35,16 +47,15 @@ import {
 
 export const workstreamCommandId = () =>
   runtime.runPromise(
-    Crypto.Crypto.pipe(
-      Effect.flatMap((crypto) => crypto.randomUUIDv4),
+    SecureRandom.SecureRandom.pipe(
+      Effect.flatMap((crypto) => crypto.uuidV4()),
       Effect.map((uuid) => `t3-workstream-${uuid}`),
     ),
   );
 
 const bindingSuperseded = Symbol("binding superseded");
-// Stable inputs prevent unchanged collapse state from notifying the parent on every render.
-const collapsedWorkstreamIdsSchema = Schema.Array(Schema.String);
-const EMPTY_COLLAPSED_WORKSTREAM_IDS: readonly string[] = [];
+
+const collapsedWorkstreamsSchema = Schema.Array(Schema.String);
 
 export function WorkstreamCreateForm({
   controller,
@@ -63,22 +74,28 @@ export function WorkstreamCreateForm({
   const pendingRef = useRef(false);
   const formRef = useRef<HTMLFormElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const sessionRef = useRef(0);
   const binding = controller.data ? workstreamBindingKey(controller.data.binding) : null;
+  const [session, setSession] = useState({ binding, open });
+  const sessionRef = useRef<typeof session | null>(null);
   const bindingRef = useRef(binding);
   const canWrite = canEditWorkstreams(controller.data);
+  if (session.binding !== binding || session.open !== open) {
+    setSession({ binding, open });
+    setName("");
+    setError(null);
+  }
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Retire the open editor when its registry binding changes and clear its session on unmount.
   useLayoutEffect(() => {
     if (bindingRef.current !== binding) onClose();
     bindingRef.current = binding;
-    sessionRef.current += 1;
-    setName("");
-    setError(null);
+    sessionRef.current = session;
     return () => {
-      sessionRef.current += 1;
+      sessionRef.current = null;
     };
-  }, [binding, open, onClose]);
+  }, [binding, session, onClose]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own document dismissal listeners and focus only while this authorized editor is open.
   useLayoutEffect(() => {
     if (!open) return;
     if (!canWrite) {
@@ -121,6 +138,18 @@ export function WorkstreamCreateForm({
         onPendingChange(true);
         setError(null);
         void (async () => {
+          if (controller.createWorkstream) {
+            const existing = data.items.find((item) => item.name === trimmedName);
+            if (existing) {
+              setError(
+                `A Workstream named ${trimmedName} already exists. Choose it from Assign Workstream.`,
+              );
+              return;
+            }
+            await controller.createWorkstream(trimmedName, { commandId: workstreamCommandId });
+            if (sessionRef.current === startedSession) onClose();
+            return;
+          }
           const id = await workstreamCommandId();
           if (sessionRef.current !== startedSession || bindingRef.current !== startedBinding)
             return;
@@ -151,7 +180,7 @@ export function WorkstreamCreateForm({
         })()
           .catch((cause: unknown) => {
             if (sessionRef.current === startedSession && bindingRef.current === startedBinding)
-              setError(workstreamFailureMessage(cause));
+              setError(cause instanceof Error ? cause.message : "Workstream creation failed.");
           })
           .finally(() => {
             pendingRef.current = false;
@@ -187,8 +216,11 @@ export function WorkstreamCreateForm({
 export function WorkstreamSidebarSection(props: {
   readonly controller: WorkstreamListView;
   readonly threadStatusSummaries?: ReadonlyMap<string, WorkstreamThreadStatusSummary>;
-  readonly onVisibleGroupsChange?: ((ids: readonly (string | null)[]) => void) | undefined;
   readonly renderMembers?: (workstreamId: string | null) => ReactNode;
+  readonly memberLabel?: (
+    reference: Awaited<ReturnType<WorkstreamListView["loadReference"]>>["reference"],
+  ) => string | undefined;
+  readonly unassignedLabel?: string;
   readonly onThreadDragOver?: (event: DragEvent, workstreamId: string | null) => boolean;
   readonly threadDropTarget?: string | null | undefined;
   readonly onThreadDragLeave?: () => void;
@@ -199,9 +231,12 @@ export function WorkstreamSidebarSection(props: {
     props.controller;
   const [collapsed, setCollapsed] = useLocalStorage<readonly string[], readonly string[]>(
     `t3:workstreams:collapsed:${data?.binding.registryId ?? "none"}:${data?.binding.ownerId ?? "none"}`,
-    EMPTY_COLLAPSED_WORKSTREAM_IDS,
-    collapsedWorkstreamIdsSchema,
+    [],
+    collapsedWorkstreamsSchema,
   );
+  const appearance = useWorkstreamAppearance(data);
+  const [addingPr, setAddingPr] = useState<string | null>(null);
+  const [colorEditing, setColorEditing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [dragging, setDragging] = useState<string | null>(null);
@@ -209,9 +244,9 @@ export function WorkstreamSidebarSection(props: {
     null,
   );
   const [selected, setSelected] = useState<string | null>(null);
-  const [addPrOpen, setAddPrOpen] = useState(false);
-  const [prBusy, setPrBusy] = useState(false);
-  const prBusyRef = useRef(false);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const selectedRef = useRef<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [targetId, setTargetId] = useState("");
   const [declarationText, setDeclarationText] = useState("");
   const [receipt, setReceipt] = useState<WorkstreamReceipt | null>(null);
@@ -220,68 +255,86 @@ export function WorkstreamSidebarSection(props: {
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof loadDetail>> | null>(null);
   const detailRequest = useRef<AbortController | null>(null);
   const manualRefreshRequest = useRef<AbortController | null>(null);
-  const items = useMemo(() => orderWorkstreamMetadata(data?.items ?? []), [data]);
-  useLayoutEffect(() => {
-    props.onVisibleGroupsChange?.([
-      ...items
-        .filter((item) => !collapsed.includes(item.workstreamId))
-        .map((item) => item.workstreamId),
-      ...(!collapsed.includes("__unassigned__") ? [null] : []),
-    ]);
-  }, [items, collapsed, props.onVisibleGroupsChange]);
+  const items = orderWorkstreamMetadata(data?.items ?? []);
   const bindingKey = data ? workstreamBindingKey(data.binding) : null;
   const bindingKeyRef = useRef(bindingKey);
-  const actionBindingKey = data
+  const referenceController: WorkstreamReferenceController | null =
+    props.controller.loadActionSnapshot && props.controller.retry
+      ? {
+          ...props.controller,
+          registrationContext: props.controller.registrationContext ?? null,
+          loadActionSnapshot: props.controller.loadActionSnapshot,
+          retry: props.controller.retry,
+        }
+      : null;
+  const prAuthorityKey = data
     ? workstreamBindingKey({ ...data.binding, registryVersion: 0 })
     : null;
-  const actionBindingRef = useRef(actionBindingKey);
-  actionBindingRef.current = actionBindingKey;
-
-  useLayoutEffect(() => {
-    bindingKeyRef.current = bindingKey;
-    detailRequest.current?.abort();
-    detailRequest.current = null;
-    if (!prBusyRef.current) {
-      manualRefreshRequest.current?.abort();
-      manualRefreshRequest.current = null;
-    }
+  const prAuthorityKeyRef = useRef(prAuthorityKey);
+  const [stateBindingKey, setStateBindingKey] = useState(bindingKey);
+  if (stateBindingKey !== bindingKey) {
+    setStateBindingKey(bindingKey);
     setDetail(null);
     setPullRequestStatus({});
     setReceipt(null);
     setEditing(null);
+    setColorEditing(null);
     setDragging(null);
     setGroupDropTarget(null);
     setCommandError(null);
     if (bindingKey === null) {
+      setAddingPr(null);
       setSelected(null);
     }
+  }
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed PR authority to pending request callbacks before they can accept a result.
+  useLayoutEffect(() => {
+    prAuthorityKeyRef.current = prAuthorityKey;
+  }, [prAuthorityKey]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Abort detail and refresh requests when their registry binding retires or the panel unmounts.
+  useLayoutEffect(() => {
+    bindingKeyRef.current = bindingKey;
+    detailRequest.current?.abort();
+    detailRequest.current = null;
+    manualRefreshRequest.current?.abort();
+    manualRefreshRequest.current = null;
     return () => {
       detailRequest.current?.abort();
       detailRequest.current = null;
-      if (!prBusyRef.current) {
-        manualRefreshRequest.current?.abort();
-        manualRefreshRequest.current = null;
-      }
+      manualRefreshRequest.current?.abort();
+      manualRefreshRequest.current = null;
     };
   }, [bindingKey]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Focus the mounted detail panel after its selected workstream commits.
   useLayoutEffect(() => {
+    if (selected) panelRef.current?.focus();
+  }, [selected]);
+  if (!data) return null;
+  const canWrite = canEditWorkstreams(data) && !props.controller.loading && !props.threadActionBusy;
+
+  const closeDetail = () => {
+    detailRequest.current?.abort();
+    detailRequest.current = null;
     manualRefreshRequest.current?.abort();
     manualRefreshRequest.current = null;
-    prBusyRef.current = false;
-    setPrBusy(false);
-    setAddPrOpen(false);
-    return () => manualRefreshRequest.current?.abort();
-  }, [actionBindingKey]);
-  if (!data) return null;
-  const canWrite =
-    canEditWorkstreams(data) && !props.controller.loading && !props.threadActionBusy && !prBusy;
-
+    selectedRef.current = null;
+    setSelected(null);
+    setDetail(null);
+    setReceipt(null);
+    setPullRequestStatus({});
+    setDeclarationText("");
+    setCommandError(null);
+    setDetailError(null);
+  };
   const showDetail = (workstreamId: string) => {
     detailRequest.current?.abort();
     const controller = new AbortController();
     detailRequest.current = controller;
     const startedBindingKey = bindingKey;
+    selectedRef.current = workstreamId;
     setSelected(workstreamId);
+    setDetailError(null);
     setDetail(null);
     setPullRequestStatus({});
     setTargetId(items.find((item) => item.workstreamId !== workstreamId)?.workstreamId ?? "");
@@ -296,9 +349,11 @@ export function WorkstreamSidebarSection(props: {
               if (controller.signal.aborted || bindingKeyRef.current !== startedBindingKey) return;
               setPullRequestStatus((current) => ({
                 ...current,
-                [reference.native_reference_id]: workstreamPrObservationLabel(
-                  result.latest_observation,
-                ),
+                [reference.native_reference_id]: referenceController
+                  ? workstreamPrObservationLabel(result.latest_observation)
+                  : (result.latest_observation?.last_success?.state ??
+                    result.latest_observation?.outcome ??
+                    "not refreshed"),
               }));
             },
             () => undefined,
@@ -307,7 +362,7 @@ export function WorkstreamSidebarSection(props: {
       },
       () => {
         if (!controller.signal.aborted && bindingKeyRef.current === startedBindingKey)
-          setDetail(null);
+          setDetailError("Workstream details could not be loaded. Close and reopen to retry.");
       },
     );
   };
@@ -316,6 +371,7 @@ export function WorkstreamSidebarSection(props: {
     registryVersion?: number,
     startedBindingKey = bindingKey,
   ) => {
+    const startedSelection = selectedRef.current;
     const id = await workstreamCommandId();
     if (bindingKeyRef.current !== startedBindingKey) throw bindingSuperseded;
     const value = await submit({
@@ -325,9 +381,11 @@ export function WorkstreamSidebarSection(props: {
       action,
     });
     if (bindingKeyRef.current !== startedBindingKey) throw bindingSuperseded;
-    setReceipt(value);
-    setCommandError(null);
-    if (selected) showDetail(selected);
+    if (selectedRef.current === startedSelection && startedSelection !== null) {
+      setReceipt(value);
+      setCommandError(null);
+      showDetail(startedSelection);
+    }
     return value;
   };
   const invoke = (action: WorkstreamCommand["action"]) => {
@@ -335,7 +393,7 @@ export function WorkstreamSidebarSection(props: {
     const startedBindingKey = bindingKey;
     void run(action, undefined, startedBindingKey).catch((cause: unknown) => {
       if (cause === bindingSuperseded || bindingKeyRef.current !== startedBindingKey) return;
-      setCommandError(workstreamFailureMessage(cause));
+      setCommandError(cause instanceof Error ? cause.message : "Workstream command failed.");
     });
   };
   const update = (
@@ -392,7 +450,7 @@ export function WorkstreamSidebarSection(props: {
       })
       .catch((cause: unknown) => {
         if (cause === bindingSuperseded || bindingKeyRef.current !== startedBindingKey) return;
-        setCommandError(workstreamFailureMessage(cause));
+        setCommandError(cause instanceof Error ? cause.message : "Workstream reorder failed.");
       });
   };
 
@@ -408,51 +466,54 @@ export function WorkstreamSidebarSection(props: {
 
   return (
     <section aria-label="Owner Workstreams" className="border-b border-sidebar-border/60 px-2 pb-2">
+      <WorkstreamExportButton controller={props.controller} />
+      {props.controller.primaryAssignmentAvailability?.state === "unavailable" ? (
+        <div role="status" className="px-1 pb-2 text-xs text-muted-foreground">
+          <p>
+            Thread assignment from this environment is unavailable:{" "}
+            {props.controller.primaryAssignmentAvailability.reason}.
+          </p>
+          <Button size="xs" variant="ghost" onClick={() => props.controller.refresh()}>
+            Refresh
+          </Button>
+        </div>
+      ) : null}
       {!canWrite ? (
         <p className="px-1 pb-1 text-xs text-muted-foreground">Workstreams are read-only.</p>
       ) : null}
-      {placementInventory.coverage === "partial" ? (
+      {placementInventory.proofsUnavailable ? (
+        <p className="px-1 pb-1 text-xs text-sidebar-muted-foreground">
+          This server cannot verify thread placements, so assignments show as recorded.
+        </p>
+      ) : placementInventory.coverage === "partial" ? (
         <p className="px-1 pb-1 text-xs text-sidebar-muted-foreground">
           Thread placement lookup scope is partial (
           {placementInventory.identities.length.toLocaleString()} of{" "}
           {placementInventory.totalIdentities.toLocaleString()} identities selected).
         </p>
       ) : null}
-      {commandError ? (
-        <p role="alert" className="px-1 pb-1 text-xs text-destructive">
-          {commandError}{" "}
-          <button
-            type="button"
-            disabled={prBusy}
-            onClick={() => {
-              if (prBusyRef.current) return;
-              prBusyRef.current = true;
-              setPrBusy(true);
-              void props.controller
-                .retry()
-                .then(() => setCommandError(null))
-                .catch((cause: unknown) => setCommandError(workstreamFailureMessage(cause)))
-                .finally(() => {
-                  prBusyRef.current = false;
-                  setPrBusy(false);
-                });
-            }}
-          >
-            Retry
-          </button>
-        </p>
-      ) : null}
-      {prBusy ? (
-        <p role="status" className="px-1 text-xs text-muted-foreground">
-          Refreshing PR metadata…
-        </p>
+      {commandError ? <p className="px-1 pb-1 text-xs text-destructive">{commandError}</p> : null}
+      {colorEditing && appearance.writable && appearance.colors.has(colorEditing) ? (
+        <WorkstreamColorDialog
+          key={`${bindingKey}:${colorEditing}`}
+          name={items.find((item) => item.workstreamId === colorEditing)?.name ?? "Workstream"}
+          saved={appearance.colors.get(colorEditing)!}
+          generation={data.binding.serverGeneration}
+          createCommandId={workstreamCommandId}
+          save={appearance.save}
+          onClose={() => setColorEditing(null)}
+        />
       ) : null}
       <ul className="space-y-0.5">
         {items.map((item, index) => (
           <li
+            style={workstreamAppearanceBorder(
+              appearance.colors.get(item.workstreamId)?.border_color,
+            )}
             className={`relative rounded-md border-l-2 ${workstreamTint(item.workstreamId)} ${props.threadDropTarget === item.workstreamId ? "ring-2 ring-primary bg-primary/10" : ""}`}
             data-drop-target={props.threadDropTarget === item.workstreamId ? "thread" : undefined}
             key={item.workstreamId}
+            data-native-workstream={JSON.stringify(item.workstreamId)}
             onDragLeave={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
                 props.onThreadDragLeave?.();
@@ -490,127 +551,140 @@ export function WorkstreamSidebarSection(props: {
                 className={`pointer-events-none absolute inset-x-0 z-20 h-0.5 bg-primary ${groupDropTarget.after ? "bottom-0" : "top-0"}`}
               />
             ) : null}
-            <WorkstreamThreadDropHeader
-              destination={item.workstreamId}
-              disabled={!props.renderMembers || !canWrite}
-            >
-              <div className="flex min-h-8 items-center gap-1 px-1">
-                {props.renderMembers ? (
-                  <button
-                    type="button"
-                    aria-label={`${collapsed.includes(item.workstreamId) ? "Expand" : "Collapse"} ${item.name}`}
-                    aria-expanded={!collapsed.includes(item.workstreamId)}
-                    onClick={() =>
-                      setCollapsed((values) =>
-                        values.includes(item.workstreamId)
-                          ? values.filter((id) => id !== item.workstreamId)
-                          : [...values, item.workstreamId],
-                      )
-                    }
-                    className="rounded p-1 focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <ChevronDownIcon
-                      aria-hidden
-                      className={`size-3.5 ${collapsed.includes(item.workstreamId) ? "-rotate-90" : ""}`}
-                    />
-                  </button>
-                ) : null}
-                {canWrite ? (
-                  <button
-                    type="button"
-                    draggable
-                    aria-label={`Drag Workstream ${item.name} to reorder`}
-                    className="cursor-grab rounded p-1 text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
-                    onDragStart={(event) => {
-                      event.stopPropagation();
-                      if (!canWrite) {
-                        event.preventDefault();
-                        return;
-                      }
-                      event.dataTransfer.effectAllowed = "move";
-                      event.dataTransfer.setData(
-                        "application/x-t3-workstream-group",
-                        item.workstreamId,
-                      );
-                      setDragging(item.workstreamId);
-                    }}
-                    onDragEnd={(event) => {
-                      event.stopPropagation();
-                      setDragging(null);
-                      setGroupDropTarget(null);
-                    }}
-                  >
-                    <GripVerticalIcon aria-hidden className="size-3.5 shrink-0" />
-                  </button>
-                ) : null}
-                {canWrite && editing === item.workstreamId ? (
-                  <Input
-                    aria-label="Workstream name"
-                    autoFocus
-                    nativeInput
-                    onBlur={() => {
-                      const next = name.trim();
-                      if (next && next !== item.name) update(item, { name: next });
-                      setEditing(null);
-                    }}
-                    onChange={(event) => setName(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") event.currentTarget.blur();
-                      if (event.key === "Escape") setEditing(null);
-                    }}
-                    size="compact"
-                    value={name}
-                  />
-                ) : (
-                  <button
-                    className="min-w-0 flex-1 truncate px-1 text-left text-sm"
-                    onClick={() => showDetail(item.workstreamId)}
-                    type="button"
-                  >
-                    {item.name}
-                  </button>
-                )}
-                <WorkstreamHeaderStatus
-                  name={item.name}
-                  summary={
-                    props.threadStatusSummaries?.get(item.workstreamId) ??
-                    EMPTY_WORKSTREAM_THREAD_STATUS
+            <div className="flex min-h-8 items-center gap-1 px-1">
+              {props.renderMembers ? (
+                <button
+                  type="button"
+                  aria-label={`${collapsed.includes(item.workstreamId) ? "Expand" : "Collapse"} ${item.name}`}
+                  aria-expanded={!collapsed.includes(item.workstreamId)}
+                  onClick={() =>
+                    setCollapsed((values) =>
+                      values.includes(item.workstreamId)
+                        ? values.filter((id) => id !== item.workstreamId)
+                        : [...values, item.workstreamId],
+                    )
                   }
+                  className="rounded p-1 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                >
+                  <ChevronDownIcon
+                    aria-hidden
+                    className={`size-3.5 ${collapsed.includes(item.workstreamId) ? "-rotate-90" : ""}`}
+                  />
+                </button>
+              ) : null}
+              {canWrite ? (
+                <button
+                  type="button"
+                  draggable
+                  aria-label={`Drag Workstream ${item.name} to reorder`}
+                  className="cursor-grab rounded p-1 text-muted-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring active:cursor-grabbing"
+                  onDragStart={(event) => {
+                    event.stopPropagation();
+                    if (!canWrite) {
+                      event.preventDefault();
+                      return;
+                    }
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData(
+                      "application/x-t3-workstream-group",
+                      item.workstreamId,
+                    );
+                    setDragging(item.workstreamId);
+                  }}
+                  onDragEnd={(event) => {
+                    event.stopPropagation();
+                    setDragging(null);
+                    setGroupDropTarget(null);
+                  }}
+                >
+                  <GripVerticalIcon aria-hidden className="size-3.5 shrink-0" />
+                </button>
+              ) : null}
+              {canWrite && editing === item.workstreamId ? (
+                <Input
+                  aria-label="Workstream name"
+                  autoFocus
+                  nativeInput
+                  onBlur={() => {
+                    const next = name.trim();
+                    if (next && next !== item.name) update(item, { name: next });
+                    setEditing(null);
+                    setColorEditing(null);
+                  }}
+                  onChange={(event) => setName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                    if (event.key === "Escape") setEditing(null);
+                  }}
+                  size="compact"
+                  value={name}
                 />
-                {canWrite ? (
-                  <Menu>
-                    <MenuTrigger
-                      aria-label={`Actions for ${item.name}`}
-                      render={<Button size="icon-micro" variant="ghost-muted" />}
+              ) : (
+                <button
+                  className="min-w-0 flex-1 truncate px-1 text-left text-sm"
+                  aria-expanded={selected === item.workstreamId}
+                  aria-controls="workstream-detail-panel"
+                  onClick={() =>
+                    selected === item.workstreamId ? closeDetail() : showDetail(item.workstreamId)
+                  }
+                  type="button"
+                >
+                  {item.name}
+                </button>
+              )}
+              <WorkstreamHeaderStatus
+                name={item.name}
+                summary={
+                  props.threadStatusSummaries?.get(item.workstreamId) ??
+                  EMPTY_WORKSTREAM_THREAD_STATUS
+                }
+              />
+              {canWrite ? (
+                <Menu>
+                  <MenuTrigger
+                    aria-label={`Actions for ${item.name}`}
+                    render={<Button size="icon-micro" variant="ghost-muted" />}
+                  >
+                    <MoreHorizontalIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    <MenuItem
+                      disabled={
+                        !referenceController?.registrationContext?.sources.some(
+                          (source) => source.provider === "github",
+                        )
+                      }
+                      onClick={() => setAddingPr(item.workstreamId)}
                     >
-                      <MoreHorizontalIcon />
-                    </MenuTrigger>
-                    <MenuPopup align="end">
-                      <MenuItem
-                        onClick={() => {
-                          setName(item.name);
-                          setEditing(item.workstreamId);
-                        }}
-                      >
-                        Rename
-                      </MenuItem>
-                      <MenuItem
-                        disabled={index === 0}
-                        onClick={() => reorder(item.workstreamId, index - 1)}
-                      >
-                        <ChevronUpIcon /> Move up
-                      </MenuItem>
-                      <MenuItem
-                        disabled={index === items.length - 1}
-                        onClick={() => reorder(item.workstreamId, index + 1)}
-                      >
-                        <ChevronDownIcon /> Move down
-                      </MenuItem>
-                    </MenuPopup>
-                  </Menu>
-                ) : null}
-              </div>
-            </WorkstreamThreadDropHeader>
+                      Add PR reference…
+                    </MenuItem>
+                    {appearance.writable ? (
+                      <MenuItem onClick={() => setColorEditing(item.workstreamId)}>Color…</MenuItem>
+                    ) : null}
+                    <MenuItem
+                      onClick={() => {
+                        setName(item.name);
+                        setEditing(item.workstreamId);
+                      }}
+                    >
+                      Rename
+                    </MenuItem>
+                    <MenuItem
+                      disabled={index === 0}
+                      onClick={() => reorder(item.workstreamId, index - 1)}
+                    >
+                      <ChevronUpIcon /> Move up
+                    </MenuItem>
+                    <MenuItem
+                      disabled={index === items.length - 1}
+                      onClick={() => reorder(item.workstreamId, index + 1)}
+                    >
+                      <ChevronDownIcon /> Move down
+                    </MenuItem>
+                  </MenuPopup>
+                </Menu>
+              ) : null}
+            </div>
             {props.renderMembers && !collapsed.includes(item.workstreamId)
               ? props.renderMembers(item.workstreamId)
               : null}
@@ -620,6 +694,7 @@ export function WorkstreamSidebarSection(props: {
       {props.renderMembers ? (
         <div
           className={`mt-2 rounded-md border-l-2 border-sidebar-border ${props.threadDropTarget === null ? "ring-2 ring-primary bg-primary/10" : ""}`}
+          data-native-workstream="null"
           data-drop-target={props.threadDropTarget === null ? "thread" : undefined}
           onDragOver={(event) => props.onThreadDragOver?.(event, null)}
           onDragLeave={(event) => {
@@ -630,436 +705,543 @@ export function WorkstreamSidebarSection(props: {
             props.onThreadDrop?.(event, null);
           }}
         >
-          <WorkstreamThreadDropHeader destination={null} disabled={!canWrite}>
-            <button
-              type="button"
-              className="flex items-center gap-1 px-2 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label={`${collapsed.includes("__unassigned__") ? "Expand" : "Collapse"} Unassigned`}
-              aria-expanded={!collapsed.includes("__unassigned__")}
-              onClick={() =>
-                setCollapsed((values) =>
-                  values.includes("__unassigned__")
-                    ? values.filter((id) => id !== "__unassigned__")
-                    : [...values, "__unassigned__"],
-                )
-              }
-            >
-              <ChevronDownIcon
-                aria-hidden
-                className={`size-3.5 ${collapsed.includes("__unassigned__") ? "-rotate-90" : ""}`}
-              />{" "}
-              Unassigned
-            </button>
-          </WorkstreamThreadDropHeader>
+          <button
+            type="button"
+            className="flex items-center gap-1 px-2 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            aria-label={`${collapsed.includes("__unassigned__") ? "Expand" : "Collapse"} ${props.unassignedLabel ?? "Unassigned"}`}
+            aria-expanded={!collapsed.includes("__unassigned__")}
+            onClick={() =>
+              setCollapsed((values) =>
+                values.includes("__unassigned__")
+                  ? values.filter((id) => id !== "__unassigned__")
+                  : [...values, "__unassigned__"],
+              )
+            }
+          >
+            <ChevronDownIcon
+              aria-hidden
+              className={`size-3.5 ${collapsed.includes("__unassigned__") ? "-rotate-90" : ""}`}
+            />{" "}
+            {props.unassignedLabel ?? "Unassigned"}
+          </button>
           {!collapsed.includes("__unassigned__") ? props.renderMembers(null) : null}
         </div>
       ) : null}
-      {workstream && selectedMetadata && detail ? (
-        <div className="mx-1 mt-2 space-y-2 rounded-md border border-sidebar-border/70 p-2 text-xs">
-          <div className="flex items-center gap-2">
-            <strong className="min-w-0 flex-1 truncate">{workstream.name}</strong>
-            <select
-              aria-label="Owner-declared workstream lifecycle"
-              disabled={!canWrite}
-              value={workstream.lifecycle}
-              onChange={(event) =>
-                update(selectedMetadata, {
-                  lifecycle: event.target.value as T3WorkstreamMetadata["lifecycle"],
-                })
-              }
-            >
-              {(["planned", "active", "paused", "completed", "deferred", "abandoned"] as const).map(
-                (value) => (
-                  <option key={value}>{value}</option>
-                ),
-              )}
-            </select>
-          </div>
-          {canWrite ? (
-            <Button size="xs" variant="ghost" onClick={() => setAddPrOpen(true)}>
-              Add PR reference
+      {selected ? (
+        <div
+          ref={panelRef}
+          id="workstream-detail-panel"
+          aria-label="Workstream details"
+          tabIndex={-1}
+          className="mx-1 mt-2 space-y-3 rounded-md border border-sidebar-border/70 p-3 text-xs wrap-anywhere"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape" || event.defaultPrevented || addingPr || colorEditing)
+              return;
+            if (
+              typeof Element !== "undefined" &&
+              event.target instanceof Element &&
+              event.target.closest('[role="dialog"], [role="menu"]')
+            )
+              return;
+            event.preventDefault();
+            event.stopPropagation();
+            closeDetail();
+          }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <strong className="min-w-0">
+              {workstream?.name ?? selectedMetadata?.name ?? "Workstream"}
+            </strong>
+            <Button size="xs" variant="ghost" onClick={closeDetail}>
+              Close
             </Button>
-          ) : null}
-          {completionAuthority ? (
-            <div
-              aria-label="Workstream completion authority"
-              className="space-y-1 rounded border p-2"
-            >
-              <div>
-                Completion:{" "}
-                {completionAuthority.state === "owner-declared"
-                  ? `owner-declared by ${completionAuthority.declaration.actor.principal_id}`
-                  : completionAuthority.state === "unverified"
-                    ? `unverified owner declaration (${completionAuthority.reason.replaceAll("-", " ")})`
-                    : "not declared"}
+          </div>
+          {!detail ? <p role="status">{detailError ?? "Loading workstream…"}</p> : null}
+          {workstream && selectedMetadata && detail ? (
+            <>
+              <div className="flex items-center gap-2">
+                <span>Status</span>
+                <select
+                  aria-label="Owner-declared workstream lifecycle"
+                  disabled={!canWrite}
+                  value={workstream.lifecycle}
+                  onChange={(event) =>
+                    update(selectedMetadata, {
+                      lifecycle: event.target.value as T3WorkstreamMetadata["lifecycle"],
+                    })
+                  }
+                >
+                  {(
+                    ["planned", "active", "paused", "completed", "deferred", "abandoned"] as const
+                  ).map((value) => (
+                    <option key={value}>{value}</option>
+                  ))}
+                </select>
               </div>
-              {completionAuthority.state === "owner-declared" ? (
-                <div className="text-muted-foreground">
-                  Revision {completionAuthority.declaration.revision} · registry version{" "}
-                  {completionAuthority.declaration.registry_version} · recorded{" "}
-                  {completionAuthority.declaration.recorded_at} · command{" "}
-                  {completionAuthority.declaration.command_id}
-                </div>
-              ) : null}
               <p className="text-muted-foreground">
-                Terminal turns, member disposition, pull request status, and T3 thread settlement
-                are separate evidence. None completes this workstream.
+                Planned, active, paused, completed, deferred, and abandoned track the workstream
+                only. They do not change thread activity or settlement.
               </p>
-            </div>
-          ) : null}
-          <label className="block">
-            Target Workstream{" "}
-            <select value={targetId} onChange={(event) => setTargetId(event.target.value)}>
-              {items
-                .filter((item) => item.workstreamId !== workstream.workstream_id)
-                .map((item) => (
-                  <option key={item.workstreamId} value={item.workstreamId}>
-                    {item.name}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <ul aria-label="Membership history" className="space-y-1">
-            {detail.memberships.items.map((membership) => {
-              const reference = references.get(membership.native_reference_id);
-              const label = reference
-                ? `${reference.identity.provider}: ${reference.identity.native_id}`
-                : membership.native_reference_id;
-              return (
-                <li className="rounded border p-1" key={membership.membership_id}>
-                  <span>
-                    {label} · {membership.kind} · {membership.closed ? "removed" : "current"}
-                  </span>
-                  <div className="flex flex-wrap gap-1">
-                    {canWrite && !membership.closed && membership.kind === "primary" && target ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          invoke({
-                            operation: "move_primary",
-                            source_workstream_id: workstream.workstream_id,
-                            expected_source_version: workstream.version,
-                            source_membership_id: membership.membership_id,
-                            destination_workstream_id: target.workstreamId,
-                            expected_destination_version: target.version,
-                          })
-                        }
-                      >
-                        Move
-                      </Button>
-                    ) : null}
-                    {canWrite && !membership.closed && target ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          invoke({
-                            operation: "link_secondary",
-                            workstream_id: target.workstreamId,
-                            expected_version: target.version,
-                            native_reference_id: membership.native_reference_id,
-                          })
-                        }
-                      >
-                        Link
-                      </Button>
-                    ) : null}
-                    {canWrite && !membership.closed ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          invoke({
-                            operation: "remove_membership",
-                            workstream_id: workstream.workstream_id,
-                            expected_version: workstream.version,
-                            membership_id: membership.membership_id,
-                          })
-                        }
-                      >
-                        {membership.kind === "secondary" ? "Unlink" : "Remove"}
-                      </Button>
-                    ) : null}
-                    {canWrite && !membership.closed ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          invoke({
-                            operation: "set_coordination_disposition",
-                            workstream_id: workstream.workstream_id,
-                            expected_version: workstream.version,
-                            membership_id: membership.membership_id,
-                            disposition: "completed",
-                            other_disposition: null,
-                          })
-                        }
-                      >
-                        Record member completed
-                      </Button>
-                    ) : null}
-                    {reference?.identity.provider === "t3" ? (
-                      !canWrite ? (
-                        <span className="text-muted-foreground">
-                          T3 settlement unavailable: write authority is required.
-                        </span>
-                      ) : reference.registration.state === "attested" ? (
-                        <>
-                          <Button
-                            size="xs"
-                            variant="ghost"
-                            onClick={() =>
-                              invoke({
-                                operation: "request_native_t3_settlement",
-                                native_reference_id: reference.native_reference_id,
-                                expected_attestation_version:
-                                  reference.registration.attestation_version,
-                                native_action: "settle",
-                              })
-                            }
-                          >
-                            Request T3 thread settlement
-                          </Button>
-                          <Button
-                            size="xs"
-                            variant="ghost"
-                            onClick={() =>
-                              invoke({
-                                operation: "request_native_t3_settlement",
-                                native_reference_id: reference.native_reference_id,
-                                expected_attestation_version:
-                                  reference.registration.attestation_version,
-                                native_action: "unsettle",
-                              })
-                            }
-                          >
-                            Request T3 thread restore
-                          </Button>
-                        </>
-                      ) : (
-                        <span className="text-muted-foreground">
-                          T3 settlement unavailable: reference is {reference.registration.state}.
-                        </span>
-                      )
-                    ) : null}
-                    {canWrite && membership.closed ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          invoke(
-                            membership.kind === "primary"
-                              ? {
-                                  operation: "reattach_primary",
-                                  workstream_id: workstream.workstream_id,
-                                  expected_version: workstream.version,
-                                  native_reference_id: membership.native_reference_id,
-                                }
-                              : {
-                                  operation: "link_secondary",
-                                  workstream_id: workstream.workstream_id,
-                                  expected_version: workstream.version,
-                                  native_reference_id: membership.native_reference_id,
-                                },
-                          )
-                        }
-                      >
-                        Reattach
-                      </Button>
-                    ) : null}
-                  </div>
-                  {reference?.pr_locator ? (
-                    <div className="flex items-center gap-1">
-                      <a href={canonicalGitHubPullRequestUrl(reference.pr_locator)}>
-                        PR #{reference.pr_locator.number} ·{" "}
-                        {pullRequestStatus[reference.native_reference_id] ?? "loading"}
-                      </a>
-                      {canWrite ? (
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          disabled={prBusy}
-                          onClick={() => {
-                            if (prBusyRef.current) return;
-                            prBusyRef.current = true;
-                            setPrBusy(true);
-                            const abort = new AbortController();
-                            manualRefreshRequest.current = abort;
-                            const startedBinding = actionBindingKey;
-                            void refreshWorkstreamPr({
-                              controller: props.controller,
-                              workstreamId: workstream.workstream_id,
-                              membershipId: membership.membership_id,
-                              referenceId: reference.native_reference_id,
-                              commandId: workstreamCommandId,
-                              signal: abort.signal,
-                            })
-                              .then(async (observation) => {
-                                if (
-                                  abort.signal.aborted ||
-                                  actionBindingRef.current !== startedBinding
-                                )
-                                  return;
-                                setPullRequestStatus((current) => ({
-                                  ...current,
-                                  [reference.native_reference_id]:
-                                    workstreamPrObservationLabel(observation),
-                                }));
-                                const updated = await loadDetail(workstream.workstream_id, {
-                                  signal: abort.signal,
-                                });
-                                if (
-                                  !abort.signal.aborted &&
-                                  actionBindingRef.current === startedBinding
-                                )
-                                  setDetail(updated);
-                              })
-                              .catch((cause: unknown) => {
-                                if (
-                                  !abort.signal.aborted &&
-                                  actionBindingRef.current === startedBinding
-                                )
-                                  setCommandError(workstreamFailureMessage(cause));
-                              })
-                              .finally(() => {
-                                if (manualRefreshRequest.current === abort)
-                                  manualRefreshRequest.current = null;
-                                if (actionBindingRef.current === startedBinding) {
-                                  prBusyRef.current = false;
-                                  setPrBusy(false);
-                                }
-                              });
-                          }}
-                        >
-                          Refresh status
-                        </Button>
-                      ) : null}
+              <ul aria-label="Current members" className="space-y-1">
+                {detail.memberships.items
+                  .filter((membership) => !membership.closed)
+                  .map((membership) => {
+                    const reference = references.get(membership.native_reference_id);
+                    return (
+                      <li key={membership.membership_id}>
+                        {reference
+                          ? (props.memberLabel?.(reference) ??
+                            `${reference.identity.provider}: ${reference.identity.native_id}`)
+                          : membership.native_reference_id}
+                      </li>
+                    );
+                  })}
+                {detail.memberships.items.every((membership) => membership.closed) ? (
+                  <li>No current members</li>
+                ) : null}
+              </ul>
+              <details className="space-y-2">
+                <summary className="cursor-pointer py-1 font-medium">Manage and history</summary>
+                {completionAuthority ? (
+                  <div
+                    aria-label="Workstream completion authority"
+                    className="space-y-1 rounded border p-2"
+                  >
+                    <div>
+                      Completion:{" "}
+                      {completionAuthority.state === "owner-declared"
+                        ? `owner-declared by ${completionAuthority.declaration.actor.principal_id}`
+                        : completionAuthority.state === "unverified"
+                          ? `unverified owner declaration (${completionAuthority.reason.replaceAll("-", " ")})`
+                          : "not declared"}
                     </div>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-          {canWrite ? (
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!declarationText.trim()) return;
-                const latest = detail.declarations.items.toSorted(
-                  (a, b) => b.revision - a.revision,
-                )[0];
-                invoke({
-                  operation: "set_declaration",
-                  workstream_id: workstream.workstream_id,
-                  expected_version: workstream.version,
-                  declaration_id: latest?.declaration_id ?? null,
-                  expected_revision: latest?.revision ?? 0,
-                  text: declarationText.trim(),
-                });
-                setDeclarationText("");
-              }}
-            >
-              <Input
-                aria-label="Owner statement"
-                nativeInput
-                value={declarationText}
-                onChange={(event) => setDeclarationText(event.target.value)}
-              />
-              <Button size="xs" type="submit">
-                Record statement
-              </Button>
-            </form>
-          ) : null}
-          <p className="text-muted-foreground">
-            Owner statements add context only; they do not change lifecycle or grant execution
-            authority.
-          </p>
-          <ul aria-label="Owner statements">
-            {detail.declarations.items.map((entry) => (
-              <li key={`${entry.declaration_id}:${entry.revision}`}>
-                {entry.state}: {entry.text}
-              </li>
-            ))}
-          </ul>
-          <div>Continuation and supersession</div>
-          <ul>
-            {detail.edges.items.map((edge) => (
-              <li key={edge.edge_id}>
-                {edge.relation}: {edge.from_workstream_id} → {edge.to_workstream_id}
-              </li>
-            ))}
-          </ul>
-          {canWrite && target ? (
-            <div className="flex gap-1">
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() =>
-                  invoke({
-                    operation: "add_edge",
-                    from_workstream_id: workstream.workstream_id,
-                    expected_from_version: workstream.version,
-                    to_workstream_id: target.workstreamId,
-                    expected_to_version: target.version,
-                    relation: "continues_as",
-                  })
-                }
-              >
-                Continues as
-              </Button>
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() =>
-                  invoke({
-                    operation: "add_edge",
-                    from_workstream_id: workstream.workstream_id,
-                    expected_from_version: workstream.version,
-                    to_workstream_id: target.workstreamId,
-                    expected_to_version: target.version,
-                    relation: "superseded_by",
-                  })
-                }
-              >
-                Superseded by
-              </Button>
-            </div>
-          ) : null}
-          <ol aria-label="Permanent history">
-            {detail.history.items.map((event) => (
-              <li key={event.event_id}>
-                {event.operation} · {event.occurred_at}
-              </li>
-            ))}
-          </ol>
-          <p>History complete: {detail.history.next_cursor === null ? "yes" : "no"}</p>
-          {receipt ? (
-            <div role="status">
-              <p>
-                Coordination:{" "}
-                {receipt.state === "committed" && receipt.effects.coordination_disposition
-                  ? receipt.effects.coordination_disposition.disposition
-                  : "unchanged"}
-              </p>
-              <p>
-                Native T3 settlement:{" "}
-                {receipt.state === "committed" && receipt.effects.native_settlement
-                  ? receipt.effects.native_settlement.outcome
-                  : "unchanged"}
-              </p>
-            </div>
+                    {completionAuthority.state === "owner-declared" ? (
+                      <div className="text-muted-foreground">
+                        Revision {completionAuthority.declaration.revision} · registry version{" "}
+                        {completionAuthority.declaration.registry_version} · recorded{" "}
+                        {completionAuthority.declaration.recorded_at} · command{" "}
+                        {completionAuthority.declaration.command_id}
+                      </div>
+                    ) : null}
+                    <p className="text-muted-foreground">
+                      Terminal turns, member disposition, pull request status, and T3 thread
+                      settlement are separate evidence. None completes this workstream.
+                    </p>
+                  </div>
+                ) : null}
+                <label className="block">
+                  Target Workstream{" "}
+                  <select value={targetId} onChange={(event) => setTargetId(event.target.value)}>
+                    {items
+                      .filter((item) => item.workstreamId !== workstream.workstream_id)
+                      .map((item) => (
+                        <option key={item.workstreamId} value={item.workstreamId}>
+                          {item.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <ul aria-label="Membership history" className="space-y-1">
+                  {detail.memberships.items.map((membership) => {
+                    const reference = references.get(membership.native_reference_id);
+                    const label = reference
+                      ? (props.memberLabel?.(reference) ??
+                        `${reference.identity.provider}: ${reference.identity.native_id}`)
+                      : membership.native_reference_id;
+                    return (
+                      <li className="rounded border p-1" key={membership.membership_id}>
+                        <span>
+                          {label} · {membership.kind} · {membership.closed ? "removed" : "current"}
+                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {canWrite &&
+                          !membership.closed &&
+                          membership.kind === "primary" &&
+                          target ? (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                invoke({
+                                  operation: "move_primary",
+                                  source_workstream_id: workstream.workstream_id,
+                                  expected_source_version: workstream.version,
+                                  source_membership_id: membership.membership_id,
+                                  destination_workstream_id: target.workstreamId,
+                                  expected_destination_version: target.version,
+                                })
+                              }
+                            >
+                              Move
+                            </Button>
+                          ) : null}
+                          {canWrite && !membership.closed && target ? (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                invoke({
+                                  operation: "link_secondary",
+                                  workstream_id: target.workstreamId,
+                                  expected_version: target.version,
+                                  native_reference_id: membership.native_reference_id,
+                                })
+                              }
+                            >
+                              Link
+                            </Button>
+                          ) : null}
+                          {canWrite && !membership.closed ? (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                invoke({
+                                  operation: "remove_membership",
+                                  workstream_id: workstream.workstream_id,
+                                  expected_version: workstream.version,
+                                  membership_id: membership.membership_id,
+                                })
+                              }
+                            >
+                              {membership.kind === "secondary" ? "Unlink" : "Remove"}
+                            </Button>
+                          ) : null}
+                          {canWrite && !membership.closed ? (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                invoke({
+                                  operation: "set_coordination_disposition",
+                                  workstream_id: workstream.workstream_id,
+                                  expected_version: workstream.version,
+                                  membership_id: membership.membership_id,
+                                  disposition: "completed",
+                                  other_disposition: null,
+                                })
+                              }
+                            >
+                              Record member completed
+                            </Button>
+                          ) : null}
+                          {reference?.identity.provider === "t3" ? (
+                            !canWrite ? (
+                              <span className="text-muted-foreground">
+                                T3 settlement unavailable: write authority is required.
+                              </span>
+                            ) : reference.registration.state === "attested" ? (
+                              <>
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() =>
+                                    invoke({
+                                      operation: "request_native_t3_settlement",
+                                      native_reference_id: reference.native_reference_id,
+                                      expected_attestation_version:
+                                        reference.registration.attestation_version,
+                                      native_action: "settle",
+                                    })
+                                  }
+                                >
+                                  Request T3 thread settlement
+                                </Button>
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() =>
+                                    invoke({
+                                      operation: "request_native_t3_settlement",
+                                      native_reference_id: reference.native_reference_id,
+                                      expected_attestation_version:
+                                        reference.registration.attestation_version,
+                                      native_action: "unsettle",
+                                    })
+                                  }
+                                >
+                                  Request T3 thread restore
+                                </Button>
+                              </>
+                            ) : (
+                              <span className="text-muted-foreground">
+                                T3 settlement unavailable:{" "}
+                                {reference.registration.state === "expired"
+                                  ? "verification expired; fresh verification is required before settlement"
+                                  : `reference is ${reference.registration.state}`}
+                                .
+                              </span>
+                            )
+                          ) : null}
+                          {canWrite && membership.closed ? (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                invoke(
+                                  membership.kind === "primary"
+                                    ? {
+                                        operation: "reattach_primary",
+                                        workstream_id: workstream.workstream_id,
+                                        expected_version: workstream.version,
+                                        native_reference_id: membership.native_reference_id,
+                                      }
+                                    : {
+                                        operation: "link_secondary",
+                                        workstream_id: workstream.workstream_id,
+                                        expected_version: workstream.version,
+                                        native_reference_id: membership.native_reference_id,
+                                      },
+                                )
+                              }
+                            >
+                              Reattach
+                            </Button>
+                          ) : null}
+                        </div>
+                        {reference?.pr_locator ? (
+                          <div className="flex items-center gap-1">
+                            <a href={canonicalGitHubPullRequestUrl(reference.pr_locator)}>
+                              PR #{reference.pr_locator.number} ·{" "}
+                              {pullRequestStatus[reference.native_reference_id] ?? "loading"}
+                            </a>
+                            {canWrite ? (
+                              <Button
+                                size="xs"
+                                variant="ghost"
+                                onClick={() => {
+                                  manualRefreshRequest.current?.abort();
+                                  const controller = new AbortController();
+                                  manualRefreshRequest.current = controller;
+                                  const startedBindingKey = bindingKey;
+                                  void (async () => {
+                                    if (referenceController?.registrationContext) {
+                                      const startedAuthority = prAuthorityKey;
+                                      const observation = await refreshWorkstreamPr({
+                                        controller: referenceController,
+                                        workstreamId: workstream.workstream_id,
+                                        membershipId: membership.membership_id,
+                                        referenceId: reference.native_reference_id,
+                                        commandId: workstreamCommandId,
+                                        signal: controller.signal,
+                                      });
+                                      if (
+                                        controller.signal.aborted ||
+                                        prAuthorityKeyRef.current !== startedAuthority
+                                      )
+                                        return;
+                                      setPullRequestStatus((current) => ({
+                                        ...current,
+                                        [reference.native_reference_id]:
+                                          workstreamPrObservationLabel(observation),
+                                      }));
+                                      return;
+                                    }
+                                    const value = await loadReference(
+                                      reference.native_reference_id,
+                                      {
+                                        signal: controller.signal,
+                                      },
+                                    );
+                                    if (
+                                      controller.signal.aborted ||
+                                      bindingKeyRef.current !== startedBindingKey
+                                    )
+                                      return;
+                                    if (!value.latest_observation) return;
+                                    await run(
+                                      {
+                                        operation: "refresh_linked_pr",
+                                        workstream_id: workstream.workstream_id,
+                                        expected_version: workstream.version,
+                                        membership_id: membership.membership_id,
+                                        expected_observation_version:
+                                          value.latest_observation.observation_version,
+                                      },
+                                      undefined,
+                                      startedBindingKey,
+                                    );
+                                    const refreshed = await loadReference(
+                                      reference.native_reference_id,
+                                      {
+                                        signal: controller.signal,
+                                      },
+                                    );
+                                    if (
+                                      controller.signal.aborted ||
+                                      bindingKeyRef.current !== startedBindingKey
+                                    )
+                                      return;
+                                    setPullRequestStatus((current) => ({
+                                      ...current,
+                                      [reference.native_reference_id]:
+                                        refreshed.latest_observation?.last_success?.state ??
+                                        refreshed.latest_observation?.outcome ??
+                                        "unknown",
+                                    }));
+                                  })()
+                                    .catch((cause: unknown) => {
+                                      if (
+                                        cause === bindingSuperseded ||
+                                        controller.signal.aborted ||
+                                        bindingKeyRef.current !== startedBindingKey
+                                      )
+                                        return;
+                                      setCommandError(
+                                        referenceController?.registrationContext
+                                          ? workstreamFailureMessage(cause)
+                                          : cause instanceof Error
+                                            ? cause.message
+                                            : "PR refresh failed.",
+                                      );
+                                    })
+                                    .finally(() => {
+                                      if (manualRefreshRequest.current === controller)
+                                        manualRefreshRequest.current = null;
+                                    });
+                                }}
+                              >
+                                Refresh status
+                              </Button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+                {canWrite ? (
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!declarationText.trim()) return;
+                      const latest = detail.declarations.items.toSorted(
+                        (a, b) => b.revision - a.revision,
+                      )[0];
+                      invoke({
+                        operation: "set_declaration",
+                        workstream_id: workstream.workstream_id,
+                        expected_version: workstream.version,
+                        declaration_id: latest?.declaration_id ?? null,
+                        expected_revision: latest?.revision ?? 0,
+                        text: declarationText.trim(),
+                      });
+                      setDeclarationText("");
+                    }}
+                  >
+                    <Input
+                      aria-label="Owner statement"
+                      nativeInput
+                      value={declarationText}
+                      onChange={(event) => setDeclarationText(event.target.value)}
+                    />
+                    <Button size="xs" type="submit">
+                      Record statement
+                    </Button>
+                  </form>
+                ) : null}
+                <p className="text-muted-foreground">
+                  Owner statements add context only; they do not change lifecycle or grant execution
+                  authority.
+                </p>
+                <ul aria-label="Owner statements">
+                  {detail.declarations.items.map((entry) => (
+                    <li key={`${entry.declaration_id}:${entry.revision}`}>
+                      {entry.state}: {entry.text}
+                    </li>
+                  ))}
+                </ul>
+                <div>Continuation and supersession</div>
+                <ul>
+                  {detail.edges.items.map((edge) => (
+                    <li key={edge.edge_id}>
+                      {edge.relation}:{" "}
+                      {items.find((item) => item.workstreamId === edge.from_workstream_id)?.name ??
+                        edge.from_workstream_id}{" "}
+                      →{" "}
+                      {items.find((item) => item.workstreamId === edge.to_workstream_id)?.name ??
+                        edge.to_workstream_id}
+                    </li>
+                  ))}
+                </ul>
+                {canWrite && target ? (
+                  <div className="flex gap-1">
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      onClick={() =>
+                        invoke({
+                          operation: "add_edge",
+                          from_workstream_id: workstream.workstream_id,
+                          expected_from_version: workstream.version,
+                          to_workstream_id: target.workstreamId,
+                          expected_to_version: target.version,
+                          relation: "continues_as",
+                        })
+                      }
+                    >
+                      Continues as
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      onClick={() =>
+                        invoke({
+                          operation: "add_edge",
+                          from_workstream_id: workstream.workstream_id,
+                          expected_from_version: workstream.version,
+                          to_workstream_id: target.workstreamId,
+                          expected_to_version: target.version,
+                          relation: "superseded_by",
+                        })
+                      }
+                    >
+                      Superseded by
+                    </Button>
+                  </div>
+                ) : null}
+                <ol aria-label="Permanent history">
+                  {detail.history.items.map((event) => (
+                    <li key={event.event_id}>
+                      {event.operation} · {event.occurred_at}
+                    </li>
+                  ))}
+                </ol>
+                <p>History complete: {detail.history.next_cursor === null ? "yes" : "no"}</p>
+                {receipt ? (
+                  <div role="status">
+                    <p>
+                      Coordination:{" "}
+                      {receipt.state === "committed" && receipt.effects.coordination_disposition
+                        ? receipt.effects.coordination_disposition.disposition
+                        : "unchanged"}
+                    </p>
+                    <p>
+                      Native T3 settlement:{" "}
+                      {receipt.state === "committed" && receipt.effects.native_settlement
+                        ? receipt.effects.native_settlement.outcome
+                        : "unchanged"}
+                    </p>
+                  </div>
+                ) : null}
+              </details>
+            </>
           ) : null}
         </div>
       ) : null}
-      {selected ? (
+      {addingPr && referenceController ? (
         <WorkstreamAddPrDialog
-          controller={props.controller}
-          workstreamId={selected}
-          open={addPrOpen}
-          onOpenChange={setAddPrOpen}
+          controller={referenceController}
+          workstreamId={addingPr}
+          open
           commandId={workstreamCommandId}
-          onLinked={() => showDetail(selected)}
+          onOpenChange={(open) => {
+            if (!open) setAddingPr(null);
+          }}
+          onLinked={() => {
+            props.controller.refresh();
+            if (selected) showDetail(selected);
+          }}
         />
       ) : null}
     </section>
@@ -1110,26 +1292,5 @@ function WorkstreamHeaderStatus({
         {summary.running}/{summary.total}
       </span>
     </span>
-  );
-}
-
-function WorkstreamThreadDropHeader(props: {
-  readonly destination: string | null;
-  readonly disabled: boolean;
-  readonly children: ReactNode;
-}) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: `workstream-thread-destination:${props.destination ?? "__unassigned__"}`,
-    disabled: props.disabled,
-    data: { workstreamThreadDestination: props.destination },
-  });
-  return (
-    <div
-      ref={setNodeRef}
-      data-thread-drop-header={props.destination ?? "__unassigned__"}
-      className={isOver ? "rounded ring-2 ring-primary bg-primary/10" : undefined}
-    >
-      {props.children}
-    </div>
   );
 }

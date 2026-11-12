@@ -1,0 +1,21 @@
+{
+  "protocol": "workstreams-registry-binding/1.0.0",
+  "files": [
+    {
+      "path": "binding.schema.json",
+      "sha256": "c4c34042defeebaea7274e5a9672a3fafd84f2d6f74c92b188fa61c5ed3ca1bb"
+    },
+    {
+      "path": "provisioning.schema.json",
+      "sha256": "4b2f2e10f37a4b1e03d058f2177cb6c386ba7d97dc380185f2012b3ff802fe18"
+    },
+    {
+      "path": "refusal.schema.json",
+      "sha256": "673052a89bcd401c06075d1021842863e991d2082ba1122c09305257bcc54820"
+    },
+    {
+      "path": "spec.md",
+      "sha256": "f0c8edbbe0981e01428ee48d05c241d6c1c7eadec11ef7a6917fe3cd7cd37b41"
+    }
+  ]
+}

@@ -1,0 +1,130 @@
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as Authority from "./NativeCreationAuthority.ts";
+import * as Repository from "./NativeCreationRepository.ts";
+import type { NativeCreationWholeOperationEvidence } from "./NativeCreationExecutionTypes.ts";
+import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
+import type { OrchestrationEffectV2 } from "../../orchestration-v2/EffectOutbox.ts";
+import { CurrentEffectClaim } from "../workspaceLifecycle/ActiveEffectClaim.ts";
+import { sameOperationRequest } from "../workspaceLifecycle/NativeOperation.ts";
+
+export class NativeCreationProviderExecutionError extends Schema.TaggedError<NativeCreationProviderExecutionError>()(
+  "NativeCreationProviderExecutionError",
+  { message: Schema.String },
+) {}
+
+// Installation requires an executor that covers activation, history injection and final start.
+// Ordinary start methods cannot manufacture this whole-operation evidence.
+export class NativeCreationProviderExecutor extends Context.Service<
+  NativeCreationProviderExecutor,
+  {
+    readonly assertAvailable?: (
+      input: Authority.NativeCreationAuthorityInput,
+    ) => Effect.Effect<void, NativeCreationProviderExecutionError>;
+    readonly executeWholeOperation: (input: {
+      readonly effect: OrchestrationEffectV2;
+      readonly context: Authority.NativeCreationExecutionContextV2;
+    }) => Effect.Effect<NativeCreationWholeOperationEvidence, NativeCreationProviderExecutionError>;
+  }
+>()("t3/jones/nativeCreation/NativeCreationProviderExecution/NativeCreationProviderExecutor") {}
+
+export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffect")(function* (
+  effect: OrchestrationEffectV2,
+) {
+  const authority = yield* Effect.serviceOption(Authority.NativeCreationAuthority);
+  const repository = yield* Effect.serviceOption(Repository.NativeCreationRepository);
+  const executor = yield* Effect.serviceOption(NativeCreationProviderExecutor);
+  const claim = yield* Effect.serviceOption(CurrentEffectClaim);
+  const reference = effect.nativeCreationExecutionReference;
+  if (
+    reference === undefined ||
+    effect.request.type !== "provider-turn.start" ||
+    reference.effectId !== effect.id ||
+    reference.stageCommandId !== effect.commandId ||
+    effect.leaseOwner === null ||
+    effect.status !== "running" ||
+    effect.attemptCount < 1 ||
+    Option.isNone(authority) ||
+    authority.value.issueExecution === undefined ||
+    Option.isNone(repository) ||
+    repository.value.confirmExecution === undefined ||
+    repository.value.holdExecution === undefined ||
+    Option.isNone(executor) ||
+    Option.isNone(claim)
+  )
+    return yield* new NativeCreationProviderExecutionError({
+      message: "Qualified native provider execution is unavailable",
+    });
+  const requestRunId = effect.request.runId;
+  const confirm = repository.value.confirmExecution;
+  const hold = repository.value.holdExecution;
+  // Once the durable start exists, cancellation and any uncertain completion retain an unknown hold.
+  const issue = authority.value.issueExecution;
+  const execute = executor.value.executeWholeOperation;
+  yield* claim.value.use((current) =>
+    current.id === effect.id &&
+    current.threadId === effect.threadId &&
+    current.commandId === effect.commandId &&
+    current.attemptCount === effect.attemptCount &&
+    current.leaseOwner === effect.leaseOwner &&
+    sameOperationRequest(current.request, effect.request) &&
+    sameOperationRequest(current.nativeCreationExecutionReference, reference)
+      ? Effect.void
+      : Effect.fail(
+          new NativeCreationProviderExecutionError({
+            message: "Native effect differs from its claiming worker",
+          }),
+        ),
+  );
+  yield* Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const context = yield* issue({
+        reference,
+        expectedClaim: {
+          workerId: effect.leaseOwner!,
+          expectedAttempt: effect.attemptCount,
+          claimedAt: effect.updatedAt,
+          commandId: effect.commandId,
+          threadId: effect.threadId,
+          runId: requestRunId,
+          requestDigest: nativeCreationSha256(nativeCreationCanonicalJson(effect.request)),
+        },
+        timestamp: DateTime.formatIso(yield* DateTime.now),
+      });
+      yield* restore(
+        Effect.gen(function* () {
+          const issued = Authority.getNativeCreationExecutionReference(context);
+          if (
+            issued === null ||
+            issued.effectId !== reference.effectId ||
+            issued.claimId !== reference.claimId ||
+            issued.stageCommandId !== reference.stageCommandId
+          )
+            return yield* new NativeCreationProviderExecutionError({
+              message: "Native executor received an unissued or mismatched context",
+            });
+          const evidence = yield* execute({ effect, context });
+          yield* claim.value.use((current) =>
+            confirm({
+              reference,
+              workerId: current.leaseOwner!,
+              expectedAttempt: current.attemptCount,
+              claimedAt: current.updatedAt,
+              evidence,
+            }),
+          );
+        }),
+      );
+    }).pipe(
+      Effect.onExit((exit) =>
+        Exit.isSuccess(exit)
+          ? Effect.void
+          : hold(reference, "Whole native provider execution did not produce confirmed completion"),
+      ),
+    ),
+  );
+});

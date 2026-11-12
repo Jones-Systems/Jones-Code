@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "server-shard-weights",
+  "jonesOwnedPaths": [],
+  "hookPaths": ["apps/server/src/testUtils/weightedShardSequencer.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/testUtils/weightedShardSequencer.ts",
+      "to": "scripts/jones/server-shard-weights/envelope.ts"
+    }
+  ]
+}

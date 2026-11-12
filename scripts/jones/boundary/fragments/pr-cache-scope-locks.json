@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "pr-cache-scope-locks",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/pullRequest/PullRequestReadCache.ts",
+      "to": "apps/server/src/jones/pullRequest/pullRequestScopeLocks.ts"
+    }
+  ]
+}

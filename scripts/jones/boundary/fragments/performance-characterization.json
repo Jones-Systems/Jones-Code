@@ -1,0 +1,11 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "performance-characterization",
+  "jonesOwnedPaths": [
+    "apps/mobile/src/jones/performance/threadActivity.bench.ts",
+    "packages/client-runtime/src/jones/remoteReplay.bench.ts"
+  ],
+  "hookPaths": ["apps/server/src/orchestration-v2/LiveStreamBudget.ts"],
+  "tombstones": [],
+  "allowedImports": []
+}

@@ -1,0 +1,753 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Verifies actual database and WAL bytes, timestamps, and fixture cleanup around synchronous node:sqlite.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Builds isolated native database fixture paths for the synchronous candidate CLI adapter.
+import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
+import { expect, it } from "@effect/vitest";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as SqlClient from "effect/sql/SqlClient";
+import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
+import { runJonesMigrations } from "../persistence/JonesMigrationGuard.ts";
+import { jonesMigrationEntries } from "../persistence/JonesMigrations.ts";
+import nativeLeaseRenewal from "../persistence/Migrations/137_JonesNativeCreationLeaseRenewal.ts";
+import workspaceRetirement from "../persistence/Migrations/138_JonesWorkspaceRetirement.ts";
+import { readMigrationPlan } from "./migrationPlan.ts";
+
+/** Upstream migration IDs from `first` through the newest one this build ships. */
+const upstreamFrom = (first: number) =>
+  migrationManifest.map(([id]) => id).filter((id) => id >= first);
+
+const manifest = {
+  upstream: [
+    [1, "Initial"],
+    [2, "UpstreamNext"],
+  ] as const,
+  jones: [
+    [1, "JonesInitial"],
+    [105, "UpstreamReferenceIsolation"],
+  ] as const,
+};
+function withDatabase(run: (databasePath: string, root: string) => void) {
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-migration-plan-"));
+  try {
+    const databasePath = NodePath.join(root, "state.sqlite");
+    const database = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      database.exec(
+        "CREATE TABLE effect_sql_migrations (migration_id INTEGER, name TEXT); CREATE TABLE jones_sql_migrations (migration_id INTEGER, name TEXT); INSERT INTO effect_sql_migrations VALUES (1, 'Initial'); INSERT INTO jones_sql_migrations VALUES (1, 'JonesInitial')",
+      );
+    } finally {
+      database.close();
+    }
+    run(databasePath, root);
+  } finally {
+    NodeFS.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+it("reads the candidate's pending IDs without changing database bytes or timestamps", () => {
+  withDatabase((databasePath, root) => {
+    const before = NodeFS.readFileSync(databasePath);
+    const modified = NodeFS.statSync(databasePath).mtimeMs;
+    expect(readMigrationPlan({ databasePath, ...manifest })).toEqual({
+      status: "ready",
+      migrationPlan: { pendingUpstream: [2], pendingJones: [105] },
+    });
+    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+    expect(NodeFS.statSync(databasePath).mtimeMs).toBe(modified);
+    expect(NodeFS.readdirSync(root)).toEqual(["state.sqlite"]);
+  });
+});
+
+// Released ff200fca manifest: later production additions must not move this fixture.
+const released130Identities = [
+  [1, "WorktreeOwnershipLeases"],
+  [2, "ProjectionThreadRuntimeIdentity"],
+  [3, "NativeCreationIntents"],
+  [4, "NativeCreationCommandIdentities"],
+  [5, "WorkstreamsNativeAttempts"],
+  [6, "WorkstreamsProviderEnrollments"],
+  [100, "NativeCreationExecution"],
+  [101, "NativeWorkspacePreparation"],
+  [102, "ImportedHistoryChoices"],
+  [103, "RuntimeStop"],
+  [104, "DeletionAdmission"],
+  [105, "UpstreamReferenceIsolation"],
+  [106, "PlannedUpdateContinuity"],
+  [107, "WorkstreamsSettlementProofs"],
+  [108, "PhysicalProcessEvidence"],
+  [109, "OrdinaryCheckoutLifecycle"],
+  [110, "ThreadLookupIndexes"],
+  [111, "ClientSettlementCommands"],
+  [112, "ClientLaunchRequests"],
+  [114, "SelfSettlementProjectItems"],
+  [115, "ScheduledWebhookPendingRuns"],
+  [116, "RemoteAdmission"],
+  [117, "RemoteDelegationIntents"],
+  [118, "RemoteAdmissionIntegration"],
+  [119, "PeerEnvironmentLinks"],
+  [120, "SettlementRestores"],
+  [121, "RemoteTaskObservations"],
+  [122, "ThreadLinks"],
+  [123, "WorkspaceLifecycle"],
+  [124, "TaskContinuations"],
+  [129, "CodexFailover"],
+  [130, "ThreadTitleRefinement"],
+] as const;
+
+const released135Identities = [
+  ...released130Identities,
+  [132, "OwnerSelections"],
+  [133, "ThreadResultDependencies"],
+  [134, "GoalContinuity"],
+  [135, "IdleWorktreeAdmission"],
+] as const;
+
+const released136Identities = [...released135Identities, [136, "WorkspaceProvenance"]] as const;
+
+it("preflights a fixed released 130 ledger: append pending, lower insertion refused, bytes unchanged", () => {
+  withDatabase((databasePath, root) => {
+    const writer = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      writer.exec(
+        "DELETE FROM jones_sql_migrations; CREATE TABLE jones_thread_title_refinement (thread_id TEXT PRIMARY KEY, state_json TEXT); INSERT INTO jones_thread_title_refinement VALUES ('retained', '{\"title\":\"Retained title\"}')",
+      );
+      const insert = writer.prepare("INSERT INTO jones_sql_migrations VALUES (?, ?)");
+      for (const [id, name] of released130Identities) insert.run(id, name);
+    } finally {
+      writer.close();
+    }
+    const before = NodeFS.readFileSync(databasePath);
+    const modified = NodeFS.statSync(databasePath).mtimeMs;
+    const files = NodeFS.readdirSync(root);
+    expect(
+      readMigrationPlan({
+        databasePath,
+        upstream: manifest.upstream,
+        jones: [...released130Identities, [131, "SyntheticAppend"]],
+      }),
+    ).toEqual({
+      status: "ready",
+      migrationPlan: { pendingUpstream: [2], pendingJones: [131] },
+    });
+    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+    expect(NodeFS.statSync(databasePath).mtimeMs).toBe(modified);
+    expect(NodeFS.readdirSync(root)).toEqual(files);
+    const lower: Array<readonly [number, string]> = [
+      ...released130Identities,
+      [125, "SyntheticLateAddition"],
+    ];
+    lower.sort(([a], [b]) => a - b);
+    expect(readMigrationPlan({ databasePath, upstream: manifest.upstream, jones: lower })).toEqual({
+      status: "blocked",
+      reason: "Jones migration history has a missing prefix.",
+    });
+    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+    expect(NodeFS.statSync(databasePath).mtimeMs).toBe(modified);
+    expect(NodeFS.readdirSync(root)).toEqual(files);
+  });
+});
+
+it("blocks a candidate older than the recorded Jones database", () => {
+  withDatabase((databasePath) => {
+    const database = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      database.exec("INSERT INTO jones_sql_migrations VALUES (106, 'Future')");
+    } finally {
+      database.close();
+    }
+    expect(readMigrationPlan({ databasePath, ...manifest })).toEqual({
+      status: "blocked",
+      reason: "Candidate older than this database (Jones migration 106).",
+    });
+  });
+});
+
+it("reads committed ledgers still in WAL without checkpointing the database", () => {
+  withDatabase((databasePath, root) => {
+    const writer = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      writer.exec(
+        "PRAGMA journal_mode = WAL; INSERT INTO effect_sql_migrations VALUES (2, 'UpstreamNext')",
+      );
+      const before = NodeFS.readFileSync(databasePath);
+      const wal = NodeFS.readFileSync(`${databasePath}-wal`);
+      const modified = NodeFS.statSync(databasePath).mtimeMs;
+      const files = NodeFS.readdirSync(root);
+      expect(readMigrationPlan({ databasePath, ...manifest })).toEqual({
+        status: "ready",
+        migrationPlan: { pendingUpstream: [], pendingJones: [105] },
+      });
+      expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+      expect(NodeFS.readFileSync(`${databasePath}-wal`)).toEqual(wal);
+      expect(NodeFS.statSync(databasePath).mtimeMs).toBe(modified);
+      expect(NodeFS.readdirSync(root)).toEqual(files);
+    } finally {
+      writer.close();
+    }
+  });
+});
+
+it("blocks unknown Jones history without writing a ledger", () => {
+  withDatabase((databasePath) => {
+    const database = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      database.exec("UPDATE jones_sql_migrations SET name = 'Unknown'");
+    } finally {
+      database.close();
+    }
+    expect(readMigrationPlan({ databasePath, ...manifest }).status).toBe("blocked");
+  });
+});
+
+it("allows first startup without creating the missing database", () => {
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-migration-plan-"));
+  try {
+    expect(
+      readMigrationPlan({ databasePath: NodePath.join(root, "missing.sqlite"), ...manifest }),
+    ).toEqual({
+      status: "ready",
+      migrationPlan: { pendingUpstream: [1, 2], pendingJones: [1, 105] },
+    });
+    expect(NodeFS.readdirSync(root)).toEqual([]);
+  } finally {
+    NodeFS.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.effect(
+  "preflights and upgrades a real released 136 native row, rolling back a failed replacement",
+  () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "jones-lease-migration-plan-"),
+      );
+      const databasePath = NodePath.join(root, "statev2.sqlite");
+      const current = {
+        upstream: migrationManifest,
+        jones: [...released136Identities, [137, "NativeCreationLeaseRenewal"] as const],
+      };
+      const released = released136Identities.map(([id, name]) => {
+        const entry = jonesMigrationEntries.find(
+          ([currentId, currentName]) => currentId === id && currentName === name,
+        );
+        expect(entry, `Released identity ${id}_${name}`).toBeDefined();
+        return entry!;
+      });
+      const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+        effect.pipe(
+          Effect.provide(
+            NodeSqliteClient.layer({
+              filename: databasePath,
+              readerWorker: false,
+              checkpointWorker: false,
+            }),
+          ),
+          Effect.scoped,
+        );
+      const capture = () => {
+        const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+        try {
+          return {
+            schema: database
+              .prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")
+              .all(),
+            starts: database
+              .prepare(
+                "SELECT rowid AS retained_rowid, *, typeof(lease_expires_at) AS expiry_storage FROM jones_native_creation_execution_starts",
+              )
+              .all(),
+            upstream: database
+              .prepare("SELECT * FROM effect_sql_migrations ORDER BY migration_id")
+              .all(),
+            jones: database
+              .prepare("SELECT * FROM jones_sql_migrations ORDER BY migration_id")
+              .all(),
+          };
+        } finally {
+          database.close();
+        }
+      };
+      try {
+        yield* run(
+          Effect.gen(function* () {
+            yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
+            expect(yield* runJonesMigrations(released)).toEqual(released136Identities);
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`INSERT INTO native_creation_intents VALUES (
+          'claim', 'operation', 'preparation', 'command', 'thread', 'message',
+          '/synthetic/project', 'branch', '/synthetic/worktree', '{}', '{}')`;
+            yield* sql`INSERT INTO jones_native_creation_execution_acceptances VALUES (
+          'command', 'claim', 'thread', ${"a".repeat(64)}, ${"b".repeat(64)}, 'event', 1)`;
+            yield* sql`INSERT INTO jones_native_creation_execution_starts
+          (rowid, effect_id, claim_id, command_id, worker_id, expected_attempt, lease_expires_at, reference_json, fact_json)
+          VALUES (401, 'effect', 'claim', 'command', 'worker', 1, '2026-11-05T12:00:30.000Z', '{}', '{}')`;
+          }),
+        );
+        const before = capture();
+        const bytes = NodeFS.readFileSync(databasePath);
+        const modified = NodeFS.statSync(databasePath).mtimeMs;
+        const files = NodeFS.readdirSync(root);
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: { pendingUpstream: [], pendingJones: [137] },
+        });
+        expect(NodeFS.readFileSync(databasePath)).toEqual(bytes);
+        expect(NodeFS.statSync(databasePath).mtimeMs).toBe(modified);
+        expect(NodeFS.readdirSync(root)).toEqual(files);
+        let replacementObserved = false;
+        const failure = yield* run(
+          Effect.exit(
+            runJonesMigrations([
+              ...released,
+              [
+                137,
+                "NativeCreationLeaseRenewal",
+                Effect.gen(function* () {
+                  yield* nativeLeaseRenewal;
+                  const sql = yield* SqlClient.SqlClient;
+                  const rows = yield* sql<{ readonly sql: string }>`SELECT sql FROM sqlite_master
+            WHERE name = 'jones_native_creation_execution_starts_no_update'`;
+                  expect(rows[0]!.sql).toContain("strftime");
+                  replacementObserved = true;
+                  yield* sql`SELECT * FROM missing_lease_install_fixture`;
+                }),
+              ],
+            ]),
+          ),
+        );
+        expect(Exit.isFailure(failure)).toBe(true);
+        expect(replacementObserved).toBe(true);
+        expect(capture()).toEqual(before);
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: { pendingUpstream: [], pendingJones: [137] },
+        });
+        yield* run(runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)));
+        const after = capture();
+        expect(after.starts).toEqual(before.starts);
+        expect(after.upstream).toEqual(before.upstream);
+        expect(after.jones.slice(0, -1)).toEqual(before.jones);
+        expect(after.jones).toHaveLength(before.jones.length + 1);
+        expect(after.jones.at(-1)).toMatchObject({
+          migration_id: 137,
+          name: "NativeCreationLeaseRenewal",
+        });
+        expect(
+          after.schema.filter(
+            (row) => row.name !== "jones_native_creation_execution_starts_no_update",
+          ),
+        ).toEqual(
+          before.schema.filter(
+            (row) => row.name !== "jones_native_creation_execution_starts_no_update",
+          ),
+        );
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: { pendingUpstream: [], pendingJones: [] },
+        });
+        expect(
+          readMigrationPlan({
+            databasePath,
+            upstream: current.upstream,
+            jones: released136Identities,
+          }),
+        ).toEqual({
+          status: "blocked",
+          reason: "Candidate older than this database (Jones migration 137).",
+        });
+        yield* run(runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)));
+        expect(capture()).toEqual(after);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+);
+
+it.effect(
+  "upgrades a retained upstream-63 installation through the latest upstream migration and preserves rows on failure",
+  () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-install-migrations-"));
+      const databasePath = NodePath.join(root, "statev2.sqlite");
+      const current = {
+        upstream: migrationManifest,
+        jones: jonesMigrationEntries.map(([id, name]) => [id, name] as const),
+      };
+      const latestJones = jonesMigrationEntries.at(-1)!;
+      const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+        effect.pipe(
+          Effect.provide(
+            NodeSqliteClient.layer({
+              filename: databasePath,
+              readerWorker: false,
+              checkpointWorker: false,
+            }),
+          ),
+          Effect.scoped,
+        );
+      try {
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: {
+            pendingUpstream: current.upstream.map(([id]) => id),
+            pendingJones: current.jones.map(([id]) => id),
+          },
+        });
+        yield* run(
+          Effect.gen(function* () {
+            yield* runMigrations({ toMigrationInclusive: 63 });
+            yield* runJonesMigrations(jonesMigrationEntries.slice(0, -1));
+            const sql = yield* SqlClient.SqlClient;
+            const retainedAt = "2026-09-01T00:00:00.000Z";
+            const retainedPayload = JSON.stringify({
+              id: "retained-thread",
+              title: "Retained upstream thread",
+              updatedAt: retainedAt,
+              linkedPullRequest: {
+                projectId: "retained-project",
+                repository: "Acme/Web",
+                number: 42,
+                url: "https://github.com/acme/web/pull/42",
+              },
+            });
+            yield* sql`INSERT INTO orchestration_v2_projection_threads (
+              thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+              created_at, updated_at, payload_json
+            ) VALUES ('retained-thread', 'retained-project', 'Retained upstream thread',
+              'codex', 'full-access', 'default', ${retainedAt}, ${retainedAt}, ${retainedPayload})`;
+            yield* sql`INSERT INTO orchestration_events (
+              event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+              actor_kind, payload_json, metadata_json, application_event_version
+            ) VALUES ('retained-event', 'thread', 'retained-thread', 0, 'thread.created',
+              ${retainedAt}, 'user', ${retainedPayload}, '{}', 2)`;
+            yield* sql`INSERT INTO jones_planned_update_continuity
+              (operation_id, binding_json, activated) VALUES ('retained-update', '{}', 0)`;
+            yield* sql`INSERT INTO jones_planned_update_threads
+              (operation_id, thread_id, snapshot_json, queue_done, work_done)
+              VALUES ('retained-update', 'retained-thread', '{}', 0, 0)`;
+            yield* sql`CREATE TABLE jones_install_fixture (value TEXT NOT NULL)`;
+            yield* sql`INSERT INTO jones_install_fixture VALUES ('keep-one'), ('keep-two')`;
+          }),
+        );
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: {
+            pendingUpstream: upstreamFrom(64),
+            pendingJones: [latestJones[0]],
+          },
+        });
+        const beforePreflight = NodeFS.readFileSync(databasePath);
+        const preflightMtime = NodeFS.statSync(databasePath).mtimeMs;
+        const preflightFiles = NodeFS.readdirSync(root);
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: {
+            pendingUpstream: upstreamFrom(64),
+            pendingJones: [latestJones[0]],
+          },
+        });
+        expect(NodeFS.readFileSync(databasePath)).toEqual(beforePreflight);
+        expect(NodeFS.statSync(databasePath).mtimeMs).toBe(preflightMtime);
+        expect(NodeFS.readdirSync(root)).toEqual(preflightFiles);
+        expect(yield* run(runMigrations({ toMigrationInclusive: 69 }))).toEqual(
+          migrationManifest.filter(([id]) => id >= 64 && id <= 69),
+        );
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: {
+            pendingUpstream: upstreamFrom(70),
+            pendingJones: [latestJones[0]],
+          },
+        });
+        yield* run(runMigrations());
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: { pendingUpstream: [], pendingJones: [] },
+        });
+        expect(
+          readMigrationPlan({ databasePath, ...current, jones: current.jones.slice(0, -1) }),
+        ).toEqual({
+          status: "blocked",
+          reason: `Candidate older than this database (Jones migration ${latestJones[0]}).`,
+        });
+        yield* run(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const projection = yield* sql<{ readonly payload_json: string }>`
+            SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = 'retained-thread'`;
+            const events = yield* sql<{ readonly payload_json: string }>`
+            SELECT payload_json FROM orchestration_events WHERE event_id = 'retained-event'`;
+            expect(projection).toHaveLength(1);
+            expect(events).toHaveLength(1);
+            expect(JSON.parse(projection[0]!.payload_json)).toMatchObject({
+              id: "retained-thread",
+              title: "Retained upstream thread",
+              linkedPullRequest: { number: 42 },
+              pullRequests: [
+                { host: "github.com", repository: "acme/web", number: 42, source: "manual" },
+              ],
+            });
+            expect(JSON.parse(events[0]!.payload_json)).toEqual(
+              JSON.parse(projection[0]!.payload_json),
+            );
+            expect(yield* sql`SELECT * FROM jones_planned_update_continuity`).toEqual([
+              { operation_id: "retained-update", binding_json: "{}", activated: 0 },
+            ]);
+            expect(yield* sql`SELECT * FROM jones_planned_update_threads`).toEqual([
+              {
+                operation_id: "retained-update",
+                thread_id: "retained-thread",
+                snapshot_json: "{}",
+                queue_done: 0,
+                work_done: 0,
+              },
+            ]);
+            expect(
+              (yield* sql<{ readonly migration_id: number; readonly name: string }>`
+            SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`).map(
+                ({ migration_id, name }) => [migration_id, name],
+              ),
+            ).toEqual(current.upstream);
+            expect(
+              (yield* sql<{ readonly migration_id: number; readonly name: string }>`
+            SELECT migration_id, name FROM jones_sql_migrations ORDER BY migration_id`).map(
+                ({ migration_id, name }) => [migration_id, name],
+              ),
+            ).toEqual(current.jones);
+            expect(
+              yield* sql`SELECT name FROM sqlite_master WHERE name = 'orchestration_v2_provider_turns_codex_native_id_idx'`,
+            ).toHaveLength(1);
+            expect(
+              yield* sql`SELECT name FROM sqlite_master WHERE name IN ('scheduled_task_webhook_replay_keys', 'scheduled_task_webhook_pending')`,
+            ).toHaveLength(2);
+            expect(
+              (yield* sql<{ readonly name: string }>`PRAGMA table_info(scheduled_tasks)`).some(
+                ({ name }) => name === "last_run_webhook_delivery_id",
+              ),
+            ).toBe(true);
+          }),
+        );
+        const failingId = latestJones[0] + 1;
+        const failed = yield* run(
+          Effect.exit(
+            runJonesMigrations([
+              ...jonesMigrationEntries,
+              [
+                failingId,
+                "SyntheticInstallFailure",
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* sql`CREATE TABLE jones_failed_install_fixture (value TEXT)`;
+                  yield* sql`DELETE FROM jones_install_fixture`;
+                  yield* sql`SELECT * FROM missing_install_fixture`;
+                }),
+              ],
+            ]),
+          ),
+        );
+        expect(Exit.isFailure(failed)).toBe(true);
+        const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+        try {
+          expect(
+            database.prepare("SELECT value FROM jones_install_fixture ORDER BY value").all(),
+          ).toEqual([{ value: "keep-one" }, { value: "keep-two" }]);
+          expect(
+            database
+              .prepare("SELECT name FROM sqlite_master WHERE name = 'jones_failed_install_fixture'")
+              .all(),
+          ).toEqual([]);
+          expect(
+            database
+              .prepare("SELECT migration_id FROM jones_sql_migrations WHERE migration_id = ?")
+              .all(failingId),
+          ).toEqual([]);
+        } finally {
+          database.close();
+        }
+        expect(readMigrationPlan({ databasePath, ...current }).status).toBe("ready");
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+);
+
+it.effect(
+  "upgrades released136 through137 and138 with exact retirement schema and rollback preservation",
+  () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "jones-lease-migration-plan-"),
+      );
+      const databasePath = NodePath.join(root, "statev2.sqlite");
+      const current = {
+        upstream: migrationManifest,
+        jones: [
+          ...released136Identities,
+          [137, "NativeCreationLeaseRenewal"] as const,
+          [138, "WorkspaceRetirement"] as const,
+        ],
+      };
+      const released = released136Identities.map(([id, name]) => {
+        const entry = jonesMigrationEntries.find(
+          ([currentId, currentName]) => currentId === id && currentName === name,
+        );
+        expect(entry, `Released identity ${id}_${name}`).toBeDefined();
+        return entry!;
+      });
+      const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+        effect.pipe(
+          Effect.provide(
+            NodeSqliteClient.layer({
+              filename: databasePath,
+              readerWorker: false,
+              checkpointWorker: false,
+            }),
+          ),
+          Effect.scoped,
+        );
+      const capture = () => {
+        const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+        try {
+          return {
+            schema: database
+              .prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")
+              .all(),
+            starts: database
+              .prepare(
+                "SELECT rowid AS retained_rowid, *, typeof(lease_expires_at) AS expiry_storage FROM jones_native_creation_execution_starts",
+              )
+              .all(),
+            upstream: database
+              .prepare("SELECT * FROM effect_sql_migrations ORDER BY migration_id")
+              .all(),
+            jones: database
+              .prepare("SELECT * FROM jones_sql_migrations ORDER BY migration_id")
+              .all(),
+          };
+        } finally {
+          database.close();
+        }
+      };
+      try {
+        yield* run(
+          Effect.gen(function* () {
+            yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
+            expect(yield* runJonesMigrations(released)).toEqual(released136Identities);
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`INSERT INTO native_creation_intents VALUES (
+          'claim', 'operation', 'preparation', 'command', 'thread', 'message',
+          '/synthetic/project', 'branch', '/synthetic/worktree', '{}', '{}')`;
+            yield* sql`INSERT INTO jones_native_creation_execution_acceptances VALUES (
+          'command', 'claim', 'thread', ${"a".repeat(64)}, ${"b".repeat(64)}, 'event', 1)`;
+            yield* sql`INSERT INTO jones_native_creation_execution_starts
+          (rowid, effect_id, claim_id, command_id, worker_id, expected_attempt, lease_expires_at, reference_json, fact_json)
+          VALUES (401, 'effect', 'claim', 'command', 'worker', 1, '2026-11-05T12:00:30.000Z', '{}', '{}')`;
+          }),
+        );
+        const before = capture();
+        const bytes = NodeFS.readFileSync(databasePath);
+        const modified = NodeFS.statSync(databasePath).mtimeMs;
+        const files = NodeFS.readdirSync(root);
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: { pendingUpstream: [], pendingJones: [137, 138] },
+        });
+        expect(NodeFS.readFileSync(databasePath)).toEqual(bytes);
+        expect(NodeFS.statSync(databasePath).mtimeMs).toBe(modified);
+        expect(NodeFS.readdirSync(root)).toEqual(files);
+        let replacementObserved = false;
+        const failure = yield* run(
+          Effect.exit(
+            runJonesMigrations([
+              ...released,
+              [
+                137,
+                "NativeCreationLeaseRenewal",
+                Effect.gen(function* () {
+                  yield* nativeLeaseRenewal;
+                  const sql = yield* SqlClient.SqlClient;
+                  const rows = yield* sql<{ readonly sql: string }>`SELECT sql FROM sqlite_master
+            WHERE name = 'jones_native_creation_execution_starts_no_update'`;
+                  expect(rows[0]!.sql).toContain("strftime");
+                  replacementObserved = true;
+                  yield* sql`SELECT * FROM missing_lease_install_fixture`;
+                }),
+              ],
+            ]),
+          ),
+        );
+        expect(Exit.isFailure(failure)).toBe(true);
+        expect(replacementObserved).toBe(true);
+        expect(capture()).toEqual(before);
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: { pendingUpstream: [], pendingJones: [137, 138] },
+        });
+        yield* run(
+          runJonesMigrations([
+            ...released,
+            [137, "NativeCreationLeaseRenewal", nativeLeaseRenewal],
+            [138, "WorkspaceRetirement", workspaceRetirement],
+          ]),
+        );
+        const after = capture();
+        expect(after.starts).toEqual(before.starts);
+        expect(after.upstream).toEqual(before.upstream);
+        expect(after.jones.slice(0, before.jones.length)).toEqual(before.jones);
+        expect(after.jones).toHaveLength(before.jones.length + 2);
+        expect(after.jones.slice(-2)).toMatchObject([
+          { migration_id: 137, name: "NativeCreationLeaseRenewal" },
+          { migration_id: 138, name: "WorkspaceRetirement" },
+        ]);
+        const retirementTables = new Set([
+          "jones_workspace_retirement_intents",
+          "jones_workspace_retirement_receipts",
+          "jones_workspace_retirement_state",
+          "jones_workspace_duty_claims",
+          "jones_workspace_disposal_journal",
+          "jones_workspace_duty_identity",
+        ]);
+        expect(
+          after.schema.filter(
+            (row) =>
+              row.name !== "jones_native_creation_execution_starts_no_update" &&
+              !retirementTables.has(String(row.tbl_name)),
+          ),
+        ).toEqual(
+          before.schema.filter(
+            (row) =>
+              row.name !== "jones_native_creation_execution_starts_no_update" &&
+              !retirementTables.has(String(row.tbl_name)),
+          ),
+        );
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: { pendingUpstream: [], pendingJones: [] },
+        });
+        expect(
+          readMigrationPlan({
+            databasePath,
+            upstream: current.upstream,
+            jones: released136Identities,
+          }),
+        ).toEqual({
+          status: "blocked",
+          reason: "Candidate older than this database (Jones migration 137).",
+        });
+        yield* run(
+          runJonesMigrations([
+            ...released,
+            [137, "NativeCreationLeaseRenewal", nativeLeaseRenewal],
+            [138, "WorkspaceRetirement", workspaceRetirement],
+          ]),
+        );
+        expect(capture()).toEqual(after);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+);

@@ -1,0 +1,21 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "superseded-terminal-history",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderEventIngestor.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    }
+  ]
+}

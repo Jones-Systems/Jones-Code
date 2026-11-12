@@ -1,0 +1,259 @@
+import {
+  AuthAccessWriteScope,
+  EnvironmentHttpApi,
+  EnvironmentHttpBadRequestError,
+  type WorkstreamsNativeOwnerRequest,
+  type WorkstreamsNativeOwnerResponse,
+} from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as PeerSetup from "../native/runtime/peerSetup.ts";
+import { createPeerSetupOwnerHandler } from "../native/runtime/peerSetupCli.ts";
+import * as SourceEnrollments from "../native/runtime/sourceEnrollment.ts";
+import * as NativeStartup from "../native/runtime/startup.ts";
+import { NativeProviderEnrollmentError } from "../nativeProvider/enrollment.ts";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+
+import { annotateEnvironmentRequest, requireEnvironmentScope } from "../../../auth/http.ts";
+import { NativeStoreAuthority } from "../../../environment/NativeStoreAuthority.ts";
+import * as ServerConfig from "../../../config.ts";
+import * as DesktopNativeOwner from "../DesktopNativeOwner.ts";
+import {
+  assertLocalDesktopOwnerRequest,
+  readDesktopNativeOwnerRequest,
+  renderDesktopNativeOwnerResponse,
+  runDesktopNativeOwnerOperation,
+} from "../enrollment/desktopOwner.ts";
+import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
+import { NativeEnrollmentsLive, NativeProviderEnrollmentLive } from "../enrollment/service.ts";
+import {
+  NativeProviderAttempts,
+  NativeProviderAttemptsLive,
+} from "../nativeProvider/attemptRepository.ts";
+import { NativeProviderEnrollment, NATIVE_PROVIDER_SCOPES } from "../nativeProvider/enrollment.ts";
+import * as NativeEvidence from "../nativeProvider/evidence.ts";
+import {
+  createNativeProviderHandlers,
+  type NativeProviderOperation,
+} from "../nativeProvider/http.ts";
+import {
+  makeWorkstreamsNativeProvider,
+  type WorkstreamsNativeProvider,
+  type NativeProviderEvidence,
+  unavailableNativeProviderEvidence,
+} from "../nativeProvider/service.ts";
+
+export class NativeWorkstreamsRuntime extends Context.Service<
+  NativeWorkstreamsRuntime,
+  {
+    readonly provider: WorkstreamsNativeProvider;
+    readonly providerV2: WorkstreamsNativeProvider<"v2">;
+    readonly enrollments: NativeProviderEnrollment["Service"];
+    readonly ownerOperations?: (
+      request: WorkstreamsNativeOwnerRequest,
+    ) => Effect.Effect<WorkstreamsNativeOwnerResponse, EnvironmentHttpBadRequestError>;
+  }
+>()("t3/jones/workstreams/runtimeIntegration/native/NativeWorkstreamsRuntime") {}
+
+const makeNativeWorkstreamsRuntimeLayer = (
+  evidence: NativeProviderEvidence = unavailableNativeProviderEvidence,
+) =>
+  Layer.effect(
+    NativeWorkstreamsRuntime,
+    Effect.gen(function* () {
+      const authority = yield* NativeStoreAuthority;
+      const config = yield* ServerConfig.ServerConfig;
+      const owner = yield* DesktopNativeOwner.DesktopNativeOwner;
+      const sql = yield* SqlClient.SqlClient;
+      const engine = yield* Orchestrator.OrchestratorV2;
+      const attempts = yield* NativeProviderAttempts;
+      const selection = yield* NativeStartup.Startup;
+      const native = yield* Effect.serviceOption(SourceEnrollments.NativeSourceEnrollments);
+      const legacy = yield* NativeProviderEnrollment;
+      const enrollments =
+        selection.mode === "legacy" || (selection.mode === "disabled" && selection.config === null)
+          ? legacy
+          : NativeProviderEnrollment.of({
+              getBySessionId: Effect.fn("NativeProviderEnrollment.getBySessionId")((id) =>
+                selection.mode === "native-home" && Option.isSome(native)
+                  ? native.value
+                      .getBySessionId(id)
+                      .pipe(Effect.mapError(() => new NativeProviderEnrollmentError()))
+                  : Effect.fail(new NativeProviderEnrollmentError()),
+              ),
+            });
+      return NativeWorkstreamsRuntime.of({
+        enrollments,
+        ownerOperations: Effect.fn("NativeWorkstreamIntegration.ownerOperations")(
+          function* (request) {
+            yield* owner.refresh;
+            const binding = owner.binding;
+            if (!owner.available || binding === undefined)
+              return yield* new EnvironmentHttpBadRequestError({
+                message: "desktop_native_owner_unavailable",
+              });
+            return yield* runDesktopNativeOwnerOperation(
+              request,
+              { binding, assertCurrent: owner.assertCurrent, refresh: owner.refresh },
+              {
+                baseDir: config.baseDir,
+                authorityDir: config.authorityStateDir,
+                environmentId: binding.environmentId,
+              },
+            );
+          },
+          (effect) =>
+            effect.pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.mapError(
+                () =>
+                  new EnvironmentHttpBadRequestError({
+                    message: "desktop_native_owner_unavailable",
+                  }),
+              ),
+            ),
+        ),
+        provider: makeWorkstreamsNativeProvider({
+          authority,
+          threadExists: (threadId) =>
+            engine.getThreadShell(threadId).pipe(Effect.map((shell) => shell !== null)),
+          engine,
+          evidence,
+          attempts,
+        }),
+        providerV2: makeWorkstreamsNativeProvider(
+          {
+            authority,
+            threadExists: (threadId) =>
+              engine.getThreadShell(threadId).pipe(Effect.map((shell) => shell !== null)),
+            engine,
+            evidence,
+            attempts,
+          },
+          "v2",
+        ),
+      });
+    }),
+  ).pipe(
+    Layer.provide(NativeProviderAttemptsLive),
+    Layer.provide(NativeProviderEnrollmentLive.pipe(Layer.provide(NativeEnrollmentsLive))),
+  );
+
+export const nativeWorkstreamsRuntimeLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const evidence = yield* NativeEvidence.NativeProviderEvidence;
+    return makeNativeWorkstreamsRuntimeLayer(evidence);
+  }),
+).pipe(Layer.provide(NativeEvidence.makeNativeProviderEvidenceLayer()));
+
+const scopes = Object.values(NATIVE_PROVIDER_SCOPES);
+const createNativeWorkstreamsHttpHandler = (
+  runtime: NativeWorkstreamsRuntime["Service"],
+  operation: NativeProviderOperation,
+  profile: "v1" | "v2" = "v1",
+) =>
+  Effect.fn("environment.workstreams.native")(function* () {
+    const scope =
+      operation === "context" || operation === "attestations"
+        ? NATIVE_PROVIDER_SCOPES.context
+        : operation === "settlements"
+          ? NATIVE_PROVIDER_SCOPES.settlement
+          : NATIVE_PROVIDER_SCOPES.reconciliation;
+    yield* annotateEnvironmentRequest(`workstreams.native.${operation}`);
+    const principal = yield* requireEnvironmentScope(scope);
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    if (request.originalUrl.includes("?") || request.originalUrl.includes("#")) {
+      return yield* new EnvironmentHttpBadRequestError({
+        message: "workstreams_native_invalid_request",
+      });
+    }
+    const enrollments = NativeProviderEnrollment.of({
+      getBySessionId: Effect.fn("NativeProviderEnrollment.getBySessionId")((sessionId) =>
+        runtime.enrollments
+          .getBySessionId(sessionId)
+          .pipe(
+            Effect.map((binding) =>
+              Option.filter(
+                binding,
+                (value) =>
+                  principal.method === "bearer-access-token" &&
+                  principal.subject === `workstreams-native:${value.enrollment_id}` &&
+                  principal.scopes.size === scopes.length &&
+                  scopes.every((value) => principal.scopes.has(value)),
+              ),
+            ),
+          ),
+      ),
+    });
+    const body =
+      request.source instanceof Request && request.source.body === null
+        ? Stream.empty
+        : request.stream;
+    return yield* createNativeProviderHandlers(
+      profile === "v2" ? runtime.providerV2 : runtime.provider,
+      enrollments,
+    ).handle(operation, principal.sessionId, body);
+  });
+
+export const nativeWorkstreamsHttpApiLayer = HttpApiBuilder.group(
+  EnvironmentHttpApi,
+  "workstreamsNative",
+  Effect.fnUntraced(function* (handlers) {
+    const runtime = yield* NativeWorkstreamsRuntime;
+    const setup = yield* Effect.serviceOption(PeerSetup.PeerSetup);
+    return handlers
+      .handleRaw(
+        "peerSetupOwnerOperations",
+        createPeerSetupOwnerHandler(Option.getOrUndefined(setup)),
+      )
+      .handleRaw(
+        "ownerOperations",
+        Effect.fnUntraced(function* () {
+          yield* annotateEnvironmentRequest("workstreams.native.ownerOperations");
+          const principal = yield* requireEnvironmentScope(AuthAccessWriteScope);
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          yield* Effect.try({
+            try: () => assertLocalDesktopOwnerRequest(request, principal),
+            catch: () =>
+              new EnvironmentHttpBadRequestError({ message: "desktop_native_owner_forbidden" }),
+          });
+          const operation = yield* readDesktopNativeOwnerRequest(request.stream);
+          if (runtime.ownerOperations === undefined)
+            return yield* new EnvironmentHttpBadRequestError({
+              message: "desktop_native_owner_unavailable",
+            });
+          const result = yield* runtime.ownerOperations(operation).pipe(
+            Effect.mapError(
+              () =>
+                new EnvironmentHttpBadRequestError({
+                  message: "desktop_native_owner_unavailable",
+                }),
+            ),
+          );
+          return renderDesktopNativeOwnerResponse(result);
+        }),
+      )
+      .handleRaw("context", createNativeWorkstreamsHttpHandler(runtime, "context"))
+      .handleRaw("attestations", createNativeWorkstreamsHttpHandler(runtime, "attestations"))
+      .handleRaw("settlements", createNativeWorkstreamsHttpHandler(runtime, "settlements"))
+      .handleRaw(
+        "settlementLookup",
+        createNativeWorkstreamsHttpHandler(runtime, "settlements/lookup"),
+      )
+      .handleRaw("contextV2", createNativeWorkstreamsHttpHandler(runtime, "context", "v2"))
+      .handleRaw(
+        "attestationsV2",
+        createNativeWorkstreamsHttpHandler(runtime, "attestations", "v2"),
+      )
+      .handleRaw("settlementsV2", createNativeWorkstreamsHttpHandler(runtime, "settlements", "v2"))
+      .handleRaw(
+        "settlementLookupV2",
+        createNativeWorkstreamsHttpHandler(runtime, "settlements/lookup", "v2"),
+      );
+  }),
+);

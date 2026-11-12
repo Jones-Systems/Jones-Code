@@ -1,0 +1,923 @@
+// @effect-diagnostics globalDate:off - Offer expiry is a client refusal only; the server requalifies before native retirement.
+import { jonesBuildLabels } from "@t3tools/shared/jones/buildTime";
+import { sameJonesUpdateAlternative } from "@t3tools/contracts/jones/jonesUpdates";
+import type { EnvironmentId } from "@t3tools/contracts";
+import type {
+  JonesUpdateProvenance,
+  JonesUpdateState,
+  JonesUpdateDownloadInput,
+  JonesUpdateExactInput,
+  JonesUpdateInstallInput,
+  JonesUpdateReconcileInput,
+  JonesUpdateAlternative,
+} from "@t3tools/contracts/jones/jonesUpdates";
+import type {
+  JonesOperationStartInput,
+  JonesOperationStopInput,
+  JonesOperationFenceInput,
+  JonesOperationReadInput,
+  JonesRecoverCleanupInput,
+  JonesRecoverCleanupResult,
+  JonesRecoveryPreflightInput,
+  JonesOperationReceipt,
+  JonesOperationReadResult,
+  JonesRecoveryPreflight,
+} from "@t3tools/contracts/jones/jonesOperations";
+import * as Schema from "effect/Schema";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Random from "effect/Random";
+import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { HttpClientError, type HttpClient } from "effect/http";
+import { EnvironmentRegistry } from "../../connection/registry.ts";
+import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
+import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
+import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
+import {
+  executeAuthenticatedEnvironmentHttpRequest,
+  type EnvironmentHttpAuthHeaders,
+} from "../../state/environmentHttpAuth.ts";
+import type { makeEnvironmentHttpApiGroupClient } from "../../rpc/http.ts";
+import {
+  createEnvironmentCommand,
+  isAtomCommandInterrupted,
+  type AtomCommandResult,
+  createEnvironmentSubscriptionAtomFamily,
+} from "../../state/runtime.ts";
+
+export class JonesUpdateDisconnectedError extends Schema.TaggedError<JonesUpdateDisconnectedError>()(
+  "JonesUpdateDisconnectedError",
+  {},
+) {}
+
+export type JonesAction =
+  | { action: "check" }
+  | { action: "download"; input: JonesUpdateDownloadInput }
+  /** Hosts that predate exact selection answer 404; callers gate this on `capability.exactSource`. */
+  | { action: "downloadExact"; input: JonesUpdateExactInput }
+  | { action: "reconcile"; input: JonesUpdateReconcileInput }
+  | { action: "install"; input: JonesUpdateInstallInput };
+
+export type JonesOperationCommand =
+  | { action: "operationStart"; input: JonesOperationStartInput }
+  | { action: "operationFence"; input: JonesOperationFenceInput }
+  | { action: "operationRead"; input: JonesOperationReadInput }
+  | { action: "recoverCleanup"; input: JonesRecoverCleanupInput }
+  | { action: "recoveryPreflight"; input: JonesRecoveryPreflightInput };
+export type JonesStopCommand = { action: "operationStop"; input: JonesOperationStopInput };
+
+type JonesRequest =
+  | JonesAction
+  | JonesOperationCommand
+  | JonesStopCommand
+  | { action: "state"; after?: number };
+type JonesRequestResult<I extends JonesRequest> = I extends { action: "operationRead" }
+  ? JonesOperationReadResult
+  : I extends { action: "recoverCleanup" }
+    ? JonesRecoverCleanupResult
+    : I extends { action: "recoveryPreflight" }
+      ? JonesRecoveryPreflight
+      : I extends { action: "operationStart" | "operationStop" | "operationFence" }
+        ? JonesOperationReceipt
+        : JonesUpdateState | null;
+
+type JonesDispatchContext = {
+  readonly client: Effect.Success<
+    ReturnType<typeof makeEnvironmentHttpApiGroupClient<"jonesUpdates">>
+  >;
+  readonly headers: EnvironmentHttpAuthHeaders;
+};
+
+const dispatchRequest = Effect.fn("clientRuntime.jonesUpdates.dispatch")(function* (
+  input: JonesRequest,
+  { client, headers }: JonesDispatchContext,
+) {
+  switch (input.action) {
+    case "state":
+      return yield* client.state({
+        headers,
+        query: input.after === undefined ? {} : { after: input.after },
+      });
+    case "check":
+      return yield* client.check({ headers });
+    case "download":
+      return yield* client.download({ headers, payload: input.input });
+    case "downloadExact":
+      return yield* client.downloadExact({ headers, payload: input.input });
+    case "install":
+      return yield* client.install({ headers, payload: input.input });
+    case "reconcile":
+      return yield* client.reconcile({ headers, payload: input.input });
+    case "operationStart":
+      return yield* client.operationStart({ headers, payload: input.input });
+    case "operationStop":
+      return yield* client.operationStop({ headers, payload: input.input });
+    case "operationFence":
+      return yield* client.operationFence({ headers, payload: input.input });
+    case "operationRead":
+      return yield* client.operationRead({ headers, payload: input.input });
+    case "recoverCleanup":
+      return yield* client.recoverCleanup({ headers, payload: input.input });
+    case "recoveryPreflight":
+      return yield* client.recoveryPreflight({ headers, payload: input.input });
+  }
+});
+
+const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
+  input:
+    | JonesAction
+    | JonesOperationCommand
+    | JonesStopCommand
+    | { action: "state"; after?: number },
+) {
+  const supervisor = yield* EnvironmentSupervisor;
+  const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+  if (Option.isNone(prepared)) return yield* new JonesUpdateDisconnectedError({});
+  const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
+  const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
+  return yield* executeAuthenticatedEnvironmentHttpRequest({
+    prepared: prepared.value,
+    signer,
+    remoteAuthorization,
+    group: "jonesUpdates",
+    method: input.action === "state" ? "GET" : "POST",
+    url: (urls) =>
+      input.action === "state"
+        ? urls.state({ query: input.after === undefined ? {} : { after: input.after } })
+        : urls[input.action](),
+    timeoutMs:
+      input.action === "state"
+        ? 35_000
+        : [
+              "operationStart",
+              "operationStop",
+              "operationFence",
+              "operationRead",
+              "recoverCleanup",
+              "recoveryPreflight",
+            ].includes(input.action)
+          ? 60_000
+          : 20 * 60_000,
+    request: (context) => dispatchRequest(input, context),
+  });
+});
+
+function request<I extends JonesRequest>(input: I) {
+  // The authenticated client dispatch above binds each action to its contract response.
+  return requestImpl(input).pipe(Effect.map((value) => value as JonesRequestResult<I>));
+}
+
+export interface JonesUpdateObservation {
+  readonly state: JonesUpdateState | null;
+  readonly freshness: "loading" | "fresh" | "stale" | "unsupported";
+  readonly message?: string;
+  /** Client clock time of the last successful status read, including unchanged long-poll returns. */
+  readonly heardAt?: number;
+}
+
+/** Longest pause between status reads; an unanswered host is retried, never abandoned. */
+const JONES_READ_RETRY_CAP_MS = 150_000;
+
+/** Unjittered transient-failure backoff: doubles from one second up to the cap. */
+export function jonesReadRetryDelayMs(failure: number) {
+  return Math.min(JONES_READ_RETRY_CAP_MS, 1000 * 2 ** Math.min(Math.max(failure, 1) - 1, 9));
+}
+
+function readFailure(error: unknown): "unsupported" | "retry" | "wait" {
+  if (typeof error !== "object" || error === null || !("_tag" in error)) return "wait";
+  if (error._tag === "EnvironmentResourceNotFoundError") return "unsupported";
+  if (error._tag === "RemoteEnvironmentAuthUndeclaredStatusError" && "status" in error) {
+    if (error.status === 404) return "unsupported";
+    if (
+      typeof error.status === "number" &&
+      (error.status === 408 || error.status === 429 || error.status >= 500)
+    )
+      return "retry";
+  }
+  if (error._tag === "RemoteEnvironmentAuthFetchError") {
+    return "cause" in error &&
+      HttpClientError.isHttpClientError(error.cause) &&
+      error.cause.response === undefined
+      ? "retry"
+      : "wait";
+  }
+  return ["RemoteEnvironmentAuthTimeoutError", "EnvironmentInternalError"].includes(
+    String(error._tag),
+  )
+    ? "retry"
+    : "wait";
+}
+
+export interface JonesUpdateSnapshotOptions {
+  /** Pause after a failure that a quick retry cannot fix, such as refused authorization. */
+  readonly waitDelay?: Effect.Effect<void>;
+  /** Completes on the next status refresh request; it cuts short a pending retry or wait. */
+  readonly kicked?: Effect.Effect<void>;
+}
+
+/** This subscription owns GET retries only; mutations and transport reconnection remain single-owner. */
+export function observeJonesUpdateSnapshot<A, E, R>(
+  connections: Stream.Stream<Option.Option<A>>,
+  read: (after?: number) => Effect.Effect<JonesUpdateState | null, E, R>,
+  retryDelay: (failure: number) => Effect.Effect<void> = (failure) =>
+    Random.nextBetween(0.5, 1).pipe(
+      Effect.flatMap((jitter) => Effect.sleep(jonesReadRetryDelayMs(failure) * jitter)),
+    ),
+  options: JonesUpdateSnapshotOptions = {},
+): Stream.Stream<JonesUpdateObservation, never, R> {
+  const waitDelay = options.waitDelay ?? Effect.sleep(JONES_READ_RETRY_CAP_MS);
+  const pause = (delay: Effect.Effect<void>) =>
+    options.kicked === undefined ? delay : Effect.raceFirst(delay, options.kicked);
+  return Stream.suspend(() => {
+    let latest: JonesUpdateState | null = null;
+    let latestIsFresh = false;
+    let heardAt: number | undefined;
+    const heard = () => (heardAt === undefined ? {} : { heardAt });
+    type Cursor = { after?: number; failures: number; wait?: "retry" | "wait"; done?: boolean };
+    return connections.pipe(
+      Stream.switchMap((connection) => {
+        if (Option.isNone(connection)) {
+          latestIsFresh = false;
+          return Stream.succeed<JonesUpdateObservation>({
+            state: latest,
+            freshness: latest === null ? "loading" : "stale",
+            message: "Update status is waiting for a connection.",
+            ...heard(),
+          });
+        }
+        const replacingFreshConnection = latestIsFresh;
+        latestIsFresh = false;
+        const reads = Stream.unfold(
+          { failures: 0 } as Cursor,
+          (
+            cursor,
+          ): Effect.Effect<readonly [JonesUpdateObservation, Cursor] | undefined, never, R> =>
+            Effect.gen(function* () {
+              if (cursor.done) return undefined;
+              if (cursor.wait === "wait") yield* pause(waitDelay);
+              if (cursor.wait === "retry") yield* pause(retryDelay(cursor.failures));
+              return yield* read(cursor.after).pipe(
+                Effect.flatMap((state) =>
+                  Clock.currentTimeMillis.pipe(Effect.map((now) => [state, now] as const)),
+                ),
+                Effect.map(([state, now]): readonly [JonesUpdateObservation, Cursor] => {
+                  latest = state;
+                  latestIsFresh = state !== null;
+                  heardAt = now;
+                  return [
+                    { state, freshness: state === null ? "unsupported" : "fresh", heardAt: now },
+                    {
+                      ...(state?.revision === undefined ? {} : { after: state.revision }),
+                      failures: 0,
+                      done: state === null,
+                    },
+                  ];
+                }),
+                Effect.catch((error) => {
+                  latestIsFresh = false;
+                  const disposition = readFailure(error);
+                  if (disposition === "unsupported") latest = null;
+                  return Effect.succeed<readonly [JonesUpdateObservation, Cursor]>([
+                    {
+                      state: latest,
+                      freshness: disposition === "unsupported" ? "unsupported" : "stale",
+                      ...heard(),
+                      ...(disposition === "unsupported"
+                        ? {}
+                        : {
+                            message:
+                              disposition === "retry"
+                                ? "Update status is temporarily unavailable; retrying."
+                                : "Update status is unavailable. Check this connection or sign in again.",
+                          }),
+                    },
+                    {
+                      ...cursor,
+                      failures: cursor.failures + 1,
+                      ...(disposition === "unsupported" ? { done: true } : { wait: disposition }),
+                    },
+                  ]);
+                }),
+              );
+            }),
+        );
+        return replacingFreshConnection
+          ? Stream.succeed<JonesUpdateObservation>({
+              state: latest,
+              freshness: "stale",
+              message: "Refreshing update status for the new connection.",
+              ...heard(),
+            }).pipe(Stream.concat(reads))
+          : reads;
+      }),
+    );
+  });
+}
+
+/** Compatibility projection for callers that only display host state. */
+export function observeJonesUpdateState<A, E, R>(
+  connections: Stream.Stream<Option.Option<A>>,
+  read: (after?: number) => Effect.Effect<JonesUpdateState | null, E, R>,
+) {
+  return observeJonesUpdateSnapshot(connections, read).pipe(
+    Stream.map((snapshot) => (snapshot.freshness === "fresh" ? snapshot.state : null)),
+  );
+}
+
+/** Observe host-owned state; mounting another client never starts another GitHub checker. */
+export function createJonesUpdateAtoms<R, E>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry | HttpClient.HttpClient | R, E>,
+) {
+  const kickWaiters = new Map<EnvironmentId, Set<() => void>>();
+  const kicked = (environmentId: EnvironmentId) =>
+    Effect.callback<void>((resume) => {
+      const waiters = kickWaiters.get(environmentId) ?? new Set<() => void>();
+      kickWaiters.set(environmentId, waiters);
+      const wake = () => resume(Effect.void);
+      waiters.add(wake);
+      return Effect.sync(() => {
+        waiters.delete(wake);
+        if (waiters.size === 0 && kickWaiters.get(environmentId) === waiters)
+          kickWaiters.delete(environmentId);
+      });
+    });
+  /** Read status now if this host's stream is waiting out a failure; a live long-poll is unaffected. */
+  const kick = (environmentId: EnvironmentId) => {
+    const waiters = kickWaiters.get(environmentId);
+    kickWaiters.delete(environmentId);
+    for (const wake of waiters ?? []) wake();
+  };
+  const subscription = createEnvironmentSubscriptionAtomFamily(runtime, {
+    label: "environment:jones-updates",
+    subscribe: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      Stream.unwrap(
+        EnvironmentSupervisor.pipe(
+          Effect.map((supervisor) =>
+            observeJonesUpdateSnapshot(
+              SubscriptionRef.changes(supervisor.prepared),
+              (after) => request({ action: "state", ...(after === undefined ? {} : { after }) }),
+              undefined,
+              { kicked: kicked(environmentId) },
+            ),
+          ),
+        ),
+      ),
+  });
+  const observation = Atom.family((environmentId: import("@t3tools/contracts").EnvironmentId) =>
+    Atom.make((get): JonesUpdateObservation =>
+      Option.getOrElse(
+        AsyncResult.value(get(subscription({ environmentId, input: { environmentId } }))),
+        () => ({ state: null, freshness: "loading" }) as const,
+      ),
+    ),
+  );
+  const value = Atom.family((environmentId: import("@t3tools/contracts").EnvironmentId) =>
+    Atom.make((get) => get(observation(environmentId)).state),
+  );
+  const action = createEnvironmentCommand(runtime, {
+    label: "environment:jones-update-action",
+    concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    execute: (input: JonesAction) => request(input),
+  });
+  const operation = createEnvironmentCommand(runtime, {
+    label: "environment:jones-update-operation",
+    concurrency: { mode: "serial", key: ({ environmentId }) => `${environmentId}:operations` },
+    execute: (input: JonesOperationCommand) => request(input),
+  });
+  const stop = createEnvironmentCommand(runtime, {
+    label: "environment:jones-update-stop",
+    concurrency: { mode: "serial", key: ({ environmentId }) => `${environmentId}:stop` },
+    execute: (input: JonesStopCommand) => request(input),
+  });
+  return { value, observation, action, operation, stop, kick };
+}
+
+const SETTLEMENT_REFUSALS = {
+  "not-failed": "This attempt is not a failed update.",
+  "not-found": "The attempt record was not found.",
+  "insufficient-evidence": "Retained evidence cannot prove this attempt made no changes.",
+  "restore-pending": "Recovery is still pending.",
+  "active-changed": "The running version changed. Its outcome needs review.",
+  "trial-evidence-present": "The candidate may have started. Its outcome needs review.",
+  "retired-evidence-mismatch": "The retired attempt does not match the retained evidence.",
+  "settlement-write-failed": "The launcher could not save reconciliation.",
+  "capability-unsupported": "Launcher refresh recommended",
+} satisfies Record<NonNullable<JonesUpdateState["settlementRefusal"]>, string>;
+
+export function jonesUpdatePresentation(state: JonesUpdateState) {
+  const busy = ["checking", "downloading", "verifying", "preparing", "installing"].includes(
+    state.phase,
+  );
+  const message =
+    state.phase === "installing"
+      ? "Installing. Server restarting. Waiting for the launcher outcome."
+      : (state.message ?? state.phase);
+  const settled =
+    state.settlement === "launcher-recorded" || state.settlement === "legacy-reconciled";
+  const settlementMessage =
+    state.settlement === undefined
+      ? undefined
+      : settled
+        ? `Update did not start: ${state.cause ?? "cause unavailable"}. Nothing changed.`
+        : "Previous attempt needs reconciliation";
+  const refusalMessage =
+    state.settlementRefusal === undefined
+      ? undefined
+      : SETTLEMENT_REFUSALS[state.settlementRefusal];
+  const outcome = state.outcome;
+  const outcomeLabels =
+    outcome === undefined
+      ? undefined
+      : jonesBuildLabels([
+          {
+            version: outcome.fromVersion,
+            startedAt:
+              outcome.fromVersion === state.currentVersion
+                ? state.currentBuildStartedAt
+                : undefined,
+            sourceSha:
+              outcome.fromVersion === state.currentVersion ? state.installedSource?.sha : undefined,
+          },
+          {
+            version: outcome.targetVersion,
+            startedAt:
+              outcome.targetVersion === state.provenance?.version
+                ? state.provenance.buildStartedAt
+                : undefined,
+            sourceSha:
+              outcome.targetVersion === state.provenance?.version
+                ? state.provenance.sourceSha
+                : undefined,
+          },
+        ]);
+  const outcomeMessage =
+    outcome === undefined
+      ? undefined
+      : `${outcome.status === "committed" ? "Installed" : outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: ${outcomeLabels![0]!.text} → ${outcomeLabels![1]!.text}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
+  return {
+    busy,
+    message,
+    outcomeMessage,
+    settlementMessage,
+    refusalMessage,
+    settled,
+    canReconcile:
+      state.settlement === "none" &&
+      state.updateId !== undefined &&
+      state.launcherSettlement === "supported",
+  };
+}
+
+export function jonesUpdateActionError(
+  result: AtomCommandResult<JonesUpdateState | null, unknown>,
+): string | null {
+  if (result._tag === "Failure")
+    return isAtomCommandInterrupted(result)
+      ? null
+      : "The update request failed. Check the connection and try again.";
+  const state = result.value;
+  if (state === null) return "This host does not support Jones updates.";
+  const presentation = jonesUpdatePresentation(state);
+  if (presentation.refusalMessage !== undefined) return presentation.refusalMessage;
+  if (
+    presentation.settled &&
+    (state.phase === "error" || state.message === presentation.settlementMessage)
+  )
+    return null;
+  return ["error", "blocked", "rolled-back"].includes(state.phase)
+    ? (state.message ?? `The update is ${state.phase}.`)
+    : null;
+}
+
+/** GitHub's abbreviation; callers keep the full commit reachable. */
+export function shortJonesSource(sha: string) {
+  return sha.slice(0, 7);
+}
+
+/**
+ * Why a host that follows its laptop will not take `source` (by default its offered or staged
+ * build), or undefined when it will. The host enforces the same rule; this only explains it.
+ */
+export function jonesFollowerHold(
+  state: JonesUpdateState,
+  source: string | undefined = state.provenance?.sourceSha,
+): string | undefined {
+  const policy = state.policy;
+  if (policy === undefined) return undefined;
+  if (source !== undefined && policy.reviewTarget?.source === source) return undefined;
+  if (policy.leaderSource === null)
+    return "This host follows its laptop and waits for the laptop to report its installed build.";
+  if (source === undefined || source === policy.leaderSource) return undefined;
+  return `This host follows its laptop and installs only the laptop's installed source ${shortJonesSource(policy.leaderSource)}.`;
+}
+
+/** One line naming whose build a following host takes. */
+export function jonesFollowerSummary(state: JonesUpdateState): string | undefined {
+  const policy = state.policy;
+  if (policy === undefined) return undefined;
+  return policy.leaderSource === null
+    ? "Follows its laptop · waiting for the laptop's installed build"
+    : `Follows its laptop · takes only source ${shortJonesSource(policy.leaderSource)}`;
+}
+
+/** The host's offered or staged build. Hosts that predate offered versions omit `version`. */
+export function jonesCandidatePresentation(state: JonesUpdateState) {
+  const provenance = state.provenance;
+  if (
+    provenance === undefined ||
+    (state.stagedHandle === undefined &&
+      state.phase !== "available" &&
+      state.phase !== "downloading" &&
+      state.phase !== "verifying")
+  )
+    return undefined;
+  return {
+    label:
+      state.stagedHandle !== undefined
+        ? "Downloaded"
+        : state.phase === "available"
+          ? "Available"
+          : "Offered",
+    version: provenance.version,
+    buildStartedAt: provenance.buildStartedAt,
+    sourceSha: provenance.sourceSha,
+  };
+}
+
+/** A generic offer never inherits the retained download's payload or migration metadata. */
+export function jonesAlternativePresentation(state: JonesUpdateState) {
+  const offer = state.stagedHandle === undefined ? undefined : state.alternativeCandidate;
+  if (offer === undefined) return undefined;
+  return {
+    label: "Alternative" as const,
+    version: offer.provenance.version,
+    buildStartedAt: offer.provenance.buildStartedAt,
+    sourceSha: offer.provenance.sourceSha,
+  };
+}
+
+export type JonesSourceComparison = "matches" | "different" | "unavailable";
+
+const FULL_SOURCE_COMMIT = /^[a-f0-9]{40}$/;
+
+/**
+ * Compares a build with an installed source its host observed. Only full commits from the same
+ * repository compare: each platform workflow builds one source under its own run, so versions
+ * and run numbers neither establish nor rule out a match.
+ */
+export function compareJonesSource(
+  installed: { readonly repository: string; readonly sha: string } | undefined,
+  candidate: JonesUpdateProvenance | undefined,
+): JonesSourceComparison {
+  if (
+    installed === undefined ||
+    candidate === undefined ||
+    installed.repository !== candidate.repository ||
+    !FULL_SOURCE_COMMIT.test(installed.sha) ||
+    !FULL_SOURCE_COMMIT.test(candidate.sourceSha)
+  )
+    return "unavailable";
+  return installed.sha === candidate.sourceSha ? "matches" : "different";
+}
+
+/** What one host can do toward this app's exact source commit. */
+export type JonesExactSourceStep =
+  | { readonly kind: "download-exact"; readonly targetSource: string }
+  | {
+      readonly kind: "replace-exact";
+      readonly targetSource: string;
+      readonly replace: Omit<NonNullable<JonesUpdateExactInput["replace"]>, "operationId">;
+    }
+  | { readonly kind: "download"; readonly input: JonesUpdateDownloadInput }
+  | { readonly kind: "install"; readonly input: JonesUpdateInstallInput };
+
+export function sameJonesReplacementStep(left: JonesExactSourceStep, right: JonesExactSourceStep) {
+  return (
+    left.kind === "replace-exact" &&
+    right.kind === "replace-exact" &&
+    left.targetSource === right.targetSource &&
+    left.replace.stagedHandle === right.replace.stagedHandle &&
+    left.replace.sourceSha === right.replace.sourceSha &&
+    left.replace.environmentId === right.replace.environmentId &&
+    left.replace.currentVersion === right.replace.currentVersion &&
+    left.replace.expectedInstalledSource === right.replace.expectedInstalledSource &&
+    sameJonesUpdateAlternative(left.replace.alternative, right.replace.alternative)
+  );
+}
+
+export type JonesExactSourceUnavailable =
+  | "invalid-target"
+  | "waiting"
+  | "unsupported"
+  | "no-permission"
+  | "already-installed"
+  | "already-downloaded"
+  | "busy"
+  | "reconciling"
+  | "staged-other"
+  | "offered-other"
+  | "follows-laptop"
+  | "unavailable";
+
+export type JonesExactSourceDecision =
+  | { readonly status: "ready"; readonly step: JonesExactSourceStep }
+  | {
+      readonly status: "unavailable";
+      readonly reason: JonesExactSourceUnavailable;
+      readonly message: string;
+    };
+
+export interface JonesExactSourceInput {
+  readonly environmentId: EnvironmentId;
+  readonly observation: JonesUpdateObservation;
+  /** A verified installed source commit, never an offered or downloaded build. */
+  readonly targetSource: string | undefined;
+  readonly canOperate: boolean;
+  readonly allowReplace?: boolean | undefined;
+  readonly allowInstall?: boolean | undefined;
+  readonly subject?: "this app" | "this laptop" | undefined;
+  /** An install request whose response was lost; it blocks re-submission until the host moves on. */
+  readonly unresolvedInstall?:
+    | {
+        readonly stagedHandle: string;
+        readonly revision: number | undefined;
+      }
+    | undefined;
+}
+
+const unavailable = (
+  reason: JonesExactSourceUnavailable,
+  message: string,
+): JonesExactSourceDecision => ({ status: "unavailable", reason, message });
+
+/** Resolve a Check offer independently of verified installed laptop-source selection. */
+export function resolveJonesAlternativeAction(input: {
+  readonly environmentId: EnvironmentId;
+  readonly observation: JonesUpdateObservation;
+  readonly canOperate: boolean;
+  readonly alternative?: JonesUpdateAlternative | undefined;
+}): JonesExactSourceDecision {
+  const { observation, environmentId } = input;
+  const state = observation.state;
+  if (observation.freshness !== "fresh" || state === null)
+    return unavailable("waiting", "Waiting for this host's current update status.");
+  if (!input.canOperate)
+    return unavailable("no-permission", "Your session on this host cannot change updates.");
+  if (jonesUpdatePresentation(state).busy)
+    return unavailable("busy", "An update operation is already in progress.");
+  const operation = state.operation;
+  if (
+    operation !== undefined &&
+    (operation.code === "launcher-unconfirmed" ||
+      ["accepted", "running", "stop-requested", "adopting", "handed-off", "held"].includes(
+        operation.phase,
+      ))
+  )
+    return unavailable("reconciling", "Read the exact operation outcome before any new work.");
+  if (state.policy !== undefined)
+    return unavailable(
+      "follows-laptop",
+      "This host follows its laptop. Use its installed-source selection.",
+    );
+  const offer = state.alternativeCandidate;
+  if (
+    offer === undefined ||
+    (input.alternative !== undefined && !sameJonesUpdateAlternative(input.alternative, offer)) ||
+    !Number.isFinite(Date.parse(offer.expiresAt)) ||
+    Date.parse(offer.expiresAt) <= Date.now()
+  )
+    return unavailable(
+      "unavailable",
+      "The qualified alternative changed or expired. Check again; the download was retained.",
+    );
+  if (
+    !state.capability.download ||
+    state.capability.exactSource !== true ||
+    state.capability.replaceStaged !== true
+  )
+    return unavailable("unsupported", "This host cannot safely replace that download.");
+  if (
+    state.environmentId !== environmentId ||
+    state.currentVersion === undefined ||
+    state.installedSource === undefined ||
+    !FULL_SOURCE_COMMIT.test(state.installedSource.sha) ||
+    state.stagedHandle === undefined ||
+    state.provenance === undefined ||
+    !FULL_SOURCE_COMMIT.test(state.provenance.sourceSha) ||
+    !FULL_SOURCE_COMMIT.test(offer.provenance.sourceSha) ||
+    state.provenance.sourceSha === offer.provenance.sourceSha ||
+    state.installedSource.sha === offer.provenance.sourceSha
+  )
+    return unavailable(
+      "unavailable",
+      "The host or downloaded build changed. Check again before replacing it.",
+    );
+  return {
+    status: "ready",
+    step: {
+      kind: "replace-exact",
+      targetSource: offer.provenance.sourceSha,
+      replace: {
+        stagedHandle: state.stagedHandle,
+        sourceSha: state.provenance.sourceSha,
+        environmentId,
+        currentVersion: state.currentVersion,
+        expectedInstalledSource: state.installedSource.sha,
+        alternative: offer,
+      },
+    },
+  };
+}
+
+function capabilityRefusal(state: JonesUpdateState, what: "download" | "install") {
+  return state.capability.reason === "bootstrap-required"
+    ? "Installing needs a qualified launcher on this host first."
+    : `This host cannot ${what} updates right now.`;
+}
+
+/**
+ * Chooses the one next step that moves a host toward this app's exact source, or says why none
+ * exists. Sources compare as full commits: platform artifacts of one commit carry different
+ * versions, and equal versions can hide different commits. Hosts that cannot select a source
+ * may only download an offer that already is the target.
+ */
+export function resolveJonesExactSourceAction(
+  input: JonesExactSourceInput,
+): JonesExactSourceDecision {
+  const { observation, targetSource } = input;
+  const subject = input.subject ?? "this app";
+  if (targetSource === undefined || !FULL_SOURCE_COMMIT.test(targetSource))
+    return unavailable(
+      "invalid-target",
+      subject === "this laptop"
+        ? "Waiting for this laptop's verified installed build."
+        : "This app does not report a verified installed source commit.",
+    );
+  const state = observation.state;
+  if (observation.freshness === "unsupported" || (observation.freshness === "fresh" && !state))
+    return unavailable("unsupported", "This host does not support Jones updates.");
+  if (observation.freshness !== "fresh" || state === null)
+    return unavailable(
+      "waiting",
+      observation.message ?? "Waiting for this host's current update status.",
+    );
+  if (!input.canOperate)
+    return unavailable("no-permission", "Your session on this host cannot change updates.");
+  const short = shortJonesSource(targetSource);
+  if (state.installedSource?.sha === targetSource)
+    return unavailable("already-installed", `This host already runs source ${short}.`);
+  if (jonesUpdatePresentation(state).busy)
+    return unavailable("busy", jonesUpdatePresentation(state).message);
+  const hold = jonesFollowerHold(state, targetSource);
+  if (hold !== undefined) return unavailable("follows-laptop", hold);
+  const pending = input.unresolvedInstall;
+  if (
+    pending !== undefined &&
+    state.stagedHandle === pending.stagedHandle &&
+    state.revision === pending.revision
+  )
+    return unavailable(
+      "reconciling",
+      "The install request was sent but its outcome is unknown. Waiting for the host to report it; it will not be sent again.",
+    );
+  const provenance = state.provenance;
+  if (state.stagedHandle !== undefined) {
+    if (provenance === undefined)
+      return unavailable(
+        "staged-other",
+        "This host has a downloaded update with no reported source, so it will not be installed from this notice. Open Settings → Connections to review this host's downloaded update; we cannot confirm it matches this app.",
+      );
+    if (provenance.sourceSha !== targetSource) {
+      if (
+        input.allowReplace === true &&
+        state.capability.download &&
+        state.capability.exactSource === true &&
+        state.capability.replaceStaged === true &&
+        state.environmentId === input.environmentId &&
+        state.currentVersion !== undefined &&
+        state.installedSource !== undefined &&
+        FULL_SOURCE_COMMIT.test(provenance.sourceSha)
+      )
+        return {
+          status: "ready",
+          step: {
+            kind: "replace-exact",
+            targetSource,
+            replace: {
+              stagedHandle: state.stagedHandle,
+              sourceSha: provenance.sourceSha,
+              environmentId: input.environmentId,
+              currentVersion: state.currentVersion,
+              expectedInstalledSource: state.installedSource.sha,
+            },
+          },
+        };
+      return unavailable(
+        "staged-other",
+        input.allowReplace === true
+          ? `This host has source ${shortJonesSource(provenance.sourceSha)} downloaded; ${subject} needs ${short}. This host cannot safely replace that download from here. Update its server and launcher to enable replacement.`
+          : `This host has source ${shortJonesSource(provenance.sourceSha)} downloaded; ${subject} needs ${short}. It will not be installed from this notice. Open Settings → Connections to review this host's downloaded update. Installing it there will not match ${subject}.`,
+      );
+    }
+    if (input.allowInstall === false)
+      return unavailable(
+        "already-downloaded",
+        `Source ${short} is downloaded. Choose Install separately to apply it.`,
+      );
+    if (!state.capability.install || state.currentVersion === undefined)
+      return unavailable("unavailable", capabilityRefusal(state, "install"));
+    return {
+      status: "ready",
+      step: {
+        kind: "install",
+        input: {
+          stagedHandle: state.stagedHandle,
+          environmentId: input.environmentId,
+          currentVersion: state.currentVersion,
+        },
+      },
+    };
+  }
+  if (!state.capability.download)
+    return unavailable("unavailable", capabilityRefusal(state, "download"));
+  if (state.capability.exactSource === true)
+    return { status: "ready", step: { kind: "download-exact", targetSource } };
+  if (
+    provenance !== undefined &&
+    state.phase === "available" &&
+    provenance.sourceSha === targetSource
+  )
+    return {
+      status: "ready",
+      step: {
+        kind: "download",
+        input: { artifactId: provenance.artifactId, sourceSha: provenance.sourceSha },
+      },
+    };
+  return unavailable(
+    "offered-other",
+    provenance !== undefined && state.phase === "available"
+      ? `This host offers source ${shortJonesSource(provenance.sourceSha)} and cannot download a specific source. Update the host from its own settings.`
+      : `This host cannot download a specific source (${short}). Update the host from its own settings.`,
+  );
+}
+
+export const JONES_STAGED_ALREADY_RUNNING_MESSAGE =
+  "The downloaded build is already running on this host. Nothing to install.";
+
+export function jonesStagedAlreadyRunning(state: JonesUpdateState): boolean {
+  return (
+    state.stagedHandle !== undefined &&
+    (state.stagedAlreadyRunning === true ||
+      compareJonesSource(state.installedSource, state.provenance) === "matches")
+  );
+}
+
+/** Revalidates the selected download after an installation confirmation. */
+export function jonesInstallRefusal(
+  clicked: JonesUpdateInstallInput,
+  latest: JonesUpdateObservation,
+): string | undefined {
+  const state = latest.state;
+  if (latest.freshness !== "fresh" || state === null)
+    return "Waiting for this host's current update status.";
+  if (jonesUpdatePresentation(state).busy) return "An update operation is already in progress.";
+  if (
+    state.stagedHandle !== clicked.stagedHandle ||
+    state.environmentId !== clicked.environmentId ||
+    state.currentVersion !== clicked.currentVersion
+  )
+    return "The host or downloaded build changed while confirmation was open.";
+  if (jonesStagedAlreadyRunning(state)) return JONES_STAGED_ALREADY_RUNNING_MESSAGE;
+  if (!state.capability.install) return capabilityRefusal(state, "install");
+  return jonesFollowerHold(state);
+}
+
+/**
+ * Judges a completed exact-source request. A host that stages another commit than the target
+ * is a refusal for this notice even when the host itself reports success.
+ */
+export function jonesExactSourceResultError(
+  step: JonesExactSourceStep,
+  result: AtomCommandResult<JonesUpdateState | null, unknown>,
+  targetSource: string,
+): string | null {
+  const failure = jonesUpdateActionError(result);
+  if (failure !== null || result._tag !== "Success" || step.kind === "install") return failure;
+  const state = result.value;
+  if (state === null) return failure;
+  if (
+    ["downloading", "verifying", "staged"].includes(state.phase) &&
+    state.provenance?.sourceSha !== targetSource
+  )
+    return state.provenance === undefined
+      ? "The host did not report the requested source for its download. Check its status before continuing."
+      : `The host reports source ${shortJonesSource(state.provenance.sourceSha)} downloaded, not ${shortJonesSource(targetSource)}. It will not be installed from this notice.`;
+  // Accepted work is under way or done; any other phase means the host did not take the download.
+  return ["downloading", "verifying", "staged"].includes(state.phase)
+    ? null
+    : (state.message ?? `The host did not start the download (${state.phase}).`);
+}

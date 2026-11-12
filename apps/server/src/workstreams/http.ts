@@ -1,3 +1,25 @@
+import { makeDeferredShellWorkstreamActivation } from "../jones/workstreams/deferredShellActivation.ts";
+import * as NativeReadExport from "../jones/workstreams/native/read/export.ts";
+import * as Stream from "effect/Stream";
+import * as Pull from "effect/Pull";
+import * as NativeMemberServices from "../jones/workstreams/native/runtime/memberServices.ts";
+import { nativeMemberPreparationLayer } from "../jones/workstreams/native/integration.ts";
+import * as HttpCompatibility from "../jones/workstreams/native/compat/http.ts";
+import * as NativeStartup from "../jones/workstreams/native/runtime/startup.ts";
+import * as NativeRuntimeEntry from "../jones/workstreams/native/runtime/entry.ts";
+import * as MemberPlacements from "../jones/workstreams/native/read/memberPlacements.ts";
+import * as NativeReads from "../jones/workstreams/native/read/routes.ts";
+import {
+  WORKSTREAMS_HOME_READ_RESULT_CONTRACT,
+  WorkstreamsHomeReadResult,
+} from "@t3tools/contracts/jones/workstreamsHomeReadResult";
+import * as Schema from "effect/Schema";
+import { nativePersistenceLayer } from "../jones/workstreams/native/integration.ts";
+import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
+import * as WorkstreamOperationsLive from "../jones/workstreams/operations/live.ts";
+import { Activation } from "../jones/workstreams/operations/ports.ts";
+import * as Option from "effect/Option";
+import * as DesktopNativeOwner from "../jones/workstreams/DesktopNativeOwner.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -5,19 +27,21 @@ import {
   EnvironmentHttpApi,
   EnvironmentInternalError,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
-  WORKSTREAMS_T3_PROVIDER_MAX_REQUEST_BYTES,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Context from "effect/Context";
+import { ServerConfig } from "../config.ts";
+import { resolveWorkstreamActivation } from "../jones/workstreams/activation.ts";
 import * as Layer from "effect/Layer";
 import * as ByteSize from "effect/ByteSize";
-import * as HttpEffect from "effect/unstable/http/HttpEffect";
+import * as HttpEffect from "effect/http/HttpEffect";
 import {
   HttpIncomingMessage,
   HttpRouter,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
+} from "effect/http";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import {
   annotateEnvironmentRequest,
@@ -26,21 +50,34 @@ import {
 } from "../auth/http.ts";
 import type { T3PlacementTrustProvider } from "../environment/NativePlacementTrust.ts";
 import * as NativeStoreAuthority from "../environment/NativeStoreAuthority.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { makeControlPlaneWorkstreamTransport } from "./ControlPlaneWorkstreamTransport.ts";
 import { WorkstreamGateway, make, type WorkstreamGatewayError } from "./WorkstreamGateway.ts";
-import { createRegistrationContextHandler } from "./registrationContext/http.ts";
+
+import { createRegistrationContextHandler } from "../jones/workstreams/registrationContext/http.ts";
 import {
   WorkstreamsRegistrationContext,
   makeWorkstreamsRegistrationContext,
-} from "./registrationContext/service.ts";
+} from "../jones/workstreams/registrationContext/service.ts";
+
+const decodeNativeReadResult = Schema.decodeUnknownEffect(WorkstreamsHomeReadResult);
 
 export const WORKSTREAM_RESPONSE_HEADERS = {
   "cache-control": "private, no-store",
   "x-content-type-options": "nosniff",
 } as const;
 
+const workstreamHttpPath = (originalUrl: string): string | undefined => {
+  if (originalUrl.startsWith("/")) return originalUrl.split(/[?#]/, 1)[0];
+  try {
+    return new URL(originalUrl).pathname;
+  } catch {
+    return undefined;
+  }
+};
+
 export const isWorkstreamHttpTarget = (originalUrl: string): boolean => {
-  const path = originalUrl.split(/[?#]/, 1)[0];
+  const path = workstreamHttpPath(originalUrl);
   return path === "/api/workstreams" || path?.startsWith("/api/workstreams/") === true;
 };
 
@@ -52,38 +89,57 @@ export const withWorkstreamBodyLimit = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   request: { readonly originalUrl: string; readonly method: string },
 ): Effect.Effect<A, E, R> =>
-  request.originalUrl.split(/[?#]/, 1)[0]?.startsWith("/api/workstreams/native/v1/") === true
+  request.method === "POST" &&
+  (workstreamHttpPath(request.originalUrl) === "/api/workstreams/thread-placements" ||
+    workstreamHttpPath(request.originalUrl) === "/api/workstreams/native/v1/read")
     ? effect.pipe(
         Effect.provideService(
           HttpIncomingMessage.MaxBodySize,
-          ByteSize.bytes(WORKSTREAMS_T3_PROVIDER_MAX_REQUEST_BYTES),
+          ByteSize.bytes(T3_PLACEMENT_MAX_REQUEST_BYTES),
         ),
       )
-    : request.method === "POST" &&
-        request.originalUrl.split(/[?#]/, 1)[0] === "/api/workstreams/thread-placements"
-      ? effect.pipe(
-          Effect.provideService(
-            HttpIncomingMessage.MaxBodySize,
-            ByteSize.bytes(T3_PLACEMENT_MAX_REQUEST_BYTES),
-          ),
-        )
-      : effect;
+    : effect;
 
 export const workstreamResponseHeadersLayer = HttpRouter.middleware(
   (httpEffect) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       if (isWorkstreamHttpTarget(request.originalUrl)) yield* appendWorkstreamResponseHeaders;
-      return yield* withWorkstreamBodyLimit(httpEffect, request);
+      return yield* HttpCompatibility.withResponseContract(
+        withWorkstreamBodyLimit(httpEffect, request),
+        {
+          method: request.method,
+          path: workstreamHttpPath(request.originalUrl),
+          headers: request.headers,
+        },
+      );
     }),
   { global: true },
 );
 
-const configured = makeControlPlaneWorkstreamTransport();
+class WorkstreamControlPlane extends Context.Service<
+  WorkstreamControlPlane,
+  ReturnType<typeof makeControlPlaneWorkstreamTransport> & {
+    readonly registryInstanceId: string | null;
+  }
+>()("t3/workstreams/http/WorkstreamControlPlane") {}
+
+// Both consumers provide this same layer identity, so one server layer graph owns one snapshot.
+const workstreamControlPlaneLayer = Layer.effect(
+  WorkstreamControlPlane,
+  Effect.gen(function* () {
+    const { baseDir } = yield* ServerConfig;
+    const activation = yield* Effect.sync(() => resolveWorkstreamActivation(baseDir));
+    const configured = makeDeferredShellWorkstreamActivation(activation);
+    return configured;
+  }),
+);
+
 const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrustProvider) =>
   Layer.effect(
     WorkstreamGateway,
     Effect.gen(function* () {
+      const configured = yield* WorkstreamControlPlane;
       const nativeAuthority =
         placementTrustProvider === undefined
           ? yield* NativeStoreAuthority.NativeStoreAuthority
@@ -98,16 +154,100 @@ const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrus
       });
     }),
   );
-export const workstreamGatewayLayerLive = makeWorkstreamGatewayLayerLive().pipe(
-  Layer.provide(NativeStoreAuthority.layer),
+export const workstreamNativeAuthorityLayerLive = NativeStoreAuthority.layer.pipe(
+  Layer.provideMerge(DesktopNativeOwner.layer),
+  Layer.provide(ServerEnvironment.layerIdentity),
 );
+
+export const workstreamGatewayLayerLive = makeWorkstreamGatewayLayerLive().pipe(
+  Layer.provide(workstreamNativeAuthorityLayerLive),
+  Layer.provide(workstreamControlPlaneLayer),
+);
+
 export const workstreamRegistrationContextLayerLive = Layer.effect(
   WorkstreamsRegistrationContext,
   Effect.gen(function* () {
+    const configured = yield* WorkstreamControlPlane;
     const authority = yield* NativeStoreAuthority.NativeStoreAuthority;
-    return makeWorkstreamsRegistrationContext({ ...configured.registrationContext, authority });
+    return makeWorkstreamsRegistrationContext({
+      get registrationContextVersion() {
+        return configured.registrationContext.registrationContextVersion;
+      },
+      get activationState() {
+        return configured.activationState;
+      },
+      get configuredBinding() {
+        return configured.registrationContext.configuredBinding;
+      },
+      get readRegistrationContext() {
+        return configured.registrationContext.readRegistrationContext;
+      },
+      authority,
+    });
   }),
-).pipe(Layer.provide(NativeStoreAuthority.layer));
+).pipe(
+  Layer.provide(workstreamNativeAuthorityLayerLive),
+  Layer.provide(workstreamControlPlaneLayer),
+);
+
+const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
+  Layer.provide(
+    Layer.effect(
+      Activation,
+      Effect.gen(function* () {
+        const configured = yield* WorkstreamControlPlane;
+        // Reuse startup qualification. Do not re-open activation files or expose values here.
+        return Activation.of({
+          get registryId() {
+            return configured.registryInstanceId;
+          },
+          get status() {
+            return {
+              state: configured.activationState,
+              missing_keys:
+                configured.activationState === "disabled"
+                  ? ([
+                      "T3_WORKSTREAM_CONTROL_PLANE_URL",
+                      "T3_WORKSTREAM_OWNER_ID",
+                      "T3_WORKSTREAM_PRINCIPAL_ID",
+                      "T3_WORKSTREAM_KEY_ID",
+                      "T3_WORKSTREAM_SIGNING_SECRET",
+                      "T3_WORKSTREAM_AUTHORIZATION_REVISION",
+                      "T3_WORKSTREAM_REGISTRY_BINDING",
+                      "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION",
+                    ] as const)
+                  : [],
+            };
+          },
+        });
+      }),
+    ),
+  ),
+  Layer.provide(workstreamControlPlaneLayer),
+);
+
+// Resolve explicit native selection before constructing any Control Plane service.
+export const workstreamStartupLayer = NativeStartup.layer.pipe(
+  Layer.provide(nativeMemberPreparationLayer),
+  Layer.provide(nativePersistenceLayer),
+);
+export const workstreamSelectedServicesLayer = NativeStartup.chooseLayer({
+  legacy: () =>
+    Layer.mergeAll(
+      workstreamGatewayLayerLive,
+      workstreamRegistrationContextLayerLive,
+      workstreamOperationsLayerLive.pipe(
+        Layer.provide(workstreamGatewayLayerLive),
+        Layer.provide(workstreamRegistrationContextLayerLive),
+      ),
+    ),
+  home: NativeStartup.homeServicesLayer,
+  member: NativeMemberServices.layer,
+  unavailable: NativeStartup.unavailableServicesLayer,
+}).pipe(
+  Layer.provideMerge(workstreamStartupLayer),
+  Layer.provide(workstreamNativeAuthorityLayerLive),
+);
 
 const internal = <A>(
   operation: string,
@@ -130,6 +270,11 @@ const restartable = <A>(
           return Effect.fail(
             new EnvironmentHttpConflictError({ message: "workstream_cursor_stale" }),
           );
+        // Unconfigured activation is a stable server state, not an outage clients should retry.
+        if (error.reason === "not-configured")
+          return Effect.fail(
+            new EnvironmentHttpConflictError({ message: "workstreams_not_configured" }),
+          );
         return failEnvironmentInternal("internal_error", { operation, reason: error.reason });
       },
     ),
@@ -151,17 +296,146 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const gateway = yield* WorkstreamGateway;
     const registrationContext = yield* WorkstreamsRegistrationContext;
-    const read = (name: string) =>
-      Effect.gen(function* () {
-        yield* annotateEnvironmentRequest(name);
-        yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-      });
+    // Legacy isolated consumers may provide only the original gateway. Production always
+    // provides the operations layer; absent capability fails closed on the new routes.
+    const operationService = yield* Effect.serviceOption(WorkstreamOperations.WorkstreamOperations);
+    const operations = <A, E>(
+      run: (service: WorkstreamOperations.WorkstreamOperations["Service"]) => Effect.Effect<A, E>,
+    ): Effect.Effect<A, E | EnvironmentInternalError> =>
+      Option.isNone(operationService)
+        ? failEnvironmentInternal("internal_error", {
+            operation: "workstreamOperations",
+            reason: "service_unavailable",
+          })
+        : run(operationService.value);
+    const read = Effect.fn("WorkstreamHttp.read")(function* (name: string) {
+      yield* annotateEnvironmentRequest(name);
+      yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+    });
     return handlers
-      .handle("registrationContext", createRegistrationContextHandler(registrationContext))
-      .handle("threadPlacements", (args) =>
+      .handle("operationSubmit", (args) =>
+        Effect.gen(function* () {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          return yield* operations((service) => service.submit(args.payload)).pipe(
+            Effect.catchTags({
+              OperationConflict: (error) =>
+                Effect.fail({
+                  code: error.code,
+                  ...(error.open_operation_id === undefined
+                    ? {}
+                    : { open_operation_id: error.open_operation_id }),
+                }),
+              OperationInternalError: () =>
+                failEnvironmentInternal("internal_error", {
+                  operation: "workstreamOperations",
+                  reason: "internal_error",
+                }),
+            }),
+          );
+        }),
+      )
+      .handle("operationRead", (args) =>
         read(args.endpoint.name).pipe(
-          Effect.andThen(internal("threadPlacements", gateway.readThreadPlacements(args.payload))),
+          Effect.andThen(operations((service) => service.read(args.payload))),
         ),
+      )
+      .handle("setupStatus", (args) =>
+        read(args.endpoint.name).pipe(
+          Effect.andThen(operations((service) => service.setupStatus())),
+        ),
+      )
+      .handle("registrationContext", createRegistrationContextHandler(registrationContext))
+      .handle("appearanceRead", (args) =>
+        read(args.endpoint.name).pipe(
+          Effect.andThen(
+            internal("appearanceRead", gateway.readAppearance(args.payload.workstream_ids)),
+          ),
+        ),
+      )
+      .handle("appearanceSave", (args) =>
+        Effect.gen(function* () {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          return yield* internal("appearanceSave", gateway.saveAppearance(args.payload));
+        }),
+      )
+      .handle("nativeRead", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const native = yield* Effect.serviceOption(NativeReads.AuthorizedReads);
+          const unavailable = () =>
+            new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" });
+          if (Option.isNone(native)) return yield* unavailable();
+          const result = yield* native.value
+            .read(args.payload.request, args.payload.placement_contract)
+            .pipe(Effect.mapError(unavailable));
+          return yield* decodeNativeReadResult(
+            { contract: WORKSTREAMS_HOME_READ_RESULT_CONTRACT, ...result },
+            { onExcessProperty: "error" },
+          ).pipe(Effect.mapError(unavailable));
+        }),
+      )
+      .handle("nativeExport", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const native = yield* Effect.serviceOption(NativeReadExport.ReadExport);
+          const unavailable = () =>
+            new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" });
+          if (Option.isNone(native)) return yield* unavailable();
+          // Acquire and authorize the first bytes before committing success headers.
+          // The request scope owns the pull through EOF, failure or client cancellation.
+          const pull = yield* Stream.toPull(native.value.stream(args.query.page_size));
+          const first = yield* Pull.catchDone(pull, () => Effect.fail(unavailable())).pipe(
+            Effect.mapError(unavailable),
+          );
+          return HttpServerResponse.stream(
+            Stream.concat(Stream.fromIterable(first), Stream.fromPull(Effect.succeed(pull))).pipe(
+              Stream.encodeText,
+              Stream.mapError(unavailable),
+            ),
+            { contentType: "application/x-ndjson", headers: WORKSTREAM_RESPONSE_HEADERS },
+          );
+        }),
+      )
+      .handle("threadPlacements", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const contract = args.headers["x-t3-workstreams-placement-contract"];
+          if (contract === undefined)
+            return yield* internal("threadPlacements", gateway.readThreadPlacements(args.payload));
+          const native = yield* Effect.serviceOption(NativeRuntimeEntry.Entry);
+          const member = yield* Effect.serviceOption(MemberPlacements.MemberPlacements);
+          const unavailable = () =>
+            new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" });
+          if (Option.isSome(native))
+            return yield* native.value
+              .placementResponse(args.payload, contract)
+              .pipe(Effect.mapError(unavailable));
+          if (Option.isSome(member))
+            return yield* member.value
+              .load(args.payload, contract)
+              .pipe(Effect.mapError(unavailable));
+          return yield* unavailable();
+        }),
+      )
+      .handle("legacyReceiptLookup", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const native = yield* Effect.serviceOption(NativeRuntimeEntry.Entry);
+          if (Option.isNone(native))
+            return yield* new EnvironmentHttpConflictError({
+              message: "workstreams_legacy_receipts_unavailable",
+            });
+          return yield* native.value.lookupLegacyReceipt(args.payload).pipe(
+            Effect.mapError(
+              () =>
+                new EnvironmentHttpConflictError({
+                  message: "workstreams_legacy_receipts_unavailable",
+                }),
+            ),
+          );
+        }),
       )
       .handle("list", (args) =>
         read(args.endpoint.name).pipe(
@@ -230,13 +504,30 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
       .handle("command", (args) =>
         read(args.endpoint.name).pipe(
           Effect.andThen(internal("command", gateway.pollCommand(args.params.commandId))),
+          Effect.tap(HttpCompatibility.receiptStatus),
         ),
       )
       .handle("submit", (args) =>
         Effect.gen(function* () {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
-          return yield* internal("submit", gateway.submit(args.payload.command));
+          // Only gateway checks before dispatch establish no effect; transport and replay failures do not.
+          return yield* gateway.submit(args.payload.command).pipe(
+            Effect.tap(HttpCompatibility.receiptStatus),
+            Effect.catch(
+              (
+                error,
+              ): Effect.Effect<never, EnvironmentHttpConflictError | EnvironmentInternalError> =>
+                error.reason === "version-conflict" || error.reason === "authorization-not-current"
+                  ? Effect.flatMap(HttpCompatibility.conflictMessage(error.reason), (message) =>
+                      Effect.fail(new EnvironmentHttpConflictError({ message })),
+                    )
+                  : failEnvironmentInternal("internal_error", {
+                      operation: "submit",
+                      reason: error.reason,
+                    }),
+            ),
+          );
         }),
       );
   }),

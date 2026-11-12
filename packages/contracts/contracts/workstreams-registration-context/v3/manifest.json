@@ -1,0 +1,28 @@
+{
+  "contract_family": "workstreams-registration-context",
+  "contract_version": "3.0.0",
+  "digest_algorithm": "sha256",
+  "manifest_sha256": "df1d07ecb6fa1785550d62fc040633f30874daa4b5bed634f82a5551f79e2474",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "c087452527f66a5a9a9813702607f893bfd98570335a49df06eab06782983b28"
+    },
+    {
+      "path": "fixtures/conformance.json",
+      "sha256": "bfe0a63c749d7cc62e99d62d0ed299550ed16c0b50f6171316038895fd2b8084"
+    },
+    {
+      "path": "fixtures/negative-cases.json",
+      "sha256": "365dba4b5eedb93d57448361916b47584d6da1ee31062cc88c9dd679091b6d75"
+    },
+    {
+      "path": "fixtures/semantic-cases.json",
+      "sha256": "229a327ad91a786f8b3304ff5fa2c15a54410ff294a9d41be021a9d359877061"
+    },
+    {
+      "path": "schemas/registration-context.schema.json",
+      "sha256": "816e269b29912e30efeb9e1707c4b7438e15fca6fe7e0c02c3797ff8e1fb924f"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@t3tools/source-control-testing",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./fakeSourceControlDriver": {
+      "types": "./src/fakeSourceControlDriver.ts",
+      "import": "./src/fakeSourceControlDriver.ts"
+    },
+    "./TestSourceControlHost": {
+      "types": "./src/TestSourceControlHost.ts",
+      "import": "./src/TestSourceControlHost.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "vp run tsrs:typecheck",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@t3tools/contracts": "workspace:*",
+    "@t3tools/shared": "workspace:*",
+    "@t3tools/source-control-core": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:"
+  }
+}

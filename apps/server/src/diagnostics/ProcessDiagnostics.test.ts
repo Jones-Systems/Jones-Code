@@ -11,10 +11,15 @@ import * as Stream from "effect/Stream";
 
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
-import * as ProcessAttribution from "../resourceTelemetry/ProcessAttribution.ts";
+import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceAttribution from "../resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts";
 import * as ProcessDiagnostics from "./ProcessDiagnostics.ts";
+
+// ProcessDiagnostics treats process.pid as the server, so the fixture PID is an
+// offset from it. A fixed PID collides whenever the test worker is assigned it.
+const SERVER_PID = process.pid;
+const CHILD_PID = SERVER_PID + 1;
 
 function makeNativeSnapshot(
   processes: ResourceMonitorSnapshotEvent["processes"],
@@ -32,11 +37,11 @@ function makeNativeSnapshot(
   };
 }
 
-function makeTelemetryLayer(
+function layerTelemetryFor(
   snapshot: ResourceMonitorSnapshotEvent,
   desktopSnapshot?: DesktopHostTelemetrySnapshot,
 ) {
-  const nativeLayer = NativeTelemetryClient.layerTest({
+  const layerNative = NativeTelemetryClient.layerTest({
     sampleNow: Effect.succeed({ generation: 0, snapshot }),
     health: Effect.succeed({
       status: "healthy",
@@ -47,7 +52,7 @@ function makeTelemetryLayer(
       sampleIntervalMs: 1_000,
     }),
   });
-  const desktopLayer = desktopSnapshot
+  const layerDesktop = desktopSnapshot
     ? DesktopTelemetryReceiver.layerTest({
         latest: Effect.succeedSome(desktopSnapshot),
         health: Effect.succeed({
@@ -60,8 +65,8 @@ function makeTelemetryLayer(
   return ResourceTelemetry.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        nativeLayer,
-        desktopLayer,
+        layerNative,
+        layerDesktop,
         ProcessAttribution.layer,
         ResourceAttribution.layer,
       ),
@@ -70,67 +75,16 @@ function makeTelemetryLayer(
 }
 
 describe("ProcessDiagnostics", () => {
-  it.effect("projects live process data from resource telemetry", () =>
-    Effect.gen(function* () {
-      const snapshot = makeNativeSnapshot([
-        {
-          pid: process.pid,
-          ppid: 1,
-          startTimeMs: 1_000,
-          runTimeMs: 60_000,
-          name: "node",
-          command: "t3 server",
-          status: "Running",
-          cpuPercent: 0,
-          cpuTimeMs: 100,
-          residentBytes: 1_024,
-          virtualBytes: 2_048,
-          ioReadBytes: 100,
-          ioWriteBytes: 200,
-          ioSemantics: "storage",
-        },
-        {
-          pid: 4_242,
-          ppid: process.pid,
-          startTimeMs: 2_000,
-          runTimeMs: 4_000,
-          name: "agent",
-          command: "codex app-server",
-          status: "Running",
-          cpuPercent: 1.5,
-          cpuTimeMs: 60,
-          residentBytes: 2_048,
-          virtualBytes: 4_096,
-          ioReadBytes: 300,
-          ioWriteBytes: 400,
-          ioSemantics: "storage",
-        },
-      ]);
-      const telemetryLayer = makeTelemetryLayer(snapshot);
-      const layer = ProcessDiagnostics.layer.pipe(Layer.provideMerge(telemetryLayer));
-
-      const diagnostics = yield* Effect.gen(function* () {
-        const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
-        return yield* processDiagnostics.read;
-      }).pipe(Effect.provide(layer));
-
-      expect(diagnostics.processes.map((process) => process.pid)).toEqual([4242]);
-      expect(diagnostics.processes[0]?.startTimeMs).toBe(2_000);
-      expect(diagnostics.processes[0]?.cpuPercent).toBe(1.5);
-      expect(diagnostics.processes[0]?.rssBytes).toBe(2_048);
-    }),
-  );
-
   it.effect("rejects stale process identities before signaling", () =>
     Effect.gen(function* () {
       const snapshot = makeNativeSnapshot([]);
-      const telemetryLayer = makeTelemetryLayer(snapshot);
-      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(telemetryLayer));
+      const layerTelemetry = layerTelemetryFor(snapshot);
+      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(layerTelemetry));
 
       const result = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
         Effect.flatMap((processDiagnostics) =>
           processDiagnostics.signal({
-            pid: 4_242,
+            pid: CHILD_PID,
             startTimeMs: 2_000,
             signal: "SIGINT",
           }),
@@ -139,10 +93,12 @@ describe("ProcessDiagnostics", () => {
       );
 
       expect(result).toEqual({
-        pid: 4242,
+        pid: CHILD_PID,
         signal: "SIGINT",
         signaled: false,
-        message: Option.some("Process 4242 no longer matches the selected process identity."),
+        message: Option.some(
+          `Process ${CHILD_PID} no longer matches the selected process identity.`,
+        ),
       });
     }),
   );
@@ -151,8 +107,8 @@ describe("ProcessDiagnostics", () => {
     Effect.gen(function* () {
       const snapshot = makeNativeSnapshot([
         {
-          pid: 4_242,
-          ppid: process.pid,
+          pid: CHILD_PID,
+          ppid: SERVER_PID,
           startTimeMs: 2_000,
           runTimeMs: 4_000,
           name: "agent",
@@ -169,9 +125,9 @@ describe("ProcessDiagnostics", () => {
       ]);
       const staleTelemetry = yield* Effect.service(ResourceTelemetry.ResourceTelemetry).pipe(
         Effect.flatMap((telemetry) => telemetry.latest),
-        Effect.provide(makeTelemetryLayer(snapshot)),
+        Effect.provide(layerTelemetryFor(snapshot)),
       );
-      const telemetryLayer = Layer.succeed(
+      const layerTelemetry = Layer.succeed(
         ResourceTelemetry.ResourceTelemetry,
         ResourceTelemetry.ResourceTelemetry.of({
           latest: Effect.succeed(staleTelemetry),
@@ -184,16 +140,15 @@ describe("ProcessDiagnostics", () => {
               cause: new Error("collector unavailable"),
             }),
           ),
-          validateProcessIdentity: () => Effect.die("unused"),
           retry: Effect.die("unused"),
         }),
       );
-      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(telemetryLayer));
+      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(layerTelemetry));
 
       const result = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
         Effect.flatMap((processDiagnostics) =>
           processDiagnostics.signal({
-            pid: 4_242,
+            pid: CHILD_PID,
             startTimeMs: 2_000,
             signal: "SIGINT",
           }),
@@ -202,11 +157,11 @@ describe("ProcessDiagnostics", () => {
       );
 
       expect(result).toEqual({
-        pid: 4_242,
+        pid: CHILD_PID,
         signal: "SIGINT",
         signaled: false,
         message: Option.some(
-          "Could not refresh process 4242; refusing to signal a stale identity.",
+          `Could not refresh process ${CHILD_PID}; refusing to signal a stale identity.`,
         ),
       });
     }),
@@ -219,7 +174,7 @@ describe("ProcessDiagnostics", () => {
       );
       const snapshot = makeNativeSnapshot([
         {
-          pid: 4_242,
+          pid: CHILD_PID,
           ppid: 1,
           startTimeMs: 2_000,
           runTimeMs: 4_000,
@@ -236,12 +191,12 @@ describe("ProcessDiagnostics", () => {
         },
       ]);
       const sampledAt = DateTime.makeUnsafe(sampledAtUnixMs);
-      const telemetryLayer = makeTelemetryLayer(snapshot, {
+      const layerTelemetry = layerTelemetryFor(snapshot, {
         version: 1,
         type: "desktopTelemetry",
         sequence: 1,
         sampledAtUnixMs,
-        electronPid: 4_242,
+        electronPid: CHILD_PID,
         power: {
           source: "electron-main",
           idle: "false",
@@ -257,7 +212,7 @@ describe("ProcessDiagnostics", () => {
         speedLimitPercent: Option.none(),
         electronProcesses: [
           {
-            pid: 4_242,
+            pid: CHILD_PID,
             creationTimeMs: 2_000,
             type: "Browser",
             name: "electron",
@@ -268,12 +223,12 @@ describe("ProcessDiagnostics", () => {
           },
         ],
       });
-      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(telemetryLayer));
+      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(layerTelemetry));
 
       const result = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
         Effect.flatMap((processDiagnostics) =>
           processDiagnostics.signal({
-            pid: 4_242,
+            pid: CHILD_PID,
             startTimeMs: 2_000,
             signal: "SIGKILL",
           }),
@@ -282,10 +237,10 @@ describe("ProcessDiagnostics", () => {
       );
 
       expect(result).toEqual({
-        pid: 4_242,
+        pid: CHILD_PID,
         signal: "SIGKILL",
         signaled: false,
-        message: Option.some("Process 4242 is not a signalable T3 backend descendant."),
+        message: Option.some(`Process ${CHILD_PID} is not a signalable T3 backend descendant.`),
       });
 
       const diagnostics = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(

@@ -6,7 +6,9 @@ import type {
 } from "@t3tools/contracts";
 import {
   currentT3Placement,
+  liveT3PlacementsCurrent,
   type LiveT3Placements,
+  type WorkstreamAssignmentIndex,
 } from "@t3tools/client-runtime/state/workstreams";
 import {
   attestedNativeThreadKey,
@@ -21,11 +23,33 @@ export const canEditWorkstreams = (data: T3WorkstreamListResult | null): boolean
   data.nextCursor === null &&
   data.binding.permissions.includes("workstreams:write");
 
-export {
-  WORKSTREAM_TINT_PALETTE,
-  workstreamPaletteIndex,
-  workstreamTint,
-} from "@t3tools/client-runtime/state/workstreams";
+/**
+ * Why membership changes are unavailable for one thread, or null when they may proceed.
+ * Stale loads are read-only, and conflicting stored assignments block changes until the
+ * thread is re-verified.
+ */
+export function mobileMembershipBlock(input: {
+  readonly snapshot: {
+    readonly data: T3WorkstreamListResult;
+    readonly placements: LiveT3Placements | null;
+    readonly stale: boolean;
+  };
+  readonly threadKey: string;
+  readonly conflictingThreadKeys: ReadonlySet<string>;
+}): string | null {
+  if (input.snapshot.stale || !canEditWorkstreams(input.snapshot.data))
+    return "Workstreams are read-only.";
+  if (input.conflictingThreadKeys.has(input.threadKey))
+    return "This thread has conflicting Workstream assignments. Changes are blocked until it is re-verified.";
+  if (
+    input.snapshot.placements?.readiness !== "ready" ||
+    !liveT3PlacementsCurrent(input.snapshot.placements)
+  )
+    return "Thread assignment requires current verified enrollment.";
+  return null;
+}
+
+export { workstreamTint } from "@t3tools/client-runtime/state/workstreams";
 
 export function planNativeMembership(input: {
   readonly data: T3WorkstreamListResult;
@@ -35,6 +59,8 @@ export function planNativeMembership(input: {
   readonly thread: WorkstreamThreadLike;
   readonly destination: string | null;
   readonly now: number;
+  /** Stored assignments read with `data`; a proof that disagrees with them blocks changes. */
+  readonly index?: WorkstreamAssignmentIndex | null;
 }): WorkstreamCommand["action"] | null {
   if (!canEditWorkstreams(input.data))
     throw new Error("Refresh Workstreams with write access before changing membership.");
@@ -46,7 +72,8 @@ export function planNativeMembership(input: {
     context.authorization_revision !== binding.authorizationRevision ||
     context.server_generation !== binding.serverGeneration ||
     context.registry_version !== binding.registryVersion ||
-    input.placements.readiness !== "ready"
+    input.placements.readiness !== "ready" ||
+    !liveT3PlacementsCurrent(input.placements)
   )
     throw new Error("Thread placement binding changed. Refresh before changing membership.");
   const key = nativeWorkstreamThreadKey(input.thread.environmentId, input.thread.id);
@@ -74,6 +101,15 @@ export function planNativeMembership(input: {
       "Thread placement is stale or conflicting. Refresh before changing membership.",
     );
   const current = placements[0];
+  const stored = input.index?.entries.get(key);
+  if (
+    stored !== undefined &&
+    (stored.state === "conflict" ||
+      (stored.primary?.membershipId ?? null) !== (current?.membership_id ?? null))
+  )
+    throw new Error(
+      "Stored Workstream assignment and current proof disagree. Refresh before changing membership.",
+    );
   if (
     current &&
     (current.native_reference_id !== reference.native_reference_id ||
@@ -136,10 +172,30 @@ export function moveNativeThreadOrder(
   return next;
 }
 
-export async function executeMobileShelfMove<A>(input: {
-  readonly removePrimary: () => Promise<void>;
-  readonly moveNative: () => Promise<A>;
-}): Promise<A> {
-  await input.removePrimary();
-  return input.moveNative();
+export interface MobileOperationActions {
+  readonly supportsOperations?: (environmentId: string) => boolean;
+  readonly operationStatus?: string | null;
+  readonly assignOperation?: (
+    snapshot: import("./projection").MobileWorkstreamSnapshot,
+    thread: WorkstreamThreadLike,
+    destination: string | null,
+  ) => Promise<void>;
+  readonly createOperation?: (
+    snapshot: import("./projection").MobileWorkstreamSnapshot,
+    name: string,
+  ) => Promise<string>;
+}
+
+/** The capable server owns registration and verification; legacy secondary actions keep their guard. */
+export function mobilePrimaryMembershipBlock(
+  input: Parameters<typeof mobileMembershipBlock>[0] & {
+    readonly capable: boolean;
+  },
+): string | null {
+  if (!input.capable) return mobileMembershipBlock(input);
+  return input.snapshot.stale || !canEditWorkstreams(input.snapshot.data)
+    ? "Workstreams are read-only."
+    : input.conflictingThreadKeys.has(input.threadKey)
+      ? "This thread has conflicting Workstream assignments. Refresh before retrying."
+      : null;
 }

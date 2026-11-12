@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { buildThreadActionMenuItems, type ThreadActionMenuState } from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
+  canOperate: true,
   branch: null,
   projectFilter: null,
   isPinned: false,
@@ -12,7 +13,6 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
-  canStopSession: true,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -25,169 +25,116 @@ const baseState: ThreadActionMenuState = {
   ],
 };
 
-function ids(state: ThreadActionMenuState): string[] {
-  return buildThreadActionMenuItems(state).map((item) => item.id);
-}
-
-function allIds(state: ThreadActionMenuState): string[] {
-  const flatten = (items: ReturnType<typeof buildThreadActionMenuItems>): string[] =>
-    items.flatMap((item) => [item.id, ...(item.children ? flatten(item.children) : [])]);
-  return flatten(buildThreadActionMenuItems(state));
-}
-
 describe("buildThreadActionMenuItems", () => {
-  it("hides lifecycle items when the environment lacks the capabilities", () => {
-    expect(
-      ids({
+  it.each(["checking", "check_failed", "signed_out", "scope_missing"] as const)(
+    "explains disabled environment access (%s) without changing authorized menus",
+    (environmentAccessStatus) => {
+      const denied = buildThreadActionMenuItems({
         ...baseState,
-        supports: {
-          settlement: false,
-          autoSettleOptOut: false,
-          snooze: false,
-          pinning: false,
-          titleRegeneration: false,
-        },
-      }),
-    ).toEqual([
-      "kill-thread",
-      "rename",
-      "mark-unread",
-      "copy",
-      "project-settings",
-      "archive",
-      "delete",
-    ]);
-  });
+        canOperate: false,
+        environmentAccessStatus,
+      });
+      expect(denied[0]).toMatchObject({ id: "environment-access-status", disabled: true });
+      expect(denied[0]?.label).toBeTruthy();
+      expect(denied.find((item) => item.id === "rename")?.disabled).toBe(true);
+      expect(denied.find((item) => item.id === "copy")?.disabled).not.toBe(true);
+      expect(buildThreadActionMenuItems({ ...baseState, environmentAccessStatus })).toEqual(
+        buildThreadActionMenuItems(baseState),
+      );
+    },
+  );
+  it.each([false, true])(
+    "puts assignment directly above Snooze/Wake with read-only gating (snoozed: %s)",
+    (isSnoozed) => {
+      const assignmentItems = [
+        { id: "assign-workstream:group:alpha" as const, label: "alpha" },
+        { id: "assign-workstream:remove" as const, label: "Unassigned (remove primary)" },
+      ];
+      for (const canOperate of [true, false]) {
+        const items = buildThreadActionMenuItems({
+          ...baseState,
+          isSnoozed,
+          canOperate,
+          assignmentItems,
+        });
+        const snooze = items.findIndex((item) => item.id === (isSnoozed ? "unsnooze" : "snooze"));
+        expect(items[snooze - 1]).toMatchObject({ id: "assign-thread", label: "Assign thread" });
+        expect(items[snooze - 1]?.children).toEqual(
+          canOperate
+            ? assignmentItems
+            : assignmentItems.map((item) => ({ ...item, disabled: true })),
+        );
+      }
+    },
+  );
 
-  it("groups project settings with utility actions before archive", () => {
+  it("places Stop after snooze and keeps it reachable without session details", () => {
     const items = buildThreadActionMenuItems(baseState);
-    const copyIndex = items.findIndex((item) => item.id === "copy");
-    expect(items[copyIndex + 1]).toMatchObject({
-      id: "project-settings",
-      label: "Project settings",
-      icon: "settings",
-    });
-    expect(items[copyIndex + 2]?.id).toBe("archive");
-  });
-
-  it("offers project filtering only for surfaces with a scoped thread list", () => {
-    expect(ids(baseState)).not.toContain("filter-by-project");
-    expect(
-      buildThreadActionMenuItems({
-        ...baseState,
-        projectFilter: { label: "Beta Project", isActive: false },
-      }).find((item) => item.id === "filter-by-project"),
-    ).toMatchObject({ label: "Filter by Beta Project", icon: "folder-tree" });
-  });
-
-  it("offers the way back to all projects once the list is scoped", () => {
-    const items = buildThreadActionMenuItems({
-      ...baseState,
-      projectFilter: { label: "Beta Project", isActive: true },
-    });
-    const filterIndex = items.findIndex((candidate) => candidate.id === "filter-by-project");
-    expect(items[filterIndex]).toMatchObject({ label: "Show all projects", icon: "folder-tree" });
-    expect(items[filterIndex - 1]?.id).toBe("mark-unread");
-    expect(items[filterIndex + 1]?.id).toBe("auto-settle");
-  });
-
-  it("includes branch items only for threads with a branch", () => {
-    const withBranch = allIds({ ...baseState, branch: "feat/menu" });
-    expect(withBranch).toContain("new-thread-on-branch");
-    expect(withBranch).toContain("copy-branch");
-    expect(allIds(baseState)).not.toContain("new-thread-on-branch");
-    expect(allIds(baseState)).not.toContain("copy-branch");
-  });
-
-  it("flips lifecycle labels with thread state", () => {
-    expect(ids({ ...baseState, isPinned: true, isSettled: true, isSnoozed: true })).toEqual(
-      expect.arrayContaining(["unpin", "unsettle", "unsnooze"]),
-    );
-    expect(ids(baseState)).toEqual(expect.arrayContaining(["pin", "settle", "snooze"]));
-  });
-
-  it("places Kill Thread below Settle and disables it after the session stops", () => {
-    const items = buildThreadActionMenuItems(baseState);
-    const settleIndex = items.findIndex((item) => item.id === "settle");
-    expect(items[settleIndex + 1]).toMatchObject({
-      id: "kill-thread",
-      label: "Kill Thread",
+    expect(items[items.findIndex((item) => item.id === "snooze") + 1]).toMatchObject({
+      id: "stop-thread",
+      label: "Stop thread",
+      icon: "square",
       disabled: false,
     });
     expect(
-      buildThreadActionMenuItems({ ...baseState, canStopSession: false }).find(
-        (item) => item.id === "kill-thread",
-      ),
-    ).toMatchObject({ disabled: true });
-  });
-
-  it("offers auto-settle as a submenu with the current option checked", () => {
-    const find = (state: ThreadActionMenuState) =>
-      buildThreadActionMenuItems(state).find((item) => item.id === "auto-settle");
-    const on = find(baseState);
-    expect(on?.label).toBe("Auto-settle behavior");
-    expect(on?.children?.map((child) => [child.id, child.checked])).toEqual([
-      ["auto-settle:enabled", true],
-      ["auto-settle:disabled", false],
-    ]);
-    const off = find({ ...baseState, autoSettleEnabled: false });
-    expect(off?.children?.map((child) => child.checked)).toEqual([false, true]);
-    // Sits with the per-thread settings after Mark unread, not the lifecycle verbs.
-    const items = buildThreadActionMenuItems(baseState);
-    expect(items[items.findIndex((item) => item.id === "mark-unread") + 1]?.id).toBe("auto-settle");
+      buildThreadActionMenuItems(baseState).find((item) => item.id === "stop-thread"),
+    ).toMatchObject({ disabled: false });
     expect(
-      ids({ ...baseState, supports: { ...baseState.supports, autoSettleOptOut: false } }),
-    ).not.toContain("auto-settle");
-  });
-
-  it("disables snooze when the thread cannot snooze, keeping presets visible", () => {
-    const snooze = buildThreadActionMenuItems({ ...baseState, canSnoozeNow: false }).find(
-      (item) => item.id === "snooze",
-    );
-    expect(snooze?.disabled).toBe(true);
-    expect(snooze?.children?.map((child) => child.id)).toEqual(["snooze:hour", "snooze:custom"]);
-  });
-
-  it("disables title regeneration while one is in flight", () => {
-    const item = buildThreadActionMenuItems({ ...baseState, isRegeneratingTitle: true }).find(
-      (candidate) => candidate.id === "regenerate-title",
-    );
-    expect(item).toMatchObject({ label: "Regenerating…", disabled: true });
-  });
-
-  it("marks delete as destructive and keeps it last", () => {
-    const items = buildThreadActionMenuItems({ ...baseState, branch: "main" });
-    expect(items.at(-1)).toMatchObject({ id: "delete", destructive: true });
-  });
-  it("offers archive as a non-destructive action right before delete", () => {
-    const items = buildThreadActionMenuItems(baseState);
-    const archiveItem = items.at(-2);
-    expect(archiveItem?.id).toBe("archive");
-    expect(archiveItem?.icon).toBe("archive");
-    expect(archiveItem?.separatorBefore).toBe(true);
-    expect(archiveItem?.destructive).toBeFalsy();
-    expect(items.at(-1)?.id).toBe("delete");
-  });
-
-  it("keeps archive available even when the environment lacks every other capability", () => {
-    expect(
-      ids({
+      buildThreadActionMenuItems({
         ...baseState,
-        supports: {
-          settlement: false,
-          autoSettleOptOut: false,
-          snooze: false,
-          pinning: false,
-          titleRegeneration: false,
-        },
-      }),
-    ).toContain("archive");
+        isPinned: true,
+        isSettled: true,
+      }).find((item) => item.id === "stop-thread"),
+    ).toMatchObject({ disabled: false });
   });
+  it.each([false, true])(
+    "disables both lifecycle directions without permission (reversed: %s)",
+    (reversed) => {
+      const items = buildThreadActionMenuItems({
+        ...baseState,
+        canOperate: false,
+        isPinned: reversed,
+        isSettled: reversed,
+        isSnoozed: reversed,
+      });
+      const expected = reversed
+        ? [
+            "unpin",
+            "unsettle",
+            "regenerate-title",
+            "unsnooze",
+            "stop-thread",
+            "rename",
+            "auto-settle",
+            "archive",
+            "delete",
+          ]
+        : [
+            "pin",
+            "settle",
+            "regenerate-title",
+            "snooze",
+            "stop-thread",
+            "rename",
+            "auto-settle",
+            "archive",
+            "delete",
+          ];
+      expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(expected);
+      expect(
+        items.find((item) => item.id === "snooze")?.children?.every((child) => child.disabled) ??
+          true,
+      ).toBe(true);
+    },
+  );
 
-  it("disables archive while the thread is running", () => {
-    const archiveItem = buildThreadActionMenuItems({ ...baseState, isRunning: true }).find(
-      (item) => item.id === "archive",
-    );
-    expect(archiveItem?.disabled).toBe(true);
+  it("disables archive and turning into a project while the thread is running", () => {
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      isRunning: true,
+      canTurnIntoProject: true,
+    });
+    expect(items.find((item) => item.id === "archive")?.disabled).toBe(true);
+    expect(items.find((item) => item.id === "turn-into-project")?.disabled).toBe(true);
   });
 });

@@ -1,0 +1,1009 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.jones.systems/workstream-operations/1.0.0/operation-result.schema.json",
+  "title": "workstream-operations/1.0.0 operation-result",
+  "$ref": "#/$defs/Result",
+  "$defs": {
+    "Assignment": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Observed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "unverified"
+            }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "enum": [
+                "not_configured",
+                "offline",
+                "registration_unavailable",
+                "placements_not_ready",
+                "contention",
+                "backpressure",
+                "verification_pending",
+                "verification_unresolved",
+                "destination_scan_bound"
+              ]
+            }
+          },
+          "required": ["kind", "reason"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Availability": {
+      "enum": [
+        "descriptor_absent",
+        "build_unavailable",
+        "contract_mismatch",
+        "source_mismatch",
+        "authority_mismatch",
+        "generation_mismatch",
+        "authority_fenced",
+        "authority_unavailable"
+      ]
+    },
+    "Child": {
+      "type": "object",
+      "properties": {
+        "command_id": {
+          "$ref": "#/$defs/CommandId"
+        },
+        "operation": {
+          "enum": [
+            "create_workstream",
+            "update_workstream",
+            "register_reference",
+            "verify_reference",
+            "attach_primary",
+            "reattach_primary",
+            "link_secondary",
+            "remove_membership",
+            "move_primary",
+            "set_coordination_disposition",
+            "set_declaration",
+            "withdraw_declaration",
+            "add_edge",
+            "remove_edge",
+            "refresh_linked_pr"
+          ]
+        },
+        "outcome": {
+          "enum": ["pending", "committed", "rejected", "unknown"]
+        }
+      },
+      "required": ["command_id", "operation", "outcome"],
+      "additionalProperties": false
+    },
+    "CommandId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$"
+    },
+    "Id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "Name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "\\S"
+    },
+    "Observed": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "unassigned"
+            }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "primary"
+            },
+            "workstream_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "name": {
+              "$ref": "#/$defs/Name"
+            }
+          },
+          "required": ["kind", "workstream_id", "name"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "OpenOperation": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Result"
+        },
+        {
+          "properties": {
+            "state": {
+              "enum": ["in_progress", "reconciling"]
+            }
+          }
+        }
+      ]
+    },
+    "Origin": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": ["app", "cli", "agent"]
+            }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "queue"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            }
+          },
+          "required": ["kind", "request_id"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ReadResponse": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Result"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["operation"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "assignment": {
+              "$ref": "#/$defs/Assignment"
+            },
+            "open_operation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OpenOperation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["assignment", "open_operation"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/OpenOperation"
+              },
+              "maxItems": 100
+            }
+          },
+          "required": ["operations"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Result": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "contract": {
+              "const": "workstream-operations/1.0.0"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/CommandId"
+            },
+            "origin": {
+              "$ref": "#/$defs/Origin"
+            },
+            "kind": {
+              "enum": ["set_primary", "create_workstream"]
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            },
+            "observed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Observed"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Child"
+              },
+              "maxItems": 16
+            },
+            "accepted_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updated_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "result": {
+              "type": "null"
+            },
+            "poll_after_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60000
+            },
+            "detail": {
+              "type": "null"
+            },
+            "state": {
+              "const": "in_progress"
+            },
+            "reason": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "contract",
+            "operation_id",
+            "origin",
+            "kind",
+            "request_sha256",
+            "observed",
+            "children",
+            "accepted_at",
+            "updated_at",
+            "result",
+            "poll_after_ms",
+            "detail",
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contract": {
+              "const": "workstream-operations/1.0.0"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/CommandId"
+            },
+            "origin": {
+              "$ref": "#/$defs/Origin"
+            },
+            "kind": {
+              "enum": ["set_primary", "create_workstream"]
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            },
+            "observed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Observed"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Child"
+              },
+              "maxItems": 16
+            },
+            "accepted_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updated_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "result": {
+              "type": "null"
+            },
+            "poll_after_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60000
+            },
+            "detail": {
+              "type": "null"
+            },
+            "state": {
+              "const": "reconciling"
+            },
+            "reason": {
+              "enum": ["membership_effect_unknown", "create_effect_unknown", "verification_pending"]
+            }
+          },
+          "required": [
+            "contract",
+            "operation_id",
+            "origin",
+            "kind",
+            "request_sha256",
+            "observed",
+            "children",
+            "accepted_at",
+            "updated_at",
+            "result",
+            "poll_after_ms",
+            "detail",
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contract": {
+              "const": "workstream-operations/1.0.0"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/CommandId"
+            },
+            "origin": {
+              "$ref": "#/$defs/Origin"
+            },
+            "kind": {
+              "enum": ["set_primary", "create_workstream"]
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            },
+            "observed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Observed"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Child"
+              },
+              "maxItems": 16
+            },
+            "accepted_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updated_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "result": {
+              "$ref": "#/$defs/ResultValue"
+            },
+            "poll_after_ms": {
+              "type": "null"
+            },
+            "detail": {
+              "type": "null"
+            },
+            "state": {
+              "const": "committed"
+            },
+            "reason": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "contract",
+            "operation_id",
+            "origin",
+            "kind",
+            "request_sha256",
+            "observed",
+            "children",
+            "accepted_at",
+            "updated_at",
+            "result",
+            "poll_after_ms",
+            "detail",
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contract": {
+              "const": "workstream-operations/1.0.0"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/CommandId"
+            },
+            "origin": {
+              "$ref": "#/$defs/Origin"
+            },
+            "kind": {
+              "const": "set_primary"
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            },
+            "observed": {
+              "$ref": "#/$defs/Observed"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Child"
+              },
+              "maxItems": 16
+            },
+            "accepted_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updated_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "result": {
+              "type": "null"
+            },
+            "poll_after_ms": {
+              "type": "null"
+            },
+            "detail": {
+              "type": "null"
+            },
+            "state": {
+              "const": "already_satisfied"
+            },
+            "reason": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "contract",
+            "operation_id",
+            "origin",
+            "kind",
+            "request_sha256",
+            "observed",
+            "children",
+            "accepted_at",
+            "updated_at",
+            "result",
+            "poll_after_ms",
+            "detail",
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contract": {
+              "const": "workstream-operations/1.0.0"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/CommandId"
+            },
+            "origin": {
+              "$ref": "#/$defs/Origin"
+            },
+            "kind": {
+              "const": "set_primary"
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            },
+            "observed": {
+              "$ref": "#/$defs/Observed"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Child"
+              },
+              "maxItems": 16
+            },
+            "accepted_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updated_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "result": {
+              "type": "null"
+            },
+            "poll_after_ms": {
+              "type": "null"
+            },
+            "detail": {
+              "type": "null"
+            },
+            "state": {
+              "const": "conflict"
+            },
+            "reason": {
+              "const": "precondition_failed"
+            }
+          },
+          "required": [
+            "contract",
+            "operation_id",
+            "origin",
+            "kind",
+            "request_sha256",
+            "observed",
+            "children",
+            "accepted_at",
+            "updated_at",
+            "result",
+            "poll_after_ms",
+            "detail",
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contract": {
+              "const": "workstream-operations/1.0.0"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/CommandId"
+            },
+            "origin": {
+              "$ref": "#/$defs/Origin"
+            },
+            "kind": {
+              "enum": ["set_primary", "create_workstream"]
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            },
+            "observed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Observed"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Child"
+              },
+              "maxItems": 16
+            },
+            "accepted_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updated_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "result": {
+              "type": "null"
+            },
+            "poll_after_ms": {
+              "type": "null"
+            },
+            "detail": {
+              "type": "null"
+            },
+            "state": {
+              "const": "rejected"
+            },
+            "reason": {
+              "enum": [
+                "foreign_thread",
+                "thread_not_found",
+                "registry_mismatch",
+                "permission_denied",
+                "workstream_not_found",
+                "identity_conflict",
+                "verification_rejected"
+              ]
+            }
+          },
+          "required": [
+            "contract",
+            "operation_id",
+            "origin",
+            "kind",
+            "request_sha256",
+            "observed",
+            "children",
+            "accepted_at",
+            "updated_at",
+            "result",
+            "poll_after_ms",
+            "detail",
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contract": {
+              "const": "workstream-operations/1.0.0"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/CommandId"
+            },
+            "origin": {
+              "$ref": "#/$defs/Origin"
+            },
+            "kind": {
+              "enum": ["set_primary", "create_workstream"]
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            },
+            "observed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Observed"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Child"
+              },
+              "maxItems": 16
+            },
+            "accepted_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updated_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "result": {
+              "type": "null"
+            },
+            "poll_after_ms": {
+              "type": "null"
+            },
+            "detail": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "enum": [
+                    "unauthorized",
+                    "forbidden",
+                    "not_found",
+                    "invalid_request",
+                    "contract_mismatch",
+                    "version_conflict",
+                    "registration_unverified",
+                    "generation_conflict",
+                    "identity_conflict",
+                    "membership_conflict",
+                    "relationship_conflict",
+                    "cycle_conflict",
+                    "idempotency_conflict",
+                    "cursor_invalid",
+                    "cursor_stale",
+                    "payload_too_large",
+                    "unsupported_media_type",
+                    "backpressure",
+                    "provider_unconfigured",
+                    "unavailable",
+                    "unknown_effect"
+                  ]
+                }
+              },
+              "required": ["code"],
+              "additionalProperties": false
+            },
+            "state": {
+              "const": "rejected"
+            },
+            "reason": {
+              "const": "registry_rejected"
+            }
+          },
+          "required": [
+            "contract",
+            "operation_id",
+            "origin",
+            "kind",
+            "request_sha256",
+            "observed",
+            "children",
+            "accepted_at",
+            "updated_at",
+            "result",
+            "poll_after_ms",
+            "detail",
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contract": {
+              "const": "workstream-operations/1.0.0"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/CommandId"
+            },
+            "origin": {
+              "$ref": "#/$defs/Origin"
+            },
+            "kind": {
+              "enum": ["set_primary", "create_workstream"]
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            },
+            "observed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Observed"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Child"
+              },
+              "maxItems": 16
+            },
+            "accepted_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updated_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "result": {
+              "type": "null"
+            },
+            "poll_after_ms": {
+              "type": "null"
+            },
+            "detail": {
+              "type": "null"
+            },
+            "state": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "enum": [
+                "not_configured",
+                "offline",
+                "placements_not_ready",
+                "contention",
+                "backpressure",
+                "verification_pending",
+                "verification_unresolved",
+                "destination_scan_bound"
+              ]
+            }
+          },
+          "required": [
+            "contract",
+            "operation_id",
+            "origin",
+            "kind",
+            "request_sha256",
+            "observed",
+            "children",
+            "accepted_at",
+            "updated_at",
+            "result",
+            "poll_after_ms",
+            "detail",
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contract": {
+              "const": "workstream-operations/1.0.0"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/CommandId"
+            },
+            "origin": {
+              "$ref": "#/$defs/Origin"
+            },
+            "kind": {
+              "enum": ["set_primary", "create_workstream"]
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            },
+            "observed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Observed"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Child"
+              },
+              "maxItems": 16
+            },
+            "accepted_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updated_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "result": {
+              "type": "null"
+            },
+            "poll_after_ms": {
+              "type": "null"
+            },
+            "detail": {
+              "type": "object",
+              "properties": {
+                "availability": {
+                  "$ref": "#/$defs/Availability"
+                }
+              },
+              "required": ["availability"],
+              "additionalProperties": false
+            },
+            "state": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "const": "registration_unavailable"
+            }
+          },
+          "required": [
+            "contract",
+            "operation_id",
+            "origin",
+            "kind",
+            "request_sha256",
+            "observed",
+            "children",
+            "accepted_at",
+            "updated_at",
+            "result",
+            "poll_after_ms",
+            "detail",
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ResultValue": {
+      "type": "object",
+      "properties": {
+        "workstream_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "membership_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "registry_version": {
+          "$ref": "#/$defs/Version"
+        }
+      },
+      "required": ["workstream_id", "membership_id", "registry_version"],
+      "additionalProperties": false
+    },
+    "SubmitResponse": {
+      "$ref": "#/$defs/Result"
+    },
+    "Timestamp": {
+      "type": "string",
+      "maxLength": 27,
+      "pattern": "^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.\\d{1,6})?Z$"
+    },
+    "Version": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  }
+}

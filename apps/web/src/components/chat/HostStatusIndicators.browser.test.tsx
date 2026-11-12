@@ -1,0 +1,230 @@
+import "../../index.css";
+import { act, render as renderTest, type Screen } from "../../../test/render";
+import { EnvironmentId, type HostStatusSnapshot } from "@t3tools/contracts";
+
+import { expect, it, vi } from "vite-plus/test";
+
+import { observeHostStatus } from "../../hostStatus";
+import { TooltipProvider } from "../ui/tooltip";
+import { clearRetainedHostStatus, HostStatusIndicators } from "./HostStatusIndicators";
+
+vi.mock("../../hostStatus", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../hostStatus")>()),
+  observeHostStatus: vi.fn(),
+}));
+
+let container: HTMLDivElement;
+let root: Screen;
+let receive: (snapshot: HostStatusSnapshot | null) => void;
+let observerDisconnected: boolean;
+
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+      await act(async () => screen?.unmount());
+      expect(observerDisconnected).toBe(true);
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+        vi.clearAllMocks();
+        vi.useRealTimers();
+      }
+    }
+  }
+  try {
+    vi.setSystemTime(new Date("2026-10-21T12:00:00.000Z"));
+    clearRetainedHostStatus(EnvironmentId.make("remote-a"));
+    clearRetainedHostStatus(EnvironmentId.make("remote-b"));
+    observerDisconnected = false;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        targets = new Set<Element>();
+        observe(target: Element) {
+          this.targets.add(target);
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target);
+        }
+        disconnect() {
+          this.targets.clear();
+          observerDisconnected = true;
+        }
+      },
+    );
+    vi.mocked(observeHostStatus).mockImplementation((_visibility, listener, _request, cache) => {
+      receive = (snapshot) => {
+        if (cache) cache.snapshot = snapshot;
+        listener(snapshot);
+      };
+      return () => {};
+    });
+    ownedContainer = container = document.createElement("div");
+    container.style.width = "1000px";
+    document.body.appendChild(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
+    await act(async () => {
+      await root.rerender(
+        <TooltipProvider>
+          <HostStatusIndicators environmentId={EnvironmentId.make("remote-a")} />
+        </TooltipProvider>,
+      );
+    });
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+it("keeps one bubble per host while live samples update both metric colors and accessible detail", async () => {
+  await using _fixture = await setupTest();
+  const bubbles = () => Array.from(container.querySelectorAll('[role="img"]'));
+  expect(bubbles().map((bubble) => bubble.textContent)).toEqual([
+    "VPS · — · —",
+    "Test · — · —",
+    "Mini · — · —",
+    "Laptop · — · —",
+  ]);
+  expect(bubbles().every((bubble) => bubble.className.includes("bg-muted"))).toBe(true);
+  await act(async () =>
+    receive({
+      hosts: [
+        {
+          id: "vps",
+          status: "available",
+          cpuUsagePercent: 23,
+          logicalCpuCount: 16,
+          occupiedMemoryBytes: 12 * 1024 ** 3,
+          totalMemoryBytes: 16 * 1024 ** 3,
+          availableMemoryBytes: 4 * 1024 ** 3,
+          sampledAt: vi.getMockedSystemTime()!.toISOString(),
+        },
+      ],
+    }),
+  );
+  expect(bubbles()).toHaveLength(4);
+  expect(bubbles()[0]?.textContent).toBe("VPS · 23% · 4");
+  expect(bubbles()[0]?.className).toContain("bg-yellow-500/8");
+  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("CPU 23%");
+  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("RAM 4 GiB available of 16 GiB");
+  expect(bubbles()[0]?.querySelector("[data-host-cpu]")?.className).toContain("text-emerald-700");
+  expect(bubbles()[0]?.querySelector("[data-host-ram]")?.className).toContain("text-yellow-800");
+  expect(bubbles()[1]?.textContent).toBe("Test · — · —");
+  await act(async () => receive(null));
+  expect(bubbles()[0]?.textContent).toBe("VPS · — · —");
+  await act(async () =>
+    receive({ hosts: [{ id: "vps", status: "unavailable", reason: "stale" }] }),
+  );
+  expect(bubbles()[0]?.textContent).toBe("VPS · — · —");
+  expect(bubbles()[0]?.className).toContain("bg-muted");
+  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("stale");
+});
+
+it("shows Mac swap activity without a low available-RAM alarm", async () => {
+  await using _fixture = await setupTest();
+  await act(async () =>
+    receive({
+      hosts: [
+        {
+          id: "home",
+          status: "available",
+          cpuUsagePercent: 12,
+          logicalCpuCount: 8,
+          occupiedMemoryBytes: 15 * 1024 ** 3,
+          totalMemoryBytes: 16 * 1024 ** 3,
+          availableMemoryBytes: 0,
+          swapIoBytesPerSecond: 0.3 * 1024 ** 2,
+          sampledAt: vi.getMockedSystemTime()!.toISOString(),
+        },
+      ],
+    }),
+  );
+  const laptop = container.querySelectorAll('[role="img"]')[3];
+  expect(laptop?.textContent).toBe("Laptop · 12% · 0.3 mb/s");
+  expect(laptop?.className).toContain("bg-emerald");
+  expect(laptop?.getAttribute("aria-label")).toContain("RAM 0 GiB available of 16 GiB");
+  expect(laptop?.getAttribute("aria-label")).toContain("Swap I/O 0.3 MiB/s");
+});
+
+it("colors CPU and RAM separately while either can raise the host background", async () => {
+  await using _fixture = await setupTest();
+  for (const [cpuUsagePercent, availablePercent, cpuColor, ramColor, background] of [
+    [49, 60, "emerald", "emerald", "emerald"],
+    [50, 24, "yellow", "orange", "orange"],
+    [76, 50, "orange", "yellow", "orange"],
+    [91, 60, "red", "emerald", "red"],
+    [20, 9, "emerald", "red", "red"],
+  ] as const) {
+    await act(async () =>
+      receive({
+        hosts: [
+          {
+            id: "vps",
+            status: "available",
+            cpuUsagePercent,
+            logicalCpuCount: 16,
+            occupiedMemoryBytes: 0,
+            totalMemoryBytes: 100 * 1024 ** 3,
+            availableMemoryBytes: availablePercent * 1024 ** 3,
+            sampledAt: vi.getMockedSystemTime()!.toISOString(),
+          },
+        ],
+      }),
+    );
+    const bubble = container.querySelector('[role="img"]');
+    expect(bubble?.textContent).toBe(`VPS · ${cpuUsagePercent}% · ${availablePercent}`);
+    expect(bubble?.querySelector("[data-host-cpu]")?.className).toContain(`text-${cpuColor}-`);
+    expect(bubble?.querySelector("[data-host-ram]")?.className).toContain(`text-${ramColor}-`);
+    expect(bubble?.className).toContain(`bg-${background}-500/`);
+  }
+});
+
+it("clears the previous environment immediately and ignores its late sample after switching", async () => {
+  await using _fixture = await setupTest();
+  const sample: HostStatusSnapshot = {
+    hosts: [
+      {
+        id: "vps",
+        status: "available",
+        cpuUsagePercent: 23,
+        logicalCpuCount: 4,
+        occupiedMemoryBytes: 12 * 1024 ** 3,
+        totalMemoryBytes: 16 * 1024 ** 3,
+        availableMemoryBytes: 4 * 1024 ** 3,
+        sampledAt: vi.getMockedSystemTime()!.toISOString(),
+      },
+    ],
+  };
+  const oldReceive = receive;
+  await act(async () => oldReceive(sample));
+  expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · 23% · 4");
+  await act(
+    async () =>
+      await root.rerender(
+        <TooltipProvider>
+          <HostStatusIndicators environmentId={EnvironmentId.make("remote-b")} />
+        </TooltipProvider>,
+      ),
+  );
+  expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · — · —");
+  await act(async () => oldReceive(sample));
+  expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · — · —");
+  await act(async () =>
+    receive({
+      hosts: [{ ...sample.hosts[0]!, id: "vps", status: "unavailable", reason: "not_configured" }],
+    }),
+  );
+  expect(container.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain(
+    "Not configured",
+  );
+});

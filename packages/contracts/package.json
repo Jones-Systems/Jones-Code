@@ -1,12 +1,56 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.0.45",
+  "version": "0.1.8",
   "private": true,
   "files": [
     "dist"
   ],
   "type": "module",
   "exports": {
+    "./jones/workstreamsHomeAccess": {
+      "types": "./src/jones/workstreamsHomeAccess.ts",
+      "import": "./src/jones/workstreamsHomeAccess.ts"
+    },
+    "./jones/workstreamsPeerSetup": {
+      "types": "./src/jones/workstreamsPeerSetup.ts",
+      "import": "./src/jones/workstreamsPeerSetup.ts"
+    },
+    "./jones/workstreamsForwarding": {
+      "types": "./src/jones/workstreamsForwarding.ts",
+      "import": "./src/jones/workstreamsForwarding.ts"
+    },
+    "./jones/workstreamsHttp": {
+      "types": "./src/jones/workstreamsHttp.ts",
+      "import": "./src/jones/workstreamsHttp.ts"
+    },
+    "./jones/deliveryEvidence": {
+      "types": "./src/jones/deliveryEvidence.ts",
+      "import": "./src/jones/deliveryEvidence.ts"
+    },
+    "./jones/workstreamOperations": {
+      "types": "./src/jones/workstreamOperations.ts",
+      "import": "./src/jones/workstreamOperations.ts"
+    },
+    "./jones/shellDestinationFence": {
+      "types": "./src/jones/shellDestinationFence.ts",
+      "import": "./src/jones/shellDestinationFence.ts"
+    },
+    "./jones/userResponseRequest": {
+      "types": "./src/jones/userResponseRequest.ts",
+      "import": "./src/jones/userResponseRequest.ts"
+    },
+    "./jones/workstreamsRegistrationAvailability": {
+      "types": "./src/jones/workstreamsRegistrationAvailability.ts",
+      "import": "./src/jones/workstreamsRegistrationAvailability.ts"
+    },
+    "./jones/fleet-updates": {
+      "types": "./src/jones/fleetUpdates/index.ts",
+      "import": "./src/jones/fleetUpdates/index.ts"
+    },
+    "./conversationLibrary": {
+      "types": "./src/conversationLibrary.ts",
+      "import": "./src/conversationLibrary.ts"
+    },
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
@@ -19,13 +63,138 @@
       "types": "./src/relay.ts",
       "import": "./src/relay.ts"
     },
-    "./conversationLibrary": {
-      "types": "./src/conversationLibrary.ts",
-      "import": "./src/conversationLibrary.ts"
+    "./jones/organizationMetadata": {
+      "types": "./src/jones/organizationMetadata.ts",
+      "import": "./src/jones/organizationMetadata.ts"
+    },
+    "./jones/jonesUpdates": {
+      "types": "./src/jones/jonesUpdates.ts",
+      "import": "./src/jones/jonesUpdates.ts"
+    },
+    "./jones/jonesOperations": {
+      "types": "./src/jones/jonesOperations.ts",
+      "import": "./src/jones/jonesOperations.ts"
+    },
+    "./jones/installPlan": {
+      "types": "./src/jones/installPlan.ts",
+      "import": "./src/jones/installPlan.ts"
+    },
+    "./jones/designRequests": {
+      "types": "./src/jones/designRequests.ts",
+      "import": "./src/jones/designRequests.ts"
+    },
+    "./jones/threadAttention": {
+      "types": "./src/jones/threadAttention.ts",
+      "import": "./src/jones/threadAttention.ts"
+    },
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "import": "./src/jones/threadReferenceExcerpt.ts"
+    },
+    "./jones/threadReferenceExcerptRpc": {
+      "types": "./src/jones/threadReferenceExcerptRpc.ts",
+      "import": "./src/jones/threadReferenceExcerptRpc.ts"
+    },
+    "./jones/linkedThreads": {
+      "types": "./src/jones/linkedThreads.ts",
+      "import": "./src/jones/linkedThreads.ts"
+    },
+    "./jones/linkedThreadsCapability": {
+      "types": "./src/jones/linkedThreadsCapability.ts",
+      "import": "./src/jones/linkedThreadsCapability.ts"
+    },
+    "./jones/linkedThreadsRpc": {
+      "types": "./src/jones/linkedThreadsRpc.ts",
+      "import": "./src/jones/linkedThreadsRpc.ts"
+    },
+    "./jones/workstreamsNative": {
+      "types": "./src/jones/workstreamsNative.ts",
+      "import": "./src/jones/workstreamsNative.ts"
+    },
+    "./jones/workstreamsNativeRead": {
+      "types": "./src/jones/workstreamsNativeRead.ts",
+      "import": "./src/jones/workstreamsNativeRead.ts"
+    },
+    "./jones/workstreamsNativePlacement": {
+      "types": "./src/jones/workstreamsNativePlacement.ts",
+      "import": "./src/jones/workstreamsNativePlacement.ts"
+    },
+    "./jones/workstreamsSnapshot": {
+      "types": "./src/jones/workstreamsSnapshot.ts",
+      "import": "./src/jones/workstreamsSnapshot.ts"
+    },
+    "./jones/workstreamsRollups": {
+      "types": "./src/jones/workstreamsRollups.ts",
+      "import": "./src/jones/workstreamsRollups.ts"
+    },
+    "./jones/workstreamsLegacyReconciliation": {
+      "types": "./src/jones/workstreamsLegacyReconciliation.ts",
+      "import": "./src/jones/workstreamsLegacyReconciliation.ts"
+    },
+    "./jones/workstreamsLegacyReceipts": {
+      "types": "./src/jones/workstreamsLegacyReceipts.ts",
+      "import": "./src/jones/workstreamsLegacyReceipts.ts"
+    },
+    "./jones/workstreamsPeerAuthority": {
+      "types": "./src/jones/workstreamsPeerAuthority.ts",
+      "import": "./src/jones/workstreamsPeerAuthority.ts"
+    },
+    "./jones/workstreamsForwardReadmission": {
+      "types": "./src/jones/workstreamsForwardReadmission.ts",
+      "import": "./src/jones/workstreamsForwardReadmission.ts"
+    },
+    "./jones/workstreamsHomeReadResult": {
+      "types": "./src/jones/workstreamsHomeReadResult.ts",
+      "import": "./src/jones/workstreamsHomeReadResult.ts"
+    },
+    "./jones/workstreamsHomeBind": {
+      "types": "./src/jones/workstreamsHomeBind.ts",
+      "import": "./src/jones/workstreamsHomeBind.ts"
+    },
+    "./jones/workstreamsMemberEnrollment": {
+      "types": "./src/jones/workstreamsMemberEnrollment.ts",
+      "import": "./src/jones/workstreamsMemberEnrollment.ts"
+    },
+    "./jones/workstreamsForwardQualification": {
+      "types": "./src/jones/workstreamsForwardQualification.ts",
+      "import": "./src/jones/workstreamsForwardQualification.ts"
+    },
+    "./jones/workstreamsRetainedSourceEffect": {
+      "types": "./src/jones/workstreamsRetainedSourceEffect.ts",
+      "import": "./src/jones/workstreamsRetainedSourceEffect.ts"
+    },
+    "./jones/workstreamsHomeRegistration": {
+      "types": "./src/jones/workstreamsHomeRegistration.ts",
+      "import": "./src/jones/workstreamsHomeRegistration.ts"
+    },
+    "./jones/workstreamsNativeExport": {
+      "types": "./src/jones/workstreamsNativeExport.ts",
+      "import": "./src/jones/workstreamsNativeExport.ts"
+    },
+    "./jones/desktopThreadMonitor": {
+      "types": "./src/jones/desktopThreadMonitor.ts",
+      "import": "./src/jones/desktopThreadMonitor.ts"
+    },
+    "./jones/guardedThreadSettlement": {
+      "types": "./src/jones/guardedThreadSettlement.ts",
+      "import": "./src/jones/guardedThreadSettlement.ts"
+    },
+    "./jones/fleetCheckpoint": {
+      "types": "./src/jones/fleetCheckpoint.ts",
+      "import": "./src/jones/fleetCheckpoint.ts"
+    },
+    "./jones/authClientPresentation": {
+      "types": "./src/jones/authClientPresentation.ts",
+      "import": "./src/jones/authClientPresentation.ts"
+    },
+    "./jones/workstreamShellActivation": {
+      "types": "./src/jones/workstreamShellActivation.ts",
+      "import": "./src/jones/workstreamShellActivation.ts"
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "vp run tsrs:typecheck",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {

@@ -1,0 +1,603 @@
+name: Jones update qualification
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Keep the macOS gate in qualify-mac-changes in step with these paths.
+    paths:
+      - .github/workflows/jones-update-qualification.yml
+      - .github/workflows/artifact-desktop-mac.yml
+      - .github/workflows/artifact-cli-linux.yml
+      - apps/desktop/src/jones/updates/**
+      - apps/desktop/src/boot.ts
+      - apps/desktop/vite.config.ts
+      - apps/desktop/scripts/main-process-bundle.test.mjs
+      - packages/shared/src/jones/nativeWriterFence*
+      - apps/web/src/jones/updates/**
+      - apps/web/src/jones/fleetUpdates/**
+      - apps/web/src/state/desktopUpdate.ts
+      - apps/web/src/components/desktopUpdate.logic.ts
+      - apps/web/src/components/desktopUpdate.toast.tsx
+      - apps/web/src/components/sidebar/SidebarUpdatePill.tsx
+      - apps/server/src/jones/updates/**
+      - apps/server/src/jones/cloud/qualified*.ts
+      - apps/server/src/jones/cloud/stoppedServerOwnership*
+      - apps/server/src/jones/cloud/capturedProcess*
+      - apps/server/src/serviceLauncher*
+      - apps/server/src/cloud/serviceLauncher*
+      - apps/server/src/cloud/serviceProtocol*
+      - apps/server/src/cloud/selfUpdate*
+      - apps/server/src/cloud/pinnedRuntime*
+      - apps/server/src/cloud/bootService*
+      - apps/server/src/jones/hostService/**
+      - apps/server/vite.config.ts
+      - apps/server/src/cli/servicePreflight.ts
+      - apps/server/src/cloud/servicePreflight*
+      - apps/server/src/orchestration-v2/RestartContinuation*
+      - apps/server/src/orchestration-v2/ServerUpdateContinuation*
+      - packages/client-runtime/src/jones/updates/**
+      - packages/client-runtime/src/jones/fleetUpdates/**
+      - packages/contracts/src/jones/jonesUpdates.ts
+      - packages/contracts/src/jones/fleetUpdates/**
+      - packages/shared/src/jones/jonesActions*
+      - scripts/stamp-jones-build*
+      - scripts/build-desktop-artifact*
+      - scripts/jones/updates/**
+      - scripts/jones/boundary/fragments/qualified-updates.json
+      - scripts/jones/boundary/fragments/update-continuity.json
+      - scripts/jones/boundary/fragments/fleet-update-access.json
+      - scripts/jones/boundary/fragments/desktop-background-preparation.json
+      - scripts/jones/boundary/fragments/desktop-stage-attempts.json
+      - scripts/jones/boundary/fragments/staged-selection-recovery.json
+      - scripts/jones/boundary/fragments/launcher-commit-diagnostics.json
+  workflow_dispatch:
+  schedule:
+    - cron: "23 8 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jones-update-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    name: Jones native startup qualification
+    if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout public source
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: Jones-Systems/Jones-Code
+          JONES_CHECKOUT_SHA: ${{ github.sha }}
+          JONES_CHECKOUT_DEPTH: "0"
+          JONES_CHECKOUT_CONE: "false"
+          JONES_CHECKOUT_SPARSE: |
+            /*
+            !/.repos/
+        run: |
+          set -euo pipefail
+          # Bootstrap is copied into checkout steps because repository source is not available yet.
+          # anonymous-checkout.node-test.mjs binds every copy to this exact script.
+          test "$GITHUB_REPOSITORY" = Jones-Systems/Jones-Code
+          [[ "$JONES_CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$JONES_CHECKOUT_DEPTH" in 0|1|2) ;; *) exit 2 ;; esac
+          case "$JONES_CHECKOUT_CONE" in true|false) ;; *) exit 2 ;; esac
+          test ! -L "$GITHUB_WORKSPACE"
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+          shopt -s nullglob dotglob
+          checkout_entries=("$GITHUB_WORKSPACE"/*)
+          test "${#checkout_entries[@]}" -eq 0
+          unset GIT_CONFIG_PARAMETERS GIT_CONFIG GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+          export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          if test "$JONES_CHECKOUT_CONE" = true; then
+            git sparse-checkout init --cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --cone --stdin
+          else
+            git sparse-checkout init --no-cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --no-cone --stdin
+          fi
+          if test "$JONES_CHECKOUT_DEPTH" = 0; then
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' "$JONES_CHECKOUT_SHA"
+          else
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --no-tags --depth="$JONES_CHECKOUT_DEPTH" origin "$JONES_CHECKOUT_SHA"
+          fi
+          git checkout --detach "$JONES_CHECKOUT_SHA"
+          test "$(git rev-parse HEAD)" = "$JONES_CHECKOUT_SHA"
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Install virtual display for Chromium startup qualification
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Check startup qualification fixtures
+        run: node --test --test-concurrency=1 scripts/jones/updates/native-startup-fixture.node-test.mjs scripts/jones/updates/native-fixture-support.node-test.mjs
+
+      - name: Check packaged recovery harness controls
+        run: node --test --test-concurrency=1 scripts/jones/updates/packaged-recovery-fixture.node-test.mjs scripts/jones/updates/packaged-recovery-launcher.node-test.mjs scripts/jones/updates/packaged-recovery-preload.node-test.mjs
+
+      - name: Check packaged desktop recovery source controls
+        run: node --test --test-concurrency=1 scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs scripts/jones/updates/packaged-desktop-pair.node-test.mjs
+
+      - name: Qualify Chromium-mode native startup refusal
+        run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
+
+  # The macOS job needs a scarce hosted runner shared across the organization,
+  # so it runs only when an update or installer path changed. Detection is
+  # API-only (no checkout) and fails open: if the diff cannot be resolved, the
+  # macOS job runs.
+  qualify-mac-changes:
+    name: Detect macOS install lifecycle changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+    steps:
+      - name: Detect update and installer changes
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          INTERRUPTION_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'qualify-interrupted-staging') }}
+        run: |
+          set -uo pipefail
+
+          run_macos() {
+            echo "$* Running the macOS install lifecycle job."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          count_rows() {
+            printf '%s\n' "$1" | grep -c . || true
+          }
+
+          # Nightly and label runs exercise only the bounded interrupted-staging steps below.
+          if [[ "$EVENT_NAME" == schedule || "$INTERRUPTION_LABEL" == true ]]; then
+            run_macos "Interrupted-staging qualification selected."
+          fi
+          if [[ "$EVENT_ACTION" == labeled ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A manual run qualifies every job, as it does for the renderer Preview.
+          if [[ -z "${PR_NUMBER}" ]]; then
+            run_macos "This is a manual run."
+          fi
+
+          # One row per changed file, holding the new path and, for a rename,
+          # the path it replaced: renaming a file out of the update paths
+          # changes them just like editing it.
+          row='[.filename, (.previous_filename // empty)] | @tsv'
+
+          pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '"\(.changed_files) \(.stack.base.ref // "")"') \
+            || run_macos "Could not read the pull request."
+          read -r expected stack_base <<< "$pr"
+
+          if [[ -z "${stack_base}" ]]; then
+            # The PR files endpoint stops at 3000 files and pagination cannot
+            # extend it, so cross-check against the count the PR itself reports.
+            rows=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq ".[] | ${row}") \
+              || run_macos "Could not resolve changed files."
+
+            listed=$(count_rows "$rows")
+            if [[ "$listed" -lt "$expected" ]]; then
+              run_macos "GitHub listed only ${listed} of ${expected} changed files."
+            fi
+          else
+            # Native stack qualification covers lower layers as well as this
+            # PR, so a stacked PR compares its head against the stack's base.
+            rows=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${stack_base}...${PR_HEAD_SHA}" --jq ".files[]? | ${row}") \
+              || run_macos "Could not resolve changed files."
+
+            # The compare endpoint reports at most 300 files and pagination does
+            # not extend that list, so a full list may be hiding update changes.
+            listed=$(count_rows "$rows")
+            if [[ "$listed" -ge 300 ]]; then
+              run_macos "GitHub listed ${listed} changed files, the compare endpoint maximum."
+            fi
+          fi
+
+          paths=$(tr '\t' '\n' <<< "$rows")
+
+          # The pull_request paths above include the precise boundary fragments
+          # of update and installer features that may change in a native stack.
+          # A fragment changes when its feature adds or removes files, which can
+          # lie outside the paths above. In [[ ]], * also matches across
+          # directories, so a pattern can only match more than its trigger.
+          update_paths=(
+            '.github/workflows/jones-update-qualification.yml'
+            '.github/workflows/artifact-desktop-mac.yml'
+            '.github/workflows/artifact-cli-linux.yml'
+            'apps/desktop/src/jones/updates/**'
+            'apps/desktop/src/boot.ts'
+            'apps/desktop/vite.config.ts'
+            'apps/desktop/scripts/main-process-bundle.test.mjs'
+            'packages/shared/src/jones/nativeWriterFence*'
+            'apps/web/src/jones/updates/**'
+            'apps/web/src/jones/fleetUpdates/**'
+            'apps/web/src/state/desktopUpdate.ts'
+            'apps/web/src/components/desktopUpdate.logic.ts'
+            'apps/web/src/components/desktopUpdate.toast.tsx'
+            'apps/web/src/components/sidebar/SidebarUpdatePill.tsx'
+            'apps/server/src/jones/updates/**'
+            'apps/server/src/jones/cloud/qualified*.ts'
+            'apps/server/src/jones/cloud/stoppedServerOwnership*'
+            'apps/server/src/jones/cloud/capturedProcess*'
+            'apps/server/src/serviceLauncher*'
+            'apps/server/src/cloud/serviceLauncher*'
+            'apps/server/src/cloud/serviceProtocol*'
+            'apps/server/src/cloud/selfUpdate*'
+            'apps/server/src/cloud/pinnedRuntime*'
+            'apps/server/src/cloud/bootService*'
+            'apps/server/src/jones/hostService/**'
+            'apps/server/vite.config.ts'
+            'apps/server/src/cli/servicePreflight.ts'
+            'apps/server/src/cloud/servicePreflight*'
+            'apps/server/src/orchestration-v2/RestartContinuation*'
+            'apps/server/src/orchestration-v2/ServerUpdateContinuation*'
+            'packages/client-runtime/src/jones/updates/**'
+            'packages/client-runtime/src/jones/fleetUpdates/**'
+            'packages/contracts/src/jones/jonesUpdates.ts'
+            'packages/contracts/src/jones/fleetUpdates/**'
+            'packages/shared/src/jones/jonesActions*'
+            'scripts/stamp-jones-build*'
+            'scripts/build-desktop-artifact*'
+            'scripts/jones/updates/**'
+            'scripts/jones/boundary/fragments/qualified-updates.json'
+            'scripts/jones/boundary/fragments/update-continuity.json'
+            'scripts/jones/boundary/fragments/fleet-update-access.json'
+            'scripts/jones/boundary/fragments/desktop-background-preparation.json'
+            'scripts/jones/boundary/fragments/desktop-stage-attempts.json'
+            'scripts/jones/boundary/fragments/staged-selection-recovery.json'
+            'scripts/jones/boundary/fragments/launcher-commit-diagnostics.json'
+          )
+
+          matched=$(while IFS= read -r path; do
+            for pattern in "${update_paths[@]}"; do
+              # shellcheck disable=SC2053 # The pattern is meant to glob.
+              if [[ -n "$path" && "$path" == $pattern ]]; then
+                echo "$path"
+                break
+              fi
+            done
+          done <<< "$paths")
+
+          if [[ -n "$matched" ]]; then
+            echo "Changed update or installer paths:"
+            echo "$matched"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No update or installer paths changed."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  qualify-mac:
+    name: Jones install lifecycle on macOS
+    needs: qualify-mac-changes
+    # Skip only on an explicit "no": a gate job that failed or errored leaves the
+    # output empty, and that must run the macOS job rather than silently skip it.
+    if: ${{ !cancelled() && needs.qualify-mac-changes.outputs.changed != 'false' }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout public source
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: Jones-Systems/Jones-Code
+          JONES_CHECKOUT_SHA: ${{ github.sha }}
+          JONES_CHECKOUT_DEPTH: "0"
+          JONES_CHECKOUT_CONE: "false"
+          JONES_CHECKOUT_SPARSE: |
+            /*
+            !/.repos/
+        run: |
+          set -euo pipefail
+          # Bootstrap is copied into checkout steps because repository source is not available yet.
+          # anonymous-checkout.node-test.mjs binds every copy to this exact script.
+          test "$GITHUB_REPOSITORY" = Jones-Systems/Jones-Code
+          [[ "$JONES_CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$JONES_CHECKOUT_DEPTH" in 0|1|2) ;; *) exit 2 ;; esac
+          case "$JONES_CHECKOUT_CONE" in true|false) ;; *) exit 2 ;; esac
+          test ! -L "$GITHUB_WORKSPACE"
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+          shopt -s nullglob dotglob
+          checkout_entries=("$GITHUB_WORKSPACE"/*)
+          test "${#checkout_entries[@]}" -eq 0
+          unset GIT_CONFIG_PARAMETERS GIT_CONFIG GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+          export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          if test "$JONES_CHECKOUT_CONE" = true; then
+            git sparse-checkout init --cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --cone --stdin
+          else
+            git sparse-checkout init --no-cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --no-cone --stdin
+          fi
+          if test "$JONES_CHECKOUT_DEPTH" = 0; then
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' "$JONES_CHECKOUT_SHA"
+          else
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --no-tags --depth="$JONES_CHECKOUT_DEPTH" origin "$JONES_CHECKOUT_SHA"
+          fi
+          git checkout --detach "$JONES_CHECKOUT_SHA"
+          test "$(git rev-parse HEAD)" = "$JONES_CHECKOUT_SHA"
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Ensure Electron runtime is installed
+        if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
+        run: vp run --filter @t3tools/desktop ensure:electron
+      - name: Qualify migration, launcher recovery and desktop snapshot cleanup
+        if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
+        run: >-
+          vp test run
+          apps/server/src/jones/updates/migrationPlan.test.ts
+          apps/server/src/jones/cloud/qualifiedLauncher.test.ts
+          apps/server/src/jones/cloud/qualifiedBackup.test.ts
+          apps/server/src/jones/cloud/qualifiedStartup.test.ts
+          apps/server/src/jones/cloud/stoppedServerOwnership.test.ts
+          apps/server/src/serviceLauncher.test.ts
+          apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts
+          apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
+          apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
+          --maxWorkers=1
+
+      - name: Exercise interrupted staging on Apple Silicon (synthetic regression only)
+        env:
+          INTERRUPTION_REPORT: ${{ runner.temp }}/interrupted-staging.json
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          node --test --test-concurrency=1 scripts/jones/updates/interrupted-staging-fixture.node-test.mjs
+          vp test run apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts --maxWorkers=1
+          node scripts/jones/updates/interrupted-staging-fixture.mjs "$INTERRUPTION_REPORT"
+          node --input-type=module - "$INTERRUPTION_REPORT" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.equal(report.syntheticTransfer.status, 'passed');
+          assert.equal(report.syntheticTransfer.packagedProof, false);
+          assert.equal(report.packagedQualification, 'unavailable');
+          assert.equal(report.packaged.length, 3);
+          for (const row of report.packaged) {
+            assert.equal(row.status, 'unavailable');
+            assert.equal(row.packagedProof, false);
+          }
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            'Interrupted staging: synthetic regression passed. Packaged 47cad979 transfer/native interruption and qualified native recovery remain **unavailable**, not passing native proof. See retained report prerequisites.\n');
+          NODE
+
+      - name: Retain interrupted-staging coverage limits
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: interrupted-staging-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/interrupted-staging.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  preview-changes:
+    name: Detect renderer update changes
+    if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.paths.outputs.changed }}
+    steps:
+      - name: Checkout public source
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: Jones-Systems/Jones-Code
+          JONES_CHECKOUT_SHA: ${{ github.sha }}
+          JONES_CHECKOUT_DEPTH: "0"
+          JONES_CHECKOUT_CONE: "false"
+          JONES_CHECKOUT_SPARSE: |
+            /*
+            !/.repos/
+        run: |
+          set -euo pipefail
+          # Bootstrap is copied into checkout steps because repository source is not available yet.
+          # anonymous-checkout.node-test.mjs binds every copy to this exact script.
+          test "$GITHUB_REPOSITORY" = Jones-Systems/Jones-Code
+          [[ "$JONES_CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$JONES_CHECKOUT_DEPTH" in 0|1|2) ;; *) exit 2 ;; esac
+          case "$JONES_CHECKOUT_CONE" in true|false) ;; *) exit 2 ;; esac
+          test ! -L "$GITHUB_WORKSPACE"
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+          shopt -s nullglob dotglob
+          checkout_entries=("$GITHUB_WORKSPACE"/*)
+          test "${#checkout_entries[@]}" -eq 0
+          unset GIT_CONFIG_PARAMETERS GIT_CONFIG GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+          export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          if test "$JONES_CHECKOUT_CONE" = true; then
+            git sparse-checkout init --cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --cone --stdin
+          else
+            git sparse-checkout init --no-cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --no-cone --stdin
+          fi
+          if test "$JONES_CHECKOUT_DEPTH" = 0; then
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' "$JONES_CHECKOUT_SHA"
+          else
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --no-tags --depth="$JONES_CHECKOUT_DEPTH" origin "$JONES_CHECKOUT_SHA"
+          fi
+          git checkout --detach "$JONES_CHECKOUT_SHA"
+          test "$(git rev-parse HEAD)" = "$JONES_CHECKOUT_SHA"
+      - name: Select renderer update paths
+        id: paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          else
+            changed_paths=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- apps/web/src/jones/updates/)
+            if [ -n "$changed_paths" ]; then
+              echo 'changed=true' >> "$GITHUB_OUTPUT"
+            else
+              echo 'changed=false' >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  preview:
+    needs: preview-changes
+    if: needs.preview-changes.outputs.changed == 'true'
+    name: Jones native Preview evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact public candidate
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: Jones-Systems/Jones-Code
+          JONES_CHECKOUT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          JONES_CHECKOUT_DEPTH: "0"
+          JONES_CHECKOUT_CONE: "false"
+          JONES_CHECKOUT_SPARSE: |
+            /*
+            !/.repos/
+        run: |
+          set -euo pipefail
+          # Bootstrap is copied into checkout steps because repository source is not available yet.
+          # anonymous-checkout.node-test.mjs binds every copy to this exact script.
+          test "$GITHUB_REPOSITORY" = Jones-Systems/Jones-Code
+          [[ "$JONES_CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$JONES_CHECKOUT_DEPTH" in 0|1|2) ;; *) exit 2 ;; esac
+          case "$JONES_CHECKOUT_CONE" in true|false) ;; *) exit 2 ;; esac
+          test ! -L "$GITHUB_WORKSPACE"
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+          shopt -s nullglob dotglob
+          checkout_entries=("$GITHUB_WORKSPACE"/*)
+          test "${#checkout_entries[@]}" -eq 0
+          unset GIT_CONFIG_PARAMETERS GIT_CONFIG GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+          export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          if test "$JONES_CHECKOUT_CONE" = true; then
+            git sparse-checkout init --cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --cone --stdin
+          else
+            git sparse-checkout init --no-cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --no-cone --stdin
+          fi
+          if test "$JONES_CHECKOUT_DEPTH" = 0; then
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' "$JONES_CHECKOUT_SHA"
+          else
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --no-tags --depth="$JONES_CHECKOUT_DEPTH" origin "$JONES_CHECKOUT_SHA"
+          fi
+          git checkout --detach "$JONES_CHECKOUT_SHA"
+          test "$(git rev-parse HEAD)" = "$JONES_CHECKOUT_SHA"
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Verify isolated Preview provider and evidence controls
+        run: node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs
+
+      - name: Build matching server and web source
+        env:
+          JONES_EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
+          version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          node scripts/update-release-package-versions.ts "$version"
+          node scripts/stamp-jones-build.ts
+          vp run --filter t3 build
+
+      - name: Build explicit desktop renderer fixture
+        working-directory: apps/web
+        env:
+          JONES_INSTALL_RENDERER_FIXTURE: "1"
+          JONES_INSTALL_FIXTURE_OUT: ${{ runner.temp }}/install-preview-renderer
+          JONES_INSTALL_FIXTURE_SOURCE_SHA: ${{ env.JONES_SOURCE_SHA }}
+          JONES_INSTALL_FIXTURE_SOURCE_TREE: ${{ env.JONES_SOURCE_TREE }}
+        run: pnpm exec vp build --config vite.install-preview.config.ts --mode jones-install-fixture
+
+      - name: Install Chromium host libraries
+        run: node apps/server/node_modules/playwright-core/cli.js install-deps chromium
+
+      - name: Prepare native Preview sandbox on the ephemeral runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          setup_root=$(mktemp -d "$RUNNER_TEMP/jones-preview-browser-setup.XXXXXX")
+          trap 'rmdir -- "$setup_root"' EXIT
+          sudo -n "$(command -v node)" "$GITHUB_WORKSPACE/apps/server/dist/bin.mjs" browser setup --base-dir "$setup_root"
+
+      - name: Bind source and served build receipt
+        run: >-
+          node scripts/jones/updates/install-preview-qualification.mjs record-build
+          --source "$GITHUB_WORKSPACE"
+          --out "$RUNNER_TEMP/install-preview-build.json"
+          --fixture-build "$RUNNER_TEMP/install-preview-renderer"
+
+      - name: Exercise renderer through real injected T3 Preview tools
+        run: >-
+          node scripts/jones/updates/install-preview-qualification.mjs run
+          --source "$GITHUB_WORKSPACE"
+          --receipt "$RUNNER_TEMP/install-preview-build.json"
+          --out "$RUNNER_TEMP/install-preview-evidence"
+          --scratch-parent "$RUNNER_TEMP"
+          --fixture-build "$RUNNER_TEMP/install-preview-renderer"
+
+      - name: Preserve source-bound Preview reports and native screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: install-preview-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/install-preview-build.json
+            ${{ runner.temp }}/install-preview-build.patch
+            ${{ runner.temp }}/install-preview-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove only this job's renderer build scratch
+        if: always()
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import shutil
+          parent = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          target = parent / "install-preview-renderer"
+          if target.is_symlink():
+              raise RuntimeError("Renderer build scratch was replaced by a symlink")
+          if target.exists():
+              shutil.rmtree(target)

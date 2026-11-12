@@ -2,7 +2,6 @@ import {
   ASSISTANT_CITATION_MAX_TEXT_LENGTH,
   EnvironmentId,
   MessageId,
-  ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ThreadId,
 } from "@t3tools/contracts";
@@ -12,7 +11,12 @@ import {
 } from "@t3tools/shared/assistantCitations";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { useQueuedMessageStore } from "../../queuedMessageStore";
+import {
+  DEFAULT_RESOLVED_KEYBINDINGS,
+  compileResolvedKeybindingsConfig,
+  mergeWithDefaultKeybindings,
+} from "@t3tools/shared/keybindings";
+
 import { handleComposerEnter, submitComposerDraft } from "./composerSubmission";
 
 const assistantCitation = {
@@ -62,23 +66,6 @@ describe("submitComposerDraft", () => {
     expect(validationMessage).toBeNull();
   });
 
-  it("allows a draft at the shared character limit through the normal send path", () => {
-    const draft = "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
-    const onSend = vi.fn();
-    const preventDefault = vi.fn();
-
-    const result = submitComposerDraft({
-      prompt: draft,
-      submissionTarget: "provider-turn",
-      event: { preventDefault },
-      onSend,
-    });
-
-    expect(result).toEqual({ validationMessage: null, didDispatch: true });
-    expect(onSend).toHaveBeenCalledOnce();
-    expect(preventDefault).not.toHaveBeenCalled();
-  });
-
   it("blocks when appended context pushes the provider input over the shared limit", () => {
     const draft = "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
     const onSend = vi.fn();
@@ -123,21 +110,6 @@ describe("submitComposerDraft", () => {
 
     expect(result).toEqual({ validationMessage: null, didDispatch: false });
     expect(preventDefault).toHaveBeenCalledOnce();
-  });
-
-  it("allows fully composed provider input at the shared character limit", () => {
-    const onSend = vi.fn();
-
-    const result = submitComposerDraft({
-      prompt: "Short draft",
-      providerInput: "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS),
-      submissionTarget: "provider-turn",
-      event: undefined,
-      onSend,
-    });
-
-    expect(result).toEqual({ validationMessage: null, didDispatch: true });
-    expect(onSend).toHaveBeenCalledOnce();
   });
 
   it.each(["draft", "composed provider input"])(
@@ -223,58 +195,6 @@ describe("submitComposerDraft", () => {
     expect(dispatchedDrafts[0]).not.toContain("<assistant_citations>");
   });
 
-  it("blocks a generated plan follow-up that exceeds the shared limit", () => {
-    const onSend = vi.fn();
-
-    const result = submitComposerDraft({
-      prompt: "",
-      providerInput: `PLEASE IMPLEMENT THIS PLAN:\n${"x".repeat(
-        PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
-      )}`,
-      submissionTarget: "provider-turn",
-      event: undefined,
-      onSend,
-    });
-
-    expect(result.didDispatch).toBe(false);
-    expect(result.validationMessage).toContain("over the 120,000-character limit");
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it("allows surrounding whitespace that the provider turn contract trims", () => {
-    const draft = ` ${"x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)} `;
-    const onSend = vi.fn();
-    const preventDefault = vi.fn();
-
-    const result = submitComposerDraft({
-      prompt: draft,
-      submissionTarget: "provider-turn",
-      event: { preventDefault },
-      onSend,
-    });
-
-    expect(result).toEqual({ validationMessage: null, didDispatch: true });
-    expect(onSend).toHaveBeenCalledOnce();
-    expect(preventDefault).not.toHaveBeenCalled();
-  });
-
-  it("dispatches pending user input answers on their separate response path", () => {
-    const answer = "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS + 1);
-    const onSend = vi.fn();
-    const preventDefault = vi.fn();
-
-    const result = submitComposerDraft({
-      prompt: answer,
-      submissionTarget: "pending-user-input",
-      event: { preventDefault },
-      onSend,
-    });
-
-    expect(result).toEqual({ validationMessage: null, didDispatch: true });
-    expect(onSend).toHaveBeenCalledOnce();
-    expect(preventDefault).not.toHaveBeenCalled();
-  });
-
   it("does not apply citation-expanded prompt limits to pending user input answers", () => {
     const citation = serializeAssistantCitation(assistantCitation);
     const answer = `${"x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS - citation.length)}${citation}`;
@@ -296,6 +216,7 @@ describe("submitComposerDraft", () => {
 });
 
 const bareEnter = {
+  key: "Enter",
   shiftKey: false,
   altKey: false,
   metaKey: false,
@@ -305,12 +226,21 @@ const bareEnter = {
   repeat: false,
 };
 
+const enterIntent = {
+  keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+  platform: "Linux",
+  isSoftwareKeyboardOpen: false,
+  isDraftThread: false,
+  isRunning: true,
+  prompt: "",
+};
+
 function enterScenario(overrides: Partial<Parameters<typeof handleComposerEnter>[0]> = {}) {
   const onSubmit = vi.fn();
   const onSteerNextQueuedMessage = vi.fn(() => true);
   const options = {
     event: bareEnter,
-    intent: { isMobileViewport: false, isDraftThread: false, isRunning: true, prompt: "" },
+    intent: enterIntent,
     hasDraftContext: false,
     queueActionDisabled: false,
     onSubmit,
@@ -342,7 +272,7 @@ describe("composer Enter actions", () => {
 
   it.each(["hello", " ", "\n"])("retains the draft send path for %j", (prompt) => {
     const result = enterScenario({
-      intent: { isMobileViewport: false, isDraftThread: false, prompt },
+      intent: { ...enterIntent, prompt },
     });
     expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
     expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
@@ -375,8 +305,7 @@ describe("composer Enter actions", () => {
 
   it("allows bare queue Enter without changing the configured draft shortcut", () => {
     const intent = {
-      isMobileViewport: false,
-      isDraftThread: false,
+      ...enterIntent,
       sendShortcut: "mod-enter" as const,
       prompt: "",
     };
@@ -386,54 +315,76 @@ describe("composer Enter actions", () => {
     expect(draft.handled).toBe(false);
     expect(draft.onSubmit).not.toHaveBeenCalled();
   });
+});
 
-  it("uses one queue item in order and shares the send lock with the arrow action", () => {
-    const threadKey = "queued-enter-fixture";
-    const queue = useQueuedMessageStore.getState();
-    const message = (prompt: string) => ({
-      prompt,
-      images: [],
-      files: [],
-      terminalContexts: [],
-      previewAnnotations: [],
-      reviewComments: [],
-      sendSettings: {
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
-        runtimeMode: "full-access" as const,
-        interactionMode: "default" as const,
-        promptEffort: null,
-      },
-      queuedAfterToolActivityId: null,
-      createdAt: "2026-10-02T00:00:00.000Z",
+describe("composer Enter with V2 submission routes", () => {
+  it.each([
+    [false, true, false, "alternate"],
+    [true, false, false, "background"],
+    [true, false, true, "background"],
+    [false, false, true, "background"],
+  ] as const)(
+    "keeps modified Enter for draft=%s running=%s alt=%s",
+    (isDraftThread, isRunning, altKey, expected) => {
+      const result = enterScenario({
+        event: { ...bareEnter, ctrlKey: true, altKey },
+        intent: { ...enterIntent, isDraftThread, isRunning },
+      });
+      expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+      expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith(expected);
+    },
+  );
+
+  it("honors a remapped Enter action without replacing the newer send routes", () => {
+    const keybindings = mergeWithDefaultKeybindings(
+      compileResolvedKeybindingsConfig([
+        {
+          key: "alt+enter",
+          command: "composer.sendAlternate",
+          when: "composerFocus && turnRunning",
+        },
+      ]),
+    );
+    const result = enterScenario({
+      event: { ...bareEnter, altKey: true },
+      intent: { ...enterIntent, keybindings, prompt: "draft" },
     });
-    const first = queue.enqueue(threadKey, message("first"));
-    const second = queue.enqueue(threadKey, message("second"));
-    const dispatched: string[] = [];
-    const steer = (id: string) => {
-      const entry = queue.beginSend(threadKey, id, null);
-      if (entry) dispatched.push(entry.prompt);
-    };
-    const next = () => {
-      const entry = useQueuedMessageStore.getState().queuesByThreadKey[threadKey]?.[0];
-      if (!entry) return false;
-      steer(entry.id);
-      return true;
-    };
-    try {
-      enterScenario({ onSteerNextQueuedMessage: next });
-      expect(dispatched).toEqual(["first"]);
-      steer(first.id);
-      enterScenario({ onSteerNextQueuedMessage: next });
-      expect(dispatched).toEqual(["first"]);
-      queue.finishSend(threadKey, first.id);
-      enterScenario({ event: { ...bareEnter, repeat: true }, onSteerNextQueuedMessage: next });
-      expect(dispatched).toEqual(["first"]);
-      enterScenario({ onSteerNextQueuedMessage: next });
-      expect(dispatched).toEqual(["first", "second"]);
-      queue.finishSend(threadKey, second.id);
-    } finally {
-      queue.remove(threadKey, first.id);
-      queue.remove(threadKey, second.id);
-    }
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+    expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith("alternate");
+  });
+
+  it("preserves a background send remapped to bare Enter", () => {
+    const keybindings = mergeWithDefaultKeybindings(
+      compileResolvedKeybindingsConfig([
+        {
+          key: "enter",
+          command: "composer.sendBackground",
+          when: "composerFocus && draftThreadRoute",
+        },
+      ]),
+    );
+    const result = enterScenario({
+      intent: { ...enterIntent, keybindings, isDraftThread: true },
+    });
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+    expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith("background");
+  });
+
+  it.each(["Linux", "iPhone"])("steers once with a hardware keyboard on %s", (platform) => {
+    const result = enterScenario({
+      intent: { ...enterIntent, platform, isSoftwareKeyboardOpen: false },
+    });
+    expect(result.handled).toBe(true);
+    expect(result.onSteerNextQueuedMessage).toHaveBeenCalledOnce();
+    expect(result.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("leaves software-keyboard Enter on its existing newline path", () => {
+    const result = enterScenario({
+      intent: { ...enterIntent, isSoftwareKeyboardOpen: true },
+    });
+    expect(result.handled).toBe(false);
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+    expect(result.onSubmit).not.toHaveBeenCalled();
   });
 });

@@ -1,8 +1,8 @@
 # Observability
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using Jones Code? See [docs/user](../user/).
 
-T3 Code has one server-side observability model:
+Jones Code has one server-side observability model:
 
 - pretty logs go to stdout for humans
 - completed spans go to a local NDJSON trace file
@@ -56,6 +56,18 @@ records instead carry OTLP resource, scope, and optional status fields.
 The `TraceRecord`, `EffectTraceRecord`, and `OtlpTraceRecord` schemas live in
 `packages/shared/src/observability.ts`.
 
+SQL statement spans (named `sqlite`) and `sql.transaction` spans carry `db.connection` and
+`db.lock_wait_ms`. `db.connection` is `writer` for the main connection, which runs on the event loop,
+or `reader` for the read-only connection in a worker thread. `db.lock_wait_ms` is the part of the
+span spent waiting for that connection, behind other SQL. That wait does not block the event loop,
+so subtract it before you blame a slow span on the query. Statements inside a transaction use its
+connection and do not carry these attributes.
+
+An MCP request over HTTP has a `McpHttpServer.authenticateRequest` span that covers only admitting
+it: the credential check, the mode limit, and the Linked environments gate. The request runs after
+it, under the `McpServer.…/<method>` span, and each tool call has its own `mcp.tool.<name>` span
+that times it. That span's attributes name the tool, never its arguments.
+
 DPoP proof failures include the safe `environment.dpop.failure_code` span
 attribute. A `time_window` failure means that a signed proof was too old or too
 far in the future for the environment server's allowed window. It can point to
@@ -77,6 +89,53 @@ It reads `T3CODE_TRACE_FILE` if set, else `<home>/userdata/logs/server.trace.ndj
 a copied file, set `T3CODE_TRACE_FILE`. `--since 30m` keeps spans that ended in the last 30
 minutes. The rate is per minute between the first and last span end.
 
+### Separate lifetimes from request latency
+
+A long-lived socket or subscription is not a slow request. The `/ws` upgrade's
+server span is named `GET` and lasts until the socket closes. Streaming RPC
+server spans (methods with `rpc.stream: true`)
+also last for the stream. The `t3_rpc_request_duration` metric includes those
+lifetimes; exclude them before calculating request latency. The stream tag is
+an attribute on server spans, not a new metric label.
+
+Renderer traces arrive as `otlp-span` records from service `t3code-web` through
+`/api/observability/v1/traces` at the primary environment's server, even when the
+request targets another environment. Effect 4.0.5 names client RPC spans by the
+bare method name; streaming methods are lifetimes too. HTTP client spans use
+names such as `GET` and `POST`, so a name alone cannot identify their role. Use
+span kind, parentage and attributes; the Diagnostics page does not currently
+show span kind.
+
+For a foreground delay, identify both the target environment and the server
+receiving the renderer's traces:
+
+- Thread open: cold opens normally use HTTP. Follow renderer
+  `clientRuntime.state.fetchEnvironmentBoundedThreadSnapshot` and
+  `clientRuntime.state.executeAuthenticatedEnvironmentHttpRequest` to server
+  `environment.orchestration.threadBoundedSnapshot` and its child
+  `http.orchestration.loadThreadSnapshotWindow`; older history uses server
+  `environment.orchestration.threadHistoryPage`. Inspect child `db.connection`
+  and `db.lock_wait_ms`. Socket resume and fallback use
+  `ws.orchestrationV2.subscribeThread` and `ws.orchestrationV2.threadSnapshotThenLive`, which measure
+  setup; `ws.rpc.orchestration.subscribeThread` measures the stream lifetime.
+- Send: pair server `ws.rpc.orchestration.dispatchCommand` with renderer
+  `orchestration.dispatchCommand` by method and time. WebSocket client and server
+  spans do not share a trace. Their elapsed-time difference can include client,
+  network and event-loop delay.
+- Git: checkpoint capture uses `VcsProcess.run`; compare it with
+  `VcsProcess.runUnbounded` to see time outside subprocess execution, including
+  permit wait, `gh` wait and retries. For `GitVcsDriverCore`, compare the enclosing
+  operation with its `runGitCommand` child. Neither difference isolates only
+  semaphore wait.
+- Whole-server pauses: correlate nearby operation spans with
+  `event-loop-stalls.ndjson`, using the interpretation below.
+
+Trace files can contain request URLs and query strings, workspace paths,
+thread identifiers and failure causes. Share only
+fields needed for the investigation, rather than raw files. WebSocket tickets
+are redacted by the shared HTTP observability layer; this does not sanitize
+historical traces or every other sensitive attribute.
+
 ### Metrics
 
 Metrics are not written to a local file.
@@ -87,6 +146,43 @@ Metrics are not written to a local file.
 
 If OTLP is not configured, metrics still exist in-process, but you will not have a local artifact to inspect.
 
+Pool timings use the existing metric registry through the Jones pool adapter.
+Reader queue, startup, checkpoint admission, worker execution, estimated reply and
+lease duration are separate. Compute admission, queue, startup, job and
+`request_round_trip` are parent-local intervals. The roundtrip includes guardian
+arm/disarm, execution and result delivery. Child-local `execute` timestamps bracket
+open, list, path/content search, refresh and close, including awaited failure or
+cancellation cleanup. `reply` measures chunk preparation, serialization, credit
+waits and writes up to terminal-envelope preparation, separately from execution.
+`parent_continuation` covers post-validation terminal credit/disarm completion and the
+supervisor's result fence/readiness update; it excludes later caller work.
+
+Each request optionally exchanges parent-send, child-receive, child-terminal and
+parent-receive monotonic timestamps. Different clock origins and asymmetric
+latency are allowed. `reply_delivery` is the midpoint of a nonnegative interval,
+with lower/upper bounds and half-width uncertainty; it includes terminal encoding
+and pipe scheduling through parent frame decode/validation, and is never exact
+network transfer. The clock-offset interval
+allows 1 ms resolution plus 1000 ppm relative drift over the bounded exchange.
+Out-of-envelope clock evidence makes the estimate unavailable. Roundtrip minus
+execution is never reported as exact transfer. Missing timing is `null` in
+observations and qualification reports; the metric adapter sets
+`jones_server_pool_timing_available` to zero without inserting a zero duration.
+
+Validated guardian RSS samples flow through the same nonthrowing observer to
+`jones_server_compute_resident_bytes`, preserving bytes exactly. RSS is sampled
+independently on FD3; it is not a hard memory cap. Qualification retains raw
+timing/bounds/RSS observations alongside separate aggregate OS samples. Generation
+is a per-slot gauge instead of an ever-growing metric label; PIDs and clock values
+are not labels.
+
+Native scan/warmup gauges are incomplete readiness samples. Zero does not prove
+native quiescence. `activeForegroundOpenRefresh`, `chargedAllocations` and
+`retiringGenerations` measure different lifetimes; only captured exit followed by
+durable retirement releases a generation's charges. Keep paths, SQL, content and
+credentials out of all pool metric labels. The adapter swallows sink failure and
+retains no observation queue.
+
 ### Event Loop Stalls
 
 `apps/server/src/observability/EventLoopMonitor.ts` samples the server's event loop every 30 s. When
@@ -94,6 +190,11 @@ the loop stalled for more than 2 s since the previous sample, it records a root
 `server.eventLoop.stall` span with a warning. The span has trace level `Warn`, so it stays when
 `T3CODE_TRACE_MIN_LEVEL` is `Warn`. The warning shows in Settings > Diagnostics unless OTLP logs are
 on. The span time is when the sample ran, not when the stall happened.
+
+The trace file rotates in well under an hour on a busy server, so each stall is also appended as one
+NDJSON line to `event-loop-stalls.ndjson`, next to the trace file. A line has `time` and the span
+attributes. The file keeps the last 1000 or more stalls, with one rotated backup
+(`event-loop-stalls.ndjson.1`). Use it to see how often a server stalls over days.
 
 Some delay is not recorded:
 
@@ -130,7 +231,17 @@ There are two useful modes:
 - local-only: stdout + local `server.trace.ndjson`
 - full local observability: stdout + local trace file + OTLP export to Grafana/Tempo/Prometheus
 
-The local trace file is always on. OTLP export is opt-in.
+The local trace file is always on. OTLP export is opt-in. It sends diagnostics
+to a collector for analysis; it does not accelerate requests. Start with local
+diagnostics. Enabling export needs an approved receiver and agreement on the
+data sent, and changing startup configuration requires its own operational scope.
+
+Use the installed Jones build, not `npx t3`: the npm package belongs to upstream
+T3 Code. The installed Jones build's `t3 triage` playbook targets Jones source and the Jones issue tracker,
+keeps server and client build attribution separate, and requires explicit permission
+for bounded private-state inspection and diagnostic uploads. Start with bounded local
+trace summaries and this guide; see
+[`triagePrompt.ts`](../../apps/server/src/cli/triagePrompt.ts).
 
 ### Option 1: Local Traces Only
 
@@ -139,15 +250,15 @@ You do not need any extra env vars. Just run the app normally and inspect `serve
 Examples:
 
 ```bash
-npx t3
+t3 # Use the verified installed Jones build, which retains this command name.
 ```
 
 ```bash
-node --run dev
+vp run dev
 ```
 
 ```bash
-node --run dev:desktop
+vp run dev:desktop
 ```
 
 ### Option 2: Run With A Local LGTM Stack
@@ -172,6 +283,10 @@ Default Grafana login:
 
 #### 2. Export OTLP env vars
 
+For endpoint settings and startup precedence, see the
+[user telemetry guide](../user/telemetry.md#export-diagnostics-to-your-own-receiver).
+In a worktree, use `vp run dev` to keep state isolated.
+
 ```bash
 export T3CODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces
 export T3CODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics
@@ -191,19 +306,19 @@ export T3CODE_TRACE_TIMING_ENABLED=true
 CLI:
 
 ```bash
-npx t3
+t3 # Use the verified installed Jones build, which retains this command name.
 ```
 
 Monorepo web/server dev:
 
 ```bash
-node --run dev
+vp run dev
 ```
 
 Monorepo desktop dev:
 
 ```bash
-node --run dev:desktop
+vp run dev:desktop
 ```
 
 Packaged desktop app:
@@ -216,7 +331,7 @@ macOS app bundle example:
 T3CODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces \
 T3CODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics \
 T3CODE_OTLP_LOGS_URL=http://localhost:4318/v1/logs \
-"/Applications/T3 Code.app/Contents/MacOS/T3 Code"
+"/Applications/Jones Code.app/Contents/MacOS/Jones Code"
 ```
 
 Direct binary example:
@@ -318,11 +433,11 @@ jq -r 'select(.traceId == "TRACE_ID_HERE") | [
 Filter orchestration commands:
 
 ```bash
-jq -c 'select(.attributes["orchestration.command_type"] != null) | {
+jq -c 'select(.attributes["orchestration_v2.command_type"] != null) | {
   name,
   durationMs,
-  commandType: .attributes["orchestration.command_type"],
-  aggregateKind: .attributes["orchestration.aggregate_kind"]
+  commandType: .attributes["orchestration_v2.command_type"],
+  threadId: .attributes["orchestration_v2.thread_id"]
 }' "$TRACE_FILE"
 ```
 
@@ -365,7 +480,7 @@ Good first searches:
   `deployment.environment.name`
 - span names like `sendTurn` or a Git operation such as `GitVcsDriver.statusDetails.status`
 - Git spans whose `git.operation` attribute identifies the operation
-- orchestration spans with attributes like `orchestration.command_type`
+- orchestration spans with attributes like `orchestration_v2.command_type`
 
 Once you know traces are arriving, narrower TraceQL queries for names such as `sendTurn` or Git
 operation names become useful.
@@ -378,8 +493,7 @@ Good metric families to watch:
 
 - `t3_rpc_request_duration`
 - `t3_orchestration_command_duration`
-- `t3_orchestration_command_ack_duration`
-- `t3_provider_turn_duration`
+- `t3_provider_turn_duration` (how long the provider adapter takes to start a turn, not the turn's run time)
 - `t3_git_command_duration`
 
 Counters tell you volume and failure rate:
@@ -388,6 +502,26 @@ Counters tell you volume and failure rate:
 - `t3_orchestration_commands_total`
 - `t3_provider_turns_total`
 - `t3_git_commands_total`
+
+Webhooks have their own families:
+
+- `t3_webhook_deliveries_total` by `outcome` and `source` (`relay` or `direct`). Beyond what the
+  sender sees, `queue_full` means a task already had its limit of deliveries waiting,
+  `prompt_too_long` means the filled-in prompt passed the provider limit, `duplicate` means
+  the relay delivered a request this environment had already run, and `unavailable` means the
+  environment could not record the request, answered 503 and ran nothing.
+- `t3_webhook_runs_total` by `outcome` (`started`, `skipped`, `failed`) for the runs those
+  deliveries start, which happen after the sender has its answer.
+- `t3_webhook_held_delay` for how long requests the relay held waited before arriving.
+
+- `t3_secret_requests_total` by `status` (`saved`, `declined`, `cancelled`, `timed_out`) for secrets
+  agents asked users for, and `t3_secret_refs_consumed_total` by `result` (`used`, `rejected`) for
+  tools redeeming them. Neither ever carries a value.
+
+`ScheduledTaskService.triggerWebhook` spans carry the same outcome per request, and each run
+started from a delivery is its own `ScheduledTaskService.runWebhookDelivery` trace. For a request
+the relay forwarded, the span also goes to the T3 Connect trace export as a child of the relay's
+span; requests that reach the environment directly never join a sender's trace.
 
 Use metrics when the question is:
 
@@ -401,21 +535,6 @@ Use traces when the question is:
 - "which child span caused this one slow interaction?"
 - "what logs were emitted inside the failing flow?"
 
-### What The New Ack Metric Means
-
-`t3_orchestration_command_ack_duration` measures:
-
-- start: command dispatch enters the orchestration engine
-- end: the first committed domain event for that command is published by the server
-
-That is a server-side acknowledgment metric. It does not measure:
-
-- websocket transit to the browser
-- client receipt
-- React render time
-
-If you need those later, add client-side instrumentation or a dedicated server fanout metric.
-
 ## Common Workflows
 
 ### "Why did this request fail?"
@@ -428,15 +547,10 @@ If you need those later, add client-side instrumentation or a dedicated server f
 
 ### "Why is the UI feeling slow?"
 
-1. Search for slow top-level spans in the trace file or Tempo.
+1. Exclude socket and subscription lifetimes, then inspect foreground spans as
+   described in [Separate lifetimes from request latency](#separate-lifetimes-from-request-latency).
 2. Check child spans for sqlite, git, provider, or terminal work.
 3. Look at the matching duration metrics to see whether the slowness is systemic.
-
-### "Did this command take too long to acknowledge?"
-
-1. Check `t3_orchestration_command_ack_duration` by `commandType`.
-2. If it is high, inspect the corresponding orchestration trace.
-3. Look at child spans for projection, sqlite, provider, or git work.
 
 ### "Are git hooks causing latency?"
 
@@ -557,7 +671,7 @@ const program = doWork().pipe(
 
 ### Runtime Wiring
 
-The server observability layer is assembled in `apps/server/src/observability/Layers/Observability.ts`.
+The server observability layer is assembled in `apps/server/src/observability/Observability.ts`.
 
 It provides:
 
@@ -584,7 +698,7 @@ Local trace file:
 - `T3CODE_TRACE_FILE`: override trace file path
 - `T3CODE_TRACE_MAX_BYTES`: per-file rotation size, default `10485760`
 - `T3CODE_TRACE_MAX_FILES`: rotated file count, default `10`
-- `T3CODE_TRACE_BATCH_WINDOW_MS`: flush window, default `200`
+- `T3CODE_TRACE_BATCH_WINDOW_MS`: flush window, default `1000`
 - `T3CODE_TRACE_MIN_LEVEL`: minimum trace level, default `Info`
 - `T3CODE_TRACE_TIMING_ENABLED`: enable timing metadata, default `true`
 
@@ -614,7 +728,30 @@ with a startup warning, rather than sending it to the Settings endpoint.
 Service names are fixed: `t3code-server` for the backend and `t3code-desktop` for the desktop main
 process, both in `service.namespace` `t3code`. `OTEL_SERVICE_NAME` and a `service.name` or
 `service.namespace` in `OTEL_RESOURCE_ATTRIBUTES` are ignored. Tell installations apart with other
-resource attributes, such as `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=development`.
+resource attributes, such as `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=staging`.
+
+Each process reports its own build, not the one it talks to: the server, the desktop main process,
+the UI, and the mobile app each carry `t3code.release.channel` (`dev`, `stable`, `nightly`, or
+`preview`, from their own version; desktop PR builds count as `preview`, and a server not built by a
+release workflow reports `dev`) and `deployment.environment.name` (`development`, `production`, or
+`staging` for `preview`). On the server and the desktop main process either key in
+`OTEL_RESOURCE_ATTRIBUTES` wins. The UI and mobile app never read that variable: Vercel PR previews
+set `VITE_RELEASE_CHANNEL=preview` because their `APP_VERSION` must stay comparable with the
+server's, and the mobile app maps its build variant (`development`, `preview`, `production`), or
+reports `dev` from a development bundle.
+
+Attributes specific to T3 Code use the `t3code.` prefix. The UI runs as `t3code-web` in both a
+browser and the desktop window, since it is the same code, and `t3code.client.surface` is `desktop`
+or `web`. The server's `t3code.server.managed_by` is `desktop` when the desktop app launched it and
+`standalone` otherwise. The desktop main process reports `t3code.desktop.mode` as `development` or
+`packaged` (formerly `service.mode`; dashboards filtering on that key must switch). Node processes
+also report the semantic `process.runtime.name`, `process.runtime.version`, and
+`process.runtime.description`, and UI traces report `browser.language`, `user_agent.original`, and,
+in Chromium, `browser.platform`, `browser.mobile`, and `browser.brands`.
+
+Every resource also carries a `service.instance.id`: random per process for the server and desktop,
+per page load for the UI, and the Expo session on mobile. A `service.instance.id` in
+`OTEL_RESOURCE_ATTRIBUTES` replaces the generated one on the server and desktop.
 
 If the OTLP URLs are unset, local tracing still works, metrics stay in-process only, and logs stay
 on stdout only.
@@ -640,15 +777,15 @@ wins for its signal. `otlp` is the default, and any other exporter name, such as
 
 Current high-value span and metric boundaries include:
 
-- Effect RPC websocket request spans from `effect/rpc`
-- RPC request metrics in `apps/server/src/observability/RpcInstrumentation.ts`
+- WebSocket RPC request spans (`ws.rpc.<method>`) and metrics in
+  `apps/server/src/observability/RpcInstrumentation.ts`
 - startup phases
 - orchestration command processing
-- orchestration command acknowledgment latency
 - provider session and turn operations
 - git command execution and git hook events
 - terminal session lifecycle
-- sqlite query execution
+- sqlite query execution, except the statements inside `orchestrationV2.EventSink.write`, which
+  its `sql.transaction` span times as one
 - event loop stalls (`server.eventLoop.stall`)
 
 ### Current Constraints
@@ -660,7 +797,7 @@ Current high-value span and metric boundaries include:
 ## Heap Snapshots
 
 To see what a long-running server holds in memory, send it `SIGUSR2`. The server writes a V8 heap
-snapshot to its logs dir and logs the path. This works for desktop, `npx t3`, and service installs
+snapshot to its logs dir and logs the path. This works for desktop, a `t3` server started from a terminal, and service installs
 on macOS and Linux. Windows has no `SIGUSR2`.
 
 Send the signal to the server pid in `server-runtime.json`, which sits in the server's state dir
@@ -696,15 +833,22 @@ Before you take one:
 
 ## Netdata host status
 
-To expose CPU utilization and occupied RAM through the authenticated `/api/host-status` endpoint,
-configure Netdata API v3 connections in the T3 Code **server process environment**.
-The fixed host IDs are `vps`, `test`, `mini`, and `home`; use their uppercase names
-in the variables below. Configure only the hosts you want to monitor.
+Configure Netdata API v3 connections in the **Jones Code server process environment**
+to expose host CPU and RAM through authenticated `GET /api/host-status`. The fixed
+slots are `vps`, `test`, `mini`, and `home`. The web and desktop header discovers
+a gateway with a configured VPS slot among ready registered connections, trying
+the primary environment first and then stable environment IDs. It retains that
+gateway for the app session until its registration is removed, independently of
+the active thread. Disconnects and request failures leave its values unavailable
+without selecting another gateway. Requests use the selected environment's
+existing HTTP authorization; the client does not receive collector URLs or
+tokens or substitute its own machine's resources. Header remounts and tab visibility
+changes retain the selected gateway's sample and ten-second polling cadence,
+while source samples still expire after thirty seconds.
 
-The primary setup uses one Netdata parent collector on the VPS. Remote hosts
-stream their metrics into that parent; T3 Code reads each mapped node from the
-parent's API. The browser calls only the authenticated T3 Code API, and neither
-the browser nor the T3 Code gateway contacts each remote host in this setup.
+A shared parent collector can serve all mapped nodes. Each shared slot requires
+an explicit machine GUID from `/api/v3/nodes`; unmapped slots stay unavailable.
+For example, these placeholders configure mappings without adopting a live collector:
 
 ```sh
 T3CODE_NETDATA_URL=http://127.0.0.1:19999
@@ -714,51 +858,62 @@ T3CODE_NETDATA_MINI_NODE='<mini-machine-guid>'
 T3CODE_NETDATA_HOME_NODE='<home-machine-guid>'
 ```
 
-Replace each placeholder with that host's exact `mg` from the parent's
-`/api/v3/nodes` response. Set only mappings for nodes collected by that parent.
-Each slot using the shared URL requires its own `_NODE`; an unmapped slot stays
-`not_configured`, even when the collector has only one node.
+| Variable                                  | Meaning                                                                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `T3CODE_NETDATA_URL`                      | Shared parent base URL reachable from the serving environment.                                            |
+| `T3CODE_NETDATA_TOKEN`                    | Optional bearer token for the shared parent, supplied through protected server configuration.             |
+| `T3CODE_NETDATA_<ID>_NODE`                | Exact machine GUID for a fixed slot.                                                                      |
+| `T3CODE_NETDATA_<ID>_URL`                 | Per-slot endpoint override; without `_NODE`, it must report exactly one node.                             |
+| `T3CODE_NETDATA_<ID>_TOKEN`               | Per-slot bearer token. A URL override never inherits the shared token.                                    |
+| `T3CODE_NETDATA_<ID>_STORAGE_MOUNT_POINT` | Optional exact filesystem mount; defaults to `/` on Linux and `/System/Volumes/Data`, then `/`, on macOS. |
 
-| Variable                    | Value                                                                                                                                                                  |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `T3CODE_NETDATA_URL`        | Shared parent base URL reachable from the T3 Code server.                                                                                                              |
-| `T3CODE_NETDATA_TOKEN`      | Optional bearer token for the shared parent only. Supply it through the server's protected environment configuration.                                                  |
-| `T3CODE_NETDATA_<ID>_NODE`  | Exact Netdata machine GUID selecting that host from the shared parent.                                                                                                 |
-| `T3CODE_NETDATA_<ID>_URL`   | Optional per-host base URL override for a separate Netdata agent or parent. Without `_NODE`, this endpoint must return exactly one node.                               |
-| `T3CODE_NETDATA_<ID>_TOKEN` | Optional bearer token for that host's configured endpoint. Overrides the shared token for a slot using the shared URL. A per-host URL never inherits the shared token. |
+Tokens authenticate API reads; they are not Netdata streaming keys. Keep collector
+configuration out of browser build variables. Changing process launch settings
+requires a separately authorized server restart; source changes do not activate
+or reconfigure a collector.
 
-The optional `_TOKEN` values authenticate API requests; they are not Netdata
-streaming keys. These are server settings; do not put upstream URLs or tokens
-into browser build variables. Supply them through your process launcher or service manager before
-starting the server. A running service must be restarted to receive changed
-launch settings; coordinate that restart with active agent work.
+The endpoint requires an authenticated session with `orchestration:read` and
+returns `cache-control: no-store`. Unconfigured slots return `not_configured`;
+invalid data, stale source samples, and upstream failures produce explicit
+unavailable states per host. One failed host does not hide the others. The gateway
+rejects redirects, URL credentials, unsupported response shapes, and oversized
+bodies, with a three-second deadline per host.
 
-A missing URL or shared node mapping returns `not_configured` for that host. An
-unknown or ambiguous node, invalid or unsupported metrics, an unreachable
-upstream, or samples older than 30 seconds return an unavailable state without
-hiding the other hosts. Redirects are not followed; configure the final base
-URL. Access requires an authenticated T3 Code session with `orchestration:read`
-scope.
+Queries select the configured node's GUID and a five-second window aggregated to
+one point. Logical CPU count and total RAM come from that node's metadata. CPU
+uses `system.cpu` percentage units and the complete macOS or Linux dimension set.
+The executing dimensions are summed; idle, iowait, and steal are excluded, and
+Linux guest dimensions are counted once. The result is 0–100% of total host CPU
+capacity, without dividing by logical core count.
 
-Available hosts report `cpuUsagePercent`, `occupiedMemoryBytes`,
-`totalMemoryBytes`, `logicalCpuCount`, and `sampledAt`. The gateway scopes both
-metric queries to the selected node's machine GUID on the configured parent,
-using a short five-second window aggregated to one point. Logical CPU count and
-total RAM come from that same node's metadata. The sample time is the oldest
-CPU or RAM query timestamp or database last-entry timestamp; all must be within
-30 seconds.
+Occupied RAM remains on the wire for compatibility: total bytes minus native
+`system.ram/free` MiB, including reclaimable memory. The optional
+`availableMemoryBytes` is collected separately: Linux `mem.available/avail`, or
+the macOS collector estimate of free + speculative + inactive + purgeable pages.
+Missing or invalid available-memory data leaves CPU usable and available RAM
+unavailable; free RAM is never relabeled as available RAM. Every reported byte
+value is integral and bounded by total RAM.
 
-CPU utilization comes from `system.cpu` with `percentage` units. The gateway
-requires the complete macOS set (`user`, `nice`, `system`) or Linux set
-(`user`, `nice`, `system`, `irq`, `softirq`, `guest`, `guest_nice`,
-`iowait`, `steal`), allowing an optional `idle` dimension. It sums executing
-CPU percentages and excludes `idle`, `iowait`, and `steal`. Netdata's Linux
-collector already subtracts guest time from user and nice, so guest dimensions
-are added exactly once. The result is a finite percentage from 0 to 100 and is
-not divided by the logical CPU count.
+Optional storage fields report one exact `disk.space` filesystem on the selected
+node, never a sum of mounts or physical disks. Free space is `avail`; total is
+`avail + used + reserved_for_root`, including blocks reserved for root.
+The gateway validates the returned node, mount label, individual dimension
+freshness and GiB units. Missing, malformed or stale storage leaves the other
+metrics available. Mount overrides accept absolute paths using letters, digits,
+underscores, dots, slashes and hyphens; pattern syntax is rejected. The Mac
+collector must publish a matching chart; source changes cannot enable it.
 
-Occupied RAM is total RAM minus `system.ram/free`, converting free MiB to bytes
-and rounding to the nearest byte before subtraction. It includes reclaimable
-cache and is not a memory-pressure or available-memory estimate; the gateway
-does not invent a macOS available-memory value or sum overlapping RAM categories.
-Missing total RAM, invalid free RAM, or free RAM above total is invalid data.
+The header shows compact whole numbers such as `VPS · 24% · 41`: total-host CPU
+percentage and available RAM in GiB. Hover and keyboard focus show one bullet per
+CPU, available/total RAM, Mac swap I/O and free/total main-filesystem storage
+reading, with units. Available RAM on macOS remains a collector estimate.
+CPU and RAM colors use their unrounded utilization, and either can raise
+the badge background; the RAM color is not a direct measurement of memory
+pressure. The breadcrumb receives its natural width first; complete badges fit
+into the remaining space in VPS, Test, Mini, Home order, with hidden badges
+removed from keyboard focus.
+
+Source timestamps older than 30 seconds become unavailable. The client expires
+presented values at 30 seconds even while another request is pending, polls every
+ten seconds while visible, clears samples when hidden or after failures, and
+releases timers and aborts its request on unmount.

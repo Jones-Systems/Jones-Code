@@ -10,6 +10,10 @@ on:
       - scripts/build-cli-archive.ts
       - scripts/smoke-cli-archive.ts
       - scripts/update-release-package-versions.ts
+      - scripts/stamp-jones-build.ts
+      - scripts/jones/updates/build-provenance.ts
+      - apps/server/src/jones/updates/**
+      - apps/server/src/jones/cloud/qualifiedStartup.ts
       - scripts/lib/cli-external-packages.ts
       - scripts/lib/public-config.ts
       - packages/shared/src/cliRelease.ts
@@ -20,6 +24,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: artifact-cli-linux-${{ github.event.pull_request.number || github.ref }}
@@ -47,14 +52,25 @@ jobs:
     env:
       TMPDIR: ${{ github.workspace }}/.artifact-cli-scratch
     steps:
-      - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+      - name: Checkout public artifact source
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          # Auth cleanup in actions/checkout traverses unmapped vendored gitlinks.
+          # This public-only fetch needs no token and preserves the exact event SHA.
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
 
       - name: Prepare job scratch
         run: mkdir -p "$TMPDIR"
@@ -68,6 +84,8 @@ jobs:
             args:
               - --filter=t3...
               - --filter=@t3tools/scripts...
+              # vp loads every workspace vite config; apps/mobile/vite.config.ts requires @babel/core.
+              - --filter=@t3tools/mobile...
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
@@ -85,15 +103,40 @@ jobs:
           echo "ARTIFACT_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Bind Jones source identity
-        run: node scripts/stamp-jones-build.ts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          build_started_at=
+          if metadata=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"); then
+            if ! build_started_at=$(printf '%s' "$metadata" | node --input-type=module -e '
+              import fs from "node:fs";
+              try {
+                const value = JSON.parse(fs.readFileSync(0, "utf8")).run_started_at;
+                if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) ||
+                    !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value.replace(/Z$/, ".000Z")) {
+                  process.exit(1);
+                }
+                process.stdout.write(value);
+              } catch {
+                process.exit(1);
+              }
+            '); then
+              echo "::warning::Build time metadata invalid; omitting build time"
+              build_started_at=
+            fi
+          else
+            echo "::warning::Build time unavailable; omitting build time"
+          fi
+          JONES_BUILD_STARTED_AT="$build_started_at" node scripts/stamp-jones-build.ts
 
       - name: Build server and web client
         run: vp run --filter t3 build
 
       - name: Build CLI single-executable
         env:
-          # Keep this aligned with SEA_NODE_VERSION in apps/server/vite.config.ts.
-          VP_NODE_VERSION: "26.8.2"
+          # Keep this aligned with engines.node in the root package.json.
+          VP_NODE_VERSION: "26.12.1"
         run: node apps/server/scripts/cli.ts build-exe --verbose
 
       - name: Build and stage resource monitor
@@ -115,6 +158,20 @@ jobs:
 
       - name: Smoke-test CLI archive
         run: node scripts/smoke-cli-archive.ts --archive release-cli/*.tar.gz --expect-version "$ARTIFACT_VERSION"
+
+      - name: Smoke-test packaged update preparation worker
+        run: |
+          set -euo pipefail
+          archives=(release-cli/*.tar.gz)
+          test "${#archives[@]}" -eq 1
+          scratch="$TMPDIR/preparation-smoke"
+          rm -rf -- "$scratch"
+          mkdir -p "$scratch"
+          tar -xzf "${archives[0]}" -C "$scratch"
+          roots=("$scratch"/*)
+          test "${#roots[@]}" -eq 1
+          node apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts --worker "${roots[0]}/t3"
+          rm -rf -- "$scratch"
 
       - name: Record checksums and source
         run: |
@@ -144,7 +201,7 @@ jobs:
           name: jones-code-cli-linux-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}--${{ env.ARTIFACT_VERSION }}
           path: release-cli/*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
           compression-level: 0
 
       - name: Clean job scratch

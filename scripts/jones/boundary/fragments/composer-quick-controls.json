@@ -1,0 +1,19 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "composer-quick-controls",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/composer/ComposerQuickControls.tsx",
+    "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/chat/ComposerControlsBar.tsx",
+    "apps/web/src/components/chat/restingComposerControlsMeasurement.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/ComposerControlsBar.tsx",
+      "to": "apps/web/src/jones/composer/ComposerQuickControls.tsx"
+    }
+  ]
+}

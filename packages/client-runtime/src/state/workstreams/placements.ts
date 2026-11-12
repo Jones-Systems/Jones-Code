@@ -9,20 +9,71 @@ import {
   type T3WorkstreamListResult,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import type {
+  WorkstreamsNativeThreadPlacement,
+  WorkstreamsNativePlacementProvenance,
+} from "@t3tools/contracts/jones/workstreamsNativePlacement";
+export type LiveT3PlacementItem = T3ThreadPlacement | WorkstreamsNativeThreadPlacement;
 
 export interface LiveT3Placements {
   readonly context: T3PlacementResult["page"]["context"];
-  readonly items: readonly T3ThreadPlacement[];
+  readonly items: readonly LiveT3PlacementItem[];
   readonly trustedEnvironments: T3PlacementResult["trustedEnvironments"];
   readonly readiness: T3PlacementResult["readiness"];
+  /** Native proof observations and their original, memory-only source/reader lifetime. */
+  readonly native?: NativePlacementWitness;
 }
 
-export const currentT3Placement = (item: T3ThreadPlacement, now: number): boolean =>
+export interface NativePlacementWitness {
+  readonly observations: readonly (typeof WorkstreamsNativePlacementProvenance.Type)[];
+}
+const nativeChecks = new WeakMap<NativePlacementWitness, () => boolean>();
+/** Server JSON and cloned observations cannot mint this memory-only caller witness. */
+export function nativePlacementWitness(
+  observations: NativePlacementWitness["observations"],
+  check: () => boolean,
+): NativePlacementWitness {
+  const witness = Object.freeze({
+    observations: Object.freeze(observations.map((value) => Object.freeze({ ...value }))),
+  });
+  nativeChecks.set(witness, check);
+  return witness;
+}
+
+export function liveT3PlacementsCurrent(proof: LiveT3Placements | null): boolean {
+  if (!proof) return false;
+  if (!proof.native)
+    return proof.items.every(
+      (item) => !("attestation_source" in item && item.attestation_source === "native"),
+    );
+  try {
+    return nativeChecks.get(proof.native)?.() ?? false;
+  } catch {
+    return false;
+  }
+}
+
+export const currentT3Placement = (
+  item: Pick<T3ThreadPlacement, "attested_at" | "expires_at">,
+  now: number,
+): boolean =>
   Number.isFinite(now) &&
   Number.isFinite(Date.parse(item.attested_at)) &&
   Date.parse(item.attested_at) <= now &&
   Date.parse(item.expires_at) > now &&
   Date.parse(item.expires_at) > Date.parse(item.attested_at);
+
+// Well-formed proof issued no later than `now`. Expiry is checked separately: an expired item
+// is dropped on its own, while malformed or future-attested evidence invalidates the response.
+const wellFormedT3Placement = (item: T3ThreadPlacement, now: number): boolean =>
+  Number.isFinite(now) &&
+  Number.isFinite(Date.parse(item.attested_at)) &&
+  Number.isFinite(Date.parse(item.expires_at)) &&
+  Date.parse(item.attested_at) <= now &&
+  Date.parse(item.expires_at) > Date.parse(item.attested_at);
+
+const decodeLoadRequest = Schema.decodeUnknownSync(T3PlacementLoadRequest);
+const decodeResult = Schema.decodeUnknownSync(T3PlacementResult);
 
 export type WorkstreamSha256 = (bytes: Uint8Array) => Promise<Uint8Array>;
 
@@ -38,13 +89,13 @@ export async function loadLiveT3Placements(
 ): Promise<LiveT3Placements> {
   if (metadata.source !== "live" || metadata.stale || metadata.nextCursor !== null)
     throw new Error("Placement metadata is not current.");
-  Schema.decodeUnknownSync(T3PlacementLoadRequest)({ identities }, { onExcessProperty: "error" });
+  decodeLoadRequest({ identities }, { onExcessProperty: "error" });
   const digest = await sha256(new TextEncoder().encode(t3PlacementInventoryJson(identities)));
   if (digest.length !== 32) throw new Error("Invalid SHA-256 digest length.");
   const inventoryDigest = Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join(
     "",
   );
-  const result = Schema.decodeUnknownSync(T3PlacementResult)(await load(), {
+  const result = decodeResult(await load(), {
     onExcessProperty: "error",
   });
   if (new TextEncoder().encode(JSON.stringify(result)).length > WORKSTREAM_MAX_RESPONSE_BYTES)
@@ -70,9 +121,10 @@ export async function loadLiveT3Placements(
   const memberships = new Set<string>();
   const referenceRouting = new Map<string, string>();
   let previous: readonly [string, string] | undefined;
+  const checkedAt = now();
   for (const item of page.items) {
     if (
-      !currentT3Placement(item, now()) ||
+      !wellFormedT3Placement(item, checkedAt) ||
       memberships.has(item.membership_id) ||
       !requested.has(
         t3PlacementIdentityKey({
@@ -81,7 +133,7 @@ export async function loadLiveT3Placements(
         }),
       )
     )
-      throw new Error("Stale, repeated, or unrelated placement.");
+      throw new Error("Malformed, repeated, or unrelated placement.");
     const tuple = [item.native_reference_id, item.membership_id] as const;
     if (
       previous &&
@@ -102,11 +154,10 @@ export async function loadLiveT3Placements(
     referenceRouting.set(item.native_reference_id, serialized);
     memberships.add(item.membership_id);
   }
-  if (page.items.some((item) => !currentT3Placement(item, now())))
-    throw new Error("Placement expired while loading.");
+  const filteredAt = now();
   return {
     context: page.context,
-    items: page.items,
+    items: page.items.filter((item) => currentT3Placement(item, filteredAt)),
     trustedEnvironments: result.trustedEnvironments,
     readiness: result.readiness,
   };

@@ -1,0 +1,29 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "descendant-approval",
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/jones/descendantApproval/",
+    "apps/web/src/jones/descendantApproval/",
+    "apps/mobile/src/jones/descendantApproval/"
+  ],
+  "hookPaths": ["apps/web/src/components/chat/useThreadLifecycle.tsx"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/useThreadLifecycle.tsx",
+      "to": "apps/web/src/jones/descendantApproval/useDescendantApprovalBanner.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+      "to": "apps/mobile/src/jones/descendantApproval/useDescendantApproval.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+      "to": "apps/mobile/src/jones/descendantApproval/DescendantApprovalCard.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+      "to": "apps/mobile/src/jones/descendantApproval/PendingApprovalStack.tsx"
+    }
+  ]
+}

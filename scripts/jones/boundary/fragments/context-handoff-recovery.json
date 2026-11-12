@@ -1,0 +1,55 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "context-handoff-recovery",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts",
+    "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts",
+    "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts",
+    "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts",
+    "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.test.ts"
+  ],
+  "hookPaths": ["apps/server/src/orchestration-v2/ContextHandoffDelivery.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ContextHandoffDelivery.ts",
+      "to": "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ContextHandoffBudget.test.ts",
+      "to": "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ContextHandoffBudget.test.ts",
+      "to": "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts"
+    }
+  ]
+}

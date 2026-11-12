@@ -1,4 +1,4 @@
-import { HostProcessPlatform, HostProcessUserId } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - The private-file check needs lstat, owner metadata, and O_NOFOLLOW/O_EXCL creation at the Node filesystem boundary.
 import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - The synchronous Node adapter needs native path semantics outside an Effect runtime.
@@ -13,9 +13,9 @@ function absent(error: unknown): boolean {
 function inspect(path: string, directory: boolean): boolean {
   try {
     const info = NodeFS.lstatSync(path);
-    const platform = HostProcessPlatform.defaultValue();
+    const platform = HostProcess.Platform.defaultValue();
     const ownerMismatch = () => {
-      const userId = HostProcessUserId.defaultValue();
+      const userId = HostProcess.UserId.defaultValue();
       return userId !== undefined && info.uid !== userId;
     };
     if (

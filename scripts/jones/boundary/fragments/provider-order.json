@@ -1,0 +1,26 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "provider-order",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/settings/providerOrder.ts",
+    "apps/web/src/jones/settings/providerOrder.test.ts",
+    "apps/web/src/jones/settings/SortableProviderRows.tsx",
+    "apps/web/src/jones/settings/SortableProviderRows.browser.test.tsx",
+    "apps/web/src/jones/settings/providerReorderKeyboard.ts"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/settings/ProviderSettingsPanel.tsx",
+    "apps/web/src/components/AppRouteModal.tsx"
+  ],
+  "tombstones": ["apps/web/src/jones/settings/ProviderOrderControls.tsx"],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/settings/ProviderSettingsPanel.tsx",
+      "to": "apps/web/src/jones/settings/SortableProviderRows.tsx"
+    },
+    {
+      "from": "apps/web/src/components/AppRouteModal.tsx",
+      "to": "apps/web/src/jones/settings/providerReorderKeyboard.ts"
+    }
+  ]
+}

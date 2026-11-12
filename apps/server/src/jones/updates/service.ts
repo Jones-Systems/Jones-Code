@@ -1,0 +1,1329 @@
+// @effect-diagnostics nodeBuiltinImport:off
+// Native activation receipt and cache paths share the detached launcher protocol.
+import {
+  EnvironmentInternalError,
+  ThreadId,
+  EnvironmentId,
+  type JonesUpdatePolicy,
+  type JonesUpdateState,
+  type JonesUpdateDownloadInput,
+  type JonesUpdateExactInput,
+  type JonesUpdateInstallInput,
+  type JonesUpdateReconcileInput,
+  type JonesUpdateRecordRetiredInput,
+  type JonesNativePrepareInput,
+  type JonesQuitPreparation,
+  ServerSelfUpdateError,
+} from "@t3tools/contracts";
+
+import type {
+  JonesOperationStartInput,
+  JonesOperationStopInput,
+  JonesOperationFenceInput,
+  JonesOperationReadInput,
+  JonesOperationReadResult,
+  JonesOperationReceipt,
+  JonesRecoverCleanupInput,
+  JonesRecoverCleanupResult,
+  JonesRecoveryPreflightInput,
+  JonesRecoveryPreflight,
+  JonesRecoveryPolicy,
+} from "@t3tools/contracts/jones/jonesOperations";
+import { createOperationLedger } from "./operations/ledger.ts";
+import { createTargetOperations, unsupportedTargetOperations } from "./operations/operations.ts";
+import type { FollowerOrigin } from "./followerPolicy.ts";
+
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
+import * as Layer from "effect/Layer";
+import * as Duration from "effect/Duration";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
+import packageJson from "../../../package.json" with { type: "json" };
+import { retainStagedSelection, restoreStagedSelection } from "./stagedSelection.ts";
+import {
+  NativePreparationRefusal,
+  prepareNativeContinuationReceipt,
+  recordNativePreparationRefusal,
+} from "./nativePreparation.ts";
+import { isJonesRuntime, isPreviewRuntime } from "./qualification.ts";
+import { publishJonesUpdateCapabilityReceipt } from "./capabilityReceipt.ts";
+import {
+  createProgressRecorder,
+  readJonesUpdateProgress,
+  reconcileProgressAtStartup,
+} from "./progress.ts";
+import { qualifiedServerCapability } from "./serverCapability.ts";
+import {
+  isUpdateOperationId,
+  operationBinding,
+  reconcileUpdateOperation,
+  readUpdateOperationSettlement,
+  readUpdateOperationCause,
+  type OperationReconciliation,
+} from "./launcherOperation.ts";
+import { parseServiceState } from "../../cloud/serviceProtocol.ts";
+import { readQualifiedBackupReceipt, inspectQualifiedBackup } from "../cloud/qualifiedBackup.ts";
+import { decodeStagedQualifiedRuntime } from "../cloud/qualifiedRuntime.ts";
+import { readBoundedJson } from "./preparation/protocol.ts";
+import { createRecoveryPreflights } from "./operations/recoveryPreflight.ts";
+import {
+  readCurrentJonesBuildStartedAt,
+  JonesUpdater,
+  type JonesUpdaterInstallInput,
+  type JonesStagedRetirementInput,
+} from "./JonesUpdater.ts";
+import {
+  makePreparationSupervisor,
+  resolvePreparationWorkerCommand,
+  readPreparedRuntimeReceipt,
+  preparedVerificationOptions,
+} from "./preparation/supervisor.ts";
+import { adoptPreparedStage, adoptVerifiedStage } from "./preparation/rebind.ts";
+import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
+import { awaitHandoffOutcome } from "./handoffOutcome.ts";
+import { createFleetHostStore } from "../fleetUpdates/store.ts";
+import * as ServerConfig from "../../config.ts";
+import * as SelfUpdate from "../../cloud/selfUpdate.ts";
+import * as Launcher from "../../cloud/serviceLauncherClient.ts";
+import * as Startup from "../../serverRuntimeStartup.ts";
+import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiver.ts";
+
+export class JonesUpdates extends Context.Service<
+  JonesUpdates,
+  {
+    readonly operationStart: (
+      input: JonesOperationStartInput,
+    ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
+    readonly operationStop: (
+      input: JonesOperationStopInput,
+    ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
+    readonly operationFence: (
+      input: JonesOperationFenceInput,
+    ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
+    readonly operationRead: (
+      input: JonesOperationReadInput,
+    ) => Effect.Effect<JonesOperationReadResult, EnvironmentInternalError>;
+    readonly recoverCleanup: (
+      input: JonesRecoverCleanupInput,
+    ) => Effect.Effect<JonesRecoverCleanupResult, EnvironmentInternalError>;
+    readonly recoveryPreflight: (
+      input: JonesRecoveryPreflightInput,
+    ) => Effect.Effect<JonesRecoveryPreflight, EnvironmentInternalError>;
+    readonly fleetOperationsSupported: boolean;
+    readonly state: (after?: number) => Effect.Effect<JonesUpdateState | null>;
+    readonly check: Effect.Effect<JonesUpdateState>;
+    readonly prepareNative: (input: JonesNativePrepareInput) => Effect.Effect<JonesUpdateState>;
+    readonly prepareQuit: Effect.Effect<JonesQuitPreparation>;
+    readonly download: (input: JonesUpdateDownloadInput) => Effect.Effect<JonesUpdateState>;
+    readonly install: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
+    readonly reconcile: (input: JonesUpdateReconcileInput) => Effect.Effect<JonesUpdateState>;
+    readonly recordRetired: (
+      input: JonesUpdateRecordRetiredInput,
+    ) => Effect.Effect<JonesUpdateState>;
+    /** Stages the build of one exact source for this host's own operator; no fleet operation. */
+    readonly downloadExact: (input: JonesUpdateExactInput) => Effect.Effect<JonesUpdateState>;
+    readonly stageExact: (input: {
+      readonly targetSource: string;
+      readonly operationId: string;
+    }) => Effect.Effect<JonesUpdateState>;
+    readonly installForOperation: (
+      input: JonesUpdateInstallInput & {
+        readonly origin?: FollowerOrigin;
+        readonly recovery?: { readonly policy: JonesRecoveryPolicy; readonly preflightId: string };
+        readonly operationId: string;
+        readonly targetSource: string;
+        readonly expectedInstalledSource: string;
+        readonly onBeforeDispatchRefusal?: NonNullable<
+          JonesUpdaterInstallInput["onBeforeDispatchRefusal"]
+        >;
+        /** Rechecked just before the launcher handoff; a reason withdraws the activation. */
+        readonly admit?: () => Promise<string | undefined>;
+      },
+    ) => Effect.Effect<JonesUpdateState>;
+    readonly retireStagedOperation: (
+      input: JonesStagedRetirementInput,
+    ) => Effect.Effect<{ readonly retired: boolean; readonly reason?: string }>;
+    readonly reconcileOperation: (operationId: string) => Effect.Effect<OperationReconciliation>;
+    /**
+     * Rereads this host's fleet enrollment and its laptop's published source, and applies them to
+     * every update entrypoint. A host that selects its own builds has no policy.
+     */
+    readonly refreshPolicy: Effect.Effect<JonesUpdatePolicy | undefined>;
+  }
+>()("t3/jones/updates/service/JonesUpdates") {}
+
+const blocked = (message: string): JonesUpdateState => ({
+  source: "jones-actions",
+  channel: "jones-main",
+  phase: "blocked",
+  message,
+  capability: { check: false, download: false, install: false, reason: "bootstrap-required" },
+});
+
+export const layer = Layer.effect(
+  JonesUpdates,
+  Effect.gen(function* () {
+    const platform = yield* HostProcess.Platform;
+    const architecture = yield* HostProcess.Architecture;
+    const config = yield* ServerConfig.ServerConfig;
+    const selfUpdate = yield* SelfUpdate.ServerSelfUpdate;
+    const launcher = yield* Launcher.ServiceLauncherClient;
+    const startup = yield* Startup.ServerRuntimeStartup;
+    const admissionFence = yield* UpdateAdmissionFence.UpdateAdmissionFence;
+    const orchestrator = yield* Effect.serviceOption(OrchestratorV2);
+    const context = yield* Effect.context<never>();
+    const run = Effect.runPromiseWith(context);
+    const version = launcher.currentVersion ?? packageJson.version;
+    const launcherStatus = {
+      childVersion: version,
+      ...(launcher.launcherVersion === undefined
+        ? {}
+        : { launcherVersion: launcher.launcherVersion }),
+      launcherSettlement:
+        launcher.managed && launcher.qualifiedSettlement === true
+          ? ("supported" as const)
+          : ("unsupported" as const),
+      launcherRefresh:
+        launcher.managed && launcher.qualifiedSettlement === true
+          ? ("none" as const)
+          : ("recommended" as const),
+      ...(launcher.managed && launcher.qualifiedSettlement === true
+        ? {}
+        : { launcherRefreshReason: "settlement-unsupported" as const }),
+    };
+    const unsupportedSettlement = (input: JonesUpdateReconcileInput) =>
+      Effect.succeed({
+        ...blocked("Launcher refresh recommended"),
+        ...launcherStatus,
+        updateId: input.operationId,
+        settlementRefusal: "capability-unsupported" as const,
+        launcherSettlement: "unsupported" as const,
+        launcherRefresh: "recommended" as const,
+        launcherRefreshReason: "settlement-unsupported" as const,
+      });
+    const preparationHost =
+      (platform === "linux" || platform === "darwin") &&
+      (architecture === "x64" || architecture === "arm64")
+        ? { platform, architecture }
+        : undefined;
+    const cacheRoot = NodePath.join(config.baseDir, "runtime", "jones-actions");
+    // Download, archive and tree hashes, extraction and validation run in a low-priority worker
+    // started from this server's own build, one at a time per host; this process only
+    // supervises it and rebinds its bounded result.
+    const preparationCommand = resolvePreparationWorkerCommand({
+      isExecutable: yield* HostProcess.IsExecutable,
+      execPath: yield* HostProcess.ExecutablePath,
+      entryPath: (yield* HostProcess.Arguments)[1],
+    });
+    const preparation =
+      preparationCommand === undefined
+        ? undefined
+        : makePreparationSupervisor({
+            baseDir: config.baseDir,
+            cacheRoot,
+            command: preparationCommand,
+            env: yield* HostProcess.Environment,
+            observe: (exit) =>
+              void run(
+                Effect.logInfo("Jones update preparation worker exited", {
+                  jobId: exit.jobId,
+                  kind: exit.kind,
+                  pid: exit.pid,
+                  priority: exit.priority,
+                  code: exit.code,
+                  signal: exit.signal,
+                  stopped: exit.stopped,
+                  reaped: exit.reaped,
+                  durationMs: exit.durationMs,
+                }),
+              ),
+          });
+
+    const currentBuildStartedAt = readCurrentJonesBuildStartedAt(packageJson, version);
+    const receiptStarted = yield* Clock.currentTimeMillis;
+    const runtimeReceipt = isPreviewRuntime(version)
+      ? yield* Effect.tryPromise(() =>
+          readPreparedRuntimeReceipt(
+            config.baseDir,
+            version,
+            { platform, architecture },
+            preparation,
+          ),
+        ).pipe(Effect.orElseSucceed(() => undefined))
+      : undefined;
+    yield* Effect.logInfo("Qualified startup timing", {
+      step: "receipt",
+      durationMs: (yield* Clock.currentTimeMillis) - receiptStarted,
+    });
+    const nativeReceipt = runtimeReceipt?.version === version;
+    const installedSource =
+      !nativeReceipt || runtimeReceipt === undefined
+        ? undefined
+        : {
+            repository: runtimeReceipt.repository,
+            sha: runtimeReceipt.sourceSha,
+            tree: runtimeReceipt.sourceTree,
+          };
+    const operationCall = <A>(f: () => Promise<A>) =>
+      Effect.tryPromise({
+        try: f,
+        catch: () =>
+          new EnvironmentInternalError({
+            code: "internal_error",
+            reason: "internal_error",
+            traceId: NodeCrypto.randomUUID(),
+          }),
+      });
+    const recoveryPreflight = Effect.fn("JonesUpdates.recoveryPreflight")(
+      (
+        _input: JonesRecoveryPreflightInput,
+      ): Effect.Effect<JonesRecoveryPreflight, EnvironmentInternalError> =>
+        Effect.fail(
+          new EnvironmentInternalError({
+            code: "internal_error",
+            reason: "internal_error",
+            traceId: NodeCrypto.randomUUID(),
+          }),
+        ),
+    );
+    const operationMethods = (
+      operations: Pick<
+        ReturnType<typeof createTargetOperations>,
+        "start" | "stop" | "fence" | "read" | "recoverCleanup"
+      >,
+    ) => ({
+      operationStart: Effect.fn("JonesUpdates.operationStart")((input: JonesOperationStartInput) =>
+        operationCall(() => operations.start(input)),
+      ),
+      operationStop: Effect.fn("JonesUpdates.operationStop")((input: JonesOperationStopInput) =>
+        operationCall(() => operations.stop(input)),
+      ),
+      operationFence: Effect.fn("JonesUpdates.operationFence")((input: JonesOperationFenceInput) =>
+        operationCall(() => operations.fence(input)),
+      ),
+      operationRead: Effect.fn("JonesUpdates.operationRead")((input: JonesOperationReadInput) =>
+        operationCall(() => operations.read(input)),
+      ),
+      recoverCleanup: Effect.fn("JonesUpdates.recoverCleanup")((input: JonesRecoverCleanupInput) =>
+        operationCall(() => operations.recoverCleanup(input)),
+      ),
+      recoveryPreflight,
+    });
+    const unsupportedOperations = {
+      ...operationMethods(unsupportedTargetOperations),
+      reconcile: unsupportedSettlement,
+      recordRetired: unsupportedSettlement,
+      refreshPolicy: Effect.undefined,
+      retireStagedOperation: () =>
+        Effect.succeed({
+          retired: false,
+          reason: "Caller-bound native updates are unavailable on this host.",
+        }),
+      fleetOperationsSupported: false,
+      stageExact: () =>
+        Effect.succeed(blocked("Caller-bound native updates are unavailable on this host.")),
+      installForOperation: () =>
+        Effect.succeed(blocked("Caller-bound native updates are unavailable on this host.")),
+      reconcileOperation: (operationId: string) =>
+        Effect.succeed({
+          state: "blocked" as const,
+          operationId,
+          reason: "Caller-bound native updates are unavailable on this host.",
+        }),
+    };
+    const prepareQuit: Effect.Effect<JonesQuitPreparation> = Effect.gen(function* () {
+      const notPrepared = { prepared: false, threadCount: 0 };
+      if (config.mode !== "desktop") return notPrepared;
+      const ready = yield* startup.awaitCommandReady.pipe(Effect.timeoutOption("250 millis"));
+      if (Option.isNone(ready)) return notPrepared;
+      const ids = yield* startup.enqueueCommand(startup.markOptedInProviderSessionsForContinuation);
+      return { prepared: true, threadCount: ids.length };
+    }).pipe(
+      Effect.catch(() =>
+        Effect.logWarning("Could not prepare thread continuations before quit.").pipe(
+          Effect.as({ prepared: false, threadCount: 0 }),
+        ),
+      ),
+    );
+    if (
+      !isJonesRuntime({
+        version,
+        buildMetadata: packageJson,
+        qualifiedRuntimeReceipt: nativeReceipt,
+      })
+    ) {
+      const unavailable = Effect.succeed(blocked("This host uses Release updates."));
+      return JonesUpdates.of({
+        ...unsupportedOperations,
+        prepareQuit,
+        state: Effect.fn("JonesUpdates.state")(() => Effect.succeed(null)),
+        check: unavailable,
+        prepareNative: Effect.fn("JonesUpdates.prepareNative")(() => unavailable),
+        download: Effect.fn("JonesUpdates.download")(() => unavailable),
+        downloadExact: Effect.fn("JonesUpdates.downloadExact")(() => unavailable),
+        install: Effect.fn("JonesUpdates.install")(() => unavailable),
+      });
+    }
+    const reconcileOperation = (operationId: string) =>
+      Effect.promise(async (): Promise<OperationReconciliation> => {
+        try {
+          if (!launcher.managed || !isUpdateOperationId(operationId))
+            return {
+              state: "blocked",
+              operationId,
+              reason: "A managed launcher and UUID v4 operation ID are required.",
+            };
+          const baseDir = await NodeFSP.realpath(config.baseDir);
+          const state = parseServiceState(
+            await NodeFSP.readFile(NodePath.join(baseDir, "runtime", "service-state.json"), "utf8"),
+          );
+          if (state === undefined)
+            return { state: "blocked", operationId, reason: "Native update state is invalid." };
+          return await reconcileUpdateOperation(baseDir, operationId, state.update);
+        } catch {
+          return {
+            state: "blocked",
+            operationId,
+            reason: "Native update state is unavailable for reconciliation.",
+          };
+        }
+      });
+    const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
+      mode: config.mode,
+      selfUpdate,
+      prepare: startup.markRunningProviderSessionsForContinuation.pipe(
+        Effect.mapError(
+          (cause) =>
+            new ServerSelfUpdateError({ reason: "Could not prepare native continuations.", cause }),
+        ),
+      ),
+      clear: (ids) =>
+        startup.clearProviderSessionContinuationMarkers(ids).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ServerSelfUpdateError({
+                reason: "Could not clear native continuations.",
+                cause,
+              }),
+          ),
+        ),
+    });
+
+    if (config.mode === "desktop") {
+      const receiver = yield* DesktopReceiver.DesktopTelemetryReceiver;
+      let state = blocked("Waiting for the desktop host's Jones updater.");
+      let revision = 0;
+      const tokens = new Map<string, string>();
+      let installPending = false;
+      const { latest, changes } = yield* receiver.desktopUpdates;
+      const apply = (next: JonesUpdateState | undefined) => {
+        if (next !== undefined) {
+          state = { ...next };
+          revision += 1;
+        }
+      };
+      if (Option.isSome(latest)) apply(latest.value.state.jones);
+      yield* changes.pipe(
+        Stream.runForEach((report) => Effect.sync(() => apply(report.state.jones))),
+        Effect.forkScoped,
+      );
+      const snapshot = () => ({ ...state, revision });
+      const action = (selection: {
+        action: "check" | "download";
+        artifactId?: number;
+        sourceSha?: string;
+      }) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const requestId = NodeCrypto.randomUUID();
+            const { changes: reports } = yield* receiver.desktopUpdates;
+            yield* receiver.requestDesktopUpdate(requestId, selection);
+            const report = yield* reports.pipe(
+              Stream.filter(
+                (report) => report.requestId === requestId && report.outcome !== undefined,
+              ),
+              Stream.runHead,
+              Effect.timeoutOption(Duration.minutes(20)),
+            );
+            if (Option.isNone(report) || Option.isNone(report.value))
+              return blocked("The desktop updater did not complete this request.");
+            const result = report.value.value;
+            apply(result.state.jones);
+            if (result.outcome === "ready-to-install" && state.stagedHandle !== undefined)
+              tokens.set(state.stagedHandle, requestId);
+            return snapshot();
+          }),
+        ).pipe(
+          Effect.orElseSucceed(() => blocked("The desktop host could not accept this request.")),
+        );
+      const prepareNative = Effect.fn("JonesUpdates.prepareNative")(
+        function* (input: JonesNativePrepareInput) {
+          const mismatch =
+            !/^[a-f0-9]{64}$/.test(input.stagedHandle) ||
+            !/^[a-f0-9]{64}$/.test(input.transactionId)
+              ? "the request is malformed"
+              : state.stagedHandle !== input.stagedHandle
+                ? "the backend has not observed this staged build"
+                : !state.capability.install
+                  ? `the backend's desktop state does not allow Install (${state.capability.reason ?? state.phase})`
+                  : state.environmentId !== input.environmentId ||
+                      state.currentVersion !== input.currentVersion
+                    ? "the environment or running version differs"
+                    : undefined;
+          if (mismatch !== undefined) {
+            const reason = `Native preparation was refused: ${mismatch}.`;
+            yield* Effect.promise(() =>
+              recordNativePreparationRefusal({
+                home: config.baseDir,
+                handle: input.stagedHandle,
+                transactionId: input.transactionId,
+                reason,
+              }),
+            );
+            return blocked(reason);
+          }
+          yield* Effect.tryPromise({
+            try: () =>
+              prepareNativeContinuationReceipt({
+                home: config.baseDir,
+                databasePath: config.dbPath,
+                environmentId: input.environmentId,
+                version: input.currentVersion,
+                handle: input.stagedHandle,
+                transactionId: input.transactionId,
+                prepare: () => run(startup.markOptedInProviderSessionsForContinuation),
+                clear: (ids) =>
+                  run(
+                    startup.clearProviderSessionContinuationMarkers(
+                      ids.map((id) => ThreadId.make(id)),
+                    ),
+                  ),
+              }),
+            catch: (cause) =>
+              new ServerSelfUpdateError({
+                reason: "Could not prepare the native recovery pair.",
+                cause,
+              }),
+          });
+          return snapshot();
+        },
+        Effect.catch((error) =>
+          Effect.succeed(
+            blocked(
+              error.cause instanceof NativePreparationRefusal
+                ? `Native preparation was refused: ${error.cause.message}`
+                : "Native preparation was dispatched but did not complete; its effects need reconciliation.",
+            ),
+          ),
+        ),
+      );
+      return JonesUpdates.of({
+        ...unsupportedOperations,
+        prepareQuit,
+        prepareNative,
+        state: Effect.fn("JonesUpdates.state")((after) =>
+          after !== revision
+            ? Effect.sync(snapshot)
+            : changes.pipe(
+                Stream.filter((report) => report.state.jones !== undefined),
+                Stream.runHead,
+                Effect.timeoutOption("25 seconds"),
+                Effect.asVoid,
+                Effect.andThen(Effect.sync(snapshot)),
+              ),
+        ),
+        check: action({ action: "check" }),
+        download: Effect.fn("JonesUpdates.download")((input) =>
+          action({ action: "download", ...input }),
+        ),
+        // The desktop host owns its updater; its state never advertises exactSource.
+        downloadExact: Effect.fn("JonesUpdates.downloadExact")(() =>
+          Effect.succeed(blocked("Exact-source download is unavailable for the desktop updater.")),
+        ),
+        install: Effect.fn("JonesUpdates.install")((input) =>
+          Effect.suspend(() => {
+            if (installPending)
+              return Effect.succeed(blocked("A native installation is already reserved."));
+            installPending = true;
+            return Effect.gen(function* () {
+              if (
+                state.stagedHandle !== input.stagedHandle ||
+                !state.capability.install ||
+                state.environmentId !== input.environmentId ||
+                state.currentVersion !== input.currentVersion ||
+                state.phase === "preparing" ||
+                state.phase === "installing"
+              )
+                return blocked("This desktop installation is not prepared for this environment.");
+              // A host restart or expired preparation must rebind this same staged handle,
+              // rather than forcing the user to download a different candidate.
+              const provenance = state.provenance;
+              if (provenance === undefined)
+                return blocked("The staged build has no qualified provenance.");
+              const prior = tokens.get(input.stagedHandle);
+              if (prior !== undefined)
+                yield* receiver.cancelDesktopUpdate(prior).pipe(Effect.orDie);
+              tokens.delete(input.stagedHandle);
+              const refreshed = yield* action({
+                action: "download",
+                artifactId: provenance.artifactId,
+                sourceSha: provenance.sourceSha,
+              });
+              const token = tokens.get(input.stagedHandle);
+              if (
+                token === undefined ||
+                refreshed.stagedHandle !== input.stagedHandle ||
+                refreshed.phase !== "staged"
+              )
+                return blocked("The fixed desktop stage could not be prepared for installation.");
+              // The desktop controller claims this selection before asking the prepare endpoint
+              // to mark continuations. Committing here only hands it the selected request token.
+              state = { ...state, phase: "installing" };
+              revision += 1;
+              yield* receiver.commitDesktopUpdate(token).pipe(Effect.orDie);
+              tokens.delete(input.stagedHandle);
+              return snapshot();
+            }).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  if (state.phase !== "installing") installPending = false;
+                }),
+              ),
+            );
+          }),
+        ),
+      });
+    }
+
+    const id = yield* Effect.promise(() =>
+      NodeFSP.readFile(config.environmentIdPath, "utf8")
+        .then((s) => s.trim())
+        .catch(() => ""),
+    );
+    const environmentId = id.length === 0 ? undefined : EnvironmentId.make(id);
+    const supported =
+      (platform === "linux" && (architecture === "x64" || architecture === "arm64")) ||
+      (platform === "darwin" && architecture === "arm64");
+    const preparationUnavailable = () =>
+      new Error(
+        "bootstrap-required: This installation cannot start its update preparation worker.",
+      );
+    const verifyStaged: SelfUpdate.QualifiedStageVerifier = async ({
+      stagedHandle,
+      activeVersion,
+      signal,
+    }) => {
+      if (preparation === undefined || preparationHost === undefined)
+        throw preparationUnavailable();
+      const outcome = await preparation.run(
+        { kind: "verify", stagedHandle, activeVersion, host: preparationHost },
+        { signal },
+      );
+      return adoptVerifiedStage({
+        baseDir: config.baseDir,
+        activeVersion,
+        stagedHandle,
+        staged: outcome.staged,
+      });
+    };
+    const terminal = launcher.qualifiedStartupOutcome;
+    type SettlementStatus = Pick<JonesUpdateState, "settlement" | "settlementRefusal" | "cause">;
+    const readSettlement = (operationId: string) =>
+      Effect.promise(async (): Promise<SettlementStatus> => {
+        const receipt = await readUpdateOperationSettlement(config.baseDir, operationId).catch(
+          () => undefined,
+        );
+        const cause = await readUpdateOperationCause(config.baseDir, operationId).catch(
+          () => undefined,
+        );
+        return {
+          settlement:
+            receipt === undefined || receipt.basis === "retired-exception" ? "none" : receipt.basis,
+          ...(cause === undefined ? {} : { cause: cause.message }),
+        };
+      });
+    let terminalSettlement =
+      terminal?.status === "failed" ? yield* readSettlement(terminal.id) : undefined;
+    let settlementOperationId = terminal?.status === "failed" ? terminal.id : undefined;
+    let restoreFailure: string | undefined;
+    const restoreStarted = yield* Clock.currentTimeMillis;
+    const restored = yield* Effect.tryPromise({
+      try: () =>
+        restoreStagedSelection(
+          config.baseDir,
+          launcher.currentVersion ?? packageJson.version,
+          { platform, architecture },
+          preparedVerificationOptions(preparation),
+        ),
+      catch: (cause) =>
+        cause instanceof Error ? cause.message : "Native staging requires reconciliation.",
+    }).pipe(
+      Effect.match({
+        onFailure: (message) => {
+          restoreFailure = message;
+          return undefined;
+        },
+        onSuccess: (selection) => selection,
+      }),
+    );
+    yield* Effect.logInfo("Qualified startup timing", {
+      step: "staged-restore",
+      durationMs: (yield* Clock.currentTimeMillis) - restoreStarted,
+    });
+    const recovery =
+      terminal === undefined
+        ? undefined
+        : yield* Effect.tryPromise(() =>
+            readQualifiedBackupReceipt(config.baseDir, terminal.id),
+          ).pipe(Effect.orElseSucceed(() => undefined));
+    let capabilityWrites = Promise.resolve();
+    const publishCapability = (state: JonesUpdateState) => {
+      if (environmentId === undefined) return;
+      capabilityWrites = capabilityWrites
+        .catch(() => {})
+        .then(() =>
+          publishJonesUpdateCapabilityReceipt({
+            schema: 1,
+            baseDir: config.baseDir,
+            environmentId,
+            currentVersion: version,
+            processId: process.pid,
+            qualifiedLauncher: launcher.managed && launcher.qualifiedUpdates === true,
+            capability: {
+              install:
+                state.capability.install && !["preparing", "installing"].includes(state.phase),
+            },
+          }),
+        );
+      void capabilityWrites.catch(() => {});
+    };
+    const serviceCapability = qualifiedServerCapability({
+      supported,
+      qualifiedRuntime: nativeReceipt,
+      launcherManaged: launcher.managed,
+      qualifiedStaging: launcher.qualifiedStaging === true,
+      qualifiedUpdates: launcher.qualifiedUpdates === true,
+      qualifiedRetirement:
+        launcher.qualifiedRetirement === true && launcher.retireUpdate !== undefined,
+      hasCurrentVersion: launcher.currentVersion !== undefined,
+      hasStage: preparation !== undefined,
+      hasInstall: qualifiedSelfUpdate.installQualified !== undefined && preparation !== undefined,
+      hasEnvironment: environmentId !== undefined,
+      restoreFailed: restoreFailure !== undefined,
+    });
+    const fleetOperationsSupported =
+      launcher.managed &&
+      launcher.qualifiedOperations === true &&
+      launcher.qualifiedRetirement === true &&
+      supported &&
+      nativeReceipt &&
+      serviceCapability.download &&
+      serviceCapability.install &&
+      preparation !== undefined;
+    const recoveryPolicySupported =
+      fleetOperationsSupported &&
+      launcher.stateRecoveryPolicy === true &&
+      launcher.withStateRecoveryPolicy !== undefined;
+    const recoveryPreflights: ReturnType<typeof createRecoveryPreflights> =
+      createRecoveryPreflights({
+        snapshot: () => updater.snapshot(),
+        nativeSupported: () => recoveryPolicySupported,
+        measure: async (binding) => {
+          if (!isUpdateOperationId(binding.stagedHandle))
+            throw new Error("Invalid recovery staged handle.");
+          const staged = decodeStagedQualifiedRuntime(
+            await readBoundedJson(
+              NodePath.join(
+                config.baseDir,
+                "runtime",
+                "staged-updates",
+                `${binding.stagedHandle}.json`,
+              ),
+              64 * 1024,
+            ),
+          );
+          if (
+            staged === undefined ||
+            staged.stagedHandle !== binding.stagedHandle ||
+            staged.binding.environmentId !== binding.environmentId ||
+            staged.binding.activeVersion !== binding.currentVersion ||
+            staged.binding.activeSourceSha !== binding.expectedInstalledSource ||
+            staged.binding.baseDir !== (await NodeFSP.realpath(config.baseDir)) ||
+            staged.binding.dbPath !== (await NodeFSP.realpath(config.dbPath))
+          )
+            throw new Error("recovery-stale-binding: Native stage binding changed.");
+          return inspectQualifiedBackup(config.baseDir, config.dbPath);
+        },
+      });
+    // Best effort: the progress record never fails or delays an update.
+    const progressRecorder = createProgressRecorder(config.baseDir);
+    const startupProgress = reconcileProgressAtStartup(
+      yield* Effect.promise(() => readJonesUpdateProgress(config.baseDir)),
+      terminal,
+      yield* Clock.currentTimeMillis,
+    );
+    const updater: JonesUpdater = new JonesUpdater({
+      stateChanged: (state) => {
+        publishCapability(state);
+        progressRecorder.persist(state);
+      },
+      checkFailed: (context) => void run(Effect.logWarning("Jones update check failed", context)),
+      startupOutcome: () => {
+        const latest = launcher.qualifiedStartupOutcome;
+        return restoreFailure === undefined && latest !== undefined
+          ? { ...latest, ...(latest.id === settlementOperationId ? terminalSettlement : {}) }
+          : undefined;
+      },
+      initialState: {
+        ...blocked("A source-qualified runtime and launcher bootstrap is required."),
+        ...launcherStatus,
+        ...(terminal === undefined
+          ? {}
+          : {
+              phase: terminal.status === "failed" ? ("error" as const) : terminal.status,
+              message:
+                terminal.status === "committed"
+                  ? "The selected Jones runtime was installed."
+                  : terminal.status === "rolled-back"
+                    ? "Installation rolled back to its retained binary and state pair."
+                    : "Native installation requires reconciliation.",
+            }),
+        ...(restored === undefined
+          ? {}
+          : {
+              phase: "staged" as const,
+              stagedHandle: restored.stagedHandle,
+              message: "Downloaded and verified. Install is a separate action.",
+              provenance: {
+                repository: restored.receipt.repository,
+                sourceSha: restored.receipt.sourceSha,
+                sourceTree: restored.receipt.sourceTree,
+                workflow: restored.receipt.workflow,
+                runId: restored.receipt.runId,
+                runAttempt: restored.receipt.runAttempt,
+                artifactId: restored.receipt.artifactId,
+                artifactDigest: restored.receipt.artifactDigest,
+                payloadSha256: restored.receipt.archiveSha256,
+                version: restored.receipt.version,
+                platform: restored.receipt.platform,
+                architecture: restored.receipt.architecture,
+              },
+            }),
+        ...(restoreFailure === undefined
+          ? {}
+          : { phase: "blocked" as const, message: restoreFailure }),
+        ...(environmentId === undefined ? {} : { environmentId }),
+        ...(startupProgress === undefined ? {} : { progress: startupProgress }),
+        currentVersion: version,
+        ...(currentBuildStartedAt === undefined ? {} : { currentBuildStartedAt }),
+        ...(installedSource === undefined ? {} : { installedSource }),
+        ...(restored !== undefined || launcher.qualifiedUpdateMigrationPlan === undefined
+          ? {}
+          : { migrationPlan: launcher.qualifiedUpdateMigrationPlan }),
+        ...(recovery === undefined
+          ? {}
+          : {
+              recovery: {
+                method: recovery.method,
+                bytes: recovery.bytes,
+                completedAt: recovery.completedAt,
+                durationMs: recovery.durationMs,
+              },
+            }),
+        capability: {
+          ...serviceCapability,
+          ...(fleetOperationsSupported ? { operations: 1 as const } : {}),
+          ...(recoveryPolicySupported ? { recoveryPolicy: 1 as const } : {}),
+        },
+      },
+      platform: platform === "darwin" ? "darwin" : "linux",
+      architecture: architecture === "arm64" ? "arm64" : "x64",
+      installedSource: async () =>
+        runtimeReceipt?.sourceSha ??
+        (
+          await readPreparedRuntimeReceipt(
+            config.baseDir,
+            launcher.currentVersion ?? packageJson.version,
+            { platform, architecture },
+            preparation,
+          )
+        ).sourceSha,
+      prepare: async (candidate, { signal, onVerifying, jobId, onStarted, onAdopting }) => {
+        if (preparation === undefined) throw preparationUnavailable();
+        const activeVersion = launcher.currentVersion;
+        if (!launcher.managed || launcher.qualifiedStaging !== true || activeVersion === undefined)
+          throw new Error(
+            "bootstrap-required: This host needs a qualified Jones runtime and launcher before installing Actions artifacts.",
+          );
+        if (preparationHost === undefined)
+          throw new Error(
+            "This service requires an Actions artifact matching its native platform.",
+          );
+        const job = preparation.start(
+          {
+            kind: "stage",
+            candidate,
+            cacheRoot,
+            dbPath: config.dbPath,
+            activeVersion,
+            host: preparationHost,
+          },
+          {
+            jobId: jobId ?? NodeCrypto.randomUUID(),
+            signal,
+            onPhase: (phase) => (phase === "verifying" ? onVerifying() : undefined),
+          },
+        );
+        onStarted?.(job.settled);
+        const outcome = await job.outcome;
+        await job.settled;
+        signal.throwIfAborted();
+        await onAdopting?.();
+        const selection = await adoptPreparedStage({
+          baseDir: config.baseDir,
+          dbPath: config.dbPath,
+          activeVersion,
+          candidate,
+          host: preparationHost,
+          staged: outcome.staged,
+        });
+        await retainStagedSelection(selection);
+        if (outcome.leftover !== undefined)
+          void run(
+            Effect.logWarning("Qualified staging left its scratch directory in place.", {
+              path: outcome.leftover,
+            }),
+          );
+        return {
+          stagedHandle: selection.stagedHandle,
+          version: selection.receipt.version,
+          payloadSha256: selection.receipt.archiveSha256,
+          ...(outcome.migrationPlan === undefined ? {} : { migrationPlan: outcome.migrationPlan }),
+        };
+      },
+      retireStaged: async (input) => {
+        if (launcher.qualifiedRetirement !== true || launcher.retireUpdate === undefined)
+          throw new Error("bootstrap-required: The launcher cannot revoke retired staged updates.");
+        const result = await run(launcher.retireUpdate(input));
+        if (!result.retired)
+          throw new Error(result.reason ?? "Native stage retirement remains held.");
+      },
+      install: async (input, reportStep, onPreparationRefused) => {
+        if (qualifiedSelfUpdate.installQualified === undefined)
+          throw new Error("bootstrap-required: Qualified Install is unavailable.");
+        const operationId =
+          input.operationId ??
+          (launcher.qualifiedOperations === true ? NodeCrypto.randomUUID() : undefined);
+        const installQualified = qualifiedSelfUpdate.installQualified;
+        const recoveryRefusal = () =>
+          input.recovery === undefined
+            ? undefined
+            : recoveryPreflights.validate(input.recovery, {
+                environmentId: input.environmentId,
+                stagedHandle: input.stagedHandle,
+                currentVersion: input.currentVersion,
+                expectedInstalledSource: updater.snapshot().installedSource?.sha ?? "",
+              });
+        const refused = recoveryRefusal();
+        if (refused !== undefined) throw new Error(refused);
+        const admit =
+          input.admit === undefined && input.recovery === undefined
+            ? undefined
+            : async () => recoveryRefusal() ?? (await input.admit?.());
+        const installEffect = UpdateAdmissionFence.fencedInstall({
+          fence: admissionFence,
+          mode: input.origin === "fleet" ? "automatic" : "manual",
+          ...(admit === undefined
+            ? {}
+            : {
+                finalCheck: Effect.promise(() =>
+                  admit().catch(() => "Running work on this host could not be read."),
+                ),
+              }),
+          handoffOutcome: (cause) =>
+            awaitHandoffOutcome({
+              operationId,
+              cause,
+              reconcile: reconcileOperation,
+              ...(launcher.qualifiedOutcomes === true && launcher.reconcileUpdate !== undefined
+                ? { query: launcher.reconcileUpdate }
+                : {}),
+            }).pipe(
+              Effect.tap((outcome) =>
+                outcome === "rejected" && operationId !== undefined
+                  ? qualifiedSelfUpdate
+                      .releaseRejectedHandoff(operationId)
+                      .pipe(
+                        Effect.catchCause((cause) =>
+                          Effect.logWarning(
+                            "Could not clear continuations of a rejected update handoff",
+                            { cause },
+                          ),
+                        ),
+                      )
+                  : Effect.void,
+              ),
+            ),
+          // Queued runs the fence refused to start stay queued; start them again here.
+          ...(Option.isNone(orchestrator)
+            ? {}
+            : {
+                reopened: orchestrator.value.resumeQueuedRuns.pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Could not restart queued runs after an update stopped", {
+                      cause,
+                    }),
+                  ),
+                  Effect.asVoid,
+                ),
+              }),
+          install: ({ onPrepared, onAccepted }) =>
+            installQualified(
+              { ...input, ...(operationId === undefined ? {} : { operationId }), verifyStaged },
+              () => onAccepted,
+              (staged) =>
+                onPrepared(
+                  operationId === undefined
+                    ? Effect.void
+                    : startup.capturePlannedUpdate === undefined
+                      ? Effect.fail(
+                          new ServerSelfUpdateError({
+                            reason: "Planned update continuity is not configured.",
+                          }),
+                        )
+                      : startup
+                          .capturePlannedUpdate({
+                            operationId,
+                            binding: operationBinding(staged),
+                            continueRunningThreads: input.continueRunningThreads === true,
+                          })
+                          .pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new ServerSelfUpdateError({
+                                  reason: "Could not capture planned update continuity.",
+                                  cause,
+                                }),
+                            ),
+                          ),
+                ),
+              (step) => Effect.sync(() => reportStep?.(step)),
+              () => Effect.sync(() => onPreparationRefused?.()),
+            ),
+        });
+        const accepted = await run(
+          input.recovery === undefined
+            ? installEffect
+            : launcher.withStateRecoveryPolicy === undefined || operationId === undefined
+              ? Effect.fail(
+                  new ServerSelfUpdateError({
+                    reason:
+                      "recovery-policy-unsupported: The launcher cannot bind recovery policy.",
+                  }),
+                )
+              : launcher.withStateRecoveryPolicy(operationId, input.recovery.policy, installEffect),
+        );
+        return {
+          ...(accepted.updateId === undefined ? {} : { updateId: accepted.updateId }),
+          ...(launcher.qualifiedUpdateMigrationPlan === undefined
+            ? {}
+            : { migrationPlan: launcher.qualifiedUpdateMigrationPlan }),
+        };
+      },
+    });
+    progressRecorder.persist(updater.snapshot());
+    const fleetStore = createFleetHostStore(config.baseDir);
+    const readPolicy = async (): Promise<JonesUpdatePolicy | undefined> => {
+      const enrollment = await fleetStore.readEnrollment();
+      if (enrollment === null || !enrollment.enabled || enrollment.environmentId !== environmentId)
+        return undefined;
+      const follower = await fleetStore.readFollower();
+      const leader = follower?.leader;
+      const directive = follower?.directive;
+      const review =
+        directive?.enrollmentId === enrollment.enrollmentId
+          ? {
+              reviewTarget: {
+                source: directive.targetSource,
+                tree: directive.targetTree,
+                directiveId: directive.directiveId,
+              },
+            }
+          : {};
+      // A leader recorded without its tree is not provenance; the host waits for a new report.
+      return leader !== null &&
+        leader !== undefined &&
+        leader.enrollmentId === enrollment.enrollmentId &&
+        leader.committedTree !== undefined
+        ? {
+            ...review,
+            role: "follower",
+            leaderSource: leader.committedSource,
+            leaderTree: leader.committedTree,
+          }
+        : { role: "follower", leaderSource: null, ...review };
+    };
+    const refreshPolicy = Effect.tryPromise(readPolicy).pipe(
+      Effect.map((policy) => updater.setPolicy(policy).policy),
+      // An unreadable enrollment may be a follower's, so the host holds until it can read it.
+      Effect.catch((cause) =>
+        Effect.logWarning("Fleet enrollment is unreadable; Jones updates hold until it reads.", {
+          cause: cause.cause instanceof Error ? cause.cause.message : String(cause.cause),
+        }).pipe(
+          Effect.andThen(
+            Effect.sync(
+              () =>
+                updater.setPolicy(
+                  updater.snapshot().policy ?? { role: "follower", leaderSource: null },
+                ).policy,
+            ),
+          ),
+        ),
+      ),
+    );
+    yield* refreshPolicy;
+    publishCapability(updater.snapshot());
+    yield* Effect.promise(() => capabilityWrites.catch(() => {}));
+    yield* Effect.sleep("15 seconds").pipe(
+      Effect.andThen(Effect.promise(() => updater.check())),
+      Effect.forkScoped,
+    );
+    yield* Effect.sleep("4 minutes").pipe(
+      Effect.andThen(Effect.promise(() => updater.check())),
+      Effect.forever,
+      Effect.forkScoped,
+    );
+    const installForOperation: JonesUpdates["Service"]["installForOperation"] = Effect.fn(
+      "JonesUpdates.installForOperation",
+    )(function* (input: Parameters<JonesUpdates["Service"]["installForOperation"]>[0]) {
+      const prior = yield* reconcileOperation(input.operationId);
+      if (prior.state === "rejected")
+        return blocked("The launcher refused this exact operation before accepting it.");
+      if (prior.state !== "absent") {
+        const binding = prior.binding;
+        if (
+          prior.state === "blocked" ||
+          binding === undefined ||
+          binding.environmentId !== input.environmentId ||
+          binding.currentVersion !== input.currentVersion ||
+          binding.expectedInstalledSource !== input.expectedInstalledSource ||
+          binding.targetSource !== input.targetSource ||
+          binding.stagedHandle !== input.stagedHandle
+        )
+          return blocked(
+            "The operation is ambiguous or its immutable installation binding changed.",
+          );
+        const { outcome: _outcome, updateId: _updateId, ...current } = updater.snapshot();
+        return {
+          ...current,
+          updateId: input.operationId,
+          phase: prior.state === "pending" ? "installing" : prior.state,
+          message: "The native launcher retained this exact installation operation.",
+        };
+      }
+      if (
+        launcher.qualifiedOperations !== true ||
+        launcher.qualifiedRetirement !== true ||
+        runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
+        updater.snapshot().provenance?.sourceSha !== input.targetSource
+      ) {
+        input.onBeforeDispatchRefusal?.({ ...input, kind: "before-dispatch" });
+        return blocked(
+          "The installed source, staged source, or operation-capable launcher changed.",
+        );
+      }
+      return yield* Effect.promise(() =>
+        updater.install({ ...input, origin: input.origin ?? "fleet" }),
+      );
+    });
+    const targetOperations =
+      fleetOperationsSupported && preparation !== undefined
+        ? createTargetOperations({
+            key: config.baseDir,
+            ledger: createOperationLedger(config.baseDir),
+            updater,
+            preparation,
+            refreshPolicy: () => run(refreshPolicy),
+            install: (input) => run(installForOperation(input)),
+            reconcileNative: (operationId) => run(reconcileOperation(operationId)),
+            onFailure: () => {
+              void run(Effect.logWarning("Target operation needs durable reconciliation."));
+            },
+            ...(recoveryPolicySupported
+              ? {
+                  recovery: {
+                    validate: recoveryPreflights.validate,
+                    observed: async (id: string) =>
+                      (await readQualifiedBackupReceipt(config.baseDir, id))?.method ??
+                      (terminal?.id === id ? recovery?.method : undefined),
+                  },
+                }
+              : {}),
+          })
+        : undefined;
+    if (targetOperations !== undefined) {
+      // Restore admission holds before any background checks or fleet pass can start.
+      yield* Effect.tryPromise(() => targetOperations.reconcile()).pipe(
+        Effect.catch(() => Effect.sync(() => updater.setHeldJobs(["ledger-unreadable"]))),
+      );
+    }
+    const maintainPreparation = async () => {
+      if (targetOperations !== undefined) await targetOperations.sweep();
+      else if (preparation?.sweepIfNeeded !== undefined) await preparation.sweepIfNeeded();
+      else if (preparation !== undefined) await preparation.sweep();
+    };
+    if (preparation !== undefined) {
+      yield* Effect.sleep("60 seconds").pipe(
+        // Reconcile every tick; only consumed cleanup demand may start a worker.
+        Effect.andThen(Effect.tryPromise(maintainPreparation)),
+        Effect.catch(() => Effect.logWarning("Target operation sweep requires reconciliation.")),
+        Effect.forever,
+        Effect.forkScoped,
+      );
+      yield* Effect.sleep("10 seconds").pipe(
+        Effect.andThen(Effect.tryPromise(maintainPreparation)),
+        Effect.ignore,
+        Effect.forkScoped,
+      );
+    }
+    const settleOperation = Effect.fn("JonesUpdates.settleOperation")(function* (
+      input: JonesUpdateReconcileInput | JonesUpdateRecordRetiredInput,
+    ) {
+      if (!launcher.managed || launcher.qualifiedSettlement !== true)
+        return yield* unsupportedSettlement(input);
+      const request =
+        "retiredLocation" in input
+          ? launcher.recordRetiredOperation?.(input)
+          : launcher.reconcileFailedUpdate?.(input);
+      if (request === undefined) return yield* unsupportedSettlement(input);
+      const result = yield* request.pipe(
+        Effect.match({
+          onFailure: () => undefined,
+          onSuccess: (value) => value,
+        }),
+      );
+      if (result === undefined)
+        return {
+          ...blocked(
+            "The reconciliation request was sent but its outcome is unknown. Check status before trying again.",
+          ),
+          ...launcherStatus,
+          updateId: input.operationId,
+        };
+      const settlement = yield* readSettlement(input.operationId);
+      const refusal = result.result === "refused" ? result.reason : undefined;
+      const latest = launcher.qualifiedStartupOutcome;
+      if (latest?.status === "failed" && latest.id === input.operationId) {
+        settlementOperationId = input.operationId;
+        terminalSettlement = {
+          ...settlement,
+          ...(refusal === undefined ? {} : { settlementRefusal: refusal }),
+        };
+        updater.refreshStartupOutcome();
+      }
+      if (refusal !== undefined)
+        return {
+          ...blocked(`Reconciliation refused: ${refusal}.`),
+          ...launcherStatus,
+          ...settlement,
+          updateId: input.operationId,
+          settlementRefusal: refusal,
+        };
+      if ("retiredLocation" in input)
+        return {
+          ...blocked("Retired operation recorded. Its attempt ID remains reserved."),
+          ...launcherStatus,
+          updateId: input.operationId,
+        };
+      if (latest?.id === input.operationId) return updater.snapshot();
+      return {
+        ...blocked(
+          settlement.settlement === "none"
+            ? "Previous attempt needs reconciliation"
+            : `Update did not start: ${settlement.cause ?? "cause unavailable"}. Nothing changed.`,
+        ),
+        ...launcherStatus,
+        ...settlement,
+        updateId: input.operationId,
+      };
+    });
+    return JonesUpdates.of({
+      ...operationMethods(targetOperations ?? unsupportedTargetOperations),
+      ...(recoveryPolicySupported
+        ? {
+            recoveryPreflight: Effect.fn("JonesUpdates.recoveryPreflight")(
+              (input: JonesRecoveryPreflightInput) =>
+                operationCall(() => recoveryPreflights.preflight(input)),
+            ),
+          }
+        : {}),
+      prepareQuit,
+      reconcile: settleOperation,
+      recordRetired: settleOperation,
+      refreshPolicy,
+      retireStagedOperation: Effect.fn("JonesUpdates.retireStagedOperation")((input) =>
+        Effect.promise(() => updater.retireStagedOperation(input)),
+      ),
+      fleetOperationsSupported,
+      stageExact: Effect.fn("JonesUpdates.stageExact")((input) =>
+        isUpdateOperationId(input.operationId) &&
+        launcher.qualifiedOperations === true &&
+        launcher.qualifiedRetirement === true
+          ? Effect.promise(() => updater.stageExact(input.targetSource))
+          : Effect.succeed(
+              blocked("A UUID v4 operation ID and an operation-capable launcher are required."),
+            ),
+      ),
+      installForOperation,
+      reconcileOperation,
+      prepareNative: Effect.fn("JonesUpdates.prepareNative")(() =>
+        Effect.succeed(blocked("Native desktop preparation is unavailable on this server.")),
+      ),
+      state: Effect.fn("JonesUpdates.state")((after) =>
+        Effect.promise(async (signal) => {
+          const state = await updater.observe(after, signal);
+          if (state.updateId === undefined || state.outcome === undefined) return state;
+          const receipt = await readQualifiedBackupReceipt(config.baseDir, state.updateId).catch(
+            () => undefined,
+          );
+          return receipt === undefined
+            ? state
+            : {
+                ...state,
+                recovery: {
+                  method: receipt.method,
+                  bytes: receipt.bytes,
+                  completedAt: receipt.completedAt,
+                  durationMs: receipt.durationMs,
+                },
+              };
+        }),
+      ),
+      check: Effect.promise(() => updater.check()),
+      download: Effect.fn("JonesUpdates.download")((input) =>
+        Effect.promise(() => updater.download(input)),
+      ),
+      downloadExact: Effect.fn("JonesUpdates.downloadExact")((input) =>
+        updater.snapshot().capability.download &&
+        updater.snapshot().capability.exactSource === true &&
+        (input.replace === undefined || updater.snapshot().capability.replaceStaged === true)
+          ? Effect.promise(() => updater.stageExact(input.targetSource, input.replace))
+          : Effect.succeed({
+              ...updater.snapshot(),
+              phase: "blocked" as const,
+              message: "Exact-source download is unavailable on this host.",
+            }),
+      ),
+      install: Effect.fn("JonesUpdates.install")((input) =>
+        Effect.promise(() => updater.install({ ...input, origin: "manual" })),
+      ),
+    });
+  }),
+);

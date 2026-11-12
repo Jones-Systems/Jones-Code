@@ -1,0 +1,383 @@
+import type {
+  MessageId,
+  OrchestrationV2RunStatus,
+  OrchestrationV2ProviderSettlement,
+  OrchestrationV2ProviderFailureClass,
+  OrchestrationV2ThreadShell,
+  PlanId,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
+import { isProviderNativeSubagentThread } from "@t3tools/contracts";
+import type {
+  ThreadAttentionStatus,
+  ThreadAttentionPill,
+} from "@t3tools/contracts/jones/threadAttention";
+import * as DateTime from "effect/DateTime";
+import { backgroundWorkHoldsCompletion as upstreamBackgroundWorkHoldsCompletion } from "../orchestrationV2PendingBackgroundWork.ts";
+
+// Jones monitors have always kept their thread visibly waiting. Preserve that
+// attention policy alongside upstream's explicit awaited-task handling.
+export const backgroundWorkHoldsCompletion = (
+  tasks: Parameters<typeof upstreamBackgroundWorkHoldsCompletion>[0],
+): boolean =>
+  tasks.some((task) => task.kind === "monitor") || upstreamBackgroundWorkHoldsCompletion(tasks);
+
+export type PendingSubagentRequest = "approval" | "user_input";
+const EMPTY_SUBAGENT_REQUESTS: ReadonlyMap<ThreadId, PendingSubagentRequest> = new Map();
+
+export interface ThreadRunSummary {
+  readonly runId: RunId;
+  readonly status: OrchestrationV2RunStatus;
+  readonly requestedAt: string | null;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  readonly providerSettlement?:
+    | (Omit<OrchestrationV2ProviderSettlement, "completedAt"> & { readonly completedAt: string })
+    | null;
+  readonly assistantMessageId: MessageId | null;
+  /** The provider turn ended while the run remains open for settlement. */
+  readonly turnEnded?: boolean;
+  readonly sourcePlanRef?: {
+    readonly threadId: ThreadId;
+    readonly planId: PlanId;
+  };
+}
+
+export interface ThreadRuntimeSummary {
+  readonly status: OrchestrationV2RunStatus | "idle";
+  readonly activeRunId: RunId | null;
+  readonly activityStartedAt?: string | null | undefined;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly providerName: string | null;
+  readonly lastError: string | null;
+  readonly lastErrorClass?: OrchestrationV2ProviderFailureClass | null;
+  readonly lastErrorCode?: string | null;
+  readonly usageLimitResetAt?: string | null;
+  readonly updatedAt: string;
+}
+
+function iso(value: DateTime.Utc): string {
+  return DateTime.formatIso(value);
+}
+
+function nullableIso(value: DateTime.Utc | null): string | null {
+  return value === null ? null : iso(value);
+}
+
+function terminalRunStatus(status: OrchestrationV2RunStatus): boolean {
+  return (
+    status === "completed" ||
+    status === "interrupted" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "rolled_back"
+  );
+}
+
+// Awaited tasks and Jones monitors hold completion; unmarked persistent
+// commands present the run's own status. The server suppresses the
+// roster while an interruptible activity run exists, so a remaining roster is
+// stronger than checkpoint-oriented waiting.
+function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary | null {
+  const parkAtIdle =
+    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) &&
+    thread.status !== "failed";
+  if (thread.latestRunId === null && thread.activeProviderThreadId === null && !parkAtIdle) {
+    return null;
+  }
+  const status = parkAtIdle ? "idle" : (thread.activityRunStatus ?? thread.status);
+  return {
+    status,
+    activeRunId: thread.activeRunId,
+    activityStartedAt:
+      thread.activityRunStartedAt === undefined
+        ? undefined
+        : nullableIso(thread.activityRunStartedAt),
+    providerInstanceId: thread.providerInstanceId,
+    providerName: null,
+    lastError: thread.lastError ?? null,
+    lastErrorClass: thread.lastErrorClass ?? null,
+    lastErrorCode: thread.lastErrorCode ?? null,
+    usageLimitResetAt: thread.usageLimitResetAt ?? null,
+    updatedAt: iso(thread.updatedAt),
+  };
+}
+
+function shellLatestRun(thread: OrchestrationV2ThreadShell): ThreadRunSummary | null {
+  const updatedAt = iso(thread.updatedAt);
+  const latestRun =
+    thread.latestRunId === null
+      ? null
+      : ({
+          runId: thread.latestRunId,
+          status: thread.status === "idle" ? "completed" : thread.status,
+          requestedAt: nullableIso(thread.latestRunRequestedAt ?? null),
+          startedAt: nullableIso(thread.latestRunStartedAt ?? null),
+          completedAt:
+            thread.latestRunCompletedAt === undefined
+              ? thread.status === "idle" || terminalRunStatus(thread.status)
+                ? updatedAt
+                : null
+              : nullableIso(thread.latestRunCompletedAt),
+          ...(thread.latestRunProviderSettlement === undefined
+            ? {}
+            : {
+                providerSettlement:
+                  thread.latestRunProviderSettlement === null
+                    ? null
+                    : {
+                        ...thread.latestRunProviderSettlement,
+                        completedAt: iso(thread.latestRunProviderSettlement.completedAt),
+                      },
+              }),
+          assistantMessageId: null,
+        } satisfies ThreadRunSummary);
+  return latestRun;
+}
+export interface ThreadAttentionInput {
+  readonly hasPendingApprovals: boolean;
+  readonly hasPendingUserInput: boolean;
+  readonly pendingSubagentRequest?: PendingSubagentRequest | null;
+  readonly interactionMode: OrchestrationV2ThreadShell["interactionMode"];
+  readonly hasActionableProposedPlan: boolean;
+  readonly latestRun: ThreadRunSummary | null;
+  readonly runtime: ThreadRuntimeSummary | null;
+  readonly lastVisitedAt?: string | null | undefined;
+  readonly pendingBackgroundTasks?:
+    | OrchestrationV2ThreadShell["pendingBackgroundTasks"]
+    | undefined;
+}
+
+export function shellAttentionInput(
+  thread: OrchestrationV2ThreadShell,
+  pendingSubagentRequest: PendingSubagentRequest | null = null,
+): ThreadAttentionInput {
+  const runtime = shellRuntime(thread);
+  // An open question needs attention independently of whether execution is blocked.
+  return {
+    latestRun: shellLatestRun(thread),
+    runtime,
+    hasPendingApprovals:
+      thread.pendingRuntimeRequest !== null &&
+      thread.pendingRuntimeRequest.kind !== "user_input" &&
+      thread.pendingRuntimeRequest.kind !== "auth_refresh",
+    hasPendingUserInput: thread.pendingRuntimeRequest?.kind === "user_input",
+    pendingSubagentRequest,
+    interactionMode: thread.interactionMode,
+    hasActionableProposedPlan: thread.hasActionableProposedPlan,
+    pendingBackgroundTasks: thread.pendingBackgroundTasks,
+    lastVisitedAt: thread.lastVisitedAt == null ? thread.lastVisitedAt : iso(thread.lastVisitedAt),
+  };
+}
+
+export function hasUnseenCompletion(thread: ThreadAttentionInput): boolean {
+  if (!thread.latestRun?.completedAt) return false;
+  const completedAt = Date.parse(thread.latestRun.completedAt);
+  if (Number.isNaN(completedAt)) return false;
+  if (!thread.lastVisitedAt) return false;
+
+  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  if (Number.isNaN(lastVisitedAt)) return true;
+  return completedAt > lastVisitedAt;
+}
+
+export function resolveThreadAttentionStatus(
+  thread: Pick<
+    ThreadAttentionInput,
+    "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest" | "runtime"
+  >,
+): ThreadAttentionStatus {
+  if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
+    return "approval";
+  }
+  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
+    return "input";
+  }
+  if (
+    thread.runtime !== null &&
+    ["preparing", "queued", "starting", "running", "waiting"].includes(thread.runtime.status)
+  ) {
+    return "working";
+  }
+  if (thread.runtime?.status === "idle") {
+    return "waiting";
+  }
+  if (thread.runtime?.status === "failed") {
+    return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
+  }
+  return "ready";
+}
+
+export function resolveThreadAttentionPill(input: {
+  thread: ThreadAttentionInput;
+}): ThreadAttentionPill | null {
+  const { thread } = input;
+
+  if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
+    return "Pending Approval";
+  }
+
+  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
+    return "Awaiting Input";
+  }
+
+  if (thread.runtime?.status === "running" || thread.runtime?.status === "waiting") {
+    return "Working";
+  }
+
+  if (
+    thread.runtime?.status === "preparing" ||
+    thread.runtime?.status === "starting" ||
+    thread.runtime?.status === "queued"
+  ) {
+    return "Connecting";
+  }
+
+  if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) {
+    return "Waiting";
+  }
+
+  if (hasUnseenCompletion(thread)) {
+    return "Completed";
+  }
+
+  return null;
+}
+
+// An async question outlives the subagent's run, but once that run ends the
+// parent is no longer waiting on the answer, so it stops counting as input.
+// The activity run stays set when a follow-up is queued behind a blocked run;
+// older servers omit it, so fall back to the latest run's status.
+const isChildRunLive = (
+  thread: Pick<OrchestrationV2ThreadShell, "activityRunStatus" | "status">,
+) =>
+  thread.activityRunStatus !== undefined
+    ? thread.activityRunStatus !== null
+    : thread.status === "preparing" ||
+      thread.status === "starting" ||
+      thread.status === "running" ||
+      thread.status === "waiting";
+
+/** Provider-native
+    subagents ask on their parent, so they are skipped. */
+export function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSubagentRequest | null {
+  const kind = thread.pendingRuntimeRequest?.kind;
+  if (
+    kind === undefined ||
+    kind === "auth_refresh" ||
+    (thread.lineage.relationshipToParent !== "subagent" && thread.delegatedFrom === undefined) ||
+    isProviderNativeSubagentThread(thread) ||
+    !isChildRunLive(thread)
+  ) {
+    return null;
+  }
+  return kind === "user_input" ? "user_input" : "approval";
+}
+
+/**
+ * Hide a linked task only when its parent is loaded. Asking tasks also need a complete
+ * local chain to an unsettled, non-delegated root that can surface their request.
+ */
+export function isDelegatedTaskShownUnderParent(
+  task: OrchestrationV2ThreadShell,
+  parents: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | null,
+  taskRequests: ReadonlyMap<ThreadId, PendingSubagentRequest>,
+): boolean {
+  const from = task.delegatedFrom;
+  if (from === undefined || parents === null) return false;
+  let row = parents.get(from.threadId);
+  if (row === undefined || row.archivedAt !== null) return false;
+  if (subagentRequest(task) === null && !taskRequests.has(task.id)) return true;
+  const seen = new Set<ThreadId>();
+  while (row.lineage.relationshipToParent === "subagent") {
+    seen.add(row.id);
+    const parentId: ThreadId | null = row.lineage.parentThreadId;
+    const parent: OrchestrationV2ThreadShell | undefined =
+      parentId === null ? undefined : parents.get(parentId);
+    if (parent === undefined || seen.has(parent.id)) return false;
+    row = parent;
+  }
+  return row.delegatedFrom === undefined && row.settledOverride !== "settled";
+}
+
+/**
+ * The threads to flag for a subagent's live question or approval, up its
+ * subagent chain. `delegated` are tasks this environment's threads delegated
+ * to linked environments, with what each one, or its own subagents, asks.
+ */
+export function pendingSubagentRequestsByThread(
+  threads: ReadonlyArray<OrchestrationV2ThreadShell>,
+  delegated: ReadonlyArray<{
+    readonly parentThreadId: ThreadId;
+    readonly request: PendingSubagentRequest;
+  }> = [],
+): ReadonlyMap<ThreadId, PendingSubagentRequest> {
+  const requests = new Map<ThreadId, PendingSubagentRequest>();
+  let byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | undefined;
+  const flag = (
+    firstParentId: ThreadId | null,
+    request: PendingSubagentRequest,
+    seen: Set<ThreadId>,
+  ) => {
+    byId ??= new Map(threads.map((thread) => [thread.id, thread] as const));
+    let parentId = firstParentId;
+    while (parentId !== null && !seen.has(parentId)) {
+      seen.add(parentId);
+      if (requests.get(parentId) !== "approval") requests.set(parentId, request);
+      const parent = byId.get(parentId);
+      parentId =
+        parent?.lineage.relationshipToParent === "subagent" || parent?.lineage.sideChat === true
+          ? parent.lineage.parentThreadId
+          : null;
+    }
+  };
+  for (const child of threads) {
+    if (child.lineage.sideChat === true) {
+      const kind = child.pendingRuntimeRequest?.kind;
+      const parentId = child.lineage.parentThreadId;
+      if (parentId !== null && kind !== undefined && kind !== "auth_refresh") {
+        const request = kind === "user_input" ? "user_input" : "approval";
+        if (requests.get(parentId) !== "approval") requests.set(parentId, request);
+      }
+      continue;
+    }
+    if (child.lineage.relationshipToParent !== "subagent") continue;
+    const request = subagentRequest(child);
+    if (request !== null) flag(child.lineage.parentThreadId, request, new Set([child.id]));
+  }
+  for (const task of delegated) flag(task.parentThreadId, task.request, new Set());
+  return requests.size === 0 ? EMPTY_SUBAGENT_REQUESTS : requests;
+}
+
+export function hasPendingGuestMessages(
+  thread: Pick<OrchestrationV2ThreadShell, "pendingGuestMessageCount">,
+): boolean {
+  return (thread.pendingGuestMessageCount ?? 0) > 0;
+}
+
+// Guest messages outlive provider work, including on provider-native children.
+// Callers supply one environment's shells; lineage IDs never cross that scope.
+export function pendingSubagentGuestAttentionByThread(
+  threads: ReadonlyArray<OrchestrationV2ThreadShell>,
+): ReadonlySet<ThreadId> {
+  const ancestors = new Set<ThreadId>();
+  let byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | undefined;
+  for (const child of threads) {
+    if (child.lineage.relationshipToParent !== "subagent" || !hasPendingGuestMessages(child))
+      continue;
+    byId ??= new Map(threads.map((thread) => [thread.id, thread] as const));
+    const seen = new Set([child.id]);
+    let parentId = child.lineage.parentThreadId;
+    while (parentId !== null && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = byId.get(parentId);
+      if (parent === undefined) break;
+      ancestors.add(parentId);
+      parentId =
+        parent.lineage.relationshipToParent === "subagent" ? parent.lineage.parentThreadId : null;
+    }
+  }
+  return ancestors;
+}

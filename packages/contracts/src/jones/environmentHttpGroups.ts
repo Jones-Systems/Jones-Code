@@ -1,0 +1,775 @@
+import { makeRemoteAdmissionHttpGroup } from "./remoteAdmissionHttp.ts";
+import {
+  WorkstreamsPeerSetupOwnerRequest,
+  WorkstreamsPeerSetupResult,
+} from "./workstreamsPeerSetup.ts";
+import {
+  WorkstreamsNativeOwnerRequest,
+  WorkstreamsNativeOwnerResponse,
+} from "./workstreamsNativeOwner.ts";
+import {
+  ImportedHistoryStart,
+  ImportedHistoryReview,
+  ImportedHistoryOutcome,
+  ImportedHistoryReviewInput,
+  ImportedHistoryObserveInput,
+  ImportedHistoryUnavailable,
+} from "./importedHistory.ts";
+import {
+  JonesUpdateDownloadInput,
+  JonesUpdateExactInput,
+  JonesNativePrepareInput,
+  JonesQuitPreparation,
+  JonesUpdateInstallInput,
+  JonesUpdateReconcileInput,
+  JonesUpdateRecordRetiredInput,
+  JonesUpdateState,
+} from "./jonesUpdates.ts";
+import {
+  JonesOperationStartInput,
+  JonesOperationStopInput,
+  JonesOperationFenceInput,
+  JonesOperationReadInput,
+  JonesOperationReceipt,
+  JonesOperationReadResult,
+  JonesRecoverCleanupInput,
+  JonesRecoverCleanupResult,
+  JonesRecoveryPreflightInput,
+  JonesRecoveryPreflight,
+} from "./jonesOperations.ts";
+import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
+import { SettlementOriginsRequest, SettlementOriginsResult } from "./settlementOrigins.ts";
+import {
+  SettlementRestoreInspectRequest,
+  SettlementRestoreInspectResult,
+} from "./settlementRestore.ts";
+import { makeFleetUpdatesHttpGroup } from "./fleetUpdates/http.ts";
+import { makePreviewCompanionHttpGroup } from "./previewCompanionHttp.ts";
+import { JonesSourceRelation, JonesSourceRelationQuery } from "./jonesSourceRelation.ts";
+import {
+  VoiceReviewRecentList,
+  VoiceReviewDiagnostics,
+  VoiceReviewDraft,
+  VoiceReviewDraftList,
+  VoiceReviewMutationResult,
+  VoiceReviewErrors,
+  VoiceReviewRevisionPayload,
+  VoiceReviewEditSavePayload,
+  VoiceReviewEditCancelPayload,
+} from "../voiceReview.ts";
+import {
+  ThreadRegistryComposedSnapshot,
+  ThreadRegistryWorkstreams,
+  ThreadRegistryEvents,
+  ThreadRegistryAssociationPayload,
+  ThreadRegistryLabelPayload,
+  ThreadRegistryMutationReceipt,
+} from "../threadRegistry.ts";
+import * as Schema from "effect/Schema";
+import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
+import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
+import { TrimmedNonEmptyString } from "../baseSchemas.ts";
+import { HostStatusSnapshot } from "../hostStatus.ts";
+import type * as Environment from "../environmentHttp.ts";
+import {
+  CONVERSATION_LIBRARY_PATH,
+  LibraryErrorCodeSchema,
+  LibraryReplySchema,
+  LibraryRequestSchema,
+} from "../conversationLibrary.ts";
+import {
+  WorkstreamAppearanceRead,
+  WorkstreamAppearanceWrite,
+  WorkstreamAppearanceResult,
+  WorkstreamAppearance,
+} from "./workstreamAppearance.ts";
+
+import {
+  EnvironmentWorkstreamOperationConflictError as WorkstreamOperationConflictError,
+  WorkstreamOperationSubmitRequest,
+  WorkstreamOperationSubmitResponse,
+  WorkstreamOperationReadRequest,
+  WorkstreamOperationReadResponse,
+  WorkstreamSetupStatus,
+} from "./workstreamOperations.ts";
+
+import { WorkstreamsRegistrationContextAcceptedResponse } from "./workstreamsRegistrationContext.ts";
+import {
+  WorkstreamsNativeContextResponse,
+  WorkstreamsNativeContextResponseV2,
+  WorkstreamsNativeAttestationResponseV2,
+  WorkstreamsNativeSettlementResponseV2,
+  WorkstreamsNativeAttestationRequest,
+  WorkstreamsNativeAttestationResponse,
+  WorkstreamsNativeSettlementRequest,
+  WorkstreamsNativeSettlementResponse,
+} from "./workstreamsNativeProvider.ts";
+
+const EnvironmentConversationLibraryInvalidError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("invalid"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(400));
+
+const EnvironmentConversationLibraryForbiddenError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("forbidden"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(403));
+
+const EnvironmentConversationLibraryNotFoundError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("not-found"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(404));
+
+const EnvironmentConversationLibraryConflictError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("conflict"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(409));
+
+const EnvironmentConversationLibraryTooLargeError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("too-large"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(413));
+
+const EnvironmentConversationLibraryStorageError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("storage"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(500));
+
+const EnvironmentConversationLibraryUnsupportedError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("unsupported"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(501));
+
+const EnvironmentConversationLibraryErrorSchemas = [
+  EnvironmentConversationLibraryInvalidError,
+  EnvironmentConversationLibraryForbiddenError,
+  EnvironmentConversationLibraryNotFoundError,
+  EnvironmentConversationLibraryConflictError,
+  EnvironmentConversationLibraryTooLargeError,
+  EnvironmentConversationLibraryStorageError,
+  EnvironmentConversationLibraryUnsupportedError,
+] as const;
+
+export const EnvironmentConversationLibraryErrorSchema = Schema.Union(
+  EnvironmentConversationLibraryErrorSchemas,
+);
+export type EnvironmentConversationLibraryError =
+  typeof EnvironmentConversationLibraryErrorSchema.Type;
+
+export const EnvironmentConversationLibraryErrorCode = LibraryErrorCodeSchema;
+
+export const EnvironmentWorkstreamOperationConflictError = WorkstreamOperationConflictError.pipe(
+  (schema) => schema.annotate({ httpApiStatus: 409 }),
+  HttpApiSchema.status(409),
+);
+export type EnvironmentWorkstreamOperationConflictError =
+  typeof EnvironmentWorkstreamOperationConflictError.Type;
+
+export const makeJonesHttpGroups = ({
+  OptionalBearerHeaders,
+  EnvironmentAuthenticatedAuth,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+  EnvironmentHttpBadRequestError,
+}: {
+  readonly OptionalBearerHeaders: Schema.Struct<{
+    authorization: Schema.optionalKey<Schema.String>;
+    dpop: Schema.optionalKey<Schema.String>;
+  }>;
+  readonly EnvironmentAuthenticatedAuth: typeof Environment.EnvironmentAuthenticatedAuth;
+  readonly EnvironmentScopeRequiredError: typeof Environment.EnvironmentScopeRequiredError;
+  readonly EnvironmentInternalError: typeof Environment.EnvironmentInternalError;
+  readonly EnvironmentHttpBadRequestError: typeof Environment.EnvironmentHttpBadRequestError;
+}) => {
+  class EnvironmentConversationLibraryHttpApi extends HttpApiGroup.make("conversationLibrary").add(
+    HttpApiEndpoint.post("conversationLibrary", CONVERSATION_LIBRARY_PATH, {
+      headers: OptionalBearerHeaders,
+      payload: LibraryRequestSchema,
+      success: LibraryReplySchema,
+      error: [...EnvironmentConversationLibraryErrorSchemas, EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+  const VoiceReviewParams = Schema.Struct({
+    id: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
+  });
+  const VoiceReviewHeaders = OptionalBearerHeaders;
+  const VoiceReviewPageLimit = Schema.optional(
+    Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 })),
+  );
+  class EnvironmentVoiceReviewHttpApi extends HttpApiGroup.make("voiceReview")
+    .add(
+      HttpApiEndpoint.get("recent", "/api/voice-review/recent", {
+        headers: VoiceReviewHeaders,
+        query: { limit: VoiceReviewPageLimit },
+        success: VoiceReviewRecentList,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("registrySnapshot", "/api/voice-review/registry/snapshot", {
+        headers: VoiceReviewHeaders,
+        query: {
+          limit: VoiceReviewPageLimit,
+          cursor: Schema.optional(
+            Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(4096)),
+          ),
+        },
+        success: ThreadRegistryComposedSnapshot,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("registryWorkstreams", "/api/voice-review/registry/workstreams", {
+        headers: VoiceReviewHeaders,
+        success: ThreadRegistryWorkstreams,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("registryEvents", "/api/voice-review/registry/events", {
+        headers: VoiceReviewHeaders,
+        query: {
+          limit: VoiceReviewPageLimit,
+          after: Schema.optional(
+            Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+          ),
+        },
+        success: ThreadRegistryEvents,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("correctAssociation", "/api/voice-review/registry/associations", {
+        headers: VoiceReviewHeaders,
+        payload: ThreadRegistryAssociationPayload,
+        success: ThreadRegistryMutationReceipt,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("correctLabel", "/api/voice-review/registry/labels", {
+        headers: VoiceReviewHeaders,
+        payload: ThreadRegistryLabelPayload,
+        success: ThreadRegistryMutationReceipt,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("diagnostics", "/api/voice-review/drafts/:id/diagnostics", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        success: VoiceReviewDiagnostics,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("list", "/api/voice-review/drafts", {
+        headers: VoiceReviewHeaders,
+        query: {
+          scope: Schema.optional(Schema.Literals(["pending", "recent"])),
+          limit: Schema.optional(
+            Schema.FiniteFromString.check(
+              Schema.isInt(),
+              Schema.isBetween({ minimum: 1, maximum: 200 }),
+            ),
+          ),
+        },
+        success: VoiceReviewDraftList,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("get", "/api/voice-review/drafts/:id", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        success: VoiceReviewDraft,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("pause", "/api/voice-review/drafts/:id/pause", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        payload: VoiceReviewRevisionPayload,
+        success: VoiceReviewMutationResult,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("play", "/api/voice-review/drafts/:id/play", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        payload: VoiceReviewRevisionPayload,
+        success: VoiceReviewMutationResult,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("editBegin", "/api/voice-review/drafts/:id/edit-begin", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        payload: VoiceReviewRevisionPayload,
+        success: VoiceReviewMutationResult,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("editSave", "/api/voice-review/drafts/:id/edit-save", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        payload: VoiceReviewEditSavePayload,
+        success: VoiceReviewMutationResult,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("editCancel", "/api/voice-review/drafts/:id/edit-cancel", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        payload: VoiceReviewEditCancelPayload,
+        success: VoiceReviewMutationResult,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("sendNow", "/api/voice-review/drafts/:id/send-now", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        payload: VoiceReviewRevisionPayload,
+        success: VoiceReviewMutationResult,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("delete", "/api/voice-review/drafts/:id/delete", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        payload: VoiceReviewRevisionPayload,
+        success: VoiceReviewMutationResult,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    ) {}
+
+  class EnvironmentHostStatusHttpApi extends HttpApiGroup.make("hostStatus").add(
+    HttpApiEndpoint.get("snapshot", "/api/host-status", {
+      headers: OptionalBearerHeaders,
+      success: HostStatusSnapshot,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+  class EnvironmentWorkstreamAppearanceHttpApi extends HttpApiGroup.make("workstreams")
+    .add(
+      HttpApiEndpoint.post("appearanceRead", "/api/workstreams/appearance/read", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamAppearanceRead,
+        success: WorkstreamAppearanceResult,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("appearanceSave", "/api/workstreams/appearance/write", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamAppearanceWrite,
+        success: WorkstreamAppearance,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("registrationContext", "/api/workstreams/registration-context", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamsRegistrationContextAcceptedResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationSubmit", "/api/workstreams/operations/submit", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamOperationSubmitRequest,
+        success: WorkstreamOperationSubmitResponse,
+        error: [
+          EnvironmentHttpBadRequestError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentWorkstreamOperationConflictError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationRead", "/api/workstreams/operations/read", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamOperationReadRequest,
+        success: WorkstreamOperationReadResponse,
+        error: [
+          EnvironmentHttpBadRequestError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("setupStatus", "/api/workstreams/setup-status", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamSetupStatus,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    ) {}
+
+  class EnvironmentWorkstreamsNativeHttpApi extends HttpApiGroup.make("workstreamsNative")
+    .add(
+      HttpApiEndpoint.post(
+        "peerSetupOwnerOperations",
+        "/api/workstreams/native/peer-setup/v1/operations",
+        {
+          headers: OptionalBearerHeaders,
+          payload: WorkstreamsPeerSetupOwnerRequest,
+          success: WorkstreamsPeerSetupResult,
+          error: [
+            EnvironmentScopeRequiredError,
+            EnvironmentInternalError,
+            EnvironmentHttpBadRequestError,
+          ],
+        },
+      ).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("ownerOperations", "/api/workstreams/native/owner/v1/operations", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeOwnerRequest,
+        success: WorkstreamsNativeOwnerResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("context", "/api/workstreams/native/v1/context", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamsNativeContextResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("attestations", "/api/workstreams/native/v1/attestations", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeAttestationRequest,
+        success: WorkstreamsNativeAttestationResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlements", "/api/workstreams/native/v1/settlements", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlementLookup", "/api/workstreams/native/v1/settlements/lookup", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("contextV2", "/api/workstreams/native/v2/context", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamsNativeContextResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("attestationsV2", "/api/workstreams/native/v2/attestations", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeAttestationRequest,
+        success: WorkstreamsNativeAttestationResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlementsV2", "/api/workstreams/native/v2/settlements", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlementLookupV2", "/api/workstreams/native/v2/settlements/lookup", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    ) {}
+
+  class EnvironmentWorkQueueMetadataHttpApi extends HttpApiGroup.make("workQueueMetadata").add(
+    HttpApiEndpoint.get("snapshot", "/api/work-queue/metadata", {
+      headers: OptionalBearerHeaders,
+      success: WorkQueueMetadataResult,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+  class EnvironmentSettlementOriginsHttpApi extends HttpApiGroup.make("settlementOrigins").add(
+    HttpApiEndpoint.post("resolve", "/api/jones/settlement-origins", {
+      headers: OptionalBearerHeaders,
+      payload: SettlementOriginsRequest,
+      success: SettlementOriginsResult,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+  class EnvironmentSettlementRestoreHttpApi extends HttpApiGroup.make("settlementRestore").add(
+    HttpApiEndpoint.post("inspect", "/api/jones/settlement-restores/inspect", {
+      headers: OptionalBearerHeaders,
+      payload: SettlementRestoreInspectRequest,
+      success: SettlementRestoreInspectResult,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+  class EnvironmentJonesUpdatesHttpApi extends HttpApiGroup.make("jonesUpdates")
+    .add(
+      HttpApiEndpoint.post("reconcile", "/api/jones-updates/reconcile", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateReconcileInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recordRetired", "/api/jones-updates/record-retired", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateRecordRetiredInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("prepareNative", "/api/jones-updates/prepare-native", {
+        headers: OptionalBearerHeaders,
+        payload: JonesNativePrepareInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("prepareQuit", "/api/jones-updates/prepare-quit", {
+        headers: OptionalBearerHeaders,
+        success: JonesQuitPreparation,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("state", "/api/jones-updates", {
+        query: Schema.Struct({ after: Schema.optionalKey(Schema.NumberFromString) }),
+        headers: OptionalBearerHeaders,
+        success: Schema.NullOr(JonesUpdateState),
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      // A read of public ancestry between two exact commits; it never stages or installs.
+      HttpApiEndpoint.get("sourceRelation", "/api/jones-updates/source-relation", {
+        query: JonesSourceRelationQuery,
+        headers: OptionalBearerHeaders,
+        success: JonesSourceRelation,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("check", "/api/jones-updates/check", {
+        headers: OptionalBearerHeaders,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("download", "/api/jones-updates/download", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateDownloadInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("downloadExact", "/api/jones-updates/download-exact", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateExactInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("install", "/api/jones-updates/install", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateInstallInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationStart", "/api/jones-updates/operations/start", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationStartInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationStop", "/api/jones-updates/operations/stop", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationStopInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationFence", "/api/jones-updates/operations/fence", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationFenceInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationRead", "/api/jones-updates/operations/read", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationReadInput,
+        success: JonesOperationReadResult,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recoverCleanup", "/api/jones-updates/operations/recover-cleanup", {
+        headers: OptionalBearerHeaders,
+        payload: JonesRecoverCleanupInput,
+        success: JonesRecoverCleanupResult,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recoveryPreflight", "/api/jones-updates/recovery-preflight", {
+        headers: OptionalBearerHeaders,
+        payload: JonesRecoveryPreflightInput,
+        success: JonesRecoveryPreflight,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    ) {}
+
+  class EnvironmentImportedHistoryHttpApi extends HttpApiGroup.make("jonesImportedHistory")
+    .add(
+      HttpApiEndpoint.post("review", "/api/jones/imported-history/review", {
+        headers: OptionalBearerHeaders,
+        payload: ImportedHistoryReviewInput,
+        success: ImportedHistoryReview,
+        error: [EnvironmentScopeRequiredError, ImportedHistoryUnavailable],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("start", "/api/jones/imported-history/start", {
+        headers: OptionalBearerHeaders,
+        payload: ImportedHistoryStart,
+        success: ImportedHistoryOutcome,
+        error: [EnvironmentScopeRequiredError, ImportedHistoryUnavailable],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("observe", "/api/jones/imported-history/observe", {
+        headers: OptionalBearerHeaders,
+        payload: ImportedHistoryObserveInput,
+        success: Schema.NullOr(ImportedHistoryOutcome),
+        error: [EnvironmentScopeRequiredError, ImportedHistoryUnavailable],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    ) {}
+
+  return {
+    EnvironmentRemoteAdmissionHttpApi: makeRemoteAdmissionHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+      EnvironmentHttpBadRequestError,
+    }),
+    EnvironmentFleetUpdatesHttpApi: makeFleetUpdatesHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+      EnvironmentHttpBadRequestError,
+    }),
+    EnvironmentPreviewCompanionHttpApi: makePreviewCompanionHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+      EnvironmentHttpBadRequestError,
+    }),
+    EnvironmentImportedHistoryHttpApi,
+    EnvironmentJonesUpdatesHttpApi,
+    EnvironmentWorkQueueMetadataHttpApi,
+    EnvironmentSettlementOriginsHttpApi,
+    EnvironmentSettlementRestoreHttpApi,
+    EnvironmentVoiceReviewHttpApi,
+    EnvironmentHostStatusHttpApi,
+    EnvironmentConversationLibraryHttpApi,
+    EnvironmentWorkstreamAppearanceHttpApi,
+    EnvironmentWorkstreamsNativeHttpApi,
+  };
+};

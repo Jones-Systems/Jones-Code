@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   canEditWorkstreams,
-  executeMobileShelfMove,
+  mobileMembershipBlock,
   moveNativeThreadOrder,
   planNativeMembership,
   workstreamTint,
 } from "./actions";
 
-import { data, input, placements, primary, reference } from "./actions.fixtures";
+import {
+  assignmentIndexFor,
+  data,
+  input,
+  placements,
+  primary,
+  reference,
+} from "./actions.fixtures";
 
 describe("native Workstream membership planning", () => {
   it("moves only primary membership across repositories and preserves native and secondary state", () => {
@@ -118,6 +125,45 @@ describe("native Workstream membership planning", () => {
   });
 });
 
+describe("durable assignment change gating", () => {
+  const threadKey = '["env:a","thread"]';
+  const conflicting = assignmentIndexFor([
+    { environmentId: "env:a", threadId: "thread", workstreamId: "alpha" },
+    { environmentId: "env:a", threadId: "thread", workstreamId: "beta" },
+  ]);
+  it("blocks membership changes for a thread with conflicting stored assignments", () => {
+    const snapshot = { data, placements, stale: false };
+    expect(
+      mobileMembershipBlock({ snapshot, threadKey, conflictingThreadKeys: new Set() }),
+    ).toBeNull();
+    expect(
+      mobileMembershipBlock({ snapshot, threadKey, conflictingThreadKeys: new Set([threadKey]) }),
+    ).toContain("conflicting Workstream assignments");
+    expect(() => planNativeMembership({ ...input, index: conflicting })).toThrow("disagree");
+  });
+  it("keeps stale loads read-only", () => {
+    expect(
+      mobileMembershipBlock({
+        snapshot: { data, placements, stale: true },
+        threadKey,
+        conflictingThreadKeys: new Set(),
+      }),
+    ).toBe("Workstreams are read-only.");
+  });
+  it("never plans a first attach for a thread whose stored primary lacks current proof", () => {
+    expect(() =>
+      planNativeMembership({
+        ...input,
+        placements: { ...placements, items: [] },
+        index: assignmentIndexFor(),
+      }),
+    ).toThrow("disagree");
+    expect(planNativeMembership({ ...input, index: assignmentIndexFor() })?.operation).toBe(
+      "move_primary",
+    );
+  });
+});
+
 describe("native member order and decoration", () => {
   it("moves the selected native row while preserving every other row and the input", () => {
     const order = ["a:one", "b:two", "c:three", "d:four"];
@@ -140,59 +186,5 @@ describe("native member order and decoration", () => {
     expect(workstreamTint("alpha")).toBe(workstreamTint("alpha"));
     expect(workstreamTint("alpha")).toMatch(/dark:border-/);
     expect(workstreamTint("alpha")).toContain("-50/70");
-  });
-});
-
-describe("explicit mobile shelf move", () => {
-  it("waits for primary removal before native writes", async () => {
-    const events: string[] = [];
-    let commit: (() => void) | undefined;
-    const committed = new Promise<void>((resolve) => {
-      commit = resolve;
-    });
-    const move = executeMobileShelfMove({
-      removePrimary: async () => {
-        events.push("remove");
-        await committed;
-        events.push("committed");
-      },
-      moveNative: async () => {
-        events.push("native");
-        return true;
-      },
-    });
-    expect(events).toEqual(["remove"]);
-    commit!();
-    expect(await move).toBe(true);
-    expect(events).toEqual(["remove", "committed", "native"]);
-  });
-  it.each(["unknown", "partial", "rejected"])(
-    "stops native effects after %s removal",
-    async (state) => {
-      const nativeWrites: string[] = [];
-      await expect(
-        executeMobileShelfMove({
-          removePrimary: () => Promise.reject(new Error(state)),
-          moveNative: async () => {
-            nativeWrites.push("pin");
-            return true;
-          },
-        }),
-      ).rejects.toThrow(state);
-      expect(nativeWrites).toEqual([]);
-    },
-  );
-  it("removes membership of a pinned thread without changing its pin or active slot", () => {
-    const pinned = {
-      ...input.thread,
-      pinnedAt: "2026-09-30T10:00:00Z",
-      pinOrderKey: "bb",
-      activeOrderKey: "zz",
-    };
-    const before = structuredClone(pinned);
-    expect(planNativeMembership({ ...input, thread: pinned, destination: null })?.operation).toBe(
-      "remove_membership",
-    );
-    expect(pinned).toEqual(before);
   });
 });

@@ -48,51 +48,18 @@ async function fixture() {
 }
 
 describe("Jones build source stamp", () => {
-  it("binds both source packages to the checked-in tree while preserving build versions", async () => {
-    const input = await fixture(),
-      envFile = NodePath.join(input.root, "build-env");
-    const serverFile = NodePath.join(input.root, "apps/server/package.json");
-    const server = JSON.parse(await NodeFSP.readFile(serverFile, "utf8")) as Record<
-      string,
-      unknown
-    >;
-    server.version = "1.2.3-preview.20261002.4.2";
-    await NodeFSP.writeFile(serverFile, JSON.stringify(server));
-    NodeChildProcess.execFileSync(
-      process.execPath,
-      [NodePath.join(input.root, "scripts/stamp-jones-build.ts")],
-      {
-        cwd: input.root,
-        env: { ...process.env, GITHUB_SHA: input.sha, GITHUB_ENV: envFile },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    for (const name of ["server", "desktop"]) {
-      expect(
-        JSON.parse(
-          await NodeFSP.readFile(NodePath.join(input.root, `apps/${name}/package.json`), "utf8"),
-        ),
-      ).toMatchObject({
-        name,
-        retained: { nested: true },
-        jonesSource: { repository: "Jones-Systems/Jones-Code", sha: input.sha, tree: input.tree },
-      });
-    }
-    expect(JSON.parse(await NodeFSP.readFile(serverFile, "utf8"))).toHaveProperty(
-      "version",
-      "1.2.3-preview.20261002.4.2",
-    );
-    expect(await NodeFSP.readFile(envFile, "utf8")).toBe(
-      `JONES_SOURCE_SHA=${input.sha}\nJONES_SOURCE_TREE=${input.tree}\n`,
-    );
-  });
-  it("refuses a mismatched workflow checkout before changing either manifest", async () => {
-    const input = await fixture(),
-      before = await NodeFSP.readFile(
-        NodePath.join(input.root, "apps/server/package.json"),
-        "utf8",
-      );
-    expect(() =>
+  it.each(["workflow fallback", "explicit head", "outside workflow"] as const)(
+    "binds both source packages to the checked-in tree while preserving build versions: %s",
+    async (sourceSelection) => {
+      const input = await fixture(),
+        envFile = NodePath.join(input.root, "build-env");
+      const serverFile = NodePath.join(input.root, "apps/server/package.json");
+      const server = JSON.parse(await NodeFSP.readFile(serverFile, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      server.version = "1.2.3-preview.20261002.4.2";
+      await NodeFSP.writeFile(serverFile, JSON.stringify(server));
       NodeChildProcess.execFileSync(
         process.execPath,
         [NodePath.join(input.root, "scripts/stamp-jones-build.ts")],
@@ -100,15 +67,166 @@ describe("Jones build source stamp", () => {
           cwd: input.root,
           env: {
             ...process.env,
-            GITHUB_SHA: "d".repeat(40),
-            GITHUB_ENV: NodePath.join(input.root, "build-env"),
+            JONES_EXPECTED_SOURCE_SHA: sourceSelection === "explicit head" ? input.sha : undefined,
+            GITHUB_SHA:
+              sourceSelection === "outside workflow"
+                ? undefined
+                : sourceSelection === "explicit head"
+                  ? "d".repeat(40)
+                  : input.sha,
+            GITHUB_ENV: envFile,
+            JONES_BUILD_STARTED_AT: undefined,
           },
           stdio: ["ignore", "pipe", "pipe"],
         },
-      ),
-    ).toThrow();
-    expect(
-      await NodeFSP.readFile(NodePath.join(input.root, "apps/server/package.json"), "utf8"),
-    ).toBe(before);
+      );
+      for (const name of ["server", "desktop"]) {
+        expect(
+          JSON.parse(
+            await NodeFSP.readFile(NodePath.join(input.root, `apps/${name}/package.json`), "utf8"),
+          ),
+        ).toMatchObject({
+          name,
+          retained: { nested: true },
+          startupGateProtocol: 1,
+          jonesSource: { repository: "Jones-Systems/Jones-Code", sha: input.sha, tree: input.tree },
+        });
+        expect(
+          JSON.parse(
+            await NodeFSP.readFile(NodePath.join(input.root, `apps/${name}/package.json`), "utf8"),
+          ),
+        ).not.toHaveProperty("jonesBuildStartedAt");
+      }
+      expect(JSON.parse(await NodeFSP.readFile(serverFile, "utf8"))).toHaveProperty(
+        "version",
+        "1.2.3-preview.20261002.4.2",
+      );
+      expect(await NodeFSP.readFile(envFile, "utf8")).toBe(
+        `JONES_SOURCE_SHA=${input.sha}\nJONES_SOURCE_TREE=${input.tree}\n`,
+      );
+    },
+  );
+  it.each([
+    {
+      name: "mismatched workflow fallback",
+      expected: undefined,
+      error: "Checkout does not match workflow source.",
+    },
+    {
+      name: "mismatched explicit head",
+      expected: "d".repeat(40),
+      error: "Checkout does not match workflow source.",
+    },
+    { name: "empty explicit head", expected: "", error: "Invalid expected Jones build source." },
+    {
+      name: "malformed explicit head",
+      expected: "not-a-source-sha",
+      error: "Invalid expected Jones build source.",
+    },
+  ])("refuses $name before writing manifests or the receipt", async ({ expected, error }) => {
+    const input = await fixture();
+    const manifests = ["server", "desktop"].map((name) =>
+      NodePath.join(input.root, `apps/${name}/package.json`),
+    );
+    const before = await Promise.all(manifests.map((file) => NodeFSP.readFile(file, "utf8")));
+    const envFile = NodePath.join(input.root, "build-env");
+    const result = NodeChildProcess.spawnSync(
+      process.execPath,
+      [NodePath.join(input.root, "scripts/stamp-jones-build.ts")],
+      {
+        cwd: input.root,
+        env: {
+          ...process.env,
+          JONES_EXPECTED_SOURCE_SHA: expected,
+          GITHUB_SHA: expected === undefined ? "d".repeat(40) : input.sha,
+          GITHUB_ENV: envFile,
+          JONES_BUILD_STARTED_AT: undefined,
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(error);
+    expect(await Promise.all(manifests.map((file) => NodeFSP.readFile(file, "utf8")))).toEqual(
+      before,
+    );
+    await expect(NodeFSP.lstat(envFile)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it.each([undefined, "", "2026-10-20T21:13:43Z", "2028-02-29T15:00:00.12Z"])(
+    "stamps both manifests with optional build time %s and replaces stale metadata",
+    async (startedAt) => {
+      const input = await fixture();
+      const manifests = ["server", "desktop"].map((name) =>
+        NodePath.join(input.root, `apps/${name}/package.json`),
+      );
+      for (const file of manifests) {
+        const manifest = JSON.parse(await NodeFSP.readFile(file, "utf8"));
+        manifest.jonesBuildStartedAt = "2025-01-01T00:00:00Z";
+        await NodeFSP.writeFile(file, JSON.stringify(manifest));
+      }
+      NodeChildProcess.execFileSync(
+        process.execPath,
+        [NodePath.join(input.root, "scripts/stamp-jones-build.ts")],
+        {
+          cwd: input.root,
+          env: {
+            ...process.env,
+            JONES_EXPECTED_SOURCE_SHA: input.sha,
+            JONES_BUILD_STARTED_AT: startedAt,
+            GITHUB_ENV: undefined,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      for (const file of manifests) {
+        const manifest = JSON.parse(await NodeFSP.readFile(file, "utf8"));
+        expect(manifest).toMatchObject({
+          version: "1.2.3",
+          retained: { nested: true },
+          startupGateProtocol: 1,
+          jonesSource: { repository: "Jones-Systems/Jones-Code", sha: input.sha, tree: input.tree },
+        });
+        if (startedAt) expect(manifest.jonesBuildStartedAt).toBe(startedAt);
+        else expect(manifest).not.toHaveProperty("jonesBuildStartedAt");
+      }
+    },
+  );
+  it.each([
+    "null",
+    " ",
+    "2026-10-20T21:13:43+00:00",
+    "2026-02-30T21:13:43Z",
+    "2026-02-29T21:13:43Z",
+    "2026-10-20T24:00:00Z",
+    "2026-10-20T21:13:43.1234Z",
+  ])("refuses invalid build time %s before any writes", async (startedAt) => {
+    const input = await fixture();
+    const manifests = ["server", "desktop"].map((name) =>
+      NodePath.join(input.root, `apps/${name}/package.json`),
+    );
+    const before = await Promise.all(manifests.map((file) => NodeFSP.readFile(file, "utf8")));
+    const envFile = NodePath.join(input.root, "build-env");
+    const result = NodeChildProcess.spawnSync(
+      process.execPath,
+      [NodePath.join(input.root, "scripts/stamp-jones-build.ts")],
+      {
+        cwd: input.root,
+        env: {
+          ...process.env,
+          JONES_EXPECTED_SOURCE_SHA: input.sha,
+          JONES_BUILD_STARTED_AT: startedAt,
+          GITHUB_ENV: envFile,
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Invalid Jones build start time.");
+    expect(await Promise.all(manifests.map((file) => NodeFSP.readFile(file, "utf8")))).toEqual(
+      before,
+    );
+    await expect(NodeFSP.lstat(envFile)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

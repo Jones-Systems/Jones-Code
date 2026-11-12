@@ -1,0 +1,1403 @@
+{
+  "contract_family": "workstreams-registration-context",
+  "contract_version": "3.0.0",
+  "cases": [
+    {
+      "name": "request selector",
+      "schema": "#/$defs/Request",
+      "value": {
+        "source_instance_id": "source-t3-synthetic-1"
+      }
+    },
+    {
+      "name": "five native sources",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-t3-synthetic-2",
+            "authority_namespace": "authority-t3-synthetic-2",
+            "store_generation": 8,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-2",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-t3-synthetic-3",
+            "authority_namespace": "authority-t3-synthetic-3",
+            "store_generation": 9,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-3",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-t3-synthetic-4",
+            "authority_namespace": "authority-t3-synthetic-4",
+            "store_generation": 10,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-4",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-fifth",
+            "authority_namespace": "authority-fifth",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-fifth",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "two GitHub sources",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          },
+          {
+            "source_instance_id": "source-github-two",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "exact duplicate source",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown response field",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-t3-synthetic-2",
+            "authority_namespace": "authority-t3-synthetic-2",
+            "store_generation": 8,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-2",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-t3-synthetic-3",
+            "authority_namespace": "authority-t3-synthetic-3",
+            "store_generation": 9,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-3",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-t3-synthetic-4",
+            "authority_namespace": "authority-t3-synthetic-4",
+            "store_generation": 10,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-4",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "origin": "https://private.invalid"
+      }
+    },
+    {
+      "name": "v1 protocol on v3",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-t3-synthetic-2",
+            "authority_namespace": "authority-t3-synthetic-2",
+            "store_generation": 8,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-2",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-t3-synthetic-3",
+            "authority_namespace": "authority-t3-synthetic-3",
+            "store_generation": 9,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-3",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-t3-synthetic-4",
+            "authority_namespace": "authority-t3-synthetic-4",
+            "store_generation": 10,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-4",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "native protocol changed",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/2.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "private source field",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "credential_locator": "/private/credential",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid profiles []",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid profiles ['workstreams-t3-provider/1.0.0', 'workstreams-t3-provider/2.0.0']",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0",
+              "workstreams-t3-provider/2.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid profiles ['workstreams-t3-provider/2.0.0', 'workstreams-t3-provider/2.0.0']",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/2.0.0",
+              "workstreams-t3-provider/2.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid profiles ['workstreams-t3-provider/1.0.0', 'workstreams-t3-provider/1.0.0']",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0",
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid profiles ['unknown']",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "unknown"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid profiles workstreams-t3-provider/2.0.0",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": "workstreams-t3-provider/2.0.0"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid profiles None",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid profiles ['workstreams-t3-provider/2.0.0', 'workstreams-t3-provider/1.0.0', 'workstreams-t3-provider/2.0.0']",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/2.0.0",
+              "workstreams-t3-provider/1.0.0",
+              "workstreams-t3-provider/2.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing source_instance_id",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing authority_namespace",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing store_generation",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing account_provenance",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing provider",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing resource_kind",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing id_kind",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing enrollment_id",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing enrolled_protocol",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing enrolled_build",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing accepted_native_profiles",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid source native_protocol",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ],
+            "native_protocol": "workstreams-t3-provider/1.0.0"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid source build",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ],
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid source session_id",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ],
+            "session_id": "synthetic"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid source enrolled_protocol",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/2.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "enrollment-source-t3-synthetic-1",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid source enrollment_id",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/3.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic-1",
+            "authority_namespace": "authority-t3-synthetic-1",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "enrolled_protocol": "workstreams-t3-provider/1.0.0",
+            "enrolled_build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "enrollment_id": "bad/path",
+            "accepted_native_profiles": [
+              "workstreams-t3-provider/1.0.0"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

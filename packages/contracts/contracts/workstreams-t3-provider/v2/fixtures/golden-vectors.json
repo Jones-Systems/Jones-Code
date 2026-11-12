@@ -1,0 +1,161 @@
+{
+  "contract_family": "workstreams-t3-provider",
+  "contract_version": "2.0.0",
+  "source": {
+    "repository": "Jones-Systems/Jones-Code",
+    "revision": "38cf9d720d34a4b0ea16bd34496f173e057fb3f2",
+    "codec": "packages/contracts/src/jones/workstreamsNativeProvider.ts",
+    "calculation": "apps/server/src/jones/workstreams/nativeProvider/service.ts",
+    "qualification": "Pre-change Schema.encodeSync executed; service attempt/observation replay must also be qualified in Jones."
+  },
+  "binding": {
+    "owner_id": "owner-synthetic",
+    "principal_id": "principal-synthetic",
+    "source_instance_id": "source-synthetic",
+    "authority_namespace": "authority-synthetic",
+    "store_generation": 7,
+    "enrollment_id": "enrollment-synthetic",
+    "protocol": "workstreams-t3-provider/1.0.0",
+    "build": {
+      "repository": "Jones-Systems/Jones-Code",
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "registry_origin": "https://registry.invalid",
+    "session_id": "session-synthetic",
+    "scopes": [
+      "workstreams:native:context",
+      "workstreams:native:settlement",
+      "workstreams:native:reconciliation"
+    ]
+  },
+  "enrollment_context_json": "{\"owner_id\":\"owner-synthetic\",\"principal_id\":\"principal-synthetic\",\"source_instance_id\":\"source-synthetic\",\"authority_namespace\":\"authority-synthetic\",\"store_generation\":7,\"enrollment_id\":\"enrollment-synthetic\",\"protocol\":\"workstreams-t3-provider/1.0.0\",\"build\":{\"repository\":\"Jones-Systems/Jones-Code\",\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tree\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}}",
+  "vectors": [
+    {
+      "name": "settle",
+      "request": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "command_id": "command-synthetic-0001",
+        "native_reference_id": "reference-synthetic",
+        "native_action": "settle",
+        "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "identity": {
+          "provider": "t3",
+          "source_instance_id": "source-synthetic",
+          "resource_kind": "thread",
+          "id_kind": "internal",
+          "native_id": "thread-synthetic",
+          "account_provenance": {
+            "kind": "not_account_scoped"
+          }
+        },
+        "expected_authority_namespace": "authority-synthetic",
+        "expected_store_generation": 7
+      },
+      "request_json": "{\"owner_id\":\"owner-synthetic\",\"principal_id\":\"principal-synthetic\",\"command_id\":\"command-synthetic-0001\",\"native_reference_id\":\"reference-synthetic\",\"native_action\":\"settle\",\"request_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"reservation_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"identity\":{\"provider\":\"t3\",\"source_instance_id\":\"source-synthetic\",\"resource_kind\":\"thread\",\"id_kind\":\"internal\",\"native_id\":\"thread-synthetic\",\"account_provenance\":{\"kind\":\"not_account_scoped\"}},\"expected_authority_namespace\":\"authority-synthetic\",\"expected_store_generation\":7}",
+      "request_bytes": "{\"owner_id\":\"owner-synthetic\",\"principal_id\":\"principal-synthetic\",\"command_id\":\"command-synthetic-0001\",\"native_reference_id\":\"reference-synthetic\",\"native_action\":\"settle\",\"request_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"reservation_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"identity\":{\"provider\":\"t3\",\"source_instance_id\":\"source-synthetic\",\"resource_kind\":\"thread\",\"id_kind\":\"internal\",\"native_id\":\"thread-synthetic\",\"account_provenance\":{\"kind\":\"not_account_scoped\"}},\"expected_authority_namespace\":\"authority-synthetic\",\"expected_store_generation\":7}",
+      "request_bytes_sha256": "c829d669cdb5482b6bc4d6594d83eb326fb24d794050353f463744659c32e297",
+      "enrollment_sha256": "913447c9ac31d5b1a3debefd169f2129df5a1aac581a369d3bae1eeb291d34d5",
+      "native_command_id": "workstreams:bbbac8b21a74019ccfe788846e0acaf75950aaf98f665c23397bc96c9488c4a3",
+      "result_digest_json": "{\"command_id\":\"command-synthetic-0001\",\"native_action\":\"settle\",\"native_outcome\":\"committed\",\"native_reference_id\":\"reference-synthetic\",\"owner_id\":\"owner-synthetic\",\"principal_id\":\"principal-synthetic\",\"request_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"reservation_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\"}",
+      "result_sha256": "f37a37aaa6a491819dcbf80a4dd1f6e41c4e1c6f8d55faadae0708ba4f078553",
+      "receipt": {
+        "commandId": "workstreams:bbbac8b21a74019ccfe788846e0acaf75950aaf98f665c23397bc96c9488c4a3",
+        "aggregateKind": "thread",
+        "aggregateId": "thread-synthetic",
+        "acceptedAt": "2026-10-02T14:00:00Z",
+        "resultSequence": 31,
+        "status": "accepted",
+        "commandType": "thread.settle"
+      },
+      "events": [
+        {
+          "eventId": "event-synthetic-0031",
+          "commandId": "workstreams:bbbac8b21a74019ccfe788846e0acaf75950aaf98f665c23397bc96c9488c4a3",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "sequence": 31,
+          "type": "thread.settled",
+          "occurredAt": "2026-10-02T14:00:00Z",
+          "applicationEventVersion": 2
+        }
+      ]
+    },
+    {
+      "name": "unsettle",
+      "request": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "command_id": "command-synthetic-0001",
+        "native_reference_id": "reference-synthetic",
+        "native_action": "unsettle",
+        "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "identity": {
+          "provider": "t3",
+          "source_instance_id": "source-synthetic",
+          "resource_kind": "thread",
+          "id_kind": "internal",
+          "native_id": "thread-synthetic",
+          "account_provenance": {
+            "kind": "not_account_scoped"
+          }
+        },
+        "expected_authority_namespace": "authority-synthetic",
+        "expected_store_generation": 7
+      },
+      "request_json": "{\"owner_id\":\"owner-synthetic\",\"principal_id\":\"principal-synthetic\",\"command_id\":\"command-synthetic-0001\",\"native_reference_id\":\"reference-synthetic\",\"native_action\":\"unsettle\",\"request_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"reservation_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"identity\":{\"provider\":\"t3\",\"source_instance_id\":\"source-synthetic\",\"resource_kind\":\"thread\",\"id_kind\":\"internal\",\"native_id\":\"thread-synthetic\",\"account_provenance\":{\"kind\":\"not_account_scoped\"}},\"expected_authority_namespace\":\"authority-synthetic\",\"expected_store_generation\":7}",
+      "request_bytes": "{\"owner_id\":\"owner-synthetic\",\"principal_id\":\"principal-synthetic\",\"command_id\":\"command-synthetic-0001\",\"native_reference_id\":\"reference-synthetic\",\"native_action\":\"unsettle\",\"request_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"reservation_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"identity\":{\"provider\":\"t3\",\"source_instance_id\":\"source-synthetic\",\"resource_kind\":\"thread\",\"id_kind\":\"internal\",\"native_id\":\"thread-synthetic\",\"account_provenance\":{\"kind\":\"not_account_scoped\"}},\"expected_authority_namespace\":\"authority-synthetic\",\"expected_store_generation\":7}",
+      "request_bytes_sha256": "08a1fcf5981322ecbfb73324889eed0bad3d19108f07c2fe6e1461c322b64238",
+      "enrollment_sha256": "913447c9ac31d5b1a3debefd169f2129df5a1aac581a369d3bae1eeb291d34d5",
+      "native_command_id": "workstreams:2e569372eca8758ce6fd3d2a886e5241f20c28fccedd2718d3c009d11b5c710e",
+      "result_digest_json": "{\"command_id\":\"command-synthetic-0001\",\"native_action\":\"unsettle\",\"native_outcome\":\"committed\",\"native_reference_id\":\"reference-synthetic\",\"owner_id\":\"owner-synthetic\",\"principal_id\":\"principal-synthetic\",\"request_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"reservation_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\"}",
+      "result_sha256": "e7a5f93ac782ed48ba69798940ba358d6c4a5a0404e142dcdebce7d55e1c7868",
+      "receipt": {
+        "commandId": "workstreams:2e569372eca8758ce6fd3d2a886e5241f20c28fccedd2718d3c009d11b5c710e",
+        "aggregateKind": "thread",
+        "aggregateId": "thread-synthetic",
+        "acceptedAt": "2026-10-02T14:00:00Z",
+        "resultSequence": 31,
+        "status": "accepted",
+        "commandType": "thread.unsettle"
+      },
+      "events": [
+        {
+          "eventId": "event-synthetic-0031",
+          "commandId": "workstreams:2e569372eca8758ce6fd3d2a886e5241f20c28fccedd2718d3c009d11b5c710e",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "sequence": 31,
+          "type": "thread.unsettled",
+          "occurredAt": "2026-10-02T14:00:00Z",
+          "applicationEventVersion": 2
+        }
+      ]
+    }
+  ],
+  "attestation": {
+    "request": {
+      "owner_id": "owner-synthetic",
+      "principal_id": "principal-synthetic",
+      "identity": {
+        "provider": "t3",
+        "source_instance_id": "source-synthetic",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_id": "thread-synthetic",
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        }
+      },
+      "expected_authority_namespace": "authority-synthetic",
+      "expected_store_generation": 7
+    },
+    "request_json": "{\"owner_id\":\"owner-synthetic\",\"principal_id\":\"principal-synthetic\",\"identity\":{\"provider\":\"t3\",\"source_instance_id\":\"source-synthetic\",\"resource_kind\":\"thread\",\"id_kind\":\"internal\",\"native_id\":\"thread-synthetic\",\"account_provenance\":{\"kind\":\"not_account_scoped\"}},\"expected_authority_namespace\":\"authority-synthetic\",\"expected_store_generation\":7}",
+    "attested_at": "2026-10-02T14:00:00Z",
+    "expires_at": "2026-10-02T14:05:00Z",
+    "evidence_sha256": "23d7999aba481eb087e4958cc17bf07225c4bcaf7f496e20062a521a90f00086"
+  }
+}

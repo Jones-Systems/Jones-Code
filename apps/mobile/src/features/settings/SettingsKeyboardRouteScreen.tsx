@@ -1,19 +1,20 @@
+import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { useNavigation } from "@react-navigation/native";
-import { AsyncResult } from "effect/unstable/reactivity";
-import { Platform, Pressable, ScrollView, View } from "react-native";
+import { AsyncResult } from "effect/reactivity";
+import { Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
-import { AppText as Text } from "../../components/AppText";
-import { SymbolView } from "../../components/AppSymbol";
-import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { AppText as Text } from "../../components/ui/AppText";
 import {
   DEFAULT_COMPOSER_ENTER_BEHAVIOR,
   type ComposerEnterBehavior,
 } from "../../lib/composerEnterBehavior";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
+import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
+
+const SEND_MODIFIER = Platform.OS === "android" ? "Ctrl" : "Command";
 
 const ENTER_BEHAVIOR_OPTIONS: ReadonlyArray<{
   readonly behavior: ComposerEnterBehavior;
@@ -28,12 +29,11 @@ const ENTER_BEHAVIOR_OPTIONS: ReadonlyArray<{
   {
     behavior: "newline",
     label: "Insert new line",
-    description: "Return inserts a new line. Command-Return sends the message.",
+    description: `Return inserts a new line. ${SEND_MODIFIER}-Return sends the message.`,
   },
 ];
 
 export function SettingsKeyboardRouteScreen() {
-  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
@@ -43,13 +43,7 @@ export function SettingsKeyboardRouteScreen() {
     : null;
 
   return (
-    <View collapsable={false} className="flex-1 bg-sheet">
-      {Platform.OS === "android" ? (
-        <>
-          <NativeStackScreenOptions options={{ headerShown: false }} />
-          <AndroidScreenHeader title="Keyboard" onBack={() => navigation.goBack()} />
-        </>
-      ) : null}
+    <SettingsScreen title="Keyboard">
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
@@ -59,43 +53,21 @@ export function SettingsKeyboardRouteScreen() {
       >
         <SettingsSection title="Return key">
           {ENTER_BEHAVIOR_OPTIONS.map((option, index) => (
-            <Pressable
+            <SettingsChoiceRow
               key={option.behavior}
-              accessibilityRole="radio"
-              accessibilityState={{
-                checked: selectedBehavior === option.behavior,
-                disabled: !preferencesReady,
-              }}
+              label={option.label}
+              description={option.description}
+              selected={selectedBehavior === option.behavior}
+              separated={index > 0}
               disabled={!preferencesReady}
               onPress={() => savePreferences({ composerEnterBehavior: option.behavior })}
-              className={
-                index === 0
-                  ? "flex-row items-center gap-4 p-4"
-                  : "flex-row items-center gap-4 border-t border-border-subtle p-4"
-              }
-            >
-              <View className="min-w-0 flex-1 gap-1">
-                <Text className="text-lg text-foreground">{option.label}</Text>
-                <Text className="text-sm leading-normal text-foreground-muted">
-                  {option.description}
-                </Text>
-              </View>
-              {selectedBehavior === option.behavior ? (
-                <SymbolView
-                  name="checkmark"
-                  size={18}
-                  tintColorClassName={"accent-icon"}
-                  type="monochrome"
-                  weight="semibold"
-                />
-              ) : null}
-            </Pressable>
+            />
           ))}
         </SettingsSection>
         <Text className="px-2 text-sm text-foreground-muted">
           Applies to the composer when a hardware keyboard is connected.
         </Text>
       </ScrollView>
-    </View>
+    </SettingsScreen>
   );
 }

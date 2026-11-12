@@ -1,0 +1,380 @@
+"""External RH-F2 test preload; never imported by product source."""
+import errno
+import hashlib
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+
+
+def _install():
+    plan_name = os.environ.get("JONES_PACKAGED_DESKTOP_FAULT_PLAN")
+    if not plan_name or not re.fullmatch(r"activate-v1-[0-9a-f]{64}\.py", pathlib.Path(sys.argv[0]).name):
+        return
+    deferred = os.environ.get("JONES_PACKAGED_DESKTOP_INSTALL_FAULT") == "1"
+    if deferred and not (len(sys.argv) == 5 and sys.argv[1] == "--manifest" and sys.argv[3] == "--activate"):
+        return
+    try:
+        plan_path = pathlib.Path(plan_name)
+        root = plan_path.parent.parent
+        root_info = root.lstat()
+        assert root.is_absolute() and root.resolve(strict=True) == root
+        assert stat.S_ISDIR(root_info.st_mode) and root_info.st_uid == os.getuid()
+        assert root_info.st_mode & 0o077 == 0
+
+        def confined(path):
+            path = pathlib.Path(path)
+            path.relative_to(root)
+            assert path.is_absolute() and path.resolve(strict=True) == path
+            for parent in [path.parent, *path.parents]:
+                if parent == root:
+                    break
+                info = parent.lstat()
+                assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                assert info.st_mode & 0o077 == 0
+            return path
+
+        def read_file(path, limit):
+            path = confined(path)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                assert stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                assert info.st_nlink == 1 and info.st_mode & 0o077 == 0
+                assert info.st_size <= limit
+                raw = stream.read(limit + 1)
+                assert len(raw) == info.st_size
+                return raw
+
+        plan = json.loads(read_file(plan_path, 16384))
+        common = {"protocol", "fixtureRoot", "rootDevice", "rootInode", "helper", "helperSha256",
+                  "manifest", "manifestSha256", "point", "observeRelaunch"}
+        assert set(plan) == common | ({"selection", "selectionSha256"} if deferred else {"intent", "intentSha256", "transactionId"})
+        assert type(plan["protocol"]) is int and plan["protocol"] == (2 if deferred else 1)
+        if deferred:
+            assert plan["observeRelaunch"] is False or plan["point"] == "before-pair"
+            assert sys.argv[2] == plan["manifest"]
+            raw = read_file(sys.argv[4], 65536)
+            actual = json.loads(raw)
+            assert type(actual["protocol"]) is int and actual["protocol"] == 1
+            txid = actual["transactionId"]
+            assert re.fullmatch("[0-9a-f]{64}", txid)
+            active = json.loads(read_file(plan["manifest"], 65536))
+            transaction = confined(active["home"]) / "runtime/jones-updates/transactions" / txid
+            assert str(transaction / "intent.json") == sys.argv[4]
+            selected_raw = read_file(plan["selection"], 131072)
+            assert hashlib.sha256(selected_raw).hexdigest() == plan["selectionSha256"]
+            assert pathlib.Path(plan["selection"]).parent == pathlib.Path(active["home"]) / "runtime/jones-updates/staging"
+            selected = json.loads(selected_raw)
+            assert selected["active"] == active == actual["expected"]
+            assert selected["app"] == actual["staged"]
+            assert re.fullmatch("[0-9a-f]{64}", selected["app"]["handle"])
+            continuation_path = confined(actual["continuationReceipt"])
+            assert continuation_path.parent == transaction
+            continuation = json.loads(read_file(continuation_path, 65536))
+            assert continuation["protocol"] == 1 and continuation["preparationClaimProtocol"] == 3
+            assert continuation["prepared"] is True and continuation["transactionId"] == txid
+            assert continuation["stagedHandle"] == selected["app"]["handle"]
+            for key in ("home", "profile", "databasePath", "environmentId"):
+                assert continuation[key] == active[key]
+            assert continuation["selectionPath"] == plan["selection"]
+            assert continuation["selectionSha256"] == plan["selectionSha256"]
+            claim = {key: value for key, value in continuation.items() if key != "prepared"}
+            for name in ("prepare-intent.json", "prepare-dispatched.json"):
+                assert json.loads(read_file(transaction / name, 65536)) == claim
+            plan = dict(plan, intent=sys.argv[4], intentSha256=hashlib.sha256(raw).hexdigest(), transactionId=txid)
+        assert type(plan["observeRelaunch"]) is bool
+        assert plan["fixtureRoot"] == str(root)
+        assert (plan["rootDevice"], plan["rootInode"]) == (str(root_info.st_dev), str(root_info.st_ino))
+        helper = confined(plan["helper"])
+        assert sys.argv == [str(helper), "--manifest", plan["manifest"], "--activate", plan["intent"]]
+        assert helper.name == "activate-v1-" + plan["helperSha256"] + ".py"
+        assert hashlib.sha256(read_file(helper, 2 * 1024 * 1024)).hexdigest() == plan["helperSha256"]
+        manifest_raw = read_file(plan["manifest"], 65536)
+        intent_raw = read_file(plan["intent"], 65536)
+        assert hashlib.sha256(manifest_raw).hexdigest() == plan["manifestSha256"]
+        assert hashlib.sha256(intent_raw).hexdigest() == plan["intentSha256"]
+        manifest, intent = json.loads(manifest_raw), json.loads(intent_raw)
+        assert re.fullmatch("[0-9a-f]{64}", plan["transactionId"])
+        assert manifest["protocol"] == 1 and manifest["owner"] == "desktop"
+        assert intent["protocol"] == 1 and intent["transactionId"] == plan["transactionId"]
+        assert intent["expected"] == manifest
+        home = confined(manifest["home"])
+        assert os.environ["T3CODE_HOME"] == str(home)
+        expected_manifest = home / "runtime" / "jones-active-install.json"
+        transaction = home / "runtime" / "jones-updates" / "transactions" / plan["transactionId"]
+        assert str(expected_manifest) == plan["manifest"]
+        assert str(transaction / "intent.json") == plan["intent"]
+        assert helper.parent == home / "runtime" / "jones-updates"
+        point = plan["point"]
+        points = {"storage": ("storage_preflight", "intent", "storage"),
+                  "reserve": ("reserve_recovery_capacity", "preparing", "reserve"),
+                  "exit-wait": ("kernel_process_identity", "preparing", "stop-processes"),
+                  "before-pair": ("pair_state", "quiescent", "pair")}
+        target, phase, step = points[point]
+        receipt_path = plan_path.with_name("fault-receipt.json")
+        assert not os.path.lexists(receipt_path)
+        assert not os.path.lexists(plan_path.with_name("before-relaunch.json"))
+        assert not os.path.lexists(plan_path.with_name("before-pair-state.json"))
+        for name in ("launch-services.json", "launch-return.json", "launch-observation-failure.json"):
+            assert not os.path.lexists(plan_path.with_name(name))
+        plan_sha = hashlib.sha256(read_file(plan_path, 16384)).hexdigest()
+
+
+        def snapshot_state():
+            counts = [0, 0]
+
+            def visit(path, depth=0):
+                counts[0] += 1
+                assert depth <= 16 and counts[0] <= 2048
+                path = pathlib.Path(path)
+                path.relative_to(root)
+                assert path != root and path.is_absolute()
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    assert path.parent.resolve(strict=True) == path.parent
+                    return None
+                assert not stat.S_ISLNK(info.st_mode) and info.st_uid == os.getuid()
+                assert path.resolve(strict=True) == path
+                identity = {"device": str(info.st_dev), "inode": str(info.st_ino), "mode": info.st_mode}
+                if stat.S_ISDIR(info.st_mode):
+                    children = {child.name: visit(child, depth + 1) for child in sorted(path.iterdir())}
+                    after = path.lstat()
+                    assert (after.st_dev, after.st_ino, after.st_mode, after.st_mtime_ns, after.st_ctime_ns) == (
+                        info.st_dev, info.st_ino, info.st_mode, info.st_mtime_ns, info.st_ctime_ns)
+                    return dict(identity, children=children)
+                assert stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                counts[1] += info.st_size
+                assert counts[1] <= 64 * 1024 * 1024
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, "rb") as stream:
+                    before = os.fstat(stream.fileno())
+                    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+                    assert all(getattr(before, key) == getattr(info, key) for key in fields)
+                    digest = hashlib.sha256()
+                    for chunk in iter(lambda: stream.read(65536), b""):
+                        digest.update(chunk)
+                    after = os.fstat(stream.fileno())
+                    current = path.lstat()
+                    assert all(getattr(after, key) == getattr(before, key) == getattr(current, key) for key in fields)
+                return dict(identity, bytes=info.st_size, sha256=digest.hexdigest())
+
+            database = pathlib.Path(manifest["databasePath"])
+            profile = pathlib.Path(manifest["profile"])
+            database.relative_to(home)
+            profile.relative_to(root)
+            paths = [pathlib.Path(str(database) + suffix) for suffix in ("", "-wal", "-shm")]
+            paths += [database.parent / name for name in ("settings.json", "desktop-settings.json", "client-settings.json", "saved-environments.json", "environment-id")]
+            paths += [profile]
+            return {str(path): visit(path) for path in paths}
+
+        fault_record = None
+        quiet_state = None
+        launch_frame = None
+        services_frame = None
+        services_sha = None
+        services_returned = False
+        before_relaunch_sha = None
+
+        def launch_record(name, kind, **fields):
+            record = dict(fault_record, kind=kind, beforeRelaunchSha256=before_relaunch_sha, **fields)
+            raw = json.dumps(record, sort_keys=True).encode()
+            assert len(raw) <= 16384
+            fd = os.open(plan_path.with_name(name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            fd = os.open(plan_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            return hashlib.sha256(raw).hexdigest()
+
+        def observation_failed(category):
+            # After launch effects, observation failure must not replace the helper's
+            # result or exception. A missing terminal receipt or this marker holds custody.
+            try:
+                launch_record("launch-observation-failure.json", "packaged-desktop-launch-observation-failure",
+                              failure=category)
+            except BaseException:
+                pass
+
+        def bounded_result(value, keys):
+            if type(value) is not dict or not set(value) <= keys:
+                return None
+            if any(type(item) not in (str, int, type(None)) for item in value.values()):
+                return None
+            raw = json.dumps(value, sort_keys=True).encode()
+            return json.loads(raw) if len(raw) <= 8192 else None
+
+        def observe_relaunch(frame, event, arg):
+            nonlocal launch_frame, services_frame, services_sha, services_returned, before_relaunch_sha
+            if deferred and fault_record is not None and plan["observeRelaunch"]:
+                try:
+                    if (event == "call" and frame.f_code.co_filename == str(helper)
+                            and frame.f_code.co_name == "launch_services" and frame.f_back is launch_frame):
+                        if services_frame is not None:
+                            observation_failed("duplicate-observation")
+                        else:
+                            services_frame = frame
+                        return
+                    if event == "return" and frame is services_frame:
+                        reply = bounded_result(arg, {"protocol", "status", "pid", "bundlePath", "executablePath", "domain", "code"})
+                        services_sha = launch_record("launch-services.json", "packaged-desktop-launch-services",
+                            sequence=1, reply=reply, failure=None if reply is not None else "launch-services-return-unproved")
+                        services_returned = reply is not None
+                        return
+                    if event == "return" and frame is launch_frame:
+                        identity = bounded_result(arg, {"pid", "startSec", "startUsec", "executable"})
+                        launch_record("launch-return.json", "packaged-desktop-launch-return", sequence=2,
+                            launchServicesSha256=services_sha, identity=identity,
+                            failure=None if identity is not None else (
+                                "launch-validation-unproved" if services_returned else "launch-services-unproved"))
+                        return
+                except BaseException:
+                    observation_failed("observation-failed")
+                    return
+            if (not plan["observeRelaunch"] or fault_record is None or event != "call"
+                    or frame.f_code.co_filename != str(helper) or frame.f_code.co_name != "launch"):
+                return
+            parent = frame.f_back
+            activation = parent.f_back if parent is not None else None
+            if (parent is None or parent.f_code.co_filename != str(helper) or parent.f_code.co_name != "relaunch_previous"
+                    or activation is None or activation.f_code.co_filename != str(helper) or activation.f_code.co_name != "activate"):
+                return
+            if deferred and launch_frame is not None:
+                observation_failed("duplicate-observation")
+                return
+            if not deferred:
+                sys.setprofile(None)
+            try:
+                local = activation.f_locals
+                assert local.get("transaction_id") == plan["transactionId"]
+                assert frame.f_locals.get("active") == manifest and frame.f_locals.get("descriptor") is None
+                journal_raw = read_file(transaction / "journal.json", 1024 * 1024)
+                journal = json.loads(journal_raw)
+                assert journal == local["journal"] and journal["intent"] == intent and journal["phase"] == "rolled-back"
+                evidence = journal["preEffect"]
+                assert (evidence["phase"], evidence["step"]) == (phase, step)
+                assert evidence["reason"] == "preparation-failed" and evidence["relaunch"] == "skipped"
+                assert evidence["diagnostics"]["errno"] == errno.EIO and "relaunch" not in journal
+                assert hashlib.sha256(read_file(plan["manifest"], 65536)).hexdigest() == plan["manifestSha256"]
+                assert hashlib.sha256(read_file(plan["intent"], 65536)).hexdigest() == plan["intentSha256"]
+                assert hashlib.sha256(read_file(helper, 2 * 1024 * 1024)).hexdigest() == plan["helperSha256"]
+                fault_raw = read_file(receipt_path, 16384)
+                assert json.loads(fault_raw) == fault_record
+                state = snapshot_state()
+                if deferred:
+                    assert point == "before-pair" and quiet_state is not None
+                    assert state == quiet_state
+                receipt = dict(fault_record, kind="packaged-desktop-before-relaunch",
+                               faultReceiptSha256=hashlib.sha256(fault_raw).hexdigest(),
+                               journalSha256=hashlib.sha256(journal_raw).hexdigest(), state=state)
+                raw = json.dumps(receipt, sort_keys=True).encode()
+                assert len(raw) <= 1024 * 1024
+                fd = os.open(plan_path.with_name("before-relaunch.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                fd = os.open(plan_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                if deferred:
+                    before_relaunch_sha = hashlib.sha256(raw).hexdigest()
+                    launch_frame = frame
+            except BaseException:
+                os.write(2, b"RH-F2 pre-relaunch observation failed; owned evidence retained.\n")
+                os._exit(125)
+
+        def trace(frame, event, arg):
+            nonlocal fault_record, quiet_state
+            if event != "call" or frame.f_code.co_filename != str(helper):
+                return None
+            if frame.f_code.co_name != target:
+                return None
+            ancestors = []
+            current = frame.f_back
+            activation = None
+            while current:
+                if current.f_code.co_filename == str(helper):
+                    ancestors.append(current.f_code.co_name)
+                    if current.f_code.co_name == "activate":
+                        activation = current
+                        break
+                current = current.f_back
+            if activation is None:
+                return None
+            if point == "exit-wait" and not all(name in ancestors for name in ("alive", "<genexpr>", "stop_exact")):
+                return None
+            local = activation.f_locals
+            if (local.get("transaction_id") != plan["transactionId"] or local.get("preparation_step") != step
+                    or local.get("journal", {}).get("phase") != phase):
+                return None
+            journal_raw = read_file(transaction / "journal.json", 1024 * 1024)
+            journal = json.loads(journal_raw)
+            assert journal["phase"] == phase and journal["intent"] == intent
+            assert hashlib.sha256(read_file(plan["manifest"], 65536)).hexdigest() == plan["manifestSha256"]
+            assert hashlib.sha256(read_file(plan["intent"], 65536)).hexdigest() == plan["intentSha256"]
+            assert hashlib.sha256(read_file(helper, 2 * 1024 * 1024)).hexdigest() == plan["helperSha256"]
+            receipt = {"protocol": 1, "kind": "packaged-desktop-helper-fault", "pid": os.getpid(),
+                       "point": point, "function": target, "phase": phase, "step": step,
+                       "transactionId": plan["transactionId"], "planSha256": plan_sha,
+                       "helperSha256": plan["helperSha256"], "manifestSha256": plan["manifestSha256"],
+                       "intentSha256": plan["intentSha256"],
+                       "journalSha256": hashlib.sha256(journal_raw).hexdigest()}
+            if deferred and plan["observeRelaunch"]:
+                try:
+                    # The initial app was live. Only this helper's stopped-process boundary
+                    # supplies a quiet baseline; never compare with a live-home snapshot.
+                    assert point == "before-pair"
+                    proofs = local.get("captured_processes")
+                    valid = frame.f_globals["valid_process_proofs"]
+                    alive = frame.f_globals["alive"]
+                    assert valid(proofs) and all(not alive(proof) for proof in proofs)
+                    quiet_state = snapshot_state()
+                    snapshot = dict(protocol=1, kind="packaged-desktop-before-pair-state", processesStopped=True,
+                                    state=quiet_state, **{key: receipt[key] for key in
+                                    ("pid", "planSha256", "transactionId", "intentSha256", "journalSha256")})
+                    raw = json.dumps(snapshot, sort_keys=True).encode()
+                    assert len(raw) <= 1024 * 1024
+                    fd = os.open(plan_path.with_name("before-pair-state.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(raw)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    receipt["beforePairStateSha256"] = hashlib.sha256(raw).hexdigest()
+                except BaseException:
+                    os.write(2, b"RH-F2 quiet-state observation failed; owned evidence retained.\n")
+                    os._exit(125)
+            fd = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as stream:
+                json.dump(receipt, stream, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            fd = os.open(receipt_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            fault_record = receipt
+            sys.settrace(None)
+            raise OSError(errno.EIO, "RH-F2 owned fixture preparation fault: " + point)
+
+        if plan["observeRelaunch"]:
+            sys.setprofile(observe_relaunch)
+        sys.settrace(trace)
+    except BaseException:
+        # sitecustomize exceptions alone may be swallowed; an armed invalid plan must stop the helper.
+        os.write(2, b"RH-F2 helper preload refused its fixture binding.\n")
+        os._exit(125)
+
+
+_install()

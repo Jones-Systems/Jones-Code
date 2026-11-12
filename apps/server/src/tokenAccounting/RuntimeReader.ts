@@ -42,7 +42,7 @@ export function makeRuntimeReader(
   }
   try {
     const configuration = decodeConfiguration({ bindingPath, bindingSha256, reportId });
-    // JavaScript's end anchor can match before a final newline; pins require exactly 64 characters.
+    // Startup pins must remain exactly 64 characters independently of schema decoding.
     if (configuration.bindingSha256.length !== 64 || configuration.reportId.length !== 64) {
       return unverifiedReader(reportId);
     }

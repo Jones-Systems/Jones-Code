@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as HttpApi from "effect/unstable/httpapi/HttpApi";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpServer from "effect/unstable/http/HttpServer";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServer from "effect/http/HttpServer";
 import {
   AuthSessionId,
   EnvironmentAuthenticatedAuth,
@@ -82,6 +83,7 @@ describe("provider queue HTTP boundaries", () => {
       ] as const) {
         const response = await f.handler(
           new Request(`http://localhost/api/provider-queue/${path}`, { method }),
+          Context.empty(),
         );
         expect(response.status).toBe(403);
       }
@@ -95,6 +97,7 @@ describe("provider queue HTTP boundaries", () => {
     try {
       const response = await f.handler(
         new Request("http://localhost/api/provider-queue/inventory"),
+        Context.empty(),
       );
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
@@ -107,6 +110,7 @@ describe("provider queue HTTP boundaries", () => {
       ] as const) {
         const result = await f.handler(
           new Request(`http://localhost/api/provider-queue/instances/missing/${path}`, { method }),
+          Context.empty(),
         );
         expect(result.status).toBe(200);
         expect(await result.json()).toMatchObject({ status: "unknown_instance", quota: null });
@@ -125,6 +129,7 @@ describe("provider queue HTTP boundaries", () => {
       ] as const) {
         const response = await f.handler(
           new Request(`http://localhost/api/provider-queue/instances/known/${path}`, { method }),
+          Context.empty(),
         );
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({

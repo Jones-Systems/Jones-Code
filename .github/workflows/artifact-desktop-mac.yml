@@ -1,16 +1,30 @@
 name: Mac Desktop Artifact
 
 on:
+  # Retained pre-590 clients discover only genuine main-push artifacts.
   push:
     branches: [main]
+  schedule:
+    - cron: "45 4 * * *"
+      timezone: "America/New_York"
   workflow_dispatch:
   pull_request:
-    branches: [main]
+    branches: [main, work/jones-rebuild/staging]
     paths:
       - .github/workflows/artifact-desktop-mac.yml
       - apps/desktop/**
       - scripts/build-desktop-artifact.ts
       - scripts/update-release-package-versions.ts
+      - scripts/stamp-jones-build.ts
+      - scripts/jones/updates/build-provenance.ts
+      - scripts/jones/updates/desktop-worker-smoke*
+      - packages/shared/src/jones/nativeWriterFence*
+      - apps/server/src/jones/updates/**
+      - apps/server/vite.config.ts
+      - vite.config.ts
+      - apps/server/package.json
+      - apps/server/src/jones/cloud/qualifiedStartup.ts
+      - apps/server/src/jones/cloud/qualifiedBackup*.ts
       - scripts/lib/**
       - native/resource-monitor/**
       - native/browser-secret/**
@@ -20,9 +34,11 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: artifact-desktop-mac-${{ github.event.pull_request.number || github.ref }}
+  # Scheduled/manual builds must not cancel the compatibility push stream.
+  group: artifact-desktop-mac-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -30,27 +46,46 @@ jobs:
     name: Unsigned Apple Silicon DMG
     if: >-
       github.repository == 'Jones-Systems/Jones-Code' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: macos-15
     timeout-minutes: 45
     env:
       T3CODE_DESKTOP_UPDATE_REPOSITORY: Jones-Systems/Jones-Code
-      TMPDIR: ${{ github.workspace }}/.artifact-desktop-scratch
       T3CODE_DESKTOP_SIGNED: "false"
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
-      - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+      - name: Checkout public artifact source
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          # Auth cleanup in actions/checkout traverses unmapped vendored gitlinks.
+          # This public-only fetch needs no token and preserves the exact event SHA.
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
 
       - name: Prepare job scratch
-        run: mkdir -p "$TMPDIR"
+        id: job_scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_TEMP" = /* && "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          job_scratch="$RUNNER_TEMP/jones-desktop-mac-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          [[ "$job_scratch" != *$'\n'* && "$job_scratch" != *$'\r'* ]]
+          mkdir -m 700 -- "$job_scratch"
+          printf 'TMPDIR=%s\n' "$job_scratch" >> "$GITHUB_ENV"
 
       - name: Verify Apple Silicon runner
         run: test "$(uname -m)" = arm64
@@ -82,11 +117,80 @@ jobs:
           echo "value=$version" >> "$GITHUB_OUTPUT"
 
       - name: Bind Jones source identity
-        run: node scripts/stamp-jones-build.ts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          build_started_at=
+          if metadata=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"); then
+            if ! build_started_at=$(printf '%s' "$metadata" | node --input-type=module -e '
+              import fs from "node:fs";
+              try {
+                const value = JSON.parse(fs.readFileSync(0, "utf8")).run_started_at;
+                if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) ||
+                    !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value.replace(/Z$/, ".000Z")) {
+                  process.exit(1);
+                }
+                process.stdout.write(value);
+              } catch {
+                process.exit(1);
+              }
+            '); then
+              echo "::warning::Build time metadata invalid; omitting build time"
+              build_started_at=
+            fi
+          else
+            echo "::warning::Build time unavailable; omitting build time"
+          fi
+          JONES_BUILD_STARTED_AT="$build_started_at" node scripts/stamp-jones-build.ts
+
+      - name: Bound compiler jobs to hosted runner capacity
+        id: build_capacity
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import os from 'node:os';
+          import fs from 'node:fs';
+          const logicalCores = os.cpus().length;
+          const availableCores = os.availableParallelism();
+          const inheritedCaps = [process.env.CARGO_BUILD_JOBS, process.env.CMAKE_BUILD_PARALLEL_LEVEL]
+            .filter(value => value !== undefined)
+            .map(value => /^\d+$/.test(value) ? Number(value) : NaN);
+          const bounds = [6, logicalCores, availableCores, ...inheritedCaps];
+          if (bounds.some(value => !Number.isSafeInteger(value) || value < 1))
+            throw new Error('Hosted compiler capacity is unavailable or invalid.');
+          const jobs = Math.min(...bounds);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `jobs=${jobs}\n`);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `Hosted build capacity: ${logicalCores} logical cores, ${availableCores} available; ${jobs} compiler jobs.\n`);
+          NODE
+
+      - name: Check native producer identity
+        run: |
+          node --input-type=module <<'JS'
+          import assert from "node:assert/strict";
+          import { execFileSync } from "node:child_process";
+          import { producerIdentity, observeProducerSelf } from "./apps/server/src/jones/workspaceRetirement/ProducerSessionObservation.ts";
+          assert.equal(process.platform, "darwin");
+          assert.equal(process.arch, "arm64");
+          const preparationStarted = performance.now();
+          execFileSync("/usr/bin/python3", ["-B", "-c", "import ctypes; ctypes.CDLL('/usr/lib/libproc.dylib')"], {
+            timeout: 15_000,
+            env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+            stdio: "inherit",
+          });
+          console.log(`System Python preparation: ${Math.round(performance.now() - preparationStarted)}ms`);
+          const identity = await producerIdentity();
+          assert.equal(identity.pid, process.pid);
+          assert.match(identity.start, /^[0-9]+:[0-9]+$/);
+          assert.deepEqual(await observeProducerSelf(identity), { state: "present", reason: "holder_present" });
+          JS
 
       - name: Build unsigned preview DMG
         env:
           BUILD_VERSION: ${{ steps.version.outputs.value }}
+          CARGO_BUILD_JOBS: ${{ steps.build_capacity.outputs.jobs }}
+          CMAKE_BUILD_PARALLEL_LEVEL: ${{ steps.build_capacity.outputs.jobs }}
         run: >-
           node scripts/build-desktop-artifact.ts
           --platform mac --target dmg --arch arm64
@@ -94,6 +198,7 @@ jobs:
           --output-dir artifacts/desktop-mac
 
       - name: Verify DMG and write checksum
+        id: dmg_verify
         env:
           BUILD_VERSION: ${{ steps.version.outputs.value }}
         shell: bash
@@ -129,6 +234,64 @@ jobs:
             echo 'Preview versions have no automatic update feed. No GitHub Release is created.'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Smoke-test packaged server update preparation worker
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mount="$TMPDIR/preparation-smoke-dmg"
+          mkdir -p "$mount"
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" \
+            "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg"
+          trap 'hdiutil detach "$mount" || hdiutil detach -force "$mount"' EXIT
+          apps=("$mount"/*.app)
+          test "${#apps[@]}" -eq 1
+          app="${apps[0]}"
+          executable="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")"
+          # The packaged service runs as Electron's Node, exactly as the qualified runtime wrapper starts it.
+          ELECTRON_RUN_AS_NODE=1 node apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts \
+            --worker "$app/Contents/MacOS/$executable" \
+            --worker-entry "$app/Contents/Resources/app.asar/apps/server/dist/bin.mjs"
+
+      - name: "Stage exact #873 payload through the diagnostic packaged server"
+        if: >-
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.body, '<!-- jones-reproduce-native-stage-873 -->')
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:apps/server/src/jones/cloud/qualifiedDarwinRuntime.ts)" = e8f0b03e72b8e2a4ec38b3b1953e04a911d7f72f
+          sw_vers
+          TMPDIR="$RUNNER_TEMP" node apps/server/src/jones/updates/preparation/packagedDarwinStageRepro.ts \
+            --worker-dmg "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg"
+
+      - name: Qualify packaged desktop staging worker
+        id: desktop_worker
+        if: ${{ !cancelled() && steps.dmg_verify.outcome == 'success' }}
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: >-
+          exec node scripts/jones/updates/desktop-worker-smoke.ts
+          --dmg "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg"
+          --source "$JONES_SOURCE_SHA" --tree "$JONES_SOURCE_TREE"
+          --version "$BUILD_VERSION" --scratch-parent "$TMPDIR"
+          --report artifacts/desktop-worker-proof/qualification.json
+
+      - name: Upload desktop worker qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: desktop-worker-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/desktop-worker-proof/qualification.json
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Upload DMG and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -139,9 +302,69 @@ jobs:
             artifacts/desktop-mac/SOURCE_COMMIT
             artifacts/desktop-mac/ARTIFACT.json
           if-no-files-found: error
+          # Ongoing publication is required; each artifact still expires normally.
           retention-days: 7
           compression-level: 0
 
       - name: Clean job scratch
-        if: always()
-        run: rm -rf -- "$GITHUB_WORKSPACE/.artifact-desktop-scratch"
+        if: always() && steps.job_scratch.outcome == 'success'
+        env:
+          DESKTOP_WORKER_OUTCOME: ${{ steps.desktop_worker.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$DESKTOP_WORKER_OUTCOME" && "$DESKTOP_WORKER_OUTCOME" != skipped ]]; then
+            # A missing proof must not turn outer cleanup into deletion through an unknown mount or writer.
+            if ! node --input-type=module -e '
+              import fs from "node:fs";
+              const proof = JSON.parse(fs.readFileSync("artifacts/desktop-worker-proof/qualification.json", "utf8"));
+              process.exit(proof.cleanup.status === "pass" ? 0 : 1);
+            '; then
+              echo '::warning::Desktop worker cleanup is unproved; preserving scratch on the disposable runner.'
+              exit 1
+            fi
+          fi
+          rm -rf -- "$TMPDIR"
+
+  reproduce_original_stage:
+    name: "Reproduce #873 with the original packaged worker"
+    if: >-
+      github.repository == 'Jones-Systems/Jones-Code' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.body, '<!-- jones-reproduce-native-stage-873 -->')
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout public reproduction source
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(uname -m)" = arm64
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: "Stage exact #873 payload through the original packaged server"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sw_vers
+          node apps/server/src/jones/updates/preparation/packagedDarwinStageRepro.ts

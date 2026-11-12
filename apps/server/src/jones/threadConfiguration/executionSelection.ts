@@ -1,0 +1,68 @@
+import type {
+  ModelSelection,
+  OrchestrationV2ProviderSession,
+  OrchestrationV2Run,
+  OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import { modelSelectionsEqual } from "@t3tools/shared/model";
+type Projection = Pick<OrchestrationV2ThreadProjection, "thread" | "providerThreads"> &
+  Partial<Pick<OrchestrationV2ThreadProjection, "runs">>;
+/** Captured root execution owns the conversation; saved defaults describe future admission. */
+export function executionProjection<P extends Projection>(projection: P): P {
+  const captured = projection.runs
+    ?.filter(
+      (run) => run.startedAt !== null && run.status !== "queued" && run.status !== "rolled_back",
+    )
+    .toSorted((a, b) => b.ordinal - a.ordinal)[0];
+  const provider =
+    projection.thread.activeProviderThreadId === null
+      ? undefined
+      : projection.providerThreads.find(
+          (row) =>
+            row.id === (captured?.providerThreadId ?? projection.thread.activeProviderThreadId),
+        );
+  const modelSelection: ModelSelection = captured?.modelSelection ?? {
+    ...projection.thread.modelSelection,
+    instanceId: provider?.providerInstanceId ?? projection.thread.modelSelection.instanceId,
+  };
+  return {
+    ...projection,
+    thread: {
+      ...projection.thread,
+      modelSelection,
+      providerInstanceId: modelSelection.instanceId,
+      activeProviderThreadId: provider?.id ?? projection.thread.activeProviderThreadId,
+    },
+  };
+}
+
+/**
+ * Jones saves a queued message's explicit pick as the default when it is sent; upstream applies it
+ * when that run starts. Work that goes ahead of those picks, or drains the running provider's own
+ * output, takes the selection in effect before them. A later save stays newer and wins.
+ */
+export function selectionAheadOfQueuedPicks(
+  saved: Pick<OrchestrationV2ThreadProjection["thread"], "modelSelection" | "updatedAt">,
+  inEffect: ModelSelection,
+  queuedPicks: ReadonlyArray<Pick<OrchestrationV2Run, "modelSelection" | "requestedAt">>,
+): ModelSelection {
+  const savedByQueuedPick = queuedPicks.some(
+    (run) =>
+      modelSelectionsEqual(run.modelSelection, saved.modelSelection) &&
+      !DateTime.isGreaterThan(saved.updatedAt, run.requestedAt),
+  );
+  return savedByQueuedPick ? inEffect : saved.modelSelection;
+}
+
+export function executionWorkspace(
+  worktreePath: string | null,
+  session: Pick<OrchestrationV2ProviderSession, "cwd" | "capabilities"> | undefined,
+): string {
+  // A pooled process keeps its opener's cwd; each conversation supplies its own workspace.
+  return (
+    (session?.capabilities.sessions.supportsMultipleProviderThreadsPerSession
+      ? (worktreePath ?? session.cwd)
+      : (session?.cwd ?? worktreePath)) ?? "<unresolved-workspace>"
+  );
+}

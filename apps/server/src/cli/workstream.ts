@@ -1,14 +1,21 @@
+import { command as exportCommand } from "../jones/workstreams/native/read/exportCli.ts";
+import { registryCommand } from "../jones/workstreams/native/runtime/cli.ts";
+import {
+  command as peerSetupCommand,
+  liveEndpointLayer as peerSetupLiveEndpointLayer,
+} from "../jones/workstreams/native/runtime/peerSetupCli.ts";
+import { workstreamOperationCommands } from "../jones/workstreams/operations/cli.ts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
-import { Command, GlobalFlag } from "effect/unstable/cli";
+import { Command, GlobalFlag } from "effect/cli";
 
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import {
   initializeNativeStoreAuthorityForBaseDir,
   NativeStoreAuthorityPersistenceError,
 } from "../environment/nativeStoreAuthorityPersistence.ts";
+import { workstreamProviderCommand } from "../jones/workstreams/enrollment/cli.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
-import { workstreamProviderCommand } from "./workstreamProvider.ts";
 
 const authorityEnrollCommand = Command.make("enroll", projectLocationFlags).pipe(
   Command.withDescription(
@@ -43,5 +50,12 @@ const authorityCommand = Command.make("authority").pipe(
 
 export const workstreamCommand = Command.make("workstream").pipe(
   Command.withDescription("Manage cross-system workstream integration."),
-  Command.withSubcommands([authorityCommand, workstreamProviderCommand]),
+  Command.withSubcommands([
+    registryCommand,
+    exportCommand,
+    peerSetupCommand.pipe(Command.provide(peerSetupLiveEndpointLayer)),
+    authorityCommand,
+    workstreamProviderCommand,
+    ...workstreamOperationCommands,
+  ]),
 );

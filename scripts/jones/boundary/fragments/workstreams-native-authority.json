@@ -1,0 +1,118 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workstreams-native-authority",
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/state/workstreams/native.ts",
+    "packages/client-runtime/src/state/workstreams/native.test.ts",
+    "packages/client-runtime/src/state/workstreams/nativeRead.ts",
+    "packages/client-runtime/src/state/workstreams/nativeRead.test.ts",
+    "packages/client-runtime/src/state/workstreams/nativeExport.ts",
+    "packages/client-runtime/src/state/workstreams/nativeExport.test.ts",
+    "apps/mobile/src/features/workstreams/summary.test.ts",
+    "apps/mobile/src/features/workstreams/summary.ts",
+    "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.browser.test.tsx",
+    "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.tsx",
+    "docs/operations/workstreams-rollups.md",
+    "packages/client-runtime/src/jones/workstreams/nativeHttp.ts",
+    "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts",
+    "packages/client-runtime/src/jones/workstreams/nativeLifetime.ts",
+    "packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts",
+    "apps/web/src/jones/workstreams/useNativeWorkstreamReads.ts",
+    "apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx",
+    "apps/mobile/src/features/workstreams/nativeLifetime.test.tsx",
+    "packages/client-runtime/src/jones/workstreams/nativeLifetime.testkit.ts",
+    "packages/client-runtime/src/jones/workstreams/nativePlacements.ts",
+    "packages/client-runtime/src/jones/workstreams/nativePlacements.test.ts",
+    "apps/web/src/jones/workstreams/WorkstreamExportButton.tsx",
+    "apps/web/src/jones/workstreams/WorkstreamExportButton.browser.test.tsx",
+    "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.tsx",
+    "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.test.tsx"
+  ],
+  "hookPaths": [
+    "apps/server/src/httpCors.ts",
+    "apps/server/src/environment/ServerEnvironment.test.ts",
+    "packages/shared/src/atomicWrite.ts",
+    "packages/shared/src/atomicWrite.test.ts",
+    "apps/server/src/serverRuntimeState.ts",
+    "apps/server/src/serverRuntimeState.test.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/workstreamsHttp.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/workstreamsNative.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativePlacement.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/startup.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/integration.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/serviceLauncherClient.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/serviceLauncherClient.test.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/admission.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/currentAuthority.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/nativeForwards.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/forwarding/homeForwardPort.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/forwarding/sourceReadmissionPort.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/forwarding/retainedSourceEffectPort.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/workstreamsHomeReadResult.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativeExport.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/forwarding/homeExportProtocol.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/descriptor.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.test.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/descriptor.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.test.ts",
+      "to": "packages/contracts/src/jones/workstreamsNative.ts"
+    }
+  ]
+}

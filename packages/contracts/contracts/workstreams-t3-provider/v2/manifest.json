@@ -1,0 +1,32 @@
+{
+  "contract_family": "workstreams-t3-provider",
+  "contract_version": "2.0.0",
+  "digest_algorithm": "sha256",
+  "manifest_sha256": "5acf321e9a2c0584d0e3e74137e6bdd07b5ab90f35bc5cec47ba1ee96c08fed8",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "71349a9336b5b846cf09b708772332e1d23e121ea319d8bc36ea885367d37857"
+    },
+    {
+      "path": "fixtures/conformance.json",
+      "sha256": "15ae849e77bc437c4cb17c1b98d245fb9ba4985602ddfb64c182c4532789bbf5"
+    },
+    {
+      "path": "fixtures/golden-vectors.json",
+      "sha256": "5cbd7960e94966e3986fbf90719e0d2f23efca442b2271c1c5dc12fd45772c79"
+    },
+    {
+      "path": "fixtures/negative-cases.json",
+      "sha256": "d2c7a935da8fd390abcc099b6156617a15c6e43b819b1d166107383f09d2e150"
+    },
+    {
+      "path": "fixtures/semantic-cases.json",
+      "sha256": "b2f421ce1868655c874bda3e3e8e7f774b360eef184f8676514a4a86e4ca43bf"
+    },
+    {
+      "path": "schemas/provider.schema.json",
+      "sha256": "ee9811103a9250f98f7ff0b9d4109cc69d40d028f712e20cac1005f13cf23b3c"
+    }
+  ]
+}

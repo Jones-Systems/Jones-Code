@@ -1,0 +1,294 @@
+import * as Schema from "effect/Schema";
+import { JonesBuildStartedAt } from "./fleetUpdates/source.ts";
+import { EnvironmentId, TrimmedNonEmptyString } from "../baseSchemas.ts";
+import {
+  JonesOperationId,
+  JonesOperationReceipt,
+  JonesRecoveryPolicy,
+  JonesSourceSha,
+} from "./jonesOperations.ts";
+import { JonesUpdateLastCheck, JonesUpdateProgress } from "./jonesUpdateProgress.ts";
+
+export * from "./jonesUpdateProgress.ts";
+
+export const JonesUpdatePhase = Schema.Literals([
+  "checking",
+  "building",
+  "no-new",
+  "available",
+  "downloading",
+  "verifying",
+  "staged",
+  "preparing",
+  "installing",
+  "committed",
+  "rolled-back",
+  "blocked",
+  "error",
+]);
+export type JonesUpdatePhase = typeof JonesUpdatePhase.Type;
+
+export const JonesUpdateProvenance = Schema.Struct({
+  repository: Schema.Literal("Jones-Systems/Jones-Code"),
+  sourceSha: TrimmedNonEmptyString,
+  sourceTree: TrimmedNonEmptyString,
+  workflow: TrimmedNonEmptyString,
+  runId: Schema.Number,
+  runAttempt: Schema.Number,
+  artifactId: Schema.Number,
+  artifactDigest: TrimmedNonEmptyString,
+  platform: Schema.Literals(["linux", "darwin"]),
+  architecture: Schema.Literals(["x64", "arm64"]),
+  version: Schema.optionalKey(TrimmedNonEmptyString),
+  buildStartedAt: Schema.optionalKey(JonesBuildStartedAt),
+  payloadSha256: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type JonesUpdateProvenance = typeof JonesUpdateProvenance.Type;
+
+/** Discovery metadata only; it carries neither a staged handle nor a migration plan. */
+export const JonesUpdateAlternative = Schema.Struct({
+  provenance: JonesUpdateProvenance,
+  checkedAt: Schema.String,
+  expiresAt: Schema.String,
+});
+export type JonesUpdateAlternative = typeof JonesUpdateAlternative.Type;
+
+export function sameJonesUpdateAlternative(
+  left: JonesUpdateAlternative | undefined,
+  right: JonesUpdateAlternative | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.checkedAt === right.checkedAt &&
+    left.expiresAt === right.expiresAt &&
+    (Object.keys(JonesUpdateProvenance.fields) as Array<keyof JonesUpdateProvenance>).every(
+      (key) => left.provenance[key] === right.provenance[key],
+    )
+  );
+}
+
+export const JonesUpdateCapability = Schema.Struct({
+  check: Schema.Boolean,
+  download: Schema.Boolean,
+  install: Schema.Boolean,
+  /**
+   * The server accepts the exact-source download action. Absent means unsupported, which is how
+   * older servers read; it is never advertised without `download`.
+   */
+  exactSource: Schema.optionalKey(Schema.Boolean),
+  /** Exact-source staging can retire a caller-bound selection; requires download and exactSource. */
+  replaceStaged: Schema.optionalKey(Schema.Boolean),
+  /** Durable operations require download and install support. Absent means unsupported. */
+  operations: Schema.optionalKey(Schema.Literal(1)),
+  recoveryPolicy: Schema.optionalKey(Schema.Literal(1)),
+  reason: Schema.optionalKey(
+    Schema.Literals([
+      "bootstrap-required",
+      "source-unqualified",
+      "unsupported-platform",
+      "native-consent-required",
+      "blocked",
+    ]),
+  ),
+});
+
+/**
+ * Present only on a host enrolled to follow a laptop. Such a host offers, stages and installs
+ * exactly `leaderSource` and `leaderTree` unless `reviewTarget` holds automatic following and
+ * permits only that target's reviewed operations. A null leader without a review target holds.
+ * Hosts without a policy select their own builds.
+ */
+export const JonesUpdatePolicy = Schema.Struct({
+  role: Schema.Literal("follower"),
+  leaderSource: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/))),
+  /** Sent with every published `leaderSource`. */
+  leaderTree: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/))),
+  reviewTarget: Schema.optionalKey(
+    Schema.Struct({
+      source: JonesSourceSha,
+      tree: JonesSourceSha,
+      directiveId: JonesOperationId,
+    }),
+  ),
+});
+export type JonesUpdatePolicy = typeof JonesUpdatePolicy.Type;
+
+export const JonesCheckClassification = Schema.Struct({
+  kind: Schema.Literals([
+    "available",
+    "target-already-running",
+    "qualification-pending",
+    "qualification-failed",
+    "no-eligible-package-in-window",
+    "incomplete-discovery",
+    "failure",
+  ]),
+  checkedAt: Schema.String,
+  discovery: Schema.optionalKey(
+    Schema.Struct({
+      termination: Schema.Literals([
+        "not-started",
+        "target-proved",
+        "candidate-selected",
+        "window-ended",
+        "interrupted",
+      ]),
+      /** The discovery frontier fit its budget; this does not claim an exhaustive search. */
+      bounded: Schema.Boolean,
+      unresolvedLimits: Schema.Array(
+        Schema.Literals([
+          "producer-pages",
+          "ci-page",
+          "artifact-page",
+          "unknown-terminal-evidence",
+        ]),
+      ).check(Schema.isMaxLength(4)),
+    }),
+  ),
+  pendingCount: Schema.optionalKey(Schema.Number),
+  failedQualificationCount: Schema.optionalKey(Schema.Number),
+});
+export type JonesCheckClassification = typeof JonesCheckClassification.Type;
+
+/** The staged handle is immutable even when a later check discovers another build. */
+export const JonesUpdateState = Schema.Struct({
+  source: Schema.Literal("jones-actions"),
+  channel: Schema.Literal("jones-main"),
+  phase: JonesUpdatePhase,
+  revision: Schema.optionalKey(Schema.Number),
+  capability: JonesUpdateCapability,
+  operation: Schema.optionalKey(JonesOperationReceipt),
+  checkClassification: Schema.optionalKey(JonesCheckClassification),
+  provenance: Schema.optionalKey(JonesUpdateProvenance),
+  alternativeCandidate: Schema.optionalKey(JonesUpdateAlternative),
+  stagedHandle: Schema.optionalKey(TrimmedNonEmptyString),
+  message: Schema.optionalKey(Schema.String),
+  checkedAt: Schema.optionalKey(Schema.String),
+  environmentId: Schema.optionalKey(EnvironmentId),
+  currentVersion: Schema.optionalKey(Schema.String),
+  currentBuildStartedAt: Schema.optionalKey(JonesBuildStartedAt),
+  installedSource: Schema.optionalKey(
+    Schema.Struct({
+      repository: Schema.Literal("Jones-Systems/Jones-Code"),
+      sha: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+      tree: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+    }),
+  ),
+  updateId: Schema.optionalKey(TrimmedNonEmptyString),
+  settlement: Schema.optionalKey(
+    Schema.Literals(["none", "launcher-recorded", "legacy-reconciled"]),
+  ),
+  settlementRefusal: Schema.optionalKey(
+    Schema.Literals([
+      "not-failed",
+      "not-found",
+      "insufficient-evidence",
+      "restore-pending",
+      "active-changed",
+      "trial-evidence-present",
+      "retired-evidence-mismatch",
+      "settlement-write-failed",
+      "capability-unsupported",
+    ]),
+  ),
+  cause: Schema.optionalKey(Schema.String),
+  launcherVersion: Schema.optionalKey(Schema.String),
+  childVersion: Schema.optionalKey(Schema.String),
+  launcherSettlement: Schema.optionalKey(Schema.Literals(["supported", "unsupported"])),
+  launcherRefresh: Schema.optionalKey(Schema.Literals(["none", "recommended"])),
+  launcherRefreshReason: Schema.optionalKey(Schema.Literal("settlement-unsupported")),
+  outcome: Schema.optionalKey(
+    Schema.Struct({
+      status: Schema.Literals(["committed", "rolled-back", "blocked"]),
+      reason: Schema.optionalKey(Schema.String),
+      fromVersion: TrimmedNonEmptyString,
+      targetVersion: TrimmedNonEmptyString,
+    }),
+  ),
+  recovery: Schema.optionalKey(
+    Schema.Struct({
+      method: Schema.Literals(["clone", "copy"]),
+      requested: Schema.optionalKey(JonesRecoveryPolicy),
+      bytes: Schema.Number,
+      completedAt: Schema.String,
+      durationMs: Schema.optionalKey(Schema.Number),
+    }),
+  ),
+  migrationPlan: Schema.optionalKey(
+    Schema.Struct({
+      pendingUpstream: Schema.Array(Schema.Number),
+      pendingJones: Schema.Array(Schema.Number),
+    }),
+  ),
+  policy: Schema.optionalKey(JonesUpdatePolicy),
+  /** Structured download or install steps. Older hosts omit it; older clients ignore it. */
+  progress: Schema.optionalKey(JonesUpdateProgress),
+  lastCheck: Schema.optionalKey(JonesUpdateLastCheck),
+  /** The staged build's source or tree is the one already running; installing it changes nothing. */
+  stagedAlreadyRunning: Schema.optionalKey(Schema.Literal(true)),
+});
+export type JonesUpdateState = typeof JonesUpdateState.Type;
+
+export const JonesUpdateDownloadInput = Schema.Struct({
+  artifactId: Schema.Number,
+  sourceSha: TrimmedNonEmptyString,
+});
+export type JonesUpdateDownloadInput = typeof JonesUpdateDownloadInput.Type;
+
+const JonesUpdateOperationId = Schema.String.check(
+  Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
+);
+
+/** Selects one build by its full source commit. A version string never identifies a source. */
+export const JonesUpdateExactInput = Schema.Struct({
+  targetSource: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+  replace: Schema.optionalKey(
+    Schema.Struct({
+      stagedHandle: TrimmedNonEmptyString,
+      sourceSha: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+      operationId: JonesUpdateOperationId,
+      environmentId: EnvironmentId,
+      currentVersion: TrimmedNonEmptyString,
+      expectedInstalledSource: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+      /** Present only for generic Check offers; laptop matching retains its installed-source semantics. */
+      alternative: Schema.optionalKey(JonesUpdateAlternative),
+    }),
+  ),
+});
+export type JonesUpdateExactInput = typeof JonesUpdateExactInput.Type;
+
+export const JonesUpdateInstallInput = Schema.Struct({
+  stagedHandle: TrimmedNonEmptyString,
+  environmentId: EnvironmentId,
+  currentVersion: TrimmedNonEmptyString,
+  continueRunningThreads: Schema.optionalKey(Schema.Boolean),
+});
+export type JonesUpdateInstallInput = typeof JonesUpdateInstallInput.Type;
+
+export const JonesUpdateReconcileInput = Schema.Struct({
+  operationId: JonesUpdateOperationId,
+  requestId: JonesUpdateOperationId,
+});
+export type JonesUpdateReconcileInput = typeof JonesUpdateReconcileInput.Type;
+
+export const JonesUpdateRecordRetiredInput = Schema.Struct({
+  operationId: JonesUpdateOperationId,
+  requestId: JonesUpdateOperationId,
+  retiredLocation: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+});
+export type JonesUpdateRecordRetiredInput = typeof JonesUpdateRecordRetiredInput.Type;
+
+/** Native preparation binds one durable attempt independently of its reusable staged artifact. */
+export const JonesNativePrepareInput = Schema.Struct({
+  stagedHandle: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  transactionId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  environmentId: EnvironmentId,
+  currentVersion: TrimmedNonEmptyString,
+});
+export type JonesNativePrepareInput = typeof JonesNativePrepareInput.Type;
+
+export const JonesQuitPreparation = Schema.Struct({
+  prepared: Schema.Boolean,
+  threadCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type JonesQuitPreparation = typeof JonesQuitPreparation.Type;

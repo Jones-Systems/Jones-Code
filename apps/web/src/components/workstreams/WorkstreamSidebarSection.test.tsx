@@ -62,4 +62,24 @@ describe("mounted Workstream sidebar", () => {
       "Thread placement lookup scope is partial (1,000 of 20,000 identities selected).",
     );
   });
+
+  it("says placement proofs are unavailable instead of reporting a partial lookup scope", () => {
+    const controller = useWorkstreams();
+    const html = renderToStaticMarkup(
+      <WorkstreamSidebarSection
+        controller={{
+          ...controller,
+          placementInventory: {
+            ...controller.placementInventory,
+            identities: [],
+            proofsUnavailable: true,
+          },
+        }}
+      />,
+    );
+    expect(html).toContain(
+      "This server cannot verify thread placements, so assignments show as recorded.",
+    );
+    expect(html).not.toContain("lookup scope is partial");
+  });
 });

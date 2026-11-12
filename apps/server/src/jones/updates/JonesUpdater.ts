@@ -1,0 +1,1270 @@
+// @effect-diagnostics globalTimers:off globalDate:off
+// Promise boundary is also exercised without an Effect runtime; timers drive subscriptions and installation progress.
+import type {
+  JonesOperationReceipt,
+  JonesRecoveryPolicy,
+} from "@t3tools/contracts/jones/jonesOperations";
+import * as Schema from "effect/Schema";
+import {
+  JonesCheckClassification,
+  sameJonesUpdateAlternative,
+} from "@t3tools/contracts/jones/jonesUpdates";
+import type { PreparationJoin } from "./preparation/supervisor.ts";
+import { readJonesBuildStartedAt } from "@t3tools/contracts/jones/fleet-updates";
+import type {
+  JonesUpdatePolicy,
+  JonesUpdateState,
+  JonesUpdateDownloadInput,
+  JonesUpdateExactInput,
+  JonesUpdateInstallInput,
+} from "@t3tools/contracts/jones/jonesUpdates";
+import { JonesActionsClient, type JonesActionsCandidate } from "@t3tools/shared/jones/jonesActions";
+import {
+  findActivationWithdrawal,
+  followerTargetRefusal,
+  type FollowerOrigin,
+} from "./followerPolicy.ts";
+import {
+  INSTALL_REPORTED_STEP,
+  advanceProgress,
+  completeProgress,
+  failProgress,
+  startProgress,
+  withOperationId,
+} from "./progress.ts";
+import { lastCheckRecord, sanitizeCheckFailure } from "./checkRecord.ts";
+
+const isCheckClassification = Schema.is(JonesCheckClassification);
+
+export interface JonesStagedRetirementInput {
+  readonly operationId: string;
+  readonly environmentId: string;
+  readonly currentVersion: string;
+  readonly expectedInstalledSource: string;
+  readonly targetSource: string;
+  readonly stagedHandle: string;
+}
+
+/** One downloaded, verified and staged build, bound to this host. */
+export interface JonesPreparedStage {
+  readonly stagedHandle: string;
+  readonly version: string;
+  readonly payloadSha256: string;
+  readonly migrationPlan?: JonesUpdateState["migrationPlan"];
+}
+
+export interface JonesUpdaterHost {
+  readonly initialState: JonesUpdateState;
+  readonly installedSource: () => Promise<string>;
+  readonly platform: "linux" | "darwin";
+  readonly architecture: "x64" | "arm64";
+  /**
+   * Downloads, verifies and stages exactly `candidate`. The host runs this off the serving
+   * process; the signal stops a preparation whose target was superseded.
+   */
+  readonly prepare: (
+    candidate: JonesActionsCandidate,
+    options: {
+      readonly signal: AbortSignal;
+      readonly onVerifying: () => void;
+      readonly jobId?: string;
+      readonly onStarted?: (settled: Promise<PreparationJoin>) => void;
+      readonly onAdopting?: () => Promise<void>;
+    },
+  ) => Promise<JonesPreparedStage>;
+  readonly install: (
+    request: JonesUpdaterInstallInput,
+    reportStep?: (step: "marking" | "verifying" | "preflight" | "capturing" | "handoff") => void,
+    onPreparationRefused?: () => void,
+  ) => Promise<void | {
+    readonly updateId?: string;
+    readonly migrationPlan?: JonesUpdateState["migrationPlan"];
+  }>;
+  readonly retireStaged?: (input: JonesStagedRetirementInput) => Promise<void>;
+  readonly stateChanged?: (state: JonesUpdateState) => void;
+  /** Receives each failed check with its sanitized reason; the host logs it. */
+  readonly checkFailed?: (context: {
+    readonly targetSource?: string;
+    readonly staged: boolean;
+    readonly reason: string;
+  }) => void;
+  readonly startupOutcome?: () =>
+    | {
+        status: "committed" | "rolled-back" | "failed";
+        id: string;
+        fromVersion: string;
+        targetVersion: string;
+        reason?: string;
+        settlement?: JonesUpdateState["settlement"];
+        settlementRefusal?: JonesUpdateState["settlementRefusal"];
+        cause?: string;
+      }
+    | undefined;
+}
+
+/** What one check run produced; the candidate belongs to this run alone. */
+interface JonesCheckRun {
+  readonly state: JonesUpdateState;
+  readonly candidate: JonesActionsCandidate | undefined;
+  readonly buildStartedAt?: string;
+}
+
+export function readCurrentJonesBuildStartedAt(
+  metadata: unknown,
+  currentVersion: string,
+): string | undefined {
+  return typeof metadata === "object" &&
+    metadata !== null &&
+    "version" in metadata &&
+    metadata.version === currentVersion
+    ? readJonesBuildStartedAt(metadata)
+    : undefined;
+}
+
+function candidateProvenance(
+  candidate: JonesActionsCandidate,
+  buildStartedAt: string | undefined,
+): NonNullable<JonesUpdateState["provenance"]> {
+  return {
+    repository: candidate.repository,
+    sourceSha: candidate.source,
+    sourceTree: candidate.tree,
+    workflow: candidate.workflow,
+    runId: candidate.runId,
+    runAttempt: candidate.runAttempt,
+    artifactId: candidate.artifactId,
+    artifactDigest: candidate.artifactDigest,
+    platform: candidate.platform,
+    architecture: candidate.architecture,
+    version: candidate.version,
+    ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
+  };
+}
+
+export type JonesInstallBeforeDispatchRefusal = JonesUpdateInstallInput & {
+  readonly kind: "before-dispatch";
+  readonly operationId: string;
+  readonly targetSource: string;
+  readonly expectedInstalledSource: string;
+};
+
+export type JonesUpdaterInstallInput = JonesUpdateInstallInput & {
+  readonly operationId?: string;
+  readonly targetSource?: string;
+  readonly expectedInstalledSource?: string;
+  /** Private callback, invoked only with positive proof that launcher dispatch never began. */
+  readonly onBeforeDispatchRefusal?: (proof: JonesInstallBeforeDispatchRefusal) => void;
+  readonly recovery?: { readonly policy: JonesRecoveryPolicy; readonly preflightId: string };
+  /** Who asked: a person on this host, or a fleet operation. Defaults to manual. */
+  readonly origin?: FollowerOrigin;
+  /**
+   * Checked again just before the launcher handoff; a reason withdraws an automatic activation
+   * while it can still be refused, leaving the staged build ready.
+   */
+  readonly admit?: () => Promise<string | undefined>;
+};
+
+export interface JonesPreparationOperation {
+  readonly operationId: string;
+  readonly jobId: string;
+  readonly signal: AbortSignal;
+  readonly onStarting?: () => void;
+  readonly onAdopting: () => Promise<void>;
+}
+export class PreparationStopRequested extends Error {
+  readonly operationId: string;
+  constructor(operationId: string) {
+    super("Download stopped. Nothing was installed.");
+    this.name = "PreparationStopRequested";
+    this.operationId = operationId;
+  }
+}
+
+const FOLLOWER_WAITING = "Waiting for the laptop to report its installed build.";
+const RETIRED_WITHOUT_TARGET =
+  "The previous staged selection was retired, but the requested target was not staged. Start a fresh exact-source download without replacement.";
+
+/** A follower's laptop moved on; the unaccepted preparation of its earlier build is dropped. */
+class PreparationSuperseded extends Error {
+  constructor() {
+    super("The laptop's installed build changed while this build was being prepared.");
+    this.name = "PreparationSuperseded";
+  }
+}
+
+/** One checker belongs to the host. Connected clients observe the same fixed staging handle. */
+export class JonesUpdater {
+  private state: JonesUpdateState;
+  private revision = 0;
+  private busy = false;
+  private checkAdmissions = 0;
+  private candidate: JonesActionsCandidate | undefined;
+  private candidateBuildStartedAt: string | undefined;
+  /** The one check run on this host, keyed by its target (`latest` for the newest main build). */
+  private inflight: { readonly key: string; readonly promise: Promise<JonesCheckRun> } | undefined;
+  /** The one unaccepted preparation; a policy change can stop it. Installs are never here. */
+  private preparation:
+    | {
+        readonly source: string;
+        readonly controller: AbortController;
+        readonly done: Promise<JonesUpdateState>;
+        readonly operationId?: string;
+        readonly jobId?: string;
+        adopting: boolean;
+        join?: Promise<PreparationJoin>;
+      }
+    | undefined;
+  private readonly heldJobs = new Set<string>();
+  setHeldJobs(jobIds: ReadonlyArray<string>): void {
+    for (const id of jobIds) this.heldJobs.add(id);
+  }
+  releaseHeldJob(jobId: string): void {
+    this.heldJobs.delete(jobId);
+  }
+  /** Read-only discovery can be joined; mutations and unproved worker exit still hold admission. */
+  admissionHeld(): boolean {
+    return this.heldJobs.size > 0 || (this.busy && this.inflight === undefined);
+  }
+  /** Reserve the gap between a read-only check and durable operation admission. */
+  reserveCheckAdmission(): { readonly ready: Promise<void>; readonly release: () => void } {
+    this.checkAdmissions += 1;
+    let released = false;
+    return {
+      ready:
+        this.inflight?.promise.then(
+          () => undefined,
+          () => undefined,
+        ) ?? Promise.resolve(),
+      release: () => {
+        if (released) return;
+        released = true;
+        this.checkAdmissions -= 1;
+      },
+    };
+  }
+  stopPreparation(operationId: string): "requested" | "not-running" | "not-stoppable-phase" {
+    const preparation = this.preparation;
+    if (preparation?.operationId !== operationId) return "not-running";
+    if (preparation.adopting) return "not-stoppable-phase";
+    preparation.controller.abort(new PreparationStopRequested(operationId));
+    return "requested";
+  }
+  private readonly listeners = new Set<() => void>();
+
+  private readonly host: JonesUpdaterHost;
+  private readonly actions: Pick<JonesActionsClient, "check">;
+  constructor(
+    host: JonesUpdaterHost,
+    actions: Pick<JonesActionsClient, "check"> = new JonesActionsClient(),
+  ) {
+    this.host = host;
+    this.actions = actions;
+    const { alternativeCandidate: _offer, ...initialState } = host.initialState;
+    this.state = initialState;
+  }
+
+  snapshot(): JonesUpdateState {
+    const outcome =
+      this.state.outcome !== undefined || ["preparing", "installing"].includes(this.state.phase)
+        ? undefined
+        : this.host.startupOutcome?.();
+    return {
+      ...this.state,
+      ...(outcome === undefined
+        ? {}
+        : {
+            updateId: this.state.updateId ?? outcome.id,
+            ...(outcome.status !== "failed"
+              ? {}
+              : {
+                  settlement: outcome.settlement ?? "none",
+                  ...(outcome.cause === undefined ? {} : { cause: outcome.cause }),
+                  ...(outcome.settlementRefusal === undefined
+                    ? {}
+                    : { settlementRefusal: outcome.settlementRefusal }),
+                }),
+            outcome: {
+              status: outcome.status === "failed" ? ("blocked" as const) : outcome.status,
+              fromVersion: outcome.fromVersion,
+              targetVersion: outcome.targetVersion,
+              ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+            },
+            ...((this.revision === 0 || this.state.phase === "error") &&
+            this.state.stagedHandle === undefined
+              ? {
+                  phase: outcome.status === "failed" ? ("error" as const) : outcome.status,
+                  message:
+                    outcome.status === "committed"
+                      ? "The selected Jones runtime was installed."
+                      : outcome.status === "rolled-back"
+                        ? "Installation rolled back to its retained binary and state pair."
+                        : outcome.settlement === "launcher-recorded" ||
+                            outcome.settlement === "legacy-reconciled"
+                          ? `Update did not start: ${outcome.cause ?? "cause unavailable"}. Nothing changed.`
+                          : "Previous attempt needs reconciliation",
+                }
+              : {}),
+          }),
+      ...(this.stagedAlreadyRunning() ? { stagedAlreadyRunning: true as const } : {}),
+      revision: this.revision,
+    };
+  }
+
+  /** A staged build whose source or tree is the running one is not a pending install. */
+  private stagedAlreadyRunning(): boolean {
+    const staged = this.state.provenance;
+    const running = this.state.installedSource;
+    return (
+      this.state.stagedHandle !== undefined &&
+      staged !== undefined &&
+      running !== undefined &&
+      (staged.sourceSha === running.sha || staged.sourceTree === running.tree)
+    );
+  }
+
+  /** Applies one progress transition; the caller's next publication carries it. */
+  private setProgress(
+    transition: (
+      progress: JonesUpdateState["progress"],
+      now: string,
+    ) => JonesUpdateState["progress"],
+  ): void {
+    const next = transition(this.state.progress, new Date().toISOString());
+    if (next !== undefined) this.state = { ...this.state, progress: next };
+  }
+
+  recordOperation(operation: JonesOperationReceipt): void {
+    if (this.state.operation === undefined || this.state.operation.updatedAt <= operation.updatedAt)
+      this.publish({ operation });
+  }
+
+  /** Notify observers after the host rereads this attempt's supplemental settlement evidence. */
+  refreshStartupOutcome(): JonesUpdateState {
+    return this.publish({});
+  }
+
+  /**
+   * Sets which builds this host may take. A follower stops offering any build other than its
+   * laptop's; a staged build stays visible (and refused) until it is retired or replaced.
+   */
+  setPolicy(policy: JonesUpdatePolicy | undefined): JonesUpdateState {
+    const current = this.state.policy;
+    if (
+      current?.role === policy?.role &&
+      current?.leaderSource === policy?.leaderSource &&
+      current?.leaderTree === policy?.leaderTree &&
+      current?.reviewTarget?.directiveId === policy?.reviewTarget?.directiveId
+    )
+      return this.snapshot();
+    const retainedState = this.snapshot();
+    this.clearAlternative();
+    const { policy: _previous, ...rest } = this.state;
+    this.state = policy === undefined ? rest : { ...rest, policy };
+    // Latest wins: a follower stops preparing a build its laptop no longer runs.
+    const running = this.preparation;
+    if (
+      running !== undefined &&
+      typeof policy?.leaderSource === "string" &&
+      running.source !== policy.leaderSource &&
+      running.source !== policy.reviewTarget?.source
+    )
+      running.controller.abort(new PreparationSuperseded());
+    const offeredOther =
+      policy !== undefined &&
+      this.state.stagedHandle === undefined &&
+      this.state.phase === "available" &&
+      this.state.provenance?.sourceSha !== (policy.leaderSource ?? undefined);
+    if (offeredOther) {
+      const { provenance: _provenance, ...withoutOffer } = this.state;
+      this.state = withoutOffer;
+      this.candidate = undefined;
+    }
+    const idle =
+      this.state.stagedHandle === undefined &&
+      !this.busy &&
+      !["preparing", "installing"].includes(this.state.phase);
+    // A policy refresh must not replace a retained startup failure with a generic waiting state.
+    if (idle && retainedState.phase === "error" && retainedState.outcome?.status === "blocked")
+      return this.publish({ phase: "error" });
+    return this.publish(
+      offeredOther || (idle && policy?.leaderSource === null)
+        ? {
+            phase: "no-new",
+            message:
+              policy?.leaderSource === null
+                ? FOLLOWER_WAITING
+                : "The laptop's installed build changed. Checking for it…",
+          }
+        : {},
+    );
+  }
+
+  private clearOutcome(): void {
+    const { outcome: _outcome, updateId: _updateId, ...state } = this.state;
+    this.state = state;
+  }
+
+  private clearAlternative(): void {
+    const { alternativeCandidate: _offer, ...state } = this.state;
+    this.state = state;
+  }
+
+  private publish(patch: Partial<JonesUpdateState>): JonesUpdateState {
+    if (
+      (patch.phase !== undefined &&
+        ["downloading", "verifying", "preparing", "installing"].includes(patch.phase)) ||
+      patch.operation !== undefined ||
+      patch.stagedHandle !== undefined ||
+      patch.installedSource !== undefined ||
+      patch.currentVersion !== undefined ||
+      patch.capability !== undefined
+    )
+      this.clearAlternative();
+    this.state = { ...this.state, ...patch };
+    this.revision += 1;
+    this.host.stateChanged?.(this.snapshot());
+    for (const listener of this.listeners) listener();
+    return this.snapshot();
+  }
+
+  async observe(after?: number, signal?: AbortSignal): Promise<JonesUpdateState> {
+    if (after === undefined || after !== this.revision) return this.snapshot();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.listeners.delete(changed);
+        signal?.removeEventListener("abort", aborted);
+      };
+      const changed = () => {
+        cleanup();
+        resolve(this.snapshot());
+      };
+      const aborted = () => {
+        cleanup();
+        reject(new Error("Update subscription closed."));
+      };
+      const timer = setTimeout(changed, 25_000);
+      this.listeners.add(changed);
+      signal?.addEventListener("abort", aborted, { once: true });
+      if (signal?.aborted) aborted();
+    });
+  }
+
+  /** `operation` marks the running download or install record failed; a check never does. */
+  private fail(error: unknown, operation = false): JonesUpdateState {
+    // The Actions adapter sanitizes transport failures; injected host errors must also be safe to publish.
+    const message = error instanceof Error ? error.message : "Jones update failed.";
+    if (operation) this.setProgress((progress, now) => failProgress(progress, now, message));
+    return this.publish({
+      phase: "blocked",
+      message,
+      // An offered build reports its version for display; only a staged build is an attempt.
+      ...(this.state.currentVersion === undefined ||
+      this.state.stagedHandle === undefined ||
+      this.state.provenance?.version === undefined
+        ? {}
+        : {
+            outcome: {
+              status: "blocked" as const,
+              fromVersion: this.state.currentVersion,
+              targetVersion: this.state.provenance.version,
+              reason: message,
+            },
+          }),
+    });
+  }
+
+  /**
+   * Checks for a build. Callers of one target share the running check; a caller of another target
+   * waits for it and then runs its own. A check yields to any other operation on the host.
+   */
+  async check(targetSource?: string): Promise<JonesUpdateState> {
+    const policy = this.state.policy;
+    if (targetSource === undefined && policy !== undefined) {
+      // A follower never asks for the newest main build; it checks for its laptop's build.
+      if (policy.leaderSource === null) return { ...this.snapshot(), message: FOLLOWER_WAITING };
+      return (await this.checkRun(policy.leaderSource)).state;
+    }
+    return (await this.checkRun(targetSource)).state;
+  }
+
+  private async checkRun(
+    targetSource?: string,
+    operation?: JonesPreparationOperation,
+  ): Promise<JonesCheckRun> {
+    const key = targetSource ?? "latest";
+    for (;;) {
+      const running = this.inflight;
+      if (running === undefined) break;
+      if (running.key === key) return running.promise;
+      await running.promise.catch(() => undefined);
+    }
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      (this.checkAdmissions > 0 && operation === undefined) ||
+      this.state.phase === "installing" ||
+      this.state.phase === "preparing" ||
+      !this.state.capability.check
+    )
+      return { state: this.snapshot(), candidate: undefined };
+    // Claim the host before the run starts so nothing can interleave with its first publication.
+    this.busy = true;
+    let settle!: { resolve: (run: JonesCheckRun) => void; reject: (cause: unknown) => void };
+    const promise = new Promise<JonesCheckRun>((resolve, reject) => (settle = { resolve, reject }));
+    this.inflight = { key, promise };
+    void this.runCheck(targetSource).then(
+      (run) => {
+        this.busy = false;
+        this.inflight = undefined;
+        settle.resolve(run);
+      },
+      (cause: unknown) => {
+        this.busy = false;
+        this.inflight = undefined;
+        settle.reject(cause);
+      },
+    );
+    return promise;
+  }
+
+  /** Runs one check under the busy latch; its result keeps candidate display metadata paired. */
+  private async runCheck(targetSource: string | undefined): Promise<JonesCheckRun> {
+    const staged = this.state.stagedHandle !== undefined;
+    if (targetSource === undefined) this.clearAlternative();
+    // A host that already holds a settled result keeps showing it until this check replaces it.
+    if (!staged && this.state.checkedAt === undefined)
+      this.publish({ phase: "checking", message: "Checking qualified main builds…" });
+    try {
+      const installedSource = await this.host.installedSource();
+      const result = await this.actions.check({
+        installedSource,
+        platform: this.host.platform,
+        architecture: this.host.architecture,
+        ...(targetSource === undefined ? {} : { targetSource }),
+      });
+      const checkedAt = new Date().toISOString();
+      const classified =
+        "classification" in result && isCheckClassification(result.classification)
+          ? result.classification
+          : undefined;
+      const failure =
+        result.state === "blocked"
+          ? sanitizeCheckFailure(new Error(result.reason))
+          : classified?.kind === "failure"
+            ? "The update check failed."
+            : undefined;
+      this.recordCheck(checkedAt, failure, targetSource, staged);
+      if (classified === undefined && this.state.checkClassification?.kind === "failure") {
+        // A later check that succeeded clears the earlier failure.
+        const { checkClassification: _stale, ...rest } = this.state;
+        this.state = rest;
+      }
+      if (classified !== undefined) this.publish({ checkClassification: classified });
+      if (result.state === "available") {
+        const candidate = result.candidate;
+        const buildStartedAt = result.buildStartedAt;
+        // A follower offers only its laptop's build, with the tree the repository records for it.
+        const refusal = followerTargetRefusal(this.state.policy, candidate.source, candidate.tree);
+        if (refusal !== undefined) {
+          this.clearAlternative();
+          this.candidate = undefined;
+          this.candidateBuildStartedAt = undefined;
+          return {
+            state: this.publish(
+              staged ? { checkedAt } : { phase: "blocked", checkedAt, message: refusal },
+            ),
+            candidate: undefined,
+          };
+        }
+        this.candidate = candidate;
+        this.candidateBuildStartedAt = buildStartedAt;
+        if (staged) {
+          const alternativeCandidate =
+            targetSource === undefined &&
+            this.state.policy === undefined &&
+            installedSource === this.state.installedSource?.sha &&
+            candidate.source !== this.state.provenance?.sourceSha &&
+            candidate.source !== this.state.installedSource?.sha
+              ? {
+                  provenance: candidateProvenance(candidate, buildStartedAt),
+                  checkedAt,
+                  expiresAt: candidate.expiresAt,
+                }
+              : undefined;
+          return {
+            state: this.publish({
+              checkedAt,
+              ...(alternativeCandidate === undefined ? {} : { alternativeCandidate }),
+            }),
+            candidate,
+            ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
+          };
+        }
+        this.clearAlternative();
+        const { migrationPlan: _previousPlan, ...state } = this.state;
+        this.state = state;
+        return {
+          state: this.publish({
+            phase: "available",
+            checkedAt,
+            message: "A qualified main build is ready to download.",
+            provenance: candidateProvenance(candidate, buildStartedAt),
+          }),
+          candidate,
+          ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
+        };
+      }
+      this.clearAlternative();
+      this.candidate = undefined;
+      this.candidateBuildStartedAt = undefined;
+      if (staged) return { state: this.publish({ checkedAt }), candidate: undefined };
+      return {
+        state: this.publish({
+          phase: result.state,
+          checkedAt,
+          message:
+            result.state === "blocked"
+              ? result.reason
+              : result.state === "building"
+                ? "A fresh main build is still being qualified."
+                : targetSource === undefined
+                  ? "No newer qualified main build."
+                  : targetSource === this.state.policy?.leaderSource
+                    ? "This host runs the laptop's installed build."
+                    : "This host already runs the requested source.",
+        }),
+        candidate: undefined,
+      };
+    } catch (error) {
+      this.clearAlternative();
+      this.candidate = undefined;
+      this.candidateBuildStartedAt = undefined;
+      const checkedAt = new Date().toISOString();
+      this.recordCheck(checkedAt, sanitizeCheckFailure(error), targetSource, staged);
+      this.state = {
+        ...this.state,
+        checkClassification: { kind: "failure", checkedAt },
+      };
+      return {
+        state: staged ? this.publish({ checkedAt }) : this.fail(error),
+        candidate: undefined,
+      };
+    }
+  }
+
+  /** Records the check time and outcome without publishing; a failure is also reported to the host. */
+  private recordCheck(
+    at: string,
+    failure: string | undefined,
+    targetSource: string | undefined,
+    staged: boolean,
+  ): void {
+    this.state = {
+      ...this.state,
+      lastCheck: lastCheckRecord(failure === undefined ? "succeeded" : "failed", at, failure),
+    };
+    if (failure !== undefined)
+      this.host.checkFailed?.({
+        ...(targetSource === undefined ? {} : { targetSource }),
+        staged,
+        reason: failure,
+      });
+  }
+
+  /**
+   * Stages the one qualified build of `targetSource`. The target is never widened to a newer build,
+   * replacement requires the original immutable binding, and the same staged source is unchanged.
+   */
+  async stageExact(
+    targetSource: string,
+    replace?: JonesUpdateExactInput["replace"],
+    operation?: JonesPreparationOperation,
+  ): Promise<JonesUpdateState> {
+    if (this.checkAdmissions > 0 && operation === undefined) return this.snapshot();
+    if (this.heldJobs.size > 0)
+      return {
+        ...this.snapshot(),
+        phase: "blocked",
+        message: "An earlier preparation has not proved its exit.",
+      };
+    if (operation?.signal.aborted) return this.snapshot();
+    const refusal = followerTargetRefusal(
+      this.state.policy,
+      targetSource,
+      this.state.provenance?.sourceSha === targetSource
+        ? this.state.provenance.sourceTree
+        : undefined,
+    );
+    if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
+    const settled = this.stagedOutcome(targetSource);
+    if (
+      settled !== undefined &&
+      (replace === undefined || settled.provenance?.sourceSha === targetSource)
+    )
+      return settled;
+    if (replace !== undefined) {
+      const refusal = this.replacementRefusal(replace);
+      if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
+      if (
+        replace.alternative !== undefined &&
+        replace.alternative.provenance.sourceSha !== targetSource
+      )
+        return {
+          ...this.snapshot(),
+          phase: "blocked",
+          message: "The alternative target changed. Check again; the download was retained.",
+        };
+    }
+    // A superseded preparation releases the host as soon as it is stopped; the newer target
+    // goes next. A running one is observed through the busy host, never awaited.
+    const running = this.preparation;
+    if (running?.controller.signal.aborted === true) await running.done;
+    const run = await this.checkRun(targetSource, operation);
+    if (operation?.signal.aborted) return this.snapshot();
+    // Download only the candidate this run returned for the target; a skipped run, or a build
+    // offered by any other check, must not be staged.
+    const candidate = run.candidate;
+    if (
+      candidate?.source !== targetSource ||
+      (replace === undefined && run.state.phase !== "available")
+    ) {
+      if (replace !== undefined)
+        return {
+          ...this.snapshot(),
+          phase: "blocked",
+          message:
+            "The requested source is not available from the current check. The staged selection was retained.",
+        };
+      return run.state.phase === "available" || run.state.phase === "checking"
+        ? {
+            ...run.state,
+            message: "The requested source is not available from the current check. Try again.",
+          }
+        : run.state;
+    }
+    // Another request may have claimed the host while this one waited for its turn.
+    while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
+    const latestRefusal = followerTargetRefusal(
+      this.state.policy,
+      candidate.source,
+      candidate.tree,
+    );
+    if (latestRefusal !== undefined)
+      return { ...this.snapshot(), phase: "blocked", message: latestRefusal };
+    if (replace !== undefined) {
+      const same = this.stagedOutcome(targetSource);
+      if (same?.provenance?.sourceSha === targetSource) return same;
+      const refusal = this.replacementRefusal(replace);
+      if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
+      if (
+        replace.alternative !== undefined &&
+        !sameJonesUpdateAlternative(replace.alternative, {
+          ...replace.alternative,
+          provenance: candidateProvenance(candidate, run.buildStartedAt),
+          expiresAt: candidate.expiresAt,
+        })
+      ) {
+        this.clearAlternative();
+        this.publish({});
+        return {
+          ...this.snapshot(),
+          phase: "blocked",
+          message: "The qualified alternative changed. Check again; the download was retained.",
+        };
+      }
+      const retired = await this.retireStagedOperation(
+        {
+          operationId: replace.operationId,
+          environmentId: replace.environmentId,
+          currentVersion: replace.currentVersion,
+          expectedInstalledSource: replace.expectedInstalledSource,
+          targetSource: replace.sourceSha,
+          stagedHandle: replace.stagedHandle,
+        },
+        () =>
+          followerTargetRefusal(this.state.policy, candidate.source, candidate.tree) ??
+          this.alternativeRefusal(replace.alternative),
+      );
+      if (!retired.retired)
+        return {
+          ...this.snapshot(),
+          phase: "blocked",
+          message: retired.reason ?? "The staged selection could not be retired safely.",
+        };
+      const afterRetirement = followerTargetRefusal(
+        this.state.policy,
+        candidate.source,
+        candidate.tree,
+      );
+      if (
+        afterRetirement !== undefined ||
+        this.busy ||
+        ["preparing", "installing"].includes(this.state.phase) ||
+        this.state.stagedHandle !== undefined ||
+        !this.state.capability.download
+      )
+        return {
+          ...this.snapshot(),
+          phase: "blocked",
+          message: `${RETIRED_WITHOUT_TARGET} ${afterRetirement ?? "The host's update state changed."}`,
+        };
+      return this.stageCandidate(candidate, run.buildStartedAt, true);
+    }
+    return (
+      this.stagedOutcome(targetSource) ??
+      this.stageCandidate(candidate, run.buildStartedAt, false, operation)
+    );
+  }
+
+  private replacementRefusal(
+    replace: NonNullable<JonesUpdateExactInput["replace"]>,
+  ): string | undefined {
+    if (
+      !this.state.capability.download ||
+      this.state.capability.exactSource !== true ||
+      this.state.capability.replaceStaged !== true ||
+      this.host.retireStaged === undefined
+    )
+      return "Replacing a staged selection is unavailable on this host.";
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      ["preparing", "installing"].includes(this.state.phase) ||
+      (this.state.operation !== undefined &&
+        (this.state.operation.code === "launcher-unconfirmed" ||
+          ["accepted", "running", "stop-requested", "adopting", "handed-off", "held"].includes(
+            this.state.operation.phase,
+          )))
+    )
+      return "An update operation is still active.";
+    // An empty slot cannot prove that this replacement completed in an earlier server lifetime.
+    if (this.state.stagedHandle === undefined)
+      return "No staged selection matches this replacement. Start a fresh exact-source download without replacement.";
+    if (
+      replace.stagedHandle !== this.state.stagedHandle ||
+      replace.sourceSha !== this.state.provenance?.sourceSha ||
+      replace.environmentId !== this.state.environmentId ||
+      replace.currentVersion !== this.state.currentVersion ||
+      replace.expectedInstalledSource !== this.state.installedSource?.sha
+    )
+      return "The retained stage belongs to another immutable binding.";
+    return this.alternativeRefusal(replace.alternative);
+  }
+
+  private alternativeRefusal(
+    alternative: JonesUpdateState["alternativeCandidate"],
+  ): string | undefined {
+    if (
+      alternative !== undefined &&
+      (this.state.policy !== undefined ||
+        !sameJonesUpdateAlternative(alternative, this.state.alternativeCandidate) ||
+        !Number.isFinite(Date.parse(alternative.expiresAt)) ||
+        Date.parse(alternative.expiresAt) <= Date.now())
+    )
+      return "The qualified alternative changed or expired. Check again; the download was retained.";
+    return undefined;
+  }
+
+  /** The result of asking for `targetSource` when a build is already staged, otherwise nothing. */
+  private stagedOutcome(targetSource: string): JonesUpdateState | undefined {
+    if (this.state.stagedHandle === undefined) return undefined;
+    const staged = this.state.provenance?.sourceSha;
+    return staged === targetSource
+      ? this.snapshot()
+      : {
+          ...this.snapshot(),
+          phase: "blocked",
+          message:
+            staged === undefined
+              ? "Another source is already staged."
+              : `Another source (${staged.slice(0, 12)}) is already staged and was not replaced.`,
+        };
+  }
+
+  async download(
+    input: JonesUpdateDownloadInput,
+    operation?: JonesPreparationOperation,
+  ): Promise<JonesUpdateState> {
+    if (operation !== undefined) {
+      while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
+      if (operation.signal.aborted) return this.snapshot();
+    }
+    const refusal = followerTargetRefusal(
+      this.state.policy,
+      input.sourceSha,
+      this.candidate?.source === input.sourceSha ? this.candidate.tree : undefined,
+    );
+    if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      (this.checkAdmissions > 0 && operation === undefined) ||
+      !this.state.capability.download ||
+      this.state.stagedHandle !== undefined
+    )
+      return this.snapshot();
+    const candidate = this.candidate;
+    if (
+      candidate === undefined ||
+      candidate.artifactId !== input.artifactId ||
+      candidate.source !== input.sourceSha
+    ) {
+      return this.publish({
+        phase: "blocked",
+        message: "The selected build changed. Check for updates again.",
+      });
+    }
+    return this.stageCandidate(candidate, this.candidateBuildStartedAt, false, operation);
+  }
+
+  /** Downloads and stages exactly `candidate` under the busy latch; the caller has chosen it. */
+  private stageCandidate(
+    candidate: JonesActionsCandidate,
+    buildStartedAt: string | undefined,
+    retiredSelection = false,
+    operation?: JonesPreparationOperation,
+  ): Promise<JonesUpdateState> {
+    const refusal = followerTargetRefusal(this.state.policy, candidate.source, candidate.tree);
+    if (refusal !== undefined)
+      return Promise.resolve({ ...this.snapshot(), phase: "blocked", message: refusal });
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      (this.checkAdmissions > 0 && operation === undefined) ||
+      !this.state.capability.download ||
+      this.state.stagedHandle !== undefined
+    )
+      return Promise.resolve(this.snapshot());
+    this.busy = true;
+    const controller = new AbortController();
+    let settle!: (state: JonesUpdateState) => void;
+    const done = new Promise<JonesUpdateState>((resolve) => (settle = resolve));
+    const forwardStop = () => controller.abort(operation?.signal.reason);
+    operation?.signal.addEventListener("abort", forwardStop, { once: true });
+    if (operation?.signal.aborted) forwardStop();
+    this.preparation = {
+      source: candidate.source,
+      controller,
+      done,
+      adopting: false,
+      ...(operation === undefined
+        ? {}
+        : { operationId: operation.operationId, jobId: operation.jobId }),
+    };
+    this.setProgress((_previous, now) =>
+      startProgress(
+        "download",
+        now,
+        operation === undefined ? {} : { operationId: operation.operationId },
+      ),
+    );
+    this.publish({
+      phase: "downloading",
+      message: "Downloading the selected main build…",
+      provenance: candidateProvenance(candidate, buildStartedAt),
+    });
+    const finish = (state: JonesUpdateState) => {
+      operation?.signal.removeEventListener("abort", forwardStop);
+      this.preparation = undefined;
+      this.busy = false;
+      settle(state);
+    };
+    void this.prepareCandidate(
+      candidate,
+      buildStartedAt,
+      controller.signal,
+      retiredSelection,
+      operation,
+    )
+      .then(async (state) => {
+        await this.preparation?.join;
+        return state;
+      })
+      .then(finish, (cause: unknown) => finish(this.fail(cause, true)));
+    return done;
+  }
+
+  /** Publishes the outcome, including a failure, as the host's state. */
+  private async prepareCandidate(
+    candidate: JonesActionsCandidate,
+    buildStartedAt: string | undefined,
+    signal: AbortSignal,
+    retiredSelection: boolean,
+    operation?: JonesPreparationOperation,
+  ): Promise<JonesUpdateState> {
+    try {
+      const refusal = followerTargetRefusal(this.state.policy, candidate.source, candidate.tree);
+      if (refusal !== undefined) throw new Error(refusal);
+      signal.throwIfAborted();
+      operation?.onStarting?.();
+      const staged = await this.host.prepare(candidate, {
+        signal,
+        ...(operation === undefined ? {} : { jobId: operation.jobId }),
+        onStarted: (join) => {
+          if (this.preparation !== undefined) this.preparation.join = join;
+        },
+        onAdopting: async () => {
+          signal.throwIfAborted();
+          await operation?.onAdopting();
+          if (this.preparation !== undefined) this.preparation.adopting = true;
+        },
+        onVerifying: () => {
+          if (!signal.aborted) {
+            this.setProgress((progress, now) => advanceProgress(progress, "verify-stage", now));
+            this.publish({
+              phase: "verifying",
+              message: "Verifying and staging the downloaded build…",
+            });
+          }
+        },
+      });
+      this.clearOutcome();
+      this.setProgress((progress, now) => completeProgress(progress, now));
+      return this.publish({
+        phase: "staged",
+        stagedHandle: staged.stagedHandle,
+        ...(staged.migrationPlan === undefined ? {} : { migrationPlan: staged.migrationPlan }),
+        message: "Downloaded and verified. Install is a separate action.",
+        provenance: {
+          ...candidateProvenance(
+            candidate,
+            staged.version === candidate.version ? buildStartedAt : undefined,
+          ),
+          version: staged.version,
+          payloadSha256: staged.payloadSha256,
+        },
+      });
+    } catch (error) {
+      const preparation = this.preparation;
+      const join = await preparation?.join;
+      if (join?.kind === "unreaped" || join?.kind === "cleanup-unconfirmed") {
+        this.heldJobs.add(join.jobId);
+        this.setProgress((progress, now) =>
+          failProgress(
+            progress,
+            now,
+            "Preparation exit or cleanup is unproved.",
+            "stop-unconfirmed",
+          ),
+        );
+        return this.publish({
+          phase: "blocked",
+          message:
+            "Stop not confirmed: preparation exit or native cleanup is unproved. Nothing new starts until release is proved.",
+        });
+      }
+      if (signal.reason instanceof PreparationStopRequested && preparation?.adopting !== true) {
+        this.setProgress((progress, now) =>
+          failProgress(progress, now, "Download stopped. Nothing was installed.", "stopped"),
+        );
+        return this.publish({
+          phase: "available",
+          message: "Download stopped. Nothing was installed.",
+        });
+      }
+      if (signal.reason instanceof PreparationSuperseded) {
+        this.setProgress((progress, now) =>
+          failProgress(progress, now, "The laptop's installed build changed.", "superseded"),
+        );
+        const { provenance: _provenance, ...rest } = this.state;
+        this.state = rest;
+        if (this.candidate?.source === candidate.source) this.candidate = undefined;
+        return this.publish({
+          phase: "no-new",
+          message: retiredSelection
+            ? RETIRED_WITHOUT_TARGET
+            : "The laptop's installed build changed. Checking for it…",
+        });
+      }
+      return this.fail(
+        retiredSelection
+          ? new Error(
+              `${RETIRED_WITHOUT_TARGET} ${error instanceof Error ? error.message : "Preparation failed."}`,
+            )
+          : error,
+        true,
+      );
+    }
+  }
+
+  async retireStagedOperation(
+    input: JonesStagedRetirementInput,
+    admit?: () => string | undefined,
+  ): Promise<{ retired: boolean; reason?: string }> {
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      this.checkAdmissions > 0 ||
+      ["preparing", "installing"].includes(this.state.phase)
+    )
+      return { retired: false, reason: "An update operation is still active." };
+    if (this.host.retireStaged === undefined)
+      return { retired: false, reason: "Exact staged retirement is unavailable on this host." };
+    if (
+      input.environmentId !== this.state.environmentId ||
+      input.currentVersion !== this.state.currentVersion ||
+      (this.state.stagedHandle !== undefined &&
+        (input.stagedHandle !== this.state.stagedHandle ||
+          input.targetSource !== this.state.provenance?.sourceSha))
+    )
+      return { retired: false, reason: "The retained stage belongs to another immutable binding." };
+    this.busy = true;
+    try {
+      if ((await this.host.installedSource()) !== input.expectedInstalledSource)
+        return { retired: false, reason: "The installed source changed before staged retirement." };
+      const refusal = admit?.();
+      if (refusal !== undefined) return { retired: false, reason: refusal };
+      // The host rechecks authoritative native absence before removing only the pointer.
+      // Payload and operation evidence remain available for reconciliation.
+      await this.host.retireStaged(input);
+      const {
+        stagedHandle: _handle,
+        provenance: _provenance,
+        migrationPlan: _plan,
+        alternativeCandidate: _offer,
+        ...rest
+      } = this.state;
+      this.state = rest;
+      this.candidate = undefined;
+      this.candidateBuildStartedAt = undefined;
+      this.publish({
+        phase: "no-new",
+        message: "The unaccepted staged selection was retired; its payload was retained.",
+      });
+      return { retired: true };
+    } catch (cause) {
+      return {
+        retired: false,
+        reason:
+          cause instanceof Error
+            ? cause.message
+            : "The retained stage could not be retired safely.",
+      };
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  async install(input: JonesUpdaterInstallInput): Promise<JonesUpdateState> {
+    const proveRefusal = () => {
+      if (
+        input.operationId !== undefined &&
+        input.targetSource !== undefined &&
+        input.expectedInstalledSource !== undefined
+      )
+        input.onBeforeDispatchRefusal?.({
+          kind: "before-dispatch",
+          operationId: input.operationId,
+          targetSource: input.targetSource,
+          expectedInstalledSource: input.expectedInstalledSource,
+          stagedHandle: input.stagedHandle,
+          environmentId: input.environmentId,
+          currentVersion: input.currentVersion,
+        });
+    };
+    const refused = (state: JonesUpdateState) => {
+      proveRefusal();
+      return state;
+    };
+    while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      (this.checkAdmissions > 0 && input.operationId === undefined) ||
+      this.state.phase === "installing"
+    )
+      return refused(this.snapshot());
+    if (!this.state.capability.install)
+      return refused(
+        this.publish({
+          phase: "blocked",
+          message: "A qualified launcher bootstrap is required before Install.",
+        }),
+      );
+    if (
+      input.stagedHandle !== this.state.stagedHandle ||
+      input.environmentId !== this.state.environmentId ||
+      input.currentVersion !== this.state.currentVersion
+    ) {
+      return refused(
+        this.publish({
+          phase: "blocked",
+          message: "Install does not match this staged build and running environment.",
+        }),
+      );
+    }
+    // A manual Install skips the quiet window and spacing, never this check.
+    const refusal = followerTargetRefusal(
+      this.state.policy,
+      this.state.provenance?.sourceSha,
+      this.state.provenance?.sourceTree,
+    );
+    if (refusal !== undefined)
+      return refused({ ...this.snapshot(), phase: "blocked", message: refusal });
+    this.busy = true;
+    this.clearOutcome();
+    this.setProgress((_previous, now) =>
+      startProgress("install", now, {
+        ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+        continueRunningThreads: input.continueRunningThreads === true,
+      }),
+    );
+    this.publish({
+      phase: "preparing",
+      message: "Preparing the selected installation…",
+    });
+    const started = Date.now();
+    const messages = {
+      marking: "Marking running threads for continuation…",
+      verifying: "Verifying the selected runtime…",
+      preflight: "Checking candidate startup readiness…",
+      capturing: "Capturing planned update continuity…",
+      handoff: "Waiting for the native launcher…",
+    };
+    let currentMessage = "Preparing the selected installation…";
+    const publishElapsed = () =>
+      this.publish({
+        message: `${currentMessage} (${Math.floor((Date.now() - started) / 1000)}s elapsed)`,
+      });
+    const heartbeat = setInterval(publishElapsed, 15_000);
+    try {
+      const { onBeforeDispatchRefusal: _refusal, ...hostInput } = input;
+      const accepted = await this.host.install(
+        hostInput,
+        (step) => {
+          currentMessage = messages[step];
+          this.setProgress((progress, now) =>
+            advanceProgress(progress, INSTALL_REPORTED_STEP[step], now),
+          );
+          publishElapsed();
+        },
+        proveRefusal,
+      );
+      this.setProgress((progress, now) =>
+        advanceProgress(withOperationId(progress, accepted?.updateId), "restart", now),
+      );
+      return this.publish({
+        phase: "installing",
+        ...(accepted?.updateId === undefined ? {} : { updateId: accepted.updateId }),
+        ...(accepted?.migrationPlan === undefined ? {} : { migrationPlan: accepted.migrationPlan }),
+        message: "The native launcher accepted the installation.",
+      });
+    } catch (error) {
+      const withdrawn = findActivationWithdrawal(error);
+      if (withdrawn !== undefined) {
+        this.setProgress((progress, now) =>
+          failProgress(progress, now, withdrawn.message, "withdrawn"),
+        );
+        return this.publish({
+          phase: "staged",
+          message: `The automatic update was withdrawn before the launcher accepted it: ${withdrawn.message}`,
+        });
+      }
+      return this.fail(error, true);
+    } finally {
+      clearInterval(heartbeat);
+      this.busy = false;
+    }
+  }
+}

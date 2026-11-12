@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "utility-navigation",
+  "jonesOwnedPaths": ["apps/web/src/jones/navigation/JonesSidebarUtilityMenu.tsx"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
+      "to": "apps/web/src/jones/navigation/JonesSidebarUtilityMenu.tsx"
+    }
+  ]
+}

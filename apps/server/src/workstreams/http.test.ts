@@ -1,9 +1,60 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NativeReadExport from "../jones/workstreams/native/read/export.ts";
+import { RegistryError } from "../jones/workstreams/native/registry/session.ts";
+import * as Stream from "effect/Stream";
+import { workstreamsHttpResponseHeaders } from "@t3tools/contracts/jones/workstreamsHttp";
+// @effect-diagnostics nodeBuiltinImport:off -- Tests exercise real POSIX filesystem custody and exact scratch cleanup.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { ServiceLauncherHostProcess } from "../cloud/serviceLauncherClient.ts";
+import { ServerConfig } from "../config.ts";
+import { workstreamGatewayLayerLive, workstreamRegistrationContextLayerLive } from "./http.ts";
+import { vi } from "vite-plus/test";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  AuthSessionId,
+  EnvironmentHttpApi,
+  EnvironmentScopeRequiredError,
+  EnvironmentAuthInvalidError,
+  EnvironmentHttpConflictError,
+  EnvironmentInternalError,
+  WorkstreamReceipt,
+  T3WorkstreamListResult,
+  type AuthEnvironmentScope,
+  type WorkstreamCommand,
+} from "@t3tools/contracts";
+import * as Layer from "effect/Layer";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpPlatform from "effect/http/HttpPlatform";
+import * as Etag from "effect/http/Etag";
+import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import { layerAuthenticatedAuth } from "../auth/http.ts";
+import {
+  make,
+  WorkstreamGateway,
+  WorkstreamGatewayError,
+  WorkstreamTransportError,
+  WorkstreamVerifiedPreDispatchRefusal,
+  type WorkstreamTransport,
+} from "./WorkstreamGateway.ts";
+import { WorkstreamsRegistrationContext } from "../jones/workstreams/registrationContext/service.ts";
+import { makeRegistrationFixture } from "../jones/workstreams/registrationContext/testFixtures.ts";
+import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport.ts";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { HttpIncomingMessage } from "effect/unstable/http";
+import * as Schema from "effect/Schema";
+import { HttpIncomingMessage } from "effect/http";
 import { describe, expect } from "vite-plus/test";
 
 import {
+  workstreamHttpApiLayer,
+  workstreamResponseHeadersLayer,
   isWorkstreamHttpTarget,
   withWorkstreamBodyLimit,
   WORKSTREAM_RESPONSE_HEADERS,
@@ -17,11 +68,24 @@ describe("Workstream HTTP response containment", () => {
         const limit = (method: string, originalUrl: string) =>
           withWorkstreamBodyLimit(HttpIncomingMessage.MaxBodySize, { method, originalUrl });
         expect(yield* limit("POST", "/api/workstreams/thread-placements")).toBe(262_144n);
+        expect(yield* limit("POST", "/api/workstreams/native/v1/read")).toBe(262_144n);
+        expect(yield* limit("POST", "/api/workstreams/native/v1/read?extra=x")).toBe(262_144n);
+        expect(yield* limit("GET", "/api/workstreams/native/v1/read")).toBeUndefined();
         expect(yield* limit("POST", "/api/workstreams/thread-placements?extra=x")).toBe(262_144n);
+        expect(
+          yield* limit("POST", "http://fixture/api/workstreams/thread-placements?extra=x"),
+        ).toBe(262_144n);
+        expect(yield* limit("POST", "https://fixture/api/workstreams/thread-placements")).toBe(
+          262_144n,
+        );
+        expect(
+          yield* limit("GET", "http://fixture/api/workstreams/thread-placements"),
+        ).toBeUndefined();
+        expect(
+          yield* limit("POST", "http://fixture/api/workstreams/thread-placements-extra"),
+        ).toBeUndefined();
+        expect(yield* limit("POST", "http://fixture/api/workstreams/commands")).toBeUndefined();
         expect(yield* limit("POST", "/api/workstreams/commands")).toBeUndefined();
-        expect(yield* limit("POST", "/api/workstreams/native/v1/settlements")).toBe(32_768n);
-        expect(yield* limit("POST", "/api/workstreams/native/v1/settlements/lookup")).toBe(32_768n);
-        expect(yield* limit("GET", "/api/workstreams/native/v1/context")).toBe(32_768n);
         expect(yield* limit("GET", "/api/workstreams")).toBeUndefined();
       }),
   );
@@ -29,6 +93,15 @@ describe("Workstream HTTP response containment", () => {
     expect(isWorkstreamHttpTarget("/api/workstreams")).toBe(true);
     expect(isWorkstreamHttpTarget("/api/workstreams?limit=50")).toBe(true);
     expect(isWorkstreamHttpTarget("/api/workstreams/ws-1/history?cursor=next")).toBe(true);
+    expect(isWorkstreamHttpTarget("http://fixture/api/workstreams?limit=50")).toBe(true);
+    expect(isWorkstreamHttpTarget("https://fixture/api/workstreams/ws-1/history?cursor=next")).toBe(
+      true,
+    );
+    expect(isWorkstreamHttpTarget("http://fixture/api/workstreams-extra")).toBe(false);
+    expect(
+      isWorkstreamHttpTarget("http://fixture/api/orchestration/snapshot?next=/api/workstreams"),
+    ).toBe(false);
+    expect(isWorkstreamHttpTarget("invalid-url")).toBe(false);
     expect(isWorkstreamHttpTarget("/api/orchestration/snapshot")).toBe(false);
     expect(WORKSTREAM_RESPONSE_HEADERS).toEqual({
       "cache-control": "private, no-store",
@@ -36,3 +109,935 @@ describe("Workstream HTTP response containment", () => {
     });
   });
 });
+
+class WorkstreamTestApi extends HttpApi.make("environment").add(
+  EnvironmentHttpApi.groups.workstreams,
+) {}
+
+const decodeListResult = Schema.decodeUnknownSync(T3WorkstreamListResult);
+const decodeScopeRequiredError = Schema.decodeUnknownSync(EnvironmentScopeRequiredError);
+const decodeReceipt = Schema.decodeUnknownSync(WorkstreamReceipt);
+const decodeAuthInvalidError = Schema.decodeUnknownSync(EnvironmentAuthInvalidError);
+
+const command: WorkstreamCommand = {
+  command_id: "command-http-fixture-0001",
+  expected_server_generation: 7,
+  expected_registry_version: 11,
+  action: {
+    operation: "update_workstream",
+    workstream_id: "ws-core-v1",
+    expected_version: 3,
+    name: "HTTP fixture",
+    lifecycle: "active",
+    progress: { state: "progressing" },
+    sort_order: 10,
+  },
+};
+
+const withHttpFixture = Effect.fn(function* (
+  scopes: readonly AuthEnvironmentScope[],
+  run: (fixture: {
+    handler: (request: Request) => Promise<Response>;
+    calls: { reads: number; writes: number };
+    submissions: { count: number };
+  }) => Promise<void>,
+  failure?: "offline" | "cursor-stale" | "not-configured",
+  customizeTransport?: (transport: WorkstreamTransport) => WorkstreamTransport,
+  nativeExport?: NativeReadExport.ReadExport["Service"],
+) {
+  const calls = { reads: 0, writes: 0 };
+  const submissions = { count: 0 };
+  const synthetic = makeSyntheticWorkstreamTransport();
+  const transport = customizeTransport?.(synthetic) ?? synthetic;
+  const gateway = yield* make(
+    {
+      ...transport,
+      submitCommand: (input) => {
+        submissions.count += 1;
+        return transport.submitCommand(input);
+      },
+    },
+    {
+      binding: {
+        registryId: "https://workstream-registry.invalid",
+        ownerId: "owner-fixture",
+        principalId: "principal-fixture",
+        authorizationRevision: 1,
+      },
+    },
+  );
+  const authenticate: EnvironmentAuth.EnvironmentAuth["Service"]["authenticateHttpRequest"] = (
+    request,
+  ) => {
+    const bearer = request.headers.authorization === "Bearer synthetic-token";
+    const cookie = request.headers.cookie === "synthetic-session=fixture";
+    if (!bearer && !cookie) {
+      return Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError({}));
+    }
+    return Effect.succeed({
+      sessionId: AuthSessionId.make("session-http-fixture"),
+      subject: "http-fixture",
+      method: bearer ? ("bearer-access-token" as const) : ("browser-session-cookie" as const),
+      scopes,
+    });
+  };
+  const auth = new Proxy(
+    {},
+    {
+      get(_target, key) {
+        if (key !== "authenticateHttpRequest") {
+          throw new Error(`Unexpected auth operation: ${String(key)}`);
+        }
+        return authenticate;
+      },
+    },
+  ) as EnvironmentAuth.EnvironmentAuth["Service"];
+  const routes = HttpApiBuilder.layer(WorkstreamTestApi).pipe(
+    Layer.provide(workstreamHttpApiLayer),
+    Layer.provide(
+      nativeExport === undefined
+        ? Layer.empty
+        : Layer.succeed(NativeReadExport.ReadExport, nativeExport),
+    ),
+    Layer.provide(Layer.succeed(WorkstreamsRegistrationContext, makeRegistrationFixture().service)),
+    Layer.provide(layerAuthenticatedAuth),
+    Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, auth)),
+    Layer.provide(
+      Layer.succeed(WorkstreamGateway, {
+        ...gateway,
+        readMetadata: (input) => {
+          calls.reads += 1;
+          return failure === undefined
+            ? gateway.readMetadata(input)
+            : Effect.fail(
+                new WorkstreamGatewayError({ reason: failure, detail: "synthetic failure" }),
+              );
+        },
+        submit: (input) => {
+          calls.writes += 1;
+          return gateway.submit(input);
+        },
+      }),
+    ),
+    Layer.provide(workstreamResponseHeadersLayer),
+    Layer.provideMerge(
+      HttpPlatform.layer.pipe(
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        Layer.provideMerge(Etag.layerWeak),
+      ),
+    ),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
+  return yield* Effect.acquireUseRelease(
+    Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
+    (app) =>
+      Effect.promise(() => run({ handler: (request) => app.handler(request), calls, submissions })),
+    (app) => Effect.promise(() => app.dispose()),
+  );
+});
+
+it.effect(
+  "refuses native reads without a selected reader instead of using the legacy Gateway",
+  () =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
+      const request = (
+        headers: Record<string, string>,
+        contract = "workstreams-native-home-read-result/1.0.0",
+      ) =>
+        new Request("http://fixture/api/workstreams/native/v1/read", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify({
+            contract,
+            request: { route: "counts", params: {} },
+          }),
+        });
+      const unauthenticated = await handler(request({}));
+      expect(unauthenticated.status).toBe(401);
+      const unavailable = await handler(request({ authorization: "Bearer synthetic-token" }));
+      expect(unavailable.status).toBe(409);
+      expect(await unavailable.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+      expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+      const unsupported = await handler(
+        request(
+          { authorization: "Bearer synthetic-token" },
+          "workstreams-native-home-read-result/2.0.0",
+        ),
+      );
+      expect(unsupported.status).toBe(400);
+      expect(await unsupported.text()).toBe("");
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
+    }),
+);
+
+it.effect(
+  "refuses native exports without a selected producer instead of using the legacy Gateway",
+  () =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
+      const request = (headers: Record<string, string>, query = "") =>
+        new Request("http://fixture/api/workstreams/native/v1/export" + query, { headers });
+      expect((await handler(request({}))).status).toBe(401);
+      const unavailable = await handler(request({ authorization: "Bearer synthetic-token" }));
+      expect(unavailable.status).toBe(409);
+      expect(await unavailable.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+      expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+      expect(unavailable.headers.get("x-content-type-options")).toBe("nosniff");
+      for (const query of [
+        "?page_size=0",
+        "?page_size=101",
+        "?caller=forged",
+        "?page_size=1&page_size=2",
+      ])
+        expect(
+          (await handler(request({ authorization: "Bearer synthetic-token" }, query))).status,
+        ).toBe(400);
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
+    }),
+);
+
+it.effect("requires read scope before opening a native export producer", () => {
+  let opened = 0;
+  return withHttpFixture(
+    [],
+    async ({ handler, calls }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(opened).toBe(0);
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+    },
+    undefined,
+    undefined,
+    {
+      stream: () => {
+        opened += 1;
+        return Stream.empty;
+      },
+    },
+  );
+});
+
+it.effect("contains initial native export refusal before committing stream headers", () =>
+  withHttpFixture(
+    [AuthOrchestrationReadScope],
+    async ({ handler, calls }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export?page_size=1", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+    },
+    undefined,
+    undefined,
+    { stream: () => Stream.fail(new RegistryError({ code: "forbidden" })) },
+  ),
+);
+
+it.effect("preserves streamed UTF-8 bytes and aborts a failed export without a trailer", () => {
+  const page = '{"private_name":"α and β"}\n';
+  const ready = Promise.withResolvers<void>();
+  return withHttpFixture(
+    [AuthOrchestrationReadScope],
+    async ({ handler }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      if (!response.body) throw new Error("Missing native export stream.");
+      const reader = response.body.getReader();
+      const first = await reader.read();
+      ready.resolve();
+      expect(first).toEqual({ done: false, value: new TextEncoder().encode(page) });
+      await expect(reader.read()).rejects.toBeDefined();
+    },
+    undefined,
+    undefined,
+    {
+      stream: () =>
+        Stream.concat(
+          Stream.succeed(page),
+          Stream.fromEffect(Effect.promise(() => ready.promise)).pipe(
+            Stream.flatMap(() => Stream.fail(new RegistryError({ code: "forbidden" }))),
+          ),
+        ),
+    },
+  );
+});
+
+it.effect("client cancellation closes the request-owned native export producer", () => {
+  let released = 0;
+  return withHttpFixture(
+    [AuthOrchestrationReadScope],
+    async ({ handler }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(200);
+      if (!response.body) throw new Error("Missing native export stream.");
+      const reader = response.body.getReader();
+      expect((await reader.read()).done).toBe(false);
+      await reader.cancel();
+      expect(released).toBe(1);
+    },
+    undefined,
+    undefined,
+    {
+      stream: () =>
+        Stream.concat(Stream.succeed("page\n"), Stream.never).pipe(
+          Stream.ensuring(
+            Effect.sync(() => {
+              released += 1;
+            }),
+          ),
+        ),
+    },
+  );
+});
+
+const credentials: readonly {
+  readonly kind: string;
+  readonly headers: Record<string, string>;
+}[] = [
+  { kind: "bearer", headers: { authorization: "Bearer synthetic-token" } },
+  { kind: "cookie", headers: { cookie: "synthetic-session=fixture" } },
+];
+
+it.effect.each(credentials)(
+  "serves registry metadata through authenticated $kind read scope",
+  ({ headers }) =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams?limit=50", { headers }),
+      );
+      expect(response.status).toBe(200);
+      const body = decodeListResult(await response.json());
+      expect(body.source).toBe("live");
+      expect(body.binding.registryId).toBe("https://workstream-registry.invalid");
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(calls).toEqual({ reads: 1, writes: 0 });
+    }),
+);
+
+it.effect.each(credentials)(
+  "rejects $kind command submission without operate scope before gateway writes",
+  ({ headers }) =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/commands", {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ command }),
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(decodeScopeRequiredError(await response.json()).requiredScope).toBe(
+        AuthOrchestrationOperateScope,
+      );
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
+    }),
+);
+
+it.effect.each(credentials)(
+  "submits a scoped $kind command and returns its committed receipt",
+  ({ headers }) =>
+    withHttpFixture([AuthOrchestrationOperateScope], async ({ handler, calls }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/commands", {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ command }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(decodeReceipt(await response.json()).state).toBe("committed");
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(calls).toEqual({ reads: 0, writes: 1 });
+    }),
+);
+
+it.effect("rejects missing HTTP credentials before registry reads", () =>
+  withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls }) => {
+    const response = await handler(new Request("http://fixture/api/workstreams?limit=50"));
+    expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(decodeAuthInvalidError(await response.json()).reason).toBe("missing_credential");
+    expect(calls).toEqual({ reads: 0, writes: 0 });
+  }),
+);
+
+it.effect.each([
+  ["offline", 500, undefined],
+  ["cursor-stale", 409, "workstream_cursor_stale"],
+  ["not-configured", 409, "workstreams_not_configured"],
+] as const)(
+  "keeps %s HTTP failures distinct and contains the response",
+  ([reason, status, conflict]) =>
+    withHttpFixture(
+      [AuthOrchestrationReadScope],
+      async ({ handler, calls }) => {
+        const response = await handler(
+          new Request("http://fixture/api/workstreams?limit=50", {
+            headers: { authorization: "Bearer synthetic-token" },
+          }),
+        );
+        expect(response.status).toBe(status);
+        expect(response.headers.get("cache-control")).toBe("private, no-store");
+        expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(calls).toEqual({ reads: 1, writes: 0 });
+        const body = await response.json();
+        if (conflict !== undefined) expect(decodeConflictError(body).message).toBe(conflict);
+        else expect(decodeInternalError(body).reason).toBe("internal_error");
+      },
+      reason,
+    ),
+);
+
+const decodeInternalError = Schema.decodeUnknownSync(EnvironmentInternalError);
+const decodeConflictError = Schema.decodeUnknownSync(EnvironmentHttpConflictError);
+
+const submitRequest = (value: unknown = command, modern = false) =>
+  new Request("http://fixture/api/workstreams/commands", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer synthetic-token",
+      "content-type": "application/json",
+      ...(modern ? workstreamsHttpResponseHeaders : {}),
+    },
+    body: JSON.stringify({ command: value }),
+  });
+
+it.effect("rejects malformed commands before transport submission", () =>
+  withHttpFixture([AuthOrchestrationOperateScope], async ({ handler, calls, submissions }) => {
+    const result = await handler(submitRequest({ ...command, action: { operation: "invalid" } }));
+    expect(result.status).toBe(400);
+    expect(await result.text()).toBe("");
+    expect(calls.writes).toBe(0);
+    expect(submissions.count).toBe(0);
+  }),
+);
+
+it.effect.each(["server", "registry"] as const)(
+  "returns a definitive conflict for a changed %s version before transport submission",
+  (version) =>
+    withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const result = await handler(
+          submitRequest(
+            {
+              ...command,
+              ...(version === "server"
+                ? { expected_server_generation: 6 }
+                : { expected_registry_version: 10 }),
+            },
+            true,
+          ),
+        );
+        expect(submissions.count).toBe(0);
+        expect(result.status).toBe(409);
+        expect(await result.json()).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "version_conflict",
+        });
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        readCommandReceipt: () => Effect.succeed({ kind: "absent" as const }),
+      }),
+    ),
+);
+
+it.effect.each(["permission", "owner", "contract", "page-bound"] as const)(
+  "returns a definitive conflict for pre-transport %s authorization rejection",
+  (failure) =>
+    withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const result = await handler(submitRequest());
+        expect(submissions.count).toBe(0);
+        expect(result.status).toBe(409);
+        expect(await result.json()).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "workstream_command_not_current",
+        });
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        getCapabilities: (input) =>
+          transport.getCapabilities(input).pipe(
+            Effect.map((value) => ({
+              ...value,
+              ...(failure === "permission" ? { permissions: [] } : {}),
+              ...(failure === "owner"
+                ? { context: { ...value.context, owner_id: "other-owner" } }
+                : {}),
+              ...(failure === "contract" ? { manifest_sha256: "0".repeat(64) } : {}),
+              // Malformed transport input deliberately bypasses the decoded capability type.
+              ...(failure === "page-bound"
+                ? { max_page_items: 0 as typeof value.max_page_items }
+                : {}),
+            })),
+          ),
+      }),
+    ),
+);
+
+it.effect(
+  "maps a verified producer refusal after ready capabilities to the existing not-current codec",
+  () => {
+    const calls: string[] = [];
+    return withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const result = await handler(submitRequest());
+        expect(submissions.count).toBe(1);
+        expect(calls).toEqual(["ready", "refused-before-dispatch"]);
+        expect(result.status).toBe(409);
+        const body = await result.json();
+        expect(body).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "workstream_command_not_current",
+        });
+        expect(decodeConflictError(body).message).toBe("workstream_command_not_current");
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        getCapabilities: (input) =>
+          transport
+            .getCapabilities(input)
+            .pipe(Effect.tap(() => Effect.sync(() => calls.push("ready")))),
+        // This fixture supplies qualified internal evidence, not a cryptographic proof verifier.
+        submitCommand: () => {
+          calls.push("refused-before-dispatch");
+          return Effect.fail(new WorkstreamVerifiedPreDispatchRefusal({}));
+        },
+      }),
+    );
+  },
+);
+
+it.effect.each([
+  { effect: "no-effect", detail: "workstream_command_not_current" },
+  { effect: "no-effect", detail: "contract_mismatch" },
+  { effect: "no-effect", detail: "invalid_response" },
+  { effect: "unknown-effect", detail: "missing_refusal_proof" },
+  { effect: "unknown-effect", detail: "invalid_refusal_proof" },
+  { effect: "unknown-effect", detail: "response_lost_after_dispatch" },
+] as const)(
+  "keeps unverified $detail transport failures opaque after submit",
+  ({ effect, detail }) =>
+    withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const result = await handler(submitRequest());
+        expect(submissions.count).toBe(1);
+        expect(result.status).toBe(500);
+        expect(decodeInternalError(await result.json()).reason).toBe("internal_error");
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        submitCommand: () =>
+          Effect.fail(
+            new WorkstreamTransportError({
+              operation: "submit",
+              effect,
+              detail,
+            }),
+          ),
+      }),
+    ),
+);
+
+it.effect("keeps invalid receipt validation opaque after transport submission", () =>
+  withHttpFixture(
+    [AuthOrchestrationOperateScope],
+    async ({ handler, submissions }) => {
+      const result = await handler(submitRequest());
+      expect(submissions.count).toBe(1);
+      expect(result.status).toBe(500);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      submitCommand: (input) =>
+        transport.submitCommand(input).pipe(
+          Effect.map((receipt) => ({
+            ...receipt,
+            actor: { principal_id: "different-principal" },
+          })),
+        ),
+    }),
+  ),
+);
+
+it.effect("keeps capability transport failure opaque without claiming a local rejection", () =>
+  withHttpFixture(
+    [AuthOrchestrationOperateScope],
+    async ({ handler, submissions }) => {
+      const result = await handler(submitRequest());
+      expect(submissions.count).toBe(0);
+      expect(result.status).toBe(500);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      getCapabilities: () =>
+        Effect.fail(
+          new WorkstreamTransportError({
+            operation: "capabilities",
+            effect: "no-effect",
+            detail: "synthetic offline",
+          }),
+        ),
+    }),
+  ),
+);
+
+it.effect("keeps conflicting command bytes opaque because an earlier submission committed", () =>
+  withHttpFixture(
+    [AuthOrchestrationOperateScope],
+    async ({ handler, submissions }) => {
+      expect((await handler(submitRequest())).status).toBe(200);
+      const result = await handler(
+        submitRequest({ ...command, action: { ...command.action, name: "Changed" } }),
+      );
+      expect(result.status).toBe(500);
+      expect(submissions.count).toBe(1);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      getCapabilities: (input) =>
+        transport.getCapabilities(input).pipe(
+          Effect.map((value) => ({
+            ...value,
+            context: { ...value.context, registry_version: command.expected_registry_version },
+          })),
+        ),
+    }),
+  ),
+);
+
+it.effect("both live consumers share one file snapshot and keep it until the next startup", () =>
+  Effect.gen(function* () {
+    const base = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        NodeFS.mkdtempSync(
+          NodePath.join(NodeFS.realpathSync(NodeOS.tmpdir()), "jones-activation-http-"),
+        ),
+      ),
+      (path) =>
+        Effect.sync(() => {
+          vi.restoreAllMocks();
+          vi.unstubAllGlobals();
+          vi.unstubAllEnvs();
+          if (process.env.NW_MEMBER_PLACEMENTS_EVIDENCE_DIR === undefined)
+            NodeFS.rmSync(path, { recursive: true, force: true });
+        }),
+    );
+    const environment = {
+      T3_WORKSTREAM_CONTROL_PLANE_URL: "https://startup.synthetic.test/",
+      T3_WORKSTREAM_OWNER_ID: "owner-startup",
+      T3_WORKSTREAM_PRINCIPAL_ID: "principal-startup",
+      T3_WORKSTREAM_KEY_ID: "key-startup",
+      T3_WORKSTREAM_SIGNING_SECRET: Buffer.alloc(32, 7).toString("base64"),
+      T3_WORKSTREAM_AUTHORIZATION_REVISION: "3",
+    };
+    const directory = NodePath.join(base, "workstreams");
+    NodeFS.mkdirSync(directory, { mode: 0o700 });
+    const file = NodePath.join(directory, "activation.env");
+    const bytes = Object.entries(environment)
+      .map(([key, value]) => `${key}=${value}\n`)
+      .join("");
+    NodeFS.writeFileSync(file, bytes, { mode: 0o600 });
+    NodeFS.writeFileSync(NodePath.join(base, "environment-id"), "environment-startup\n");
+    for (const key of [
+      ...Object.keys(environment),
+      "T3_WORKSTREAM_REGISTRY_BINDING",
+      "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION",
+    ])
+      vi.stubEnv(key, undefined);
+    const opened = vi.spyOn(NodeFS, "openSync");
+    const requests: Headers[] = [];
+    vi.stubGlobal("fetch", async (_input: unknown, init: RequestInit) => {
+      requests.push(new Headers(init.headers));
+      throw new Error("synthetic-offline");
+    });
+    const live = Layer.mergeAll(
+      workstreamGatewayLayerLive,
+      workstreamRegistrationContextLayerLive,
+    ).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ServerConfig, {
+            baseDir: base,
+            authorityStateDir: NodePath.join(base, "authority"),
+            stateDir: base,
+            environmentIdPath: NodePath.join(base, "environment-id"),
+          } as ServerConfig["Service"]),
+          Layer.succeed(HostProcess.Environment, {}),
+          Layer.succeed(ServiceLauncherHostProcess, {
+            connected: false,
+            send: () => false,
+            on: () => {},
+            off: () => {},
+          }),
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const gateway = yield* WorkstreamGateway;
+      const registration = yield* WorkstreamsRegistrationContext;
+      expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(1);
+      NodeFS.writeFileSync(file, bytes.replaceAll("principal-startup", "principal-replaced"));
+      vi.stubEnv("T3_WORKSTREAM_PRINCIPAL_ID", "principal-from-later-env");
+      yield* gateway.readMetadata({}).pipe(Effect.result);
+      yield* registration.read().pipe(Effect.result);
+      expect(requests).toHaveLength(2);
+      expect(requests.map((headers) => headers.get("x-control-principal-id"))).toEqual([
+        "principal-startup",
+        "principal-startup",
+      ]);
+      expect(process.env.T3_WORKSTREAM_SIGNING_SECRET).toBeUndefined();
+    }).pipe(Effect.provide(live));
+    expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(1);
+    vi.stubEnv("T3_WORKSTREAM_PRINCIPAL_ID", undefined);
+    yield* Effect.gen(function* () {
+      const gateway = yield* WorkstreamGateway;
+      const registration = yield* WorkstreamsRegistrationContext;
+      expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(2);
+      yield* gateway.readMetadata({}).pipe(Effect.result);
+      yield* registration.read().pipe(Effect.result);
+      expect(requests).toHaveLength(4);
+      expect(requests.map((headers) => headers.get("x-control-principal-id"))).toEqual([
+        "principal-startup",
+        "principal-startup",
+        "principal-replaced",
+        "principal-replaced",
+      ]);
+      expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(2);
+      expect(process.env.T3_WORKSTREAM_SIGNING_SECRET).toBeUndefined();
+    }).pipe(Effect.provide(live));
+  }),
+);
+
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+}));
+
+it.effect.each([
+  { contract: "workstreams-t3-placement/2.0.0", status: 409 },
+  { contract: "workstreams-t3-placement/9.0.0", status: 400 },
+])("refuses placement negotiation $contract without native service", ({ contract, status }) =>
+  withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls }) => {
+    const response = await handler(
+      new Request("http://fixture/api/workstreams/thread-placements", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer synthetic-token",
+          "content-type": "application/json",
+          "x-t3-workstreams-placement-contract": contract,
+        },
+        body: JSON.stringify({ identities: [] }),
+      }),
+    );
+    expect(response.status).toBe(status);
+    if (status === 409)
+      expect(await response.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(calls).toEqual({ reads: 0, writes: 0 });
+  }),
+);
+
+it.effect(
+  "legacy proof lookup fails closed without an admitted native entry and keeps authentication and contract fences",
+  () =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
+      const payload = {
+        contract: "workstreams-legacy-receipts/1.0.0",
+        command_id: "command:0",
+        expected_server_generation: 1,
+      };
+      const request = (body: unknown, authenticated = true) =>
+        handler(
+          new Request("http://fixture/api/workstreams/legacy-receipts/v1/lookup", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(authenticated ? credentials[0]!.headers : {}),
+            },
+            body: JSON.stringify(body),
+          }),
+        );
+      expect((await request(payload, false)).status).toBe(401);
+      const unavailable = await request(payload);
+      expect(unavailable.status).toBe(409);
+      expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+      expect(
+        (await request({ ...payload, contract: "workstreams-legacy-receipts/2.0.0" })).status,
+      ).toBe(400);
+      expect((await request({ ...payload, principal_id: "forged" })).status).toBe(400);
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
+    }),
+);
+
+it.effect("invalid response negotiation never reaches command lookup or submission", () => {
+  let lookups = 0;
+  return withHttpFixture(
+    [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+    async ({ handler, calls, submissions }) => {
+      const headers = {
+        authorization: "Bearer synthetic-token",
+        "content-type": "application/json",
+        "x-t3-workstreams-response-contract": "workstreams-http-response/9.0.0",
+      };
+      for (const request of [
+        new Request("http://fixture/api/workstreams/commands", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ command }),
+        }),
+        new Request("http://fixture/api/workstreams/commands/" + command.command_id, { headers }),
+      ]) {
+        const response = await handler(request);
+        expect(response.status).toBe(400);
+        expect(await response.text()).toBe("");
+      }
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(lookups).toBe(0);
+      expect(submissions.count).toBe(0);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      readCommandReceipt: () => {
+        lookups += 1;
+        return Effect.die("Invalid response negotiation reached lookup");
+      },
+    }),
+  );
+});
+
+it.effect(
+  "response negotiation stays local to each command request and leaves legacy reads alone",
+  () =>
+    withHttpFixture(
+      [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+      async ({ handler, calls, submissions }) => {
+        const stale = { ...command, expected_server_generation: 6 };
+        for (const modern of [true, false, true, false]) {
+          const response = await handler(submitRequest(stale, modern));
+          expect(response.status).toBe(409);
+          expect(await response.json()).toEqual({
+            _tag: "EnvironmentHttpConflictError",
+            message: modern ? "version_conflict" : "workstream_command_not_current",
+          });
+        }
+        const response = await handler(
+          new Request("http://fixture/api/workstreams?limit=50", {
+            headers: {
+              authorization: "Bearer synthetic-token",
+              "x-t3-workstreams-response-contract": "workstreams-http-response/9.0.0",
+            },
+          }),
+        );
+        expect(response.status).toBe(200);
+        expect(decodeListResult(await response.json()).source).toBe("live");
+        expect(calls.reads).toBe(1);
+        expect(submissions.count).toBe(0);
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        readCommandReceipt: () => Effect.succeed({ kind: "absent" as const }),
+      }),
+    ),
+);
+
+it.effect.each([false, true])(
+  "changed authorization keeps its legacy refusal discriminator with modern=%s",
+  (modern) =>
+    withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const response = await handler(submitRequest(command, modern));
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "workstream_command_not_current",
+        });
+        expect(submissions.count).toBe(0);
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        getCapabilities: (input) =>
+          transport
+            .getCapabilities(input)
+            .pipe(Effect.map((value) => ({ ...value, permissions: [] }))),
+      }),
+    ),
+);
+
+it.effect("modern negotiation keeps unverified post-submit failures unknown", () =>
+  withHttpFixture(
+    [AuthOrchestrationOperateScope],
+    async ({ handler, submissions }) => {
+      const response = await handler(submitRequest(command, true));
+      expect(response.status).toBe(500);
+      expect(decodeInternalError(await response.json()).reason).toBe("internal_error");
+      expect(submissions.count).toBe(1);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      submitCommand: () =>
+        Effect.fail(
+          new WorkstreamTransportError({
+            operation: "submit",
+            effect: "no-effect",
+            detail: "workstream_command_not_current",
+          }),
+        ),
+    }),
+  ),
+);

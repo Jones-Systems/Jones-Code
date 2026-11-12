@@ -1,0 +1,90 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "native-goal-continuity",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/goals/continuity/CodexRecovery.test.ts",
+    "apps/server/src/jones/goals/continuity/CodexRecovery.ts",
+    "apps/server/src/jones/goals/continuity/GoalContinuity.test.ts",
+    "apps/server/src/jones/goals/continuity/GoalContinuity.ts",
+    "apps/server/src/jones/goals/continuity/GoalContinuityStore.test.ts",
+    "apps/server/src/jones/goals/continuity/GoalContinuityStore.ts",
+    "apps/server/src/jones/goals/continuity/McpAccess.test.ts",
+    "apps/server/src/jones/goals/continuity/RuntimeIntegration.ts",
+    "apps/server/src/jones/goals/continuity/admission.test.ts",
+    "apps/server/src/jones/goals/continuity/admission.testkit.ts",
+    "apps/server/src/jones/goals/continuity/admission.ts",
+    "apps/server/src/jones/goals/continuity/capsule.test.ts",
+    "apps/server/src/jones/goals/continuity/capsule.ts",
+    "apps/server/src/jones/goals/continuity/model.test.ts",
+    "apps/server/src/jones/goals/continuity/model.ts",
+    "apps/server/src/jones/goals/continuity/selection.test.ts",
+    "apps/server/src/jones/goals/continuity/selection.ts",
+    "apps/server/src/jones/goals/continuity/tool.test.ts",
+    "apps/server/src/jones/goals/continuity/tool.ts",
+    "packages/provider-core/src/server/jones/GoalContinuityContext.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/goalContinuity.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/ProviderAdapter.ts",
+      "to": "packages/provider-core/src/server/jones/GoalContinuityContext.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/goals/continuity/GoalContinuity.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/goals/continuity/admission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/goals/continuity/admission.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "packages/provider-core/src/server/jones/GoalContinuityContext.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.testkit.ts",
+      "to": "apps/server/src/jones/goals/continuity/admission.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
+      "to": "packages/provider-core/src/server/jones/GoalContinuityContext.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/goals/continuity/RuntimeIntegration.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/goals/continuity/CodexRecovery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "packages/provider-core/src/server/jones/GoalContinuityContext.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "packages/provider-core/src/server/jones/GoalContinuityContext.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/goals/continuity/RuntimeIntegration.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+      "to": "apps/server/src/jones/goals/continuity/tool.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+      "to": "apps/server/src/jones/goals/continuity/tool.ts"
+    }
+  ]
+}

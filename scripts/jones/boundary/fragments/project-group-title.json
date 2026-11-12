@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "project-group-title",
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/jones/projectGroupTitle.ts",
+    "packages/client-runtime/src/jones/projectGroupTitle.test.ts"
+  ],
+  "hookPaths": ["packages/client-runtime/src/state/projectGrouping.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/client-runtime/src/state/projectGrouping.ts",
+      "to": "packages/client-runtime/src/jones/projectGroupTitle.ts"
+    }
+  ]
+}

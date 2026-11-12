@@ -9,11 +9,16 @@ import {
   canonicalGitHubPullRequestUrl,
 } from "./workstreams.ts";
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(T3WorkstreamListResult);
+const compiledDecodeSync2 = Schema.decodeSync(T3WorkstreamListResult);
+const compiledDecodeSync3 = Schema.decodeSync(WorkstreamReferenceDetail);
+const compiledDecodeUnknownSync4 = Schema.decodeUnknownSync(WorkstreamReferenceDetail);
+
 describe("Workstream wire contract", () => {
   it("decodes every lifecycle value with a fully fenced client binding", () => {
     const lifecycles = ["planned", "active", "paused", "completed", "deferred", "abandoned"];
     for (const lifecycle of lifecycles) {
-      const result = Schema.decodeUnknownSync(T3WorkstreamListResult)({
+      const result = compiledDecodeUnknownSync1({
         binding: {
           registryId: "https://control-plane.example.test:8443",
           ownerId: "owner",
@@ -48,7 +53,7 @@ describe("Workstream wire contract", () => {
 
   it("preserves the enabled producer's canonical HTTPS registry origin", () => {
     const registryId = "https://control-plane.example.test:8443";
-    const decoded = Schema.decodeUnknownSync(T3WorkstreamListResult)({
+    const decoded = compiledDecodeSync2({
       binding: {
         registryId,
         ownerId: "owner",
@@ -73,7 +78,7 @@ describe("Workstream wire contract", () => {
       "https://user@control-plane.example.test:8443",
     ]) {
       expect(() =>
-        Schema.decodeUnknownSync(T3WorkstreamListResult)({
+        compiledDecodeSync2({
           ...decoded,
           binding: { ...decoded.binding, registryId: invalidOrigin },
         }),
@@ -146,11 +151,9 @@ describe("Workstream wire contract", () => {
         command_id: "command-refresh-0001",
       },
     } as const;
-    expect(Schema.decodeUnknownSync(WorkstreamReferenceDetail)(fixture).latest_observation).toEqual(
-      fixture.latest_observation,
-    );
+    expect(compiledDecodeSync3(fixture).latest_observation).toEqual(fixture.latest_observation);
     expect(() =>
-      Schema.decodeUnknownSync(WorkstreamReferenceDetail)({
+      compiledDecodeUnknownSync4({
         ...fixture,
         latest_observation: { ...fixture.latest_observation, observation_version: undefined },
       }),

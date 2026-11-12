@@ -1,0 +1,2166 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as SourceControlProviderRegistry from "../../sourceControl/SourceControlProviderRegistry.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
+import {
+  AuthSessionId,
+  EnvironmentAuthenticatedPrincipal,
+  ProviderThreadId,
+  CommandId,
+  EventId,
+  MessageId,
+  NodeId,
+  RuntimeRequestId,
+  ScheduledTaskId,
+  type ModelSelection,
+  type OrchestrationV2ExecutionNode,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderTurnId,
+  RunId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SettlementOrigins from "../settlementOrigins/SettlementOrigins.ts";
+import * as Fiber from "effect/Fiber";
+import * as AuthSessions from "../../persistence/AuthSessions.ts";
+import * as ConversationReselection from "../runtime/ProviderConversationReselection.ts";
+import * as Exit from "effect/Exit";
+import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
+import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
+import * as GitWorkflow from "../../git/GitWorkflowService.ts";
+import * as ServerConfig from "../../config.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
+import * as ServerSettings from "../../serverSettings.ts";
+import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
+import * as VcsProcess from "../../vcs/VcsProcess.ts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import { CommandReceiptStoreV2 } from "../../orchestration-v2/CommandReceiptStore.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import { queuedToolBoundaryTarget } from "../../orchestration-v2/QueuedToolBoundary.ts";
+import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
+import type {
+  ProviderAdapterV2SessionRuntime,
+  ProviderAdapterV2Shape,
+} from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
+import * as RuntimeLayer from "../../orchestration-v2/runtimeLayer.ts";
+import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
+import { withOwnerSelectionIngress } from "../threadConfiguration/ownerIngress.ts";
+
+const PlatformTestLayer = Layer.merge(
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+  Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+    resolveLink: () => Effect.die("unused title link"),
+  }),
+);
+
+const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
+  prefix: "t3-orchestration-v2-runtime-layer-",
+});
+
+const modelSelection = {
+  instanceId: ProviderInstanceId.make("codex"),
+  model: "gpt-5.4",
+} satisfies ModelSelection;
+const alternateInstanceId = ProviderInstanceId.make("codex_alternate");
+
+const VcsDriverRegistryTestLayer = VcsDriverRegistry.layer.pipe(
+  Layer.provide(VcsProcess.layer),
+  Layer.provide(ServerConfigLayer),
+  Layer.provide(PlatformTestLayer),
+);
+
+const CheckpointStoreTestLayer = CheckpointStore.layer.pipe(
+  Layer.provide(VcsDriverRegistryTestLayer),
+);
+const GitWorkflowTestLayer = Layer.mock(GitWorkflow.GitWorkflowService)({
+  pruneWorktrees: () => Effect.void,
+  createWorktree: () => Effect.succeed({} as never),
+});
+const ProjectServiceTestLayer = Layer.mock(ProjectService.ProjectService)({
+  getById: () => Effect.succeedNone,
+});
+
+const driver = ProviderDriverKind.make("codex");
+const orchestrationAdapter = {
+  instanceId: modelSelection.instanceId,
+  driver,
+  getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+  planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+  openSession: () => Effect.die("sessions are not used by lifecycle tests"),
+} as ProviderAdapterV2Shape;
+const providerInstance = {
+  instanceId: modelSelection.instanceId,
+  driverKind: driver,
+  continuationIdentity: {
+    driverKind: driver,
+    continuationKey: "codex:test",
+  },
+  displayName: "Codex test",
+  enabled: true,
+  // No supportedRuntimeModes: every runtime mode runs as stored.
+  snapshot: { getSnapshot: Effect.succeed({}) } as unknown as ProviderInstance["snapshot"],
+  orchestrationAdapter,
+  textGeneration: {} as ProviderInstance["textGeneration"],
+} satisfies ProviderInstance;
+const alternateProviderInstance = {
+  ...providerInstance,
+  instanceId: alternateInstanceId,
+  continuationIdentity: {
+    driverKind: driver,
+    continuationKey: "codex:test:alternate",
+  },
+  displayName: "Codex alternate test",
+  orchestrationAdapter: {
+    ...orchestrationAdapter,
+    instanceId: alternateInstanceId,
+  },
+} satisfies ProviderInstance;
+
+const testProviderRegistry = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+  getCatalogSource: (instanceId) =>
+    [providerInstance, alternateProviderInstance].find(
+      (instance) => instanceId === instance.instanceId,
+    ),
+  getInstance: (instanceId) =>
+    Effect.succeed(
+      [providerInstance, alternateProviderInstance].find(
+        (instance) => instanceId === instance.instanceId,
+      ),
+    ),
+  listInstances: Effect.succeed([providerInstance, alternateProviderInstance]),
+  listUnavailable: Effect.succeed([]),
+  streamChanges: Stream.empty,
+  subscribeChanges: Effect.never,
+});
+const TestProviderInstanceRegistry = Layer.succeed(
+  ProviderInstanceRegistry.ProviderInstanceRegistry,
+  testProviderRegistry,
+);
+
+/** Seed a project row the way a committed `project.created` event folds into it. */
+const seedProject = (input: {
+  readonly projectId: ProjectId;
+  readonly title: string;
+  readonly workspaceRoot: string;
+  readonly defaultModelSelection: ModelSelection | null;
+  readonly createdAt: string;
+}) =>
+  Effect.flatMap(ProjectStore.ProjectStoreV2, (projects) =>
+    projects.apply({
+      sequence: 0,
+      eventId: EventId.make(`seed:${input.projectId}`),
+      aggregateKind: "project",
+      aggregateId: input.projectId,
+      occurredAt: input.createdAt,
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "project.created",
+      payload: {
+        projectId: input.projectId,
+        title: input.title,
+        workspaceRoot: input.workspaceRoot,
+        defaultModelSelection: input.defaultModelSelection,
+        scripts: [],
+        createdAt: input.createdAt,
+        updatedAt: input.createdAt,
+      },
+    }),
+  );
+
+const TestLayer = Layer.mergeAll(
+  RuntimeLayer.layer,
+  RuntimeLayer.layerEventSink,
+  ProjectStore.layer,
+  ProjectionStore.layer,
+  EffectOutbox.layer,
+  ThreadCommandExecutor.layer,
+  AuthSessions.layer,
+).pipe(
+  Layer.provide(McpSessionRegistryTestkit.layer),
+  Layer.provide(McpProviderSessions.layer),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
+  Layer.provide(CheckpointStoreTestLayer),
+  Layer.provide(ServerConfigLayer),
+  Layer.provide(ServerSettings.layerTest()),
+  Layer.provide(TestProviderInstanceRegistry),
+  Layer.provide(GitWorkflowTestLayer),
+  Layer.provide(ProjectServiceTestLayer),
+  Layer.provide(PlatformTestLayer),
+);
+
+const selfSettlementFixture = Effect.fnUntraced(function* (prefix: string) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const sink = yield* EventSink.EventSinkV2;
+  const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+  const threadId = ThreadId.make(prefix);
+  const projectId = ProjectId.make(`${prefix}-project`);
+  yield* seedProject({
+    projectId,
+    title: "Self settlement project",
+    workspaceRoot: process.cwd(),
+    defaultModelSelection: modelSelection,
+    createdAt: DateTime.formatIso(yield* DateTime.now),
+  });
+  yield* orchestrator.dispatch({
+    type: "thread.create",
+    commandId: CommandId.make(`${prefix}-create`),
+    threadId,
+    createdBy: "user",
+    creationSource: "web",
+    projectId,
+    title: "Self settlement",
+    modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+  });
+  yield* orchestrator.dispatch({
+    type: "message.dispatch",
+    commandId: CommandId.make(`${prefix}-start`),
+    threadId,
+    createdBy: "user",
+    creationSource: "web",
+    messageId: MessageId.make(`${prefix}-message`),
+    text: "Finish this task",
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
+  });
+  const initial = yield* orchestrator.getThreadProjection(threadId);
+  const run = initial.runs[0]!;
+  const provider = initial.providerThreads[0]!;
+  const callerSpy = vi
+    .spyOn(sessions, "isMcpCallerAttached")
+    .mockImplementation((input) =>
+      Effect.succeed(
+        input.threadId === threadId &&
+          input.mcpCredentialId === "self-credential" &&
+          input.providerSessionId === provider.providerSessionId,
+      ),
+    );
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      callerSpy.mockRestore();
+    }),
+  );
+  const request = {
+    threadId,
+    commandId: CommandId.make(`${prefix}-request`),
+    mcpCredentialId: "self-credential",
+    providerInstanceId: modelSelection.instanceId,
+  };
+  const now = yield* DateTime.now;
+  const providerSession = {
+    id: provider.providerSessionId!,
+    driver,
+    providerInstanceId: modelSelection.instanceId,
+    status: "running" as const,
+    cwd: process.cwd(),
+    model: modelSelection.model,
+    capabilities: CodexProviderCapabilitiesV2,
+    createdAt: now,
+    updatedAt: now,
+    lastError: null,
+  };
+  yield* sink.write({
+    events: [
+      {
+        id: EventId.make(`${prefix}-attached`),
+        type: "provider-session.attached",
+        threadId,
+        occurredAt: now,
+        payload: providerSession,
+      },
+    ],
+  });
+  return { orchestrator, sink, sessions, threadId, run, provider, providerSession, request };
+});
+
+const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
+  yield* seedProject({
+    projectId: ProjectId.make(`${prefix}-project`),
+    title: "Tool boundary",
+    workspaceRoot: `/synthetic/${prefix}`,
+    defaultModelSelection: modelSelection,
+    createdAt: "2026-10-04T00:00:00.000Z",
+  });
+  const fixture = yield* selfSettlementFixture(prefix);
+  const { orchestrator, sink, sessions, threadId, run, provider, providerSession } = fixture;
+  const now = yield* DateTime.now;
+  const turnId = ProviderTurnId.make(`${prefix}-turn`);
+  const sessionSpy = vi.spyOn(sessions, "get").mockReturnValue(
+    Effect.succeedSome({
+      providerSession,
+      providerSessionId: providerSession.id,
+      instanceId: modelSelection.instanceId,
+      driver,
+      events: Stream.empty,
+      ensureThread: () => Effect.die("Unexpected ensure"),
+      resumeThread: () => Effect.die("Unexpected resume"),
+      startTurn: () => Effect.die("Unexpected start"),
+      steerTurn: () => Effect.die("Effects are not executed by this test"),
+      interruptTurn: () => Effect.die("Unexpected interrupt"),
+      respondToRuntimeRequest: () => Effect.die("Unexpected response"),
+      readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
+      rollbackThread: () => Effect.die("Unexpected rollback"),
+      forkThread: () => Effect.die("Unexpected fork"),
+    } satisfies ProviderAdapterV2SessionRuntime),
+  );
+  yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
+  const root = (yield* orchestrator.getThreadProjection(threadId)).nodes.find(
+    (node) => node.id === run.rootNodeId,
+  )!;
+  yield* sink.write({
+    events: [
+      {
+        id: EventId.make(`${prefix}-running`),
+        type: "run.updated",
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+        payload: { ...run, status: "running", startedAt: now },
+      },
+      {
+        id: EventId.make(`${prefix}-root-running`),
+        type: "node.updated",
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+        payload: { ...root, status: "running", providerTurnId: turnId },
+      },
+      {
+        id: EventId.make(`${prefix}-turn`),
+        type: "provider-turn.updated",
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+        payload: {
+          id: turnId,
+          providerThreadId: provider.id,
+          nodeId: run.rootNodeId!,
+          runAttemptId: run.activeAttemptId,
+          nativeTurnRef: null,
+          ordinal: 1,
+          status: "running",
+          startedAt: now,
+          completedAt: null,
+        },
+      },
+    ],
+  });
+  const queue = (
+    text: string,
+    selection: ModelSelection = modelSelection,
+    eligibility: boolean | null = true,
+  ) =>
+    orchestrator.dispatch({
+      type: "message.dispatch",
+      threadId,
+      commandId: CommandId.make(`${prefix}-queue-${text}`),
+      ...(eligibility === null ? {} : { queuedToolBoundaryEligible: eligibility }),
+      messageId: MessageId.make(`${prefix}-${text}`),
+      createdBy: "user",
+      creationSource: "web",
+      text,
+      modelSelection: selection,
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+    });
+  const tool = (
+    id: string,
+    status: OrchestrationV2ExecutionNode["status"] = "completed",
+  ): OrchestrationV2ExecutionNode => ({
+    id: NodeId.make(`${prefix}-${id}`),
+    threadId,
+    runId: run.id,
+    parentNodeId: run.rootNodeId,
+    rootNodeId: run.rootNodeId!,
+    kind: "tool_call",
+    status,
+    countsForRun: false,
+    providerThreadId: provider.id,
+    providerTurnId: turnId,
+    nativeItemRef: { driver, nativeId: id, strength: "strong" },
+    runtimeRequestId: null,
+    checkpointScopeId: null,
+    startedAt: now,
+    completedAt: status === "completed" ? now : null,
+  });
+  let eventOrdinal = 0;
+  const writeTool = (node: OrchestrationV2ExecutionNode) =>
+    sink.write({
+      events: [
+        {
+          id: EventId.make(`${prefix}-node-event-${++eventOrdinal}`),
+          type: "node.updated",
+          threadId,
+          runId: node.runId ?? run.id,
+          occurredAt: now,
+          payload: node,
+        },
+      ],
+    });
+  const react = (
+    node: OrchestrationV2ExecutionNode,
+    beforeLock: Effect.Effect<void> = Effect.void,
+  ) =>
+    Effect.gen(function* () {
+      const reacted = yield* Deferred.make<void>();
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const preflight = store.hasQueuedToolBoundaryWork;
+      const withLock = executor.withLock;
+      const preflightSpy = vi
+        .spyOn(store, "hasQueuedToolBoundaryWork")
+        .mockImplementation((id, runId) =>
+          preflight(id, runId).pipe(
+            Effect.tap((ready) =>
+              id === threadId && !ready ? Deferred.succeed(reacted, undefined) : Effect.void,
+            ),
+          ),
+        );
+      let intercepted = false;
+      const observedLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+        id,
+        effect,
+      ) =>
+        Effect.suspend(() => {
+          const intercept = id === threadId && !intercepted;
+          if (intercept) intercepted = true;
+          return (intercept ? beforeLock : Effect.void).pipe(
+            Effect.andThen(withLock(id, effect)),
+            Effect.ensuring(intercept ? Deferred.succeed(reacted, undefined) : Effect.void),
+          );
+        });
+      const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observedLock);
+      return yield* Effect.gen(function* () {
+        const stored = yield* writeTool(node);
+        yield* Deferred.await(reacted);
+        return stored[0]!;
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            preflightSpy.mockRestore();
+            lockSpy.mockRestore();
+          }),
+        ),
+      );
+    });
+  return { ...fixture, turnId, now, queue, tool, writeTool, react, sessionSpy };
+});
+
+it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
+  it.effect.each([
+    { name: "model", saved: { ...modelSelection, model: "prospective-model" } },
+    { name: "provider", saved: { ...modelSelection, instanceId: alternateInstanceId } },
+    {
+      name: "options",
+      saved: { ...modelSelection, options: [{ id: "reasoningEffort", value: "high" }] },
+    },
+  ] satisfies Array<{ name: string; saved: ModelSelection }>)(
+    "queues an inherited owner steer under the saved $name after a provider gap",
+    ({ name, saved }) =>
+      Effect.gen(function* () {
+        const prefix = `steer-gap-inherited-${name}`;
+        const f = yield* queuedToolFixture(prefix);
+        if (name === "provider") {
+          const instances = testProviderRegistry;
+          const getInstance = instances.getInstance;
+          const identitySpy = vi.spyOn(instances, "getInstance").mockImplementation((id) =>
+            id === alternateInstanceId
+              ? Effect.succeed({
+                  ...alternateProviderInstance,
+                  continuationIdentity: providerInstance.continuationIdentity,
+                })
+              : getInstance(id),
+          );
+          yield* Effect.addFinalizer(() => Effect.sync(() => identitySpy.mockRestore()));
+          yield* f.sink.write({
+            events: [
+              {
+                id: EventId.make(`${prefix}-native-conversation`),
+                type: "provider-thread.updated",
+                threadId: f.threadId,
+                occurredAt: f.now,
+                payload: {
+                  ...f.provider,
+                  nativeThreadRef: { driver, nativeId: `${prefix}-native`, strength: "strong" },
+                },
+              },
+            ],
+          });
+        }
+        const initial = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const nativeTurn = initial.providerTurns.find((turn) => turn.id === f.turnId)!;
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-save`),
+              type: "thread.model-selection-updated",
+              threadId: f.threadId,
+              occurredAt: f.now,
+              payload: {
+                ...initial.thread,
+                providerInstanceId: saved.instanceId,
+                modelSelection: saved,
+                updatedAt: f.now,
+              },
+            },
+            {
+              id: EventId.make(`${prefix}-pending-turn`),
+              type: "provider-turn.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...nativeTurn, status: "pending" },
+            },
+          ],
+        });
+        const commandId = CommandId.make(`${prefix}-send`);
+        const messageId = MessageId.make(`${prefix}-follow-up`);
+        const command = {
+          type: "message.dispatch" as const,
+          commandId,
+          threadId: f.threadId,
+          messageId,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          text: "Keep the inherited follow-up",
+          attachments: [],
+          modelSelection: saved,
+          modelSelectionExplicit: false,
+          deliveryIntent: "steer" as const,
+          dispatchMode: { type: "start_immediately" as const },
+        };
+        yield* f.orchestrator.dispatch(command).pipe(withOwnerSelectionIngress);
+        const receipts = yield* CommandReceiptStoreV2;
+        assert.equal(
+          Option.getOrThrow(yield* receipts.getByCommandId(commandId)).status,
+          "accepted",
+        );
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const queued = after.runs.find((run) => run.userMessageId === messageId)!;
+        assert.equal(queued.status, "queued");
+        assert.deepEqual(queued.modelSelection, saved);
+        assert.equal(queued.providerInstanceId, saved.instanceId);
+        assert.isTrue(queued.queuedToolBoundaryEligible);
+        yield* f.orchestrator.dispatch(command).pipe(withOwnerSelectionIngress);
+        assert.equal(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.filter(
+            (run) => run.userMessageId === messageId,
+          ).length,
+          1,
+        );
+        assert.deepEqual(
+          after.runs.find((run) => run.id === f.run.id)?.modelSelection,
+          modelSelection,
+        );
+        assert.deepEqual(after.thread.modelSelection, saved);
+        const sql = yield* SqlClient.SqlClient;
+        const ownerRows =
+          yield* sql`SELECT thread_id FROM jones_owner_selections WHERE thread_id = ${f.threadId}`;
+        assert.equal(ownerRows.length, 0);
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-resume-turn`),
+              type: "provider-turn.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: nativeTurn,
+            },
+          ],
+        });
+        yield* f.react(f.tool("safe-boundary"));
+        const boundary = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(boundary.runs.find((run) => run.id === queued.id)?.status, "queued");
+        assert.equal(
+          boundary.messages.find((message) => message.id === messageId)?.runId,
+          queued.id,
+        );
+        assert.isFalse(
+          boundary.turnItems.some(
+            (item) =>
+              item.type === "user_message" &&
+              item.messageId === messageId &&
+              item.inputIntent === "promoted_queued_to_steer",
+          ),
+        );
+        const started = yield* Queue.unbounded<RunId>();
+        yield* f.sink
+          .stream({ threadId: f.threadId, afterSequence: yield* f.sink.latestSequence() })
+          .pipe(
+            Stream.runForEach((stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === queued.id &&
+              stored.event.payload.status === "starting"
+                ? Queue.offer(started, queued.id)
+                : Effect.void,
+            ),
+            Effect.forkScoped,
+          );
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-terminal`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...f.run, status: "completed", startedAt: f.now, completedAt: f.now },
+            },
+          ],
+        });
+        assert.equal(yield* Queue.take(started), queued.id);
+        const terminal = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const next = terminal.runs.find((run) => run.id === queued.id)!;
+        assert.equal(next.status, "starting");
+        assert.deepEqual(next.modelSelection, saved);
+        assert.equal(next.providerInstanceId, saved.instanceId);
+        assert.equal(next.userMessageId, messageId);
+        assert.equal(terminal.messages.filter((message) => message.id === messageId).length, 1);
+      }),
+  );
+  it.effect.each([false, true])(
+    "keeps Stop rejection with prospective selection %s during a gap",
+    (prospective) =>
+      Effect.gen(function* () {
+        const prefix = `steer-gap-stop-${prospective}`;
+        const f = yield* queuedToolFixture(prefix);
+        const initial = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const saved = prospective
+          ? { ...modelSelection, model: "prospective-model" }
+          : modelSelection;
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-saved`),
+              type: "thread.model-selection-updated",
+              threadId: f.threadId,
+              occurredAt: f.now,
+              payload: { ...initial.thread, modelSelection: saved, updatedAt: f.now },
+            },
+          ],
+        });
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-waiting`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...f.run, status: "waiting" },
+            },
+            {
+              id: EventId.make(`${prefix}-stop`),
+              type: "turn-item.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: {
+                id: TurnItemId.make(`${prefix}-stop`),
+                threadId: f.threadId,
+                runId: f.run.id,
+                nodeId: f.run.rootNodeId!,
+                providerThreadId: f.provider.id,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 1000,
+                status: "completed",
+                title: "Interrupt requested",
+                startedAt: f.now,
+                completedAt: f.now,
+                updatedAt: f.now,
+                type: "run_interrupt_request",
+                message: "Stop",
+              },
+            },
+          ],
+        });
+        const commandId = CommandId.make(`${prefix}-send`);
+        const result = yield* Effect.exit(
+          f.orchestrator
+            .dispatch({
+              type: "message.dispatch",
+              commandId,
+              threadId: f.threadId,
+              messageId: MessageId.make(`${prefix}-follow-up`),
+              createdBy: "user",
+              creationSource: "web",
+              text: "Do not release Stop",
+              modelSelection: saved,
+              modelSelectionExplicit: false,
+              attachments: [],
+              deliveryIntent: "steer",
+              dispatchMode: { type: "start_immediately" },
+            })
+            .pipe(withOwnerSelectionIngress),
+        );
+        assert.isTrue(Exit.isFailure(result));
+        const receipts = yield* CommandReceiptStoreV2;
+        assert.equal(
+          Option.getOrThrow(yield* receipts.getByCommandId(commandId)).status,
+          "rejected",
+        );
+        assert.isFalse(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.some(
+            (run) => run.status === "queued",
+          ),
+        );
+      }),
+  );
+  it.effect.each(["healthy", "explicit", "pending"] as const)(
+    "preserves the %s owner steer path after a prospective save",
+    (mode) =>
+      Effect.gen(function* () {
+        const prefix = `steer-gap-owner-${mode}`;
+        const f = yield* queuedToolFixture(prefix);
+        const initial = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const saved = { ...modelSelection, model: "prospective-model" };
+        const nativeTurn = initial.providerTurns.find((turn) => turn.id === f.turnId)!;
+        if (mode === "pending") {
+          yield* f.orchestrator
+            .dispatch({
+              type: "thread.model-selection.set",
+              commandId: CommandId.make(`${prefix}-save`),
+              threadId: f.threadId,
+              modelSelection: saved,
+            })
+            .pipe(withOwnerSelectionIngress);
+        } else {
+          yield* f.sink.write({
+            events: [
+              {
+                id: EventId.make(`${prefix}-save`),
+                type: "thread.model-selection-updated",
+                threadId: f.threadId,
+                occurredAt: f.now,
+                payload: { ...initial.thread, modelSelection: saved, updatedAt: f.now },
+              },
+            ],
+          });
+        }
+        if (mode !== "healthy")
+          yield* f.sink.write({
+            events: [
+              {
+                id: EventId.make(`${prefix}-pending-turn`),
+                type: "provider-turn.updated",
+                threadId: f.threadId,
+                runId: f.run.id,
+                occurredAt: f.now,
+                payload: { ...nativeTurn, status: "pending" },
+              },
+            ],
+          });
+        const commandId = CommandId.make(`${prefix}-send`);
+        const messageId = MessageId.make(`${prefix}-follow-up`);
+        const result = yield* Effect.exit(
+          f.orchestrator
+            .dispatch({
+              type: "message.dispatch",
+              commandId,
+              threadId: f.threadId,
+              messageId,
+              createdBy: "user",
+              creationSource: "web",
+              text: "Owner follow-up",
+              attachments: [],
+              modelSelection: saved,
+              modelSelectionExplicit: mode === "explicit",
+              deliveryIntent: "steer",
+              dispatchMode: { type: "start_immediately" },
+            })
+            .pipe(withOwnerSelectionIngress),
+        );
+        const receipts = yield* CommandReceiptStoreV2;
+        assert.equal(
+          Option.getOrThrow(yield* receipts.getByCommandId(commandId)).status,
+          mode === "healthy" ? "accepted" : "rejected",
+        );
+        assert.equal(Exit.isSuccess(result), mode === "healthy");
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.isFalse(after.runs.some((run) => run.status === "queued"));
+        assert.deepEqual(
+          after.runs.find((run) => run.id === f.run.id)?.modelSelection,
+          modelSelection,
+        );
+        assert.deepEqual(after.thread.modelSelection, saved);
+        if (mode === "healthy")
+          assert.equal(after.messages.find((message) => message.id === messageId)?.runId, f.run.id);
+      }),
+  );
+  it.effect.each(["preparing", "starting", "waiting", "running"] as const)(
+    "accepts a steer during the %s provider gap and promotes its original message at a tool boundary",
+    (status) =>
+      Effect.gen(function* () {
+        const prefix = `steer-gap-${status}`;
+        const f = yield* queuedToolFixture(prefix);
+        const initial = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const nativeTurn = initial.providerTurns.find((turn) => turn.id === f.turnId)!;
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-gap-run`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...f.run, status },
+            },
+            {
+              id: EventId.make(`${prefix}-pending-turn`),
+              type: "provider-turn.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...nativeTurn, status: "pending" },
+            },
+          ],
+        });
+        const commandId = CommandId.make(`${prefix}-send`);
+        const messageId = MessageId.make(`${prefix}-send`);
+        const command = {
+          type: "message.dispatch" as const,
+          threadId: f.threadId,
+          commandId,
+          messageId,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          text: "Keep this follow-up",
+          attachments: [],
+          deliveryIntent: "steer" as const,
+          dispatchMode: { type: "start_immediately" as const },
+        };
+        yield* f.orchestrator.dispatch(command);
+        const receipts = yield* CommandReceiptStoreV2;
+        assert.equal(
+          Option.getOrThrow(yield* receipts.getByCommandId(commandId)).status,
+          "accepted",
+        );
+        const queued = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.find(
+          (run) => run.userMessageId === messageId,
+        )!;
+        assert.equal(queued.status, "queued");
+        assert.isTrue(queued.queuedToolBoundaryEligible);
+        yield* f.orchestrator.dispatch(command);
+        assert.equal(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.filter(
+            (run) => run.userMessageId === messageId,
+          ).length,
+          1,
+        );
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-resumed-run`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: { ...f.run, status: "running", startedAt: f.now },
+            },
+            {
+              id: EventId.make(`${prefix}-resumed-turn`),
+              type: "provider-turn.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: nativeTurn,
+            },
+          ],
+        });
+        yield* f.react(f.tool("safe-boundary"));
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(after.messages.find((message) => message.id === messageId)?.runId, f.run.id);
+        assert.isTrue(
+          after.turnItems.some(
+            (item) =>
+              item.type === "user_message" &&
+              item.messageId === messageId &&
+              item.inputIntent === "promoted_queued_to_steer",
+          ),
+        );
+        assert.equal(after.runs.find((run) => run.id === queued.id)?.status, "cancelled");
+      }),
+  );
+  it.effect(
+    "reselection shares the dispatch lock and the next same-account run uses its target",
+    () =>
+      Effect.gen(function* () {
+        const prefix = "reselection-runtime-layer";
+        const f = yield* selfSettlementFixture(prefix);
+        const now = yield* DateTime.now;
+        const target = {
+          ...f.provider,
+          status: "idle" as const,
+          nativeThreadRef: {
+            driver,
+            nativeId: "native:healthy-reselection",
+            strength: "strong" as const,
+          },
+          lastRunOrdinal: f.run.ordinal,
+          updatedAt: now,
+        };
+        const old = {
+          ...target,
+          id: ProviderThreadId.make(`${prefix}-obsolete`),
+          nativeThreadRef: {
+            driver,
+            nativeId: "native:obsolete-reselection",
+            strength: "strong" as const,
+          },
+        };
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-completed`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: now,
+              payload: { ...f.run, status: "completed", startedAt: now, completedAt: now },
+            },
+            {
+              id: EventId.make(`${prefix}-healthy`),
+              type: "provider-thread.updated",
+              threadId: f.threadId,
+              occurredAt: now,
+              payload: target,
+            },
+            {
+              id: EventId.make(`${prefix}-obsolete-selected`),
+              type: "provider-thread.updated",
+              threadId: f.threadId,
+              occurredAt: now,
+              payload: old,
+            },
+          ],
+        });
+        const principal = EnvironmentAuthenticatedPrincipal.of({
+          sessionId: AuthSessionId.make(`${prefix}-actor`),
+          subject: "Synthetic recovery operator",
+          method: "browser-session-cookie",
+          scopes: new Set(["orchestration:operate", "environment:maintain"]),
+        });
+        const auth = yield* AuthSessions.AuthSessionRepository;
+        yield* auth.create({
+          sessionId: principal.sessionId,
+          subject: principal.subject,
+          method: principal.method,
+          scopes: ["orchestration:operate", "environment:maintain"],
+          issuedAt: now,
+          expiresAt: DateTime.add(now, { hours: 1 }),
+          client: {
+            label: null,
+            ipAddress: null,
+            userAgent: null,
+            deviceType: "bot",
+            os: null,
+            browser: null,
+          },
+        });
+        const owner = yield* ConversationReselection.ProviderConversationReselection;
+        const input = {
+          threadId: f.threadId,
+          expectedActiveProviderThreadId: old.id,
+          targetProviderThreadId: target.id,
+          expectedTargetNativeThreadId: "native:healthy-reselection",
+        };
+        const preview = yield* owner.preview(input, principal);
+        assert.deepEqual(preview.refusalCodes, []);
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const withLock = executor.withLock;
+        const attempted = yield* Deferred.make<void>();
+        let finished = false;
+        const observedLock: typeof withLock = (id, action) =>
+          Deferred.succeed(attempted, undefined).pipe(Effect.andThen(withLock(id, action)));
+        const spy = vi.spyOn(executor, "withLock").mockImplementation(observedLock);
+        const repair = yield* withLock(
+          f.threadId,
+          Effect.gen(function* () {
+            const fiber = yield* owner
+              .reselect(
+                {
+                  ...input,
+                  commandId: CommandId.make(`${prefix}-repair`),
+                  expectedPreimageDigest: preview.preimageDigest,
+                },
+                principal,
+              )
+              .pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    finished = true;
+                  }),
+                ),
+                Effect.forkChild,
+              );
+            yield* Deferred.await(attempted);
+            assert.isFalse(finished);
+            assert.equal(
+              (yield* f.orchestrator.getThreadProjection(f.threadId)).thread.activeProviderThreadId,
+              old.id,
+            );
+            return fiber;
+          }),
+        ).pipe(Effect.ensuring(Effect.sync(() => spy.mockRestore())));
+        assert.equal((yield* Fiber.join(repair)).activeProviderThreadId, target.id);
+        yield* f.orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${prefix}-next`),
+          threadId: f.threadId,
+          messageId: MessageId.make(`${prefix}-next-message`),
+          text: "Synthetic verification turn",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: "start_immediately" },
+        });
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(after.runs.at(-1)?.providerThreadId, target.id);
+        assert.equal(
+          after.providerThreads.find((row) => row.id === target.id)?.nativeThreadRef?.nativeId,
+          "native:healthy-reselection",
+        );
+        assert.deepEqual(
+          after.providerThreads.find((row) => row.id === old.id),
+          old,
+        );
+      }),
+  );
+
+  it.effect.each([null, false] as const)(
+    "retains legacy eligibility %s for a separate terminal turn",
+    (eligibility) =>
+      Effect.gen(function* () {
+        const f = yield* queuedToolFixture(`queue-legacy-${eligibility}`);
+        try {
+          yield* f.queue("Legacy", modelSelection, eligibility);
+          const before = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.find(
+            (run) => run.status === "queued",
+          )!;
+          assert.equal(before.queuedToolBoundaryEligible, eligibility === null ? undefined : false);
+          const boundary = yield* f.react(f.tool("legacy-tool"));
+          const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+          assert.equal(after.runs.find((run) => run.id === before.id)?.status, "queued");
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          assert.isEmpty(
+            yield* outbox.listByCommandId(
+              CommandId.make(
+                `command:queue-tool-boundary:${before.id}:${f.turnId}:${boundary.sequence}`,
+              ),
+            ),
+          );
+        } finally {
+          f.sessionSpy.mockRestore();
+        }
+      }),
+  );
+  it.effect("revalidates eligibility against run birth after a projection update", () =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture("queue-birth-policy");
+      try {
+        yield* f.queue("Legacy", modelSelection, false);
+        const run = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.find(
+          (run) => run.status === "queued",
+        )!;
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make("queue-birth-policy-skew"),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: run.id,
+              occurredAt: f.now,
+              payload: { ...run, queuedToolBoundaryEligible: true },
+            },
+          ],
+        });
+        yield* f.react(f.tool("birth-tool"));
+        assert.equal(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.find(
+            (candidate) => candidate.id === run.id,
+          )?.status,
+          "queued",
+        );
+      } finally {
+        f.sessionSpy.mockRestore();
+      }
+    }),
+  );
+  it.effect("does not leapfrog a legacy queue head or continue past one", () =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture("queue-mixed-eligibility");
+      try {
+        yield* f.queue("Legacy", modelSelection, null);
+        yield* f.queue("Eligible");
+        yield* f.react(f.tool("mixed-first"));
+        let projection = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.lengthOf(
+          projection.runs.filter((run) => run.status === "queued"),
+          2,
+        );
+        const eligible = projection.runs.find(
+          (run) => run.userMessageId === MessageId.make("queue-mixed-eligibility-Eligible"),
+        )!;
+        yield* f.orchestrator.dispatch({
+          type: "queued-run.reorder",
+          commandId: CommandId.make("mixed-reorder"),
+          threadId: f.threadId,
+          runId: eligible.id,
+          beforeRunId: projection.runs.find(
+            (run) => run.status === "queued" && run.id !== eligible.id,
+          )!.id,
+        });
+        const boundary = yield* f.react(f.tool("mixed-second"));
+        projection = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(projection.runs.find((run) => run.id === eligible.id)?.status, "cancelled");
+        assert.lengthOf(
+          projection.runs.filter((run) => run.status === "queued"),
+          1,
+        );
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const effects = yield* outbox.listByCommandId(
+          CommandId.make(
+            `command:queue-tool-boundary:batch:${eligible.id}:${f.turnId}:${boundary.sequence}`,
+          ),
+        );
+        assert.isTrue(
+          effects.some(
+            (effect) =>
+              effect.request.type === "provider-turn.steer-batch" &&
+              effect.request.messageId === eligible.userMessageId,
+          ),
+        );
+      } finally {
+        f.sessionSpy.mockRestore();
+      }
+    }),
+  );
+  it.effect(
+    "delivers queued owner messages FIFO at a native tool boundary while the root turn runs",
+    () =>
+      Effect.gen(function* () {
+        const prefix = "queue-tool-boundary";
+        yield* seedProject({
+          projectId: ProjectId.make(`${prefix}-project`),
+          title: "Tool boundary",
+          workspaceRoot: `/synthetic/${prefix}`,
+          defaultModelSelection: modelSelection,
+          createdAt: "2026-10-04T00:00:00.000Z",
+        });
+        const { orchestrator, sink, sessions, threadId, run, provider, providerSession } =
+          yield* selfSettlementFixture(prefix);
+        const now = yield* DateTime.now;
+        const turnId = ProviderTurnId.make(`${prefix}-turn`);
+        const sessionSpy = vi.spyOn(sessions, "get").mockReturnValue(
+          Effect.succeedSome({
+            providerSession,
+            providerSessionId: providerSession.id,
+            instanceId: modelSelection.instanceId,
+            driver,
+            events: Stream.empty,
+            ensureThread: () => Effect.die("Unexpected ensure"),
+            resumeThread: () => Effect.die("Unexpected resume"),
+            startTurn: () => Effect.die("Unexpected start"),
+            steerTurn: () => Effect.die("Effects are not executed by this test"),
+            interruptTurn: () => Effect.die("Unexpected interrupt"),
+            respondToRuntimeRequest: () => Effect.die("Unexpected response"),
+            readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
+            rollbackThread: () => Effect.die("Unexpected rollback"),
+            forkThread: () => Effect.die("Unexpected fork"),
+          } satisfies ProviderAdapterV2SessionRuntime),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-running`),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "running", startedAt: now },
+            },
+            {
+              id: EventId.make(`${prefix}-turn`),
+              type: "provider-turn.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: {
+                id: turnId,
+                providerThreadId: provider.id,
+                nodeId: run.rootNodeId!,
+                runAttemptId: run.activeAttemptId,
+                nativeTurnRef: null,
+                ordinal: 1,
+                status: "running",
+                startedAt: now,
+                completedAt: null,
+              },
+            },
+          ],
+        });
+        const texts = Array.from({ length: 12 }, (_, index) => `Queued-${index + 1}`);
+        for (const text of texts) {
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            threadId,
+            commandId: CommandId.make(`${prefix}-${text}`),
+            queuedToolBoundaryEligible: true,
+            messageId: MessageId.make(`${prefix}-${text}`),
+            createdBy: "user",
+            creationSource: "web",
+            text,
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+          });
+        }
+        const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.filter(
+          (candidate) => candidate.status === "queued",
+        );
+        yield* orchestrator.dispatch({
+          type: "queued-run.reorder",
+          commandId: CommandId.make(`${prefix}-reorder`),
+          threadId,
+          runId: queued.at(-1)!.id,
+          beforeRunId: queued[0]!.id,
+        });
+        const expectedMessageIds = [texts.at(-1)!, ...texts.slice(0, -1)].map((text) =>
+          MessageId.make(`${prefix}-${text}`),
+        );
+        const delivered = yield* Queue.unbounded<MessageId>();
+        yield* sink
+          .stream({ threadId, afterSequence: yield* sink.latestSequence({ threadId }) })
+          .pipe(
+            Stream.runForEach((stored) =>
+              stored.event.type === "turn-item.updated" &&
+              stored.event.payload.type === "user_message" &&
+              stored.event.payload.inputIntent === "promoted_queued_to_steer"
+                ? Queue.offer(delivered, stored.event.payload.messageId)
+                : Effect.void,
+            ),
+            Effect.forkScoped,
+          );
+        const completed = yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-tool-completed`),
+              type: "node.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: {
+                id: NodeId.make(`${prefix}-tool`),
+                threadId,
+                runId: run.id,
+                parentNodeId: run.rootNodeId,
+                rootNodeId: run.rootNodeId!,
+                kind: "tool_call",
+                status: "completed",
+                countsForRun: false,
+                providerThreadId: provider.id,
+                providerTurnId: turnId,
+                nativeItemRef: { driver, nativeId: "tool-1", strength: "strong" },
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt: now,
+                completedAt: now,
+              },
+            },
+          ],
+        });
+        assert.deepEqual(
+          yield* Effect.forEach(expectedMessageIds, () => Queue.take(delivered)),
+          expectedMessageIds,
+        );
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(after.runs.find((candidate) => candidate.id === run.id)?.status, "running");
+        assert.isFalse(after.runs.some((candidate) => candidate.status === "queued"));
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        yield* outbox.cancelUnsettled({
+          threadId,
+          effectTypes: ["provider-turn.start"],
+          reason: "Fixture start is already represented by the running provider turn",
+        });
+        const effects = yield* outbox.listByCommandId(
+          CommandId.make(
+            `command:queue-tool-boundary:batch:${queued.at(-1)!.id}:${turnId}:${completed[0]!.sequence}`,
+          ),
+        );
+        assert.deepEqual(
+          effects.map((effect) => effect.request.type),
+          ["provider-turn.steer-batch"],
+        );
+        const workerId = `${prefix}-claim-worker`;
+        const effect = Option.getOrThrow(yield* outbox.claimNext({ workerId }));
+        assert.equal(effect.threadId, threadId);
+        assert.equal(effect.request.type, "provider-turn.steer-batch");
+        if (effect.request.type !== "provider-turn.steer-batch") return;
+        assert.deepEqual(effect.request.messageIds, expectedMessageIds);
+        assert.isTrue(yield* outbox.succeed({ effectId: effect.id, workerId }));
+      }),
+  );
+
+  it.effect.each(["owner", "peer", "scheduled"] as const)(
+    "skips held work at a tool boundary but preserves the first unheld %s eligibility",
+    (source) =>
+      Effect.gen(function* () {
+        const f = yield* queuedToolFixture(`queue-mixed-hold-${source}`);
+        yield* f.queue("Held");
+        yield* f.orchestrator.dispatch({
+          type: "message.dispatch",
+          threadId: f.threadId,
+          commandId: CommandId.make(`${f.threadId}-candidate`),
+          messageId: MessageId.make(`${f.threadId}-candidate`),
+          text: "Candidate",
+          attachments: [],
+          queuedToolBoundaryEligible: true,
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: source === "owner" ? "user" : "agent",
+          creationSource: source === "owner" ? "web" : "mcp",
+          ...(source === "peer" ? { senderThreadId: ThreadId.make("peer") } : {}),
+          ...(source === "scheduled"
+            ? { scheduledTaskId: ScheduledTaskId.make("scheduled-task") }
+            : {}),
+        });
+        yield* f.queue("Tail");
+        const before = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const [held, candidate, tail] = before.runs.filter((run) => run.status === "queued");
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${f.threadId}-hold`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: held!.id,
+              occurredAt: f.now,
+              payload: { ...held!, queueHeld: true },
+            },
+          ],
+        });
+        yield* f.react(f.tool("mixed-held-boundary"));
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(after.runs.find((run) => run.id === held!.id)?.status, "queued");
+        assert.isTrue(after.runs.find((run) => run.id === held!.id)?.queueHeld);
+        for (const run of [candidate!, tail!]) {
+          assert.equal(
+            after.runs.find((entry) => entry.id === run.id)?.status,
+            source !== "scheduled" ? "cancelled" : "queued",
+          );
+        }
+        assert.equal(after.runs.find((run) => run.id === f.run.id)?.status, "running");
+        if (source !== "scheduled") {
+          assert.equal(
+            after.messages.find((message) => message.text === "Candidate")?.runId,
+            f.run.id,
+          );
+          assert.equal(after.messages.find((message) => message.text === "Tail")?.runId, f.run.id);
+        } else {
+          assert.isFalse(
+            after.turnItems.some(
+              (item) =>
+                item.type === "user_message" && item.inputIntent === "promoted_queued_to_steer",
+            ),
+          );
+        }
+      }),
+  );
+
+  it.effect("waits for the last foreground tool then leaves post-boundary additions queued", () =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture("queue-boundary-parallel");
+      yield* f.queue("First");
+      yield* f.writeTool(f.tool("second-tool", "waiting"));
+      yield* f.react(f.tool("first-tool"));
+      assert.equal(
+        (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.at(-1)?.status,
+        "queued",
+      );
+      const completed = yield* f.react(
+        f.tool("second-tool"),
+        f.queue("Later").pipe(Effect.orDie, Effect.asVoid),
+      );
+      const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.equal(after.messages.find((message) => message.text === "First")?.runId, f.run.id);
+      assert.equal(after.runs.at(-1)?.status, "queued");
+      const later = after.runs.at(-1)!;
+      yield* f.react(f.tool("second-tool"));
+      assert.equal(
+        (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.at(-1)?.status,
+        "queued",
+      );
+      const freshBoundary = yield* f.react(f.tool("fresh-tool"));
+      const freshCommandId = CommandId.make(
+        `command:queue-tool-boundary:batch:${later.id}:${f.turnId}:${freshBoundary.sequence}`,
+      );
+      // Terminal-event reactions also take this thread's lock. Wait for this
+      // boundary's committed promotion before reading its result.
+      const promoted = yield* f.sink
+        .stream({
+          threadId: f.threadId,
+          afterSequence: freshBoundary.sequence,
+          eventType: "turn-item.updated",
+        })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.commandId === freshCommandId &&
+              stored.event.type === "turn-item.updated" &&
+              stored.event.payload.type === "user_message" &&
+              stored.event.payload.inputIntent === "promoted_queued_to_steer" &&
+              stored.event.payload.messageId === later.userMessageId &&
+              stored.event.payload.runId === f.run.id,
+          ),
+          Stream.runHead,
+        );
+      assert.isTrue(Option.isSome(promoted));
+      assert.equal(
+        (yield* f.orchestrator.getThreadProjection(f.threadId)).messages.find(
+          (message) => message.text === "Later",
+        )?.runId,
+        f.run.id,
+      );
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      assert.deepEqual(
+        yield* outbox.listByCommandId(
+          CommandId.make(
+            `command:queue-tool-boundary:${later.id}:${f.turnId}:${completed.sequence}`,
+          ),
+        ),
+        [],
+      );
+    }),
+  );
+
+  it.effect("keeps content edited after a boundary queued until a fresh completion", () =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture("queue-boundary-edit");
+      yield* f.queue("First");
+      yield* f.queue("Second");
+      const first = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.find(
+        (run) => run.status === "queued",
+      )!;
+      yield* f.react(
+        f.tool("before-edit"),
+        f.orchestrator
+          .dispatch({
+            type: "queued-run.edit",
+            threadId: f.threadId,
+            commandId: CommandId.make("queue-boundary-edit-update"),
+            runId: first.id,
+            text: "Edited",
+            attachments: [],
+          })
+          .pipe(Effect.orDie, Effect.asVoid),
+      );
+      assert.equal(
+        (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.filter(
+          (run) => run.status === "queued",
+        ).length,
+        2,
+      );
+      yield* f.react(f.tool("after-edit"));
+      assert.isFalse(
+        (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.some(
+          (run) => run.status === "queued",
+        ),
+      );
+    }),
+  );
+
+  it.effect.each([
+    "subagent",
+    "old-turn",
+    "old-run",
+    "held",
+    "approval",
+    "runtime-mode",
+    "interaction-mode",
+    "incompatible-model",
+    "maintenance",
+    "restart-only",
+    "live-restart-only",
+  ] as const)("keeps the FIFO queue intact at a %s boundary", (condition) =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture(`queue-boundary-${condition}`);
+      yield* f.queue(
+        condition === "maintenance" ? "/compact" : "First",
+        condition === "incompatible-model"
+          ? { ...modelSelection, model: "different-model" }
+          : modelSelection,
+      );
+      yield* f.queue("Second");
+      let node = f.tool("boundary");
+      const projection = yield* f.orchestrator.getThreadProjection(f.threadId);
+      const first = projection.runs.find((run) => run.status === "queued")!;
+      if (condition === "subagent") {
+        const child = { ...f.tool("subagent-root", "running"), kind: "subagent" as const };
+        yield* f.writeTool(child);
+        node = { ...node, parentNodeId: child.id };
+      } else if (condition === "old-turn") {
+        node = { ...node, providerTurnId: ProviderTurnId.make("previous-turn") };
+      } else if (condition === "old-run") {
+        node = { ...node, runId: RunId.make("previous-run") };
+      } else if (condition === "held") {
+        yield* f.sink.write({
+          events: projection.runs
+            .filter((run) => run.status === "queued")
+            .map((run) => ({
+              id: EventId.make(`queue-boundary-held-event:${run.id}`),
+              type: "run.updated" as const,
+              threadId: f.threadId,
+              runId: run.id,
+              occurredAt: f.now,
+              payload: { ...run, queueHeld: true },
+            })),
+        });
+      } else if (condition === "approval") {
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make("queue-boundary-approval-event"),
+              type: "runtime-request.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: f.now,
+              payload: {
+                id: RuntimeRequestId.make("queue-boundary-approval-request"),
+                nodeId: f.run.rootNodeId!,
+                providerTurnId: f.turnId,
+                nativeRequestRef: null,
+                kind: "permission",
+                status: "pending",
+                responseCapability: { type: "live", providerSessionId: f.providerSession.id },
+                createdAt: f.now,
+                resolvedAt: null,
+              },
+            },
+          ],
+        });
+      } else if (condition === "runtime-mode" || condition === "interaction-mode") {
+        yield* f.orchestrator.dispatch(
+          condition === "runtime-mode"
+            ? {
+                type: "thread.runtime-mode.set",
+                threadId: f.threadId,
+                commandId: CommandId.make(`${f.threadId}-mode`),
+                runtimeMode: "approval-required",
+              }
+            : {
+                type: "thread.interaction-mode.set",
+                threadId: f.threadId,
+                commandId: CommandId.make(`${f.threadId}-mode`),
+                interactionMode: "plan",
+              },
+        );
+      } else if (condition === "restart-only" || condition === "live-restart-only") {
+        const providerSession = {
+          ...f.providerSession,
+          capabilities: {
+            ...f.providerSession.capabilities,
+            turns: {
+              ...f.providerSession.capabilities.turns,
+              supportsActiveSteering: false,
+              supportsSteeringByInterruptRestart: true,
+            },
+          },
+        };
+        if (condition === "restart-only")
+          yield* f.sink.write({
+            events: [
+              {
+                id: EventId.make(`${f.threadId}-capabilities`),
+                type: "provider-session.updated",
+                threadId: f.threadId,
+                occurredAt: f.now,
+                payload: providerSession,
+              },
+            ],
+          });
+        f.sessionSpy.mockReturnValue(
+          Effect.succeedSome({
+            ...Option.getOrThrow(yield* f.sessions.get(f.providerSession.id)),
+            providerSession,
+          }),
+        );
+      }
+      const stored = yield* f.react(node);
+      const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.equal(after.runs.filter((run) => run.status === "queued").length, 2);
+      assert.equal(after.runs.find((run) => run.id === f.run.id)?.status, "running");
+      assert.isFalse(
+        after.turnItems.some(
+          (item) => item.type === "user_message" && item.inputIntent === "promoted_queued_to_steer",
+        ),
+      );
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      assert.deepEqual(
+        yield* outbox.listByCommandId(
+          CommandId.make(`command:queue-tool-boundary:${first.id}:${f.turnId}:${stored.sequence}`),
+        ),
+        [],
+      );
+    }),
+  );
+
+  it.effect("preserves terminal fallback for an incompatible FIFO head", () =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture("queue-boundary-terminal-fallback");
+      yield* f.queue("Different", { ...modelSelection, model: "different-model" });
+      yield* f.queue("Second");
+      yield* f.react(f.tool("tool"));
+      const queued = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.filter(
+        (run) => run.status === "queued",
+      );
+      const started = yield* Queue.unbounded<RunId>();
+      yield* f.sink
+        .stream({ threadId: f.threadId, afterSequence: yield* f.sink.latestSequence() })
+        .pipe(
+          Stream.runForEach((stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "starting"
+              ? Queue.offer(started, stored.event.payload.id)
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+      yield* f.sink.write({
+        events: [
+          {
+            id: EventId.make(`${f.threadId}-terminal`),
+            type: "run.updated",
+            threadId: f.threadId,
+            runId: f.run.id,
+            occurredAt: f.now,
+            payload: { ...f.run, status: "completed", startedAt: f.now, completedAt: f.now },
+          },
+        ],
+      });
+      assert.equal(yield* Queue.take(started), queued[0]!.id);
+      const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.equal(after.runs.find((run) => run.id === queued[1]!.id)?.status, "queued");
+    }),
+  );
+
+  it.effect(
+    "excludes live child tools and synthetic terminal tool states from root boundaries",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* queuedToolFixture("queue-boundary-child-tools");
+        yield* f.queue("First");
+        const child = { ...f.tool("child-root", "running"), kind: "subagent" as const };
+        yield* f.writeTool(child);
+        yield* f.writeTool({ ...f.tool("child-tool", "running"), parentNodeId: child.id });
+        yield* f.react(f.tool("root-tool"));
+        assert.equal(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).messages.find(
+            (message) => message.text === "First",
+          )?.runId,
+          f.run.id,
+        );
+        yield* f.queue("Second");
+        for (const status of ["failed", "cancelled", "interrupted"] as const) {
+          const node = f.tool(`synthetic-${status}`, status);
+          yield* f.writeTool(node);
+          assert.isNull(
+            queuedToolBoundaryTarget(yield* f.orchestrator.getThreadProjection(f.threadId), node),
+          );
+        }
+        assert.equal(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.at(-1)?.status,
+          "queued",
+        );
+        yield* f.react(f.tool("fresh-root-tool"));
+        assert.equal(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).messages.find(
+            (message) => message.text === "Second",
+          )?.runId,
+          f.run.id,
+        );
+      }),
+  );
+
+  it.effect("rolls back failed project-item acceptance and preserves empty original retries", () =>
+    Effect.gen(function* () {
+      const { orchestrator, threadId, request } = yield* selfSettlementFixture("items-rollback");
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TRIGGER fail_project_items BEFORE INSERT ON jones_self_settlement_project_items BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END`;
+      yield* Effect.addFinalizer(() =>
+        sql`DROP TRIGGER IF EXISTS fail_project_items`.pipe(Effect.orDie),
+      );
+      const result = yield* Effect.exit(
+        orchestrator.requestSelfSettlement({ ...request, projectRemaining: ["Pending work"] }),
+      );
+      assert.isTrue(Exit.isFailure(result));
+      assert.isUndefined((yield* orchestrator.getThreadProjection(threadId)).thread.selfSettlement);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM orchestration_command_receipts WHERE command_id = ${request.commandId}`,
+        0,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM orchestration_events WHERE command_id = ${request.commandId}`,
+        0,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM jones_self_settlement_project_items WHERE command_id = ${request.commandId}`,
+        0,
+      );
+      yield* sql`DROP TRIGGER fail_project_items`;
+      const accepted = yield* orchestrator.requestSelfSettlement(request);
+      assert.deepEqual(
+        yield* orchestrator.requestSelfSettlement({
+          ...request,
+          projectRemaining: ["Later replacement"],
+        }),
+        accepted,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM jones_self_settlement_project_items WHERE command_id = ${request.commandId}`,
+        0,
+      );
+    }),
+  );
+
+  it.effect.each(["absent", "pending", "header-error", "records-error"] as const)(
+    "reads self-settlement history only for retained intent: %s",
+    (mode) =>
+      Effect.gen(function* () {
+        const prefix = `self-settlement-reads-${mode}`;
+        const { orchestrator, sink, threadId, run, request } = yield* selfSettlementFixture(prefix);
+        if (mode === "pending" || mode === "records-error")
+          yield* orchestrator.requestSelfSettlement(request);
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const consumed = yield* Deferred.make<Exit.Exit<unknown, unknown>>();
+        const promoted = yield* Deferred.make<void>();
+        const readError = new ProjectionStore.ProjectionStoreReadError({ threadId });
+        let consuming = false;
+        let historyReads = 0;
+        let dutyReads = 0;
+        const tracer = Tracer.make({
+          span: (options) => {
+            const span = new Tracer.NativeSpan(options);
+            if (span.name === "DependencyStore.duties" && consuming) dutyReads++;
+            if (span.name === "Orchestrator.consumeSelfSettlement") {
+              consuming = true;
+              const end = span.end.bind(span);
+              span.end = (time, exit) => {
+                end(time, exit);
+                consuming = false;
+                Deferred.doneUnsafe(consumed, Effect.succeed(exit));
+              };
+            }
+            return span;
+          },
+        });
+        const getThread = store.getThread;
+        const getThreadRecords = store.getThreadRecords;
+        const canStartQueuedRun = store.canStartQueuedRun;
+        const withLock = executor.withLock;
+        const headerSpy = vi
+          .spyOn(store, "getThread")
+          .mockImplementation((id) =>
+            id === threadId && mode === "header-error" ? Effect.fail(readError) : getThread(id),
+          );
+        const recordsSpy = vi
+          .spyOn(store, "getThreadRecords")
+          .mockImplementation((id, fields, filter) => {
+            if (id === threadId && fields.join(",") === "runs,messages,runtimeRequests,attempts") {
+              historyReads++;
+              if (mode === "records-error") return Effect.fail(readError);
+            }
+            return getThreadRecords(id, fields, filter);
+          });
+        const promotionSpy = vi
+          .spyOn(store, "canStartQueuedRun")
+          .mockImplementation((id) =>
+            canStartQueuedRun(id).pipe(
+              Effect.tap(() =>
+                id === threadId ? Deferred.succeed(promoted, undefined) : Effect.void,
+              ),
+            ),
+          );
+        const observedLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+          id,
+          effect,
+        ) => withLock(id, id === threadId ? effect.pipe(Effect.withTracer(tracer)) : effect);
+        const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observedLock);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            headerSpy.mockRestore();
+            recordsSpy.mockRestore();
+            promotionSpy.mockRestore();
+            lockSpy.mockRestore();
+          }),
+        );
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-completed`),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        const result = yield* Deferred.await(consumed);
+        if (mode === "header-error" || mode === "records-error") {
+          assert.isTrue(Exit.isFailure(result));
+          if (Exit.isFailure(result)) {
+            const failure = Cause.squash(result.cause);
+            assert.instanceOf(failure, Orchestrator.OrchestratorProjectionError);
+            assert.strictEqual(
+              (failure as Orchestrator.OrchestratorProjectionError).cause,
+              readError,
+            );
+          }
+          assert.equal(historyReads, mode === "records-error" ? 1 : 0);
+          assert.equal(dutyReads, 0);
+          return;
+        }
+        assert.isTrue(Exit.isSuccess(result));
+        yield* Deferred.await(promoted);
+        const thread = yield* store.getThread(threadId);
+        if (mode === "absent") {
+          assert.equal(historyReads, 0);
+          assert.equal(dutyReads, 0);
+          assert.isUndefined(thread.selfSettlement);
+          assert.isNull(thread.settledOverride);
+        } else {
+          assert.equal(historyReads, 1);
+          assert.isAbove(dutyReads, 0);
+          assert.isNull(thread.selfSettlement);
+          assert.equal(thread.settledOverride, "settled");
+        }
+      }),
+  );
+
+  it.effect(
+    "defers self settlement through checkpoint completion and replays the original run after successor work",
+    () =>
+      Effect.gen(function* () {
+        const { orchestrator, sink, threadId, run, provider, providerSession, request } =
+          yield* selfSettlementFixture("runtime-self-settle");
+        const projectRemaining = [
+          "Finish the separate project follow-up",
+          "Publish the other workstream",
+        ];
+        const accepted = yield* orchestrator.requestSelfSettlement({
+          ...request,
+          projectRemaining,
+        });
+        assert.deepEqual(
+          yield* orchestrator.requestSelfSettlement({
+            ...request,
+            projectRemaining: ["replacement"],
+          }),
+          accepted,
+        );
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              orchestrator.requestSelfSettlement({
+                ...request,
+                mcpCredentialId: "another-credential",
+              }),
+            ),
+          ),
+        );
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              orchestrator.requestSelfSettlement({
+                ...request,
+                providerInstanceId: alternateInstanceId,
+              }),
+            ),
+          ),
+        );
+        assert.equal(accepted.runId, run.id);
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.status,
+          "starting",
+        );
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.settledOverride,
+          null,
+        );
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("self-waiting"),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "waiting" },
+            },
+          ],
+        });
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.selfSettlement?.runId,
+          run.id,
+        );
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.settledOverride,
+          null,
+        );
+        const settledEvents = yield* Queue.unbounded<void>();
+        const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+        yield* sink.stream({ threadId, afterSequence }).pipe(
+          Stream.runForEach((stored) =>
+            stored.event.type === "thread.settled"
+              ? Queue.offer(settledEvents, undefined)
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("self-completed"),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        yield* Queue.take(settledEvents);
+        const settled = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(settled.thread.settledOverride, "settled");
+        assert.isNull(settled.thread.selfSettlement);
+        const origins = yield* SettlementOrigins.SettlementOrigins.pipe(
+          Effect.provide(SettlementOrigins.layer),
+        );
+        assert.deepEqual(
+          (yield* origins.resolve({
+            items: [{ threadId, settledAtMs: DateTime.toEpochMillis(settled.thread.settledAt!) }],
+          })).items[0]?.projectRemaining,
+          projectRemaining,
+        );
+        assert.isFalse(
+          settled.providerSessions.some((session) => session.id === provider.providerSessionId),
+        );
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        assert.deepEqual(
+          (yield* outbox.listByCommandId(CommandId.make(`${request.commandId}:settle`))).map(
+            (effect) => effect.request,
+          ),
+          [
+            {
+              type: "provider-session.detach",
+              providerSessionId: providerSession.id,
+              detail: "Thread settled.",
+            },
+          ],
+        );
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("self-successor"),
+          threadId,
+          createdBy: "user",
+          creationSource: "web",
+          messageId: MessageId.make("self-successor-message"),
+          text: "New work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+        });
+        assert.deepEqual(yield* orchestrator.requestSelfSettlement(request), accepted);
+        const successor = yield* orchestrator.getThreadProjection(threadId);
+        assert.notEqual(successor.runs.at(-1)!.id, run.id);
+        assert.isNull(successor.thread.selfSettlement);
+        assert.equal(successor.thread.settledOverride, null);
+      }),
+  );
+
+  it.effect.each(["cancelled", "failed", "queue", "steer"] as const)(
+    "does not self settle after %s even if the original run later completes",
+    (invalidation) =>
+      Effect.gen(function* () {
+        const prefix = `self-invalidate-${invalidation}`;
+        const { orchestrator, sink, sessions, threadId, run, provider, providerSession, request } =
+          yield* selfSettlementFixture(prefix);
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const now = yield* DateTime.now;
+        yield* orchestrator.requestSelfSettlement({
+          ...request,
+          projectRemaining: ["Cancelled project item"],
+        });
+
+        const completeReaction = Effect.fnUntraced(function* (
+          status: "cancelled" | "failed" | "completed",
+        ) {
+          const reacted = yield* Deferred.make<void>();
+          const withLock = executor.withLock;
+          // For this parentless thread, the terminal reactor first finalizes delivery,
+          // then consumes settlement and promotes the queue under a second lock.
+          let completedLocks = 0;
+          const observeLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+            key,
+            effect,
+          ) =>
+            withLock(key, effect).pipe(
+              Effect.tap(() =>
+                key === threadId && ++completedLocks === 2
+                  ? Deferred.succeed(reacted, undefined)
+                  : Effect.void,
+              ),
+            );
+          const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
+          yield* Effect.gen(function* () {
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make(`${prefix}-${status}`),
+                  type: "run.updated",
+                  threadId,
+                  runId: run.id,
+                  occurredAt: now,
+                  payload: { ...run, status, completedAt: now },
+                },
+              ],
+            });
+            yield* Deferred.await(reacted);
+          }).pipe(Effect.ensuring(Effect.sync(() => lockSpy.mockRestore())));
+        });
+
+        if (invalidation === "cancelled" || invalidation === "failed") {
+          yield* completeReaction(invalidation);
+        } else {
+          if (invalidation === "steer") {
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make(`${prefix}-running`),
+                  type: "run.updated",
+                  threadId,
+                  runId: run.id,
+                  occurredAt: now,
+                  payload: { ...run, status: "running", startedAt: now },
+                },
+                {
+                  id: EventId.make(`${prefix}-turn`),
+                  type: "provider-turn.updated",
+                  threadId,
+                  runId: run.id,
+                  occurredAt: now,
+                  payload: {
+                    id: ProviderTurnId.make(`${prefix}-turn`),
+                    providerThreadId: provider.id,
+                    nodeId: run.rootNodeId!,
+                    runAttemptId: run.activeAttemptId,
+                    nativeTurnRef: null,
+                    ordinal: 1,
+                    status: "running",
+                    startedAt: now,
+                    completedAt: null,
+                  },
+                },
+              ],
+            });
+            const sessionSpy = vi
+              .spyOn(sessions, "get")
+              .mockReturnValue(
+                Effect.succeedSome({ providerSession } as ProviderAdapterV2SessionRuntime),
+              );
+            yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
+          }
+          const commandId = CommandId.make(`${prefix}-new-work`);
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId,
+            threadId,
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make(`${prefix}-new-work`),
+            text: "Keep working",
+            attachments: [],
+            dispatchMode: {
+              type: invalidation === "queue" ? "queue_after_active" : "start_immediately",
+            },
+            ...(invalidation === "steer" ? { deliveryIntent: "auto" as const } : {}),
+          });
+          const updated = yield* orchestrator.getThreadProjection(threadId);
+          if (invalidation === "queue") {
+            assert.equal(updated.runs.at(-1)?.status, "queued");
+          } else {
+            assert.lengthOf(updated.runs, 1);
+            assert.equal(
+              (yield* outbox.listByCommandId(commandId))[0]?.request.type,
+              "provider-turn.steer",
+            );
+          }
+        }
+        assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.selfSettlement);
+        yield* completeReaction("completed");
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.isNull(projection.thread.settledOverride);
+        assert.isNull(projection.thread.selfSettlement);
+        assert.deepEqual(
+          yield* outbox.listByCommandId(CommandId.make(`${request.commandId}:settle`)),
+          [],
+        );
+        assert.lengthOf(
+          Array.from(
+            yield* sink
+              .readByCommandId({
+                commandId: CommandId.make(`${request.commandId}:settle`),
+              })
+              .pipe(Stream.runCollect),
+          ),
+          0,
+        );
+        if (invalidation === "cancelled" || invalidation === "failed") {
+          yield* orchestrator.dispatch({
+            type: "thread.settle",
+            commandId: CommandId.make(`${prefix}-manual`),
+            threadId,
+          });
+          const later = yield* orchestrator.getThreadProjection(threadId);
+          const origins = yield* SettlementOrigins.SettlementOrigins.pipe(
+            Effect.provide(SettlementOrigins.layer),
+          );
+          assert.isUndefined(
+            (yield* origins.resolve({
+              items: [{ threadId, settledAtMs: DateTime.toEpochMillis(later.thread.settledAt!) }],
+            })).items[0]?.projectRemaining,
+          );
+        }
+      }),
+  );
+});

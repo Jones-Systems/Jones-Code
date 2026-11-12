@@ -3,7 +3,7 @@
 ## First checkout
 
 Install `vp` using the [root README](../../README.md#install-vp). The checkout
-requires Node `^24.13.1` and declares `pnpm@11.10.0`; Bun is optional.
+requires Node `26.12.1` and declares `pnpm@12.14.0`; Bun is optional.
 For an authorized dependency install and development run, use the repository root:
 
 ```sh
@@ -11,18 +11,74 @@ vp i
 vp run dev
 ```
 
-The `t3.json` Setup Worktree action runs `scripts/setup-worktree.ts`: it installs
-dependencies, links the main checkout's gitignored `.env` and `infra/relay/.env`
-when present, and warms the web dependency cache. Those are separate effects,
-including access to potentially sensitive configuration. An assignment to edit
-source does not itself authorize running setup or accessing those files.
-Confirm the applicable scope before invoking it; do not print their contents.
+The automatic `t3.json` Setup Worktree action runs `node scripts/setup-worktree.ts`
+in lightweight mode: it links the main checkout's gitignored `.env` and
+`infra/relay/.env` when present, preserving real destination files. It does not
+install dependencies or warm caches. Linking configuration is still an effect;
+confirm the applicable scope before invoking it and do not print file contents.
 
-Give the printed pairing URL to the authorized tester. The bare origin does not
-authenticate a new browser. Agents must have browser authorization before
-opening a browser and must not consume the user's pairing token.
+For an authorized install, use `node scripts/setup-worktree.ts --install` with
+`T3CODE_PROJECT_ROOT` set to the main checkout. Add `--warm` to warm the web cache
+after that invocation's successful frozen-lockfile install, or select the manual
+**Install and Warm Worktree** action. `--warm` alone is rejected.
+
+Before installation and again before warming, setup measures the worktree's
+actual filesystem and requires at least 40 GiB available: a provisional 30 GiB
+reserve plus 10 GiB estimated additional peak allocation. Existing outputs
+already reduce availability. `--reserve-gib` and `--peak-gib` accept integer
+values at least 30 and 10 respectively; smaller or malformed values are rejected.
+Unknown or insufficient capacity stops the next producer without deleting
+anything. This snapshot is not a storage reservation. Separately configured
+shared package stores are not resolved or measured by this check. Dependency
+outputs and warmed caches remain reusable worktree outputs; this action does
+not authorize cleanup of them or shared stores.
+
+Setup records its PID in `.t3/setup-running`, then replaces that marker with
+`setup-done` or `setup-failed`. In lightweight mode, done confirms configuration
+linking only. For an install or warm, completion waits for the producer's output
+to close, including after cancellation; failures retain a bounded output tail.
+The cross-filesystem pnpm store warning runs only after an actual successful
+install. A first development start can also warm the web dependency cache.
+
+Startup logs record issuance without printing pairing credentials or QR codes,
+including when stdout is a terminal or redirected. For manual access, explicitly
+request a link in a separate terminal using the base directory printed by the
+runner:
+
+```sh
+node apps/server/src/bin.ts pair --base-dir <printed-base-directory>
+```
+
+Keep this command's credential-bearing output private; do not redirect it into
+service logs. Give its pairing URL to the authorized tester. The bare origin
+does not authenticate a new browser. `vp run dev --browser` instead opens the
+startup pairing URL automatically without printing it.
+[Standing local app testing permission](./contributor-guidance.md#local-app-testing-permission)
+covers isolated synthetic verification; agents must not consume the user's
+pairing token.
 
 Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
+
+### Updating dependencies and verifying test scratch cleanup
+
+Updating source does not synchronize `node_modules`. A global `vp` can delegate
+to the checkout's installed VitePlus, so updating the global tool alone does not
+replace an older local Vitest. After updating source, use the supported Node and
+pnpm versions above and run an authorized `vp install --frozen-lockfile` before
+verification. Apply the same storage admission described above when installing
+without the setup helper.
+
+From the repository root, verify the actual installed Vitest cleanup behavior:
+
+```sh
+node --test --test-concurrency=1 scripts/jones/test-scratch/vitest-cleanup.node-test.mjs
+```
+
+This serial regression observes temporary transformed modules during both a
+passing and a deliberately failing fixture, then checks removal after close
+and process exit. Its unique fixtures live in disk-backed `node_modules` and
+are removed after owned consumers close. A source PR does not update other
+checkouts' dependencies or remove older temporary data.
 
 ## Choosing a dev process
 
@@ -33,7 +89,45 @@ See the [mobile README](../../apps/mobile/README.md) for native builds and Metro
 Flags go directly after the task name, for example
 `vp run dev --home-dir /absolute/task-owned/t3-home`.
 Use an isolated, task-owned directory with a defined lifetime and cleanup owner.
-Add `--browser` only when opening a browser is authorized.
+The [standing testing permission](./contributor-guidance.md#local-app-testing-permission)
+covers `--browser` for isolated synthetic verification.
+
+To stop a worktree's dev stack when its thread settles, import the **Dev** action from
+`t3.json` in Settings > Projects > Actions and start it through the action menu or its
+keybinding. Its `stopOnSettle` option lets T3 stop the terminal and its child processes.
+Running `vp run dev` through an agent's own shell tool does not attach it to this lifecycle.
+
+### Preview lifetime and cleanup
+
+The workflow launching a task-owned preview owns its cleanup on completion,
+failure, and cancellation. Register the cleanup path before launch. Keep a
+launch receipt with the task and cleanup owner, host, worktree/revision, isolated
+state directory, PID and process-start identity, ports, and graceful stop method.
+Record the process group or service and any separately owned terminal groups;
+stopping a server does not prove its terminals or watch supervisors have exited.
+Keep this working receipt outside the checkout, without credentials.
+
+Reuse an appropriate owned preview when its source and configuration still match
+the task. Stop a superseded instance after its replacement is verified, unless
+both have a recorded continuing purpose. Detached launch makes this ownership
+more important: the dev runner's child cleanup does not observe agent-task
+completion.
+
+At interruption, handoff, and completion, reconcile every launched or retained
+preview. Record either verified shutdown or a continuing retention duty:
+
+- For shutdown, freshly verify the captured process identities and ownership,
+  stop the owned runtime gracefully, and read back that its listeners, watch
+  supervisors, and owned terminals are gone. Report uncertain or failed cleanup.
+- For retention, name the concrete inspection or resume purpose, cleanup owner,
+  and end condition or next review point. A handoff must explicitly transfer
+  that duty; "available for resume" alone is not a complete disposition.
+
+Preserving dirty source, synthetic state, or qualification evidence does not
+require keeping its servers running. Classify those files separately before
+removal. A merged PR, completed thread, old process, or absent client connection
+does not itself authorize stopping another task's retained preview. A retention
+end condition calls for reconciliation, not an automatic sweep.
 
 ### State and ports
 
@@ -47,6 +141,16 @@ destination before starting a process, including when reusing an existing
 launch command. Never run a development server against live `~/.t3/userdata`.
 Reading or copying private state also requires exact authorization.
 Follow [test data](#test-data) for isolated fixtures and snapshots.
+
+Development startup does not inspect or copy the live seed database by default.
+After authorization for that source and destination, `--seed` or
+`T3CODE_DEV_SEED=1` opts in to seeding an empty linked worktree's `.t3` from
+`~/.t3/userdata/statev2.sqlite`. `--no-seed` overrides an environment opt-in;
+`T3CODE_DEV_SEED=0` also disables seeding when no flag overrides it. A worktree
+with either `statev2.sqlite` or `state.sqlite` keeps its existing data. A
+separately selected `--home-dir` is not auto-seeded. For isolated synthetic
+verification, leave seeding disabled; an isolated destination alone does not
+authorize reading the live source.
 
 Read ports and the selected base directory from `[dev-runner]` output.
 Worktrees derive stable port preferences from their paths, but occupied ports
@@ -74,16 +178,17 @@ credentials, secrets, settings, or unrelated files.
 For an authorized SQLite snapshot:
 
 1. Choose a fresh destination under the task-owned T3 home, normally
-   `<worktree>/.t3/userdata/state.sqlite`. Verify that the destination and its
+   `<worktree>/.t3/userdata/statev2.sqlite`. Verify that the destination and its
    parents are isolated from live state and that no server is using them.
    If the destination already exists, stop and reconcile ownership; do not
-   remove `state.sqlite*` or other state unconditionally.
+   remove `statev2.sqlite*` or other state unconditionally.
 2. Open the approved source read-only and use SQLite's online backup API or
    `VACUUM INTO` to create a consistent snapshot at the fresh destination.
    `VACUUM INTO` requires a destination file that does not already exist.
    Do not copy a live SQLite file with `cp`, including its WAL or SHM siblings
    as a substitute for a consistent snapshot.
-3. Close the source connection and validate the copied database locally.
+3. Close the source connection and validate the copied V2 database locally.
+   The server uses `statev2.sqlite`; a V1 `state.sqlite` copy is not a substitute.
    Run the test server only against the isolated copy.
 4. Copy additional files only when the flow requires them and their access
    and copying are separately authorized. In particular, do not bring
@@ -105,12 +210,14 @@ creating its own, and the mapping can outlive the process. Obtain authorization
 covering the exact shared route and its cleanup before running it. Do not
 manually change Tailscale routes as a workaround.
 
-Wait for the runner's actual share result and `pairingUrl:` output. Sharing can
-fail while the server continues locally; a running process does not prove
-tailnet access. Give the authorized tester the complete pairing URL through
-the approved private channel. Do not open or consume the user's pairing token,
-or put it in commits, PRs, or public output. A browser already holding the
-reusable dev cookie can use the bare origin.
+Wait for the runner's actual share result. Sharing can fail while the server
+continues locally; a running process does not prove tailnet access. After the
+server is ready, use the explicit `pair --base-dir <printed-base-directory>`
+command above to print a pairing URL for the recorded web origin. Give the
+authorized tester that URL through the approved private channel. Do not open
+or consume the user's pairing token, or put it in commits, PRs, service logs,
+or public output. A browser already holding the reusable dev cookie can use
+the bare origin.
 
 The runner attempts to remove its mapping on exit, but cleanup can fail and
 overlapping runs can affect the same mapping. Verify cleanup through the
@@ -118,10 +225,13 @@ authorized route and report any remaining or unknown effect. Do not claim
 removal from process exit alone or perform an unapproved manual cleanup.
 
 If an authorized tester consumed a normal one-time token and needs another,
-the development server's `node apps/server/src/bin.ts pair` command can mint
-one. Run it only against the exact authorized isolated environment. It grants
-standard scopes; the startup pairing URL carries administrative scopes needed
-for Connections settings.
+repeat the explicit pairing command for the same authorized isolated base
+directory. It grants standard client scopes. Startup browser auto-open carries
+administrative scopes needed for Connections settings; manual `pair` accepts
+repeated `--scope` flags when additional scopes are intended. Explicit scopes
+replace the default set, so include every required scope. See
+[environment authentication](../internals/environment-auth.md) for the scope
+model.
 
 Leave `VITE_HTTP_URL` and `VITE_WS_URL` unset for browser development.
 Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known` through the browser's
@@ -138,16 +248,30 @@ when changing this setup:
   chunks. Static imports can work on first load and fail after a route split.
 - Bundled dev rebuilds Tailwind through watched files. Its ordinary Vite hot-update hook expects
   a server/module graph that Rolldown does not provide.
+- The app and its routes are lazy chunks, built on first request. A plugin pre-bundles the
+  startup chain when the server starts. Renaming or moving a startup route or the app entry
+  silently drops it from that list.
 
-The workarounds live in the [web entry](../../apps/web/src/bootstrap.ts) and
-[Tailwind plugin](../../apps/web/vite/tailwind.ts).
+The workarounds live in the [web entry](../../apps/web/src/bootstrap.ts),
+[Tailwind plugin](../../apps/web/vite/tailwind.ts), and
+[startup warmup](../../apps/web/vite/warmBundledDev.ts).
+
+`vp run dev --share --built` skips the Vite dev server. It runs `vp build --watch` for the web
+app, and the backend serves `apps/web/dist` on the same tailnet URL and pairing flow. Use it when
+someone tests over a slow link or only needs to use the app: loads are production size, and the
+first load does not wait for dev bundling. There is no HMR. After an edit, wait for the
+`built in` line (about 6 s), then reload. Until the first build exists, the URL shows a page that
+reloads by itself. The license manifest is not generated in this mode. `--built` requires
+`--share` and the `dev` mode.
 
 #### Reusable dev credential
 
 Configure or reuse this credential only when the task authorizes the exact
 configuration access and change. This procedure does not grant permission to
-read existing `.env` values, copy credentials, start a shared server, or open a
-browser. Reuse an existing authorization within its scope.
+read existing `.env` values, copy credentials, or start a shared server.
+Browser verification is covered separately by [standing local app testing
+permission](./contributor-guidance.md#local-app-testing-permission); credential
+configuration still needs exact authorization.
 
 Use this only on a hostname where you trust every service. Browsers send cookies to all ports
 on that hostname. Any service you visit there can receive the reusable admin credential,
@@ -177,11 +301,14 @@ export T3CODE_DEV_AUTH_TOKEN="<the value generated above>"
 ```
 
 Do not generate a new value at startup. For an authorized shared run, start or
-restart `vp run dev --share` after configuration and have the authorized tester
-open its printed startup pairing URL once per browser profile on that hostname.
-Later web dev servers on the same hostname accept the shared cookie across
-ports. The cookie expires after 30 days. Reload an old tab if its URL now serves
-a replacement environment.
+restart `vp run dev --share --browser` after configuration. Browser auto-open
+passes the reusable startup credential directly to the browser on the server
+host; startup logs never print it. After pairing, later web dev servers on the
+same hostname accept that browser profile's shared cookie across ports. The
+cookie expires after 30 days. Reload an old tab if its URL now serves a
+replacement environment. For a remote browser or unavailable auto-open, the
+explicit pairing command above creates an ordinary one-time link; it does not
+print the reusable dev credential or establish cross-environment cookie reuse.
 
 The token and startup pairing URLs are reusable administrative secrets. Never put them in a
 commit, pull request, or public output. Every server still seeds its own auth database record at
@@ -191,7 +318,22 @@ for the security model.
 
 ## Checks
 
-Run checks for the files and packages you changed:
+`vp run check:changed` runs CI's fast checks for your branch's changes: format and lint of the
+changed files, `knip:check` when code or a manifest changes, the generated GraphQL checks, typecheck
+of the affected packages and their dependents, and the test files beside the changed files. It maps
+files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), as CI does. It
+compares against the merge base with `origin/main`, or with a ref you pass. CI still runs the full
+test suites and the jobs the summary lists, so a local pass does not promise a green CI run.
+
+For provider lifecycle, thread admission, or selection hooks, also run the affected Jones
+integration commands from [the maintained check recipes](../../scripts/jones/boundary/checks.json)
+(`jones-provider-core-reliability`, plus the affected provider retirement and selection groups)
+at the implementation checkpoint and before publication. Keep the changed-file checks for quick
+iteration; `check:changed` does not automatically consume those integration recipes. Await the
+specific run or effect's completion in asynchronous tests; a worker drain alone does not join
+work already claimed by another daemon lane.
+
+While you iterate, run single checks:
 
 ```sh
 vp test run <files>
@@ -199,12 +341,39 @@ vp lint <files>
 vp run --filter <package> typecheck
 ```
 
+In `apps/web`, a test that renders React or touches the DOM is named `*.browser.test.{ts,tsx}`
+and runs in headless Chromium with the React Compiler on, like the app. There is no jsdom; other
+`*.test.ts` files run in Node.
+
+TypeScript workspace commands run the verified official Effect-patched TSRS
+launcher. Root `typecheck` and `tc` first run uncached compiler admission, then
+Vite+'s cached recursive checks. The `typescript` catalog entry remains
+`npm:@tsc-rs/typescript@0.8.0` for editors and the pinned local fallback on
+unsupported hosts. Marketing keeps `astro check` for Astro files. See the
+[compiler guide](../internals/typecheck-compiler.md) for provenance, rationale,
+platform limits and installation repair. Candidate adoption remains subject to
+[complete qualification](https://github.com/Jones-Systems/Jones-Code/issues/711).
+
+For repeated local checks on supported TSRS hosts, use
+`pnpm typecheck:incremental packages/shared apps/server` (or `--all` for exact
+verified-launcher workspace scripts). This opt-in command retains native state
+while running TypeScript and Effect checks every time. It excludes Vite task
+entrypoints, the root recursive command and Astro. Retained mode supports the
+repository base config and qualified Expo base; `--fresh` bypasses retention
+for other config inheritance. The v2 namespace lives under this worktree's
+`node_modules/.cache/jones/incremental-typecheck/v2`, with the dependency-cache
+lifetime. Legacy v1 is ignored and preserved with an exact-path notice.
+Interrupted runs clean their owned files after process exit; crash residue is
+ignored and counted toward admission, without automatic reclamation. Admission
+and accepted payload limits are not a hard concurrent disk quota. Unsupported
+hosts use regular `typecheck`, whose local fallback includes Effect diagnostics.
+
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
 
 ### Unused code
 
-`vp run knip:check` checks unused files and dependencies across the repo, then
+`vp run knip:check` checks unused files and dependencies across the repo and, at the same time,
 unused runtime exports in `apps/server`, `apps/desktop`, `apps/web`, and every internal package under
 `packages/`. CI enforces both checks.
 Exported types and Effect schemas are allowed without consumers. The schema preprocessor
@@ -220,6 +389,49 @@ export check's workspace selectors as more workspaces become clean. Review calle
 deleting code; production mode can also report development scripts and test fixtures.
 Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](../../knip.jsonc).
 
+### Server parallelism qualification
+
+Run the synthetic pool harness only on a host admitted for the repository's
+supported Node/native dependencies and storage budget. It writes disposable state,
+never live userdata. The source changes alone are not qualification evidence.
+
+Create a command manifest using `scripts/jones/serverParallelism/source-command.mjs`
+for the absolute source `apps/server/src/bin.ts`, or `artifact-command.mjs` for an
+actual bundled Node, Electron Node-mode or SEA installed layout. The latter takes
+`<bundle|electron|sea> <absolute executable> <absolute entry or -> <absolute manifest>`.
+Each manifest binds the hidden command and actual build identity; the harness
+reconstructs the production minimal child environment rather than accepting secrets.
+
+Invoke `qualify.mjs <manifest> <absolute report> <laptop|vps> [baseline-report]` for
+each profile/runtime form. It runs three steady combined reader/writer/control and
+productive-native windows with at least 500 acquisitions, then overflow and churn.
+Reports retain aggregate process samples and explicit missing capabilities.
+A passing source test or idle PID is not proof of N-way productive CPU overlap.
+No baseline means writer/throughput regression acceptance remains unknown. A failed
+retirement retains its exact scratch/journal for owner reconciliation; successful
+retirement permits the invoking harness to remove its own fixture.
+
+The advisory `Server parallel qualification` workflow defaults to bounded
+`source-evidence`: one unchanged baseline and one real source run for each
+profile, including churn and shutdown. It also runs matching-build and
+wrong-build dispatch checks. These reports cannot qualify the full matrix.
+After reviewing those prerequisites, select `scope: full` on the workflow's
+manual dispatch to exercise source, bundle, Electron and SEA on both platforms.
+Missing or failed cells remain explicit; a narrower diagnostic scope never
+substitutes for full performance qualification.
+
+Set `JONES_SP_COMMAND_MANIFEST` to the qualified manifest when running
+`nativeProcess.integration.test.ts`; absent manifests produce explicit skips.
+Run the native file separately for each of the four runtime forms. Its parent-loss
+case kills only its captured fixture parent, then proves child absence through the
+same conservative OS probe as restart admission. Source/bundle/Linux checks do not
+substitute for Electron/SEA/macOS packaging evidence.
+
+`snapshot.mjs <absolute report> [thread-count]` measures real shell capture, deferred
+decode, schema projection, synchronous JSON encoding and compression separately.
+Only measured contiguous encoding or qualified decode/projection/loop attribution
+activates a snapshot-offload follow-up. A payload-size guess does not activate it.
+
 ## Desktop artifacts
 
 Local artifact builds are unsigned by default and write to `release/`:
@@ -227,35 +439,40 @@ Local artifact builds are unsigned by default and write to `release/`:
 ```sh
 vp run dist:desktop:dmg
 vp run dist:desktop:linux
-vp run dist:desktop:win
 ```
 
-DMGs default to the host architecture. Use `--arch` to choose another target and `--keep-stage`
-to retain packaging files for inspection. Run `vp run dist:desktop:artifact --help` for other
-options.
+Jones Code builds macOS artifacts for Apple Silicon (`arm64`) only. Linux artifacts
+support `x64` and `arm64`. Windows and Intel or universal Mac builds are unsupported
+and are rejected before packaging starts. Use `--keep-stage` to retain packaging
+files for inspection. Run `vp run dist:desktop:artifact --help` for other options.
 
 ### Linux AppImage prerequisites
 
 Build on Linux because the browser-secret helper links against the host's libsecret. Install
-Rust, C/C++ build tools, libsecret development headers, pkg-config, and ImageMagick.
+C/C++ build tools, libsecret development headers, pkg-config, and ImageMagick.
+Bytecode preparation also runs packaged Electron and requires GTK, NSS, ALSA, and GBM runtime libraries.
+Install Rust 1.95 or newer through [rustup](https://rust-lang.org/install), using the stable
+toolchain as release CI does.
 
-Ubuntu and Debian:
+Ubuntu 24.04 and Debian 13:
 
 ```sh
 sudo apt-get update
-sudo apt-get install cargo rustc build-essential libsecret-1-dev pkg-config imagemagick
+sudo apt-get install build-essential libsecret-1-dev pkg-config imagemagick libgtk-3-0t64 libnss3 libasound2t64 libgbm1
 ```
+
+On Ubuntu 22.04 and Debian 12, use `libgtk-3-0` and `libasound2` instead of the `t64` packages.
 
 Fedora:
 
 ```sh
-sudo dnf install rust cargo gcc gcc-c++ make libsecret-devel pkgconf-pkg-config ImageMagick
+sudo dnf install gcc gcc-c++ make libsecret-devel pkgconf-pkg-config ImageMagick gtk3 nss alsa-lib mesa-libgbm
 ```
 
 Arch Linux:
 
 ```sh
-sudo pacman -S rust base-devel libsecret pkgconf imagemagick
+sudo pacman -S base-devel libsecret pkgconf imagemagick gtk3 nss alsa-lib mesa
 ```
 
 The C toolchain, pkg-config, and libsecret headers are also needed for Linux desktop development.
@@ -263,27 +480,11 @@ The C toolchain, pkg-config, and libsecret headers are also needed for Linux des
 ### macOS DMG prerequisites
 
 Install the Xcode Command Line Tools with `xcode-select --install` and install Rust.
-For a cross-architecture or universal build, add the requested Rust targets:
+Add the Apple Silicon Rust target if it is not already installed:
 
 ```sh
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
+rustup target add aarch64-apple-darwin
 ```
-
-### Windows installer prerequisites
-
-Install Rust, Python 3, and Visual Studio Build Tools with **Desktop development with C++**.
-Include the Windows SDK and the MSVC build tools and Spectre-mitigated libraries for the target
-architecture. Add its Rust target:
-
-```powershell
-rustup target add x86_64-pc-windows-msvc
-# For an ARM64 installer:
-rustup target add aarch64-pc-windows-msvc
-```
-
-NSIS is downloaded by electron-builder. WSL support additionally needs the Linux CLI archive
-passed as `--wsl-runtime`; see the
-[release runbook](./release.md#windows-payload-topology-and-update-validation).
 
 ### Signing and passkeys
 

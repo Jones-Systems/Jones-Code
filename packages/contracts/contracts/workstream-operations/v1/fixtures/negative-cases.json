@@ -1,0 +1,3500 @@
+{
+  "contract_family": "workstream-operations",
+  "contract_version": "1.0.0",
+  "cases": [
+    {
+      "name": "closed-assignment-",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "unassigned"
+        },
+        "undeclared": true
+      }
+    },
+    {
+      "name": "closed-assignment-origin",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app",
+          "undeclared": true
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "unassigned"
+        }
+      }
+    },
+    {
+      "name": "closed-assignment-thread",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1",
+          "undeclared": true
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "unassigned"
+        }
+      }
+    },
+    {
+      "name": "closed-assignment-target",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1",
+          "undeclared": true
+        },
+        "expected": {
+          "kind": "unassigned"
+        }
+      }
+    },
+    {
+      "name": "closed-assignment-expected",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "unassigned",
+          "undeclared": true
+        }
+      }
+    },
+    {
+      "name": "closed-create-",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "create_workstream",
+        "registry": {
+          "registry_id": "registry-1",
+          "owner_id": "owner-1"
+        },
+        "workstream": {
+          "name": "Synthetic workstream",
+          "lifecycle": "active",
+          "progress": {
+            "state": "unknown"
+          },
+          "sort_order": 0
+        },
+        "undeclared": true
+      }
+    },
+    {
+      "name": "closed-create-origin",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app",
+          "undeclared": true
+        },
+        "kind": "create_workstream",
+        "registry": {
+          "registry_id": "registry-1",
+          "owner_id": "owner-1"
+        },
+        "workstream": {
+          "name": "Synthetic workstream",
+          "lifecycle": "active",
+          "progress": {
+            "state": "unknown"
+          },
+          "sort_order": 0
+        }
+      }
+    },
+    {
+      "name": "closed-create-registry",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "create_workstream",
+        "registry": {
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "undeclared": true
+        },
+        "workstream": {
+          "name": "Synthetic workstream",
+          "lifecycle": "active",
+          "progress": {
+            "state": "unknown"
+          },
+          "sort_order": 0
+        }
+      }
+    },
+    {
+      "name": "closed-create-workstream",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "create_workstream",
+        "registry": {
+          "registry_id": "registry-1",
+          "owner_id": "owner-1"
+        },
+        "workstream": {
+          "name": "Synthetic workstream",
+          "lifecycle": "active",
+          "progress": {
+            "state": "unknown"
+          },
+          "sort_order": 0,
+          "undeclared": true
+        }
+      }
+    },
+    {
+      "name": "closed-create-workstream.progress",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "create_workstream",
+        "registry": {
+          "registry_id": "registry-1",
+          "owner_id": "owner-1"
+        },
+        "workstream": {
+          "name": "Synthetic workstream",
+          "lifecycle": "active",
+          "progress": {
+            "state": "unknown",
+            "undeclared": true
+          },
+          "sort_order": 0
+        }
+      }
+    },
+    {
+      "name": "closed-result-",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": {
+          "workstream_id": "ws-1",
+          "membership_id": "membership-1",
+          "registry_version": 4
+        },
+        "poll_after_ms": null,
+        "children": [
+          {
+            "command_id": "child-command-0001",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          }
+        ],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z",
+        "undeclared": true
+      }
+    },
+    {
+      "name": "closed-result-origin",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app",
+          "undeclared": true
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": {
+          "workstream_id": "ws-1",
+          "membership_id": "membership-1",
+          "registry_version": 4
+        },
+        "poll_after_ms": null,
+        "children": [
+          {
+            "command_id": "child-command-0001",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          }
+        ],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "closed-result-result",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": {
+          "workstream_id": "ws-1",
+          "membership_id": "membership-1",
+          "registry_version": 4,
+          "undeclared": true
+        },
+        "poll_after_ms": null,
+        "children": [
+          {
+            "command_id": "child-command-0001",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          }
+        ],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "closed-result-children.0",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": {
+          "workstream_id": "ws-1",
+          "membership_id": "membership-1",
+          "registry_version": 4
+        },
+        "poll_after_ms": null,
+        "children": [
+          {
+            "command_id": "child-command-0001",
+            "operation": "attach_primary",
+            "outcome": "committed",
+            "undeclared": true
+          }
+        ],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "closed-setup-",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": [],
+        "undeclared": true
+      }
+    },
+    {
+      "name": "closed-setup-activation",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": [],
+          "undeclared": true
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "closed-setup-registry",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true,
+          "undeclared": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "closed-setup-t3_source",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null,
+          "undeclared": true
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "closed-setup-placements",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready",
+          "undeclared": true
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "closed-setup-operations",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0,
+          "undeclared": true
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "closed-read-",
+      "schema": "#/$defs/ReadResponse",
+      "value": {
+        "assignment": {
+          "kind": "unverified"
+        },
+        "open_operation": {
+          "contract": "workstream-operations/1.0.0",
+          "operation_id": "operation-000001",
+          "origin": {
+            "kind": "app"
+          },
+          "kind": "set_primary",
+          "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "in_progress",
+          "reason": null,
+          "detail": null,
+          "observed": null,
+          "result": null,
+          "poll_after_ms": 250,
+          "children": [],
+          "accepted_at": "2026-10-23T09:00:00Z",
+          "updated_at": "2026-10-23T09:00:00Z"
+        },
+        "undeclared": true
+      }
+    },
+    {
+      "name": "closed-read-assignment",
+      "schema": "#/$defs/ReadResponse",
+      "value": {
+        "assignment": {
+          "kind": "unverified",
+          "undeclared": true
+        },
+        "open_operation": {
+          "contract": "workstream-operations/1.0.0",
+          "operation_id": "operation-000001",
+          "origin": {
+            "kind": "app"
+          },
+          "kind": "set_primary",
+          "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "in_progress",
+          "reason": null,
+          "detail": null,
+          "observed": null,
+          "result": null,
+          "poll_after_ms": 250,
+          "children": [],
+          "accepted_at": "2026-10-23T09:00:00Z",
+          "updated_at": "2026-10-23T09:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "closed-read-open_operation",
+      "schema": "#/$defs/ReadResponse",
+      "value": {
+        "assignment": {
+          "kind": "unverified"
+        },
+        "open_operation": {
+          "contract": "workstream-operations/1.0.0",
+          "operation_id": "operation-000001",
+          "origin": {
+            "kind": "app"
+          },
+          "kind": "set_primary",
+          "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "in_progress",
+          "reason": null,
+          "detail": null,
+          "observed": null,
+          "result": null,
+          "poll_after_ms": 250,
+          "children": [],
+          "accepted_at": "2026-10-23T09:00:00Z",
+          "updated_at": "2026-10-23T09:00:00Z",
+          "undeclared": true
+        }
+      }
+    },
+    {
+      "name": "closed-read-open_operation.origin",
+      "schema": "#/$defs/ReadResponse",
+      "value": {
+        "assignment": {
+          "kind": "unverified"
+        },
+        "open_operation": {
+          "contract": "workstream-operations/1.0.0",
+          "operation_id": "operation-000001",
+          "origin": {
+            "kind": "app",
+            "undeclared": true
+          },
+          "kind": "set_primary",
+          "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "in_progress",
+          "reason": null,
+          "detail": null,
+          "observed": null,
+          "result": null,
+          "poll_after_ms": 250,
+          "children": [],
+          "accepted_at": "2026-10-23T09:00:00Z",
+          "updated_at": "2026-10-23T09:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "request-operation_id-5",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "short",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "unassigned"
+        }
+      }
+    },
+    {
+      "name": "request-operation_id-129",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "unassigned"
+        }
+      }
+    },
+    {
+      "name": "request-operation_id-16",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "----------------",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "unassigned"
+        }
+      }
+    },
+    {
+      "name": "request-contract-27",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/2.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "unassigned"
+        }
+      }
+    },
+    {
+      "name": "request-kind-12",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "move_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "unassigned"
+        }
+      }
+    },
+    {
+      "name": "wait--1",
+      "schema": "#/$defs/SubmitRequest",
+      "value": {
+        "request": {
+          "contract": "workstream-operations/1.0.0",
+          "operation_id": "operation-000001",
+          "origin": {
+            "kind": "app"
+          },
+          "kind": "set_primary",
+          "thread": {
+            "environment_id": "env-1",
+            "thread_id": "thread-1"
+          },
+          "target": {
+            "kind": "workstream",
+            "registry_id": "registry-1",
+            "owner_id": "owner-1",
+            "workstream_id": "ws-1"
+          },
+          "expected": {
+            "kind": "unassigned"
+          }
+        },
+        "wait_ms": -1
+      }
+    },
+    {
+      "name": "wait-3001",
+      "schema": "#/$defs/SubmitRequest",
+      "value": {
+        "request": {
+          "contract": "workstream-operations/1.0.0",
+          "operation_id": "operation-000001",
+          "origin": {
+            "kind": "app"
+          },
+          "kind": "set_primary",
+          "thread": {
+            "environment_id": "env-1",
+            "thread_id": "thread-1"
+          },
+          "target": {
+            "kind": "workstream",
+            "registry_id": "registry-1",
+            "owner_id": "owner-1",
+            "workstream_id": "ws-1"
+          },
+          "expected": {
+            "kind": "unassigned"
+          }
+        },
+        "wait_ms": 3001
+      }
+    },
+    {
+      "name": "wait-1.5",
+      "schema": "#/$defs/SubmitRequest",
+      "value": {
+        "request": {
+          "contract": "workstream-operations/1.0.0",
+          "operation_id": "operation-000001",
+          "origin": {
+            "kind": "app"
+          },
+          "kind": "set_primary",
+          "thread": {
+            "environment_id": "env-1",
+            "thread_id": "thread-1"
+          },
+          "target": {
+            "kind": "workstream",
+            "registry_id": "registry-1",
+            "owner_id": "owner-1",
+            "workstream_id": "ws-1"
+          },
+          "expected": {
+            "kind": "unassigned"
+          }
+        },
+        "wait_ms": 1.5
+      }
+    },
+    {
+      "name": "wait-0",
+      "schema": "#/$defs/SubmitRequest",
+      "value": {
+        "request": {
+          "contract": "workstream-operations/1.0.0",
+          "operation_id": "operation-000001",
+          "origin": {
+            "kind": "app"
+          },
+          "kind": "set_primary",
+          "thread": {
+            "environment_id": "env-1",
+            "thread_id": "thread-1"
+          },
+          "target": {
+            "kind": "workstream",
+            "registry_id": "registry-1",
+            "owner_id": "owner-1",
+            "workstream_id": "ws-1"
+          },
+          "expected": {
+            "kind": "unassigned"
+          }
+        },
+        "wait_ms": "0"
+      }
+    },
+    {
+      "name": "wait-None",
+      "schema": "#/$defs/SubmitRequest",
+      "value": {
+        "request": {
+          "contract": "workstream-operations/1.0.0",
+          "operation_id": "operation-000001",
+          "origin": {
+            "kind": "app"
+          },
+          "kind": "set_primary",
+          "thread": {
+            "environment_id": "env-1",
+            "thread_id": "thread-1"
+          },
+          "target": {
+            "kind": "workstream",
+            "registry_id": "registry-1",
+            "owner_id": "owner-1",
+            "workstream_id": "ws-1"
+          },
+          "expected": {
+            "kind": "unassigned"
+          }
+        },
+        "wait_ms": null
+      }
+    },
+    {
+      "name": "read-selector-34",
+      "schema": "#/$defs/ReadRequest",
+      "value": {}
+    },
+    {
+      "name": "read-selector-35",
+      "schema": "#/$defs/ReadRequest",
+      "value": {
+        "open": false
+      }
+    },
+    {
+      "name": "read-selector-36",
+      "schema": "#/$defs/ReadRequest",
+      "value": {
+        "open": true,
+        "operation_id": "operation-000001"
+      }
+    },
+    {
+      "name": "result-fields-37",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "result-fields-38",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "result-fields-39",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": {
+          "workstream_id": "ws-1",
+          "membership_id": "membership-1",
+          "registry_version": 4
+        },
+        "poll_after_ms": 250,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "result-fields-40",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "rejected",
+        "reason": "offline",
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "result-fields-41",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "rejected",
+        "reason": "registry_rejected",
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "result-fields-42",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "unavailable",
+        "reason": "registration_unavailable",
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "result-fields-43",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "result-fields-44",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "result-fields-45",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 60001,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "result-fields-46",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "conflict",
+        "reason": "precondition_failed",
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "empty-workstream_id",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": {
+          "workstream_id": "",
+          "membership_id": "membership-1",
+          "registry_version": 4
+        },
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "empty-membership_id",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": {
+          "workstream_id": "ws-1",
+          "membership_id": "",
+          "registry_version": 4
+        },
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "too-many-children",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [
+          {
+            "command_id": "child-command-0000",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0001",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0002",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0003",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0004",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0005",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0006",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0007",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0008",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0009",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0010",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0011",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0012",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0013",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0014",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0015",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          },
+          {
+            "command_id": "child-command-0016",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          }
+        ],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "child-enum-50",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [
+          {
+            "command_id": "child-command-0001",
+            "operation": "invented_action",
+            "outcome": "committed"
+          }
+        ],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "child-enum-51",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [
+          {
+            "command_id": "child-command-0001",
+            "operation": "attach_primary",
+            "outcome": "success"
+          }
+        ],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "read-final-as-open",
+      "schema": "#/$defs/ReadResponse",
+      "value": {
+        "operations": [
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000001",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "committed",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": {
+              "workstream_id": "ws-1",
+              "membership_id": "membership-1",
+              "registry_version": 4
+            },
+            "poll_after_ms": null,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "name": "read-over-bound",
+      "schema": "#/$defs/ReadResponse",
+      "value": {
+        "operations": [
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000000",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000001",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000002",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000003",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000004",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000005",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000006",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000007",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000008",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000009",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000010",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000011",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000012",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000013",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000014",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000015",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000016",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000017",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000018",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000019",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000020",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000021",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000022",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000023",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000024",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000025",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000026",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000027",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000028",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000029",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000030",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000031",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000032",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000033",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000034",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000035",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000036",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000037",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000038",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000039",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000040",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000041",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000042",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000043",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000044",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000045",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000046",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000047",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000048",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000049",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000050",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000051",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000052",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000053",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000054",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000055",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000056",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000057",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000058",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000059",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000060",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000061",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000062",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000063",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000064",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000065",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000066",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000067",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000068",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000069",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000070",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000071",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000072",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000073",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000074",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000075",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000076",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000077",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000078",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000079",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000080",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000081",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000082",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000083",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000084",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000085",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000086",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000087",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000088",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000089",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000090",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000091",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000092",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000093",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000094",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000095",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000096",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000097",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000098",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000099",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000100",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "name": "setup-field-54",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "ready",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "setup-field-55",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "invalid",
+          "missing_keys": ["SECRET_VALUE"]
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "setup-field-56",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "unavailable",
+          "registry_id": null,
+          "owner_id": null,
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "setup-field-57",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": "descriptor_absent"
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "setup-field-58",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "pending"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "setup-field-59",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": -1
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "setup-field-60",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": [
+          {
+            "code": "configure_activation",
+            "doc": "https://attacker.invalid"
+          }
+        ]
+      }
+    }
+  ]
+}

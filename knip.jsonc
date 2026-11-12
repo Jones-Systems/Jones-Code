@@ -3,48 +3,126 @@
   // Exported types are part of our contracts even before they have consumers.
   "rules": { "types": "off", "nsTypes": "off" },
   // These executables are supplied by the OS or installed separately from npm.
-  "ignoreBinaries": ["eas", "file", "mkfifo", "pkill", "pkg-config", "plutil", "sips"],
+  "ignoreBinaries": ["cc", "eas", "file", "mkfifo", "pkill", "pkg-config", "plutil", "sips"],
   "workspaces": {
     ".": {
       // Keep vendored reference repositories outside the root project.
       "project": ["*.{js,mjs,cjs,ts,mts,cts}", ".github/**/*.cjs"],
-      "entry": [".github/scripts/thread-transfer-report.cjs"],
+      "entry": [
+        // CodeRabbit loads its configuration by filename.
+        ".coderabbit.config.ts",
+        ".github/scripts/thread-transfer-report.cjs",
+        // Retained upstream helper; its publishing workflow stays disabled in Jones.
+        ".github/scripts/mirror-play-apk.cjs",
+      ],
       "vite": { "entry": [".github/**/*.test.cjs"] },
       "vitest": { "entry": [".github/**/*.test.cjs"] },
     },
     "scripts": {
       // Knip loads its preprocessor through a CLI option; native verification and
-      // worktree setup (from t3.json) run directly.
+      // worktree setup (from t3.json) run directly. release-desktop.yml bundles the
+      // Windows verify script with esbuild through a path knip does not trace,
+      // electron-builder loads the macOS signer and the Linux afterPack hook by path, and mobile-e2e.ts runs
+      // agent-device's CLI by path, and mobile-behavior.ts spawns its runner by path.
+      // release-desktop.yml runs the desktop launch check through xvfb-run, which knip
+      // does not trace.
       "entry": [
+        // These fixture scripts are injected into a browser page by path.
+        "fixtures/*/*.js",
         "knip-schemas.ts",
+        // Retained release CLI; publication workflows stay disabled for this sync.
+        "resolve-nightly-release.ts",
+        "linux-after-pack.ts",
+        "mobile-behavior/run.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
-        // Retained CLI archive verifier for the deferred release workflow.
         "smoke-cli-archive.ts",
-        "runtime-adoption-qualification/run.mjs",
+        "jones/ci-test-progress-reporter.ts",
+        "jones/serverParallelism/*.mjs",
+        "jones/ci/chromium-setup.mjs",
+        "jones/ci/chromium-setup.node-test.mjs",
+        "jones/server-shard-weights/select.ts",
+        "jones/server-shard-weights/aggregate-cli.ts",
+        // Xvfb invokes this native Chromium qualifier through a wrapper command.
+        "jones/updates/native-startup-chromium.mjs",
+        "jones/updates/digest-benchmark.ts",
+        "jones/performance/*.node-test.mjs",
+        "jones/performance/*.d.mts",
+        "jones/performance/prepare-sources.mjs",
+        "jones/performance/fixtures-historical-worker.mjs",
+        "jones/performance/migration-restore-worker.mjs",
+        "jones/performance/current-qualification-worker.mjs",
+        "sign-macos.ts",
+        "prepare-server-compile-cache.cjs",
+        "smoke-desktop-app.ts",
+        "verify-windows-desktop-artifact.ts",
+        // Candidate CI builds and invokes these disposable SEA qualification entries.
+        "jones/native-enrollment/candidate.vite.config.ts",
+        "jones/native-enrollment/sea-fixture.cjs",
+        "jones/native-enrollment/sea-fixture.node-test.mjs",
       ],
+      "ignoreDependencies": ["agent-device", "esbuild"],
+      // The `t3` npm package's files: copied into the package, never imported.
+      // knip-schemas.test.ts writes a throwaway project to .knip-test-*, which a
+      // knip run beside it in check:changed must not report.
+      "ignore": ["npm-launcher/**", ".knip-test-*/**"],
     },
     "apps/server": {
       // Vite+ pack entries and the launcher used by installed background services.
       "entry": [
         "src/bin.ts!",
+        "src/jones/serverCompute/worker.ts",
+        "src/jones/serverParallelism/nativeQualification.ts",
+        "src/jones/serverParallelism/snapshotQualification.ts",
+        "scripts/jones/v2Benchmark.mjs",
+        "scripts/jones/v2Benchmark.worker.mjs",
+        "src/jones/orchestration/*.bench.ts",
+        "scripts/jones/currentFixtures.ts",
+        "scripts/jones/sqliteHealth.ts",
+        "scripts/jones/sqliteHealth.worker.ts",
+        "src/jones/cloud/*.ts",
+        "src/jones/updates/*.ts",
+        "src/jones/updates/preparation/packagedDarwinStageRepro.ts",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
-        "scripts/evaluate-thread-titles.ts",
-        "scripts/measure-pr-preview.ts",
+        "scripts/fetch-expo-schema.ts",
+        "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",
+        "scripts/verify-background-live.ts",
+        // The physical-host operator and relay launch these fixtures by filename.
+        "integration/jones-e2e/physicalHost.ts",
+        "integration/jones-e2e/physicalHost.worker.ts",
+        "integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
         "src/provider/testFixtures/*.mjs",
-        // Staged native creation ports are consumed by the dependent execution slice.
-        // Analyzer entries preserve their source API without enabling runtime authority.
-        "src/orchestration/NativeCreationPreparation.ts",
-        "src/orchestration/NativeCreationAuthority.ts",
-        "src/persistence/Layers/NativeCreationRepository.ts",
+        "src/jones/workstreams/operations/fullAppFixture.ts",
+        // Staged native creation substrate is consumed by the deferred L39 execution slice.
+        // Analyzer entries preserve these APIs without registering runtime authority or launch.
+        "src/jones/nativeCreation/NativeCreationPreparation.ts",
+        "src/jones/nativeCreation/NativeCreationAuthority.ts",
+        "src/jones/nativeCreation/NativeCreationRepositorySqlite.ts",
+        // graphqlgen reads its config.
+        "graphql.config.ts",
       ],
+      // The generated operations export every selection's class.
+      "ignoreIssues": { "**/*.graphql.ts": ["exports", "types", "namespaceMembers"] },
       // Keep the transitive Effect runtime pinned for standalone npm installs.
       // The Vite+ web build prerequisite.
-      "ignoreDependencies": ["@effect/platform-node-shared", "@t3tools/web"],
+      // Native and disk-loaded provider packages stay external to the bundle; the
+      // CLI archive and desktop sidecar stage them from this manifest.
+      "ignoreDependencies": [
+        "@effect/platform-node-shared",
+        "@t3tools/web",
+        "@napi-rs/keyring",
+        "ffi-rs",
+        "transcribe-cpp",
+      ],
     },
     "apps/desktop": {
+      // Exact filenames emitted by the desktop build and required by boot.
+      "paths": {
+        "./compileCache.cjs": ["./src/compileCache.ts"],
+        "./main.cjs": ["./src/main.ts"],
+      },
       // Electron loads these bundles by filename rather than importing them.
       "entry": [
         "gnome-extension/extension.js!",
@@ -52,19 +130,33 @@
         "src/snapShot/GlobalShiftShortcutWorker.ts!",
         "src/snapShot/RegionSnapShotWorker.ts!",
         "src/snapShot/SnapShotAccessibilityWorker.ts!",
+        "src/jones/updates/jonesStagingWorker.ts!",
         "src/boot.ts!",
         "src/compileCache.ts!",
+        "src/serverCompileCache.ts!",
         "src/main.ts!",
         "src/preload.ts!",
+        "src/jones/threadMonitor/preload.ts!",
         "src/preview-pick-preload.ts!",
         "src/preview-pip-preload.ts!",
         "src/mac-permission-preload.ts!",
+        // The hosted two-process store test launches this captured child by filename.
+        "src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
         "src/preview/Annotation.css!",
         // The namespace launcher stages and loads these modules by filename.
         "scripts/ui-evidence/probe.mjs",
         "scripts/ui-evidence/runner.mjs",
+        "scripts/ui-evidence/support/pin-oracle.mjs",
         "scripts/ui-evidence/scenarios/example.mjs",
         "scripts/ui-evidence/scenarios/sidebar-rename.mjs",
+        "scripts/ui-evidence/scenarios/sidebar-pin-reload.mjs",
+        "scripts/ui-evidence/scenarios/two-servers-one-client.mjs",
+        "scripts/ui-evidence/scenarios/thread-self-configure.mjs",
+        "scripts/ui-evidence/scenarios/thread-monitor.mjs",
+        "scripts/ui-evidence/scenarios/thread-monitor-requests.mjs",
+        "scripts/ui-evidence/thread-self-configure-support.mjs",
+        // The namespace stages this module and serializes its exported fixture helpers.
+        "scripts/ui-evidence/thread-monitor-provider.mjs",
       ],
       // The injected runtime resolves Playwright by string; release tooling runs
       // electron-builder from this workspace, outside its package scripts.
@@ -73,20 +165,52 @@
     "apps/web": {
       // Vitest loads this through the per-file @vitest-environment directive.
       "ignoreDependencies": ["jsdom"],
-      // Worktree setup (scripts/setup-worktree.ts) runs this directly.
-      "entry": ["scripts/warm-dep-cache.ts"],
+      "entry": [
+        // Worktree setup (scripts/setup-worktree.ts) runs this directly.
+        "scripts/warm-dep-cache.ts",
+        // Qualification invokes the config by CLI and the fixture entry through HTML.
+        "vite.install-preview.config.ts",
+        "src/jones/updates/fixtures/install-preview-entry.ts",
+        // The dev server serves this synthetic update-views fixture through its HTML page.
+        "src/jones/updates/fixtures/environment-updates-entry.tsx",
+        // The standalone client-notice HTML fixture loads this module through a script tag.
+        "src/jones/updates/fixtures/client-update-notices-entry.tsx",
+        // The PR read fixture HTML loads this synthetic verification entry.
+        "src/jones/pullRequestReads/fixtures/pr-read-pause-entry.tsx",
+        "src/jones/workstreams/operationsPreview.tsx",
+        // The independent monitor HTML loads this renderer entry by filename.
+        "src/jones/threadMonitor/entry.tsx",
+        // Evidence fixtures run under node.
+        "test/fixtures/**/*.mjs",
+      ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
       // reports an entire component module when nothing imports it.
       "ignoreIssues": { "src/components/ui/*.tsx": ["exports", "nsExports", "duplicates"] },
     },
+    "apps/marketing": {
+      // `astro check` runs from the typecheck task in vite.config.ts, which knip does not read.
+      "ignoreDependencies": ["@astrojs/check"],
+    },
     "apps/mobile": {
-      // Expo loads plugins by string; Metro embeds the browser entry in the native WebView.
+      // Awaited Metro generators create these string modules and license manifest.
+      "paths": {
+        "@t3tools/mobile-preview-stream": [".generated/preview-stream/index.js"],
+        "@t3tools/mobile-device-stream": [".generated/device-stream/index.js"],
+        "@t3tools/mobile-third-party-licenses": [".generated/third-party-licenses/index.js"],
+      },
+      // Expo loads plugins and the fingerprint config by string; Metro embeds the browser entry in the native WebView.
       "entry": [
         "index.ts!",
+        "src/jones/performance/*.bench.ts",
+        "fingerprint.config.js",
         "plugins/*.cjs",
         "scripts/generate-device-stream.mts",
         "src/features/devices/device-stream.browser.ts!",
+        "src/features/browser/preview-stream.browser.ts!",
+        ".generated/preview-stream/index.js!",
+        ".generated/device-stream/index.js!",
+        ".generated/third-party-licenses/index.js!",
       ],
       // Fonts are configured as asset paths; Expo autolinks the native packages.
       "ignoreDependencies": [
@@ -95,12 +219,34 @@
         "@t3tools/mobile-terminal-native",
       ],
     },
-    "apps/mobile/modules/t3-markdown-text": {
+    "apps/mobile/modules/t3-highlights": {
+      // Nitrogen discovers HybridObject specifications by filename.
+      "entry": ["src/*.nitro.ts!"],
+    },
+    "apps/mobile/modules/t3-source-text": {
       // React Native codegen discovers component specifications by filename.
       "entry": ["src/*NativeComponent.ts!"],
     },
+    "infra/task-cache": {
+      "ignore": ["vendor/**"],
+      // The bootstrap and Vite+ hook are loaded by shell/package configuration.
+      "entry": [
+        "alchemy.run.ts!",
+        "scripts/install.ts",
+        "scripts/install-ci.ts",
+        "src/runHook.ts",
+        "src/flush.ts",
+        "src/nativeRunHook.js",
+        "src/preload.mjs",
+      ],
+    },
     "infra/relay": {
-      "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!"],
+      // Alchemy loads src/worker.ts as the Worker entry and reads its default export.
+      "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!", "src/worker.ts!"],
+    },
+    "packages/client-runtime": {
+      "includeEntryExports": true,
+      "entry": ["src/jones/*.bench.ts"],
     },
     "packages/*": {
       // These workspace packages are private to this monorepo.
@@ -116,6 +262,11 @@
       "includeEntryExports": true,
       "entry": ["test/fixtures/*.ts"],
       "ignoreIssues": { "src/_generated/**": ["exports", "types"] },
+    },
+    "packages/source-control-github": {
+      // graphqlgen reads its config; the generated operations export every selection's class.
+      "entry": ["graphql.config.ts", "scripts/measure-pr-preview.ts"],
+      "ignoreIssues": { "**/*.graphql.ts": ["exports", "types", "namespaceMembers"] },
     },
   },
 }
