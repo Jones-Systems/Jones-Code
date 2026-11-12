@@ -110,7 +110,8 @@ const readers: ReadonlyArray<Reader> = [
     classification: "tolerate",
     after:
       "Missing restart command events refuse historical admission. Exact event-ID readback compares the retained selected event with Schema-encoded stored facts; missing, pruned or unavailable readback preserves the original failure, never proves absence or permits a new historical commit.",
-    proof: "orchestration/HistoricalTerminalHistory.test.ts; orchestration/SupersededTerminal.integration.test.ts (authored, CI qualification required)",
+    proof:
+      "orchestration/HistoricalTerminalHistory.test.ts; orchestration/SupersededTerminal.integration.test.ts (authored, CI qualification required)",
   },
   {
     file: "orchestration/RestartPreparation.ts",

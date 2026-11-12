@@ -85,13 +85,24 @@ export const modes = [
   "ordinary-same-session-race",
   "ordinary-same-session-unrelated-race",
 ] as const;
-export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure = false,
-  consumer = false, missingEvidence = false, logicalOnly = false, uncertainPublication = false,
+export const historyScenario = ({
+  mode,
+  lockFailures = 0,
+  normalizationFailure = false,
+  consumer = false,
+  missingEvidence = false,
+  logicalOnly = false,
+  uncertainPublication = false,
   readback = "found",
-}: { readonly mode: (typeof modes)[number]; readonly lockFailures?: number;
-  readonly normalizationFailure?: boolean; readonly consumer?: boolean;
-  readonly missingEvidence?: boolean; readonly logicalOnly?: boolean;
-  readonly uncertainPublication?: boolean; readonly readback?: "found" | "missing" | "unavailable" | "mismatched";
+}: {
+  readonly mode: (typeof modes)[number];
+  readonly lockFailures?: number;
+  readonly normalizationFailure?: boolean;
+  readonly consumer?: boolean;
+  readonly missingEvidence?: boolean;
+  readonly logicalOnly?: boolean;
+  readonly uncertainPublication?: boolean;
+  readonly readback?: "found" | "missing" | "unavailable" | "mismatched";
 }) => {
   const ordinaryRace = mode.startsWith("ordinary-") || normalizationFailure;
   const admissionFailure = new ProjectionStore.ProjectionStoreReadError({
@@ -170,14 +181,22 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
           if (uncertainCommitted && input?.eventId !== undefined) {
             readbackCalls++;
             if (readback === "missing") return Stream.empty;
-            if (readback === "mismatched") return store.read(input).pipe(Stream.map((stored) =>
-              stored.event.type === "provider-turn.updated" ? {
-                ...stored, event: { ...stored.event, payload: { ...stored.event.payload, status: "failed" as const } },
-              } : stored,
-            ));
-            if (readback === "unavailable") return Stream.fail(
-              new EventStore.EventStoreReadEventsError({ cause: null }),
-            );
+            if (readback === "mismatched")
+              return store.read(input).pipe(
+                Stream.map((stored) =>
+                  stored.event.type === "provider-turn.updated"
+                    ? {
+                        ...stored,
+                        event: {
+                          ...stored.event,
+                          payload: { ...stored.event.payload, status: "failed" as const },
+                        },
+                      }
+                    : stored,
+                ),
+              );
+            if (readback === "unavailable")
+              return Stream.fail(new EventStore.EventStoreReadEventsError({ cause: null }));
           }
           return store.read(input);
         },
@@ -217,23 +236,33 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
     ProviderEventIngestor.layer.pipe(
       Layer.updateService(ProjectionStore.ProjectionStoreV2, (projections) => ({
         ...projections,
-        getPendingNativeUserInputs: (threadId, turnId) => Effect.suspend(() => {
-          if (pendingReadFailures === 0) return projections.getPendingNativeUserInputs(threadId, turnId);
-          pendingReadFailures--;
-          return Deferred.succeed(ordinaryObserved, undefined).pipe(
-            Effect.andThen(Deferred.await(releaseOrdinary)),
-            Effect.andThen(Effect.fail(admissionFailure)),
-          );
-        }),
+        getPendingNativeUserInputs: (threadId, turnId) =>
+          Effect.suspend(() => {
+            if (pendingReadFailures === 0)
+              return projections.getPendingNativeUserInputs(threadId, turnId);
+            pendingReadFailures--;
+            return Deferred.succeed(ordinaryObserved, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseOrdinary)),
+              Effect.andThen(Effect.fail(admissionFailure)),
+            );
+          }),
       })),
       Layer.updateService(EventSink.EventSinkV2, (sink) => ({
         ...sink,
-        write: (input) => sink.write(input).pipe(Effect.flatMap((stored) => {
-          if (!uncertainPublication || uncertainCommitted || input.historicalTerminal === undefined || stored.length === 0)
-            return Effect.succeed(stored);
-          uncertainCommitted = true;
-          return Effect.fail(publicationFailure);
-        })),
+        write: (input) =>
+          sink.write(input).pipe(
+            Effect.flatMap((stored) => {
+              if (
+                !uncertainPublication ||
+                uncertainCommitted ||
+                input.historicalTerminal === undefined ||
+                stored.length === 0
+              )
+                return Effect.succeed(stored);
+              uncertainCommitted = true;
+              return Effect.fail(publicationFailure);
+            }),
+          ),
         writeHistoricalTerminal: (input) =>
           Effect.suspend(() => {
             historicalWrites++;
@@ -297,19 +326,21 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
     const providerInstanceId = ProviderInstanceId.make("codex");
     const providerSessionId = ProviderSessionId.make("session:raw-terminal");
     const commandId = CommandId.make("command:restart-history");
-    const accepts = [
-      "current",
-      "superseded-same-session",
-      "superseded-rebound-session",
-      "failed-replacement",
-      "duplicate",
-      "history-only",
-      "locator-race",
-      "ordinary-write-race",
-      "ordinary-current-guard-race",
-      "ordinary-owner-guard-race",
-      "ordinary-same-session-race",
-    ].includes(mode) || (normalizationFailure && mode === "superseded-same-session");
+    const accepts =
+      [
+        "current",
+        "superseded-same-session",
+        "superseded-rebound-session",
+        "failed-replacement",
+        "duplicate",
+        "history-only",
+        "locator-race",
+        "ordinary-write-race",
+        "ordinary-current-guard-race",
+        "ordinary-owner-guard-race",
+        "ordinary-same-session-race",
+      ].includes(mode) ||
+      (normalizationFailure && mode === "superseded-same-session");
     const replacementAttemptId = RunAttemptId.make("attempt:raw-terminal:replacement");
     const modelSelection = { instanceId: providerInstanceId, model: "test-model" };
     const thread: OrchestrationV2AppThread = {
@@ -671,12 +702,21 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
           }),
         ],
       });
-    const logicalTerminalForIngestion = ProviderEventOrigin.stampProviderEvent({
-      type: "turn.terminal" as const, driver, providerThreadId: providerThread.id,
-      providerTurnId: turn.id, runOrdinal: run.ordinal, status: "interrupted" as const,
-      failure: null, threadDisposition: "reusable" as const, providerTurn: terminalTurn,
-      runtimeEvidence: capture,
-    }, ProviderEventOrigin.readProviderEventOrigin(terminalEvent)!);
+    const logicalTerminalForIngestion = ProviderEventOrigin.stampProviderEvent(
+      {
+        type: "turn.terminal" as const,
+        driver,
+        providerThreadId: providerThread.id,
+        providerTurnId: turn.id,
+        runOrdinal: run.ordinal,
+        status: "interrupted" as const,
+        failure: null,
+        threadDisposition: "reusable" as const,
+        providerTurn: terminalTurn,
+        runtimeEvidence: capture,
+      },
+      ProviderEventOrigin.readProviderEventOrigin(terminalEvent)!,
+    );
     const ingest = ingestor.ingestNormalized({
       providerSessionId: providerSessionId,
       providerInstanceId,
@@ -710,33 +750,59 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
       terminalDrain.capture(logicalTerminalForIngestion);
       const execution = yield* RunExecutionService.RunExecutionServiceV2;
       yield* execution.startRootRun({
-        commandId: CommandId.make("command:consumer"), appThread: thread,
+        commandId: CommandId.make("command:consumer"),
+        appThread: thread,
         providerSessionId,
         session: {
-          driver, instanceId: providerInstanceId, providerSessionId, eventOriginMode: "captured",
+          driver,
+          instanceId: providerInstanceId,
+          providerSessionId,
+          eventOriginMode: "captured",
           events: Stream.empty,
           subscribeEvents: Effect.succeed({
             events: Stream.fromIterable([terminalEvent, logicalTerminalForIngestion]),
             close: Deferred.succeed(consumerClosed, undefined).pipe(Effect.asVoid),
           }),
-          startTurn: () => Effect.sync(() => { starts++; }),
-          interruptTurn: () => Effect.sync(() => { interrupts++; }),
+          startTurn: () =>
+            Effect.sync(() => {
+              starts++;
+            }),
+          interruptTurn: () =>
+            Effect.sync(() => {
+              interrupts++;
+            }),
         } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
-        run, rootNode, providerThread, attempt, attemptId: attempt.id,
+        run,
+        rootNode,
+        providerThread,
+        attempt,
+        attemptId: attempt.id,
         providerTurnOrdinal: 1,
         checkpointScope: {
           id: CheckpointScopeId.make("checkpoint:history"),
-        } as Parameters<RunExecutionService.RunExecutionServiceV2["Service"]["startRootRun"]>[0]["checkpointScope"],
+        } as Parameters<
+          RunExecutionService.RunExecutionServiceV2["Service"]["startRootRun"]
+        >[0]["checkpointScope"],
         shouldFinalizeRun: () => Effect.succeed(false),
-        message: { messageId: run.userMessageId, text: "synthetic", attachments: [],
-          createdBy: "user", creationSource: "web" },
+        message: {
+          messageId: run.userMessageId,
+          text: "synthetic",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+        },
         modelSelection,
-        runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: "/synthetic",
-          approvalPolicy: "never", sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" },
-            networkAccess: false } },
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: "/synthetic",
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false },
+        },
       });
     }
-    const ordinaryIngestion = ordinaryRace && !consumer ? yield* ingest.pipe(Effect.forkScoped) : undefined;
+    const ordinaryIngestion =
+      ordinaryRace && !consumer ? yield* ingest.pipe(Effect.forkScoped) : undefined;
     if (ordinaryIngestion !== undefined || consumer) {
       yield* Deferred.await(ordinaryObserved);
       receiptOrder.push("pending-read");
@@ -770,13 +836,18 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
       published.filter((stored) => stored.sequence > sequence).map((stored) => stored.id);
     const waiterRead = yield* Deferred.make<void>();
     const waiter = yield* awaitRestartTerminal({
-      target: { threadId: ids.threadId, runId: run.id, providerThreadId: providerThread.id,
-        providerTurnId: turn.id, interruptedAttemptId: attempt.id },
+      target: {
+        threadId: ids.threadId,
+        providerThreadId: providerThread.id,
+        providerTurnId: turn.id,
+        interruptedAttemptId: attempt.id,
+      },
       projections: {
         ...projections,
-        getProviderControlContext: (threadId, target) => projections.getProviderControlContext(threadId, target).pipe(
-          Effect.tap(() => Deferred.succeed(waiterRead, undefined)),
-        ),
+        getProviderControlContext: (threadId, target) =>
+          projections
+            .getProviderControlContext(threadId, target)
+            .pipe(Effect.tap(() => Deferred.succeed(waiterRead, undefined))),
       },
       sink,
     }).pipe(Effect.forkScoped);
@@ -784,21 +855,24 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
     assert.isUndefined(waiter.pollUnsafe());
     if (normalizationFailure) receiptOrder.push("waiter-read");
     const result = yield* (
-      consumer ? Deferred.succeed(releaseOrdinary, undefined).pipe(
-        Effect.andThen(Deferred.await(consumerClosed)), Effect.as([]),
-      ) : ordinaryIngestion !== undefined
+      consumer
         ? Deferred.succeed(releaseOrdinary, undefined).pipe(
-            Effect.andThen(Fiber.join(ordinaryIngestion)),
+            Effect.andThen(Deferred.await(consumerClosed)),
+            Effect.as([]),
           )
-        : mode === "locator-race"
-          ? Effect.gen(function* () {
-              const ingestion = yield* ingest.pipe(Effect.forkScoped);
-              yield* Deferred.await(validated);
-              yield* Deferred.succeed(releaseCommit, undefined);
-              yield* Fiber.join(restartFiber!);
-              return yield* Fiber.join(ingestion);
-            })
-          : ingest
+        : ordinaryIngestion !== undefined
+          ? Deferred.succeed(releaseOrdinary, undefined).pipe(
+              Effect.andThen(Fiber.join(ordinaryIngestion)),
+            )
+          : mode === "locator-race"
+            ? Effect.gen(function* () {
+                const ingestion = yield* ingest.pipe(Effect.forkScoped);
+                yield* Deferred.await(validated);
+                yield* Deferred.succeed(releaseCommit, undefined);
+                yield* Fiber.join(restartFiber!);
+                return yield* Fiber.join(ingestion);
+              })
+            : ingest
     ).pipe(Effect.exit);
     const exhausted = lockFailures === 3;
     if (uncertainPublication && readback !== "found") {
@@ -858,23 +932,38 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
     assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, outboxBefore);
     const admitted = accepts && !exhausted && !missingEvidence && !logicalOnly;
     const expectedReasons: Readonly<Record<string, string>> = {
-      "wrong-session": "identity", "wrong-instance": "identity", "wrong-generation": "origin",
-      "wrong-conversation": "replacement", "wrong-native-turn": "projection_turn",
-      "retired-producer": "origin", "replaced-producer": "origin", "missing-intent": "locator",
-      "unrelated-successor": "successor", "advanced-successor": "successor",
+      "wrong-session": "identity",
+      "wrong-instance": "identity",
+      "wrong-generation": "origin",
+      "wrong-conversation": "replacement",
+      "wrong-native-turn": "projection_turn",
+      "retired-producer": "origin",
+      "replaced-producer": "origin",
+      "missing-intent": "locator",
+      "unrelated-successor": "successor",
+      "advanced-successor": "successor",
       "changed-replacement": "replacement",
     };
     const expectedReason = expectedReasons[mode];
-    if (expectedReason !== undefined && !exhausted) assert.equal(sink.supersededTerminalTrace!.read({
-      threadId: ids.threadId, runId: ids.runId, providerThreadId: ids.providerThreadId,
-      providerTurnId: ids.rootProviderTurnId, interruptedAttemptId: ids.attemptId,
-    }), expectedReason);
+    if (expectedReason !== undefined && !exhausted)
+      assert.equal(
+        sink.supersededTerminalTrace!.read({
+          threadId: ids.threadId,
+          runId: ids.runId,
+          providerThreadId: ids.providerThreadId,
+          providerTurnId: ids.rootProviderTurnId,
+          interruptedAttemptId: ids.attemptId,
+        }),
+        expectedReason,
+      );
     assert.equal(after.providerTurns[0]?.status, admitted ? "interrupted" : "running");
     if (!consumer && !uncertainPublication) assert.equal(stored.length, admitted ? 1 : 0);
     assert.equal((yield* sink.latestSequence()) - sequence, admitted ? 1 : 0);
     assert.deepEqual(
       publishedAfter(),
-      consumer || uncertainPublication ? [retainedInput!.terminal.id] : stored.map((stored) => stored.event.id),
+      consumer || uncertainPublication
+        ? [retainedInput!.terminal.id]
+        : stored.map((stored) => stored.event.id),
     );
     if (uncertainPublication) {
       assert.equal(readbackCalls, 1);
@@ -882,9 +971,12 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
     }
     if (normalizationFailure && admitted) {
       assert.strictEqual(retainedInput?.event, terminalEvent);
-      const persisted = yield* (yield* EventStore.EventStoreV2).read({
-        eventId: retainedInput!.terminal.id, limit: 1,
-      }).pipe(Stream.runCollect);
+      const persisted = yield* (yield* EventStore.EventStoreV2)
+        .read({
+          eventId: retainedInput!.terminal.id,
+          limit: 1,
+        })
+        .pipe(Stream.runCollect);
       assert.equal(persisted.length, 1);
       assert.deepEqual(persisted[0]?.event, retainedInput!.terminal);
     }
@@ -892,7 +984,12 @@ export const historyScenario = ({ mode, lockFailures = 0, normalizationFailure =
       yield* Fiber.join(waiter);
       if (normalizationFailure) {
         receiptOrder.push("terminal-durable");
-        assert.deepEqual(receiptOrder, ["pending-read", "restart-committed", "waiter-read", "terminal-durable"]);
+        assert.deepEqual(receiptOrder, [
+          "pending-read",
+          "restart-committed",
+          "waiter-read",
+          "terminal-durable",
+        ]);
         assert.equal(pendingReadFailures, 0);
         assert.deepEqual(after.providerTurns[0]?.completedAt, terminalAt);
         assert.equal(after.providerTurns[0]?.nativeTurnRef?.nativeId, "old-native-turn");

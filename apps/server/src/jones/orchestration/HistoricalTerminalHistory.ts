@@ -52,11 +52,17 @@ const stale = (reason: Reason): HistoricalTerminalRejection => ({ type: "stale",
 // Cancellation and unavailable/refused history preserve the original failure channel.
 export function retainHistoricalTerminalOnError<A, E, R, E2, R2>(
   effect: Effect.Effect<ReadonlyArray<A>, E, R>,
-  historicalWrite: Effect.Effect<{
-    readonly handled: boolean;
-    readonly persisted?: boolean;
-    readonly storedEvents: ReadonlyArray<A>;
-  }, E2, R2> | undefined,
+  historicalWrite:
+    | Effect.Effect<
+        {
+          readonly handled: boolean;
+          readonly persisted?: boolean;
+          readonly storedEvents: ReadonlyArray<A>;
+        },
+        E2,
+        R2
+      >
+    | undefined,
 ): Effect.Effect<ReadonlyArray<A>, E, R | R2> {
   return effect.pipe(
     Effect.catchCause((cause) => {

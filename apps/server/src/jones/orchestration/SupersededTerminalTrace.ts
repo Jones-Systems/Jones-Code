@@ -54,7 +54,9 @@ export function terminalKey(event: ProviderAdapterV2Event): Key | undefined {
 
 // Each sink owns this bounded diagnostic cache. It supplies no admission or retirement proof.
 export function make(capacity = 4096) {
-  const limit = Number.isFinite(capacity) ? Math.max(1, Math.min(4096, Math.floor(capacity))) : 4096;
+  const limit = Number.isFinite(capacity)
+    ? Math.max(1, Math.min(4096, Math.floor(capacity)))
+    : 4096;
   const entries = new Map<string, Reason>();
   const keyOf = (key: Key) =>
     [key.threadId, key.runId, key.providerThreadId, key.providerTurnId, key.interruptedAttemptId]
