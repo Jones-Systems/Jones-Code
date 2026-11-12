@@ -93,6 +93,9 @@ vi.mock("./threads", async () => {
   state.threadShells = Atom.make<ReadonlyArray<unknown>>([state.thread]).pipe(Atom.keepAlive);
   return {
     threadEnvironment: {
+      // Messages dispatch prepared turns; the preceding /compact still uses startTurn.
+      // Both reach the server, so one mock records their relative order.
+      startTurn: state.start,
       dispatchPreparedTurn: state.start,
       prepareTurn: state.prepareTurn,
       updateMetadata: state.metadata,
@@ -583,7 +586,9 @@ describe("compaction before a queued send", () => {
     dispatchMode: "queue",
   };
 
-  it("queues /compact ahead of the message and resends the same /compact on a retry", async () => {
+  // Jones: once /compact is accepted and the message is issued, a retry redelivers the
+  // persisted prepared message rather than repeating the pre-send /compact.
+  it("queues /compact ahead of the message and retries the issued message without another /compact", async () => {
     setOperateGrant("secondary", true);
     const queued = message({ compactBeforeSend: true, dispatchMode: "queue" });
     await state.manager.enqueue(queued);
@@ -591,17 +596,27 @@ describe("compaction before a queued send", () => {
       .mockResolvedValueOnce(AsyncResult.success({}))
       .mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("Socket is not connected"))));
     await runDrain();
-    expect(remaining()).toEqual([queued]);
+    expect(state.prepareTurn).toHaveBeenCalledOnce();
+    expect(state.prepareTurn.mock.calls[0]?.[0].input).toMatchObject({
+      commandId: "command",
+      dispatchMode: "queue",
+    });
+    const retained = remaining()[0];
+    expect(remaining()).toHaveLength(1);
+    expect(retained).toMatchObject({ ...queued, issuance: { state: "issued" } });
+    if (retained?.issuance?.state !== "issued") throw new Error("Expected retained issued row");
+    expect(retained.issuance.prepared).toBe(state.start.mock.calls[1]?.[0].input);
 
     // A restarted app delivers the persisted message again.
     state.cleanups.splice(0).forEach((cleanup) => cleanup());
     await runDrain();
+    const prepared = retained.issuance.prepared;
     expect(state.start.mock.calls.map(([call]) => call.input)).toEqual([
       expect.objectContaining(compactTurn),
-      expect.objectContaining({ commandId: "command", dispatchMode: "queue" }),
-      expect.objectContaining(compactTurn),
-      expect.objectContaining({ commandId: "command", dispatchMode: "queue" }),
+      prepared,
+      prepared,
     ]);
+    expect(state.prepareTurn).toHaveBeenCalledOnce();
     expect(remaining()).toEqual([]);
   });
 
