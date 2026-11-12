@@ -1,3 +1,4 @@
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import {
   makeTerminalNormalizer,
   makeTerminalPublisher,
@@ -5,6 +6,7 @@ import {
 } from "../jones/orchestration/AcceptedTerminalRecovery.ts";
 import {
   isHistoricalTerminalCandidate,
+  retainHistoricalTerminalOnError,
   type HistoricalTerminalInput,
 } from "../jones/orchestration/HistoricalTerminalHistory.ts";
 import {
@@ -801,11 +803,21 @@ export const layer: Layer.Layer<
         /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
         Effect.fnUntraced(
           function* (input) {
+            if (
+              (input.event.type === "provider_turn.updated" || input.event.type === "turn.terminal") &&
+              !isHistoricalTerminalCandidate(input.event)
+            )
+              yield* SupersededTerminalTrace.recordTerminalRejection(
+                eventSink.supersededTerminalTrace,
+                input.event,
+                "ineligible",
+              );
             let historicalInput: HistoricalTerminalInput | undefined;
             let historicalWrite:
               | Effect.Effect<
                   {
                     readonly handled: boolean;
+                    readonly persisted?: boolean;
                     readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
                   },
                   ProviderEventPublishError
@@ -858,89 +870,105 @@ export const layer: Layer.Layer<
               storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
             ) =>
               storedEvents.length === 0 && historicalWrite !== undefined
-                ? historicalWrite.pipe(Effect.map((historical) => historical.storedEvents))
+                ? historicalWrite.pipe(
+                    Effect.tap((historical) =>
+                      !historical.handled
+                        ? SupersededTerminalTrace.recordTerminalRejection(
+                            eventSink.supersededTerminalTrace,
+                            input.event,
+                            "ordinary_rejected",
+                          )
+                        : Effect.void,
+                    ),
+                    Effect.map((historical) => historical.storedEvents),
+                  )
                 : Effect.succeed(storedEvents);
-            const events = yield* input.event.type === "turn.terminal"
-              ? normalizeTerminal(input.event, normalize(input))
-              : normalize(input);
-            if (events.length === 0) {
-              return [];
-            }
-            const observation =
-              input.event.type === "runtime_identity.observed" ? input.event : undefined;
-            const identity =
-              observation === undefined
-                ? undefined
-                : events.find((event) => event.type === "provider-thread.updated");
-            const runtimeGuard = {
-              ...(historicalInput === undefined ? {} : { historicalTerminal: historicalInput }),
-              ...(observation === undefined
-                ? "runtimeEvidence" in input.event && input.event.runtimeEvidence !== undefined
-                  ? { runtimeEvidence: input.event.runtimeEvidence }
-                  : {}
-                : {
-                    runtimeEvidence: {
-                      ...observation.binding,
-                      ...(identity?.type === "provider-thread.updated" &&
-                      identity.payload.runtimeIdentity?.evidenceRevision !== undefined
-                        ? { evidenceRevision: identity.payload.runtimeIdentity.evidenceRevision }
-                        : {}),
-                    },
-                    runtimeIdentityObservation: observation.requested,
-                  }),
-            };
-            const mapWriteError = (cause: unknown) =>
-              new ProviderEventPublishError({
-                providerSessionId: input.providerSessionId,
-                eventCount: events.length,
-                cause,
-              });
-            if (input.writeIfProviderThreadOwner !== undefined) {
-              const ownerResult = yield* eventSink
-                .writeIfProviderThreadOwner({
-                  guardPendingUserInputCancellations: true,
-                  skipUnchangedProviderNodes: input.event.type === "node.updated",
-                  ...runtimeGuard,
-                  ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-                  ...input.writeIfProviderThreadOwner,
-                  events,
-                })
-                .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
-              return yield* retainRejectedTerminal(ownerResult.storedEvents);
-            }
-            if (input.writeIfRunCurrent === undefined) {
-              return yield* eventSink
-                .write({
-                  guardPendingUserInputCancellations: true,
-                  skipUnchangedProviderNodes: input.event.type === "node.updated",
-                  ...runtimeGuard,
-                  ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-                  events,
-                })
-                .pipe(
-                  retryLockTimeout,
-                  Effect.mapError(mapWriteError),
-                  Effect.flatMap(retainRejectedTerminal),
-                );
-            }
-            const terminalWrite = {
-              guardPendingUserInputCancellations: true,
-              skipUnchangedProviderNodes: input.event.type === "node.updated",
-              ...runtimeGuard,
-              ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-              threadId: input.threadId,
-              ...input.writeIfRunCurrent,
-              events,
-            };
-            const result = yield* (
-              input.event.type === "turn.terminal"
-                ? publishTerminal(input.event, "ingestion", {
-                    type: "current",
-                    input: terminalWrite,
+            const ordinary = Effect.gen(function* () {
+              const events = yield* input.event.type === "turn.terminal"
+                ? normalizeTerminal(input.event, normalize(input))
+                : normalize(input);
+              if (events.length === 0) {
+                return [];
+              }
+              const observation =
+                input.event.type === "runtime_identity.observed" ? input.event : undefined;
+              const identity =
+                observation === undefined
+                  ? undefined
+                  : events.find((event) => event.type === "provider-thread.updated");
+              const runtimeGuard = {
+                ...(historicalInput === undefined ? {} : { historicalTerminal: historicalInput }),
+                ...(observation === undefined
+                  ? "runtimeEvidence" in input.event && input.event.runtimeEvidence !== undefined
+                    ? { runtimeEvidence: input.event.runtimeEvidence }
+                    : {}
+                  : {
+                      runtimeEvidence: {
+                        ...observation.binding,
+                        ...(identity?.type === "provider-thread.updated" &&
+                        identity.payload.runtimeIdentity?.evidenceRevision !== undefined
+                          ? { evidenceRevision: identity.payload.runtimeIdentity.evidenceRevision }
+                          : {}),
+                      },
+                      runtimeIdentityObservation: observation.requested,
+                    }),
+              };
+              const mapWriteError = (cause: unknown) =>
+                new ProviderEventPublishError({
+                  providerSessionId: input.providerSessionId,
+                  eventCount: events.length,
+                  cause,
+                });
+              if (input.writeIfProviderThreadOwner !== undefined) {
+                const ownerResult = yield* eventSink
+                  .writeIfProviderThreadOwner({
+                    guardPendingUserInputCancellations: true,
+                    skipUnchangedProviderNodes: input.event.type === "node.updated",
+                    ...runtimeGuard,
+                    ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+                    ...input.writeIfProviderThreadOwner,
+                    events,
                   })
-                : eventSink.writeIfRunCurrent(terminalWrite).pipe(retryLockTimeout)
-            ).pipe(Effect.mapError(mapWriteError));
-            return yield* retainRejectedTerminal(result.storedEvents);
+                  .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
+                return ownerResult.storedEvents;
+              }
+              if (input.writeIfRunCurrent === undefined) {
+                return yield* eventSink
+                  .write({
+                    guardPendingUserInputCancellations: true,
+                    skipUnchangedProviderNodes: input.event.type === "node.updated",
+                    ...runtimeGuard,
+                    ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+                    events,
+                  })
+                  .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
+              }
+              const terminalWrite = {
+                guardPendingUserInputCancellations: true,
+                skipUnchangedProviderNodes: input.event.type === "node.updated",
+                ...runtimeGuard,
+                ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+                threadId: input.threadId,
+                ...input.writeIfRunCurrent,
+                events,
+              };
+              const result = yield* (
+                input.event.type === "turn.terminal"
+                  ? publishTerminal(input.event, "ingestion", {
+                      type: "current",
+                      input: terminalWrite,
+                    })
+                  : eventSink.writeIfRunCurrent(terminalWrite).pipe(retryLockTimeout)
+              ).pipe(Effect.mapError(mapWriteError));
+              return result.storedEvents;
+            });
+            return yield* ordinary.pipe(
+              Effect.matchCauseEffect({
+                onFailure: (cause) =>
+                  retainHistoricalTerminalOnError(Effect.failCause(cause), historicalWrite),
+                onSuccess: retainRejectedTerminal,
+              }),
+            );
           },
           (effect, input) =>
             effect.pipe(

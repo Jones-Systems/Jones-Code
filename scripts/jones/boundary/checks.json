@@ -2,6 +2,28 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-superseded-terminal-history",
+      "tests": [
+        "apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts",
+        "apps/server/src/jones/orchestration/SupersededTerminalTrace.test.ts",
+        "apps/server/src/jones/orchestration/SupersededTerminal.integration.test.ts",
+        "apps/server/src/jones/orchestration/RestartPreparation.test.ts",
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+        "packages/provider-core/src/server/jones/providerControlOutcome.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts apps/server/src/jones/orchestration/SupersededTerminalTrace.test.ts apps/server/src/jones/orchestration/SupersededTerminal.integration.test.ts apps/server/src/jones/orchestration/RestartPreparation.test.ts apps/server/src/jones/persistence/EventLogPruning.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts packages/provider-core/src/server/jones/providerControlOutcome.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/orchestration/HistoricalTerminalHistory.ts apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts apps/server/src/jones/orchestration/HistoricalTerminalHistory.testkit.ts apps/server/src/jones/orchestration/SupersededTerminalTrace.ts apps/server/src/jones/orchestration/SupersededTerminalTrace.test.ts apps/server/src/jones/orchestration/SupersededTerminal.integration.test.ts apps/server/src/jones/orchestration/RestartPreparation.ts apps/server/src/jones/orchestration/RestartPreparation.test.ts apps/server/src/jones/persistence/EventLogPruning.test.ts apps/server/src/orchestration-v2/EventSink.ts apps/server/src/orchestration-v2/ProviderEventIngestor.ts apps/server/src/orchestration-v2/RunExecutionService.ts",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
       "id": "jones-accepted-terminal-recovery",
       "tests": [
         "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts",
