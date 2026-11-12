@@ -84,7 +84,7 @@ For example, after staging the files (replace all host-specific values):
     "config": "/home/operator/staged/source.service",
     "executable": "/home/operator/staged/jones/t3",
     "argv": ["/home/operator/staged/jones/t3", "--no-browser"],
-    "payload": {"root": "/home/operator/staged/jones"}
+    "payload": { "root": "/home/operator/staged/jones" }
   },
   "target": {
     "distribution": "t3",
@@ -92,7 +92,7 @@ For example, after staging the files (replace all host-specific values):
     "config": "/home/operator/staged/target.service",
     "executable": "/home/operator/staged/t3/t3",
     "argv": ["/home/operator/staged/t3/t3", "--no-browser"],
-    "payload": {"root": "/home/operator/staged/t3"}
+    "payload": { "root": "/home/operator/staged/t3" }
   }
 }
 ```
