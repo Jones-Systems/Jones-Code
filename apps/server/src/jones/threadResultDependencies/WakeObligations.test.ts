@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -11,8 +12,15 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import * as Forwarding from "../../peer/PeerForwarding.ts";
+import * as Reactor from "./DependencyReactor.ts";
+import * as Watch from "./RequestWatch.ts";
 import * as StartRefusals from "../startRefusal/Store.ts";
 import { makeDependencyStore } from "./DependencyStore.ts";
+import { pruneEventLogLikeUpstream } from "../persistence/prunedEventLog.testkit.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import { roster } from "./Projection.ts";
 import { notification } from "./Wake.ts";
@@ -124,6 +132,7 @@ const witness = Effect.fnUntraced(function* (
   key = "external",
   native = true,
   invalid?: "unmatched" | "other_thread" | "held_run" | "unsupported",
+  publish = true,
 ) {
   const run = {
     ...f.run(
@@ -197,7 +206,7 @@ const witness = Effect.fnUntraced(function* (
                 : event.payload.runAttemptId,
           },
         };
-  yield* f.sink.write({ events: [candidate] });
+  if (publish) yield* f.sink.write({ events: [candidate] });
   return candidate;
 });
 
@@ -238,6 +247,101 @@ it.effect(
         .pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(settlement));
       assert.equal((yield* restarted.get(held.dependencyId))?.wakeHold, "held");
+    }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect(
+  "a pruned attempt birth denies accepted-start release and retains the held answer after restart",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* Fixture.seed;
+      const wake = yield* admit(f);
+      yield* wake.refuse();
+      const event = yield* witness(f, wake, "pruned-birth", true, undefined, false);
+      const birth = (yield* f.sql<{ sequence: number }>`SELECT sequence FROM orchestration_events
+      WHERE event_type = 'run-attempt.created' AND json_extract(payload_json, '$.id') = ${event.payload.runAttemptId}`)[0]!;
+      const attemptBefore = yield* f.sql`SELECT * FROM orchestration_v2_projection_run_attempts
+      WHERE attempt_id = ${event.payload.runAttemptId}`;
+      assert.lengthOf(attemptBefore, 1);
+      assert.equal(attemptBefore[0]?.run_id, event.runId);
+      assert.equal(attemptBefore[0]?.provider_thread_id, event.payload.providerThreadId);
+      assert.equal(attemptBefore[0]?.root_node_id, event.payload.nodeId);
+      const head = yield* f.sink.write({
+        events: [
+          f.event({
+            type: "thread.metadata-updated",
+            threadId: f.waiter.id,
+            payload: f.waiter,
+          }),
+        ],
+      });
+      assert.include(yield* pruneEventLogLikeUpstream(birth.sequence), birth.sequence);
+      assert.lengthOf(
+        yield* f.sql`SELECT * FROM orchestration_events WHERE sequence = ${birth.sequence}`,
+        0,
+      );
+      assert.deepEqual(
+        yield* f.sql`SELECT * FROM orchestration_v2_projection_run_attempts
+      WHERE attempt_id = ${event.payload.runAttemptId}`,
+        attemptBefore,
+      );
+      assert.lengthOf(
+        yield* f.sql`SELECT * FROM orchestration_events WHERE event_id = ${head[0]!.event.id}`,
+        1,
+      );
+      yield* f.sink.write({ events: [event] });
+      assert.lengthOf(yield* f.store.wakes.armedBy(event.id), 0);
+      yield* advance(f);
+      yield* f.sql.withTransaction(f.store.prune);
+      const restarted = makeDependencyStore(f.sql, makeJonesTablePresence(f.sql));
+      const held = (yield* restarted.get(wake.dependency.dependencyId))!;
+      assert.equal(held.state, "resolved");
+      assert.equal(held.wakeHold, "held");
+      assert.equal(held.generation, 1);
+      assert.equal((yield* restarted.requests(f.receiver.id))[0]?.result, "PEER_UNIQUE_ANSWER");
+      assert.equal((yield* restarted.duties(f.waiter.id)).outgoing, 1);
+      assert.deepEqual((yield* restarted.dependencies()).filter(wakeEligible), []);
+      const calls: string[] = [];
+      const unexpected = (name: string) =>
+        Effect.suspend(() => {
+          calls.push(name);
+          return Effect.die(`Unexpected held-duty ${name}`);
+        });
+      const ports = Layer.mergeAll(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          acquireDomainEvents: Effect.succeed(Stream.never),
+          dispatch: () => unexpected("dispatch"),
+          finalizeDelegatedTask: () => unexpected("finalize"),
+        }),
+        Layer.mock(Watch.RequestWatch)({ observe: () => unexpected("observe") }),
+        Layer.mock(Forwarding.PeerForwarding)({ call: () => unexpected("forward") }),
+        NodeCrypto.layer,
+      );
+      for (let restart = 0; restart < 2; restart++) {
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* (yield* Reactor.DependencyReactor).start();
+            assert.deepEqual(calls, []);
+            assert.equal((yield* restarted.get(held.dependencyId))?.wakeHold, "held");
+            assert.equal((yield* restarted.duties(f.waiter.id)).outgoing, 1);
+            assert.equal(
+              (yield* restarted.requests(f.receiver.id))[0]?.result,
+              "PEER_UNIQUE_ANSWER",
+            );
+          }).pipe(Effect.provide(Reactor.layer.pipe(Layer.provide(ports)))),
+        );
+      }
+
+      assert.lengthOf(yield* restarted.wakes.armedBy(event.id), 0);
+      assert.isTrue(
+        Exit.isFailure(
+          yield* f.sql
+            .withTransaction(restarted.admitWake({ ...wake.commit, generation: held.generation }))
+            .pipe(Effect.exit),
+        ),
+      );
+      assert.equal((yield* restarted.get(held.dependencyId))?.wakeHold, "held");
+      assert.lengthOf(yield* f.sql`SELECT * FROM jones_peer_wake_holds`, 1);
     }).pipe(Effect.provide(Fixture.layer)),
 );
 

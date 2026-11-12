@@ -175,6 +175,14 @@ const readers: ReadonlyArray<Reader> = [
     proof: "persistence/EventLogPruning.test.ts (ApplicationBirth)",
   },
   {
+    file: "threadResultDependencies/WakeObligations.ts",
+    classification: "tolerate",
+    after:
+      "A missing run-attempt.created event denies accepted-start release even when its matching attempt projection survives. The persistent hold retains the answer and outgoing duty across restart; it remains ineligible for wake admission.",
+    proof:
+      "threadResultDependencies/WakeObligations.test.ts (pruned attempt birth before accepted start)",
+  },
+  {
     file: "threadResultDependencies/DependencyStore.ts",
     classification: "unaffected",
     after: "The high-water sequence is a stream head, which the pruner always keeps.",
