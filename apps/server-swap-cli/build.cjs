@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { execFileSync } = require("node:child_process");
-const { builtinModules } = require("node:module");
+const { isBuiltin } = require("node:module");
 const esbuild = require("esbuild");
 const { readHostProcess } = require("./host-process.mjs");
 
@@ -23,7 +23,7 @@ function bundleHostProcess(directory) {
   if (result.outputFiles.length !== 1 || outputs.length !== 1)
     throw new Error("HostProcess bridge must produce exactly one embedded output");
   for (const imported of outputs[0].imports) {
-    if (!imported.external || !builtinModules.includes(imported.path.replace(/^node:/, "")))
+    if (!imported.external || !isBuiltin(imported.path))
       throw new Error(`HostProcess bridge has an unresolved dependency: ${imported.path}`);
     if (!imported.path.startsWith("node:"))
       throw new Error(`HostProcess bridge requires a canonical Node builtin: ${imported.path}`);

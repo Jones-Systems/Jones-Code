@@ -10,14 +10,14 @@
     "test": "node --test --test-concurrency=1 core.test.cjs native.test.cjs transport.test.cjs prepare.test.cjs fleet.test.cjs cli.test.cjs host-process.test.cjs build.test.cjs",
     "build:standalone": "node build.cjs"
   },
-  "engines": {
-    "node": ">=24.13.1"
-  },
   "dependencies": {
     "@t3tools/shared": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
     "esbuild": "0.28.2"
+  },
+  "engines": {
+    "node": ">=24.13.1"
   }
 }

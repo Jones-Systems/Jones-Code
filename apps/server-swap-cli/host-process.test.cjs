@@ -25,7 +25,10 @@ test("host identity mismatches throw synchronously before state access", () => {
     { host: "mismatched-fixture-host" },
     { uid: -1 },
   ]) {
-    assert.throws(() => verifyHost({ ...plan, ...change }), /exact host, uid, platform and architecture/);
+    assert.throws(
+      () => verifyHost({ ...plan, ...change }),
+      /exact host, uid, platform and architecture/,
+    );
   }
 });
 
@@ -42,7 +45,10 @@ test("matching runtime still requires a canonical owned home and exact environme
     environmentId: "synthetic-environment",
   };
   assert.equal(verifyHost(plan), undefined);
-  assert.throws(() => verifyHost({ ...plan, environmentId: "other-environment" }), /environment ID mismatch/);
+  assert.throws(
+    () => verifyHost({ ...plan, environmentId: "other-environment" }),
+    /environment ID mismatch/,
+  );
   const alias = path.join(root, "alias");
   fs.symlinkSync(root, alias);
   assert.throws(() => verifyHost({ ...plan, home: alias }), /canonical and owned/);

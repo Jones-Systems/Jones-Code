@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { builtinModules } = require("node:module");
+const { isBuiltin } = require("node:module");
 const { spawnSync } = require("node:child_process");
 const { bundleHostProcess, bundle } = require("./build.cjs");
 const { readHostProcess } = require("./host-process.mjs");
@@ -13,7 +13,7 @@ const { readHostProcess } = require("./host-process.mjs");
 test("compiled canonical bridge is synchronous, builtin-only and matches source identity", () => {
   const compiled = { exports: {} };
   const builtinOnly = (id) => {
-    assert.ok(id.startsWith("node:") && builtinModules.includes(id.slice(5)), id);
+    assert.ok(id.startsWith("node:") && isBuiltin(id), id);
     return process.getBuiltinModule(id);
   };
   new Function("module", "exports", "require", bundleHostProcess(__dirname))(
