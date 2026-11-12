@@ -7,6 +7,10 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.testkit.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/accepted-terminal-recovery.json": "jones-owned",
     "apps/server/src/jones/orchestration/appFailureReason.ts": "jones-owned",
     "apps/server/src/jones/orchestration/appFailureReason.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/readerAdmissionMessage.test.ts": "jones-owned",
@@ -2923,6 +2927,7 @@
     "apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts": "jones-owned",
     ".agents/skills/test-t3-app/references/sqlite-fixtures.md": "policy",
     "scripts/jones/boundary/fragments/workstreams-native-home-fixture.json": "jones-owned",
+    "scripts/jones/boundary/fragments/superseded-terminal-history.json": "jones-owned",
     "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.py": "jones-owned",
     "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts": "jones-owned"
   },

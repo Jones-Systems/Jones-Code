@@ -54,7 +54,7 @@ def _install():
         assert set(plan) == common | ({"selection", "selectionSha256"} if deferred else {"intent", "intentSha256", "transactionId"})
         assert type(plan["protocol"]) is int and plan["protocol"] == (2 if deferred else 1)
         if deferred:
-            assert plan["observeRelaunch"] is False
+            assert plan["observeRelaunch"] is False or plan["point"] == "before-pair"
             assert sys.argv[2] == plan["manifest"]
             raw = read_file(sys.argv[4], 65536)
             actual = json.loads(raw)
@@ -117,6 +117,7 @@ def _install():
         receipt_path = plan_path.with_name("fault-receipt.json")
         assert not os.path.lexists(receipt_path)
         assert not os.path.lexists(plan_path.with_name("before-relaunch.json"))
+        assert not os.path.lexists(plan_path.with_name("before-pair-state.json"))
         plan_sha = hashlib.sha256(read_file(plan_path, 16384)).hexdigest()
 
 
@@ -169,6 +170,7 @@ def _install():
             return {str(path): visit(path) for path in paths}
 
         fault_record = None
+        quiet_state = None
 
         def observe_relaunch(frame, event, arg):
             if (not plan["observeRelaunch"] or fault_record is None or event != "call"
@@ -196,9 +198,13 @@ def _install():
                 assert hashlib.sha256(read_file(helper, 2 * 1024 * 1024)).hexdigest() == plan["helperSha256"]
                 fault_raw = read_file(receipt_path, 16384)
                 assert json.loads(fault_raw) == fault_record
+                state = snapshot_state()
+                if deferred:
+                    assert point == "before-pair" and quiet_state is not None
+                    assert state == quiet_state
                 receipt = dict(fault_record, kind="packaged-desktop-before-relaunch",
                                faultReceiptSha256=hashlib.sha256(fault_raw).hexdigest(),
-                               journalSha256=hashlib.sha256(journal_raw).hexdigest(), state=snapshot_state())
+                               journalSha256=hashlib.sha256(journal_raw).hexdigest(), state=state)
                 raw = json.dumps(receipt, sort_keys=True).encode()
                 assert len(raw) <= 1024 * 1024
                 fd = os.open(plan_path.with_name("before-relaunch.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -216,7 +222,7 @@ def _install():
                 os._exit(125)
 
         def trace(frame, event, arg):
-            nonlocal fault_record
+            nonlocal fault_record, quiet_state
             if event != "call" or frame.f_code.co_filename != str(helper):
                 return None
             if frame.f_code.co_name != target:
@@ -251,6 +257,30 @@ def _install():
                        "helperSha256": plan["helperSha256"], "manifestSha256": plan["manifestSha256"],
                        "intentSha256": plan["intentSha256"],
                        "journalSha256": hashlib.sha256(journal_raw).hexdigest()}
+            if deferred and plan["observeRelaunch"]:
+                try:
+                    # The initial app was live. Only this helper's stopped-process boundary
+                    # supplies a quiet baseline; never compare with a live-home snapshot.
+                    assert point == "before-pair"
+                    proofs = local.get("captured_processes")
+                    valid = frame.f_globals["valid_process_proofs"]
+                    alive = frame.f_globals["alive"]
+                    assert valid(proofs) and all(not alive(proof) for proof in proofs)
+                    quiet_state = snapshot_state()
+                    snapshot = dict(kind="packaged-desktop-before-pair-state", processesStopped=True,
+                                    state=quiet_state, **{key: receipt[key] for key in
+                                    ("pid", "planSha256", "transactionId", "intentSha256", "journalSha256")})
+                    raw = json.dumps(snapshot, sort_keys=True).encode()
+                    assert len(raw) <= 1024 * 1024
+                    fd = os.open(plan_path.with_name("before-pair-state.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(raw)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    receipt["beforePairStateSha256"] = hashlib.sha256(raw).hexdigest()
+                except BaseException:
+                    os.write(2, b"RH-F2 quiet-state observation failed; owned evidence retained.\n")
+                    os._exit(125)
             fd = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "w") as stream:
                 json.dump(receipt, stream, sort_keys=True)

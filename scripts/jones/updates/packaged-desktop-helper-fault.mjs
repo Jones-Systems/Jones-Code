@@ -150,8 +150,8 @@ export async function preparePackagedDesktopHelperFault({
   const deferred = selection !== undefined;
   NodeAssert.ok(deferred ? intent === undefined : typeof intent === "string");
   NodeAssert.ok(
-    !deferred || observeRelaunch === false,
-    "Install-time state observation needs a separately bound quiet-state oracle.",
+    !deferred || observeRelaunch === false || point === "before-pair",
+    "Deferred relaunch observation requires the quiet before-pair boundary.",
   );
   await privatePath(fixtureRoot, fixtureRoot, true);
   const rootInfo = await NodeFSP.lstat(fixtureRoot, { bigint: true });
@@ -194,7 +194,8 @@ export async function preparePackagedDesktopHelperFault({
   }
   NodeAssert.equal(NodePath.dirname(helper), NodePath.join(active.home, "runtime/jones-updates"));
   NodeAssert.equal(typeof observeRelaunch, "boolean");
-  const stateBefore = observeRelaunch ? await snapshotRecoveryState(fixtureRoot, active) : null;
+  const stateBefore =
+    observeRelaunch && !deferred ? await snapshotRecoveryState(fixtureRoot, active) : null;
   const plan = {
     protocol: deferred ? 2 : 1,
     fixtureRoot,
@@ -313,19 +314,38 @@ export async function preparePackagedDesktopHelperFault({
         sha(await readPrivate(fixtureRoot, NodePath.join(preload, "fault-receipt.json"), 16384)),
       );
       NodeAssert.match(receipt.journalSha256, /^[a-f0-9]{64}$/);
+      const baseline = deferred ? await this.readBeforePairState() : stateBefore;
       NodeAssert.deepEqual(
         receipt.state,
-        stateBefore,
+        baseline,
         "Protected fixture state changed before relaunch.",
       );
       return Object.freeze(receipt);
+    },
+    async readBeforePairState() {
+      NodeAssert.ok(deferred && observeRelaunch && point === "before-pair");
+      const fault = await this.readReceipt();
+      const bytes = await readPrivate(
+        fixtureRoot,
+        NodePath.join(preload, "before-pair-state.json"),
+        1024 * 1024,
+      );
+      NodeAssert.equal(sha(bytes), fault.beforePairStateSha256);
+      const receipt = JSON.parse(bytes);
+      NodeAssert.equal(receipt.kind, "packaged-desktop-before-pair-state");
+      for (const key of ["pid", "planSha256", "transactionId", "intentSha256", "journalSha256"])
+        NodeAssert.equal(receipt[key], fault[key]);
+      NodeAssert.equal(receipt.processesStopped, true);
+      NodeAssert.ok(receipt.state && typeof receipt.state === "object");
+      return receipt.state;
     },
     async assertNoRelaunch() {
       NodeAssert.equal(observeRelaunch, true);
       await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(preload, "before-relaunch.json")), {
         code: "ENOENT",
       });
-      NodeAssert.deepEqual(await snapshotRecoveryState(fixtureRoot, active), stateBefore);
+      const baseline = deferred ? await this.readBeforePairState() : stateBefore;
+      NodeAssert.deepEqual(await snapshotRecoveryState(fixtureRoot, active), baseline);
     },
     packagedDesktopMatrixPassed: false,
   });

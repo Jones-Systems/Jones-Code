@@ -81,7 +81,7 @@ const exists = async (file) =>
       throw e;
     },
   );
-const readJson = async (file, limit = 65536) => {
+const readJson = async (file, limit = 65536, expectedSha256) => {
   const handle = await NodeFSP.open(file, "r");
   try {
     const stat = await handle.stat();
@@ -89,7 +89,9 @@ const readJson = async (file, limit = 65536) => {
     const bytes = Buffer.alloc(limit + 1);
     const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
     NodeAssert.ok(bytesRead <= limit);
-    return JSON.parse(bytes.subarray(0, bytesRead).toString("utf8"));
+    const content = bytes.subarray(0, bytesRead);
+    if (expectedSha256 !== undefined) NodeAssert.equal(sha(content), expectedSha256);
+    return JSON.parse(content.toString("utf8"));
   } finally {
     await handle.close();
   }
@@ -241,7 +243,7 @@ async function verifyNativeBinding(provider, host, fileSystem = NodeFSP, digest 
     await fileSystem.realpath(binding.nativeExecutable.path),
     binding.nativeExecutable.realPath,
   );
-  const native = await readPublic(binding.nativeExecutable.realPath, 256 * MiB, true);
+  const native = await readPublic(binding.nativeExecutable.realPath, 512 * MiB, true);
   NodeAssert.equal(digest(native), binding.nativeExecutable.sha256);
   // Recheck the mutable pointer after verifying the qualified closure.
   NodeAssert.equal(await fileSystem.realpath(`${miniFleet.root}/current`), releaseRoot);
@@ -371,15 +373,19 @@ function validateOperator(v) {
   return v;
 }
 
-// Preparation exports committed source without borrowing a checkout's history or
-// dependencies. A bounded explicit file manifest binds those bytes AND the exact
-// Git tree, including modes and symlink blobs, without writing Git objects.
-// Manifest: {schema,commit,tree,files:[{path,mode,sha256}]} with relative paths.
+// Bind committed/exported bytes and exact Git trees without writing Git objects
+// or borrowing history/dependencies. Closed V1 blobs: {path,mode,sha256};
+// V2 raw gitlinks: {path,mode:"160000",oid}, with absent/empty exported slots.
+// Gitlinks bind commit OIDs only, never unexported submodule contents.
 async function verifyExport(root, manifestPath, manifestSha256, commit, tree) {
-  const manifest = await readJson(manifestPath, 8 * MiB);
-  NodeAssert.equal(sha(await NodeFSP.readFile(manifestPath)), manifestSha256);
+  const manifest = await readJson(manifestPath, 8 * MiB, manifestSha256);
   exact(manifest, ["schema", "commit", "tree", "files"]);
-  NodeAssert.equal(manifest.schema, "jones.workspace-lifecycle-dev.source-files/v1");
+  NodeAssert.ok(
+    [
+      "jones.workspace-lifecycle-dev.source-files/v1",
+      "jones.workspace-lifecycle-dev.source-files/v2",
+    ].includes(manifest.schema),
+  );
   NodeAssert.equal(manifest.commit, commit);
   NodeAssert.equal(manifest.tree, tree);
   NodeAssert.ok(
@@ -389,7 +395,8 @@ async function verifyExport(root, manifestPath, manifestSha256, commit, tree) {
     paths = new Set();
   let total = 0;
   for (const file of manifest.files) {
-    exact(file, ["path", "mode", "sha256"]);
+    object(file);
+    exact(file, file.mode === "160000" ? ["path", "mode", "oid"] : ["path", "mode", "sha256"]);
     text(file.path);
     NodeAssert.ok(
       !NodePath.isAbsolute(file.path) &&
@@ -397,25 +404,49 @@ async function verifyExport(root, manifestPath, manifestSha256, commit, tree) {
     );
     NodeAssert.ok(!paths.has(file.path));
     paths.add(file.path);
-    NodeAssert.ok(["100644", "100755", "120000"].includes(file.mode));
-    NodeAssert.match(file.sha256, /^[a-f0-9]{64}$/u);
-    const target = NodePath.join(root, file.path),
-      stat = await NodeFSP.lstat(target);
-    NodeAssert.ok(stat.size <= 64 * MiB);
-    NodeAssert.ok(inside(root, await NodeFSP.realpath(NodePath.dirname(target))));
-    const bytes =
-      file.mode === "120000"
-        ? Buffer.from((NodeAssert.ok(stat.isSymbolicLink()), await NodeFSP.readlink(target)))
-        : (NodeAssert.ok(stat.isFile() && !stat.isSymbolicLink()), await NodeFSP.readFile(target));
-    if (file.mode !== "120000")
-      NodeAssert.equal(Boolean(stat.mode & 0o111), file.mode === "100755");
-    total += bytes.length;
-    NodeAssert.ok(total <= 512 * MiB);
-    NodeAssert.equal(sha(bytes), file.sha256);
-    const oid = NodeCrypto.createHash("sha1")
-      .update(`blob ${bytes.length}\0`)
-      .update(bytes)
-      .digest();
+    let oid;
+    if (file.mode === "160000") {
+      NodeAssert.equal(manifest.schema, "jones.workspace-lifecycle-dev.source-files/v2");
+      NodeAssert.match(file.oid, /^[a-f0-9]{40}$/u);
+      let target = root;
+      for (const segment of file.path.split("/")) {
+        target = NodePath.join(target, segment);
+        const stat = await NodeFSP.lstat(target).catch((error) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (stat === null) break;
+        NodeAssert.ok(stat.isDirectory() && !stat.isSymbolicLink());
+        NodeAssert.ok(inside(root, await NodeFSP.realpath(target)));
+        if (target === NodePath.join(root, file.path)) {
+          const directory = await NodeFSP.opendir(target);
+          try {
+            NodeAssert.equal(await directory.read(), null);
+          } finally {
+            await directory.close();
+          }
+        }
+      }
+      oid = Buffer.from(file.oid, "hex");
+    } else {
+      NodeAssert.ok(["100644", "100755", "120000"].includes(file.mode));
+      NodeAssert.match(file.sha256, /^[a-f0-9]{64}$/u);
+      const target = NodePath.join(root, file.path),
+        stat = await NodeFSP.lstat(target);
+      NodeAssert.ok(stat.size <= 64 * MiB);
+      NodeAssert.ok(inside(root, await NodeFSP.realpath(NodePath.dirname(target))));
+      const bytes =
+        file.mode === "120000"
+          ? Buffer.from((NodeAssert.ok(stat.isSymbolicLink()), await NodeFSP.readlink(target)))
+          : (NodeAssert.ok(stat.isFile() && !stat.isSymbolicLink()),
+            await NodeFSP.readFile(target));
+      if (file.mode !== "120000")
+        NodeAssert.equal(Boolean(stat.mode & 0o111), file.mode === "100755");
+      total += bytes.length;
+      NodeAssert.ok(total <= 512 * MiB);
+      NodeAssert.equal(sha(bytes), file.sha256);
+      oid = NodeCrypto.createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest();
+    }
     let parent = nodes;
     const segments = file.path.split("/"),
       name = segments.pop();
@@ -2356,7 +2387,7 @@ async function testNativeBindings() {
     mutate(operator);
     NodeAssert.throws(() => validateOperator(operator));
   }
-  const chainFixture = () => {
+  const chainFixture = (nativeBytes) => {
     const provider = providerFor();
     const binding = provider.nativeBinding;
     const release = `${miniFleet.root}/releases/${binding.release.id}`;
@@ -2384,7 +2415,10 @@ async function testNativeBindings() {
         return {
           uid: 501,
           mode: 0o755,
-          size: files.get(file).length,
+          size:
+            file === binding.nativeExecutable.realPath
+              ? (nativeBytes ?? files.get(file).length)
+              : files.get(file).length,
           isFile: () => true,
           isSymbolicLink: () => false,
         };
@@ -2409,6 +2443,13 @@ async function testNativeBindings() {
   const observation = await valid.verify();
   NodeAssert.equal(observation.state, "qualified-launcher-release-executable-chain-observed");
   NodeAssert.equal(observation.account.state, "not-observed");
+  for (const nativeBytes of [323702464, 512 * MiB]) {
+    const large = chainFixture(nativeBytes);
+    const observed = await large.verify();
+    NodeAssert.equal(observed.state, "qualified-launcher-release-executable-chain-observed");
+    NodeAssert.equal(observed.account.state, "not-observed");
+  }
+  await NodeAssert.rejects(chainFixture(512 * MiB + 1).verify());
   const badChains = [
     (f) => f.links.set(`${miniFleet.root}/current`, "/synthetic/unqualified-release"),
     (f) => f.links.set(f.binding.nativeExecutable.path, "/synthetic/wrong-native"),
@@ -2463,8 +2504,219 @@ async function testNativeBindings() {
   );
 }
 
+async function testSourceExports() {
+  const root = await NodeFSP.mkdtemp(
+    NodePath.join(await NodeFSP.realpath(NodeOS.tmpdir()), "jones-source-export-"),
+  );
+  try {
+    await NodeFSP.chmod(root, 0o700);
+    const source = NodePath.join(root, "source"),
+      repository = NodePath.join(root, "objects.git"),
+      manifestPath = NodePath.join(root, "manifest.json");
+    await NodeFSP.mkdir(NodePath.join(source, "nested"), { recursive: true, mode: 0o700 });
+    const git = (...args) =>
+      NodeChildProcess.execFileSync("/usr/bin/git", ["--git-dir", repository, ...args], {
+        maxBuffer: MiB,
+        timeout: 10000,
+      })
+        .toString()
+        .trim();
+    NodeChildProcess.execFileSync("/usr/bin/git", ["init", "--bare", "--quiet", repository], {
+      maxBuffer: MiB,
+      timeout: 10000,
+    });
+    const blob = (bytes) =>
+      NodeChildProcess.execFileSync(
+        "/usr/bin/git",
+        ["--git-dir", repository, "hash-object", "-w", "--stdin"],
+        { input: bytes, maxBuffer: MiB, timeout: 10000 },
+      )
+        .toString()
+        .trim();
+    const treeFor = (entries) =>
+      NodeChildProcess.execFileSync(
+        "/usr/bin/git",
+        ["--git-dir", repository, "mktree", "--missing"],
+        {
+          input: entries.join("\n") + "\n",
+          maxBuffer: MiB,
+          timeout: 10000,
+        },
+      )
+        .toString()
+        .trim();
+    const regular = Buffer.from("source bytes\n"),
+      executable = Buffer.from("#!/bin/sh\nexit 0\n"),
+      link = Buffer.from("nested/readme");
+    await NodeFSP.writeFile(NodePath.join(source, "nested/readme"), regular, { mode: 0o644 });
+    await NodeFSP.writeFile(NodePath.join(source, "run"), executable, { mode: 0o755 });
+    await NodeFSP.symlink(link.toString(), NodePath.join(source, "alias"));
+    const gitlinks = [
+      {
+        path: "modules/distilled",
+        mode: "160000",
+        oid: "e02e9d405b8848909f4f746b61b12a663f631c7c",
+      },
+      {
+        path: "modules/floci",
+        mode: "160000",
+        oid: "493909133db04153348eabc503f4e30cf0033d96",
+      },
+    ];
+    const nested = treeFor([`100644 blob ${blob(regular)}\treadme`]),
+      modules = treeFor(
+        gitlinks.map((file) => `160000 commit ${file.oid}\t${NodePath.basename(file.path)}`),
+      );
+    const blobEntries = [
+      `040000 tree ${nested}\tnested`,
+      `100755 blob ${blob(executable)}\trun`,
+      `120000 blob ${blob(link)}\talias`,
+    ];
+    const tree = treeFor([...blobEntries, `040000 tree ${modules}\tmodules`]),
+      legacyTree = treeFor(blobEntries),
+      commit = "a".repeat(40),
+      blobs = [
+        { path: "nested/readme", mode: "100644", sha256: sha(regular) },
+        { path: "run", mode: "100755", sha256: sha(executable) },
+        { path: "alias", mode: "120000", sha256: sha(link) },
+      ];
+    NodeAssert.equal(git("cat-file", "-t", tree), "tree");
+    const manifest = {
+      schema: "jones.workspace-lifecycle-dev.source-files/v2",
+      commit,
+      tree,
+      files: [...blobs, ...gitlinks],
+    };
+    const verify = async (value, expectedTree = tree) => {
+      const bytes = Buffer.from(JSON.stringify(value));
+      await NodeFSP.writeFile(manifestPath, bytes);
+      return verifyExport(source, manifestPath, sha(bytes), commit, expectedTree);
+    };
+    await NodeAssert.rejects(
+      verify({
+        ...manifest,
+        schema: "jones.workspace-lifecycle-dev.source-files/v1",
+        files: blobs,
+      }),
+    );
+    const accepted = await verify(manifest);
+    NodeAssert.equal(accepted.tree, tree);
+    NodeAssert.equal(accepted.bytes, regular.length + executable.length + link.length);
+    NodeAssert.equal(accepted.files, 5);
+    await verify(
+      {
+        ...manifest,
+        schema: "jones.workspace-lifecycle-dev.source-files/v1",
+        tree: legacyTree,
+        files: blobs,
+      },
+      legacyTree,
+    );
+    await NodeFSP.mkdir(NodePath.join(source, "modules/distilled"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await verify(manifest);
+    const bad = [
+      (v) => {
+        v.schema = "jones.workspace-lifecycle-dev.source-files/v1";
+      },
+      (v) => {
+        v.files[3].oid = "0".repeat(39);
+      },
+      (v) => {
+        v.files[3].oid = "G".repeat(40);
+      },
+      (v) => {
+        v.files[3].oid = "f".repeat(40);
+      },
+      (v) => {
+        v.files[3].sha256 = "0".repeat(64);
+      },
+      (v) => {
+        v.files[3].path = "../outside";
+      },
+      (v) => {
+        v.files[3].path = "/absolute";
+      },
+      (v) => {
+        v.files[3].path = "modules//distilled";
+      },
+      (v) => {
+        v.files[3].mode = "040000";
+      },
+      (v) => {
+        v.files.push({ ...v.files[3] });
+      },
+      (v) => {
+        v.files.push({ path: "modules/distilled/hidden", mode: "100644", sha256: sha(regular) });
+      },
+      (v) => {
+        v.files.unshift({ path: "modules", mode: "100644", sha256: sha(regular) });
+      },
+      (v) => {
+        v.files[0].sha256 = "0".repeat(64);
+      },
+      (v) => {
+        v.files[0].mode = "100755";
+      },
+      (v) => {
+        v.files[0].mode = "120000";
+      },
+      (v) => {
+        v.files[0].oid = gitlinks[0].oid;
+      },
+      (v) => {
+        v.files = [];
+      },
+    ];
+    for (const mutate of bad) {
+      const value = structuredClone(manifest);
+      mutate(value);
+      await NodeAssert.rejects(verify(value));
+    }
+    await NodeFSP.writeFile(NodePath.join(source, "modules/distilled/hidden"), regular);
+    await NodeAssert.rejects(verify(manifest));
+    await NodeFSP.rm(NodePath.join(source, "modules/distilled"), { recursive: true });
+    await NodeFSP.writeFile(NodePath.join(source, "modules/distilled"), regular);
+    await NodeAssert.rejects(verify(manifest));
+    await NodeFSP.unlink(NodePath.join(source, "modules/distilled"));
+    await NodeFSP.symlink("../nested", NodePath.join(source, "modules/distilled"));
+    await NodeAssert.rejects(verify(manifest));
+    await NodeFSP.unlink(NodePath.join(source, "modules/distilled"));
+    await NodeFSP.rmdir(NodePath.join(source, "modules"));
+    await NodeFSP.symlink("nested", NodePath.join(source, "modules"));
+    await NodeAssert.rejects(verify(manifest));
+    const handle = await NodeFSP.open(manifestPath, "w");
+    try {
+      await handle.truncate(8 * MiB + 1);
+    } finally {
+      await handle.close();
+    }
+    await NodeAssert.rejects(verifyExport(source, manifestPath, "0".repeat(64), commit, tree));
+    console.log(
+      JSON.stringify({
+        schema: "jones.workspace-lifecycle-dev.source-export-fixtures/v1",
+        outcome: "passed",
+        gitTreeOracle: tree,
+        acceptedSchemas: 2,
+        rejectedManifests: bad.length,
+        rejectedFilesystemMismatches: 4,
+        execution: "synthetic-only",
+      }),
+    );
+  } finally {
+    await NodeFSP.rm(root, { recursive: true });
+    NodeAssert.equal(await exists(root), false);
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
+  if (args.length === 1 && args[0] === "--test-source-exports") {
+    await testSourceExports();
+    return;
+  }
   if (args.length === 1 && args[0] === "--test-native-bindings") {
     await testNativeBindings();
     return;
@@ -2509,7 +2761,10 @@ async function main() {
 }
 if (process.argv[1] === NodeURL.fileURLToPath(import.meta.url))
   await main().catch((error) => {
-    if (process.argv.length === 3 && process.argv[2] === "--test-native-bindings") {
+    if (
+      process.argv.length === 3 &&
+      ["--test-native-bindings", "--test-source-exports"].includes(process.argv[2])
+    ) {
       console.error(error);
       process.exitCode = 1;
       return;
