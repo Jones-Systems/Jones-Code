@@ -2369,6 +2369,7 @@
     "apps/desktop/src/jones/updates/recoveryPreflight.ts": "jones-owned",
     "apps/desktop/src/jones/updates/stagingAdmission.test.ts": "jones-owned",
     "apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx": "jones-owned",
+    "apps/server/src/jones/updates/operations/cleanupReview.test.ts": "jones-owned",
     "apps/server/src/jones/updates/operations/ledger.test.ts": "jones-owned",
     "apps/server/src/jones/updates/operations/ledger.ts": "jones-owned",
     "apps/server/src/jones/updates/operations/operations.test.ts": "jones-owned",
