@@ -401,6 +401,13 @@ function milestoneController() {
   };
 }
 
+// Every resource read also requests this worker's own pid, so a synthetic child that shared
+// it would look live after retirement. Skip the worker pid within the synthetic range.
+function syntheticChildPid(ordinal: number, workerPid = process.pid) {
+  const pid = 10_000 + ordinal;
+  return pid >= workerPid ? pid + 1 : pid;
+}
+
 function fixture(holdReplacement = false, startupFailure?: Error) {
   const clock = milestoneController();
   let firstFailure: { cause: unknown } | undefined;
@@ -450,7 +457,7 @@ function fixture(holdReplacement = false, startupFailure?: Error) {
         build: bootstrap.build,
       });
       expect(bootstrap.authorityId).toBe("qualification");
-      const pid = 10_000 + children.length;
+      const pid = syntheticChildPid(children.length);
       starts++;
       await clock.edge({ kind: "startup", stage: "entered", pid, bootstrap, command: _command });
       if (startupFailure) throw startupFailure;
@@ -822,6 +829,18 @@ it.each([
     }
   },
 );
+
+it("never gives a synthetic child the worker's own pid", () => {
+  expect([0, 1, 2, 3].map((ordinal) => syntheticChildPid(ordinal, 10_001))).toEqual([
+    10_000, 10_002, 10_003, 10_004,
+  ]);
+  expect([0, 1, 2].map((ordinal) => syntheticChildPid(ordinal, 4_000))).toEqual([
+    10_001, 10_002, 10_003,
+  ]);
+  expect([0, 1, 2].map((ordinal) => syntheticChildPid(ordinal, 99_999))).toEqual([
+    10_000, 10_001, 10_002,
+  ]);
+});
 
 it("observes startup rejection before the replacement-pool milestone without advancing time", async () => {
   const startupFailure = new Error("controlled startup rejection");
