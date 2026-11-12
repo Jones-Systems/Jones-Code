@@ -28,6 +28,7 @@ import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 
 import {
   increment,
@@ -270,89 +271,138 @@ export const layerExecutor: Layer.Layer<
               );
           case "provider-turn.interrupt": {
             const request = effect.request;
-            // Jones: a failed interrupt of an idle adapter's turn still settles that turn's run.
-            const settleIdleRun =
-              request.subagent !== undefined
-                ? Effect.void
-                : settleRunOfIdleTurn({
-                    session: providerSessions.get(request.providerSessionId, {
-                      touchActivity: false,
-                    }),
-                    providerTurnId: request.providerTurnId,
-                    settleRun: Effect.suspend(() =>
-                      threads.dispatch({
-                        type: "thread.background-work.settle",
-                        commandId: CommandId.make(`${effect.id}:idle-run-settled`),
-                        threadId: effect.threadId,
-                        providerThreadId: request.providerThreadId,
-                        providerTurnId: request.providerTurnId,
-                        runOnly: true,
-                      }),
-                    ),
-                  }).pipe(Effect.ignore);
-            return providerTurnControl
-              .interrupt({
-                threadId: effect.threadId,
-                providerSessionId: request.providerSessionId,
-                providerThreadId: request.providerThreadId,
-                providerTurnId: request.providerTurnId,
-                ...(request.subagent === undefined
-                  ? {}
-                  : {
-                      subagent: {
-                        ...request.subagent,
-                        requestedAt: DateTime.makeUnsafe(effect.createdAt),
-                      },
-                    }),
-              })
-              .pipe(
-                Effect.tapError((cause) =>
-                  request.subagent === undefined
-                    ? Effect.void
-                    : Effect.logWarning("orchestration-v2.subagent-stop-failed", {
-                        effectId: effect.id,
-                        cause,
-                      }),
-                ),
-                Effect.catch((cause) =>
+            return commandReceipts.getByCommandId(effect.commandId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: request.type,
+                    cause,
+                  }),
+              ),
+              Effect.flatMap((receipt) => {
+                if (
                   request.subagent === undefined &&
-                  findProviderControlOutcomeUnknown(cause) === undefined &&
-                  isNonRetryableProviderTurnControlFailure(
-                    request.type,
-                    Cause.pretty(Cause.fail(cause)),
-                  )
+                  Option.isSome(receipt) &&
+                  receipt.value.commandType === "thread.metadata.update"
+                ) {
+                  return Effect.gen(function* () {
+                    const controlScope = yield* Scope.Scope;
+                    const live = yield* providerSessions.get(request.providerSessionId, {
+                      touchActivity: false,
+                      controlScope,
+                    });
+                    if (Option.isNone(live)) return;
+                    yield* providerTurnControl.interrupt({
+                      threadId: effect.threadId,
+                      providerSessionId: request.providerSessionId,
+                      providerThreadId: request.providerThreadId,
+                      providerTurnId: request.providerTurnId,
+                    });
+                    yield* threads.dispatch({
+                      type: "thread.background-work.settle",
+                      commandId: CommandId.make(`${effect.id}:background-work-settled`),
+                      threadId: effect.threadId,
+                      providerThreadId: request.providerThreadId,
+                      providerTurnId: request.providerTurnId,
+                    });
+                  }).pipe(
+                    Effect.scoped,
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationEffectExecutionError({
+                          effectId: effect.id,
+                          effectType: request.type,
+                          cause,
+                        }),
+                    ),
+                  );
+                }
+                // Jones: a failed interrupt of an idle adapter's turn still settles that turn's run.
+                const settleIdleRun =
+                  request.subagent !== undefined
                     ? Effect.void
-                    : settleIdleRun.pipe(Effect.andThen(Effect.fail(cause))),
-                ),
-                Effect.andThen((outcome) =>
-                  request.subagent !== undefined && outcome === undefined
-                    ? Effect.void
-                    : threads.dispatch({
-                        type: "thread.background-work.settle",
-                        commandId: CommandId.make(`${effect.id}:background-work-settled`),
-                        ...(request.subagent === undefined || outcome === undefined
-                          ? {}
-                          : {
-                              subagent: {
-                                id: request.subagent.id,
-                                stoppedAt: DateTime.makeUnsafe(effect.createdAt),
-                                outcome,
-                              },
-                            }),
-                        threadId: effect.threadId,
-                        providerThreadId: request.providerThreadId,
+                    : settleRunOfIdleTurn({
+                        session: providerSessions.get(request.providerSessionId, {
+                          touchActivity: false,
+                        }),
                         providerTurnId: request.providerTurnId,
-                      }),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: request.type,
-                      cause,
-                    }),
-                ),
-              );
+                        settleRun: Effect.suspend(() =>
+                          threads.dispatch({
+                            type: "thread.background-work.settle",
+                            commandId: CommandId.make(`${effect.id}:idle-run-settled`),
+                            threadId: effect.threadId,
+                            providerThreadId: request.providerThreadId,
+                            providerTurnId: request.providerTurnId,
+                            runOnly: true,
+                          }),
+                        ),
+                      }).pipe(Effect.ignore);
+                return providerTurnControl
+                  .interrupt({
+                    threadId: effect.threadId,
+                    providerSessionId: request.providerSessionId,
+                    providerThreadId: request.providerThreadId,
+                    providerTurnId: request.providerTurnId,
+                    ...(request.subagent === undefined
+                      ? {}
+                      : {
+                          subagent: {
+                            ...request.subagent,
+                            requestedAt: DateTime.makeUnsafe(effect.createdAt),
+                          },
+                        }),
+                  })
+                  .pipe(
+                    Effect.tapError((cause) =>
+                      request.subagent === undefined
+                        ? Effect.void
+                        : Effect.logWarning("orchestration-v2.subagent-stop-failed", {
+                            effectId: effect.id,
+                            cause,
+                          }),
+                    ),
+                    Effect.catch((cause) =>
+                      request.subagent === undefined &&
+                      findProviderControlOutcomeUnknown(cause) === undefined &&
+                      isNonRetryableProviderTurnControlFailure(
+                        request.type,
+                        Cause.pretty(Cause.fail(cause)),
+                      )
+                        ? Effect.void
+                        : settleIdleRun.pipe(Effect.andThen(Effect.fail(cause))),
+                    ),
+                    Effect.andThen((outcome) =>
+                      request.subagent !== undefined && outcome === undefined
+                        ? Effect.void
+                        : threads.dispatch({
+                            type: "thread.background-work.settle",
+                            commandId: CommandId.make(`${effect.id}:background-work-settled`),
+                            ...(request.subagent === undefined || outcome === undefined
+                              ? {}
+                              : {
+                                  subagent: {
+                                    id: request.subagent.id,
+                                    stoppedAt: DateTime.makeUnsafe(effect.createdAt),
+                                    outcome,
+                                  },
+                                }),
+                            threadId: effect.threadId,
+                            providerThreadId: request.providerThreadId,
+                            providerTurnId: request.providerTurnId,
+                          }),
+                    ),
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationEffectExecutionError({
+                          effectId: effect.id,
+                          effectType: request.type,
+                          cause,
+                        }),
+                    ),
+                  );
+              }),
+            );
           }
           case "provider-turn.steer-batch":
           case "provider-turn.steer": {

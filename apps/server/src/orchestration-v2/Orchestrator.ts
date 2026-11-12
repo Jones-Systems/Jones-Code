@@ -4452,6 +4452,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             },
             events,
             effects,
+            { requireLiveSession: true },
           );
         }
       }
@@ -12021,6 +12022,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "run.interrupt" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    options?: { readonly requireLiveSession: true },
   ) {
     const projection = yield* loadProjectionForCommand(
       command,
@@ -12095,6 +12097,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Run ${command.runId} is not interruptible.`,
       });
+    }
+    if (options?.requireLiveSession === true) {
+      if (
+        run.status !== "running" ||
+        providerTurn?.status !== "running" ||
+        providerThread.providerSessionId === null
+      )
+        return;
     }
     const now = yield* DateTime.now;
     const completionMessage = projection.messages.find(
@@ -12363,6 +12373,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ),
           );
     if (Option.isNone(sessionOption)) {
+      if (options?.requireLiveSession === true) return;
       yield* emitEvent({
         type: "turn-item.updated",
         threadId: command.threadId,

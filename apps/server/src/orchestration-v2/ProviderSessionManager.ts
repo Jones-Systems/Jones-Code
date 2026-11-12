@@ -238,7 +238,10 @@ export interface ProviderSessionManagerV2Shape {
   >;
   readonly get: (
     providerSessionId: ProviderSessionId,
-    options?: { readonly touchActivity: boolean },
+    options?: {
+      readonly touchActivity: boolean;
+      readonly controlScope?: Scope.Scope;
+    },
   ) => Effect.Effect<
     Option.Option<ProviderAdapter.ProviderAdapterV2SessionRuntime>,
     ProviderSessionManagerV2Error
@@ -4200,6 +4203,15 @@ export const layerWithOptions = (
             const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
             if (entry === undefined) {
               return Option.none<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
+            }
+            if (options?.controlScope !== undefined) {
+              // Keep confirmed handoff control and settlement ahead of session release.
+              yield* Effect.acquireRelease(entry.requestEventPermit.take(1), () =>
+                entry.requestEventPermit.release(1),
+              ).pipe(Scope.provide(options.controlScope));
+              const current = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
+              if (current?.runtime !== entry.runtime)
+                return Option.none<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
             }
             if (options?.touchActivity !== false) yield* touchActivity(providerSessionId);
             return Option.some(entry.exposedRuntime);

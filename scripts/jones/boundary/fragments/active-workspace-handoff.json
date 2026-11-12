@@ -1,7 +1,7 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "active-workspace-handoff",
-  "jonesOwnedPaths": ["apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts"],
+  "jonesOwnedPaths": [],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": []
