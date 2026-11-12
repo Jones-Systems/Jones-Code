@@ -210,6 +210,8 @@ export function runOrchestratorV2ProviderReplayScenario<
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
     >;
+    readonly continuationRequestsLayer?: Layer.Layer<never>;
+    readonly startAdmissionLayer?: Layer.Layer<ControlAdmission.ControlAdmission>;
     readonly runEffectWorker?: boolean;
     readonly configureMcp?: boolean;
     readonly onSessionDetached?: (
@@ -257,6 +259,8 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
     >;
+    readonly continuationRequestsLayer?: Layer.Layer<never>;
+    readonly startAdmissionLayer?: Layer.Layer<ControlAdmission.ControlAdmission>;
     readonly runEffectWorker?: boolean;
     readonly configureMcp?: boolean;
     readonly onSessionDetached?: (
@@ -340,6 +344,8 @@ export function layerWithRegistryAndServices<Error>(
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
     >;
+    readonly continuationRequestsLayer?: Layer.Layer<never>;
+    readonly startAdmissionLayer?: Layer.Layer<ControlAdmission.ControlAdmission>;
     readonly runEffectWorker?: boolean;
     readonly configureMcp?: boolean;
     readonly beforeEffectExecution?: (
@@ -358,6 +364,7 @@ export function layerWithRegistryAndServices<Error>(
   | AuthSessions.AuthSessionRepository
   | ProjectionStore.ProjectionStoreV2
   | ProviderSwitchService.ProviderSwitchServiceV2
+  | ProviderTurnStartService.ProviderTurnStartServiceV2
   | ServerSettings.ServerSettingsService
   | SqlClient.SqlClient
   | ThreadCommandExecutor.ThreadCommandExecutor
@@ -384,7 +391,8 @@ export function layerWithRegistryAndServices<Error>(
   const layerDatabase = options.databaseLayer ?? SqlitePersistence.layerMemory;
   // Share one continuation queue across adapters, orchestrator, and worker through layer memoization.
   const layerContinuationRequests =
-    options.runContinuationWorker === true ? ProviderContinuationRequests.layer : Layer.empty;
+    options.continuationRequestsLayer ??
+    (options.runContinuationWorker === true ? ProviderContinuationRequests.layer : Layer.empty);
   const layerProvidedRegistry = registryLayer.pipe(
     Layer.provide(Layer.merge(layerContinuationRequests, McpProviderSessions.layer)),
   );
@@ -519,7 +527,12 @@ export function layerWithRegistryAndServices<Error>(
   );
   const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
     Layer.provide(layerProviderSwitchServiceProvided),
-    Layer.provide(Layer.merge(layerRestartPreparationProvided, ControlAdmission.layer)),
+    Layer.provide(
+      Layer.merge(
+        layerRestartPreparationProvided,
+        options.startAdmissionLayer ?? ControlAdmission.layer,
+      ),
+    ),
     Layer.provide(
       Layer.mergeAll(
         layerContextHandoffServiceProvided,
@@ -695,6 +708,7 @@ export function layerWithRegistryAndServices<Error>(
     layerServerSettings,
     layerThreadManagementProvided,
     layerProviderSwitchServiceProvided,
+    layerProviderTurnStartServiceProvided,
     ThreadCommandExecutor.layer,
     layerOrchestratorProvided,
     layerProviderSessionManagerProvided,

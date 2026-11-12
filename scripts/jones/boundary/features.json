@@ -3736,6 +3736,23 @@
         "apps/server/src/jones/updates/JonesUpdater.test.ts"
       ],
       "scope": "Reservation and launch remain under the existing job lock; immutable owner-controlled released evidence bypasses historical SQLite locks. Coalesced cleanup demand bounds failure retries, follows underlying worker settlement, and quiesces for expected retention and standing holds. History files are retained and still scanned linearly. Scale, race, cancellation and refusal cases are synthetic source coverage, not measured VPS latency."
+    },
+    {
+      "id": "start-refusal-retention",
+      "tests": [
+        "apps/server/src/jones/startRefusal/Store.test.ts",
+        "apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts",
+        "apps/server/src/jones/startRefusal/Probe.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+        "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
+      ],
+      "scope": "ETS-B v4 retains complete positively certified delegated-result refusals in sparse Jones attempt and successor-hold tables. Atomic EventSink hooks bind attempt eligibility and closed refusal reasons to settlement, enforce admission, reserve successors, void superseded holds and arm only source-proved Codex acceptance. An irreversible prefix crossing covers repeated outbox execution of an attempt. All five offer callers and restart recovery share the held/armed guard. Fresh accepted starts supply single-use retry eligibility; the read-only continuity/control probe and authoritative start prefix preserve existing fences. Silent gate clearance stays a visible manual hold. Small shared service and runtime/harness edits preserve the upstream transaction/lock owners; the four-site assertions in ProviderTurnStartService.test.ts are a harness-bound test exception. No wire/adapters/upstream schema or history-policy changes."
     }
   ]
 }

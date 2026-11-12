@@ -1,3 +1,6 @@
+import * as StartRefusal from "../jones/startRefusal/Store.ts";
+import * as StartRefusalProbe from "../jones/startRefusal/Probe.ts";
+import { acceptedStartWitness, type HoldReservation } from "../jones/startRefusal/model.ts";
 import { readAutomaticQueueHolds } from "../jones/orchestration/QueueHoldProvenance.ts";
 import { EventId } from "@t3tools/contracts";
 import { queuedToolBoundaryTarget } from "./QueuedToolBoundary.ts";
@@ -1485,6 +1488,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const providerAdapters = yield* ProviderAdapterRegistryV2;
+  const startRefusals = yield* Effect.serviceOption(StartRefusal.StartRefusals);
+  const startRefusalProbe = yield* Effect.serviceOption(StartRefusalProbe.Probe);
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
   const plannedContinuity = yield* Effect.serviceOption(
@@ -1837,6 +1842,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       options: {
         readonly updateDelegatedCompletionOnly?: boolean;
         readonly queueHold?: QueueHoldIntent;
+        readonly startRefusalHold?: HoldReservation;
       } = {},
     ) {
       const withIds = yield* Effect.forEach(events, (event) => makeSystemEvent(event));
@@ -1923,6 +1929,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         delivery.taskIds.length === 0 ||
         controls.thread.archivedAt !== null ||
         controls.thread.deletedAt !== null
+      )
+        return;
+      if (
+        Option.isSome(startRefusals) &&
+        (yield* startRefusals.value.blocked({
+          threadId,
+          parentRunId,
+          generation: delivery.generation,
+          messageId: delivery.messageId,
+        }))
       )
         return;
       const messages = yield* projectionStore.getThreadRecords(threadId, ["messages"], {
@@ -15359,6 +15375,48 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return;
     }
 
+    if (Option.isSome(startRefusals) && (yield* startRefusals.value.qualifies(threadId, runId))) {
+      const successor = {
+        generation: cohort.nextGeneration,
+        messageId: yield* idAllocator.allocate.message({
+          threadId,
+          ordinal: (yield* projectionStore.getMessageCount(threadId)) + 1,
+        }),
+        taskIds: delivery.taskIds,
+      };
+      yield* writeSystemEvents(
+        [
+          {
+            type: "run.updated",
+            threadId,
+            runId: parentRun.id,
+            providerInstanceId: parentRun.providerInstanceId,
+            occurredAt: yield* DateTime.now,
+            payload: {
+              ...parentRun,
+              delegatedCompletion: {
+                ...cohort,
+                nextGeneration: successor.generation + 1,
+                delivery: successor,
+              },
+            },
+          },
+        ],
+        [],
+        {
+          updateDelegatedCompletionOnly: true,
+          startRefusalHold: {
+            threadId,
+            parentRunId: parentRun.id,
+            refusedRunId: runId,
+            source: delivery,
+            successor,
+          },
+        },
+      );
+      return;
+    }
+
     const now = yield* DateTime.now;
     const nextTaskStates = new Map<
       OrchestrationV2Subagent["id"],
@@ -17870,6 +17928,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Stream.runForEach(handleQueuedToolBoundary),
       Effect.forkDetach,
     );
+  if (Option.isSome(startRefusals) && Option.isSome(startRefusalProbe)) {
+    const refusals = startRefusals.value;
+    const probe = startRefusalProbe.value;
+    yield* eventSink
+      .stream({ afterSequence: terminalEventsAfterSequence, eventType: "provider-turn.updated" })
+      .pipe(
+        Stream.filter((stored) => acceptedStartWitness(stored) !== undefined),
+        Stream.runForEach((stored) =>
+          threadDispatch
+            .withLock(
+              stored.event.threadId,
+              Effect.gen(function* () {
+                for (const hold of yield* refusals.armedBy(stored)) {
+                  const open = yield* probe.open(hold.threadId);
+                  if (yield* refusals.finishArming(hold, open))
+                    yield* offerDelegatedCompletionDelivery(hold.threadId, hold.parentRunId);
+                }
+              }),
+            )
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Refused delivery remains held", {
+                  threadId: stored.event.threadId,
+                  cause,
+                }),
+              ),
+            ),
+        ),
+        Effect.forkScoped,
+      );
+  }
   // Queue promotion can wait on a provider or a thread lock. Subscribe to run
   // updates before buffering so that wait never retains unrelated tool bodies.
   yield* eventSink

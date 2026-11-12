@@ -2573,6 +2573,7 @@
     "scripts/jones/boundary/fragments/shell-publication-batching.json": "jones-owned",
     "scripts/jones/boundary/fragments/sqlite-checkpoint-lifecycle.json": "jones-owned",
     "scripts/jones/boundary/fragments/staged-selection-recovery.json": "jones-owned",
+    "scripts/jones/boundary/fragments/start-refusal-retention.json": "jones-owned",
     "scripts/jones/boundary/fragments/startup-access-logging.json": "jones-owned",
     "scripts/jones/boundary/fragments/task-continuation.json": "jones-owned",
     "scripts/jones/boundary/fragments/terminal-history-urgent-flush.json": "jones-owned",
