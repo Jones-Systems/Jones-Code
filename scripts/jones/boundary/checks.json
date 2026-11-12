@@ -2,6 +2,26 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-workspace-lifecycle-dev-proof",
+      "tests": [
+        "apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
+        "apps/server/src/provider/Drivers/ClaudeHome.test.ts",
+        "apps/server/src/provider/Drivers/ClaudeDriver.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts"
+      ],
+      "commands": [
+        "node apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs --test-native-bindings",
+        "vp test run apps/server/src/provider/Drivers/ClaudeHome.test.ts apps/server/src/provider/Drivers/ClaudeDriver.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/provider/Drivers/ClaudeHome.ts apps/server/src/provider/Drivers/ClaudeHome.test.ts apps/server/src/provider/Drivers/ClaudeDriver.ts apps/server/src/provider/Drivers/ClaudeDriver.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+        "node --check apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
+        "node --check apps/server/integration/jones-e2e/workspaceLifecycleDev.entrypoint.ts",
+        "vp lint apps/server/integration/jones-e2e/workspaceLifecycleDev.entrypoint.ts apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
       "id": "jones-direct-producer-completion",
       "tests": [
         "scripts/jones/direct-producers/completion.node-test.mjs",
