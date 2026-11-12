@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - preinstall code uses Node built-ins only.
 import { spawn } from "node:child_process";
 import { cpus } from "node:os";
+import NodeTimers from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const admissionContract = "jones.local-mac-setup-admission/v1";
@@ -28,13 +29,24 @@ export function cpuEvidence(before: Cpu[], after: Cpu[]) {
   return { usedPercent: ((total - idle) / total) * 100, oneCorePercent: 100 / before.length };
 }
 export function parseVmStat(output: string) {
-  const page = [...output.matchAll(/^Mach Virtual Memory Statistics: \(page size of ([0-9]+) bytes\)\s*$/gm)];
-  if (page.length !== 1 || output.split("\n").filter((line) => line.startsWith("Mach Virtual Memory Statistics:")).length !== 1) throw new Error("Missing/duplicate vm_stat page size");
+  const page = [
+    ...output.matchAll(/^Mach Virtual Memory Statistics: \(page size of ([0-9]+) bytes\)\s*$/gm),
+  ];
+  if (
+    page.length !== 1 ||
+    output.split("\n").filter((line) => line.startsWith("Mach Virtual Memory Statistics:"))
+      .length !== 1
+  )
+    throw new Error("Missing/duplicate vm_stat page size");
   const pageSize = counter(Number(page[0]![1]));
   if (!pageSize) throw new Error("Invalid page size");
   function read(name: string) {
     const matches = [...output.matchAll(new RegExp(`^${name}:\\s+([0-9]+)\\.\\s*$`, "gm"))];
-    if (matches.length !== 1 || output.split("\n").filter((line) => line.startsWith(`${name}:`)).length !== 1) throw new Error(`Missing/duplicate vm_stat ${name}`);
+    if (
+      matches.length !== 1 ||
+      output.split("\n").filter((line) => line.startsWith(`${name}:`)).length !== 1
+    )
+      throw new Error(`Missing/duplicate vm_stat ${name}`);
     return counter(Number(matches[0]![1]));
   }
   return { pageSize, swapins: read("Swapins"), swapouts: read("Swapouts") };
@@ -66,26 +78,35 @@ export function utilityReader(spawnUtility: typeof spawn = spawn) {
       });
       let output = "";
       let failure: Error | undefined;
-      let closureTimer: ReturnType<typeof setTimeout> | undefined;
+      let closureTimer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
       const stop = (error: Error) => {
         failure ??= error;
         if (closureTimer) return;
-        child.kill("SIGKILL");
-        closureTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch (error) {
+          failure = error instanceof Error ? error : new Error(String(error));
+        }
+        closureTimer = NodeTimers.setTimeout(() => {
           cleanup();
           reject(new UnknownSamplerClosure("Sampler utility output closure unknown"));
         }, 250);
       };
       const abort = () => stop(new Error("Sampler aborted"));
-      const timer = setTimeout(() => stop(new Error("Sampler utility timeout")), 2_000);
+      const timer = NodeTimers.setTimeout(() => stop(new Error("Sampler utility timeout")), 2_000);
       const cleanup = () => {
-        clearTimeout(timer);
-        clearTimeout(closureTimer);
+        NodeTimers.clearTimeout(timer);
+        NodeTimers.clearTimeout(closureTimer);
         signal.removeEventListener("abort", abort);
       };
       signal.addEventListener("abort", abort, { once: true });
-      child.on("error", (error) => { failure ??= error; });
-      for (const [stream, stdout] of [[child.stdout, true], [child.stderr, false]] as const) {
+      child.on("error", (error) => {
+        failure ??= error;
+      });
+      for (const [stream, stdout] of [
+        [child.stdout, true],
+        [child.stderr, false],
+      ] as const) {
         stream?.on("data", (chunk: Buffer) => {
           outputBytes += chunk.length;
           if (outputBytes > 65_536) stop(new Error("Sampler output exceeds 64 KiB"));
@@ -121,7 +142,7 @@ export function createLocalMacAdmission(dependencies?: SamplerDependencies) {
       const controller = new AbortController();
       const abort = () => controller.abort();
       signal.addEventListener("abort", abort, { once: true });
-      const deadline = setTimeout(abort, 5_000);
+      const deadline = NodeTimers.setTimeout(abort, 5_000);
       const started = d.now();
       const utility = d.utility ?? utilityReader();
       try {
@@ -133,19 +154,30 @@ export function createLocalMacAdmission(dependencies?: SamplerDependencies) {
         const cpu = cpuEvidence(firstCpu, secondCpu);
         const secondVm = await utility("/usr/bin/vm_stat", [], controller.signal);
         const secondAt = d.now();
-        const pressure = await utility("/usr/sbin/sysctl", ["-n", "kern.memorystatus_vm_pressure_level"], controller.signal);
+        const pressure = await utility(
+          "/usr/sbin/sysctl",
+          ["-n", "kern.memorystatus_vm_pressure_level"],
+          controller.signal,
+        );
         const memory = memoryEvidence(firstVm, secondVm, secondAt - firstAt, pressure);
         const finished = d.now();
         controller.signal.throwIfAborted();
-        if (!Number.isFinite(finished - started) || finished - started <= 0 || finished - started > 5_000)
+        if (
+          !Number.isFinite(finished - started) ||
+          finished - started <= 0 ||
+          finished - started > 5_000
+        )
           throw new Error("Sampler deadline/interval invalid");
-        if (cpu.usedPercent >= 85 || (memory.pressure === 4 && memory.swapBytesPerSecond > 10_485_760))
+        if (
+          cpu.usedPercent >= 85 ||
+          (memory.pressure === 4 && memory.swapBytesPerSecond > 10_485_760)
+        )
           throw new Error("Local Mac setup resource admission held");
         const receipt = Object.freeze({ contract: admissionContract, cpu, memory });
         receipts.set(receipt, { attempt, finished });
         return receipt;
       } finally {
-        clearTimeout(deadline);
+        NodeTimers.clearTimeout(deadline);
         signal.removeEventListener("abort", abort);
       }
     },
@@ -163,11 +195,13 @@ export type LocalMacAdmission = ReturnType<typeof createLocalMacAdmission>;
 
 export function producerEnvironment(kind: "install" | "warm", environment = process.env) {
   const env = { ...environment };
-  const controls = kind === "install"
-    ? { PNPM_CONFIG_CHILD_CONCURRENCY: "1" }
-    : { ROLLDOWN_WORKER_THREADS: "1", ROLLDOWN_MAX_BLOCKING_THREADS: "1" };
+  const controls =
+    kind === "install"
+      ? { PNPM_CONFIG_CHILD_CONCURRENCY: "1" }
+      : { ROLLDOWN_WORKER_THREADS: "1", ROLLDOWN_MAX_BLOCKING_THREADS: "1" };
   for (const key of Object.keys(env)) {
-    if (Object.keys(controls).some((control) => control.toLowerCase() === key.toLowerCase())) delete env[key];
+    if (Object.keys(controls).some((control) => control.toLowerCase() === key.toLowerCase()))
+      delete env[key];
   }
   return { ...env, ...controls };
 }

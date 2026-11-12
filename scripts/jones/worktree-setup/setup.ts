@@ -230,7 +230,9 @@ export async function runSetupWorktree(
     NodeFS.existsSync(unfinalizedMarker) &&
     NodeFS.readFileSync(unfinalizedMarker, "utf8") === "sampler_closure_unknown\n"
   ) {
-    throw new UnknownSamplerClosure("Prior sampler closure is unresolved; setup cannot be replayed.");
+    throw new UnknownSamplerClosure(
+      "Prior sampler closure is unresolved; setup cannot be replayed.",
+    );
   }
   NodeFS.rmSync(doneMarker, { force: true });
   NodeFS.rmSync(failedMarker, { force: true });
@@ -277,8 +279,8 @@ export async function runSetupWorktree(
       return status;
     }
     status = await setupWorktree(args, projectRoot, worktree, {
-      platform: dependencies.platform,
-      admission: dependencies.admission,
+      ...(dependencies.platform === undefined ? {} : { platform: dependencies.platform }),
+      ...(dependencies.admission === undefined ? {} : { admission: dependencies.admission }),
       signal: abortController.signal,
       available: dependencies.available,
       report: dependencies.report,
@@ -339,22 +341,22 @@ export async function runSetupWorktree(
     const result = unknownClosure
       ? { status: "unavailable", reason: "sampler_closure_unknown" }
       : (dependencies.record ?? recordCompletion)(
-      completionObservation({
-        producer: "jones-setup",
-        owner: "jones-setup",
-        worktree,
-        status: outcome,
-        roots: [
-          status === 0 ? doneMarker : failedMarker,
-          ...(args.includes("--install") ? [NodePath.join(worktree, "node_modules")] : []),
-          ...(args.includes("--warm")
-            ? [NodePath.join(worktree, "apps/web/node_modules/.vite")]
-            : []),
-        ],
-        lineage: availableLineage(process.env),
-        omittedEnrichment: ["package_local_output_roots_not_enumerated"],
-      }),
-    );
+          completionObservation({
+            producer: "jones-setup",
+            owner: "jones-setup",
+            worktree,
+            status: outcome,
+            roots: [
+              status === 0 ? doneMarker : failedMarker,
+              ...(args.includes("--install") ? [NodePath.join(worktree, "node_modules")] : []),
+              ...(args.includes("--warm")
+                ? [NodePath.join(worktree, "apps/web/node_modules/.vite")]
+                : []),
+            ],
+            lineage: availableLineage(process.env),
+            omittedEnrichment: ["package_local_output_roots_not_enumerated"],
+          }),
+        );
     if (result.status !== "recorded")
       dependencies.report(
         `Setup completion metadata unavailable: ${result.reason}; outcome=${outcome}.`,
