@@ -1,5 +1,7 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeEvents from "node:events";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -18,7 +20,12 @@ import {
   readPackagedDesktopMetadata,
   validatePackagedDesktopDialog,
 } from "./packaged-desktop-pair.mjs";
-import { assertFixtureProcessesStopped, runOwnedChild } from "./native-startup-fixture.mjs";
+import {
+  FixtureOwnership,
+  assertFixtureProcessesStopped,
+  runOwnedChild,
+} from "./native-startup-fixture.mjs";
+import { NativeFixtureOwnership, withNativeFixtureScratch } from "./native-fixture-support.mjs";
 
 // A standard packed ASAR control, never an executable or a packaged proof.
 function archive(metadata, entryChange = {}) {
@@ -39,8 +46,11 @@ function archive(metadata, entryChange = {}) {
   return Buffer.concat([size, header, body]);
 }
 
-async function fixture(body) {
-  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-desktop-pair-"));
+async function fixture(body, managed = null) {
+  const ownership = managed?.ownership ?? new NativeFixtureOwnership();
+  const root =
+    managed?.root ??
+    (await ownership.temporary(NodePath.join(NodeOS.tmpdir(), "jones-desktop-pair-")));
   await NodeFSP.chmod(root, 0o700);
   try {
     async function app(name, source) {
@@ -79,15 +89,18 @@ async function fixture(body) {
         bundleIdentifier: "com.t3tools.t3code",
       };
     }
-    await body({
+    return await body({
       root,
+      ownership,
       active: await app("Previous", "a"),
       candidate: await app("Candidate", "c"),
     });
   } finally {
     assertFixtureProcessesStopped();
-    await NodeFSP.rm(root, { recursive: true, force: false });
-    await NodeAssert.rejects(NodeFSP.lstat(root), { code: "ENOENT" });
+    if (!managed) {
+      await NodeFSP.rm(root, { recursive: true, force: false });
+      await NodeAssert.rejects(NodeFSP.lstat(root), { code: "ENOENT" });
+    }
   }
 }
 
@@ -289,8 +302,8 @@ NodeTest.test(
   },
 );
 
-async function preparedFixture(body) {
-  await fixture(async ({ root, active, candidate }) => {
+async function preparedFixture(body, managed = null) {
+  return fixture(async ({ root, active, candidate, ownership }) => {
     const home = NodePath.join(root, "home");
     const profile = NodePath.join(root, "profile");
     await NodeFSP.mkdir(home, { mode: 0o700 });
@@ -365,8 +378,9 @@ async function preparedFixture(body) {
     await write(NodePath.join(transaction, "prepare-intent.json"), claim);
     await write(NodePath.join(transaction, "prepare-dispatched.json"), claim);
     const pair = await bindPackagedDesktopPair({ fixtureRoot: root, active, candidate });
-    await body({
+    return body({
       root,
+      ownership,
       pair,
       helper,
       manifest,
@@ -382,7 +396,7 @@ async function preparedFixture(body) {
       write,
       active,
     });
-  });
+  }, managed);
 }
 
 NodeTest.test(
@@ -455,8 +469,8 @@ const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("
 
 // Inert protocol controls test custody decisions and receipt relationships only.
 // They do not claim a native Install, kernel watch, process exit or packaged pass.
-async function refusedFixture(body) {
-  await preparedFixture(async (f) => {
+async function refusedFixture(body, managed = null) {
+  return preparedFixture(async (f) => {
     const { root, current, activation, staged, transaction, claim, write } = f;
     const appIdentity = {
       pid: 123,
@@ -543,7 +557,7 @@ async function refusedFixture(body) {
       },
     };
     await write(NodePath.join(transaction, "journal.json"), journal);
-    await body({
+    return body({
       ...f,
       receipt,
       receiptPath,
@@ -557,7 +571,7 @@ async function refusedFixture(body) {
         readReceipt: async () => JSON.parse(await NodeFSP.readFile(receiptPath)),
       },
     });
-  });
+  }, managed);
 }
 
 NodeTest.test(
@@ -698,6 +712,7 @@ function installDriver(f, fail = null) {
       selection: f.selectionPath,
       stagedHandle: f.staged.handle,
       fault: f.fault,
+      ownership: f.ownership,
       app,
       native,
     },
@@ -789,6 +804,207 @@ NodeTest.test(
         });
         NodeAssert.equal(driver.stopCount(), 0);
       });
+    }
+  },
+);
+
+async function liveInstallControl(root) {
+  const child = NodeChildProcess.spawn(
+    process.execPath,
+    ["-e", "process.send('ready'); setInterval(() => {}, 1000)"],
+    { cwd: root, detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] },
+  );
+  let closed = false;
+  const close = new Promise((resolve) =>
+    child.once("close", (code, signal) => {
+      closed = true;
+      resolve({ code, signal });
+    }),
+  );
+  const stop = () =>
+    !closed && child.exitCode === null && child.signalCode === null && child.kill("SIGTERM");
+  await NodeEvents.once(child, "message");
+  return { child, close, stop, closed: () => closed };
+}
+
+NodeTest.test(
+  "Install custody protects real scratch and FixtureOwnership until close and native settlement",
+  async (context) => {
+    for (const scenario of [
+      "fault-timeout",
+      "helper-timeout",
+      "close-timeout",
+      "pre-install-close-timeout",
+      "settlement-failed",
+      "settlement-incomplete",
+      "bridge-failed",
+      "proved",
+    ]) {
+      let allocated;
+      let app;
+      let helper;
+      let owner;
+      let result;
+      let failure;
+      let stageReached;
+      const stage = new Promise((resolve) => {
+        stageReached = resolve;
+      });
+      context.mock.timers.enable({ apis: ["setTimeout"] });
+      try {
+        const run = withNativeFixtureScratch(async (root, ownership) => {
+          allocated = root;
+          owner = ownership;
+          return refusedFixture(
+            async (f) => {
+              await NodeFSP.writeFile(
+                NodePath.join(root, "custody-marker"),
+                "preserve until settlement",
+              );
+              const setupCustody = ownership.holdCustody(root);
+              app = await liveInstallControl(root);
+              helper = await liveInstallControl(root);
+              f.appIdentity = { ...f.appIdentity, pid: app.child.pid };
+              f.activation.processes[0].pid = app.child.pid;
+              f.prepare.processes[0].pid = app.child.pid;
+              f.receipt.pid = helper.child.pid;
+              f.receipt.intentSha256 = digest(JSON.stringify(f.activation));
+              await f.write(f.intent, f.activation);
+              await f.write(NodePath.join(f.transaction, "activation-request.json"), f.activation);
+              await f.write(NodePath.join(f.transaction, "prepare-request.json"), f.prepare);
+              await f.write(f.receiptPath, f.receipt);
+              await f.write(NodePath.join(f.transaction, "journal.json"), f.journal);
+              const driver = installDriver(f);
+              driver.args.ownership = ownership;
+              driver.args.app = {
+                pid: app.child.pid,
+                requestStop: app.stop,
+                waitForClose: () => {
+                  if (["close-timeout", "pre-install-close-timeout"].includes(scenario)) {
+                    stageReached();
+                    return new Promise(() => {});
+                  }
+                  return app.close;
+                },
+              };
+              if (scenario === "pre-install-close-timeout")
+                driver.args.native.captureApp = async () => {
+                  throw new Error("app capture failed");
+                };
+              if (scenario === "fault-timeout")
+                driver.args.native.waitForFault = () => {
+                  stageReached();
+                  return new Promise(() => {});
+                };
+              const closure = driver.args.native.waitForHelperClosure;
+              driver.args.native.waitForHelperClosure = async (...args) => {
+                if (scenario === "helper-timeout") {
+                  stageReached();
+                  return new Promise(() => {});
+                }
+                helper.stop();
+                await helper.close;
+                NodeAssert.throws(() => process.kill(-helper.child.pid, 0), { code: "ESRCH" });
+                return closure(...args);
+              };
+              const settle = driver.args.native.settleApp;
+              driver.args.native.settleApp = async (...args) => {
+                if (scenario === "settlement-failed") throw new Error("native settlement failed");
+                NodeAssert.equal(app.closed(), true);
+                NodeAssert.equal(helper.closed(), true);
+                NodeAssert.throws(() => process.kill(-app.child.pid, 0), { code: "ESRCH" });
+                const receipt = await settle(...args);
+                return scenario === "settlement-incomplete"
+                  ? { ...receipt, appGroupAbsent: false }
+                  : receipt;
+              };
+              if (scenario === "bridge-failed") {
+                const connect = driver.args.native.connectApp;
+                driver.args.native.connectApp = async (...args) => ({
+                  ...(await connect(...args)),
+                  close: async () => {
+                    throw new Error("bridge close failed");
+                  },
+                });
+              }
+              const observed = observePackagedDesktopInstallRefusal(driver.args);
+              setupCustody.release();
+              return observed;
+            },
+            { root, ownership },
+          );
+        }).then(
+          (value) => {
+            result = value;
+          },
+          (error) => {
+            failure = error;
+          },
+        );
+        if (scenario.endsWith("timeout")) {
+          await Promise.race([stage, run]);
+          context.mock.timers.tick(120000);
+        }
+        await run;
+        context.mock.timers.reset();
+        if (scenario === "proved") {
+          NodeAssert.equal(failure, undefined);
+          NodeAssert.equal(result.settlement.appGroupAbsent, true);
+          NodeAssert.ok(owner instanceof FixtureOwnership);
+          await owner.cleanup();
+          await NodeAssert.rejects(NodeFSP.lstat(allocated), { code: "ENOENT" });
+        } else {
+          NodeAssert.ok(failure, scenario);
+          // This is the outer destructive boundary: the real app/helper can still
+          // be alive, or SIGTERM/close has happened without full settlement.
+          NodeAssert.equal((await NodeFSP.lstat(allocated)).isDirectory(), true, scenario);
+          NodeAssert.equal(failure.preserveScratch, true);
+          NodeAssert.equal(failure.scratchRoot, allocated);
+          NodeAssert.equal(failure.installCustody.retained, true);
+          if (["close-timeout", "pre-install-close-timeout"].includes(scenario)) {
+            NodeAssert.equal(failure.installCustody.appStopRequested, true);
+            NodeAssert.equal(failure.installCustody.appCloseProved, false);
+          }
+          if (scenario === "pre-install-close-timeout") {
+            NodeAssert.equal(failure.installCustody.installAttempted, false);
+            NodeAssert.match(failure.custodyCleanupError.message, /timed out/);
+          }
+          if (["settlement-failed", "settlement-incomplete"].includes(scenario)) {
+            NodeAssert.equal(failure.installCustody.appCloseProved, true);
+            NodeAssert.equal(failure.installCustody.settlementProved, false);
+          }
+          if (scenario === "bridge-failed")
+            NodeAssert.equal(failure.installCustody.settlementProved, true);
+          NodeAssert.ok(owner instanceof FixtureOwnership);
+          await NodeAssert.rejects(owner.cleanup(), (error) => error.preserveScratch === true);
+          NodeAssert.equal(
+            await NodeFSP.readFile(NodePath.join(allocated, "custody-marker"), "utf8"),
+            "preserve until settlement",
+          );
+          if (["fault-timeout", "helper-timeout"].includes(scenario)) {
+            NodeAssert.equal(app.closed(), false);
+            NodeAssert.equal(helper.closed(), false);
+          }
+        }
+      } finally {
+        context.mock.timers.reset();
+        // These are captured Node controls with no updater or relaunch logic.
+        // Reap the helper before the app, then remove only this test's exact root.
+        if (helper) {
+          helper.stop();
+          await helper.close;
+          NodeAssert.throws(() => process.kill(-helper.child.pid, 0), { code: "ESRCH" });
+        }
+        if (app) {
+          app.stop();
+          await app.close;
+          NodeAssert.throws(() => process.kill(-app.child.pid, 0), { code: "ESRCH" });
+        }
+        if (allocated) {
+          await NodeFSP.rm(allocated, { recursive: true, force: true });
+          await NodeAssert.rejects(NodeFSP.lstat(allocated), { code: "ENOENT" });
+        }
+      }
     }
   },
 );

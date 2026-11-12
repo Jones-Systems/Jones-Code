@@ -8,6 +8,7 @@ import * as NodeUtil from "node:util";
 import { packagedStartupNames, runOwnedChild, snapshotTree } from "./native-startup-fixture.mjs";
 import { observerControl, protectedMutations, startObserver } from "./native-startup-observer.mjs";
 
+import { NativeFixtureOwnership } from "./native-fixture-support.mjs";
 import { preparePackagedDesktopHelperFault } from "./packaged-desktop-helper-fault.mjs";
 
 function assertDarwin() {
@@ -850,36 +851,68 @@ export async function observePackagedDesktopInstallRefusal({
   fault,
   app,
   native,
+  ownership,
   signal,
   observationTimeoutMs = 120000,
 }) {
-  for (const name of [
-    "captureApp",
-    "connectApp",
-    "waitForFault",
-    "captureHelper",
-    "waitForHelperClosure",
-    "assertAppAlive",
-    "settleApp",
-  ])
-    NodeAssert.equal(typeof native[name], "function", "Missing native custody hook: " + name);
-  NodeAssert.equal(typeof app.requestStop, "function");
-  NodeAssert.equal(typeof app.waitForClose, "function");
-  NodeAssert.ok(Number.isSafeInteger(app.pid) && app.pid > 0);
-  NodeAssert.match(stagedHandle, shaPattern);
-  NodeAssert.equal(fault.argv, null);
-  NodeAssert.ok(
-    Number.isSafeInteger(observationTimeoutMs) &&
-      observationTimeoutMs > 0 &&
-      observationTimeoutMs <= 120000,
-  );
+  if (!(ownership instanceof NativeFixtureOwnership)) {
+    const failure = new Error("Install requires its native fixture owner.");
+    failure.preserveScratch = true;
+    throw failure;
+  }
+  const custody = ownership.holdCustody(pair.fixtureRoot);
   let attempted = false;
   let stopRequested = false;
   let closure = null;
   let bridge;
   let appIdentity;
   let primaryError;
+  let appCloseProved = false;
+  let settlementProved = false;
+  const retain = (cause) => {
+    const error =
+      cause instanceof Error && Object.isExtensible(cause)
+        ? cause
+        : new Error("Install observation failed; native custody retained.", { cause });
+    error.preserveScratch = true;
+    Object.defineProperty(error, "installCustody", {
+      configurable: true,
+      value: {
+        appPid: app?.pid,
+        appIdentity,
+        installAttempted: attempted,
+        appStopRequested: stopRequested,
+        helperClosureProved: closure !== null,
+        appCloseProved,
+        settlementProved,
+        retained: true,
+      },
+    });
+    custody.retain(error);
+    return error;
+  };
   try {
+    for (const name of [
+      "captureApp",
+      "connectApp",
+      "waitForFault",
+      "captureHelper",
+      "waitForHelperClosure",
+      "assertAppAlive",
+      "settleApp",
+    ])
+      NodeAssert.equal(typeof native[name], "function", "Missing native custody hook: " + name);
+    NodeAssert.equal(typeof app.requestStop, "function");
+    NodeAssert.equal(typeof app.waitForClose, "function");
+    NodeAssert.ok(Number.isSafeInteger(app.pid) && app.pid > 0);
+    NodeAssert.match(stagedHandle, shaPattern);
+    NodeAssert.equal(fault.argv, null);
+    NodeAssert.ok(
+      Number.isSafeInteger(observationTimeoutMs) &&
+        observationTimeoutMs > 0 &&
+        observationTimeoutMs <= 120000,
+    );
+
     const selectedBytes = await privateFixtureBytes(pair.fixtureRoot, selection, 131072);
     const selected = JSON.parse(selectedBytes);
     NodeAssert.equal(selected.app.handle, stagedHandle);
@@ -985,6 +1018,7 @@ export async function observePackagedDesktopInstallRefusal({
     NodeAssert.equal(app.requestStop(), true);
     stopRequested = true;
     const execution = await custodyObservation(() => app.waitForClose(), undefined, 10000);
+    appCloseProved = true;
     const settlement = await observe(() =>
       native.settleApp({ app: appIdentity, helper: helperIdentity, closure, execution, signal }),
     );
@@ -1000,6 +1034,7 @@ export async function observePackagedDesktopInstallRefusal({
     ])
       NodeAssert.equal(settlement[key], true, "Unclosed native custody: " + key);
     await binding.assertInputsUnchanged();
+    settlementProved = true;
     return Object.freeze({
       before,
       after,
@@ -1013,38 +1048,33 @@ export async function observePackagedDesktopInstallRefusal({
       stateComparison: "live-home-not-compared",
       packagedDesktopMatrixPassed: false,
     });
-  } catch (error) {
-    primaryError = error;
-    // Before Install there can be no detached activation. Afterwards, even a
-    // failed assertion retains the app: stopping it can trigger helper relaunch.
-    if (!attempted) {
+  } catch (cause) {
+    // Before Install, only the captured app handle can be stopped. Afterwards,
+    // unknown helper custody retains the app; SIGTERM never releases the hold.
+    if (!attempted && typeof app?.requestStop === "function") {
       try {
         stopRequested = app.requestStop();
-        if (stopRequested) await custodyObservation(() => app.waitForClose(), undefined, 10000);
+        if (stopRequested) {
+          await custodyObservation(() => app.waitForClose(), undefined, 10000);
+          appCloseProved = true;
+        }
       } catch (cleanupError) {
-        Object.defineProperty(error, "custodyCleanupError", { value: cleanupError });
+        primaryError = retain(cause);
+        Object.defineProperty(primaryError, "custodyCleanupError", { value: cleanupError });
       }
     }
-    Object.defineProperty(error, "installCustody", {
-      value: {
-        appPid: app.pid,
-        appIdentity,
-        installAttempted: attempted,
-        appStopRequested: stopRequested,
-        helperClosureProved: closure !== null,
-        retained: attempted && !stopRequested,
-      },
-    });
-    throw error;
+    primaryError ??= retain(cause);
+    throw primaryError;
   } finally {
     if (bridge) {
       try {
         await custodyObservation(() => bridge.close(), undefined, 5000);
-      } catch (error) {
-        if (primaryError) Object.defineProperty(primaryError, "bridgeCloseError", { value: error });
-        else throw error;
+      } catch (cause) {
+        if (primaryError) Object.defineProperty(primaryError, "bridgeCloseError", { value: cause });
+        else throw retain(cause);
       }
     }
+    if (settlementProved && !primaryError) custody.release();
   }
 }
 
@@ -1058,9 +1088,14 @@ export async function exercisePackagedDesktopInstallRefusal({
   stagedHandle,
   temporary,
   native,
+  ownership,
   signal,
 }) {
   assertDarwin();
+  NodeAssert.ok(
+    ownership instanceof NativeFixtureOwnership,
+    "Install requires its native fixture owner.",
+  );
   for (const name of [
     "captureApp",
     "connectApp",
@@ -1103,71 +1138,84 @@ export async function exercisePackagedDesktopInstallRefusal({
     selection,
     point: "storage",
   });
-  const child = NodeChildProcess.spawn(
-    pair.active.executablePath,
-    ["--use-mock-keychain", "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1"],
-    {
-      cwd: pair.fixtureRoot,
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        PATH: "/usr/bin:/bin",
-        LANG: "en_US.UTF-8",
-        HOME: active.home,
-        CFFIXED_USER_HOME: active.home,
-        TMPDIR: temporary,
-        T3CODE_HOME: active.home,
-        T3CODE_DESKTOP_USER_DATA_DIR: active.profile,
-        ...fault.environment,
+  const spawnCustody = ownership.holdCustody(pair.fixtureRoot);
+  try {
+    const child = NodeChildProcess.spawn(
+      pair.active.executablePath,
+      ["--use-mock-keychain", "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1"],
+      {
+        cwd: pair.fixtureRoot,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          PATH: "/usr/bin:/bin",
+          LANG: "en_US.UTF-8",
+          HOME: active.home,
+          CFFIXED_USER_HOME: active.home,
+          TMPDIR: temporary,
+          T3CODE_HOME: active.home,
+          T3CODE_DESKTOP_USER_DATA_DIR: active.profile,
+          ...fault.environment,
+        },
       },
-    },
-  );
-  let stdout = "";
-  let stderr = "";
-  let failure;
-  let closed = false;
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  const execution = new Promise((resolve) => {
-    child.once("error", (error) => {
-      failure = error;
+    );
+    let stdout = "";
+    let stderr = "";
+    let failure;
+    let closed = false;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const execution = new Promise((resolve) => {
+      child.once("error", (error) => {
+        failure = error;
+      });
+      child.once("close", (code, exitSignal) => {
+        closed = true;
+        resolve({ code, signal: exitSignal, stdout, stderr });
+      });
     });
-    child.once("close", (code, exitSignal) => {
-      closed = true;
-      resolve({ code, signal: exitSignal, stdout, stderr });
+    child.stdout.on("data", (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > 1024 * 1024)
+        failure ??= new Error("Install app stdout exceeded its bound; custody retained.");
+      stdout = (stdout + chunk).slice(-1024 * 1024);
     });
-  });
-  child.stdout.on("data", (chunk) => {
-    stdoutBytes += chunk.length;
-    if (stdoutBytes > 1024 * 1024)
-      failure ??= new Error("Install app stdout exceeded its bound; custody retained.");
-    stdout = (stdout + chunk).slice(-1024 * 1024);
-  });
-  child.stderr.on("data", (chunk) => {
-    stderrBytes += chunk.length;
-    if (stderrBytes > 1024 * 1024)
-      failure ??= new Error("Install app stderr exceeded its bound; custody retained.");
-    stderr = (stderr + chunk).slice(-1024 * 1024);
-  });
-  const app = {
-    pid: child.pid,
-    output: () => ({ stdout, stderr, closed, failure }),
-    requestStop: () =>
-      !closed && child.exitCode === null && child.signalCode === null && child.kill("SIGTERM"),
-    waitForClose: () => execution,
-  };
-  const result = await observePackagedDesktopInstallRefusal({
-    pair,
-    helper,
-    manifest,
-    selection,
-    stagedHandle,
-    fault,
-    app,
-    native,
-    signal,
-  });
-  return Object.freeze({ ...result, guiSession });
+    child.stderr.on("data", (chunk) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > 1024 * 1024)
+        failure ??= new Error("Install app stderr exceeded its bound; custody retained.");
+      stderr = (stderr + chunk).slice(-1024 * 1024);
+    });
+    const app = {
+      pid: child.pid,
+      output: () => ({ stdout, stderr, closed, failure }),
+      requestStop: () =>
+        !closed && child.exitCode === null && child.signalCode === null && child.kill("SIGTERM"),
+      waitForClose: () => execution,
+    };
+    const result = await observePackagedDesktopInstallRefusal({
+      pair,
+      helper,
+      manifest,
+      selection,
+      stagedHandle,
+      fault,
+      app,
+      native,
+      ownership,
+      signal,
+    });
+    spawnCustody.release();
+    return Object.freeze({ ...result, guiSession });
+  } catch (cause) {
+    const error =
+      cause instanceof Error && Object.isExtensible(cause)
+        ? cause
+        : new Error("Install app custody is unresolved.", { cause });
+    error.preserveScratch = true;
+    spawnCustody.retain(error);
+    throw error;
+  }
 }
 
 // LaunchServices may reopen the previous app outside the helper's process group.
