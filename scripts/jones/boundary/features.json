@@ -284,6 +284,7 @@
         "apps/server/src/jones/goals/continuity/McpAccess.test.ts",
         "apps/server/src/jones/goals/continuity/admission.test.ts",
         "apps/server/src/jones/goals/continuity/capsule.test.ts",
+        "apps/server/src/jones/goals/continuity/codexTransport.test.ts",
         "apps/server/src/jones/goals/continuity/model.test.ts",
         "apps/server/src/jones/goals/continuity/selection.test.ts",
         "apps/server/src/jones/goals/continuity/tool.test.ts",
