@@ -8,6 +8,10 @@ import {
 import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Deferred from "effect/Deferred";
+import * as Stream from "effect/Stream";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -19,6 +23,8 @@ import {
 } from "../../orchestration-v2/DispatchModeLimit.ts";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as SqlClient from "effect/sql/SqlClient";
+import { readEventLogPrunedThrough } from "../persistence/EventLogPruneBoundary.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Invocation from "../../mcp/McpInvocationContext.ts";
@@ -61,7 +67,7 @@ interface Receipt {
   readonly fingerprint: string;
   readonly objective?: string;
   readonly previousStatus?: string;
-  readonly startRequestId?: string;
+  startRequestId?: string;
   result: ThreadGoalResult;
 }
 interface Binding {
@@ -72,6 +78,12 @@ interface Binding {
   readonly runtime: ProviderAdapterV2SessionRuntime | undefined;
   readonly receipts: Map<string, Receipt>;
   uncertain: boolean;
+  controlOrder: number;
+  intent?: {
+    readonly done: Deferred.Deferred<void>;
+    readonly receipt: Receipt;
+    readonly order: number;
+  };
 }
 
 const sameConversation = (
@@ -98,18 +110,48 @@ const make = Effect.gen(function* () {
   const sessions = yield* Effect.serviceOption(Sessions.ProviderSessionManagerV2);
   const starts = yield* Effect.serviceOption(GoalStart.GoalStartDispatch);
   const crypto = yield* SecureRandom.SecureRandom;
+  const events = yield* Effect.serviceOption(EventSink.EventSinkV2);
+  const history = yield* EventStore.EventStoreV2;
+  const sql = yield* SqlClient.SqlClient;
+  // MCP registrations are built once by layerHttp, outside individual invocation scopes.
+  const serviceScope = yield* Effect.scope;
+  type Disposition =
+    | "control_superseded"
+    | "stop_requested"
+    | "owner_run_superseded"
+    | "caller_did_not_complete"
+    | "binding_or_access_changed"
+    | "goal_changed"
+    | "event_subscription_failed"
+    | "event_history_incomplete"
+    | "dispatch_attempts_exhausted";
+  const dispose = Effect.fn("GoalControl.disposeResume")(function* (
+    binding: Binding,
+    reason: Disposition,
+  ) {
+    const intent = binding.intent;
+    if (intent === undefined) return;
+    delete binding.intent;
+    intent.receipt.result = {
+      ...intent.receipt.result,
+      outcome: intent.receipt.result.outcome === "unknown" ? "unknown" : "stale",
+      reason: `resume_discarded_${reason}`,
+    };
+    yield* Deferred.succeed(intent.done, undefined);
+  });
   const bindings = new Map<string, Binding>();
   // One lock per target thread, so a slow native call on one thread never queues another.
   // An entry exists only while a call holds or awaits it.
   const locks = new Map<string, { readonly semaphore: Semaphore.Semaphore; holders: number }>();
   // Release the runtime reference held for a stopped or replaced session. Receipts are kept
   // so every reused clientRequestId still resolves as stale after the next read rebinds.
-  const retire = (key: string) => {
+  const retire = Effect.fn("GoalControl.retire")(function* (key: string) {
     const binding = bindings.get(key);
     if (binding === undefined) return;
+    yield* dispose(binding, "binding_or_access_changed");
     if (binding.receipts.size === 0) bindings.delete(key);
     else bindings.set(key, { ...binding, runtime: undefined });
-  };
+  });
   // ProviderSessionManagerV2 publishes no stop event, so release stopped sessions' runtime
   // references on the next call. A thread with a call in flight is left to that call.
   const retireStopped = Effect.fn("GoalControl.retireStopped")(function* (currentKey: string) {
@@ -133,7 +175,7 @@ const make = Effect.gen(function* () {
         bindings.get(key) === binding &&
         !locks.has(key)
       )
-        retire(key);
+        yield* retire(key);
     }
   });
   const perThread =
@@ -163,6 +205,12 @@ const make = Effect.gen(function* () {
   const execute = (scope: Invocation.McpInvocationScope, input: ThreadGoalInput) =>
     perThread(input.threadId ?? scope.thread?.threadId ?? "")(
       Effect.gen(function* () {
+        const targetId = input.threadId ?? scope.thread?.threadId;
+        const eventMark = Option.isSome(events)
+          ? yield* events.value
+              .latestSequence(targetId === undefined ? {} : { threadId: targetId })
+              .pipe(Effect.mapError(unavailable))
+          : undefined;
         const context = yield* readThread(input.threadId, ["providerThreads", "runs"]);
         const { thread } = context.projection;
         const now = DateTime.formatIso(yield* DateTime.now);
@@ -219,7 +267,7 @@ const make = Effect.gen(function* () {
           provider.providerSessionId === null ||
           Option.isNone(sessions)
         ) {
-          retire(thread.id);
+          yield* retire(thread.id);
           return answer("unavailable", "session_unavailable");
         }
         if (provider.nativeThreadRef?.driver !== "codex" || !provider.nativeThreadRef.nativeId)
@@ -228,7 +276,7 @@ const make = Effect.gen(function* () {
           .get(provider.providerSessionId)
           .pipe(Effect.mapError(unavailable));
         if (Option.isNone(runtimeOption)) {
-          retire(thread.id);
+          yield* retire(thread.id);
           return answer("unavailable", "session_stopped");
         }
         const runtime = runtimeOption.value;
@@ -236,7 +284,7 @@ const make = Effect.gen(function* () {
           runtime.instanceId !== thread.providerInstanceId ||
           runtime.instanceId !== provider.providerInstanceId
         ) {
-          retire(thread.id);
+          yield* retire(thread.id);
           return answer("stale", "instance_changed");
         }
         if (runtime.controlGoal === undefined)
@@ -267,7 +315,9 @@ const make = Effect.gen(function* () {
                   },
                 ]),
               );
+          if (binding !== undefined) yield* dispose(binding, "binding_or_access_changed");
           binding = {
+            controlOrder: 0,
             token,
             provider,
             runtime,
@@ -291,55 +341,66 @@ const make = Effect.gen(function* () {
             });
           return { ...prior.result, controlToken: binding.token, replayed: true };
         }
+        if (mutation) {
+          binding.controlOrder += 1;
+          yield* dispose(binding, "control_superseded");
+        }
         if (mutation && binding.uncertain)
           return answer("unknown", "prior_mutation_unresolved", { controlToken: binding.token });
-        const revalidate = Effect.gen(function* () {
-          const fresh = yield* readThread(thread.id, ["providerThreads"]);
-          if (
-            fresh.projection.thread.archivedAt !== null ||
-            fresh.projection.thread.providerInstanceId !== thread.providerInstanceId ||
-            !sameBinding(
-              provider,
-              fresh.projection.providerThreads.find(
-                (p) => p.id === fresh.projection.thread.activeProviderThreadId,
-              ),
+        const revalidation = Effect.fn("GoalControl.revalidate")(
+          function* (deferred: boolean) {
+            const fresh = yield* readThread(thread.id, ["providerThreads"]);
+            if (
+              fresh.projection.thread.archivedAt !== null ||
+              fresh.projection.thread.providerInstanceId !== thread.providerInstanceId ||
+              !sameBinding(
+                provider,
+                fresh.projection.providerThreads.find(
+                  (p) => p.id === fresh.projection.thread.activeProviderThreadId,
+                ),
+              )
             )
-          )
-            return false;
-          if (mutation) {
-            yield* assertLiveCaller(fresh);
-            if (scope.thread !== undefined) {
-              const callerRecords = yield* threads.getThreadRecords(scope.thread.threadId, [
-                "providerThreads",
-              ]);
-              const callerProvider = callerRecords.providerThreads.find(
-                (p) => p.id === callerRecords.thread.activeProviderThreadId,
-              );
-              if (
-                callerProvider === undefined ||
-                callerProvider.providerSessionId === null ||
-                callerProvider.providerInstanceId !== scope.thread.providerInstanceId
-              )
-                return false;
-              if (
-                !(yield* sessions.value.isMcpCallerAttached({
-                  threadId: scope.thread.threadId,
-                  providerSessionId: callerProvider.providerSessionId,
-                  providerInstanceId: scope.thread.providerInstanceId,
-                  mcpCredentialId: scope.thread.providerSessionId,
-                }))
-              )
-                return false;
+              return false;
+            if (mutation) {
+              // Only the captured self-intent may outlive its run. All other gates remain.
+              if (!deferred) yield* assertLiveCaller(fresh);
+              yield* assertTargetWithinLimits(context.limits, fresh.projection.thread);
+              if (scope.thread !== undefined) {
+                const callerRecords = yield* threads.getThreadRecords(scope.thread.threadId, [
+                  "providerThreads",
+                ]);
+                const callerProvider = callerRecords.providerThreads.find(
+                  (p) => p.id === callerRecords.thread.activeProviderThreadId,
+                );
+                if (
+                  callerProvider === undefined ||
+                  callerProvider.providerSessionId === null ||
+                  callerProvider.providerInstanceId !== scope.thread.providerInstanceId
+                )
+                  return false;
+                if (
+                  !(yield* sessions.value.isMcpCallerAttached({
+                    threadId: scope.thread.threadId,
+                    providerSessionId: callerProvider.providerSessionId,
+                    providerInstanceId: scope.thread.providerInstanceId,
+                    mcpCredentialId: scope.thread.providerSessionId,
+                  }))
+                )
+                  return false;
+              }
+              yield* assertTargetWithinLimits(fresh.limits, fresh.projection.thread);
             }
-            yield* assertTargetWithinLimits(fresh.limits, fresh.projection.thread);
-          }
-          const current = yield* sessions.value.get(provider.providerSessionId!);
-          return Option.isSome(current) && current.value === runtime;
-        }).pipe(
-          Effect.orElseSucceed(() => false),
-          Effect.provideService(Invocation.McpInvocationContext, scope),
-          Effect.provideService(ThreadManagement.ThreadManagementService, threads),
+            const current = yield* sessions.value.get(provider.providerSessionId!);
+            return Option.isSome(current) && current.value === runtime;
+          },
+          (effect) =>
+            effect.pipe(
+              Effect.orElseSucceed(() => false),
+              Effect.provideService(Invocation.McpInvocationContext, scope),
+              Effect.provideService(ThreadManagement.ThreadManagementService, threads),
+            ),
         );
+        const revalidate = revalidation(false);
         const observed = yield* runtime.controlGoal({
           providerThread: provider,
           action: "read",
@@ -396,7 +457,217 @@ const make = Effect.gen(function* () {
         const active = context.projection.runs.some((run) =>
           ["preparing", "queued", "starting", "running", "waiting"].includes(run.status),
         );
-        if (input.action === "resume" && active) return answer("busy", "run_already_active", base);
+        if (input.action === "resume" && active) {
+          const owner = context.projection.runs.find(
+            (run) => run.id === context.caller?.activeRunId,
+          );
+          if (
+            scope.thread?.threadId !== thread.id ||
+            owner === undefined ||
+            owner.providerThreadId !== provider.id ||
+            owner.providerInstanceId !== scope.thread.providerInstanceId ||
+            !["preparing", "queued", "starting", "running", "waiting"].includes(owner.status) ||
+            !["paused", "blocked"].includes(observed.goal?.status ?? "") ||
+            Option.isNone(events) ||
+            Option.isNone(starts) ||
+            eventMark === undefined
+          )
+            return answer("busy", "run_already_active", base);
+          const receipt: Receipt = {
+            fingerprint,
+            startRequestId: [thread.id, key].map(encodeURIComponent).join(":"),
+            result: answer("busy", "resume_armed_session_local_until_idle", base),
+          };
+          binding.receipts.set(key, receipt);
+          const capturedBinding = binding;
+          const intent = {
+            done: yield* Deferred.make<void>(),
+            receipt,
+            order: binding.controlOrder,
+          };
+          binding.intent = intent;
+          const objective = observed.goal!.objective;
+          const deferredValidation = revalidation(true);
+          let afterSequence = eventMark;
+          let attempts = 0;
+          let observing = false;
+          const originalRequestId = receipt.startRequestId!;
+          const sink = events.value;
+          const historyStore = history;
+          const dispatch = starts.value;
+          const complete = Effect.fn("GoalControl.completeResume")(function* (
+            result: ThreadGoalResult,
+          ) {
+            receipt.result = result;
+            capturedBinding.uncertain = result.outcome === "unknown";
+            if (result.outcome !== "unknown") {
+              delete capturedBinding.intent;
+              yield* Deferred.succeed(intent.done, undefined);
+            }
+          });
+          // The replay mark is captured before the request projection. Subscribe-before-replay
+          // in EventSink closes the terminal-event/registration race while history is retained.
+          // Prove the finite replay complete before evaluating projected state or moving its cursor.
+          const sweep = Effect.fn("GoalControl.sweepResumeEvents")(function* () {
+            const checked = afterSequence;
+            const highWater = yield* sink.latestSequence({ threadId: thread.id });
+            if (highWater < checked)
+              return yield* dispose(capturedBinding, "event_history_incomplete");
+            if (highWater === checked) return;
+            if (checked < (yield* readEventLogPrunedThrough(sql)))
+              return yield* dispose(capturedBinding, "event_history_incomplete");
+            // The live stream omits private bootstrap events. Finite stored replay must
+            // not wait for a public event to reach a private high-water mark.
+            const stored = yield* historyStore
+              .read({ threadId: thread.id, afterSequence: checked, throughSequence: highWater })
+              .pipe(Stream.runCollect);
+            // The pruner publishes its global boundary before deleting. Compare with the original
+            // cursor again: retained later rows cannot prove an earlier Stop was absent.
+            if (checked < (yield* readEventLogPrunedThrough(sql)))
+              return yield* dispose(capturedBinding, "event_history_incomplete");
+            for (const { event } of stored) {
+              if (
+                event.type === "turn-item.updated" &&
+                event.payload.type === "run_interrupt_request"
+              )
+                yield* dispose(capturedBinding, "stop_requested");
+              if (
+                event.type === "run.updated" &&
+                event.payload.id === owner.id &&
+                !["preparing", "queued", "starting", "running", "waiting", "completed"].includes(
+                  event.payload.status,
+                )
+              )
+                yield* dispose(capturedBinding, "caller_did_not_complete");
+              if (event.type === "provider-thread.updated" && event.payload.id === provider.id) {
+                if (!sameBinding(provider, event.payload))
+                  yield* dispose(capturedBinding, "binding_or_access_changed");
+                else if (
+                  event.payload.goal === null ||
+                  (event.payload.goal !== undefined && event.payload.goal.objective !== objective)
+                )
+                  yield* dispose(capturedBinding, "goal_changed");
+              }
+              if (
+                event.type === "thread.archived" ||
+                (event.type === "provider-session.detach-requested" &&
+                  event.payload.providerSessionId === provider.providerSessionId) ||
+                (event.type === "provider-session.detached" &&
+                  event.payload.providerSessionId === provider.providerSessionId)
+              )
+                yield* dispose(capturedBinding, "binding_or_access_changed");
+            }
+            afterSequence = highWater;
+          });
+          const evaluate = Effect.fn("GoalControl.consumeResume")(function* () {
+            if (capturedBinding.intent !== intent) return;
+            yield* sweep();
+            if (capturedBinding.intent !== intent) return;
+            if (
+              bindings.get(thread.id) !== capturedBinding ||
+              capturedBinding.controlOrder !== intent.order ||
+              !(yield* deferredValidation)
+            )
+              return yield* dispose(capturedBinding, "binding_or_access_changed");
+            const fresh = yield* threads.getThreadRecords(thread.id, ["runs", "messages"]);
+            const currentOwner = fresh.runs.find((run) => run.id === owner.id);
+            if (
+              currentOwner === undefined ||
+              !["preparing", "queued", "starting", "running", "waiting", "completed"].includes(
+                currentOwner.status,
+              )
+            )
+              return yield* dispose(capturedBinding, "caller_did_not_complete");
+            for (const run of fresh.runs) {
+              if (run.ordinal <= owner.ordinal) continue;
+              const message = fresh.messages.find((message) => message.id === run.userMessageId);
+              // Only persisted, server-authored result metadata proves a non-owner wake.
+              const resultWake =
+                message?.createdBy === "agent" &&
+                message.creationSource === "server" &&
+                (message.delegatedCompletion !== undefined ||
+                  (message.notification !== undefined &&
+                    message.notification.outcome !== "updated" &&
+                    ["subagent", "background_task", "monitor"].includes(
+                      message.notification.source.kind,
+                    )));
+              if (!resultWake && run.userMessageId !== `goal:${receipt.startRequestId}`)
+                return yield* dispose(capturedBinding, "owner_run_superseded");
+            }
+            if (observing) {
+              const result = yield* dispatch.observe(thread.id, receipt.startRequestId!);
+              return yield* complete(answer(result.outcome, result.reason, { ...base, ...result }));
+            }
+            const guard = yield* dispatch.capture(thread.id);
+            if (guard === null) return;
+            const native = yield* runtime.controlGoal!({
+              providerThread: provider,
+              action: "read",
+              revalidate: deferredValidation,
+            });
+            if (native.outcome !== "observed")
+              return yield* dispose(capturedBinding, "binding_or_access_changed");
+            if (native.goal === null || native.goal.objective !== objective)
+              return yield* dispose(capturedBinding, "goal_changed");
+            yield* sweep();
+            if (capturedBinding.intent !== intent) return;
+            if (!(yield* deferredValidation))
+              return yield* dispose(capturedBinding, "binding_or_access_changed");
+            if (native.goal.status === "active")
+              return yield* complete(
+                answer("observed", "resume_satisfied_by_native_read", {
+                  ...base,
+                  goal: native.goal,
+                }),
+              );
+            if (!["paused", "blocked"].includes(native.goal.status))
+              return yield* dispose(capturedBinding, "goal_changed");
+            attempts += 1;
+            // A proved rejected command is immutable. Subsequent no-effect attempts remain
+            // correlated to the original key; an unknown attempt never advances this suffix.
+            receipt.startRequestId =
+              attempts === 1 ? originalRequestId : `${originalRequestId}:attempt:${attempts}`;
+            const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+            observing = true;
+            receipt.result = answer("unknown", "dispatch_readback_unresolved", base);
+            capturedBinding.uncertain = true;
+            const result = yield* dispatch
+              .start({
+                thread: fresh.thread,
+                guard,
+                requestId: receipt.startRequestId,
+                senderThreadId: thread.id,
+                text: "/goal resume",
+              })
+              .pipe(
+                Effect.provideService(DispatchModeLimit, { ...context.limits, refused }),
+                Effect.orElseSucceed(() => ({
+                  outcome: "unknown" as const,
+                  reason: "dispatch_readback_unresolved",
+                })),
+              );
+            if (result.outcome === "busy") {
+              observing = false;
+              capturedBinding.uncertain = false;
+              receipt.result = answer("busy", "resume_armed_session_local_until_idle", base);
+              if (attempts >= 3) yield* dispose(capturedBinding, "dispatch_attempts_exhausted");
+              return;
+            }
+            observing = result.outcome === "unknown";
+            yield* complete(answer(result.outcome, result.reason, { ...base, ...result }));
+          });
+          yield* sink.stream({ threadId: thread.id, afterSequence: eventMark }).pipe(
+            Stream.runForEach(() => perThread(thread.id)(evaluate())),
+            Effect.catch(() =>
+              perThread(thread.id)(dispose(capturedBinding, "event_subscription_failed")),
+            ),
+            Effect.raceFirst(Deferred.await(intent.done)),
+            Effect.provideService(Invocation.McpInvocationContext, scope),
+            Effect.provideService(ThreadManagement.ThreadManagementService, threads),
+            Effect.forkIn(serviceScope),
+          );
+          return receipt.result;
+        }
         if (input.action === "resume" && observed.goal === null)
           return answer("unavailable", "goal_missing", base);
         const receipt: Receipt = {
@@ -461,4 +732,5 @@ const make = Effect.gen(function* () {
     );
   return GoalControl.of({ execute });
 });
-export const layer = Layer.effect(GoalControl, make);
+export const layerFromEventStore = Layer.effect(GoalControl, make);
+export const layer = layerFromEventStore.pipe(Layer.provide(EventStore.layer));

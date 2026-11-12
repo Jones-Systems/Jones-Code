@@ -23,6 +23,7 @@ import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/ser
 import type { ProviderGoalControlInput } from "@t3tools/provider-core/server/jones/runtimeTypes";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as GoalControl from "./GoalControl.ts";
 import * as GoalStart from "./GoalStartDispatch.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -175,6 +176,7 @@ function fixture(
     runs: active ? [{ status: "running" }] : [],
   });
   const dependencies = Layer.mergeAll(
+    Sqlite.layerMemory,
     Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
     Layer.mock(Threads.ThreadManagementService)({
       getThreadShell: (id) =>
