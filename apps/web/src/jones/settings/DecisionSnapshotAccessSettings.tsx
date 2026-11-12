@@ -38,8 +38,8 @@ export function DecisionSnapshotAccessSettings() {
         {...searchableSetting("agent-decision-snapshot-access")}
         description={
           isProjectScope
-            ? "Allow agents in this project to read the decision snapshot of thread, workstream and host usage. Applies when the agent session next starts."
-            : "Allow agents to read the decision snapshot of thread, workstream and host usage from this environment's installed collector. Off by default; projects can override it."
+            ? "Allow agents in this project to read thread, workstream and host usage. Applies when the agent session next starts."
+            : "Allow agents to read thread, workstream and host usage. Projects can override it."
         }
         resetAction={
           enabled !== DEFAULT_SERVER_SETTINGS.enableAgentDecisionSnapshotAccess ? (
