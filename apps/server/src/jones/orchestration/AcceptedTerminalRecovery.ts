@@ -29,6 +29,7 @@ type Publication =
   | { readonly type: "unconditional"; readonly input: UnconditionalWrite };
 type Result = Effect.Success<ReturnType<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>>;
 const isLockTimeout = Schema.is(SqlError.LockTimeoutError);
+const encodeTerminalEvent = Schema.encodeEffect(Schema.fromJsonString(OrchestrationV2DomainEvent));
 
 export const isAdmissionUnavailable = (cause: unknown): boolean =>
   findSqliteReaderAdmissionFailure(cause) !== undefined;
@@ -83,40 +84,45 @@ export const retryAdmissionUnavailable = <A, E, R>(
   read: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E, R> => read.pipe(Effect.retry({ while: isAdmissionUnavailable, times: 2 }));
 
-export const recoverAcceptedTerminal = Effect.fn("AcceptedTerminalRecovery.recover")(
-  function* <A, E, R>(
-    work: Effect.Effect<A, E, R>,
-    identity: { readonly runId: RunId; readonly attemptId: RunAttemptId },
-    initialCause: Cause.Cause<E>,
-  ): Effect.fn.Return<A, E, R> {
-    if (!isTransientLocalStorageFailure(initialCause)) return yield* Effect.failCause(initialCause);
-    let nextWarningAt = yield* DateTime.now;
-    return yield* work.pipe(
-      Effect.catchCause((cause) =>
-        Effect.gen(function* () {
-          const now = yield* DateTime.now;
-          if (
-            isTransientLocalStorageFailure(cause) &&
-            DateTime.isGreaterThanOrEqualTo(now, nextWarningAt)
-          ) {
-            yield* Effect.logWarning("orchestration V2 accepted terminal finalization retry", identity);
-            nextWarningAt = DateTime.add(now, { minutes: 10 });
-          }
-          return yield* Effect.fail(cause);
-        }),
-      ),
-      Effect.retry({
-        while: isTransientLocalStorageFailure,
-        schedule: Schedule.exponential("1 second").pipe(
-          Schedule.modifyDelay(({ duration }) =>
-            Effect.succeed(Duration.min(duration, Duration.seconds(30))),
-          ),
-        ),
+export const recoverAcceptedTerminal = Effect.fn("AcceptedTerminalRecovery.recover")(function* <
+  A,
+  E,
+  R,
+>(
+  work: Effect.Effect<A, E, R>,
+  identity: { readonly runId: RunId; readonly attemptId: RunAttemptId },
+  initialCause: Cause.Cause<E>,
+): Effect.fn.Return<A, E, R> {
+  if (!isTransientLocalStorageFailure(initialCause)) return yield* Effect.failCause(initialCause);
+  let nextWarningAt = yield* DateTime.now;
+  return yield* work.pipe(
+    Effect.catchCause((cause) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        if (
+          isTransientLocalStorageFailure(cause) &&
+          DateTime.isGreaterThanOrEqualTo(now, nextWarningAt)
+        ) {
+          yield* Effect.logWarning(
+            "orchestration V2 accepted terminal finalization retry",
+            identity,
+          );
+          nextWarningAt = DateTime.add(now, { minutes: 10 });
+        }
+        return yield* Effect.fail(cause);
       }),
-      Effect.catch((cause) => Effect.failCause(cause)),
-    );
-  },
-);
+    ),
+    Effect.retry({
+      while: isTransientLocalStorageFailure,
+      schedule: Schedule.exponential("1 second").pipe(
+        Schedule.modifyDelay(({ duration }) =>
+          Effect.succeed(Duration.min(duration, Duration.seconds(30))),
+        ),
+      ),
+    }),
+    Effect.catch((cause) => Effect.failCause(cause)),
+  );
+});
 
 export function finalizationFailureItems(input: {
   readonly terminal: Terminal;
@@ -262,20 +268,23 @@ export const makeTerminalPublisher = Effect.gen(function* () {
           ) {
             normalizedExpected = {
               ...expected,
-              payload: { ...expected.payload, runtimeIdentity: record.event.payload.runtimeIdentity },
+              payload: {
+                ...expected.payload,
+                runtimeIdentity: record.event.payload.runtimeIdentity,
+              },
             };
           }
-          const actualJson = yield* Schema.encodeEffect(OrchestrationV2DomainEvent)(record.event).pipe(
+          const actualJson = yield* encodeTerminalEvent(record.event).pipe(
             Effect.mapError(
               (cause) => new EventSink.EventSinkWriteError({ eventCount: stored.length, cause }),
             ),
           );
-          const expectedJson = yield* Schema.encodeEffect(OrchestrationV2DomainEvent)(normalizedExpected).pipe(
+          const expectedJson = yield* encodeTerminalEvent(normalizedExpected).pipe(
             Effect.mapError(
               (cause) => new EventSink.EventSinkWriteError({ eventCount: stored.length, cause }),
             ),
           );
-          if (JSON.stringify(actualJson) !== JSON.stringify(expectedJson))
+          if (actualJson !== expectedJson)
             return yield* new EventSink.EventSinkWriteError({ eventCount: stored.length });
         }
         entry.result = { committed: true, storedEvents: stored };

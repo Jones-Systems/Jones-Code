@@ -576,11 +576,9 @@ export const layer: Layer.Layer<
                 input.event.driver !== binding.driver
               )
                 return [];
-              const current = (
-                yield* retryAdmissionUnavailable(
-                  projections.getThreadRecords(binding.threadId, ["providerThreads"]),
-                )
-              ).providerThreads.find((thread) => thread.id === binding.providerThreadId);
+              const current = (yield* retryAdmissionUnavailable(
+                projections.getThreadRecords(binding.threadId, ["providerThreads"]),
+              )).providerThreads.find((thread) => thread.id === binding.providerThreadId);
               if (current?.runtimeIdentity === undefined) return [];
               return [
                 yield* makeDomainEvent(input, {
@@ -934,9 +932,13 @@ export const layer: Layer.Layer<
               ...input.writeIfRunCurrent,
               events,
             };
-            const result = yield* (input.event.type === "turn.terminal"
-              ? publishTerminal(input.event, "ingestion", { type: "current", input: terminalWrite })
-              : eventSink.writeIfRunCurrent(terminalWrite).pipe(retryLockTimeout)
+            const result = yield* (
+              input.event.type === "turn.terminal"
+                ? publishTerminal(input.event, "ingestion", {
+                    type: "current",
+                    input: terminalWrite,
+                  })
+                : eventSink.writeIfRunCurrent(terminalWrite).pipe(retryLockTimeout)
             ).pipe(Effect.mapError(mapWriteError));
             return yield* retainRejectedTerminal(result.storedEvents);
           },

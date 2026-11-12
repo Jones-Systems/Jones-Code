@@ -753,9 +753,7 @@ export const layer: Layer.Layer<
                   ? undefined
                   : yield* input.loadRunInterruptReason();
               const interruptResult = {
-                ...(runtimeEvidence === undefined
-                  ? {}
-                  : { runtimeEvidence }),
+                ...(runtimeEvidence === undefined ? {} : { runtimeEvidence }),
                 effects: [],
                 events: [
                   {
@@ -841,9 +839,7 @@ export const layer: Layer.Layer<
         );
         // Stopped runs capture rollback points for the next message; enqueue before later starts on this effect lane.
         const finalization = {
-          ...(runtimeEvidence === undefined
-            ? {}
-            : { runtimeEvidence }),
+          ...(runtimeEvidence === undefined ? {} : { runtimeEvidence }),
           effects:
             input.terminal.status === "completed" ||
             input.terminal.status === "interrupted" ||
@@ -990,9 +986,7 @@ export const layer: Layer.Layer<
           ],
         } satisfies Parameters<typeof eventSink.writeWithEffects>[0];
         const finalWrite = {
-          ...(runtimeEvidence === undefined
-            ? {}
-            : { runtimeEvidence }),
+          ...(runtimeEvidence === undefined ? {} : { runtimeEvidence }),
           threadId: input.run.threadId,
           runId: input.run.id,
           activeAttemptId: input.writeIfRunCurrent?.activeAttemptId ?? input.attempt.id,
@@ -1000,12 +994,12 @@ export const layer: Layer.Layer<
           events: finalization.events,
           effects: finalization.effects,
         } satisfies Parameters<typeof eventSink.writeIfRunCurrent>[0];
-        const result = yield* (input.publicationTerminal === undefined
+        const result = yield* input.publicationTerminal === undefined
           ? eventSink.writeIfRunCurrent(finalWrite)
           : publishTerminal(input.publicationTerminal, "finalization", {
               type: "current",
               input: finalWrite,
-            }));
+            });
         if (!result.committed) {
           // Jones: a terminal whose provider thread lost its producer evidence still settles
           // its own current run. The same run check makes a second settlement impossible, and
@@ -1039,12 +1033,12 @@ export const layer: Layer.Layer<
                   ],
             effects: finalization.effects,
           } satisfies Parameters<typeof eventSink.writeIfRunCurrent>[0];
-          const settled = yield* (input.publicationTerminal === undefined
+          const settled = yield* input.publicationTerminal === undefined
             ? eventSink.writeIfRunCurrent(lostEvidenceWrite)
             : publishTerminal(input.publicationTerminal, "lost-evidence", {
                 type: "current",
                 input: lostEvidenceWrite,
-              }));
+              });
           if (!settled.committed) return;
         }
         yield* input.refreshAfterTurn;
@@ -1770,11 +1764,7 @@ export const layer: Layer.Layer<
                     ),
                     { runId: input.run.id, attemptId: input.attempt.id },
                     cause,
-                  ).pipe(
-                    Effect.forkIn(scope),
-                    Effect.flatMap(Fiber.join),
-                    Effect.exit,
-                  );
+                  ).pipe(Effect.forkIn(scope), Effect.flatMap(Fiber.join), Effect.exit);
                   if (Exit.isSuccess(recovered)) return;
                   if (Cause.hasInterruptsOnly(recovered.cause))
                     return yield* Effect.failCause(recovered.cause);

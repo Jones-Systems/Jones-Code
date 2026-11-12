@@ -4152,7 +4152,9 @@ it.effect("does not interrupt an ended provider when its terminal write fails", 
           if ((yield* Ref.updateAndGet(writes, (count) => count + 1)) === 1) {
             return yield* new EventSink.EventSinkWriteError({
               eventCount: 1,
-              cause: new SqlError.SqlError({ reason: new SqlError.LockTimeoutError({ cause: null }) }),
+              cause: new SqlError.SqlError({
+                reason: new SqlError.LockTimeoutError({ cause: null }),
+              }),
             });
           }
           return true;

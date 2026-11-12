@@ -1,11 +1,7 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "accepted-terminal-recovery",
-  "jonesOwnedPaths": [
-    "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.ts",
-    "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts",
-    "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.testkit.ts"
-  ],
+  "jonesOwnedPaths": [],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
