@@ -88,32 +88,42 @@ const seam = (options?: { metadataFails?: boolean }) => {
     run: (value = input) => makeVoiceReviewComposition(value).pipe(Effect.provide(dependencies)),
     read,
     metadataRead,
-    removeThread: () => { exists = false; },
-    unassign: () => { assigned = false; },
-    changeEnvironment: () => { environmentId = "replacement"; },
+    removeThread: () => {
+      exists = false;
+    },
+    unassign: () => {
+      assigned = false;
+    },
+    changeEnvironment: () => {
+      environmentId = "replacement";
+    },
   };
 };
 
 describe("voice personal service composition", () => {
-  it.effect("reads local membership without a registry, placement gateway or projection service", () =>
-    Effect.gen(function* () {
-      const h = seam();
-      const port = yield* h.run();
-      expect(port).toBeDefined();
-      const identities = [...port!.identities([registryThread]).values()];
-      const result = yield* Effect.promise(() => port!.read(principal, identities));
-      expect(result).toEqual([{
-        workstream_ref: "native:legacy-group:kept",
-        workstream_id: workstream.id,
-        name: workstream.name,
-        environment_id: binding.native_environment_id,
-        thread_id: "thread",
-        revision: 7,
-      }]);
-      expect(h.read).toHaveBeenCalledExactlyOnceWith(ThreadId.make("thread"));
-      h.unassign();
-      expect(yield* Effect.promise(() => port!.read(principal, identities))).toEqual([]);
-    }),
+  it.effect(
+    "reads local membership without a registry, placement gateway or projection service",
+    () =>
+      Effect.gen(function* () {
+        const h = seam();
+        const port = yield* h.run();
+        expect(port).toBeDefined();
+        const identities = [...port!.identities([registryThread]).values()];
+        const result = yield* Effect.promise(() => port!.read(principal, identities));
+        expect(result).toEqual([
+          {
+            workstream_ref: "native:legacy-group:kept",
+            workstream_id: workstream.id,
+            name: workstream.name,
+            environment_id: binding.native_environment_id,
+            thread_id: "thread",
+            revision: 7,
+          },
+        ]);
+        expect(h.read).toHaveBeenCalledExactlyOnceWith(ThreadId.make("thread"));
+        h.unassign();
+        expect(yield* Effect.promise(() => port!.read(principal, identities))).toEqual([]);
+      }),
   );
   it.effect("rechecks thread existence and environment ownership on each read", () =>
     Effect.gen(function* () {
@@ -130,7 +140,9 @@ describe("voice personal service composition", () => {
   it.effect("requires read scope before accessing local thread metadata", () =>
     Effect.gen(function* () {
       const h = seam();
-      const denied = yield* h.run({ ...input, principal: { ...principal, scopes: new Set() } }).pipe(Effect.flip);
+      const denied = yield* h
+        .run({ ...input, principal: { ...principal, scopes: new Set() } })
+        .pipe(Effect.flip);
       expect(denied).toMatchObject({ _tag: "VoiceReviewForbiddenError" });
       expect(h.metadataRead).not.toHaveBeenCalled();
       expect(h.read).not.toHaveBeenCalled();
@@ -139,7 +151,11 @@ describe("voice personal service composition", () => {
   it.effect("keeps missing or mismatched deployment binding unavailable", () =>
     Effect.gen(function* () {
       const h = seam();
-      expect(yield* makeVoiceReviewComposition({ ...input, binding: null }).pipe(Effect.provide(h.dependencies))).toBeUndefined();
+      expect(
+        yield* makeVoiceReviewComposition({ ...input, binding: null }).pipe(
+          Effect.provide(h.dependencies),
+        ),
+      ).toBeUndefined();
       h.changeEnvironment();
       expect(yield* h.run()).toBeUndefined();
       expect(h.metadataRead).not.toHaveBeenCalled();
@@ -157,7 +173,9 @@ describe("voice personal service composition", () => {
   it.effect("captures the personal service in the production factory", () =>
     Effect.gen(function* () {
       const h = seam();
-      const factory = yield* makeVoiceReviewCompositionFactory().pipe(Effect.provide(h.dependencies));
+      const factory = yield* makeVoiceReviewCompositionFactory().pipe(
+        Effect.provide(h.dependencies),
+      );
       const port = yield* factory(input);
       const identities = [...port!.identities([registryThread]).values()];
       expect(yield* Effect.promise(() => port!.read(principal, identities))).toHaveLength(1);

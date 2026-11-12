@@ -50,7 +50,10 @@ describe("voice personal membership read adapter", () => {
   it("requires ordinary read scope before touching local state", async () => {
     const read = vi.fn(() => Effect.succeed(membership));
     const projectionRead = vi.fn(() => projection);
-    const port = makeVoiceReviewNativeReadPort({ readThread: read, readIdentities: projectionRead });
+    const port = makeVoiceReviewNativeReadPort({
+      readThread: read,
+      readIdentities: projectionRead,
+    });
     await expect(port.read({ ...principal, scopes: new Set() }, [identity])).rejects.toThrow();
     expect(read).not.toHaveBeenCalled();
     expect(projectionRead).not.toHaveBeenCalled();
@@ -65,7 +68,9 @@ describe("voice personal membership read adapter", () => {
     current = [];
     await expect(port.read(principal, identities)).rejects.toThrow();
     current = projection;
-    await expect(port.read(principal, [{ ...identity, source_instance_id: "other" }])).rejects.toThrow();
+    await expect(
+      port.read(principal, [{ ...identity, source_instance_id: "other" }]),
+    ).rejects.toThrow();
     await expect(port.read(principal, [identity, identity])).rejects.toThrow();
     expect(read).not.toHaveBeenCalled();
   });

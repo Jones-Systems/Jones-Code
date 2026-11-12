@@ -195,10 +195,12 @@ it.effect("binds the application census without any Workstream registry runtime"
     const nativePorts = yield* DecisionSnapshotNativeCounts.pipe(
       Effect.provide(
         DecisionSnapshotNativeCountsLive.pipe(
-          Layer.provide(Layer.mergeAll(
-            ProjectionStore.layerMemory,
-            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
-          )),
+          Layer.provide(
+            Layer.mergeAll(
+              ProjectionStore.layerMemory,
+              Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+            ),
+          ),
         ),
       ),
     );
@@ -224,18 +226,33 @@ it.effect("binds the application census without any Workstream registry runtime"
 it.effect("keeps other collector sources and cannot promote unsupported Workstream counts", () =>
   Effect.gen(function* () {
     const old = yield* (yield* harness()).call(["decision-snapshot"]);
-    const host = { ...old.sources.host, status: "observed" as const, reason: null, values: { cpu_used_percent: 17 } };
-    const h = yield* harness(false, 0, {}, {
-      collect: () => encodeSnapshotJson({
-        ...old,
-        coverage: "complete",
-        sources: {
-          ...old.sources,
-          host,
-          workstreams: { ...old.sources.workstreams, status: "observed", values: { total: 99, active: 99 } },
-        },
-      }).pipe(Effect.mapError(() => new CollectorFailure("collector_failed"))),
-    });
+    const host = {
+      ...old.sources.host,
+      status: "observed" as const,
+      reason: null,
+      values: { cpu_used_percent: 17 },
+    };
+    const h = yield* harness(
+      false,
+      0,
+      {},
+      {
+        collect: () =>
+          encodeSnapshotJson({
+            ...old,
+            coverage: "complete",
+            sources: {
+              ...old.sources,
+              host,
+              workstreams: {
+                ...old.sources.workstreams,
+                status: "observed",
+                values: { total: 99, active: 99 },
+              },
+            },
+          }).pipe(Effect.mapError(() => new CollectorFailure("collector_failed"))),
+      },
+    );
     const result = yield* h.call(["decision-snapshot"]);
     expect(result.coverage).toBe("partial");
     expect(result.sources.host).toEqual(host);
@@ -253,29 +270,47 @@ it.effect("keeps other collector sources and cannot promote unsupported Workstre
         authorization_revision: null,
       },
     });
-    const legacy = { ...result, sources: {
-      ...result.sources,
-      workstreams: { ...old.sources.workstreams, status: "partial" as const, scope: {
-        native_read: { contract: "workstreams-read/1.0.0", historical: true },
-        registry_id: "https://historical.example.test",
-        owner_id: "historical-owner",
-        registry_version: 7,
-      } },
-    } };
+    const legacy = {
+      ...result,
+      sources: {
+        ...result.sources,
+        workstreams: {
+          ...old.sources.workstreams,
+          status: "partial" as const,
+          scope: {
+            native_read: { contract: "workstreams-read/1.0.0", historical: true },
+            registry_id: "https://historical.example.test",
+            owner_id: "historical-owner",
+            registry_version: 7,
+          },
+        },
+      },
+    };
     expect(yield* decodeSnapshotJson(yield* encodeSnapshotJson(legacy))).toEqual(legacy);
   }),
 );
 
-it.effect("round trips the fallback through the immutable collector and proves personal scope is rejected", () =>
-  Effect.gen(function* () {
-    let launches = 0;
-    const collector: DecisionSnapshotCollector["Service"] = {
-      collect: (purpose, input) => Effect.gen(function* () {
-        const packet = yield* input;
-        return yield* Effect.tryPromise({
-          try: (signal) => new Promise<string>((resolve, reject) => {
-            launches++;
-            NodeChildProcess.execFile("/usr/bin/python3", ["-I", "-S", "-B", "-c", `
+it.effect(
+  "round trips the fallback through the immutable collector and proves personal scope is rejected",
+  () =>
+    Effect.gen(function* () {
+      let launches = 0;
+      const collector: DecisionSnapshotCollector["Service"] = {
+        collect: (purpose, input) =>
+          Effect.gen(function* () {
+            const packet = yield* input;
+            return yield* Effect.tryPromise({
+              try: (signal) =>
+                new Promise<string>((resolve, reject) => {
+                  launches++;
+                  NodeChildProcess.execFile(
+                    "/usr/bin/python3",
+                    [
+                      "-I",
+                      "-S",
+                      "-B",
+                      "-c",
+                      `
 import asyncio, copy, hashlib, importlib.machinery, importlib.util, json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 assert hashlib.sha256(path.read_bytes()).hexdigest() == '089bd5fc2c03ec7b7dd2b3b031a68bc1145d3d38f7ad74a9cf4e0c653555d40a'
@@ -295,33 +330,51 @@ except module.Invalid:
 else:
     raise AssertionError('collector unexpectedly accepts personal scope')
 print(json.dumps(asyncio.run(module.compose({}, purpose=sys.argv[2], native=packet))))
-`, NodeURL.fileURLToPath(new URL("./fixtures/decision_snapshot.py.fixture", import.meta.url)), purpose, packet],
-              { signal, timeout: 5_000, maxBuffer: 262_144 },
-              (error, stdout) => error ? reject(error) : resolve(stdout));
+`,
+                      NodeURL.fileURLToPath(
+                        new URL("./fixtures/decision_snapshot.py.fixture", import.meta.url),
+                      ),
+                      purpose,
+                      packet,
+                    ],
+                    { signal, timeout: 5_000, maxBuffer: 262_144 },
+                    (error, stdout) => (error ? reject(error) : resolve(stdout)),
+                  );
+                }),
+              catch: () => new CollectorFailure("collector_failed"),
+            });
           }),
-          catch: () => new CollectorFailure("collector_failed"),
-        });
-      }),
-    };
-    const h = yield* harness(false, 0, {
-      readOperatingCounts: () => Effect.succeed({
-        total: 4,
-        operating: 2,
-        foregroundWaitingApproval: 0,
-        foregroundWaitingInput: 0,
-        foregroundWaitingPlan: 0,
-        backgroundOperating: 0,
-        backgroundUnknown: 0,
-        backgroundSampledAt: DateTime.formatIso(DateTime.nowUnsafe()),
-      }),
-    }, collector);
-    const result = yield* h.call(["decision-snapshot"]);
-    expect(launches).toBe(1);
-    expect(result.sources.threads).toMatchObject({ status: "observed", values: { total: 4, operating: 2 } });
-    expect(result.sources.host.reason).toBe("source_not_bound");
-    expect(result.sources.workstreams).toMatchObject({
-      status: "unavailable", reason: "registry_counts_unavailable", values: {},
-    });
-    expect(yield* decodeSnapshotJson(yield* encodeSnapshotJson(result))).toEqual(result);
-  }),
+      };
+      const h = yield* harness(
+        false,
+        0,
+        {
+          readOperatingCounts: () =>
+            Effect.succeed({
+              total: 4,
+              operating: 2,
+              foregroundWaitingApproval: 0,
+              foregroundWaitingInput: 0,
+              foregroundWaitingPlan: 0,
+              backgroundOperating: 0,
+              backgroundUnknown: 0,
+              backgroundSampledAt: DateTime.formatIso(DateTime.nowUnsafe()),
+            }),
+        },
+        collector,
+      );
+      const result = yield* h.call(["decision-snapshot"]);
+      expect(launches).toBe(1);
+      expect(result.sources.threads).toMatchObject({
+        status: "observed",
+        values: { total: 4, operating: 2 },
+      });
+      expect(result.sources.host.reason).toBe("source_not_bound");
+      expect(result.sources.workstreams).toMatchObject({
+        status: "unavailable",
+        reason: "registry_counts_unavailable",
+        values: {},
+      });
+      expect(yield* decodeSnapshotJson(yield* encodeSnapshotJson(result))).toEqual(result);
+    }),
 );

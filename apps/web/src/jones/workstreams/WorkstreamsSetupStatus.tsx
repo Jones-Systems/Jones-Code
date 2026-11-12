@@ -1,7 +1,4 @@
-import {
-  SettingsRow,
-  SettingsSection,
-} from "../../components/settings/settingsLayout";
+import { SettingsRow, SettingsSection } from "../../components/settings/settingsLayout";
 import { useEnvironments } from "../../state/environments";
 import { usePersonalWorkstreams } from "../../state/workstreamsPersonal";
 export const personalStatusLabels = {

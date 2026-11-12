@@ -23,15 +23,17 @@ const historical = {
   next_cursor: null,
   partial: false,
   unavailable: [],
-  threads: [{
-    thread_key: '["historical-host","historical-environment","historical-thread"]',
-    registration: null,
-    summary: null,
-    activity: null,
-    freshness: {},
-    associations: [],
-    native_memberships: [{ workstream_ref: "native:legacy-id:kept", placement: legacyPlacement }],
-  }],
+  threads: [
+    {
+      thread_key: '["historical-host","historical-environment","historical-thread"]',
+      registration: null,
+      summary: null,
+      activity: null,
+      freshness: {},
+      associations: [],
+      native_memberships: [{ workstream_ref: "native:legacy-id:kept", placement: legacyPlacement }],
+    },
+  ],
 };
 
 describe("voice membership wire compatibility", () => {
@@ -57,8 +59,10 @@ describe("voice membership wire compatibility", () => {
         personal_memberships: [membership],
       })),
     };
-    expect(Schema.encodeSync(ThreadRegistryComposedSnapshot)(
-      Schema.decodeUnknownSync(ThreadRegistryComposedSnapshot)(current),
-    )).toEqual(current);
+    expect(
+      Schema.encodeSync(ThreadRegistryComposedSnapshot)(
+        Schema.decodeUnknownSync(ThreadRegistryComposedSnapshot)(current),
+      ),
+    ).toEqual(current);
   });
 });

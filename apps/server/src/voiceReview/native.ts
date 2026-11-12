@@ -73,7 +73,9 @@ export const makeVoiceReviewNativeReadPort = (
           if (!trusted.has(key) || seen.has(key)) return yield* new VoiceReviewUnavailableError({});
           seen.add(key);
         }
-        const memberships = yield* Effect.forEach(identities, (identity) => composition.readThread(identity));
+        const memberships = yield* Effect.forEach(identities, (identity) =>
+          composition.readThread(identity),
+        );
         return memberships.filter((item) => item !== null);
       }).pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
     ),

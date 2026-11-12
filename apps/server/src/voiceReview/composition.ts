@@ -46,28 +46,25 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
   }));
   return makeVoiceReviewNativeReadPort({
     readIdentities: () => identities,
-    readThread: Effect.fn("VoiceReviewComposition.readPersonalMembership")(
-      function* (request: VoiceReviewThreadIdentity) {
-        const currentEnvironment = yield* identity.getEnvironmentId;
-        if (
-          currentEnvironment !== environmentId ||
-          request.source_instance_id !== currentEnvironment
-        )
-          return yield* new VoiceReviewUnavailableError({});
-        const { assignment, workstream } = yield* personal.readThread(
-          ThreadId.make(request.native_thread_id),
-        ).pipe(Effect.mapError(() => new VoiceReviewUnavailableError({})));
-        if (workstream === null) return null;
-        return {
-          workstream_ref: `native:${workstream.id}`,
-          workstream_id: workstream.id,
-          name: workstream.name,
-          environment_id: currentEnvironment,
-          thread_id: assignment.threadId,
-          revision: assignment.revision,
-        } satisfies VoiceReviewPersonalMembership;
-      },
-    ),
+    readThread: Effect.fn("VoiceReviewComposition.readPersonalMembership")(function* (
+      request: VoiceReviewThreadIdentity,
+    ) {
+      const currentEnvironment = yield* identity.getEnvironmentId;
+      if (currentEnvironment !== environmentId || request.source_instance_id !== currentEnvironment)
+        return yield* new VoiceReviewUnavailableError({});
+      const { assignment, workstream } = yield* personal
+        .readThread(ThreadId.make(request.native_thread_id))
+        .pipe(Effect.mapError(() => new VoiceReviewUnavailableError({})));
+      if (workstream === null) return null;
+      return {
+        workstream_ref: `native:${workstream.id}`,
+        workstream_id: workstream.id,
+        name: workstream.name,
+        environment_id: currentEnvironment,
+        thread_id: assignment.threadId,
+        revision: assignment.revision,
+      } satisfies VoiceReviewPersonalMembership;
+    }),
   });
 });
 

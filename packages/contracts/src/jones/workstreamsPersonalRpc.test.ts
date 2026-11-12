@@ -42,7 +42,9 @@ describe("personal Workstream RPC compatibility", () => {
   it("keeps the capability absent on old servers and gates it to version one", () => {
     const decode = Schema.decodeUnknownSync(ExecutionEnvironmentCapabilities);
     expect(decode({}).workstreamsPersonal).toBeUndefined();
-    expect(decode({ workstreamsPersonal: { version: 1 } }).workstreamsPersonal).toEqual({ version: 1 });
+    expect(decode({ workstreamsPersonal: { version: 1 } }).workstreamsPersonal).toEqual({
+      version: 1,
+    });
     expect(() => decode({ workstreamsPersonal: { version: 2 } })).toThrow();
   });
 });
@@ -90,8 +92,6 @@ describe("Voice personal membership compatibility", () => {
         ...thread,
         native_memberships: [{ workstream_ref: "native:legacy", placement: { historical: true } }],
       }).native_memberships,
-    ).toEqual([
-      { workstream_ref: "native:legacy", placement: { historical: true } },
-    ]);
+    ).toEqual([{ workstream_ref: "native:legacy", placement: { historical: true } }]);
   });
 });

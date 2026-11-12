@@ -163,7 +163,9 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
           };
           // The bound v1 collector accepts only registry identity scope. Sending personal
           // environment scope would invalidate the entire packet, including unrelated sources.
-          const registry = Effect.succeed(absentEntry("registry_counts_unavailable", registryScope));
+          const registry = Effect.succeed(
+            absentEntry("registry_counts_unavailable", registryScope),
+          );
           const nativeCounts = yield* Effect.forkChild(
             Effect.all([threads, registry], { concurrency: 2 }),
           );

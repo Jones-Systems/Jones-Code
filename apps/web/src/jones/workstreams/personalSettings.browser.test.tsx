@@ -32,7 +32,9 @@ vi.mock("../../state/session", async (importOriginal) => ({
   useEnvironmentsWithScope: () => new Set(),
 }));
 vi.mock("../../hooks/useSettings", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../hooks/useSettings")>()), usePrimarySettingsAvailable: () => true }));
+  ...(await importOriginal<typeof import("../../hooks/useSettings")>()),
+  usePrimarySettingsAvailable: () => true,
+}));
 vi.mock("../../components/settings/useScopedSettings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../components/settings/useScopedSettings")>()),
   useScopedSettingsMixed: () => false,
