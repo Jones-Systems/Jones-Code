@@ -1,3 +1,8 @@
+import {
+  HistoryNotApplied,
+  PromptNotApplied,
+  historyInjectionRejection,
+} from "../../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import { codexCommandApprovalOptions } from "../../jones/threadMonitor/codexCommandApprovalOptions.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { GoalNotificationNotDelivered } from "../../jones/goals/GoalNotificationDelivery.ts";
@@ -8289,7 +8294,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     threadId: turnInput.threadId,
                     providerThreadId: turnInput.providerThread.id,
                     runId: turnInput.runId,
-                    cause,
+                    cause:
+                      request === undefined || !request.startDispatched
+                        ? new PromptNotApplied({ cause })
+                        : cause,
                   }),
               ),
             );
@@ -9068,26 +9076,36 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           injectHistory: Effect.fn("CodexAdapterV2.injectHistory")(
             function* (input) {
-              if (hasUnknownNativeStart())
-                return yield* toProtocolError(
-                  "Codex has an unconfirmed native effect; history injection is not safe.",
-                );
-              yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
-                threadId: input.providerThread.appThreadId,
-                runtimeGeneration: currentProducer.generation,
-              });
-              const threadId = yield* getNativeThreadId(input.providerThread);
-              return yield* client
+              const prepared = yield* Effect.gen(function* () {
+                if (hasUnknownNativeStart())
+                  return yield* toProtocolError(
+                    "Codex has an unconfirmed native effect; history injection is not safe.",
+                  );
+                const producer = (yield* CodexProducerContext) ?? currentProducer;
+                yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                  threadId: input.providerThread.appThreadId,
+                  runtimeGeneration: producer.generation,
+                });
+                const threadId = yield* getNativeThreadId(input.providerThread);
+                const items = historyResponseItems(input.messages, input.context);
+                yield* requestAdmission("thread/inject_items", { threadId }, producer);
+                return { producer, threadId, items };
+              }).pipe(Effect.mapError((cause) => new HistoryNotApplied({ cause })));
+              return yield* prepared.producer.client
                 .request("thread/inject_items", {
-                  threadId,
-                  items: historyResponseItems(input.messages, input.context),
+                  threadId: prepared.threadId,
+                  items: prepared.items,
                 })
                 .pipe(
                   Effect.as(true),
-                  // Retry only unknown-method errors, which precede history mutation. Transport or payload errors leave delivery ambiguous.
                   Effect.catchTags({
-                    CodexAppServerRequestError: (error) =>
-                      error.code === -32601 ? Effect.succeed(false) : Effect.fail(error),
+                    CodexAppServerRequestError: (error) => {
+                      const outcome = historyInjectionRejection(error);
+                      if (outcome === "unsupported") return Effect.succeed(false);
+                      return Effect.fail(
+                        outcome === "not_applied" ? new HistoryNotApplied({ cause: error }) : error,
+                      );
+                    },
                   }),
                 );
             },

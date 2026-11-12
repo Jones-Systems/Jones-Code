@@ -1,3 +1,5 @@
+import * as CodexErrors from "effect-codex-app-server/errors";
+import { HistoryNotApplied } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
@@ -499,6 +501,8 @@ function makeLocalCommandHarness(
     readonly handoffRecovery?: {
       readonly compact?: ProviderAdapter.ProviderAdapterV2SessionRuntime["compactForContextHandoff"];
       readonly usedTokens?: number;
+      readonly inject?: ProviderAdapter.ProviderAdapterV2SessionRuntime["injectHistory"];
+      readonly startFailure?: ProviderAdapter.ProviderAdapterV2Error;
     };
     readonly effortProof?: {
       readonly selection?: ModelSelection;
@@ -1015,13 +1019,18 @@ function makeLocalCommandHarness(
                               },
                             },
                       ),
+                    ...(input.handoffRecovery?.inject === undefined
+                      ? {}
+                      : { injectHistory: input.handoffRecovery.inject }),
                     ...(input.handoffRecovery?.compact === undefined
                       ? {}
                       : { compactForContextHandoff: input.handoffRecovery.compact }),
                     startTurn: (value: ProviderAdapter.ProviderAdapterV2TurnInput) =>
-                      Effect.sync(() => {
-                        dispatched.push(value);
-                      }),
+                      input.handoffRecovery?.startFailure === undefined
+                        ? Effect.sync(() => {
+                            dispatched.push(value);
+                          })
+                        : Effect.fail(input.handoffRecovery.startFailure),
                   } as never)
                 : Effect.die("A local command must not open a native session."),
   );
@@ -1178,7 +1187,13 @@ function makeLocalCommandHarness(
           hasStoppedRuntime: () => Effect.succeed(false),
           assertRuntimeStopStartAllowed: () => Effect.void,
           assertImportedHistoryStartAllowed: () => Effect.void,
-          write: () => (input.effortProof?.duringHandoff ?? Effect.void).pipe(Effect.as([])),
+          write: ({ events: incoming }) =>
+            Effect.sync(() => {
+              for (const event of incoming) {
+                events.push(event);
+                projection = ProjectionStore.applyToProjection(projection, event);
+              }
+            }).pipe(Effect.andThen(input.effortProof?.duringHandoff ?? Effect.void), Effect.as([])),
         }),
         IdAllocator.layer,
         layerWorktreeLocation(input.worktreesDir),
@@ -2692,5 +2707,135 @@ effectIt.effect.each([
       expect(harness.recreateCheckout).not.toHaveBeenCalled();
       expect(harness.open).not.toHaveBeenCalled();
       expect(harness.startRootRun).not.toHaveBeenCalled();
+    }),
+);
+
+// Jones integration exception: this harness owns provider loading, the current
+// attempt and persisted handoffs, which together determine same-native retry.
+effectIt.effect(
+  "retries proved-unsent history on the same native conversation with its paused goal",
+  () =>
+    Effect.gen(function* () {
+      let injections = 0;
+      const goal = { objective: "Preserve synthetic progress", status: "paused" as const };
+      const harness = makeLocalCommandHarness({
+        text: "Continue after a refused injection",
+        plannedResume: "same",
+        goal,
+        handoffRecovery: {
+          usedTokens: 1000,
+          inject: () =>
+            Effect.suspend(() =>
+              ++injections === 1
+                ? Effect.fail(
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: ProviderDriverKind.make("codex"),
+                      detail: "Synthetic refused history",
+                      cause: new HistoryNotApplied({ cause: new Error("Local admission refused") }),
+                    }),
+                  )
+                : Effect.succeed(true),
+            ),
+        },
+        effortProof: {
+          models: effortModels,
+          duringHandoff: Effect.void,
+          getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+        },
+      });
+      const originalRef = harness.projection().providerThreads.at(-1)?.nativeThreadRef;
+      yield* Effect.exit(harness.start);
+      expect(injections).toBe(1);
+      expect(harness.dispatched).toHaveLength(0);
+      expect(harness.projection().contextHandoffs[0]?.delivery).toBeUndefined();
+      const current = harness.projection();
+      harness.setProjection({
+        ...current,
+        runs: current.runs.map((run) => ({
+          ...run,
+          status: "starting",
+          completedAt: null,
+        })),
+      });
+      yield* harness.start;
+      expect(injections).toBe(2);
+      expect(harness.dispatched).toHaveLength(1);
+      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+      expect(harness.projection().contextHandoffs[0]?.delivery?.status).toBe("injected");
+      expect(harness.projection().providerThreads.at(-1)?.nativeThreadRef).toEqual(originalRef);
+      expect(harness.projection().providerThreads.at(-1)?.goal).toEqual(goal);
+    }),
+);
+
+effectIt.effect(
+  "restores unsent inline history when settings outlive the current running attempt",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Unsent inline request",
+        plannedResume: "same",
+        handoffRecovery: { usedTokens: 1000, inject: () => Effect.succeed(false) },
+        effortProof: {
+          models: effortModels,
+          duringHandoff: Effect.void,
+          getSettings: Effect.sync(() => {
+            harness.interruptRun();
+            return DEFAULT_SERVER_SETTINGS;
+          }),
+        },
+      });
+      yield* harness.start;
+      expect(harness.dispatched).toHaveLength(0);
+      expect(harness.projection().runs.at(-1)?.status).toBe("interrupted");
+      expect(harness.projection().contextHandoffs[0]?.delivery).toBeUndefined();
+      expect(
+        harness.events
+          .filter((event) => event.type === "context-handoff.updated")
+          .map((event) =>
+            event.type === "context-handoff.updated" ? event.payload.delivery?.status : undefined,
+          ),
+      ).toEqual(["pending", undefined]);
+    }),
+);
+
+effectIt.effect.each([
+  { operation: "encode-payload", code: -32602, restored: true },
+  { operation: "receive-response", code: -32602, restored: true },
+  { operation: "decode-payload", code: -32602, restored: false },
+  { operation: "receive-response", code: -32603, restored: false },
+] as const)(
+  "inline Codex prompt failure restores only attributed non-applying attempts: %j",
+  (row) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Inline native request",
+        plannedResume: "same",
+        handoffRecovery: {
+          usedTokens: 1000,
+          inject: () => Effect.succeed(false),
+          startFailure: new ProviderAdapter.ProviderAdapterTurnStartError({
+            driver: ProviderDriverKind.make("codex"),
+            threadId: ThreadId.make("thread-native-account-command"),
+            providerThreadId: ProviderThreadId.make("provider-thread-native-account-command"),
+            runId: RunId.make("run-native-account-command"),
+            cause: new CodexErrors.CodexAppServerRequestError({
+              operation: row.operation,
+              code: row.code,
+              method: "turn/start",
+              errorMessage: "Synthetic native prompt rejection",
+            }),
+          }),
+        },
+        effortProof: {
+          models: effortModels,
+          duringHandoff: Effect.void,
+          getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+        },
+      });
+      yield* Effect.exit(harness.start);
+      expect(harness.dispatched).toHaveLength(0);
+      expect(harness.projection().contextHandoffs[0]?.delivery?.status).toBe(
+        row.restored ? undefined : "pending",
+      );
     }),
 );
