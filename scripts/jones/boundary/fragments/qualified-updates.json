@@ -116,7 +116,8 @@
     "apps/server/src/jones/updates/recoverQualifiedStage.ts",
     "apps/server/src/jones/updates/recoverQualifiedStage.test.ts",
     "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts",
-    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts"
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts",
+    "apps/web/src/jones/updates/qualifiedBuildReview.browser.test.tsx"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",

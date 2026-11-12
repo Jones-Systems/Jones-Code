@@ -1465,7 +1465,9 @@
         "apps/server/src/persistence/Migrations/066_RepairClientSettlementTimestamps.test.ts",
         "apps/server/src/jones/updates/recoverStagedSelection.test.ts",
         "scripts/jones/updates/recover-staged-selection.test.ts",
-        "scripts/jones/updates/desktop-worker-smoke.test.ts"
+        "scripts/jones/updates/desktop-worker-smoke.test.ts",
+        "apps/web/src/jones/updates/qualifiedBuildReview.browser.test.tsx",
+        "packages/contracts/src/jones/jonesUpdates.catalog.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/ServerSettingsPersistence.test.ts apps/server/src/serverSettings.test.ts",
@@ -1484,7 +1486,8 @@
         "vp test run packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/jonesSourceRelation.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/updates/sourceRelation.test.ts apps/server/src/jones/updates/http.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run packages/contracts/src/jones/environmentIdentity.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/persistence/Migrations/064_CanonicalizeThreadPullRequestLinks.test.ts apps/server/src/persistence/Migrations/066_RepairClientSettlementTimestamps.test.ts apps/server/src/jones/updates/recoverStagedSelection.test.ts scripts/jones/updates/recover-staged-selection.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run scripts/jones/updates/desktop-worker-smoke.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run scripts/jones/updates/desktop-worker-smoke.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/updates/qualifiedBuildReview.browser.test.tsx packages/contracts/src/jones/jonesUpdates.catalog.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
