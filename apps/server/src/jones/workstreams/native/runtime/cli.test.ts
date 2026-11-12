@@ -14,6 +14,10 @@ import * as Layer from "effect/Layer";
 import { Command } from "effect/cli";
 import * as TestConsole from "effect/testing/TestConsole";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Config from "../../../../config.ts";
+import migration from "../../../persistence/Migrations/125_JonesWorkstreamsNative.ts";
+import { RegistryError } from "../registry/session.ts";
 import * as SecretStore from "../../../../auth/ServerSecretStore.ts";
 import * as Admin from "../cli.ts";
 import * as Keys from "../crypto/keyProvider.ts";
@@ -405,6 +409,151 @@ const keyRows = (database: string) => {
     db.close();
   }
 };
+
+it.effect(
+  "member-init resume preserves orphan bytes, converges, and resolves the active key",
+  () => {
+    const f = memberHome();
+    const file = NodePath.join(f.secrets, memberKeyName + ".bin");
+    const bytes = Buffer.alloc(32, 73);
+    NodeFS.mkdirSync(f.secrets, { recursive: true, mode: 0o700 });
+    NodeFS.writeFileSync(file, bytes, { mode: 0o600 });
+    const provider = Keys.layer.pipe(
+      Layer.provide(SecretStore.layer.pipe(Layer.provide(Config.layerTest(process.cwd(), f.home)))),
+      Layer.provide(NodeSqliteClient.layer({ filename: f.database })),
+    );
+    return Effect.gen(function* () {
+      expect(yield* refusal(run(memberKeys(f.home)))).toBe("key_exists");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        yield* run([...memberKeys(f.home), "--resume"]);
+        expect(NodeFS.readFileSync(file)).toEqual(bytes);
+        expect(keyRows(f.database)).toHaveLength(1);
+      }
+      const resolved = yield* Effect.gen(function* () {
+        const keys = yield* Keys.WorkstreamsKeyProvider;
+        const id = yield* keys.activeKeyId({ ...Fixture.scope, key_scope: "local" });
+        expect(id).toBe(memberRequest.local_key_id);
+        return yield* keys.get(id);
+      }).pipe(Effect.provide(provider));
+      expect(Buffer.from(resolved)).toEqual(bytes);
+      const lines = (yield* TestConsole.logLines).map(String);
+      expect(JSON.parse(lines.at(-1)!)).toEqual({ created: [] });
+      expect(lines.join("\n")).not.toContain(bytes.toString("base64"));
+      NodeFS.rmSync(file);
+      for (const resume of [[], ["--resume"]])
+        expect(yield* refusal(run([...memberKeys(f.home), ...resume]))).toBe("key_file_missing");
+      expect(NodeFS.existsSync(file)).toBe(false);
+      expect(keyRows(f.database)).toHaveLength(1);
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)),
+    );
+  },
+);
+
+it.effect("member-init resume refuses malformed files and conflicting rows untouched", () => {
+  const f = memberHome();
+  const file = NodePath.join(f.secrets, memberKeyName + ".bin");
+  NodeFS.mkdirSync(f.secrets, { recursive: true, mode: 0o700 });
+  NodeFS.writeFileSync(file, Buffer.alloc(31, 9), { mode: 0o600 });
+  return Effect.gen(function* () {
+    expect(yield* refusal(run([...memberKeys(f.home), "--resume"]))).toBe("invalid_key");
+    expect(NodeFS.readFileSync(file)).toEqual(Buffer.alloc(31, 9));
+    expect(keyRows(f.database)).toEqual([]);
+    NodeFS.writeFileSync(file, Buffer.alloc(32, 9));
+    const db = new NodeSqlite.DatabaseSync(f.database);
+    try {
+      db.prepare("INSERT INTO jones_workstreams_keys VALUES (?, ?, 'home', 'active', ?)").run(
+        memberRequest.local_key_id,
+        Fixture.scope.registry_instance_id,
+        Fixture.now,
+      );
+    } finally {
+      db.close();
+    }
+    const before = keyRows(f.database);
+    expect(yield* refusal(run([...memberKeys(f.home), "--resume"]))).toBe("key_exists");
+    expect(NodeFS.readFileSync(file)).toEqual(Buffer.alloc(32, 9));
+    expect(keyRows(f.database)).toEqual(before);
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, TestConsole.layer, NetService.layer)));
+});
+
+it.effect.each([
+  "committed",
+  "readback-failed",
+  "rollback",
+  "conflicting",
+  "different-at",
+] as const)("member-init reconciles transaction failure: %s", (outcome) => {
+  const f = memberHome();
+  const file = NodePath.join(f.secrets, memberKeyName + ".bin");
+  const resources = Layer.mergeAll(
+    SecretStore.layer.pipe(Layer.provide(Config.layerTest(process.cwd(), f.home))),
+    NodeSqliteClient.layer({ filename: f.database }),
+  ).pipe(Layer.provideMerge(NodeServices.layer));
+  return Effect.gen(function* () {
+    yield* migration;
+    const sql = yield* SqlClient.SqlClient;
+    let transactionEnded = false;
+    const fault = new RegistryError({ code: "synthetic_transaction_failure" });
+    // Preserve real SQLite commit/rollback; inject failure only at its acknowledgement boundary.
+    const wrapped = new Proxy(sql, {
+      get(target, property, receiver) {
+        if (property !== "withTransaction") return Reflect.get(target, property, receiver);
+        return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          (outcome === "rollback"
+            ? sql.withTransaction(effect.pipe(Effect.andThen(Effect.fail(fault))))
+            : sql.withTransaction(effect).pipe(Effect.andThen(Effect.fail(fault)))
+          ).pipe(
+            Effect.tapError(() =>
+              Effect.sync(() => {
+                transactionEnded = true;
+              }),
+            ),
+          );
+      },
+      apply(target, thisArg, args) {
+        if (transactionEnded && outcome === "readback-failed") return Effect.fail(fault);
+        const query = Reflect.apply(target, thisArg, args);
+        return transactionEnded && (outcome === "conflicting" || outcome === "different-at")
+          ? query.pipe(
+              Effect.map(() => [
+                {
+                  key_id: memberRequest.local_key_id,
+                  registry_instance_id: Fixture.scope.registry_instance_id,
+                  scope: outcome === "conflicting" ? "home" : "local",
+                  state: "active",
+                  created_at: "different-at",
+                },
+              ]),
+            )
+          : query;
+      },
+    });
+    const result = yield* Effect.result(
+      Effect.gen(function* () {
+        return yield* (yield* Admin.NativeMemberKeyAdmin).initialize(memberRequest);
+      }).pipe(
+        Effect.provide(
+          Admin.memberKeyLayer.pipe(Layer.provide(Layer.succeed(SqlClient.SqlClient, wrapped))),
+        ),
+      ),
+    );
+    if (outcome === "committed") {
+      expect(result._tag).toBe("Success");
+      expect(result._tag === "Success" && result.success).toEqual({ created: [memberKeyName] });
+      const keys = yield* Keys.WorkstreamsKeyProvider;
+      const id = yield* keys.activeKeyId({ ...Fixture.scope, key_scope: "local" });
+      expect(id).toBe(memberRequest.local_key_id);
+      expect(Buffer.from(yield* keys.get(id))).toEqual(NodeFS.readFileSync(file));
+    } else {
+      expect(result._tag === "Failure" && result.failure.code).toBe(
+        outcome === "rollback" ? "synthetic_transaction_failure" : "outcome_unknown",
+      );
+    }
+    expect(NodeFS.existsSync(file)).toBe(outcome !== "rollback");
+    expect(keyRows(f.database)).toHaveLength(outcome === "rollback" ? 0 : 1);
+  }).pipe(Effect.provide(Keys.layer.pipe(Layer.provideMerge(resources))));
+});
 
 it.effect(
   "keys member-init provisions the member's local key once and the key provider resolves it",
