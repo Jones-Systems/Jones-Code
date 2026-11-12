@@ -753,7 +753,15 @@ NodeTest.test(
   async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     try {
-      for (const mode of ["timeout", "abort", "oversize", "nonzero", "missing", "unclosed", "kill-error"]) {
+      for (const mode of [
+        "timeout",
+        "abort",
+        "oversize",
+        "nonzero",
+        "missing",
+        "unclosed",
+        "kill-error",
+      ]) {
         const child = new NodeEvents.EventEmitter();
         child.stdout = new NodeStream.PassThrough();
         child.stderr = new NodeStream.PassThrough();
