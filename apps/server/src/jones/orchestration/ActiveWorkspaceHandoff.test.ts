@@ -1,3 +1,6 @@
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as Cause from "effect/Cause";
@@ -534,7 +537,16 @@ it.live.each([
       if (scenario === "failure before planning") yield* failStream();
       assert.equal(actualConfigs.length, 1);
       assert.equal(actualConfigs[0]!.cwd, process.cwd());
-      assert.isTrue(actualConfigs[0]!.baseDir.startsWith(process.env.TMPDIR!));
+      const relativeBaseDir = NodePath.relative(
+        NodeFS.realpathSync(NodeOS.tmpdir()),
+        NodeFS.realpathSync(actualConfigs[0]!.baseDir),
+      );
+      assert.isTrue(
+        relativeBaseDir !== "" &&
+          relativeBaseDir !== ".." &&
+          !relativeBaseDir.startsWith(`..${NodePath.sep}`) &&
+          !NodePath.isAbsolute(relativeBaseDir),
+      );
       const cfg = Context.get(yield* Layer.build(fixtureConfig), ServerConfig.ServerConfig);
       assert.notEqual(cfg.baseDir, actualConfigs[0]!.baseDir);
       let record: Conversation.HandoffRecord = {
