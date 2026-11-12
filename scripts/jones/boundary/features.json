@@ -321,6 +321,7 @@
         "apps/server/src/jones/goals/preserveGoalConversation.test.ts",
         "apps/server/src/jones/goals/CodexGoalControl.test.ts",
         "apps/server/src/jones/goals/GoalControl.test.ts",
+        "apps/server/src/jones/goals/GoalControl.integration.test.ts",
         "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
         "packages/contracts/src/jones/threadGoal.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
@@ -3280,6 +3281,11 @@
         "apps/mobile/src/features/workstreams/personalStorage.test.ts"
       ],
       "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered."
+    },
+    {
+      "id": "active-workspace-handoff",
+      "tests": ["apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts"],
+      "scope": "A workspace metadata change records the existing run.interrupt before detaching a live session owned by a running run. Handoff interruption requires a live session at planning and control; its existing session-release permit remains held through confirmed native control and durable settlement. A genuine stream failure that removes the session before planning or control retains failure settlement and the provider_failure queue hold. Explicit Stop and subagent control retain their existing behavior. These shared-file hooks use existing private orchestrator, effect-worker and session lifecycle machinery rather than duplicate it. The Jones-owned fake-provider integration exercises actual handoff, session removal, ingestion and continuation, including failure before planning, before control and after lease acquisition. A separate per-runtime outcome permit orders observed stream-failure ownership before release waits against handoff settlement admission after control; settlement rechecks captured runtime identity and the current run-attempt binding. Deterministic fixtures establish this transition only, not historical cause or live native qualification."
     },
     {
       "id": "preparation-history-reconciliation",

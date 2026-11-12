@@ -6,6 +6,7 @@
     "apps/server/src/jones/goals/CodexGoalControl.test.ts",
     "apps/server/src/jones/goals/GoalControl.ts",
     "apps/server/src/jones/goals/GoalControl.test.ts",
+    "apps/server/src/jones/goals/GoalControl.integration.test.ts",
     "apps/server/src/jones/goals/GoalStartDispatch.ts",
     "apps/server/src/jones/goals/tool.ts",
     "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
