@@ -7,8 +7,11 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import * as NodeVM from "node:vm";
+import { jonesNativeHelperSource } from "../../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts";
 import {
   bindPackagedDesktopPair,
+  preparePackagedDesktopRelaunchPair,
+  observePackagedDesktopInstallRelaunch,
   observePackagedDesktopInstallRefusal,
   validatePackagedDesktopGuiSession,
   bindPackagedDesktopPreparedIntent,
@@ -1400,3 +1403,701 @@ NodeTest.test(
     }
   },
 );
+
+async function relaunchFixture(body, managed) {
+  return fixture(async (artifacts) => {
+    const root = await managed.ownership.temporary(NodePath.join(managed.root, "case-"));
+    const candidatePath = NodePath.join(root, "Candidate.app");
+    await NodeFSP.cp(artifacts.candidate.appPath, candidatePath, {
+      recursive: true,
+      verbatimSymlinks: true,
+    });
+    const candidate = {
+      ...artifacts.candidate,
+      appPath: candidatePath,
+      executablePath: NodePath.join(candidatePath, "Contents/MacOS/Jones"),
+    };
+    const mergedCandidate = Object.fromEntries(
+      ["sourceSha", "sourceTree", "appDigest"].map((key) => [key, artifacts.active[key]]),
+    );
+    const storageBudget = { additionalPeakBytes: 16 * 1024 * 1024, reserveBytes: 1024 * 1024 };
+    const pair = await preparePackagedDesktopRelaunchPair({
+      storageBudget,
+      fixtureRoot: root,
+      previousArtifact: artifacts.active,
+      candidate,
+      mergedCandidate,
+    });
+    const home = NodePath.join(root, "home");
+    const profile = NodePath.join(root, "profile");
+    const temporary = NodePath.join(root, "tmp");
+    const updates = NodePath.join(home, "runtime/jones-updates");
+    await NodeFSP.mkdir(NodePath.join(updates, "staging"), { recursive: true, mode: 0o700 });
+    await NodeFSP.mkdir(profile, { mode: 0o700 });
+    await NodeFSP.mkdir(temporary, { mode: 0o700 });
+    const write = (path, value) =>
+      NodeFSP.writeFile(path, typeof value === "string" ? value : JSON.stringify(value), {
+        mode: 0o600,
+      });
+    const active = {
+      protocol: 1,
+      owner: "desktop",
+      home,
+      profile,
+      generation: "previous",
+      databasePath: NodePath.join(home, "state.sqlite"),
+      environmentId: "synthetic",
+      ...Object.fromEntries(
+        ["appPath", "executablePath", "sourceSha", "sourceTree", "appDigest", "version"].map(
+          (key) => [key, pair.active[key]],
+        ),
+      ),
+    };
+    const manifest = NodePath.join(home, "runtime/jones-active-install.json");
+    await write(manifest, active);
+    await write(active.databasePath, "synthetic database");
+    const selection = NodePath.join(updates, "staging/selection.json");
+    const stagedHandle = "d".repeat(64);
+    await write(selection, {
+      active,
+      app: {
+        handle: stagedHandle,
+        ...Object.fromEntries(
+          ["appPath", "executablePath", "sourceSha", "sourceTree", "appDigest", "version"].map(
+            (key) => [key, pair.candidate[key]],
+          ),
+        ),
+      },
+    });
+    const helper = NodePath.join(updates, "activate-v1-" + digest(jonesNativeHelperSource) + ".py");
+    await write(helper, jonesNativeHelperSource);
+    const startupInputs = [];
+    for (const kind of [
+      "settings",
+      "catalog",
+      "legacy",
+      "transaction-dispositions",
+      "selection",
+      "unreclaimed-ledger",
+    ]) {
+      const path = kind === "selection" ? selection : NodePath.join(home, kind + ".json");
+      if (kind !== "selection")
+        await write(path, { synthetic: true, backgroundPreparation: false, entries: [] });
+      startupInputs.push({ kind, path, sha256: digest(await NodeFSP.readFile(path)) });
+    }
+    const oracleBinding = {
+      adapterSha256: "f".repeat(64),
+      helperSha256: digest(jonesNativeHelperSource),
+      bootId: "00000000-0000-0000-0000-000000000001",
+    };
+    return body({
+      pair,
+      helper,
+      manifest,
+      selection,
+      stagedHandle,
+      temporary,
+      startupInputs,
+      oracleBinding,
+      ownership: managed.ownership,
+      point: "before-pair",
+      artifacts,
+      mergedCandidate,
+      storageBudget,
+      candidate,
+      root,
+    });
+  });
+}
+
+NodeTest.test(
+  "relaunch previous-app copy is fresh, fingerprint-equal, preserves retained artifact modes and refuses historical bindings",
+  async () => {
+    await withNativeFixtureScratch(async (root, ownership) => {
+      await relaunchFixture(
+        async (f) => {
+          NodeAssert.notEqual(f.pair.active.appPath, f.artifacts.active.appPath);
+          NodeAssert.equal(f.pair.active.appDigest, f.artifacts.active.appDigest);
+          const before = await fingerprintPackagedDesktopBundle(f.artifacts.active.appPath);
+          await f.pair.assertUnchanged();
+          NodeAssert.deepEqual(
+            await fingerprintPackagedDesktopBundle(f.artifacts.active.appPath),
+            before,
+          );
+          await NodeAssert.rejects(
+            preparePackagedDesktopRelaunchPair({
+              storageBudget: f.storageBudget,
+              fixtureRoot: f.root,
+              previousArtifact: f.artifacts.active,
+              candidate: f.candidate,
+              mergedCandidate: { ...f.mergedCandidate, sourceSha: "7".repeat(40) },
+            }),
+            /bound merged candidate/,
+          );
+          await NodeAssert.rejects(
+            preparePackagedDesktopRelaunchPair({
+              storageBudget: f.storageBudget,
+              fixtureRoot: f.root,
+              previousArtifact: f.artifacts.active,
+              candidate: f.candidate,
+              mergedCandidate: f.mergedCandidate,
+            }),
+            { code: "EEXIST" },
+          );
+        },
+        { root, ownership },
+      );
+    });
+  },
+);
+
+for (const failAt of [
+  "script-mismatch",
+  "helper-binding",
+  "missing",
+  "incomplete",
+  "unknown-pre-effect",
+  "unknown-birth",
+  "after-install",
+]) {
+  NodeTest.test("external launch custody holds the actual outer root on " + failAt, async () => {
+    let outer;
+    let child;
+    let execution;
+    let attempted = false;
+    let started = false;
+    const expectedHold = !["missing", "script-mismatch", "helper-binding"].includes(failAt);
+    const failure = Object.freeze(new Error("external birth or inventory unknown"));
+    try {
+      const run = withNativeFixtureScratch(async (root, ownership) => {
+        outer = root;
+        await relaunchFixture(
+          async (f) => {
+            if (failAt === "script-mismatch")
+              await NodeFSP.writeFile(
+                f.helper,
+                jonesNativeHelperSource.replace('ObjC.import("AppKit")', 'ObjC.import("changed")'),
+              );
+            if (failAt === "helper-binding") f.oracleBinding.helperSha256 = "0".repeat(64);
+            const identity = (pid, executable) => ({
+              pid,
+              uid: process.getuid(),
+              startSec: 456,
+              startUsec: 789,
+              executable,
+              bootId: f.oracleBinding.bootId,
+            });
+            let bindingSha256;
+            let original;
+            const inventory = () => ({
+              bindingSha256,
+              bootId: f.oracleBinding.bootId,
+              parentChainsComplete: true,
+              executablePathsComplete: true,
+              openFilesComplete: true,
+              launchdBirthsComplete: true,
+              helperWorkersComplete: true,
+              resourcesComplete: true,
+              watchesContinuous: true,
+              allBirthsOwned: true,
+              stopOrderResolved: true,
+              unknown: [],
+              processes: original
+                ? [{ identity: original, kernelExitWatchRegistered: true, birthObserved: true }]
+                : [],
+            });
+            const session = {
+              ready: async () => ({
+                ...inventory(),
+                adapterSha256: f.oracleBinding.adapterSha256,
+                evidenceKind: "darwin-kernel",
+                preEffect: true,
+                fixtureIsolationQualified: true,
+                syntheticStartupStateBound: true,
+                backgroundPreparationDisabled: true,
+                immutableMergedCandidateBound: true,
+                controller: identity(process.pid, process.execPath),
+                unknown: failAt === "unknown-pre-effect" ? ["unknown native resource"] : [],
+              }),
+              captureOriginal: async () => {
+                if (failAt === "unknown-birth") throw failure;
+                original = identity(child.pid, f.pair.active.executablePath);
+                return { identity: original, kernelExitWatchRegistered: true, birthObserved: true };
+              },
+              connectApp: async () => ({
+                close: async () => {},
+                evaluate: async (expression) => {
+                  if (expression.includes("installUpdate")) {
+                    attempted = true;
+                    return;
+                  }
+                  return { jones: { phase: "staged", stagedHandle: f.stagedHandle } };
+                },
+              }),
+              inventory: async () => inventory(),
+              waitForCustody: async () => {
+                throw failure;
+              },
+              captureHelper: async () => {
+                throw new Error("unexpected helper adoption");
+              },
+              stopCapturedWriters: async () => {
+                throw new Error("must not stop unresolved original");
+              },
+              waitForCompletion: async () => {
+                throw new Error("unexpected completion");
+              },
+              stopBornTree: async () => {
+                throw new Error("must not signal unresolved birth");
+              },
+              settle: async () => {
+                throw new Error("must not settle unknown custody");
+              },
+              close: async () => {
+                throw new Error("must not close unknown watches");
+              },
+            };
+            const native =
+              failAt === "missing"
+                ? {}
+                : {
+                    launchCustody: {
+                      arm: async (args) => {
+                        bindingSha256 = args.bindingSha256;
+                        return failAt === "incomplete" ? {} : session;
+                      },
+                    },
+                  };
+            const startApp = () => {
+              started = true;
+              child = NodeChildProcess.spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+                stdio: "ignore",
+              });
+              execution = new Promise((resolve, reject) => {
+                child.once("error", reject);
+                child.once("close", resolve);
+              });
+              return { pid: child.pid, waitForClose: () => execution };
+            };
+            // Deliberately swallow and replace a frozen or non-Error failure;
+            // the actual root owner, not the thrown object's properties, must hold.
+            try {
+              await observePackagedDesktopInstallRelaunch({ ...f, native, startApp });
+            } catch (cause) {
+              if (["unknown-birth", "after-install"].includes(failAt))
+                NodeAssert.equal(cause, failure);
+              else NodeAssert.ok(cause instanceof Error);
+            }
+            NodeAssert.equal(attempted, failAt === "after-install");
+            NodeAssert.equal(started, ["unknown-birth", "after-install"].includes(failAt));
+            if (expectedHold) await NodeAssert.rejects(ownership.cleanup(), /cleanup is held/);
+          },
+          { root, ownership },
+        );
+        if (failAt === "unknown-birth") throw "replacement non-Error";
+      });
+      if (expectedHold) {
+        await NodeAssert.rejects(run, (error) => {
+          NodeAssert.equal(error.preserveScratch, true);
+          NodeAssert.equal(error.scratchRoot, outer);
+          return true;
+        });
+        NodeAssert.equal((await NodeFSP.lstat(outer)).isDirectory(), true);
+        if (child) NodeAssert.equal(child.exitCode, null);
+      } else {
+        await run;
+        await NodeAssert.rejects(NodeFSP.lstat(outer), { code: "ENOENT" });
+      }
+    } finally {
+      // The Linux control's creating layer reconciles its exact captured child,
+      // never treating the fake native identity as authority to signal a PID.
+      if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      if (execution) await execution;
+      if (expectedHold && outer) {
+        try {
+          await NodeFSP.rm(outer, { recursive: true, force: false });
+        } catch (cause) {
+          if (cause.code !== "ENOENT") throw cause;
+        }
+        await NodeAssert.rejects(NodeFSP.lstat(outer), { code: "ENOENT" });
+      }
+    }
+  });
+}
+
+// Synthetic records exercise the controller contract only. No macOS process,
+// LaunchServices call, kernel watch, or native acceptance is claimed here.
+async function syntheticRelaunchSession(f, fail, events) {
+  const bootId = f.oracleBinding.bootId;
+  const identity = (pid, executable, extra = {}) => ({
+    pid,
+    startSec: 456,
+    startUsec: 789,
+    executable,
+    uid: process.getuid(),
+    bootId,
+    ...extra,
+  });
+  const original = identity(123, f.pair.active.executablePath);
+  const helper = identity(124, "/usr/bin/python3", { ppid: original.pid });
+  const born = identity(321, f.pair.active.executablePath);
+  const worker = identity(322, "/usr/bin/python3", { ppid: born.pid });
+  const proof = (value) =>
+    Object.fromEntries(
+      ["pid", "startSec", "startUsec", "executable"].map((key) => [key, value[key]]),
+    );
+  let hash;
+  let binding;
+  let originalsLive = false;
+  let launched = false;
+  let settled = false;
+  const inventory = () => ({
+    bindingSha256: hash,
+    bootId,
+    parentChainsComplete: true,
+    executablePathsComplete: true,
+    openFilesComplete: fail !== "unknown-inventory" || !launched,
+    launchdBirthsComplete: true,
+    helperWorkersComplete: true,
+    resourcesComplete: true,
+    watchesContinuous: true,
+    allBirthsOwned: true,
+    stopOrderResolved: true,
+    unknown: [],
+    processes: (settled ? [] : launched ? [born, worker] : originalsLive ? [original] : []).map(
+      (value) => ({
+        identity: value,
+        kernelExitWatchRegistered: true,
+        birthObserved: true,
+      }),
+    ),
+  });
+  const write = async (path, value) => {
+    const bytes = Buffer.from(JSON.stringify(value));
+    await NodeFSP.writeFile(path, bytes, { mode: 0o600 });
+    return digest(bytes);
+  };
+  const txid = "e".repeat(64);
+  let fault;
+  let active;
+  let selected;
+  let transaction;
+  let intent;
+  let preload;
+  return {
+    arm: async (args) => {
+      hash = args.bindingSha256;
+      binding = args.binding;
+      active = binding.active;
+      selected = binding.selected;
+      preload = NodePath.join(f.root, "python-preload");
+      transaction = NodePath.join(active.home, "runtime/jones-updates/transactions", txid);
+      const session = {
+        ready: async () => ({
+          ...inventory(),
+          controller: identity(process.pid, process.execPath),
+          adapterSha256: f.oracleBinding.adapterSha256,
+          evidenceKind: "darwin-kernel",
+          preEffect: true,
+          fixtureIsolationQualified: true,
+          syntheticStartupStateBound: true,
+          backgroundPreparationDisabled: true,
+          immutableMergedCandidateBound: true,
+        }),
+        captureOriginal: async () => {
+          originalsLive = true;
+          return { identity: original, kernelExitWatchRegistered: true };
+        },
+        connectApp: async () => ({
+          close: async () => {
+            events.push("bridge-closed");
+          },
+          evaluate: async (expression) => {
+            if (expression.includes("installUpdate")) {
+              events.push("install");
+              return;
+            }
+            return { jones: { phase: "staged", stagedHandle: f.stagedHandle } };
+          },
+        }),
+        inventory: async () => inventory(),
+        waitForCustody: async ({ fault: prepared }) => {
+          fault = prepared;
+          await NodeFSP.mkdir(transaction, { recursive: true, mode: 0o700 });
+          const claim = {
+            protocol: 1,
+            preparationClaimProtocol: 3,
+            transactionId: txid,
+            stagedHandle: f.stagedHandle,
+            selectionPath: f.selection,
+            selectionSha256: digest(await NodeFSP.readFile(f.selection)),
+            ...Object.fromEntries(
+              ["home", "profile", "databasePath", "environmentId"].map((key) => [key, active[key]]),
+            ),
+          };
+          const continuationReceipt = NodePath.join(transaction, "continuation.json");
+          await write(continuationReceipt, { ...claim, prepared: true });
+          const claimSha256 = await write(NodePath.join(transaction, "prepare-intent.json"), claim);
+          await write(NodePath.join(transaction, "prepare-dispatched.json"), claim);
+          await write(NodePath.join(transaction, "prepare-request.json"), {
+            protocol: 1,
+            transactionId: txid,
+            stagedHandle: f.stagedHandle,
+            claimSha256,
+            processes: [proof(original)],
+          });
+          intent = {
+            protocol: 1,
+            transactionId: txid,
+            expected: active,
+            staged: selected.app,
+            continuationReceipt,
+            processes: [{ role: "main", pid: original.pid }],
+          };
+          const intentSha256 = await write(NodePath.join(transaction, "intent.json"), intent);
+          await write(NodePath.join(transaction, "activation-request.json"), intent);
+          const attempts = NodePath.join(active.home, "runtime/jones-updates/attempt-selections");
+          await NodeFSP.mkdir(attempts, { mode: 0o700 });
+          await write(
+            NodePath.join(attempts, digest(f.selection + "\n" + claim.selectionSha256) + ".json"),
+            {
+              protocol: 1,
+              transactionId: txid,
+              stagedHandle: f.stagedHandle,
+              selectionPath: f.selection,
+              selectionSha256: claim.selectionSha256,
+              expected: active,
+            },
+          );
+          await write(NodePath.join(preload, "custody.json"), {
+            protocol: 1,
+            kind: "packaged-desktop-helper-custody",
+            planSha256: prepared.planSha256,
+            helper: proof(helper),
+            parent: proof(original),
+            processes: [proof(original)],
+            transactionId: txid,
+            intentSha256,
+          });
+        },
+        captureHelper: async () => ({ identity: helper, kernelExitWatchRegistered: true }),
+        stopCapturedWriters: async ({ captured }) => {
+          events.push("original-exits");
+          originalsLive = false;
+          return {
+            bindingSha256: hash,
+            original,
+            originalKernelExitObserved: true,
+            allCapturedKernelExitsObserved: true,
+            exited: captured.processes,
+            helperContinuouslyHeld: true,
+          };
+        },
+        waitForCompletion: async () => {
+          events.push("helper-exits");
+          launched = true;
+          const journal = {
+            intent,
+            phase: "rolled-back",
+            preEffect: {
+              reason: "preparation-failed",
+              phase: f.point === "before-pair" ? "quiescent" : "preparing",
+              step: f.point === "before-pair" ? "pair" : "stop-processes",
+              diagnostics: { errno: 5 },
+              relaunch: "started",
+            },
+          };
+          const journalSha256 = await write(NodePath.join(transaction, "journal.json"), journal);
+          const receipt = {
+            protocol: 1,
+            kind: "packaged-desktop-helper-fault",
+            pid: helper.pid,
+            transactionId: txid,
+            planSha256: fault.planSha256,
+            helperSha256: fault.helperSha256,
+            manifestSha256: digest(await NodeFSP.readFile(f.manifest)),
+            intentSha256: digest(await NodeFSP.readFile(NodePath.join(transaction, "intent.json"))),
+            point: f.point,
+            function: f.point === "before-pair" ? "pair_state" : "kernel_process_identity",
+            phase: journal.preEffect.phase,
+            step: journal.preEffect.step,
+            journalSha256,
+          };
+          receipt.beforePairStateSha256 = await write(
+            NodePath.join(preload, "before-pair-state.json"),
+            {
+              protocol: 1,
+              kind: "packaged-desktop-before-pair-state",
+              processesStopped: true,
+              state: {},
+              ...Object.fromEntries(
+                ["pid", "planSha256", "transactionId", "intentSha256", "journalSha256"].map(
+                  (key) => [key, receipt[key]],
+                ),
+              ),
+            },
+          );
+          const faultReceiptSha256 = await write(fault.receiptPath, receipt);
+          const beforeRelaunchSha256 = await write(NodePath.join(preload, "before-relaunch.json"), {
+            ...receipt,
+            kind: "packaged-desktop-before-relaunch",
+            faultReceiptSha256,
+            state: {},
+          });
+          const script = jonesNativeHelperSource.match(
+            /^LAUNCH_SERVICES_SCRIPT = r'''([\s\S]*?)'''/m,
+          )[1];
+          const transformed = script.replace(
+            "$.NSDictionary.dictionaryWithObjectForKey($(request.environment), key)",
+            "$.NSDictionary.dictionaryWithObjectsForKeys($([request.environment, request.arguments]), $([key, $.NSWorkspaceLaunchConfigurationArguments]))",
+          );
+          const launchContextSha256 = await write(NodePath.join(preload, "launch-context.json"), {
+            ...receipt,
+            kind: "packaged-desktop-launch-context",
+            sequence: 0,
+            beforeRelaunchSha256,
+            originalScriptSha256: digest(script),
+            transformedScriptSha256: digest(transformed),
+            selector: "launchApplicationAtURLOptionsConfigurationError",
+            options: 0x80000 | 0x10000 | 0x100,
+            effectiveRequest: {
+              appPath: active.appPath,
+              arguments: binding.context.arguments,
+              environment: {
+                ...binding.context.environment,
+                T3CODE_HOME: active.home,
+                T3CODE_DESKTOP_USER_DATA_DIR: active.profile,
+                T3CODE_JONES_ACTIVE_MANIFEST: f.manifest,
+                T3CODE_JONES_ACTIVE_GENERATION: active.generation,
+              },
+            },
+          });
+          const launchServicesSha256 = await write(NodePath.join(preload, "launch-services.json"), {
+            ...receipt,
+            kind: "packaged-desktop-launch-services",
+            sequence: 1,
+            beforeRelaunchSha256,
+            launchContextSha256,
+            reply: {
+              protocol: 1,
+              status: "launched",
+              pid: born.pid,
+              bundlePath: active.appPath,
+              executablePath: active.executablePath,
+            },
+            failure: null,
+          });
+          await write(NodePath.join(preload, "launch-return.json"), {
+            ...receipt,
+            kind: "packaged-desktop-launch-return",
+            sequence: 2,
+            beforeRelaunchSha256,
+            launchContextSha256,
+            launchServicesSha256,
+            identity: proof(born),
+            failure: null,
+          });
+          return {
+            bindingSha256: hash,
+            helper,
+            helperKernelExitObserved: fail !== "helper-exit",
+            originalKernelExitObserved: true,
+            born: fail === "birth-mismatch" ? { ...born, startUsec: 790 } : born,
+          };
+        },
+        stopBornTree: async ({ census }) => {
+          events.push("born-tree-exits");
+          return {
+            bindingSha256: hash,
+            identities: census.processes.map((entry) => entry.identity),
+            allKernelExitsObserved: true,
+            freshIdentityChecks: true,
+          };
+        },
+        settle: async () => {
+          settled = true;
+          return {
+            ...inventory(),
+            resourcesAbsent: fail !== "resource",
+            helperKernelExitObserved: true,
+            originalKernelExitObserved: true,
+            registrationDeltas: [],
+          };
+        },
+        close: async () => {
+          events.push("controller-closed");
+          if (fail === "close") throw "unknown bridge closure";
+          return {
+            bindingSha256: hash,
+            bridgesClosed: true,
+            watchesClosed: true,
+            finalInventoryComplete: true,
+          };
+        },
+      };
+      return session;
+    },
+  };
+}
+for (const [point, fail] of [
+  ["before-pair", null],
+  ["exit-wait", null],
+  ["before-pair", "helper-exit"],
+  ["before-pair", "birth-mismatch"],
+  ["before-pair", "unknown-inventory"],
+  ["before-pair", "resource"],
+  ["before-pair", "close"],
+]) {
+  NodeTest.test(`synthetic external custody ${point} ${fail ?? "closes all births"}`, async () => {
+    let outer;
+    const events = [];
+    try {
+      const run = withNativeFixtureScratch(async (root, ownership) => {
+        outer = root;
+        await relaunchFixture(
+          async (f) => {
+            f.point = point;
+            const launchCustody = await syntheticRelaunchSession(f, fail, events);
+            const result = await observePackagedDesktopInstallRelaunch({
+              ...f,
+              native: { launchCustody },
+              startApp: () => ({ pid: 123, waitForClose: async () => ({ code: 0 }) }),
+            });
+            NodeAssert.equal(result.nativeQualification, false);
+            NodeAssert.equal(result.packagedDesktopMatrixPassed, false);
+            NodeAssert.equal(result.retryProceedsProved, false);
+          },
+          { root, ownership },
+        );
+      });
+      if (fail) {
+        await NodeAssert.rejects(run, (cause) => {
+          NodeAssert.equal(cause.preserveScratch, true);
+          return true;
+        });
+        NodeAssert.equal((await NodeFSP.lstat(outer)).isDirectory(), true);
+        if (["helper-exit", "birth-mismatch", "unknown-inventory"].includes(fail))
+          NodeAssert.equal(events.includes("born-tree-exits"), false);
+      } else {
+        await run;
+        NodeAssert.deepEqual(events, [
+          "install",
+          "bridge-closed",
+          "original-exits",
+          "helper-exits",
+          "born-tree-exits",
+          "controller-closed",
+        ]);
+        await NodeAssert.rejects(NodeFSP.lstat(outer), { code: "ENOENT" });
+      }
+    } finally {
+      if (fail && outer) {
+        try {
+          await NodeFSP.rm(outer, { recursive: true, force: false });
+        } catch (cause) {
+          if (cause.code !== "ENOENT") throw cause;
+        }
+      }
+    }
+  });
+}

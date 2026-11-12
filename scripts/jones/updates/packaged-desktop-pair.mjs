@@ -9,7 +9,12 @@ import { packagedStartupNames, runOwnedChild, snapshotTree } from "./native-star
 import { observerControl, protectedMutations, startObserver } from "./native-startup-observer.mjs";
 
 import { NativeFixtureOwnership } from "./native-fixture-support.mjs";
-import { preparePackagedDesktopHelperFault } from "./packaged-desktop-helper-fault.mjs";
+import {
+  preparePackagedDesktopHelperFault,
+  packagedDesktopFixtureArguments,
+  packagedDesktopLaunchScriptSha256,
+  validatePackagedDesktopLaunchContext,
+} from "./packaged-desktop-helper-fault.mjs";
 
 function assertDarwin() {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone packaged fixture admits its actual native host without loading application services.
@@ -262,6 +267,86 @@ export async function bindPackagedDesktopPair({ fixtureRoot, active, candidate }
       }
     },
   });
+}
+
+const disposableRelaunchPairs = new WeakMap();
+// Never run prepare_bundle beside a retained artifact: it writes an incoming
+// clone beside active.appPath before the preparation fault is reached.
+export async function preparePackagedDesktopRelaunchPair({
+  fixtureRoot,
+  previousArtifact,
+  candidate,
+  mergedCandidate,
+  storageBudget,
+}) {
+  previousArtifact = structuredClone(previousArtifact);
+  mergedCandidate = structuredClone(mergedCandidate);
+  await confined(fixtureRoot, fixtureRoot, true);
+  NodeAssert.equal((await NodeFSP.lstat(fixtureRoot)).mode & 0o077, 0);
+  for (const key of ["sourceSha", "sourceTree", "appDigest"])
+    NodeAssert.equal(
+      previousArtifact[key],
+      mergedCandidate[key],
+      "Previous artifact is not the bound merged candidate.",
+    );
+  NodeAssert.ok(!previousArtifact.appPath.startsWith(fixtureRoot + NodePath.sep));
+  const artifactInfo = await NodeFSP.lstat(previousArtifact.appPath);
+  NodeAssert.equal(await NodeFSP.realpath(previousArtifact.appPath), previousArtifact.appPath);
+  const original = await fingerprintPackagedDesktopBundle(previousArtifact.appPath);
+  NodeAssert.equal(original.appDigest, previousArtifact.appDigest);
+  const staged = await fingerprintPackagedDesktopBundle(candidate.appPath);
+  NodeAssert.equal(staged.appDigest, candidate.appDigest);
+  // Reserve both the previous copy and prepare_bundle's incoming staged clone,
+  // including a conservative per-entry allocation allowance on this filesystem.
+  for (const key of ["additionalPeakBytes", "reserveBytes"])
+    NodeAssert.ok(Number.isSafeInteger(storageBudget?.[key]) && storageBudget[key] > 0);
+  NodeAssert.ok(
+    storageBudget.additionalPeakBytes >=
+      original.bytes + staged.bytes + (original.files + staged.files) * 4096,
+  );
+  const filesystem = await NodeFSP.statfs(fixtureRoot, { bigint: true });
+  const availableBytes = filesystem.bavail * filesystem.bsize;
+  NodeAssert.ok(
+    availableBytes >=
+      BigInt(storageBudget.additionalPeakBytes) + BigInt(storageBudget.reserveBytes),
+    "Insufficient fixture copy/incoming-clone storage reserve.",
+  );
+  const directory = NodePath.join(fixtureRoot, "previous-app");
+  await NodeFSP.mkdir(directory, { mode: 0o700 });
+  const appPath = NodePath.join(directory, NodePath.basename(previousArtifact.appPath));
+  await NodeFSP.cp(previousArtifact.appPath, appPath, {
+    recursive: true,
+    dereference: false,
+    verbatimSymlinks: true,
+    errorOnExist: true,
+    force: false,
+  });
+  const executablePath = NodePath.join(
+    appPath,
+    NodePath.relative(previousArtifact.appPath, previousArtifact.executablePath),
+  );
+  const pair = await bindPackagedDesktopPair({
+    fixtureRoot,
+    active: { ...previousArtifact, appPath, executablePath },
+    candidate,
+  });
+  const binding = Object.freeze({
+    artifact: Object.freeze({ ...previousArtifact }),
+    mergedCandidate: Object.freeze({ ...mergedCandidate }),
+    storageAdmission: Object.freeze({ ...storageBudget, availableBytes: String(availableBytes) }),
+    async assertUnchanged() {
+      const info = await NodeFSP.lstat(previousArtifact.appPath);
+      NodeAssert.equal(info.dev, artifactInfo.dev);
+      NodeAssert.equal(info.ino, artifactInfo.ino);
+      NodeAssert.deepEqual(
+        await fingerprintPackagedDesktopBundle(previousArtifact.appPath),
+        original,
+      );
+      await pair.assertUnchanged();
+    },
+  });
+  disposableRelaunchPairs.set(pair, binding);
+  return pair;
 }
 
 export function validatePackagedDesktopDialog(receipt, { pid, executable, code, transactionId }) {
@@ -1092,8 +1177,37 @@ export async function exercisePackagedDesktopInstallRefusal({
   native,
   ownership,
   signal,
+  point = "storage",
+  expectedRelaunch = "skipped",
+  startupInputs,
+  oracleBinding,
 }) {
   assertDarwin();
+  if (expectedRelaunch === "started") {
+    const guiSession = await assertPackagedDesktopGuiSession({
+      fixtureRoot: pair.fixtureRoot,
+      lock: "any",
+      signal,
+    });
+    const result = await observePackagedDesktopInstallRelaunch({
+      pair,
+      helper,
+      manifest,
+      selection,
+      stagedHandle,
+      temporary,
+      native,
+      ownership,
+      signal,
+      point,
+      startupInputs,
+      oracleBinding,
+      startApp: (environment) => spawnRelaunchOriginal(pair, temporary, environment),
+    });
+    return Object.freeze({ ...result, guiSession });
+  }
+  NodeAssert.equal(expectedRelaunch, "skipped");
+  NodeAssert.equal(point, "storage");
   NodeAssert.ok(
     ownership instanceof NativeFixtureOwnership,
     "Install requires its native fixture owner.",
@@ -1144,7 +1258,7 @@ export async function exercisePackagedDesktopInstallRefusal({
   try {
     const child = NodeChildProcess.spawn(
       pair.active.executablePath,
-      ["--use-mock-keychain", "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1"],
+      packagedDesktopFixtureArguments,
       {
         cwd: pair.fixtureRoot,
         detached: true,
@@ -1217,6 +1331,445 @@ export async function exercisePackagedDesktopInstallRefusal({
     error.preserveScratch = true;
     spawnCustody.retain(error);
     throw error;
+  }
+}
+
+function spawnRelaunchOriginal(pair, temporary, environment) {
+  const child = NodeChildProcess.spawn(
+    pair.active.executablePath,
+    packagedDesktopFixtureArguments,
+    {
+      cwd: pair.fixtureRoot,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", TMPDIR: temporary, ...environment },
+    },
+  );
+  let stdout = "";
+  let stderr = "";
+  let failure;
+  let closed = false;
+  const execution = new Promise((resolve) => {
+    child.on("error", (cause) => {
+      failure ??= cause;
+    });
+    child.once("close", (code, signal) => {
+      closed = true;
+      resolve({ code, signal });
+    });
+  });
+  for (const [stream, name] of [
+    [child.stdout, "stdout"],
+    [child.stderr, "stderr"],
+  ]) {
+    let bytes = 0;
+    stream.on("data", (chunk) => {
+      bytes += chunk.length;
+      if (bytes > 1024 * 1024) failure ??= new Error("Original app output exceeded its bound.");
+      if (name === "stdout") stdout = (stdout + chunk).slice(-65536);
+      else stderr = (stderr + chunk).slice(-65536);
+    });
+  }
+  // No timeout/abort signal path: only the controller's exact-identity stop is allowed.
+  return {
+    pid: child.pid,
+    output: () => ({ stdout, stderr, failure, closed }),
+    waitForClose: () => execution,
+  };
+}
+
+function bootIdentity(value, bootId, executable) {
+  NodeAssert.equal(value.bootId, bootId);
+  const { bootId: ignored, ...identity } = value;
+  NodeAssert.equal(ignored, bootId);
+  capturedIdentity(identity, { pid: identity.pid, executable });
+  return value;
+}
+
+function completeInventory(record, binding, bootId) {
+  NodeAssert.equal(record.bindingSha256, binding);
+  NodeAssert.equal(record.bootId, bootId);
+  for (const key of [
+    "parentChainsComplete",
+    "executablePathsComplete",
+    "openFilesComplete",
+    "launchdBirthsComplete",
+    "helperWorkersComplete",
+    "resourcesComplete",
+    "watchesContinuous",
+    "allBirthsOwned",
+    "stopOrderResolved",
+  ])
+    NodeAssert.equal(record[key], true, "Incomplete external inventory: " + key);
+  NodeAssert.deepEqual(record.unknown, []);
+  NodeAssert.ok(Array.isArray(record.processes) && record.processes.length <= 4096);
+  const identities = new Set();
+  for (const entry of record.processes) {
+    bootIdentity(entry.identity, bootId);
+    NodeAssert.equal(entry.kernelExitWatchRegistered, true);
+    NodeAssert.equal(entry.birthObserved, true);
+    const key = JSON.stringify(entry.identity);
+    NodeAssert.ok(!identities.has(key));
+    identities.add(key);
+  }
+  return record;
+}
+
+// This is a capability boundary for a separately qualified private native
+// controller, not a PID manager or a native proof implementation. The controller
+// owns continuous same-boot kernel watches and independent path/open-file/parent
+// inventories from arm through settlement, including misroutes and further workers.
+// Receipts below are corroboration; none can authorize a signal or release alone.
+export async function observePackagedDesktopInstallRelaunch({
+  pair,
+  helper,
+  manifest,
+  selection,
+  stagedHandle,
+  temporary,
+  native,
+  ownership,
+  signal,
+  point,
+  startupInputs,
+  oracleBinding,
+  startApp,
+}) {
+  NodeAssert.ok(ownership instanceof NativeFixtureOwnership);
+  NodeAssert.ok(["before-pair", "exit-wait"].includes(point));
+  const previous = disposableRelaunchPairs.get(pair);
+  NodeAssert.ok(previous, "Relaunch requires a new bound disposable previous-app copy.");
+  const oracle = native?.launchCustody;
+  NodeAssert.equal(
+    typeof oracle?.arm,
+    "function",
+    "Qualified native launch custody oracle is required before Install.",
+  );
+  NodeAssert.deepEqual(Object.keys(oracleBinding ?? {}).sort(), [
+    "adapterSha256",
+    "bootId",
+    "helperSha256",
+  ]);
+  NodeAssert.match(oracleBinding.adapterSha256, shaPattern);
+  NodeAssert.match(oracleBinding.helperSha256, shaPattern);
+  NodeAssert.match(oracleBinding.bootId, /^[0-9a-fA-F-]{36}$/);
+  NodeAssert.equal(typeof startApp, "function");
+  await previous.assertUnchanged();
+  await confined(pair.fixtureRoot, temporary, true);
+  const manifestBytes = await privateFixtureBytes(pair.fixtureRoot, manifest, 65536);
+  const active = JSON.parse(manifestBytes);
+  const selectedBytes = await privateFixtureBytes(pair.fixtureRoot, selection, 131072);
+  const selected = JSON.parse(selectedBytes);
+  NodeAssert.deepEqual(selected.active, active);
+  NodeAssert.equal(selected.app.handle, stagedHandle);
+  for (const key of [
+    "appPath",
+    "executablePath",
+    "sourceSha",
+    "sourceTree",
+    "version",
+    "appDigest",
+  ]) {
+    NodeAssert.equal(active[key], pair.active[key]);
+    NodeAssert.equal(selected.app[key], pair.candidate[key]);
+  }
+  await requireAbsent(NodePath.join(active.home, "runtime/jones-updates/transactions"));
+  const helperBytes = await privateFixtureBytes(pair.fixtureRoot, helper, 2 * 1024 * 1024);
+  const context = await validatePackagedDesktopLaunchContext(
+    pair.fixtureRoot,
+    {
+      protocol: 1,
+      originalScriptSha256: packagedDesktopLaunchScriptSha256,
+      arguments: packagedDesktopFixtureArguments,
+      environment: { HOME: active.home, CFFIXED_USER_HOME: active.home, TMPDIR: temporary },
+    },
+    helperBytes,
+  );
+  NodeAssert.equal(
+    sha(helperBytes),
+    oracleBinding.helperSha256,
+    "Relaunch requires the controller-bound emitted helper bytes.",
+  );
+  const inputs = new Map([
+    [helper, sha(helperBytes)],
+    [manifest, sha(manifestBytes)],
+    [selection, sha(selectedBytes)],
+  ]);
+  NodeAssert.ok(Array.isArray(startupInputs) && startupInputs.length === 6);
+  NodeAssert.deepEqual(startupInputs.map((item) => item.kind).sort(), [
+    "catalog",
+    "legacy",
+    "selection",
+    "settings",
+    "transaction-dispositions",
+    "unreclaimed-ledger",
+  ]);
+  for (const input of startupInputs) {
+    NodeAssert.deepEqual(Object.keys(input).sort(), ["kind", "path", "sha256"]);
+    NodeAssert.match(input.sha256, shaPattern);
+    NodeAssert.equal(
+      sha(await privateFixtureBytes(pair.fixtureRoot, input.path, 1024 * 1024)),
+      input.sha256,
+    );
+    inputs.set(input.path, input.sha256);
+    if (input.kind === "selection") NodeAssert.equal(input.path, selection);
+  }
+  const unchanged = async () => {
+    await previous.assertUnchanged();
+    for (const [filename, hash] of inputs)
+      NodeAssert.equal(
+        sha(await privateFixtureBytes(pair.fixtureRoot, filename, 2 * 1024 * 1024)),
+        hash,
+      );
+  };
+  const freeze = (value) => {
+    if (value && typeof value === "object") {
+      Object.values(value).forEach(freeze);
+      Object.freeze(value);
+    }
+    return value;
+  };
+  const binding = freeze(
+    JSON.parse(
+      JSON.stringify({
+        protocol: 1,
+        fixtureRoot: pair.fixtureRoot,
+        nonce: NodeCrypto.randomUUID(),
+        point,
+        context,
+        oracleBinding,
+        startupInputs,
+        artifact: previous.artifact,
+        mergedCandidate: previous.mergedCandidate,
+        storageAdmission: previous.storageAdmission,
+        active,
+        selected,
+        helperSha256: sha(helperBytes),
+        manifestSha256: sha(manifestBytes),
+        selectionSha256: sha(selectedBytes),
+      }),
+    ),
+  );
+  const bindingSha256 = sha(JSON.stringify(binding));
+  // Install, direct spawn and possible launchd births share this outer root hold.
+  const custody = ownership.holdCustody(pair.fixtureRoot);
+  const observe = (body) => custodyObservation(body, signal);
+  let session;
+  let bridge;
+  let closed = false;
+  let failed = false;
+  try {
+    session = await observe(() => oracle.arm({ binding, bindingSha256, ownership, signal }));
+    for (const name of [
+      "ready",
+      "captureOriginal",
+      "connectApp",
+      "waitForCustody",
+      "captureHelper",
+      "stopCapturedWriters",
+      "waitForCompletion",
+      "inventory",
+      "stopBornTree",
+      "settle",
+      "close",
+    ])
+      NodeAssert.equal(
+        typeof session?.[name],
+        "function",
+        "Missing native launch custody hook: " + name,
+      );
+    const ready = await observe(() => session.ready({ bindingSha256, signal }));
+    NodeAssert.equal(ready.adapterSha256, oracleBinding.adapterSha256);
+    NodeAssert.equal(ready.evidenceKind, "darwin-kernel");
+    NodeAssert.equal(ready.preEffect, true);
+    NodeAssert.equal(ready.fixtureIsolationQualified, true);
+    NodeAssert.equal(ready.syntheticStartupStateBound, true);
+    NodeAssert.equal(ready.backgroundPreparationDisabled, true);
+    NodeAssert.equal(ready.immutableMergedCandidateBound, true);
+    completeInventory(ready, bindingSha256, oracleBinding.bootId);
+    NodeAssert.deepEqual(ready.processes, []);
+    await unchanged();
+    signal?.throwIfAborted();
+    const preload = NodePath.join(pair.fixtureRoot, "python-preload");
+    const controller = bootIdentity(ready.controller, oracleBinding.bootId);
+    NodeAssert.equal(controller.pid, process.pid);
+    const app = await observe(() =>
+      startApp({
+        ...context.environment,
+        T3CODE_HOME: active.home,
+        T3CODE_DESKTOP_USER_DATA_DIR: active.profile,
+        PYTHONPATH: preload,
+        PYTHONNOUSERSITE: "1",
+        PYTHONDONTWRITEBYTECODE: "1",
+        JONES_PACKAGED_DESKTOP_INSTALL_FAULT: "1",
+        JONES_PACKAGED_DESKTOP_FAULT_PLAN: NodePath.join(preload, "fault-plan.json"),
+      }),
+    );
+    const capture = await observe(() => session.captureOriginal({ app, signal }));
+    NodeAssert.equal(capture.kernelExitWatchRegistered, true);
+    const original = bootIdentity(capture.identity, oracleBinding.bootId, active.executablePath);
+    NodeAssert.equal(original.pid, app.pid);
+    const withoutBoot = (identity) =>
+      Object.fromEntries(
+        ["pid", "startSec", "startUsec", "executable"].map((key) => [key, identity[key]]),
+      );
+    const fault = await preparePackagedDesktopHelperFault({
+      fixtureRoot: pair.fixtureRoot,
+      helper,
+      manifest,
+      selection,
+      point,
+      observeRelaunch: true,
+      launchContext: context,
+      controller: {
+        identity: withoutBoot(controller),
+        main: withoutBoot(original),
+        timeoutMs: 60000,
+      },
+    });
+    bridge = await observe(() => session.connectApp({ app, original, signal }));
+    NodeAssert.equal(typeof bridge?.evaluate, "function");
+    NodeAssert.equal(typeof bridge?.close, "function");
+    const before = await observe(() => bridge.evaluate("window.desktopBridge.getUpdateState()"));
+    NodeAssert.equal(before.jones?.phase, "staged");
+    NodeAssert.equal(before.jones.stagedHandle, stagedHandle);
+    await unchanged();
+    const preInstall = completeInventory(
+      await observe(() => session.inventory({ signal })),
+      bindingSha256,
+      oracleBinding.bootId,
+    );
+    NodeAssert.ok(
+      preInstall.processes.some((entry) => NodeUtil.isDeepStrictEqual(entry.identity, original)),
+    );
+    // An unknown bridge result can already mean Install dispatched a helper.
+    await observe(() =>
+      bridge.evaluate("window.desktopBridge.installUpdate(" + JSON.stringify(stagedHandle) + ")"),
+    );
+    await observe(() => session.waitForCustody({ fault, original, signal }));
+    const captured = await fault.readCustody();
+    const helperCapture = await observe(() =>
+      session.captureHelper({ captured, original, signal }),
+    );
+    NodeAssert.equal(helperCapture.kernelExitWatchRegistered, true);
+    const helperIdentity = bootIdentity(helperCapture.identity, oracleBinding.bootId);
+    NodeAssert.equal(helperIdentity.pid, captured.helper.pid);
+    NodeAssert.equal(helperIdentity.ppid, original.pid);
+    for (const key of ["pid", "startSec", "startUsec", "executable"])
+      NodeAssert.equal(helperIdentity[key], captured.helper[key]);
+    await observe(() => bridge.close());
+    bridge = null;
+    const stopped = await custodyObservation(
+      () => session.stopCapturedWriters({ captured, original, helper: helperIdentity, signal }),
+      signal,
+      30000,
+    );
+    NodeAssert.equal(stopped.bindingSha256, bindingSha256);
+    NodeAssert.deepEqual(stopped.original, original);
+    NodeAssert.equal(stopped.originalKernelExitObserved, true);
+    NodeAssert.equal(stopped.allCapturedKernelExitsObserved, true);
+    NodeAssert.deepEqual(stopped.exited, captured.processes);
+    NodeAssert.equal(stopped.helperContinuouslyHeld, true);
+    await observe(() => app.waitForClose());
+    await unchanged();
+    await fault.releaseCustody(captured);
+    const completion = await observe(() =>
+      session.waitForCompletion({ fault, original, helper: helperIdentity, signal }),
+    );
+    NodeAssert.equal(completion.bindingSha256, bindingSha256);
+    NodeAssert.deepEqual(completion.helper, helperIdentity);
+    NodeAssert.equal(completion.helperKernelExitObserved, true);
+    NodeAssert.equal(completion.originalKernelExitObserved, true);
+    const observation = await fault.readLaunchObservation();
+    NodeAssert.equal(observation.launchServices.reply?.status, "launched");
+    NodeAssert.equal(observation.launchReturn.failure, null);
+    const born = bootIdentity(completion.born, oracleBinding.bootId, active.executablePath);
+    for (const key of ["pid", "startSec", "startUsec", "executable"])
+      NodeAssert.equal(born[key], observation.launchReturn.identity[key]);
+    NodeAssert.equal(born.pid, observation.launchServices.reply.pid);
+    NodeAssert.equal(await NodeFSP.realpath(born.executable), active.executablePath);
+    const census = completeInventory(
+      await observe(() => session.inventory({ signal })),
+      bindingSha256,
+      oracleBinding.bootId,
+    );
+    NodeAssert.ok(
+      census.processes.some((entry) => NodeUtil.isDeepStrictEqual(entry.identity, born)),
+    );
+    const receipt = await fault.readReceipt();
+    const intent = NodePath.join(
+      active.home,
+      "runtime/jones-updates/transactions",
+      receipt.transactionId,
+      "intent.json",
+    );
+    const prepared = await bindPackagedDesktopPreparedIntent({
+      pair,
+      helper,
+      manifest,
+      intent,
+      outcome: "pre-effect-refused",
+      fault: receipt,
+      expectedRelaunch: "started",
+    });
+    await prepared.assertInputsUnchanged();
+    await unchanged();
+    // Only the live controller may freshly revalidate and stop this whole census.
+    const exited = await observe(() => session.stopBornTree({ census, born, signal }));
+    NodeAssert.equal(exited.bindingSha256, bindingSha256);
+    NodeAssert.deepEqual(
+      exited.identities,
+      census.processes.map((entry) => entry.identity),
+    );
+    NodeAssert.equal(exited.allKernelExitsObserved, true);
+    NodeAssert.equal(exited.freshIdentityChecks, true);
+    const settled = completeInventory(
+      await observe(() => session.settle({ signal })),
+      bindingSha256,
+      oracleBinding.bootId,
+    );
+    NodeAssert.deepEqual(settled.processes, []);
+    NodeAssert.equal(settled.resourcesAbsent, true);
+    NodeAssert.equal(settled.helperKernelExitObserved, true);
+    NodeAssert.equal(settled.originalKernelExitObserved, true);
+    // Registrations are retained evidence, never silently removed by this harness.
+    NodeAssert.ok(Array.isArray(settled.registrationDeltas));
+    await prepared.assertInputsUnchanged();
+    await unchanged();
+    const closure = await observe(() => session.close());
+    NodeAssert.equal(closure.bindingSha256, bindingSha256);
+    NodeAssert.equal(closure.bridgesClosed, true);
+    NodeAssert.equal(closure.watchesClosed, true);
+    NodeAssert.equal(closure.finalInventoryComplete, true);
+    closed = true;
+    await fault.readLaunchObservation();
+    await prepared.assertInputsUnchanged();
+    await unchanged();
+    custody.release();
+    return Object.freeze({
+      observation,
+      settled,
+      bindingSha256,
+      nativeQualification: false,
+      packagedDesktopMatrixPassed: false,
+      retryProceedsProved: false,
+    });
+  } catch (cause) {
+    failed = true;
+    custody.retain(cause);
+    throw cause;
+  } finally {
+    // Closing transports cannot close the custody hold. Do not stop anything on
+    // failure: unknown birth/misroute/order remains with the creating controller.
+    if (bridge) {
+      try {
+        await custodyObservation(() => bridge.close(), undefined, 5000);
+      } catch (cause) {
+        custody.retain(cause);
+        if (!failed) throw cause;
+      }
+    }
+    if (!closed && session) custody.retain(new Error("Native launch session remains in custody."));
   }
 }
 
