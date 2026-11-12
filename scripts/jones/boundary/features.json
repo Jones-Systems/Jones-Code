@@ -4,6 +4,22 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "reader-admission-failures",
+      "tests": [
+        "packages/shared/src/jones/sqliteReaders/admissionFailure.test.ts",
+        "packages/shared/src/jones/sqliteReaders/admission.test.ts",
+        "apps/server/src/jones/orchestration/appFailureReason.test.ts",
+        "apps/server/src/jones/orchestration/readerAdmissionMessage.test.ts",
+        "apps/server/src/jones/goals/continuity/GoalContinuityStore.test.ts",
+        "apps/server/src/jones/goals/continuity/GoalContinuity.test.ts",
+        "apps/server/src/jones/goals/continuity/admission.test.ts",
+        "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/UserFacingErrors.test.ts"
+      ],
+      "scope": "Finite tagged SQLite reader admission failures remain distinct from native SQLite errors, real continuity holds and run/selection mismatch. The bounded extractor inspects Effect Cause/reason/cause without text authority. UserFacingErrors adds one hook before its unchanged unknown-SQL fallback; RunExecutionService adds only three allowlisted failure-code constructor arguments and one import. ProviderTurnStartService hooks continuity read admission into the existing willRetry path, preserves real holds, maps only failed revalidation reads to unavailable and uses existing guarded settlement. GoalContinuityStore retains a non-enumerable runtime cause on the unchanged GoalContinuityError schema; requirementFor and reconstruction already pass it through. prepareExecutionSession records only completed detach events through the existing current-attempt guard when the following revalidation read fails, preserving completed retirement for retry; it never treats the pending retired-writer fence as completion and still guards replacement persistence. The existing ProviderTurnStartService.test.ts harness gains only injected continuity/read/retirement seams and a Jones test registration call; this accepted shared-test exception avoids copying its large harness. Jones readerAdmissionStart.testkit.ts imports ProjectionStoreReadError to inject realistic wrapped reads; readerAdmissionMessage.test.ts imports the existing dispatch renderer and persistence wrapper. New absent/required/exhaustion/hold/Stop/custody/read-vs-change/post-retirement/history cases are authored, not locally executed. Shared test harness and preparation tests preserve all existing assertions. No schema, pool, timeout, checkpoint, provider request, authentication or routing changes."
+    },
+    {
       "id": "workspace-lifecycle-dev-proof",
       "tests": [
         "apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",

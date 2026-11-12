@@ -1,3 +1,4 @@
+import { appFailureCodeFromCause } from "../jones/orchestration/appFailureReason.ts";
 import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import { findEffectClaimLost, guardClaim } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
 import type { GoalContinuityContext } from "@t3tools/provider-core/server/jones/GoalContinuityContext";
@@ -1104,6 +1105,7 @@ export const layer: Layer.Layer<
                 terminal: makeFailedTerminalEvent(
                   makeProviderFailure({
                     cause: Cause.squash(cause),
+                    code: appFailureCodeFromCause(cause),
                     message: "Run preparation failed.",
                     class: "unknown",
                   }),
@@ -1741,7 +1743,11 @@ export const layer: Layer.Layer<
                   ...(abandonedProviderTurn === null ? {} : { abandonedProviderTurn }),
                   completedAt,
                   terminal: makeFailedTerminalEvent(
-                    makeProviderFailure({ cause: Cause.squash(cause), class: "unknown" }),
+                    makeProviderFailure({
+                      cause: Cause.squash(cause),
+                      code: appFailureCodeFromCause(cause),
+                      class: "unknown",
+                    }),
                     latestItemOrdinal + 1,
                   ),
                   failureItemPersisted: false,
@@ -1906,6 +1912,7 @@ export const layer: Layer.Layer<
                           terminal: makeFailedTerminalEvent(
                             makeProviderFailure({
                               cause: Cause.squash(cause),
+                              code: appFailureCodeFromCause(cause),
                               class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
                             }),
                             latestItemOrdinal + 1,
