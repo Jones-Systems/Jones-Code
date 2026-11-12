@@ -58,16 +58,14 @@ function layer(lostAck = false) {
         getThreadRecords: orchestrator.getThreadRecords,
         dispatch: (command) =>
           orchestrator.dispatch(command).pipe(
-            Effect.flatMap((accepted) =>
-              lostAck
-                ? Effect.fail(
-                    new Orchestrator.OrchestratorDispatchError({
-                      commandId: command.commandId,
-                      commandType: command.type,
-                      cause: "synthetic lost acknowledgement",
-                    }),
-                  )
-                : Effect.succeed(accepted),
+            Effect.filterOrFail(
+              () => !lostAck,
+              () =>
+                new Orchestrator.OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause: "synthetic lost acknowledgement",
+                }),
             ),
           ),
       } as Threads.ThreadManagementService["Service"]);

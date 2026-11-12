@@ -1,9 +1,11 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cache from "effect/Cache";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -12,8 +14,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { TestClock } from "effect/testing";
 
 import { makeGitVcsDriverCore } from "../../vcs/GitVcsDriverCore.ts";
-import { dependencies } from "./backgroundGitAdmission.fixture.ts";
-import { asBackgroundGitWork } from "./backgroundGitAdmission.ts";
+import { asBackgroundGitWork, dependencies } from "./backgroundGitAdmission.fixture.ts";
 import {
   getObservedListRefsSnapshot,
   markListRefsSnapshotRead,
@@ -35,7 +36,11 @@ const withTelemetry = <A, E, R>(
       return span;
     },
   });
-  return test(ended).pipe(Effect.scoped, Effect.withTracer(tracer), Effect.provide(dependencies));
+  return test(ended).pipe(
+    Effect.scoped,
+    Effect.withTracer(tracer),
+    Effect.provide(Layer.mergeAll(dependencies, NodeCrypto.layer)),
+  );
 };
 
 const listRefsSpans = (ended: ReadonlyArray<Tracer.NativeSpan>) =>
@@ -55,8 +60,10 @@ const makeDriver = Effect.fn("ListRefsTelemetryTest.makeDriver")(function* () {
       if (!ChildProcess.isStandardCommand(command)) {
         return yield* Effect.die("expected a standard Git command");
       }
-      const label = command.args[0] ?? "";
-      if (!label.startsWith("held-")) return yield* delegate.spawn(command);
+      const label = command.args[0];
+      if (typeof label !== "string" || !label.startsWith("held-")) {
+        return yield* delegate.spawn(command);
+      }
       yield* Queue.offer(heldStarts, label);
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(1),
@@ -148,9 +155,9 @@ describe("listRefs span telemetry", () => {
     withTelemetry((ended) =>
       Effect.gen(function* () {
         const { driver, cwd, heldStarts, hold, releaseHeld } = yield* makeDriver();
-        // Four hold the background gate; two more queue behind it.
+        // Two hold upstream's background Git lane; four more queue behind it.
         const background = yield* hold(6).pipe(asBackgroundGitWork, Effect.forkScoped);
-        yield* Effect.forEach(Array.from({ length: 4 }), () => Queue.take(heldStarts));
+        yield* Effect.forEach(Array.from({ length: 2 }), () => Queue.take(heldStarts));
         yield* Effect.yieldNow;
         expect(yield* Queue.size(heldStarts)).toBe(0);
 

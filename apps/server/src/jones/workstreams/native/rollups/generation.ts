@@ -47,7 +47,9 @@ export const unconfiguredLayer = Layer.succeed(RollupGenerationProvider, {
     prompt_template_sha256: "0".repeat(64),
     result_schema_version: "2.0.0",
   },
-  generate: () => Effect.fail(new RollupError({ code: "provider_unconfigured" })),
+  generate: Effect.fn("RollupGenerationProvider.generate")(() =>
+    Effect.fail(new RollupError({ code: "provider_unconfigured" })),
+  ),
 });
 export function createManifest(
   input: Omit<Manifest, "manifest_version" | "manifest_sha256">,

@@ -25,11 +25,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
 import * as Config from "../../../../config.ts";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import * as Links from "../../../../peer/PeerLinks.ts";
+import * as ServerSettings from "../../../../serverSettings.ts";
 import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import { runMigrations } from "../../../../persistence/Migrations.ts";
 import peerLinksMigration from "../../../persistence/Migrations/119_JonesPeerEnvironmentLinks.ts";
@@ -237,13 +239,19 @@ const harness = () => {
           }),
       });
     }),
-  ).pipe(Layer.provide(Links.layer), Layer.provide(Layer.mock(Environment.ServerEnvironment)({})));
+  ).pipe(
+    Layer.provide(Links.layer),
+    Layer.provide(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
+    Layer.provide(Layer.mock(Environment.ServerEnvironment)({})),
+  );
   const transport = Peer.layer.pipe(Layer.provideMerge(links), Layer.provideMerge(http));
   const configDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "nw-source-qualification-"));
   const layer = Source.layer.pipe(
     Layer.provideMerge(transport),
     Layer.provideMerge(Pins.nativeLayer),
-    Layer.provideMerge(Auth.layer.pipe(Layer.provide(signing))),
+    Layer.provideMerge(
+      Auth.layer.pipe(Layer.provide(ManagedPolicy.layerTest()), Layer.provide(signing)),
+    ),
     Layer.provideMerge(Layer.succeed(NativeHome, home)),
     Layer.provideMerge(signing),
     Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),

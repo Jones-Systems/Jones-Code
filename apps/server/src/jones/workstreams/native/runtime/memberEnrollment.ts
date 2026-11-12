@@ -5,6 +5,7 @@ import { canonicalWorkstreamsSnapshotJson as canonical } from "@t3tools/contract
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Mac from "effect/crypto/Mac";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -118,7 +119,8 @@ const make = Effect.gen(function* () {
     pins = yield* Pins.PeerSessionPinStore,
     bindings = yield* Bindings.BindingStore,
     sql = yield* SqlClient.SqlClient,
-    secrets = yield* Secrets.ServerSecretStore;
+    secrets = yield* Secrets.ServerSecretStore,
+    mac = yield* Mac.Mac;
   const links = yield* Links.PeerLinks;
   const issuer = yield* Effect.serviceOption(Source.SourceIssuer),
     owner = yield* Effect.serviceOption(Source.SourceSetupOwner);
@@ -302,6 +304,7 @@ const make = Effect.gen(function* () {
     const sign = yield* makeReservedBearerSessionMaterializer.pipe(
       Effect.provideService(AuthSessions.AuthSessionRepository, sessions),
       Effect.provideService(Secrets.ServerSecretStore, secrets),
+      Effect.provideService(Mac.Mac, mac),
       Effect.mapError(memberFailure),
     );
     const token = (yield* sign(

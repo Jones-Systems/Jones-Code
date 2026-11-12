@@ -15,6 +15,12 @@ import { unresolvedOwner } from "./NativeDutyOwner.ts";
 
 // Called within EventSink's transaction, before projections change. Read-only native
 // binding performs no optional enrichment and acquires no common-store writer lock.
+const compiledMain3acaCodec36 = Schema.encodeEffect(DutyIdentityJson);
+const encodeSettlementHolder = Schema.encodeEffect(SettlementHolderJson);
+const encodeNativeDutyOwner = Schema.encodeEffect(NativeDutyOwnerJson);
+
+const compiledMain3acaCodec35 = Schema.encodeEffect(QueuedHolderJson);
+
 export const events = Effect.fn("WorkspaceRetirement.admitRecordedEvents")(function* (
   sql: SqlClient.SqlClient,
   values: readonly RecordedEvent[],
@@ -71,21 +77,21 @@ export const events = Effect.fn("WorkspaceRetirement.admitRecordedEvents")(funct
         // A real preservation duty binds restart recovery to this event's native incarnation.
         const identity = yield* Effect.promise(() => dutyIdentity(prior.worktreePath!));
         const claim = settlementClaimId(event.id);
-        const holder = yield* Schema.encodeEffect(SettlementHolderJson)({
+        const holder = yield* encodeSettlementHolder({
           eventId: event.id,
           projectId: event.payload.projectId,
           branch: event.payload.branch,
         });
         yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${claim},${prior.worktreePath},${identity.status === "bound" ? identity.incarnation : null},'settlement-intent',${event.threadId},${holder},${DateTime.formatIso(event.occurredAt)},NULL)`;
-        yield* sql`INSERT INTO jones_workspace_duty_identity VALUES (${claim},${yield* Schema.encodeEffect(DutyIdentityJson)(identity)},${yield* Schema.encodeEffect(NativeDutyOwnerJson)(unresolvedOwner("settlement_not_issued"))})`;
+        yield* sql`INSERT INTO jones_workspace_duty_identity VALUES (${claim},${yield* compiledMain3acaCodec36(identity)},${yield* encodeNativeDutyOwner(unresolvedOwner("settlement_not_issued"))})`;
       }
     }
     if (event.type === "run.created" && prior?.worktreePath) {
       const worktree = prior.worktreePath;
       const identity = yield* Effect.promise(() => dutyIdentity(worktree));
       const claim = `queued-turn:${event.payload.id}`;
-      yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${claim},${prior.worktreePath},${identity.status === "bound" ? identity.incarnation : null},'queued-turn',${event.threadId},${yield* Schema.encodeEffect(QueuedHolderJson)({ runId: event.payload.id, threadId: event.threadId })},${DateTime.formatIso(event.occurredAt)},NULL) ON CONFLICT(claim_id) DO NOTHING`;
-      yield* sql`INSERT INTO jones_workspace_duty_identity VALUES (${claim},${yield* Schema.encodeEffect(DutyIdentityJson)(identity)},NULL) ON CONFLICT(claim_id) DO NOTHING`;
+      yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${claim},${prior.worktreePath},${identity.status === "bound" ? identity.incarnation : null},'queued-turn',${event.threadId},${yield* compiledMain3acaCodec35({ runId: event.payload.id, threadId: event.threadId })},${DateTime.formatIso(event.occurredAt)},NULL) ON CONFLICT(claim_id) DO NOTHING`;
+      yield* sql`INSERT INTO jones_workspace_duty_identity VALUES (${claim},${yield* compiledMain3acaCodec36(identity)},NULL) ON CONFLICT(claim_id) DO NOTHING`;
     }
     if (
       event.type === "run.updated" &&

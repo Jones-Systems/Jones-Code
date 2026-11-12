@@ -7,7 +7,7 @@ import type {
   WorkstreamsLegacyReceiptLookupResult,
 } from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Option from "effect/Option";
 import * as Recorded from "../runtime/recordedCaller.ts";
 import * as Supplied from "../forwarding/suppliedEvidence.ts";
@@ -88,7 +88,7 @@ const now = DateTime.now.pipe(Effect.map((t) => DateTime.formatIso(t)));
 const different = (a: unknown, b: unknown) => canonicalJson(a) !== canonicalJson(b);
 
 const make = Effect.gen(function* () {
-  const recoveryCrypto = yield* Crypto.Crypto;
+  const recoveryCrypto = yield* Digest.Digest;
   const home = yield* NativeHome;
   const scope = { registry_instance_id: home.registry_instance_id, owner_id: home.owner_id };
   const db = yield* NativeSql.NativeSql;
@@ -510,7 +510,7 @@ const make = Effect.gen(function* () {
                   body,
                   digest,
                   record,
-                ).pipe(Effect.provideService(Crypto.Crypto, recoveryCrypto))
+                ).pipe(Effect.provideService(Digest.Digest, recoveryCrypto))
               : null;
             if (record && Option.isSome(recording)) {
               const evidence = yield* recording.value.readmitRecorded(record);

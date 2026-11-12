@@ -34,12 +34,26 @@ vi.mock(import("../../assets/assetUrls"), async (original) => ({
   ...(await original()),
   useAssetUrls: (() => []) as never,
 }));
+// Model the frozen additive queue command interface; exact package/runtime qualification remains blocked by L5-REQ05.
+vi.mock(import("../../state/threads"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    threadEnvironment: {
+      ...actual.threadEnvironment,
+      reorderQueuedRun: { label: "environment-data:commands:thread:reorder-queued-run" },
+    },
+  } as never;
+});
 import {
   QueuedRunsControl,
   type QueuedRunsControlHandle,
 } from "../../components/chat/QueuedRunsControl";
 
 const props = {
+  editBlockedReason: null,
+  timestampFormat: "locale",
+  onOpenThread: vi.fn(),
   environmentId: "environment:test" as never,
   threadId: "thread:test" as never,
   optimisticMessages: [],
@@ -140,8 +154,9 @@ describe("independent queued prompt removal", () => {
     await using screen = await render(<QueuedRunsControl {...props} />, { router: false });
     const view = screen.container;
     const clear = button(view, "Clear All");
-    expect(clear.parentElement?.getAttribute("data-slot")).toBe("composer-banner-content");
-    expect(clear.previousSibling?.textContent).toContain("Queued");
+    const queue = clear.closest("section[data-thread-queue]");
+    expect(queue?.tagName).toBe("SECTION");
+    expect(queue?.getAttribute("aria-label")).toBe("3 queued messages");
     await act(() => {
       removeButtons(view)[0]!.click();
       clear.click();

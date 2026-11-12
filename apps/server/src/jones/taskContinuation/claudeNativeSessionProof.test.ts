@@ -20,6 +20,8 @@ const requirement = (confirm: NativeSessionRequirement["confirm"]): NativeSessio
   confirm,
 });
 
+const compiledIs1 = Schema.is(NativeSessionIdentityRejected);
+
 describe("Claude native session proof", () => {
   it.effect("serializes concurrent proof consumers and writes one exact attempt witness", () =>
     Effect.gen(function* () {
@@ -71,8 +73,8 @@ describe("Claude native session proof", () => {
       );
       const proof = yield* makeClaudeNativeSessionProof(expected);
       const error = yield* proof.confirm(observed, "generation:actual", init).pipe(Effect.flip);
-      assert.isTrue(Schema.is(NativeSessionIdentityRejected)(error));
-      if (!Schema.is(NativeSessionIdentityRejected)(error)) return;
+      assert.isTrue(compiledIs1(error));
+      if (!compiledIs1(error)) return;
       assert.equal(error.expected, expected.nativeSessionId);
       assert.equal(error.observed, observed);
       assert.equal(error.reason, reason);

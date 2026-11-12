@@ -17,7 +17,7 @@ import {
   type WorkstreamSetupStatus,
 } from "@t3tools/contracts/jones/workstreamOperations";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -160,7 +160,7 @@ const sameContext = (context: WorkstreamReadContext, binding: T3WorkstreamBindin
 
 const make = Effect.gen(function* () {
   const ports = yield* Ports;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const scope = yield* Scope.Scope;
   const gateway = ports.gateway;
   const native = ports.native;
@@ -176,7 +176,7 @@ const make = Effect.gen(function* () {
     }
   >();
   const digest = (body: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(body)).pipe(Effect.map(Hex.encode));
+    crypto.digest(Digest.sha256, new TextEncoder().encode(body)).pipe(Effect.map(Hex.encode));
   const queue: { priority: number; run: Effect.Effect<void> }[] = [];
   let writing = false;
   const write = Effect.fn("WorkstreamOperations.write")(function* (entry: Entry, child: Child) {
@@ -1090,7 +1090,7 @@ const make = Effect.gen(function* () {
             kind,
             attempt,
           }).pipe(
-            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(Digest.Digest, crypto),
             Effect.mapError(() => new OperationInternalError({})),
           ),
         );
@@ -1264,7 +1264,7 @@ const make = Effect.gen(function* () {
                   kind,
                   attempt,
                 }).pipe(
-                  Effect.provideService(Crypto.Crypto, crypto),
+                  Effect.provideService(Digest.Digest, crypto),
                   Effect.mapError(() => new OperationInternalError({})),
                 ),
               );

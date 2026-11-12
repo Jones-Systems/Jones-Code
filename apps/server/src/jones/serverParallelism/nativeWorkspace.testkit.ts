@@ -15,7 +15,11 @@ export const nativeWorkspaceTestLayer = Layer.effect(
     type Runtime = Effect.Success<ReturnType<typeof NativeSearchRuntime.make>>;
     type NativeError = Effect.Error<
       ReturnType<
-        Runtime["list"] | Runtime["search"] | Runtime["searchContents"] | Runtime["refresh"]
+        | Runtime["list"]
+        | Runtime["search"]
+        | Runtime["searchContents"]
+        | Runtime["refresh"]
+        | Runtime["refreshContent"]
       >
     >;
     const indexes = new Map<string, Runtime>();
@@ -59,12 +63,16 @@ export const nativeWorkspaceTestLayer = Layer.effect(
             search: (value) => index.search(value.query, value.limit, value.kind, value.imageOnly),
             searchContents: (value) => index.searchContents(value),
             refresh: () => index.refresh(),
+            refreshContent: () => index.refreshContent(),
           };
           return handlers[operation](input).pipe(
             Effect.mapError(
               (cause) =>
                 new ComputeFailure({
-                  reason: operation === "refresh" ? "finder-refresh" : "finder-search",
+                  reason:
+                    operation === "refresh" || operation === "refreshContent"
+                      ? "finder-refresh"
+                      : "finder-search",
                   cause,
                   scanTimedOut:
                     typeof cause === "object" &&

@@ -2548,11 +2548,13 @@ it("proves an exact retired A-to-B preparation on receiving C and refuses change
   }
 });
 
+const compiledIncomingSchema13 = Schema.decodeUnknownSync(JonesActiveInstall);
+
 it("proves ordinary recovery only with the exact manual receipt, current owner and same ready run", async () => {
   const f = await fixture();
   try {
     await f.controller.configure();
-    const installed = Schema.decodeUnknownSync(JonesActiveInstall)(
+    const installed = compiledIncomingSchema13(
       JSON.parse(await NodeFSP.readFile(f.controller.manifestPath, "utf8")),
     );
     const active = { ...installed, generation: handle, transactionId: `manual-${handle}` };

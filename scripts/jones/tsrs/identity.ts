@@ -2,7 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -99,7 +99,7 @@ export function errorCode(error: unknown): string | undefined {
 export function hash(bytes: Uint8Array): string {
   return Buffer.from(
     Effect.runSync(
-      Effect.flatMap(Crypto.Crypto, (crypto) => crypto.digest("SHA-256", bytes)).pipe(
+      Effect.flatMap(Digest.Digest, (digest) => digest.digest(Digest.sha256, bytes)).pipe(
         Effect.provide(NodeCrypto.layer),
       ),
     ),

@@ -134,6 +134,9 @@ const accessSchema = Schema.Struct({
   owner: Schema.String,
   generation: Schema.String,
 });
+
+const decodeSyncFromJsonStringAccessSchema = Schema.decodeSync(Schema.fromJsonString(accessSchema));
+
 const getDirect = async (f: ReturnType<typeof fixture>, extra = "") => {
   const response = await f.handler(
     new Request(
@@ -144,7 +147,7 @@ const getDirect = async (f: ReturnType<typeof fixture>, extra = "") => {
   expect(response.status).toBe(200);
   const text = await response.text();
   expect(text).not.toContain("private-vps-token");
-  return Schema.decodeSync(Schema.fromJsonString(accessSchema))(text);
+  return decodeSyncFromJsonStringAccessSchema(text);
 };
 
 describe("device hub proxy", () => {
@@ -239,6 +242,32 @@ describe("device hub proxy", () => {
     await offer.text();
     expect(requests).toEqual(["http://hub.test/vendor/serve-sim/helper/udid-1/webrtc/offer"]);
     expect(headers[0]?.["content-type"]).toBe("application/json");
+  });
+
+  it("lets a viewer read Android stream capabilities and signal WebRTC with read scope", async () => {
+    const { handler, requests } = fixture([AuthOrchestrationReadScope]);
+    const hub = "http://t3.test/api/device-hub/vendor/serve-emu";
+    const api = await handler(new Request(`${hub}/api?device=session-1`));
+    expect(api.status).toBe(200);
+    await api.text();
+    for (const action of ["offer", "close"]) {
+      const signal = await handler(
+        new Request(`${hub}/webrtc/${action}?device=session-1`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: '{"sessionId":"viewer"}',
+        }),
+      );
+      expect(signal.status).toBe(200);
+      await signal.text();
+    }
+    expect(requests).toEqual([
+      "http://hub.test/vendor/serve-emu/api?device=session-1",
+      "http://hub.test/vendor/serve-emu/webrtc/offer?device=session-1",
+      "http://hub.test/vendor/serve-emu/webrtc/close?device=session-1",
+    ]);
+    expect((await handler(new Request(`${hub}/api`, { method: "POST" }))).status).toBe(405);
+    expect((await handler(new Request(`${hub}/webrtc/offer`))).status).toBe(405);
   });
 
   it("sends requests a host routes itself to its upstream with its credentials", async () => {

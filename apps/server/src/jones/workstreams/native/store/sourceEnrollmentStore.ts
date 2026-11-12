@@ -94,9 +94,11 @@ const make = Effect.gen(function* () {
     });
     const unavailable = () => new Keys.KeyUnavailable({ reason: "missing" });
     const cached = Layer.succeed(Keys.WorkstreamsKeyProvider, {
-      activeKeyId: () => Effect.fail(unavailable()),
-      indexKey: () => Effect.fail(unavailable()),
-      get: (id) =>
+      activeKeyId: Effect.fn("Keys.WorkstreamsKeyProvider.activeKeyId")(() =>
+        Effect.fail(unavailable()),
+      ),
+      indexKey: Effect.fn("Keys.WorkstreamsKeyProvider.indexKey")(() => Effect.fail(unavailable())),
+      get: Effect.fn("Keys.WorkstreamsKeyProvider.get")((id) =>
         Effect.suspend(() => {
           const result = live ? material.get(id) : undefined;
           if (!result) return Effect.fail(unavailable());
@@ -104,6 +106,7 @@ const make = Effect.gen(function* () {
             ? Effect.fail(result.failure)
             : Effect.succeed(Uint8Array.from(result.success));
         }),
+      ),
     });
     const graph = Layer.fresh(Database.layer).pipe(
       Layer.provide(Layer.fresh(Envelope.layer).pipe(Layer.provide(cached))),

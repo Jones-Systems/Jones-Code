@@ -86,6 +86,7 @@ const Request = Schema.TaggedStruct("Request", {
   id: Schema.Union([Schema.String, Schema.Number]),
   tag: Schema.String,
 });
+const isRequest = Schema.is(Request);
 type Request = typeof Request.Type;
 const encodeConfigStreamExit = Schema.encodeSync(
   Schema.toCodecJson(
@@ -135,7 +136,7 @@ class SyntheticSocket {
 
   send(data: string) {
     const message: unknown = JSON.parse(data);
-    if (Schema.is(Request)(message)) Queue.offerUnsafe(this.requests, message);
+    if (isRequest(message)) Queue.offerUnsafe(this.requests, message);
   }
 
   open() {
@@ -303,6 +304,7 @@ const harness = Effect.fn("ConnectDiagnosticTest.harness")(function* (scenario: 
           Layer.mergeAll(
             Layer.succeed(HttpClient.HttpClient, http),
             Layer.succeed(RpcSession.RpcSessionFactory, sessions),
+            Layer.succeed(Authorization.RemoteEnvironmentAuthorization, authorization),
             Layer.mock(Resolver.ConnectionResolver)({
               prepare: (entry) =>
                 authorization

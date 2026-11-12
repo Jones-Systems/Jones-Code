@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic provider transport, no provider process or user configuration.
 import {
   ClaudeSettings,
@@ -16,7 +17,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
 import * as CodexClient from "effect-codex-app-server/client";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -40,7 +41,7 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const config = yield* ServerConfig.ServerConfig;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const paths = yield* Path.Path;
   const sessions = yield* McpSessions.McpProviderSessions;
@@ -105,6 +106,7 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
     });
   const unused = () => Effect.die("Unused synthetic transport operation");
   const codexClient: CodexClient.CodexAppServerClient["Service"] = {
+    awaitTermination: Effect.never,
     request: respond as CodexClient.CodexAppServerClient["Service"]["request"],
     notify: () => Effect.void,
     handleServerRequest: () => Effect.void,
@@ -126,7 +128,7 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
           instanceId: modelSelection.instanceId,
           settings: { ...codexSettings, homePath: config.stateDir },
           environment: {},
-          crypto,
+          digest: yield* Digest.Digest,
           fileSystem,
           idAllocator,
           serverConfig: config,
@@ -137,7 +139,7 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
           settings: { ...claudeSettings, homePath: config.stateDir },
           environment: { CLAUDE_CONFIG_DIR: config.stateDir },
           attachmentsDir: config.attachmentsDir,
-          crypto,
+          random,
           fileSystem,
           path: paths,
           idAllocator,
@@ -163,6 +165,10 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
                   applyFlagSettings: () => Effect.void,
                   setPermissionMode: () => Effect.void,
                   backgroundTasks: () => Effect.succeed(false),
+                  mcpServerStatus: Effect.succeed([]),
+                  readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                  callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                  listPermissionRules: Effect.die("unexpected permission rules read"),
                   stopTask: () => Effect.void,
                   termination: Effect.void,
                   interrupt: Effect.void,

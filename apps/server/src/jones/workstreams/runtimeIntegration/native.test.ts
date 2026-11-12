@@ -111,6 +111,8 @@ const request = (operation: string, credential = "Bearer enrolled", body?: strin
     ...(body === undefined ? {} : { body }),
   });
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(WorkstreamsNativeContextResponse);
+
 it("authenticates and checks dedicated scope before consulting enrollment", async () => {
   const app = makeApp();
   try {
@@ -122,9 +124,7 @@ it("authenticates and checks dedicated scope before consulting enrollment", asyn
     for (const credential of ["Bearer wrong-subject", "Bearer cookie"]) {
       const response = await app.handler(request("context", credential));
       expect(response.status).toBe(403);
-      expect(
-        Schema.decodeUnknownSync(WorkstreamsNativeContextResponse)(await response.json()),
-      ).toEqual({
+      expect(compiledDecodeUnknownSync1(await response.json())).toEqual({
         protocol: "workstreams-t3-provider/1.0.0",
         state: "rejected",
         reason: "forbidden",
@@ -150,38 +150,31 @@ it("fails closed when an authenticated dedicated session has no enrollment", asy
   }
 });
 
+const compiledEncodeSync2 = Schema.encodeSync(
+  Schema.fromJsonString(WorkstreamsNativeAttestationRequest),
+);
+const compiledDecodeUnknownSync3 = Schema.decodeUnknownSync(WorkstreamsNativeAttestationResponse);
+const compiledDecodeUnknownSync4 = Schema.decodeUnknownSync(WorkstreamsNativeSettlementResponse);
+
 it("mounts all four closed native handlers and preserves the raw settlement digest", async () => {
   const app = makeApp();
   try {
     const context = await app.handler(request("context"));
     expect(context.status).toBe(200);
     expect(context.headers.get("cache-control")).toBe("private, no-store");
-    expect(
-      Schema.decodeUnknownSync(WorkstreamsNativeContextResponse)(await context.json()).state,
-    ).toBe("ready");
-    const text = Schema.encodeSync(Schema.fromJsonString(WorkstreamsNativeAttestationRequest))(
-      attestationRequest,
-    );
+    expect(compiledDecodeUnknownSync1(await context.json()).state).toBe("ready");
+    const text = compiledEncodeSync2(attestationRequest);
     const attestation = await app.handler(request("attestations", "Bearer enrolled", text));
-    expect(
-      Schema.decodeUnknownSync(WorkstreamsNativeAttestationResponse)(await attestation.json())
-        .state,
-    ).toBe("attested");
+    expect(compiledDecodeUnknownSync3(await attestation.json()).state).toBe("attested");
     const settled = await app.handler(request("settlements", "Bearer enrolled", requestText));
     expect(settled.status).toBe(200);
-    const terminal = Schema.decodeUnknownSync(WorkstreamsNativeSettlementResponse)(
-      await settled.json(),
-    );
+    const terminal = compiledDecodeUnknownSync4(await settled.json());
     expect(terminal.state).toBe("terminal");
     const lookup = await app.handler(request("settlements/lookup", "Bearer enrolled", requestText));
-    expect(
-      Schema.decodeUnknownSync(WorkstreamsNativeSettlementResponse)(await lookup.json()),
-    ).toEqual(terminal);
+    expect(compiledDecodeUnknownSync4(await lookup.json())).toEqual(terminal);
     const changed = await app.handler(request("settlements", "Bearer enrolled", ` ${requestText}`));
     expect(changed.status).toBe(409);
-    expect(
-      Schema.decodeUnknownSync(WorkstreamsNativeSettlementResponse)(await changed.json()),
-    ).toEqual({
+    expect(compiledDecodeUnknownSync4(await changed.json())).toEqual({
       protocol: "workstreams-t3-provider/1.0.0",
       state: "rejected",
       reason: "idempotency_conflict",
@@ -210,6 +203,10 @@ it("rejects query selectors and excessive raw bodies without reserving a command
   }
 });
 
+const compiledDecodeUnknownSync5 = Schema.decodeUnknownSync(WorkstreamsNativeContextResponseV2);
+const compiledDecodeUnknownSync6 = Schema.decodeUnknownSync(WorkstreamsNativeAttestationResponseV2);
+const compiledDecodeUnknownSync7 = Schema.decodeUnknownSync(WorkstreamsNativeSettlementResponseV2);
+
 it("v2 mounts all operations with the exact bearer subject and three-scope filter", async () => {
   const app = makeApp();
   const v2Request = (operation: string, credential = "Bearer enrolled", body?: string) =>
@@ -233,32 +230,18 @@ it("v2 mounts all operations with the exact bearer subject and three-scope filte
       (await app.handler(new Request("http://local/api/workstreams/native/v2/context"))).status,
     ).toBe(401);
     const context = await app.handler(v2Request("context"));
-    expect(
-      Schema.decodeUnknownSync(WorkstreamsNativeContextResponseV2)(await context.json()).state,
-    ).toBe("ready");
+    expect(compiledDecodeUnknownSync5(await context.json()).state).toBe("ready");
     const attest = await app.handler(
-      v2Request(
-        "attestations",
-        "Bearer enrolled",
-        Schema.encodeSync(Schema.fromJsonString(WorkstreamsNativeAttestationRequest))(
-          attestationRequest,
-        ),
-      ),
+      v2Request("attestations", "Bearer enrolled", compiledEncodeSync2(attestationRequest)),
     );
-    expect(
-      Schema.decodeUnknownSync(WorkstreamsNativeAttestationResponseV2)(await attest.json()).state,
-    ).toBe("attested");
+    expect(compiledDecodeUnknownSync6(await attest.json()).state).toBe("attested");
     const settled = await app.handler(v2Request("settlements", "Bearer enrolled", requestText));
-    const terminal = Schema.decodeUnknownSync(WorkstreamsNativeSettlementResponseV2)(
-      await settled.json(),
-    );
+    const terminal = compiledDecodeUnknownSync7(await settled.json());
     expect(terminal.state).toBe("terminal");
     const lookup = await app.handler(
       v2Request("settlements/lookup", "Bearer enrolled", requestText),
     );
-    expect(
-      Schema.decodeUnknownSync(WorkstreamsNativeSettlementResponseV2)(await lookup.json()),
-    ).toEqual(terminal);
+    expect(compiledDecodeUnknownSync7(await lookup.json())).toEqual(terminal);
     expect(app.fixture.calls).toHaveLength(1);
   } finally {
     await app.dispose();

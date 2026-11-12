@@ -36,7 +36,7 @@ it.effect("uses schema encoded canonical UTF8 bytes for native and server identi
         },
       },
     };
-    const encoded = yield* Schema.encodeEffect(ImportedHistoryStart)(command);
+    const encoded = yield* encodeEffectImportedHistoryStart(command);
     expect(importedHistoryCanonicalJson(encoded)).toBe(
       '{"commandId":"command:test","delivery":{"command":{"attachments":[],"commandId":"command:test","createdBy":"user","creationSource":"mobile","dispatchMode":{"type":"start_immediately"},"messageId":"message:test","text":"Synthetic π 😀","threadId":"thread:test","type":"message.dispatch"},"type":"message"},"reviewedBasis":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","threadId":"thread:test","type":"thread.imported-history.start"}',
     );
@@ -46,3 +46,5 @@ it.effect("uses schema encoded canonical UTF8 bytes for native and server identi
     });
   }),
 );
+
+const encodeEffectImportedHistoryStart = Schema.encodeEffect(ImportedHistoryStart);

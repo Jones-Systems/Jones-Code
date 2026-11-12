@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -103,7 +105,7 @@ const makeRegistry = McpSessionRegistry.__testing.make({ now: () => 1_000 }).pip
       getDescriptor: Effect.die("unused"),
     }),
   ),
-  Effect.provide(NodeServices.layer),
+  Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
 it.effect("an opt-in change invalidates the issued grant and the reissued token carries it", () =>

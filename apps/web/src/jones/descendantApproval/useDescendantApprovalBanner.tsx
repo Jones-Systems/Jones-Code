@@ -19,7 +19,7 @@ import { Atom } from "effect/reactivity";
 import { ShieldQuestionIcon } from "lucide-react";
 import { useContext, useId } from "react";
 import { ComposerPendingApprovalActions } from "../../components/chat/ComposerPendingApprovalActions";
-import { ComposerPendingApprovalPanel } from "../../components/chat/ComposerPendingApprovalPanel";
+import { ApprovalDetails } from "./ApprovalDetails";
 import type { ComposerBannerStackItem } from "../../components/chat/ComposerBannerStack";
 import { Button } from "../../components/ui/button";
 import { toastManager } from "../../components/ui/toast";
@@ -100,7 +100,7 @@ export function useDescendantApprovalBanner({
   return {
     id: `descendant-approval:${selected.key}`,
     variant: "warning",
-    priority: "urgent",
+    group: "attention",
     icon: <ShieldQuestionIcon />,
     title: `${selected.title} needs approval`,
     description:
@@ -110,7 +110,7 @@ export function useDescendantApprovalBanner({
     children: (
       <div className="flex min-w-0 flex-col gap-2">
         {approval !== null ? (
-          <ComposerPendingApprovalPanel
+          <ApprovalDetails
             approval={approval}
             pendingCount={view.kind === "actionable" ? view.pendingCount : 1}
           />

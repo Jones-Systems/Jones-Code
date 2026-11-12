@@ -83,7 +83,9 @@ export const make = Effect.fn("resourceTelemetry.processAttribution.make")(funct
         }),
       );
     }),
-    launcherFor: (client) => Effect.sync(() => launchers.get(client)?.identity ?? null),
+    launcherFor: Effect.fn("ProcessAttribution.launcherFor")((client) =>
+      Effect.sync(() => launchers.get(client)?.identity ?? null),
+    ),
     snapshot: Ref.get(registrations).pipe(
       Effect.map(
         (current) =>

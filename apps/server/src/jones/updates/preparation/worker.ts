@@ -26,7 +26,6 @@ import {
   type PreparationRequest,
   type PreparationResult,
 } from "./protocol.ts";
-import { stageQualifiedArtifact } from "./stageArtifact.ts";
 import { sweepPreparationLeftovers } from "./sweep.ts";
 import { preparationLifecycle } from "./lifecycle.ts";
 
@@ -107,6 +106,8 @@ async function runJob(
     return { kind: "verify", staged };
   }
   phase("downloading");
+  const { stageQualifiedArtifact } = await import("./stageArtifact.ts");
+  signal.throwIfAborted();
   const artifact = await new JonesActionsClient().stage(job.candidate, job.cacheRoot);
   signal.throwIfAborted();
   phase("verifying");

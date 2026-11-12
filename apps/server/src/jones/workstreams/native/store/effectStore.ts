@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -75,7 +75,7 @@ export class EffectStore extends Context.Service<
   }
 >()("t3/jones/workstreams/native/store/effectStore") {}
 const make = Effect.gen(function* () {
-  const recoveryCrypto = yield* Crypto.Crypto;
+  const recoveryCrypto = yield* Digest.Digest;
   const sql = yield* SqlClient.SqlClient;
   const db = yield* NativeSql.NativeSql;
   const receipts = yield* ReceiptStore.ReceiptStore;
@@ -122,7 +122,7 @@ const make = Effect.gen(function* () {
             row.envelope,
           );
           const decoded = yield* Recorded.unwrapEffectIntent(intent).pipe(
-            Effect.provideService(Crypto.Crypto, recoveryCrypto),
+            Effect.provideService(Digest.Digest, recoveryCrypto),
             Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
           );
           const saved: Reservation = {
@@ -183,7 +183,7 @@ const make = Effect.gen(function* () {
           const retained = reservation.peer_recovery ?? reservation.recovery;
           if (retained) {
             const decoded = yield* Recorded.unwrapEffectIntent(retained).pipe(
-              Effect.provideService(Crypto.Crypto, recoveryCrypto),
+              Effect.provideService(Digest.Digest, recoveryCrypto),
               Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
             );
             const recovery = retained;

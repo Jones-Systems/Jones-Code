@@ -8,6 +8,7 @@ import type {
   DirSearchResult,
   FileItem,
   FileFinder as FileFinderType,
+  GrepCursor,
   MixedItem,
   MixedSearchResult,
   Result,
@@ -353,8 +354,8 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     return result.value;
   });
 
-  const refresh: WorkspaceSearchIndex["Service"]["refresh"] = Effect.fn(
-    "WorkspaceSearchIndex.refresh",
+  const refreshContent: WorkspaceSearchIndex["Service"]["refreshContent"] = Effect.fn(
+    "WorkspaceSearchIndex.refreshContent",
   )(function* () {
     const result = yield* Effect.try({
       try: () => finder.scanFiles(),
@@ -382,6 +383,13 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
         }),
     );
   });
+  const refresh: WorkspaceSearchIndex["Service"]["refresh"] = Effect.fn(
+    "WorkspaceSearchIndex.refresh",
+  )(() =>
+    refreshContent().pipe(
+      Effect.catchTags({ WorkspaceSearchIndexScanTimedOut: () => Effect.void }),
+    ),
+  );
 
   const list: WorkspaceSearchIndex["Service"]["list"] = Effect.fn("WorkspaceSearchIndex.list")(
     function* () {
@@ -431,30 +439,47 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   const searchContents: WorkspaceSearchIndex["Service"]["searchContents"] = Effect.fn(
     "WorkspaceSearchIndex.searchContents",
   )(function* (input) {
-    const { searchQuery, regexMode } = buildContentSearchQuery(input);
+    let { searchQuery, regexMode } = buildContentSearchQuery(input);
     // Grep cursors advance by file, so whole-word post-filtering needs enough
     // raw candidates from the current file before moving to the next one.
     const rawPageSize = input.wholeWord
       ? Math.max(input.limit, CONTENT_SEARCH_MAX_MATCHES_PER_FILE)
       : input.limit;
+    const grepPage = (
+      cursor: GrepCursor | null,
+      budget: { readonly timeBudgetMs: number; readonly enforceTimeBudget: true },
+    ) =>
+      runSearch(input.query, input.limit, "grep", () =>
+        finder.grep(searchQuery, {
+          mode: regexMode ? "regex" : "plain",
+          smartCase: !input.caseSensitive && !regexMode,
+          maxMatchesPerFile: Math.min(CONTENT_SEARCH_MAX_MATCHES_PER_FILE, rawPageSize),
+          pageSize: rawPageSize,
+          cursor,
+          ...budget,
+        }),
+      );
     return yield* collectContentSearchPages({
       limit: input.limit,
       searchPage: (cursor, budget) =>
-        runSearch(input.query, input.limit, "grep", () =>
-          finder.grep(searchQuery, {
-            mode: regexMode ? "regex" : "plain",
-            smartCase: !input.caseSensitive && !regexMode,
-            maxMatchesPerFile: Math.min(CONTENT_SEARCH_MAX_MATCHES_PER_FILE, rawPageSize),
-            pageSize: rawPageSize,
-            cursor,
-            ...budget,
+        grepPage(cursor, budget).pipe(
+          Effect.flatMap((result) => {
+            const { regexFallbackError } = result;
+            // fff searches an invalid pattern as a literal, which would keep the `(?i)` prefix.
+            if (!regexMode || input.caseSensitive || regexFallbackError === undefined) {
+              return Effect.succeed(result);
+            }
+            ({ searchQuery, regexMode } = buildContentSearchQuery({ ...input, useRegex: false }));
+            return grepPage(cursor, budget).pipe(
+              Effect.map((literal) => ({ ...literal, regexFallbackError })),
+            );
           }),
         ),
       mapMatch: (match) => {
         const matchRanges = mapContentMatchRanges(match.lineContent, match.matchRanges).filter(
           (range) => !input.wholeWord || isWholeWordRange(match.lineContent, range),
         );
-        if (matchRanges.length === 0) return undefined;
+        if (input.wholeWord && matchRanges.length === 0) return undefined;
         return {
           path: toPosixPath(match.relativePath),
           lineNumber: match.lineNumber,
@@ -468,6 +493,7 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   return {
     list,
     refresh,
+    refreshContent,
     search,
     searchContents,
     status: () => {

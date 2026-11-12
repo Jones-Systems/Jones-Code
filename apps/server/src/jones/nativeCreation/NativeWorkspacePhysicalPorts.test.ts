@@ -16,6 +16,7 @@ import * as Physical from "./NativeWorkspacePhysicalPorts.ts";
 import type { NativeWorkspaceBasis } from "./NativeCreationWorkspaceTypes.ts";
 import { nativeCreationCanonicalJson as canonical } from "./NativeCreationPreparation.ts";
 
+const decodeFixtureHistoryBinding = Schema.decodeSync(NativeCreationHistoricalBinding);
 const fixtureClaim = (setup = false): Repository.NativeCreationStoredIntent => ({
   claimId: "fixture-claim",
   claimedBootId: "fixture-boot",
@@ -33,7 +34,7 @@ const fixtureClaim = (setup = false): Repository.NativeCreationStoredIntent => (
   threadId: "fixture-thread",
   messageId: "fixture-message",
   canonicalPreparation: "{}",
-  binding: Schema.decodeSync(NativeCreationHistoricalBinding)({
+  binding: decodeFixtureHistoryBinding({
     backendInstance: "fixture-backend",
     environmentId: "fixture-environment",
     projectId: "fixture-project",
@@ -214,7 +215,7 @@ const scenario = (
         }
         yield* hooks.beforeEffect({
           ...step,
-          args: ["config", "branch.fixture-branch.gh-merge-base", "main"],
+          args: ["config", "branch.fixture-branch.t3-merge-base", "main"],
           kind: "worktree.base-config",
         });
         calls.push("config");
@@ -222,7 +223,7 @@ const scenario = (
           yield* hooks.afterEffect(
             {
               ...step,
-              args: ["config", "branch.fixture-branch.gh-merge-base", "main"],
+              args: ["config", "branch.fixture-branch.t3-merge-base", "main"],
               kind: "worktree.base-config",
             },
             "failed_or_unknown",
@@ -233,7 +234,7 @@ const scenario = (
         yield* hooks.afterEffect(
           {
             ...step,
-            args: ["config", "branch.fixture-branch.gh-merge-base", "main"],
+            args: ["config", "branch.fixture-branch.t3-merge-base", "main"],
             kind: "worktree.base-config",
           },
           "settled_success",

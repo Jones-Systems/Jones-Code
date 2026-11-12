@@ -319,24 +319,58 @@ const make = Effect.gen(function* () {
     return result;
   });
   return Gateway.WorkstreamGateway.of({
-    readSession: () => run((gateway) => gateway.readSession()),
-    readMetadata: (input) => run((gateway) => gateway.readMetadata(input)),
-    readDetail: (id) => run((gateway) => gateway.readDetail(id)),
-    readReferences: (input) => run((gateway) => gateway.readReferences(input)),
-    readReference: (id) => run((gateway) => gateway.readReference(id)),
-    readMemberships: (id, input) => run((gateway) => gateway.readMemberships(id, input)),
-    readDeclarations: (id, input) => run((gateway) => gateway.readDeclarations(id, input)),
-    readEdges: (id, input) => run((gateway) => gateway.readEdges(id, input)),
-    readHistory: (id, input) => run((gateway) => gateway.readHistory(id, input)),
-    readRegistryCounts: () => run((gateway) => gateway.readRegistryCounts()),
-    readAppearance: (ids) => run((gateway) => gateway.readAppearance(ids)),
-    readThreadPlacements: (input) => run((gateway) => gateway.readThreadPlacements(input)),
-    saveAppearance: (input) => run((gateway) => gateway.saveAppearance(input), true),
-    submit: (command) => run((gateway) => gateway.submit(command), true),
-    pollCommand: (id) => run((gateway) => gateway.pollCommand(id)),
-    readReceipt: (id) => run((gateway) => gateway.readReceipt(id)),
+    readSession: Effect.fn("Gateway.WorkstreamGateway.readSession")(() =>
+      run((gateway) => gateway.readSession()),
+    ),
+    readMetadata: Effect.fn("Gateway.WorkstreamGateway.readMetadata")((input) =>
+      run((gateway) => gateway.readMetadata(input)),
+    ),
+    readDetail: Effect.fn("Gateway.WorkstreamGateway.readDetail")((id) =>
+      run((gateway) => gateway.readDetail(id)),
+    ),
+    readReferences: Effect.fn("Gateway.WorkstreamGateway.readReferences")((input) =>
+      run((gateway) => gateway.readReferences(input)),
+    ),
+    readReference: Effect.fn("Gateway.WorkstreamGateway.readReference")((id) =>
+      run((gateway) => gateway.readReference(id)),
+    ),
+    readMemberships: Effect.fn("Gateway.WorkstreamGateway.readMemberships")((id, input) =>
+      run((gateway) => gateway.readMemberships(id, input)),
+    ),
+    readDeclarations: Effect.fn("Gateway.WorkstreamGateway.readDeclarations")((id, input) =>
+      run((gateway) => gateway.readDeclarations(id, input)),
+    ),
+    readEdges: Effect.fn("Gateway.WorkstreamGateway.readEdges")((id, input) =>
+      run((gateway) => gateway.readEdges(id, input)),
+    ),
+    readHistory: Effect.fn("Gateway.WorkstreamGateway.readHistory")((id, input) =>
+      run((gateway) => gateway.readHistory(id, input)),
+    ),
+    readRegistryCounts: Effect.fn("Gateway.WorkstreamGateway.readRegistryCounts")(() =>
+      run((gateway) => gateway.readRegistryCounts()),
+    ),
+    readAppearance: Effect.fn("Gateway.WorkstreamGateway.readAppearance")((ids) =>
+      run((gateway) => gateway.readAppearance(ids)),
+    ),
+    readThreadPlacements: Effect.fn("Gateway.WorkstreamGateway.readThreadPlacements")((input) =>
+      run((gateway) => gateway.readThreadPlacements(input)),
+    ),
+    saveAppearance: Effect.fn("Gateway.WorkstreamGateway.saveAppearance")((input) =>
+      run((gateway) => gateway.saveAppearance(input), true),
+    ),
+    submit: Effect.fn("Gateway.WorkstreamGateway.submit")((command) =>
+      run((gateway) => gateway.submit(command), true),
+    ),
+    pollCommand: Effect.fn("Gateway.WorkstreamGateway.pollCommand")((id) =>
+      run((gateway) => gateway.pollCommand(id)),
+    ),
+    readReceipt: Effect.fn("Gateway.WorkstreamGateway.readReceipt")((id) =>
+      run((gateway) => gateway.readReceipt(id)),
+    ),
     // The native transport's retained resubmit is lookup-only, even when source intent is missing.
-    resubmit: (id, body) => run((gateway) => gateway.resubmit(id, body), true),
+    resubmit: Effect.fn("Gateway.WorkstreamGateway.resubmit")((id, body) =>
+      run((gateway) => gateway.resubmit(id, body), true),
+    ),
     purgeAuthorization: () => {
       epoch++;
     },

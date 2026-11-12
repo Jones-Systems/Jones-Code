@@ -344,7 +344,9 @@ const make = Effect.gen(function* () {
       if (prepared.state !== "authorized") return yield* new RegistryError({ code: "not_granted" });
       return prepared;
     }),
-    prepareReadback: (request, pin) => prepare(request, pin, true),
+    prepareReadback: Effect.fn("Supplied.SourceForwardQualification.prepareReadback")(
+      (request, pin) => prepare(request, pin, true),
+    ),
   });
 });
 

@@ -57,38 +57,41 @@ export const deliverWithHandoffRecovery = <
       ),
     );
   return deliver(delivery.budget).pipe(
-    Effect.catch((error) => {
-      if (deliveryEffectsStarted || !isContextHandoffBudgetError(error)) return Effect.fail(error);
-      return Effect.gen(function* () {
-        const nativeId = delivery.providerThread.nativeThreadRef?.nativeId;
-        if (
-          delivery.deferInline ||
-          !recovery.compact ||
-          !nativeId ||
-          delivery.handoffs.some(
-            (handoff) =>
-              handoff.delivery?.nativeThreadId === nativeId &&
-              handoff.delivery.status === "pending",
+    Effect.catchIf(
+      (error): error is ContextHandoffBudgetError =>
+        !deliveryEffectsStarted && isContextHandoffBudgetError(error),
+      (error) => {
+        return Effect.gen(function* () {
+          const nativeId = delivery.providerThread.nativeThreadRef?.nativeId;
+          if (
+            delivery.deferInline ||
+            !recovery.compact ||
+            !nativeId ||
+            delivery.handoffs.some(
+              (handoff) =>
+                handoff.delivery?.nativeThreadId === nativeId &&
+                handoff.delivery.status === "pending",
+            )
           )
-        )
-          return yield* error;
-        // A pure preview proves that the intact request plus reserves can fit
-        // after reclaiming history. Zero occupancy is a capacity bound, not telemetry.
-        yield* deliverContextHandoffs({
-          handoffs: delivery.handoffs,
-          providerThread: delivery.providerThread,
-          alreadyDeliveredItemIds: delivery.alreadyDeliveredItemIds,
-          budget: recovery.reclaimableBudget,
-          persist: () => Effect.void,
+            return yield* error;
+          // A pure preview proves that the intact request plus reserves can fit
+          // after reclaiming history. Zero occupancy is a capacity bound, not telemetry.
+          yield* deliverContextHandoffs({
+            handoffs: delivery.handoffs,
+            providerThread: delivery.providerThread,
+            alreadyDeliveredItemIds: delivery.alreadyDeliveredItemIds,
+            budget: recovery.reclaimableBudget,
+            persist: () => Effect.void,
+          });
+          yield* recovery.revalidate;
+          const usage = yield* recovery.compact({
+            ...recovery.input,
+            revalidateStartAdmission: recovery.revalidate,
+          });
+          yield* recovery.revalidate;
+          return yield* deliver(recovery.budgetAfter(usage));
         });
-        yield* recovery.revalidate;
-        const usage = yield* recovery.compact({
-          ...recovery.input,
-          revalidateStartAdmission: recovery.revalidate,
-        });
-        yield* recovery.revalidate;
-        return yield* deliver(recovery.budgetAfter(usage));
-      });
-    }),
+      },
+    ),
   );
 };

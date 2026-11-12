@@ -67,8 +67,10 @@ export const backendLayer = Layer.effect(
           "Workstreams are unavailable. Read t3_workstreams_status for setup and repair steps; retain the operation ID on retry.",
       });
     return WorkstreamToolsBackend.of({
-      list: (input) => gateway.readMetadata(input).pipe(Effect.mapError(unavailable)),
-      submit: (input) =>
+      list: Effect.fn("WorkstreamToolsBackend.list")((input) =>
+        gateway.readMetadata(input).pipe(Effect.mapError(unavailable)),
+      ),
+      submit: Effect.fn("WorkstreamToolsBackend.submit")((input) =>
         operations.submit(input).pipe(
           Effect.catchTags({
             OperationConflict: (error) =>
@@ -81,8 +83,9 @@ export const backendLayer = Layer.effect(
             OperationInternalError: () => Effect.fail(unavailable()),
           }),
         ),
-      read: (input) => operations.read(input),
-      setupStatus: () => operations.setupStatus(),
+      ),
+      read: Effect.fn("WorkstreamToolsBackend.read")((input) => operations.read(input)),
+      setupStatus: Effect.fn("WorkstreamToolsBackend.setupStatus")(() => operations.setupStatus()),
     });
   }),
 );

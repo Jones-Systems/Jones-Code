@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import * as Authority from "./NativeCreationAuthority.ts";
 import * as Repository from "./NativeCreationRepository.ts";
 import type { NativeCreationWholeOperationEvidence } from "./NativeCreationExecutionTypes.ts";
+import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
 import type { OrchestrationEffectV2 } from "../../orchestration-v2/EffectOutbox.ts";
 import { CurrentEffectClaim } from "../workspaceLifecycle/ActiveEffectClaim.ts";
 import { sameOperationRequest } from "../workspaceLifecycle/NativeOperation.ts";
@@ -45,7 +46,7 @@ export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffec
     reference.effectId !== effect.id ||
     reference.stageCommandId !== effect.commandId ||
     effect.leaseOwner === null ||
-    effect.leaseExpiresAt === null ||
+    effect.status !== "running" ||
     effect.attemptCount < 1 ||
     Option.isNone(authority) ||
     authority.value.issueExecution === undefined ||
@@ -58,6 +59,7 @@ export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffec
     return yield* new NativeCreationProviderExecutionError({
       message: "Qualified native provider execution is unavailable",
     });
+  const requestRunId = effect.request.runId;
   const confirm = repository.value.confirmExecution;
   const hold = repository.value.holdExecution;
   // Once the durable start exists, cancellation and any uncertain completion retain an unknown hold.
@@ -82,6 +84,15 @@ export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffec
     Effect.gen(function* () {
       const context = yield* issue({
         reference,
+        expectedClaim: {
+          workerId: effect.leaseOwner!,
+          expectedAttempt: effect.attemptCount,
+          claimedAt: effect.updatedAt,
+          commandId: effect.commandId,
+          threadId: effect.threadId,
+          runId: requestRunId,
+          requestDigest: nativeCreationSha256(nativeCreationCanonicalJson(effect.request)),
+        },
         timestamp: DateTime.formatIso(yield* DateTime.now),
       });
       yield* restore(
@@ -102,7 +113,7 @@ export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffec
               reference,
               workerId: current.leaseOwner!,
               expectedAttempt: current.attemptCount,
-              leaseExpiresAt: current.leaseExpiresAt!,
+              claimedAt: current.updatedAt,
               evidence,
             }),
           );

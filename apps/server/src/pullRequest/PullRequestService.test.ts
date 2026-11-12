@@ -1,4 +1,5 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
 import { assert, expect, it } from "@effect/vitest";
@@ -116,335 +117,62 @@ function hostedChangeRequest(body: string, additions = 1) {
   };
 }
 
-it.effect("reuses rich reads for sixty seconds with their original observation", () =>
+it.effect("reads maintainer edits and changes them through the update command", () =>
   Effect.gen(function* () {
-    const reads = { detail: 0, activity: 0, preview: 0 };
-    const service = yield* makeService({
-      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
-      providers: [
-        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-          getChangeRequest: () =>
-            Effect.sync(() => {
-              reads.detail++;
-              return hostedChangeRequest("body");
-            }),
-          getChangeRequestActivity: () =>
-            Effect.sync(() => {
-              reads.activity++;
-              return {
-                comments: [],
-                commentCount: 0,
-                commentsTruncated: false,
-                reviewThreads: [],
-                commits: [],
-              };
-            }),
-          getChangeRequestPreview: ({ number }) =>
-            Effect.sync(() => {
-              reads.preview++;
-              return changeRequest(number, "2026-07-02T00:00:00Z");
-            }),
+    let enabled = true;
+    const provider = fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+      getChangeRequest: () =>
+        Effect.succeed({ ...hostedChangeRequest("Body"), maintainerCanModify: enabled }),
+      updateChangeRequest: (input) =>
+        Effect.sync(() => {
+          assert.strictEqual(input.title, undefined);
+          assert.strictEqual(input.body, undefined);
+          enabled = input.maintainerCanModify!;
         }),
-      ],
     });
-    const ref = {
-      projectId: "p1" as ProjectId,
-      repository: "acme/web",
-      number: 1,
-      allowStale: false,
-    };
-    const read = () =>
-      Effect.all(
-        [service.detail(ref), service.activity(ref), service.preview({ ...ref, number: 2 })],
-        { concurrency: "unbounded" },
-      );
-    const [first, concurrent] = yield* Effect.all([read(), read()], { concurrency: 2 });
-    assert.deepStrictEqual(concurrent, first);
-    assert.deepStrictEqual(reads, { detail: 1, activity: 1, preview: 1 });
-    yield* TestClock.adjust("59 seconds");
-    assert.deepStrictEqual(yield* read(), first);
-    assert.deepStrictEqual(reads, { detail: 1, activity: 1, preview: 1 });
-    yield* TestClock.adjust("2 seconds");
-    const fresh = yield* read();
-    assert.deepStrictEqual(reads, { detail: 2, activity: 2, preview: 2 });
-    assert.isAbove(fresh[0].observedAt!, first[0].observedAt!);
-  }),
-);
-
-it.effect("does not cache rich read failures or infer pauses from error text", () =>
-  Effect.gen(function* () {
-    for (const reason of ["failed", "rate-limited"] as const) {
-      let reads = 0;
-      const service = yield* makeService({
-        projects: [
-          project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" }),
-        ],
-        providers: [
-          fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-            getChangeRequestPreview: () =>
-              Effect.suspend(() => {
-                reads++;
-                return reads === 1
-                  ? Effect.fail(
-                      new PullRequestProviderError({
-                        provider: SourceControlProviderKind.make("github"),
-                        operation: "preview",
-                        reason,
-                        detail: "rate limit paused",
-                        retryAt: Infinity,
-                      }),
-                    )
-                  : Effect.succeed(changeRequest(1, "2026-07-02T00:00:00Z"));
-              }),
-          }),
-        ],
-      });
-      const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
-      const error = yield* Effect.flip(service.preview(ref));
-      assert.instanceOf(error, PullRequestOperationError);
-      if (error._tag !== "PullRequestOperationError") return;
-      assert.strictEqual(error.reason, reason === "rate-limited" ? reason : undefined);
-      assert.strictEqual(error.retryAt, undefined);
-      if (reason === "failed") {
-        yield* service.preview(ref);
-        assert.strictEqual(reads, 2);
-      }
-    }
-  }),
-);
-
-it.effect("caches narrow previews and invalidates them after refresh or mutation", () =>
-  Effect.gen(function* () {
-    let reads = 0;
     const service = yield* makeService({
       projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
       providers: [
-        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-          getViewer: () => Effect.die("preview must not read the viewer"),
-          getChangeRequestPreview: () =>
-            Effect.sync(() => {
-              reads += 1;
-              return changeRequest(1, "2026-07-02T00:00:00Z");
-            }),
-        }),
+        {
+          ...provider,
+          capabilities: {
+            ...provider.capabilities,
+            edit: { changeRequest: true, comment: true, maintainerEdits: true },
+          },
+        },
       ],
     });
     const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
-    const previews = yield* Effect.all([service.preview(ref), service.preview(ref)], {
-      concurrency: 2,
-    });
-    assert.deepStrictEqual(previews[0], {
-      ...ref,
-      title: "Change request 1",
-      url: "https://host/pull/1",
-      author: { login: "octocat", name: null, avatarUrl: null },
-      state: "open",
-      isDraft: false,
-      createdAt: "2026-07-01T00:00:00Z",
-    });
-    assert.strictEqual(reads, 1);
-    yield* service.invalidate({ reference: ref });
-    yield* service.preview(ref);
-    assert.strictEqual(reads, 2);
-    yield* service.runAction({ ...ref, action: "close" });
-    yield* service.preview(ref);
-    assert.strictEqual(reads, 3);
-    yield* service.refreshAfterTurn(ref.projectId);
-    yield* service.preview(ref);
-    assert.strictEqual(reads, 4);
-    const error = yield* Effect.flip(service.preview({ ...ref, repository: "another/repo" }));
-    assert.strictEqual(error._tag, "PullRequestOperationError");
-    assert.strictEqual(reads, 4);
+    assert.strictEqual((yield* service.detail(ref)).maintainerCanModify, true);
+    yield* service.update({ ...ref, maintainerCanModify: false });
+    assert.strictEqual((yield* service.detail(ref)).maintainerCanModify, false);
   }),
 );
 
-it.effect("keeps cached previews available and pauses uncached previews until quota resets", () =>
+it.effect("refuses maintainer edits on a host without the capability", () =>
   Effect.gen(function* () {
-    let reads = 0;
-    const retryAt = Date.parse("2099-08-13T14:00:00Z");
+    let writes = 0;
     const service = yield* makeService({
       projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
       providers: [
         fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-          getChangeRequestPreview: ({ number }) =>
-            Effect.gen(function* () {
-              reads++;
-              if (reads === 2)
-                return yield* new PullRequestProviderError({
-                  provider: SourceControlProviderKind.make("github"),
-                  operation: "getChangeRequestPreview",
-                  reason: "rate-limited",
-                  detail: "GitHub requests are paused until the rate limit resets.",
-                  retryAt,
-                });
-              return changeRequest(number, "2026-07-02T00:00:00Z");
+          updateChangeRequest: () =>
+            Effect.sync(() => {
+              writes += 1;
             }),
         }),
       ],
     });
-    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
-    yield* service.preview(ref);
-    const limited = yield* Effect.flip(service.preview({ ...ref, number: 2 }));
-    assert.instanceOf(limited, PullRequestOperationError);
-    if (limited._tag !== "PullRequestOperationError") return;
-    assert.include(limited.detail, "paused");
-    assert.strictEqual(limited.reason, "rate-limited");
-    assert.strictEqual(limited.retryAt, retryAt);
-    assert.strictEqual((yield* service.preview(ref)).number, 1);
-    for (const number of [2, 3, 4]) {
-      const paused = yield* Effect.flip(service.preview({ ...ref, number }));
-      assert.instanceOf(paused, PullRequestOperationError);
-      if (paused._tag !== "PullRequestOperationError") return;
-      assert.include(paused.detail, "paused");
-      assert.strictEqual(paused.reason, "rate-limited");
-      assert.strictEqual(paused.retryAt, retryAt);
-    }
-    assert.strictEqual(reads, 2);
-    yield* TestClock.setTime(retryAt);
-    assert.strictEqual((yield* service.preview({ ...ref, number: 2 })).number, 2);
-    assert.strictEqual(reads, 3);
-  }),
-);
-
-it.effect("reuses only unexpired detail for previews", () =>
-  Effect.gen(function* () {
-    let previewReads = 0;
-    const service = yield* makeService({
-      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
-      providers: [
-        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-          getChangeRequest: () => Effect.succeed(hostedChangeRequest("Description")),
-          getChangeRequestPreview: () =>
-            Effect.sync(() => {
-              previewReads++;
-              return {
-                ...changeRequest(1, "2026-07-02T00:00:00Z"),
-                title: "Updated title",
-                state: "closed" as const,
-              };
-            }),
-        }),
-      ],
-    });
-    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
-    yield* service.detail(ref);
-    assert.strictEqual((yield* service.preview(ref)).title, "Change request 1");
-    assert.strictEqual(previewReads, 0);
-    yield* TestClock.adjust("61 seconds");
-    const preview = yield* service.preview(ref);
-    assert.strictEqual(preview.title, "Updated title");
-    assert.strictEqual(preview.state, "closed");
-    assert.strictEqual(previewReads, 1);
-  }),
-);
-
-it.effect("shares detail and activity for a minute, and for ten once merged", () =>
-  Effect.gen(function* () {
-    const reads: Array<string> = [];
-    const service = yield* makeService({
-      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
-      providers: [
-        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-          getChangeRequest: ({ number }) =>
-            Effect.sync(() => {
-              reads.push(`detail #${number}`);
-              return {
-                ...hostedChangeRequest("Description"),
-                number,
-                state:
-                  number === 1
-                    ? ("open" as const)
-                    : number === 2
-                      ? ("merged" as const)
-                      : ("closed" as const),
-              };
-            }),
-          getChangeRequestActivity: ({ number }) =>
-            Effect.sync(() => {
-              reads.push(`activity #${number}`);
-              return {
-                comments: [],
-                commentCount: 0,
-                commentsTruncated: false,
-                reviewThreads: [],
-                commits: [],
-              };
-            }),
-        }),
-      ],
-    });
-    const reread = Effect.forEach([1, 2, 3], (number) => {
-      const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number };
-      return Effect.andThen(service.detail(ref), service.activity(ref));
-    }).pipe(
-      Effect.andThen(Effect.yieldNow),
-      Effect.andThen(Effect.sync(() => reads.splice(0).toSorted())),
-    );
-
-    const everything = [
-      "activity #1",
-      "activity #2",
-      "activity #3",
-      "detail #1",
-      "detail #2",
-      "detail #3",
-    ];
-    assert.deepStrictEqual(yield* reread, everything);
-    yield* TestClock.adjust("59 seconds");
-    assert.deepStrictEqual(yield* reread, []);
-    yield* TestClock.adjust("2 seconds");
-    assert.deepStrictEqual(yield* reread, ["activity #1", "activity #3", "detail #1", "detail #3"]);
-    yield* TestClock.adjust("9 minutes");
-    assert.deepStrictEqual(yield* reread, everything);
-  }),
-);
-
-it.effect("re-reads an open pull request after a turn, but not a merged one", () =>
-  Effect.gen(function* () {
-    const reads: Array<string> = [];
-    const service = yield* makeService({
-      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
-      providers: [
-        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-          getChangeRequest: ({ number }) =>
-            Effect.sync(() => {
-              reads.push(`detail #${number}`);
-              return {
-                ...hostedChangeRequest("Description"),
-                number,
-                state: number === 1 ? ("open" as const) : ("merged" as const),
-              };
-            }),
-          getChangeRequestActivity: ({ number }) =>
-            Effect.sync(() => {
-              reads.push(`activity #${number}`);
-              return {
-                comments: [],
-                commentCount: 0,
-                commentsTruncated: false,
-                reviewThreads: [],
-                commits: [],
-              };
-            }),
-        }),
-      ],
-    });
-    const merged = { projectId: "p1" as ProjectId, repository: "acme/web", number: 2 };
-    const reread = Effect.forEach([1, 2], (number) => {
-      const ref = { ...merged, number };
-      return Effect.andThen(service.detail(ref), service.activity(ref));
-    }).pipe(
-      Effect.andThen(Effect.yieldNow),
-      Effect.andThen(Effect.sync(() => reads.splice(0).toSorted())),
-    );
-
-    assert.deepStrictEqual(yield* reread, ["activity #1", "activity #2", "detail #1", "detail #2"]);
-    for (let turn = 0; turn < 3; turn++) {
-      yield* service.refreshAfterTurn(merged.projectId);
-      assert.deepStrictEqual(yield* reread, ["activity #1", "detail #1"]);
-    }
-    yield* service.invalidate({ reference: merged });
-    assert.deepStrictEqual(yield* reread, ["activity #2", "detail #2"]);
+    const result = yield* service
+      .update({
+        projectId: "p1" as ProjectId,
+        repository: "acme/web",
+        number: 1,
+        maintainerCanModify: false,
+      })
+      .pipe(Effect.flip);
+    assert.strictEqual(result._tag, "PullRequestOperationError");
+    assert.strictEqual(writes, 0);
   }),
 );
 
@@ -471,6 +199,73 @@ it.effect("does not wait for an in-flight detail read to display a preview", () 
     assert.strictEqual((yield* service.preview(ref)).title, "Change request 1");
     yield* Deferred.succeed(releaseDetail, undefined);
     yield* Fiber.join(detail);
+  }),
+);
+
+it.effect("shows a listed pull request's preview without asking the host again", () =>
+  Effect.gen(function* () {
+    let previewReads = 0;
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          listChangeRequests: () =>
+            Effect.succeed({
+              items: [changeRequest(1, "2026-07-02T00:00:00Z")],
+              truncated: false,
+              continues: false,
+            }),
+          getChangeRequestPreview: () =>
+            Effect.sync(() => {
+              previewReads++;
+              return { ...changeRequest(1, "2026-07-02T00:00:00Z"), title: "Renamed" };
+            }),
+        }),
+      ],
+    });
+    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    yield* service.list({ state: "open" });
+    assert.strictEqual((yield* service.preview(ref)).title, "Change request 1");
+    assert.strictEqual(previewReads, 0);
+    yield* service.refreshAfterTurn(ref.projectId);
+    assert.strictEqual((yield* service.preview(ref)).title, "Renamed");
+    assert.strictEqual(previewReads, 1);
+    yield* service.list({ state: "open", limit: 1 });
+    assert.strictEqual((yield* service.preview(ref)).title, "Renamed");
+  }),
+);
+
+it.effect("a list read under a pinned account leaves the shared preview to the host", () =>
+  Effect.gen(function* () {
+    let previewReads = 0;
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          getRoutingIdentity: () => Effect.succeed({ accountId: "101", viewer: "octocat" }),
+          withVerifiedCredential: (_, use) =>
+            use({ accountId: "101", viewer: "octocat", credentialFingerprint: "pinned" }),
+          listChangeRequests: () =>
+            Effect.succeed({
+              items: [{ ...changeRequest(1, "2026-07-02T00:00:00Z"), title: "Pinned view" }],
+              truncated: false,
+              continues: false,
+            }),
+          getChangeRequestPreview: () =>
+            Effect.sync(() => {
+              previewReads++;
+              return changeRequest(1, "2026-07-02T00:00:00Z");
+            }),
+        }),
+      ],
+    });
+    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    yield* service.withRoutingCredential(
+      { ...ref, host: "github.com", expectedAccountId: "101" },
+      service.list({ state: "open" }),
+    );
+    assert.strictEqual((yield* service.preview(ref)).title, "Change request 1");
+    assert.strictEqual(previewReads, 1);
   }),
 );
 
@@ -530,6 +325,7 @@ function makeService(input: {
   readonly providers: ReadonlyArray<PullRequestProviderApi>;
   readonly resolveHandle?: SourceControlProviderRegistry.SourceControlProviderRegistry["Service"]["resolveHandle"];
   readonly resolveRepositoryIdentity?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]["resolve"];
+  readonly onProjectRead?: () => void;
 }) {
   // Build in the test scope; per-call Effect.provide would close the marks database on service acquisition.
   return Effect.flatMap(
@@ -553,11 +349,17 @@ function makeService(input: {
         }),
         Layer.mock(ProjectService.ProjectService)({
           listShells: (options) =>
-            Effect.succeed(
-              input.projects.filter((project) => options?.projectIds?.includes(project.id) ?? true),
-            ),
+            Effect.sync(() => {
+              input.onProjectRead?.();
+              return input.projects.filter(
+                (project) => options?.projectIds?.includes(project.id) ?? true,
+              );
+            }),
           getShell: (projectId) =>
-            Effect.succeed(Option.fromNullishOr(input.projects.find((p) => p.id === projectId))),
+            Effect.sync(() => {
+              input.onProjectRead?.();
+              return Option.fromNullishOr(input.projects.find((p) => p.id === projectId));
+            }),
         }),
         Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
           resolve: input.resolveRepositoryIdentity ?? (() => Effect.succeed(null)),
@@ -566,7 +368,7 @@ function makeService(input: {
         PullRequestFilesViewed.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
         Layer.effect(PullRequestReadCache.PullRequestReadCache, PullRequestReadCache.make).pipe(
           Layer.provide(KeyValueStore.layerMemory),
-          Layer.provide(NodeServices.layer),
+          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         ),
       ),
     ),
@@ -743,6 +545,52 @@ it.effect("reads nothing from a host with no implementation, but reports it", ()
       [
         { kind: SourceControlProviderKind.make("github"), configured: true, projectCount: 1 },
         { kind: SourceControlProviderKind.make("gitlab"), configured: false, projectCount: 1 },
+      ],
+    );
+  }),
+);
+
+it.effect("reads nothing from a host its provider does not serve, but reports it", () =>
+  Effect.gen(function* () {
+    const reached = new Set<string>();
+    const bitbucket = (id: string, host: string) =>
+      project({
+        id,
+        title: host,
+        workspaceRoot: `/${id}`,
+        repository: "proj/repo",
+        provider: SourceControlProviderKind.make("bitbucket"),
+        host,
+      });
+    const service = yield* makeService({
+      projects: [bitbucket("p1", "bitbucket.org"), bitbucket("p2", "bitbucket.example.com")],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("bitbucket"), {
+          servesHost: (host) => host === "bitbucket.org",
+          getViewer: ({ host }) => {
+            reached.add(host ?? "");
+            return Effect.succeed("bilal");
+          },
+          listChangeRequests: ({ host }) => {
+            reached.add(host);
+            return Effect.succeed({ items: [], truncated: false, continues: false });
+          },
+        }),
+      ],
+    });
+
+    const result = yield* service.list({ state: "open" });
+
+    assert.deepStrictEqual([...reached], ["bitbucket.org"]);
+    assert.deepStrictEqual(
+      result.providers.map(({ host, configured, detail }) => ({ host, configured, detail })),
+      [
+        { host: "bitbucket.org", configured: true, detail: null },
+        {
+          host: "bitbucket.example.com",
+          configured: false,
+          detail: "This host cannot be browsed here yet.",
+        },
       ],
     );
   }),
@@ -1219,6 +1067,50 @@ it.effect("puts the author a query names exactly ahead of those it only begins",
   }),
 );
 
+it.effect("ranks references by number, keeping the host's recent-first order", () =>
+  Effect.gen(function* () {
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "t3code", workspaceRoot: "/a", repository: "pingdotgg/t3code" }),
+        project({ id: "p2", title: "tree", workspaceRoot: "/b", repository: "pingdotgg/t3code" }),
+      ],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          searchRepositoryReferences: () =>
+            Effect.succeed({
+              items: [
+                { reference: "#129", kind: "issue", number: 129, title: "Newest", state: "open" },
+                {
+                  reference: "#7",
+                  kind: "issue",
+                  number: 7,
+                  title: "Fix #12 again",
+                  state: "open",
+                },
+                {
+                  reference: "#12",
+                  kind: "change-request",
+                  number: 12,
+                  title: "Exact",
+                  state: "merged",
+                },
+                { reference: "#120", kind: "issue", number: 120, title: "Older", state: "closed" },
+              ],
+              truncated: false,
+            }),
+        }),
+      ],
+    });
+
+    const result = yield* service.filterOptions({ kind: "references", query: "12" });
+
+    assert.deepStrictEqual(
+      result.references.map((candidate) => candidate.reference),
+      ["#12", "#129", "#120", "#7"],
+    );
+  }),
+);
+
 it.effect("tries another workspace on the same host for the viewer", () =>
   Effect.gen(function* () {
     const service = yield* makeService({
@@ -1391,7 +1283,7 @@ it.effect("publishes a merge for immediate settlement only after host confirmati
                       detail: "HTTP 504",
                     }),
                   )
-                : Effect.succeed({ ...changeRequest(1, mergedAt), state }),
+                : Effect.succeed({ ...changeRequest(1, mergedAt), state, mergedAt }),
           }),
         ],
       });
@@ -1400,7 +1292,7 @@ it.effect("publishes a merge for immediate settlement only after host confirmati
         Effect.forkChild({ startImmediately: true }),
       );
 
-      yield* service.runAction({ ...reference, action: "merge" });
+      assert.isUndefined(yield* service.runAction({ ...reference, action: "merge" }));
       const queuedRefresh = Option.getOrThrow(yield* Stream.runHead(service.subscribeRefreshes));
       confirmationFails = true;
       yield* service.runAction({ ...reference, action: "merge" });
@@ -1410,7 +1302,8 @@ it.effect("publishes a merge for immediate settlement only after host confirmati
       );
       confirmationFails = false;
       state = "merged";
-      yield* TestClock.setTime(Date.parse(mergedAt));
+      // The event carries the host's merge time, not the moment the confirmation ran.
+      yield* TestClock.setTime(Date.parse(mergedAt) + 60_000);
       yield* service.runAction({
         ...reference,
         repository: " ACME/WEB ",
@@ -1418,6 +1311,71 @@ it.effect("publishes a merge for immediate settlement only after host confirmati
         mergeMethod: "merge",
       });
 
+      assert.deepStrictEqual(Option.getOrThrow(yield* Fiber.join(observedMerge)), {
+        ...reference,
+        mergedAt,
+      });
+    }),
+  ),
+);
+
+it.effect("returns the host's merged reply as a summary and trusts it without another read", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const mergedAt = "2026-09-03T02:00:00.000Z";
+      const merged = {
+        number: 1,
+        title: "Change request 1",
+        url: "https://host/pull/1",
+        headBranch: "feat/1",
+        baseBranch: "main",
+        state: "merged" as const,
+        isDraft: false,
+        updatedAt: mergedAt,
+        mergedAt,
+        headSha: "abc123",
+        autoMergeEnabled: false,
+      };
+      let summaryReads = 0;
+      const reference = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" }),
+        ],
+        providers: [
+          fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+            runAction: () => Effect.succeed(merged),
+            getChangeRequestSummary: () =>
+              Effect.sync(() => {
+                summaryReads++;
+                return { ...changeRequest(1, mergedAt), state: "merged" as const, mergedAt };
+              }),
+          }),
+        ],
+      });
+      const merges = yield* service.subscribeMerges;
+      const observedMerge = yield* Stream.runHead(merges).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      const observedAt = Date.parse("2026-09-03T02:00:01.000Z");
+      yield* TestClock.setTime(observedAt);
+
+      // Clients that did not ask decode the success as void, so they must get nothing back.
+      assert.isUndefined(yield* service.runAction({ ...reference, action: "merge" }));
+      const result = yield* service.runAction({
+        ...reference,
+        action: "merge",
+        replyWithSummary: true,
+      });
+
+      assert.deepStrictEqual(result, {
+        ...merged,
+        provider: SourceControlProviderKind.make("github"),
+        projectId: reference.projectId,
+        repository: reference.repository,
+        observedAt,
+      });
+      assert.strictEqual(summaryReads, 0);
       assert.deepStrictEqual(Option.getOrThrow(yield* Fiber.join(observedMerge)), {
         ...reference,
         mergedAt,
@@ -1981,7 +1939,11 @@ it.effect("resolves a project's repository identity when its shell has none cach
 it.effect("routes a hosted reference to another repository through a project on that host", () =>
   Effect.gen(function* () {
     const seen: Array<{ cwd: string; repository: string; host: string }> = [];
+    let projectReads = 0;
     const service = yield* makeService({
+      onProjectRead: () => {
+        projectReads += 1;
+      },
       projects: [
         project({ id: "frontend", title: "web", workspaceRoot: "/web", repository: "acme/web" }),
       ],
@@ -2003,6 +1965,20 @@ it.effect("routes a hosted reference to another repository through a project on 
 
     assert.strictEqual(summary.number, 7);
     assert.deepStrictEqual(seen, [{ cwd: "/web", repository: "acme/api", host: "github.com" }]);
+
+    // A sync sweep resolves the project once for all of its references, then reads fresh again.
+    const readsPerReference = projectReads;
+    const read = (number: number) =>
+      service.summary(
+        { projectId: "frontend" as ProjectId, host: "github.com", repository: "acme/api", number },
+        { recoverTransientFailure: false },
+      );
+    assert.isAbove(readsPerReference, 2);
+    yield* service.withSharedProjectReads(Effect.all([read(8), read(9), read(10)]));
+    // One read of the project and one of the host's projects, for all three references.
+    assert.strictEqual(projectReads, readsPerReference + 2);
+    yield* read(11);
+    assert.strictEqual(projectReads, readsPerReference * 2 + 2);
   }),
 );
 
@@ -2459,6 +2435,98 @@ it.effect("does not revive old summaries when project epochs are evicted", () =>
     for (let index = 0; index < 2048; index++)
       yield* service.refreshAfterTurn(`project-${index}` as ProjectId);
     assert.strictEqual((yield* service.summary(ref))?.title, "new");
+  }),
+);
+
+it.effect("a refresh or a finished turn drops the provider's own change request reads", () =>
+  Effect.gen(function* () {
+    const forgotten: Array<{ readonly repository: string; readonly number?: number } | undefined> =
+      [];
+    const service = yield* makeService({
+      projects: [
+        project({
+          id: "p1",
+          title: "web",
+          workspaceRoot: "/a",
+          repository: "acme/web",
+          provider: "gitlab",
+        }),
+      ],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("gitlab"), {
+          forgetChangeRequestReads: (scope) => Effect.sync(() => void forgotten.push(scope)),
+        }),
+      ],
+    });
+    const reference = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+
+    yield* service.invalidate({ reference });
+    yield* service.refreshAfterTurn(reference.projectId);
+    yield* service.invalidate({});
+
+    assert.deepStrictEqual(forgotten, [
+      { repository: "acme/web", number: 1 },
+      undefined,
+      undefined,
+    ]);
+  }),
+);
+
+it.effect("a read during a refresh cannot keep the provider's old change request", () =>
+  Effect.gen(function* () {
+    let hostTitle = "old";
+    let held: string | undefined;
+    let gate:
+      | { readonly entered: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
+      | undefined;
+    const service = yield* makeService({
+      projects: [
+        project({
+          id: "p1",
+          title: "web",
+          workspaceRoot: "/a",
+          repository: "acme/web",
+          provider: "gitlab",
+        }),
+      ],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("gitlab"), {
+          getChangeRequest: () =>
+            Effect.sync(() => {
+              held ??= hostTitle;
+              return { ...hostedChangeRequest("body"), title: held };
+            }),
+          forgetChangeRequestReads: () =>
+            Effect.gen(function* () {
+              if (gate !== undefined) {
+                yield* Deferred.succeed(gate.entered, undefined);
+                yield* Deferred.await(gate.release);
+              }
+              held = undefined;
+            }),
+        }),
+      ],
+    });
+    const reference = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    const refreshWithReadInBetween = (refresh: Effect.Effect<void>) =>
+      Effect.gen(function* () {
+        gate = { entered: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+        const running = yield* refresh.pipe(Effect.forkChild());
+        yield* Deferred.await(gate.entered);
+        yield* service.detail(reference);
+        yield* Deferred.succeed(gate.release, undefined);
+        yield* Fiber.join(running);
+        gate = undefined;
+      });
+
+    assert.strictEqual((yield* service.detail(reference)).title, "old");
+    hostTitle = "after turn";
+    yield* refreshWithReadInBetween(service.refreshAfterTurn(reference.projectId));
+    assert.strictEqual((yield* service.detail(reference)).title, "after turn");
+
+    hostTitle = "after refresh";
+    yield* refreshWithReadInBetween(service.invalidate({ reference }));
+    assert.strictEqual((yield* service.detail(reference)).title, "after refresh");
   }),
 );
 
@@ -3603,7 +3671,7 @@ it.effect("hands a host's own resume position back on the next read", () =>
   }),
 );
 
-it.effect("judges the review filter only on a host that summarises its reviews", () =>
+it.effect("judges review and checks filters only on a host that summarises them", () =>
   Effect.gen(function* () {
     const service = yield* makeService({
       projects: [
@@ -3621,10 +3689,15 @@ it.effect("judges the review filter only on a host that summarises its reviews",
           listChangeRequests: () =>
             Effect.succeed({
               items: [
-                { ...changeRequest(1, "2026-07-02T00:00:00Z"), reviewDecision: null },
+                {
+                  ...changeRequest(1, "2026-07-02T00:00:00Z"),
+                  reviewDecision: null,
+                  checksState: "failing" as const,
+                },
                 {
                   ...changeRequest(2, "2026-07-02T00:00:00Z"),
                   reviewDecision: "approved" as const,
+                  checksState: null,
                 },
               ],
               truncated: false,
@@ -3647,6 +3720,12 @@ it.effect("judges the review filter only on a host that summarises its reviews",
 
     const approved = yield* service.list({ state: "open", filters: { review: "approved" } });
     assert.deepStrictEqual(approved.entries.map((entry) => entry.number).toSorted(), [2, 3]);
+
+    const failing = yield* service.list({ state: "open", filters: { checks: "failing" } });
+    assert.deepStrictEqual(failing.entries.map((entry) => entry.number).toSorted(), [1, 3]);
+
+    const passing = yield* service.list({ state: "open", filters: { checks: "passing" } });
+    assert.deepStrictEqual(passing.entries.map((entry) => entry.number).toSorted(), [3]);
   }),
 );
 
@@ -4105,19 +4184,19 @@ it.effect("finishes two presses on one file in the order they were made", () =>
       ],
     });
 
-    const tick = service
+    const tick = yield* service
       .setFilesViewed({
         ...GITLAB_REFERENCE,
         files: [{ path: "src/a.ts", viewed: true }],
       })
-      .pipe(Effect.runFork);
+      .pipe(Effect.forkChild({ startImmediately: true }));
     yield* TestClock.adjust("1 second");
-    const untick = service
+    const untick = yield* service
       .setFilesViewed({
         ...GITLAB_REFERENCE,
         files: [{ path: "src/a.ts", viewed: false }],
       })
-      .pipe(Effect.runFork);
+      .pipe(Effect.forkChild({ startImmediately: true }));
     yield* TestClock.adjust("1 second");
     yield* Deferred.succeed(held, undefined);
     yield* Fiber.join(tick);
@@ -4711,4 +4790,336 @@ it.effect.each(["expiry", "commit expiry", "cache hit", "commit cache hit", "ref
       assert.strictEqual(error.reason, "not-found");
       assert.strictEqual(diffReads, 2);
     }),
+);
+
+it.effect("reuses rich reads for sixty seconds with their original observation", () =>
+  Effect.gen(function* () {
+    const reads = { detail: 0, activity: 0, preview: 0 };
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          getChangeRequest: () =>
+            Effect.sync(() => {
+              reads.detail++;
+              return hostedChangeRequest("body");
+            }),
+          getChangeRequestActivity: () =>
+            Effect.sync(() => {
+              reads.activity++;
+              return {
+                comments: [],
+                commentCount: 0,
+                commentsTruncated: false,
+                reviewThreads: [],
+                commits: [],
+              };
+            }),
+          getChangeRequestPreview: ({ number }) =>
+            Effect.sync(() => {
+              reads.preview++;
+              return changeRequest(number, "2026-07-02T00:00:00Z");
+            }),
+        }),
+      ],
+    });
+    const ref = {
+      projectId: "p1" as ProjectId,
+      repository: "acme/web",
+      number: 1,
+      allowStale: false,
+    };
+    const read = () =>
+      Effect.all(
+        [service.detail(ref), service.activity(ref), service.preview({ ...ref, number: 2 })],
+        { concurrency: "unbounded" },
+      );
+    const [first, concurrent] = yield* Effect.all([read(), read()], { concurrency: 2 });
+    assert.deepStrictEqual(concurrent, first);
+    assert.deepStrictEqual(reads, { detail: 1, activity: 1, preview: 1 });
+    yield* TestClock.adjust("59 seconds");
+    assert.deepStrictEqual(yield* read(), first);
+    assert.deepStrictEqual(reads, { detail: 1, activity: 1, preview: 1 });
+    yield* TestClock.adjust("2 seconds");
+    const fresh = yield* read();
+    assert.deepStrictEqual(reads, { detail: 2, activity: 2, preview: 2 });
+    assert.isAbove(fresh[0].observedAt!, first[0].observedAt!);
+  }),
+);
+
+it.effect("does not cache rich read failures or infer pauses from error text", () =>
+  Effect.gen(function* () {
+    for (const reason of ["failed", "rate-limited"] as const) {
+      let reads = 0;
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [
+          fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+            getChangeRequestPreview: () =>
+              Effect.suspend(() => {
+                reads++;
+                return reads === 1
+                  ? Effect.fail(
+                      new PullRequestProviderError({
+                        provider: SourceControlProviderKind.make("github"),
+                        operation: "preview",
+                        reason,
+                        detail: "rate limit paused",
+                        retryAt: Infinity,
+                      }),
+                    )
+                  : Effect.succeed(changeRequest(1, "2026-07-02T00:00:00Z"));
+              }),
+          }),
+        ],
+      });
+      const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+      const error = yield* Effect.flip(service.preview(ref));
+      assert.instanceOf(error, PullRequestOperationError);
+      if (error._tag !== "PullRequestOperationError") return;
+      assert.strictEqual(error.reason, reason === "rate-limited" ? reason : undefined);
+      assert.strictEqual(error.retryAt, undefined);
+      if (reason === "failed") {
+        yield* service.preview(ref);
+        assert.strictEqual(reads, 2);
+      }
+    }
+  }),
+);
+
+it.effect("caches narrow previews and invalidates them after refresh or mutation", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          getViewer: () => Effect.die("preview must not read the viewer"),
+          getChangeRequestPreview: () =>
+            Effect.sync(() => {
+              reads += 1;
+              return changeRequest(1, "2026-07-02T00:00:00Z");
+            }),
+        }),
+      ],
+    });
+    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    const previews = yield* Effect.all([service.preview(ref), service.preview(ref)], {
+      concurrency: 2,
+    });
+    assert.deepStrictEqual(previews[0], {
+      ...ref,
+      title: "Change request 1",
+      url: "https://host/pull/1",
+      author: { login: "octocat", name: null, avatarUrl: null },
+      state: "open",
+      isDraft: false,
+      createdAt: "2026-07-01T00:00:00Z",
+    });
+    assert.strictEqual(reads, 1);
+    yield* service.invalidate({ reference: ref });
+    yield* service.preview(ref);
+    assert.strictEqual(reads, 2);
+    yield* service.runAction({ ...ref, action: "close" });
+    yield* service.preview(ref);
+    assert.strictEqual(reads, 3);
+    yield* service.refreshAfterTurn(ref.projectId);
+    yield* service.preview(ref);
+    assert.strictEqual(reads, 4);
+    const error = yield* Effect.flip(service.preview({ ...ref, repository: "another/repo" }));
+    assert.strictEqual(error._tag, "PullRequestOperationError");
+    assert.strictEqual(reads, 4);
+  }),
+);
+
+it.effect("keeps cached previews available and pauses uncached previews until quota resets", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const retryAt = Date.parse("2099-08-13T14:00:00Z");
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          getChangeRequestPreview: ({ number }) =>
+            Effect.gen(function* () {
+              reads++;
+              if (reads === 2)
+                return yield* new PullRequestProviderError({
+                  provider: SourceControlProviderKind.make("github"),
+                  operation: "getChangeRequestPreview",
+                  reason: "rate-limited",
+                  detail: "GitHub requests are paused until the rate limit resets.",
+                  retryAt,
+                });
+              return changeRequest(number, "2026-07-02T00:00:00Z");
+            }),
+        }),
+      ],
+    });
+    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    yield* service.preview(ref);
+    const limited = yield* Effect.flip(service.preview({ ...ref, number: 2 }));
+    assert.instanceOf(limited, PullRequestOperationError);
+    if (limited._tag !== "PullRequestOperationError") return;
+    assert.include(limited.detail, "paused");
+    assert.strictEqual(limited.reason, "rate-limited");
+    assert.strictEqual(limited.retryAt, retryAt);
+    assert.strictEqual((yield* service.preview(ref)).number, 1);
+    for (const number of [2, 3, 4]) {
+      const paused = yield* Effect.flip(service.preview({ ...ref, number }));
+      assert.instanceOf(paused, PullRequestOperationError);
+      if (paused._tag !== "PullRequestOperationError") return;
+      assert.include(paused.detail, "paused");
+      assert.strictEqual(paused.reason, "rate-limited");
+      assert.strictEqual(paused.retryAt, retryAt);
+    }
+    assert.strictEqual(reads, 2);
+    yield* TestClock.setTime(retryAt);
+    assert.strictEqual((yield* service.preview({ ...ref, number: 2 })).number, 2);
+    assert.strictEqual(reads, 3);
+  }),
+);
+
+it.effect("reuses only unexpired detail for previews", () =>
+  Effect.gen(function* () {
+    let previewReads = 0;
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          getChangeRequest: () => Effect.succeed(hostedChangeRequest("Description")),
+          getChangeRequestPreview: () =>
+            Effect.sync(() => {
+              previewReads++;
+              return {
+                ...changeRequest(1, "2026-07-02T00:00:00Z"),
+                title: "Updated title",
+                state: "closed" as const,
+              };
+            }),
+        }),
+      ],
+    });
+    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    yield* service.detail(ref);
+    assert.strictEqual((yield* service.preview(ref)).title, "Change request 1");
+    assert.strictEqual(previewReads, 0);
+    yield* TestClock.adjust("61 seconds");
+    const preview = yield* service.preview(ref);
+    assert.strictEqual(preview.title, "Updated title");
+    assert.strictEqual(preview.state, "closed");
+    assert.strictEqual(previewReads, 1);
+  }),
+);
+
+it.effect("shares detail and activity for a minute, and for ten once merged", () =>
+  Effect.gen(function* () {
+    const reads: Array<string> = [];
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          getChangeRequest: ({ number }) =>
+            Effect.sync(() => {
+              reads.push(`detail #${number}`);
+              return {
+                ...hostedChangeRequest("Description"),
+                number,
+                state:
+                  number === 1
+                    ? ("open" as const)
+                    : number === 2
+                      ? ("merged" as const)
+                      : ("closed" as const),
+              };
+            }),
+          getChangeRequestActivity: ({ number }) =>
+            Effect.sync(() => {
+              reads.push(`activity #${number}`);
+              return {
+                comments: [],
+                commentCount: 0,
+                commentsTruncated: false,
+                reviewThreads: [],
+                commits: [],
+              };
+            }),
+        }),
+      ],
+    });
+    const reread = Effect.forEach([1, 2, 3], (number) => {
+      const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number };
+      return Effect.andThen(service.detail(ref), service.activity(ref));
+    }).pipe(
+      Effect.andThen(Effect.yieldNow),
+      Effect.andThen(Effect.sync(() => reads.splice(0).toSorted())),
+    );
+
+    const everything = [
+      "activity #1",
+      "activity #2",
+      "activity #3",
+      "detail #1",
+      "detail #2",
+      "detail #3",
+    ];
+    assert.deepStrictEqual(yield* reread, everything);
+    yield* TestClock.adjust("59 seconds");
+    assert.deepStrictEqual(yield* reread, []);
+    yield* TestClock.adjust("2 seconds");
+    assert.deepStrictEqual(yield* reread, ["activity #1", "activity #3", "detail #1", "detail #3"]);
+    yield* TestClock.adjust("9 minutes");
+    assert.deepStrictEqual(yield* reread, everything);
+  }),
+);
+
+it.effect("re-reads an open pull request after a turn, but not a merged one", () =>
+  Effect.gen(function* () {
+    const reads: Array<string> = [];
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          getChangeRequest: ({ number }) =>
+            Effect.sync(() => {
+              reads.push(`detail #${number}`);
+              return {
+                ...hostedChangeRequest("Description"),
+                number,
+                state: number === 1 ? ("open" as const) : ("merged" as const),
+              };
+            }),
+          getChangeRequestActivity: ({ number }) =>
+            Effect.sync(() => {
+              reads.push(`activity #${number}`);
+              return {
+                comments: [],
+                commentCount: 0,
+                commentsTruncated: false,
+                reviewThreads: [],
+                commits: [],
+              };
+            }),
+        }),
+      ],
+    });
+    const merged = { projectId: "p1" as ProjectId, repository: "acme/web", number: 2 };
+    const reread = Effect.forEach([1, 2], (number) => {
+      const ref = { ...merged, number };
+      return Effect.andThen(service.detail(ref), service.activity(ref));
+    }).pipe(
+      Effect.andThen(Effect.yieldNow),
+      Effect.andThen(Effect.sync(() => reads.splice(0).toSorted())),
+    );
+
+    assert.deepStrictEqual(yield* reread, ["activity #1", "activity #2", "detail #1", "detail #2"]);
+    for (let turn = 0; turn < 3; turn++) {
+      yield* service.refreshAfterTurn(merged.projectId);
+      assert.deepStrictEqual(yield* reread, ["activity #1", "detail #1"]);
+    }
+    yield* service.invalidate({ reference: merged });
+    assert.deepStrictEqual(yield* reread, ["activity #2", "detail #2"]);
+  }),
 );

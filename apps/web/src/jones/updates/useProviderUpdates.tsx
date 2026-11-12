@@ -58,7 +58,9 @@ export function useJonesProviderUpdates() {
       providers: providersByEnvironment.get(environment.environmentId) ?? [],
     })),
   );
-  const machines = environmentGroupsWithUpdates(groups);
+  const machines = environmentGroupsWithUpdates(groups).filter((machine) =>
+    permitted.has(machine.environmentId),
+  );
   const updateEnvironment = (environmentId: EnvironmentId) => {
     const machine =
       machines.find((entry) => entry.environmentId === environmentId) ??

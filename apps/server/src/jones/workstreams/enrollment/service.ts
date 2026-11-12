@@ -79,6 +79,8 @@ const decodeBinding = Schema.decodeUnknownEffect(
   Schema.fromJsonString(NativeProviderEnrollmentBinding),
 );
 const jsonBinding = Schema.encodeSync(Schema.fromJsonString(NativeProviderEnrollmentBinding));
+const isWorkstreamsNativeBuild = Schema.is(WorkstreamsNativeBuild);
+const isNativeEnrollmentError = Schema.is(NativeEnrollmentError);
 
 export const makeNativeEnrollments = Effect.fn("NativeEnrollments.makeNativeEnrollments")(
   function* (ports: NativeEnrollmentPorts) {
@@ -115,7 +117,7 @@ export const makeNativeEnrollments = Effect.fn("NativeEnrollments.makeNativeEnro
       )
         return yield* new NativeEnrollmentError({ code: "authority_mismatch" });
       const build = yield* ports.build;
-      if (Option.isNone(build) || !Schema.is(WorkstreamsNativeBuild)(build.value))
+      if (Option.isNone(build) || !isWorkstreamsNativeBuild(build.value))
         return yield* new NativeEnrollmentError({ code: "build_unavailable" });
       return build.value;
     });
@@ -231,7 +233,7 @@ export const makeNativeEnrollments = Effect.fn("NativeEnrollments.makeNativeEnro
           )
           .pipe(
             Effect.mapError((error) =>
-              Schema.is(NativeEnrollmentError)(error)
+              isNativeEnrollmentError(error)
                 ? error
                 : new NativeEnrollmentError({ code: "unknown_commit" }),
             ),
@@ -273,10 +275,11 @@ export const NativeProviderEnrollmentLive = Layer.effect(
   Effect.gen(function* () {
     const enrollments = yield* NativeEnrollments;
     return NativeProviderEnrollment.of({
-      getBySessionId: (sessionId) =>
+      getBySessionId: Effect.fn("NativeProviderEnrollment.getBySessionId")((sessionId) =>
         enrollments
           .getBySessionId(sessionId)
           .pipe(Effect.mapError(() => new NativeProviderEnrollmentError())),
+      ),
     });
   }),
 );

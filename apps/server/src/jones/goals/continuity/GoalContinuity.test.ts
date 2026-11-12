@@ -157,6 +157,15 @@ const agentScope = (credential: string): Invocation.McpInvocationScope => ({
 const database = NodeSqliteClient.layer({ filename: ":memory:" });
 // A real in-memory database with the exact indexed projection columns used here.
 // No runtime, provider process, filesystem state or application startup is involved.
+const compiledEncodeEffect1 = Schema.encodeEffect(Schema.fromJsonString(RecordedAppThreadJson));
+const compiledEncodeEffect2 = Schema.encodeEffect(
+  Schema.fromJsonString(C.OrchestrationV2ProviderThreadJson),
+);
+const compiledEncodeEffect3 = Schema.encodeEffect(Schema.fromJsonString(RecordedRunJson));
+const compiledEncodeEffect4 = Schema.encodeEffect(
+  Schema.fromJsonString(C.OrchestrationV2RunAttemptJson),
+);
+
 const setup = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -167,10 +176,10 @@ const setup = Layer.effectDiscard(
     yield* sql`CREATE INDEX synthetic_runs_thread_status ON orchestration_v2_projection_runs(thread_id,status)`;
     yield* sql`CREATE TABLE orchestration_v2_projection_run_attempts(attempt_id TEXT PRIMARY KEY,thread_id TEXT,payload_json TEXT)`;
     yield* sql`CREATE TABLE orchestration_v2_projection_provider_sessions(provider_session_id TEXT PRIMARY KEY,provider_instance_id TEXT,driver TEXT,status TEXT)`;
-    yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${owner.threadId},${yield* Schema.encodeEffect(Schema.fromJsonString(RecordedAppThreadJson))(thread)})`;
-    yield* sql`INSERT INTO orchestration_v2_projection_provider_threads VALUES (${owner.providerThreadId},${owner.threadId},${yield* Schema.encodeEffect(Schema.fromJsonString(C.OrchestrationV2ProviderThreadJson))(provider)})`;
-    yield* sql`INSERT INTO orchestration_v2_projection_runs VALUES (${run.id},${owner.threadId},'running',1,${yield* Schema.encodeEffect(Schema.fromJsonString(RecordedRunJson))(run)})`;
-    yield* sql`INSERT INTO orchestration_v2_projection_run_attempts VALUES (${attempt.id},${owner.threadId},${yield* Schema.encodeEffect(Schema.fromJsonString(C.OrchestrationV2RunAttemptJson))(attempt)})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${owner.threadId},${yield* compiledEncodeEffect1(thread)})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_provider_threads VALUES (${owner.providerThreadId},${owner.threadId},${yield* compiledEncodeEffect2(provider)})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_runs VALUES (${run.id},${owner.threadId},'running',1,${yield* compiledEncodeEffect3(run)})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_run_attempts VALUES (${attempt.id},${owner.threadId},${yield* compiledEncodeEffect4(attempt)})`;
     yield* sql`INSERT INTO orchestration_v2_projection_provider_sessions VALUES (${witness.providerSessionId},${owner.providerInstanceId},${owner.driver},'running')`;
   }),
 ).pipe(Layer.provideMerge(database));

@@ -4,7 +4,7 @@ import {
   WorkstreamOperationResult,
 } from "@t3tools/contracts/jones/workstreamOperations";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
@@ -74,7 +74,7 @@ const make = Effect.gen(function* () {
   const callerPreparation = yield* Preparation.RecordedCallerPreparation;
   const bindings = yield* BindingStore.BindingStore;
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const decodeRequest = Schema.decodeUnknownEffect(
     Schema.fromJsonString(WorkstreamOperationRequest),
   );
@@ -111,10 +111,9 @@ const make = Effect.gen(function* () {
       return yield* new DurableEntryError({ code: "invalid_checkpoint" });
     if (checkpoint?.unknown) {
       const child = checkpoint.unknown;
-      const hash = yield* crypto.digest("SHA-256", new TextEncoder().encode(child.body)).pipe(
-        Effect.map(Hex.encode),
-        Effect.mapError(() => new DurableEntryError({ code: "unavailable" })),
-      );
+      const hash = yield* crypto
+        .digest(Digest.sha256, new TextEncoder().encode(child.body))
+        .pipe(Effect.map(Hex.encode));
       if (
         canonicalJson(child.command) !== child.body ||
         hash !== child.digest ||

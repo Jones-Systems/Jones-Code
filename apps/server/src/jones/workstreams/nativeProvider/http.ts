@@ -143,6 +143,13 @@ const render = Effect.fn("NativeProviderHttp.render")(function* (
   });
 });
 
+const compiledDecodeEffect1 = Schema.decodeEffect(NativeProviderEnrollmentBinding);
+const compiledDecodeUnknownEffect2 = Schema.decodeUnknownEffect(WorkstreamsNativeContextRequest);
+const compiledDecodeUnknownEffect3 = Schema.decodeUnknownEffect(
+  WorkstreamsNativeAttestationRequest,
+);
+const compiledDecodeUnknownEffect4 = Schema.decodeUnknownEffect(WorkstreamsNativeSettlementRequest);
+
 export const createNativeProviderHandlers = (
   provider: WorkstreamsNativeProvider<"v1" | "v2">,
   enrollments: NativeProviderEnrollment["Service"],
@@ -180,9 +187,7 @@ export const createNativeProviderHandlers = (
         state: "rejected",
         reason: "forbidden",
       });
-    const binding = yield* Schema.decodeEffect(NativeProviderEnrollmentBinding)(
-      enrolled.value.value.value,
-    ).pipe(Effect.option);
+    const binding = yield* compiledDecodeEffect1(enrolled.value.value.value).pipe(Effect.option);
     if (Option.isNone(binding) || binding.value.session_id !== authenticatedSessionId)
       return yield* renderResponse(operation, {
         protocol,
@@ -197,9 +202,7 @@ export const createNativeProviderHandlers = (
       return yield* renderResponse(operation, invalid);
     const input = parsed.value.value;
     if (operation === "context") {
-      const request = yield* Schema.decodeUnknownEffect(WorkstreamsNativeContextRequest)(
-        input.value,
-      ).pipe(Effect.option);
+      const request = yield* compiledDecodeUnknownEffect2(input.value).pipe(Effect.option);
       if (Option.isNone(request)) return yield* renderResponse(operation, invalid);
       const result = yield* provider
         .context(binding.value)
@@ -214,9 +217,7 @@ export const createNativeProviderHandlers = (
       );
     }
     if (operation === "attestations") {
-      const request = yield* Schema.decodeUnknownEffect(WorkstreamsNativeAttestationRequest)(
-        input.value,
-      ).pipe(Effect.option);
+      const request = yield* compiledDecodeUnknownEffect3(input.value).pipe(Effect.option);
       if (Option.isNone(request)) return yield* renderResponse(operation, invalid);
       const result = yield* provider
         .attest(binding.value, request.value)
@@ -230,9 +231,7 @@ export const createNativeProviderHandlers = (
         })),
       );
     }
-    const request = yield* Schema.decodeUnknownEffect(WorkstreamsNativeSettlementRequest)(
-      input.value,
-    ).pipe(Effect.option);
+    const request = yield* compiledDecodeUnknownEffect4(input.value).pipe(Effect.option);
     if (Option.isNone(request)) return yield* renderResponse(operation, invalid);
     const action = operation === "settlements" ? provider.settle : provider.lookup;
     const result = yield* action(binding.value, request.value, input.requestBytesSha256).pipe(

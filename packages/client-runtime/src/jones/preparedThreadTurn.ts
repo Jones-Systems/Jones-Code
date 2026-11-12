@@ -45,11 +45,13 @@ export const PreparedThreadTurnJson = Schema.toCodecJson(PreparedThreadTurnValue
     }),
   ),
 );
+const encodePreparedThreadTurnJson = Schema.encodeSync(PreparedThreadTurnJson);
 
 export function encodePreparedThreadTurn(prepared: PreparedThreadTurn): unknown {
-  return Schema.encodeSync(PreparedThreadTurnJson)(prepared);
+  return encodePreparedThreadTurnJson(prepared);
 }
+const decodePreparedThreadTurnJson = Schema.decodeUnknownSync(PreparedThreadTurnJson);
 
 export function decodePreparedThreadTurn(value: unknown): PreparedThreadTurn {
-  return Schema.decodeUnknownSync(PreparedThreadTurnJson)(value);
+  return decodePreparedThreadTurnJson(value);
 }

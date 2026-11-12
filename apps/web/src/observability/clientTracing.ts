@@ -71,24 +71,27 @@ const layerDelegateRuntime = Layer.mergeAll(
 let activeRuntime: ManagedRuntime.ManagedRuntime<never, never> | null = null;
 let activeScope: Scope.Closeable | null = null;
 let activeConfigKey: string | null = null;
-let configurationGeneration = 0;
 let pendingConfiguration = Promise.resolve();
 
-export interface ClientTracingConfig {
-  readonly exportIntervalMs?: number;
-}
-
-export function configureClientTracing(config: ClientTracingConfig = {}): Promise<void> {
-  if (config.exportIntervalMs === undefined && activeConfigKey !== null) {
+export function configureClientTracing(
+  options: { readonly exportIntervalMs?: number } = {},
+): Promise<void> {
+  if (
+    activeConfigKey !== null &&
+    ClientTracer.hasDelegate() &&
+    options.exportIntervalMs === undefined
+  ) {
     return pendingConfiguration;
   }
-  pendingConfiguration = pendingConfiguration.finally(() => applyClientTracingConfig(config));
+  pendingConfiguration = pendingConfiguration.finally(() => applyClientTracingConfig(options));
   return pendingConfiguration;
 }
 
-async function applyClientTracingConfig(config: ClientTracingConfig): Promise<void> {
+async function applyClientTracingConfig(options: {
+  readonly exportIntervalMs?: number;
+}): Promise<void> {
   const otlpTracesUrl = resolvePrimaryEnvironmentHttpUrl("/api/observability/v1/traces");
-  const exportIntervalMs = Math.max(10, config.exportIntervalMs ?? DEFAULT_EXPORT_INTERVAL_MS);
+  const exportIntervalMs = options.exportIntervalMs ?? DEFAULT_EXPORT_INTERVAL_MS;
   const nextConfigKey = `${otlpTracesUrl}|${exportIntervalMs}`;
 
   if (activeConfigKey === nextConfigKey && ClientTracer.hasDelegate()) {
@@ -96,7 +99,6 @@ async function applyClientTracingConfig(config: ClientTracingConfig): Promise<vo
   }
 
   activeConfigKey = nextConfigKey;
-  const generation = ++configurationGeneration;
 
   const previousRuntime = activeRuntime;
   const previousScope = activeScope;
@@ -108,7 +110,7 @@ async function applyClientTracingConfig(config: ClientTracingConfig): Promise<vo
   await disposeTracerRuntime(previousRuntime, previousScope);
 
   const runtime = ManagedRuntime.make(layerDelegateRuntime);
-  const scope = runtime.runSync(Scope.make());
+  const scope = await runtime.runPromise(Scope.make());
 
   const delegateResult = await settleAsyncResult(() =>
     runtime.runPromiseExit(
@@ -124,23 +126,15 @@ async function applyClientTracingConfig(config: ClientTracingConfig): Promise<vo
   if (delegateResult._tag === "Failure") {
     await disposeTracerRuntime(runtime, scope);
 
-    if (generation === configurationGeneration) {
-      activeConfigKey = null;
-      const error = squashAtomCommandFailure(delegateResult);
-      const tracesUrl = new URL(otlpTracesUrl);
-      console.warn("Failed to configure client tracing exporter", {
-        scheme: tracesUrl.protocol.replace(/:$/, ""),
-        host: tracesUrl.hostname,
-        port: tracesUrl.port || undefined,
-        exportIntervalMs,
-        ...safeErrorLogAttributes(error),
-      });
-    }
-    return;
-  }
-
-  if (generation !== configurationGeneration) {
-    await disposeTracerRuntime(runtime, scope);
+    const error = squashAtomCommandFailure(delegateResult);
+    const tracesUrl = new URL(otlpTracesUrl);
+    console.warn("Failed to configure client tracing exporter", {
+      scheme: tracesUrl.protocol.replace(/:$/, ""),
+      host: tracesUrl.hostname,
+      port: tracesUrl.port || undefined,
+      exportIntervalMs,
+      ...safeErrorLogAttributes(error),
+    });
     return;
   }
 

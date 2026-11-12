@@ -1,8 +1,5 @@
 import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thread-requests";
-import {
-  resolvePendingUserInputAnswer,
-  type PendingUserInputDraftAnswer,
-} from "../../lib/threadActivity";
+import { resolvePendingUserInputAnswer, type PendingUserInputDraftAnswer } from "./answers";
 
 export function clampQuestionIndex(index: number, count: number): number {
   return Math.max(0, Math.min(index, count - 1));

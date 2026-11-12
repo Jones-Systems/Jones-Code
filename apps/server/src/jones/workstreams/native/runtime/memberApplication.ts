@@ -1,6 +1,6 @@
 import * as MemberExport from "../read/memberExport.ts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -63,7 +63,7 @@ type Inputs =
   | Environment.ServerEnvironmentIdentity
   | Sessions.AuthSessionRepository
   | Store.OperationStore
-  | Crypto.Crypto
+  | Digest.Digest
   | Peer.PeerMcpClient
   | Links.PeerLinks
   | Pins.PeerSessionPins
@@ -82,7 +82,7 @@ const make = Effect.gen(function* () {
     ),
     Context.add(Sessions.AuthSessionRepository, yield* Sessions.AuthSessionRepository),
     Context.add(Store.OperationStore, yield* Store.OperationStore),
-    Context.add(Crypto.Crypto, yield* Crypto.Crypto),
+    Context.add(Digest.Digest, yield* Digest.Digest),
     Context.add(Peer.PeerMcpClient, yield* Peer.PeerMcpClient),
     Context.add(Links.PeerLinks, yield* Links.PeerLinks),
     Context.add(Pins.PeerSessionPins, yield* Pins.PeerSessionPins),
@@ -167,12 +167,13 @@ const make = Effect.gen(function* () {
     ),
   );
   return MemberApplication.of({
-    export: (pageSize) =>
+    export: Effect.fn("MemberApplication.export")((pageSize) =>
       run(
         Integration.nativeMemberExportRequestLayer,
         Effect.flatMap(MemberExport.MemberExport, (exporter) => exporter.read(pageSize)),
       ),
-    commandReceipt: (input) =>
+    ),
+    commandReceipt: Effect.fn("MemberApplication.commandReceipt")((input) =>
       run(
         CommandReceipts.layer.pipe(
           Layer.provide(HomeClient.layer),
@@ -180,7 +181,8 @@ const make = Effect.gen(function* () {
         ),
         Effect.flatMap(CommandReceipts.MemberCommandReceipts, (receipts) => receipts.lookup(input)),
       ),
-    registration: () =>
+    ),
+    registration: Effect.fn("MemberApplication.registration")(() =>
       run(
         Registration.layer.pipe(
           Layer.provide(Integration.nativeMemberAdmissionRequestLayer),
@@ -193,86 +195,102 @@ const make = Effect.gen(function* () {
         ),
         Effect.flatMap(Registration.MemberRegistration, (registration) => registration.read()),
       ),
-    access: () =>
+    ),
+    access: Effect.fn("MemberApplication.access")(() =>
       run(
         MemberAccess.layer.pipe(Layer.provide(Integration.nativeMemberAdmissionRequestLayer)),
         Effect.flatMap(MemberAccess.MemberAccess, (access) => access.current()),
       ),
-    read: (request, placement) =>
+    ),
+    read: Effect.fn("MemberApplication.read")((request, placement) =>
       run(
         Integration.nativeMemberReadRequestLayer,
         Effect.flatMap(Reads.MemberReads, (reads) => reads.read(request, placement)),
       ),
-    submitCommand: (input) =>
+    ),
+    submitCommand: Effect.fn("MemberApplication.submitCommand")((input) =>
       run(
         Integration.nativeMemberForwardRequestLayer,
         Effect.flatMap(Transport.MemberWriteTransport, (transport) =>
           transport.submitCommand(input),
         ),
       ),
-    saveAppearance: (input) =>
+    ),
+    saveAppearance: Effect.fn("MemberApplication.saveAppearance")((input) =>
       run(
         Integration.nativeMemberForwardRequestLayer,
         Effect.flatMap(Transport.MemberWriteTransport, (transport) =>
           transport.saveAppearance(input),
         ),
       ),
-    submitOperation: (input) =>
+    ),
+    submitOperation: Effect.fn("MemberApplication.submitOperation")((input) =>
       run(
         Integration.nativeMemberForwardRequestLayer,
         Effect.flatMap(Operations.MemberOperations, (operations) => operations.submit(input)),
       ),
-    submitOperationBody: (body) =>
+    ),
+    submitOperationBody: Effect.fn("MemberApplication.submitOperationBody")((body) =>
       run(
         Integration.nativeMemberForwardRequestLayer,
         Effect.flatMap(Operations.MemberOperations, (operations) => operations.submitBody(body)),
       ),
-    readOperation: (id) =>
+    ),
+    readOperation: Effect.fn("MemberApplication.readOperation")((id) =>
       run(
         Integration.nativeMemberForwardRequestLayer,
         Effect.flatMap(Operations.MemberOperations, (operations) => operations.read(id)),
       ),
-    openOperations: () =>
+    ),
+    openOperations: Effect.fn("MemberApplication.openOperations")(() =>
       run(
         Integration.nativeMemberForwardRequestLayer,
         Effect.flatMap(Operations.MemberOperations, (operations) => operations.open()),
       ),
-    readPublicOperation: (id) =>
+    ),
+    readPublicOperation: Effect.fn("MemberApplication.readPublicOperation")((id) =>
       run(
         PublicRead.layer.pipe(Layer.provideMerge(Integration.nativeMemberForwardRequestLayer)),
         Effect.flatMap(PublicRead.MemberOperationRead, (operations) => operations.read(id)),
       ),
-    openPublicOperations: () =>
+    ),
+    openPublicOperations: Effect.fn("MemberApplication.openPublicOperations")(() =>
       run(
         PublicRead.layer.pipe(Layer.provideMerge(Integration.nativeMemberForwardRequestLayer)),
         Effect.flatMap(PublicRead.MemberOperationRead, (operations) => operations.open()),
       ),
-    recoverOpen: (options) =>
+    ),
+    recoverOpen: Effect.fn("MemberApplication.recoverOpen")((options) =>
       run(
         recovery,
         Effect.flatMap(Forwarder.MemberForwarder, (forwarder) => forwarder.recoverOpen(options)),
       ),
-    invokeRetainedEffect: (request, invocation) =>
-      run(
-        retainedSource,
-        Effect.flatMap(RetainedPort.RetainedSourceEffects, (source) =>
-          source.invoke(request, invocation),
+    ),
+    invokeRetainedEffect: Effect.fn("MemberApplication.invokeRetainedEffect")(
+      (request, invocation) =>
+        run(
+          retainedSource,
+          Effect.flatMap(RetainedPort.RetainedSourceEffects, (source) =>
+            source.invoke(request, invocation),
+          ),
         ),
-      ),
-    lookupParent: (request, invocation) =>
+    ),
+    lookupParent: Effect.fn("MemberApplication.lookupParent")((request, invocation) =>
       run(
         source,
         Effect.flatMap(SourceReadmission.SourceReadmission, (source) =>
           source.lookupParent(request, invocation),
         ),
       ),
-    lookupRaw: (request, invocation) =>
+    ),
+    lookupRaw: Effect.fn("MemberApplication.lookupRaw")((request, invocation) =>
       run(
         source,
         Effect.flatMap(SourceReadmission.SourceReadmission, (source) =>
           source.lookupRaw(request, invocation),
         ),
       ),
+    ),
   });
 });
 

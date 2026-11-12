@@ -78,6 +78,7 @@ export function classifyThreadStatus(
     if (status === "approval" || status === "input" || status === "request") return "input";
     if (status === "failed" || status === "limited") return null;
     if (
+      status === "preparing" ||
       status === "working" ||
       status === "waiting" ||
       (thread.pendingBackgroundTasks?.length ?? 0) > 0
@@ -107,6 +108,8 @@ export function classifyThreadStatus(
     }
   }
   const status = resolveSidebarThreadStatus(thread);
+  // Worktree setup is its own sidebar status; like the row and folder dot, it is still work.
+  if (status === "preparing") return "working";
   const topStatus = resolveSidebarV2TopStatus({
     status,
     isUnread: hasUnseenCompletion(thread),

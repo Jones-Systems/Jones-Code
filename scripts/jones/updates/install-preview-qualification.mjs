@@ -755,6 +755,9 @@ export async function serveRendererFixture(directory) {
 export async function indexedDbBrowserProof(phase, syntheticOrigin) {
   const slot = "__jonesLegacyIndexedDbProof";
   const runtimeName = "t3code:connection-runtime";
+  // The current catalog version (apps/web/src/connection/storage.ts DATABASE_VERSION, upstream 5).
+  // Jones compatibility hints must never bump it while an existing connection is held.
+  const catalogVersion = 5;
   const hintName = "t3code:connection-compatibility-hints";
   const require = (condition, message) => {
     if (!condition) throw new Error(message);
@@ -861,9 +864,9 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
       require(!(await indexedDB.databases()).some(
         (entry) => entry.name === temporaryName,
       ), "Owned IndexedDB control name already exists");
-      state.hold(await state.open(temporaryName, 4, 0));
+      state.hold(await state.open(temporaryName, catalogVersion, 0));
       require(state.temporaryOwned, "IndexedDB control creation was not owned");
-      await state.open(temporaryName, 5, 4);
+      await state.open(temporaryName, catalogVersion + 1, catalogVersion);
       let closed = false;
       try {
         state.database.transaction("probe", "readonly");
@@ -872,7 +875,7 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
       }
       let oldVersionRejected = false;
       try {
-        await state.open(temporaryName, 4);
+        await state.open(temporaryName, catalogVersion);
       } catch (error) {
         oldVersionRejected = error.name === "VersionError";
       }
@@ -907,10 +910,10 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
     window[slot] = state;
     try {
       require((await indexedDB.databases()).some(
-        (entry) => entry.name === runtimeName && entry.version === 4,
-      ), "Existing connection catalog must remain version 4");
-      state.hold(await state.open(runtimeName, 4));
-      return { legacyV4Held: state.database.version === 4 };
+        (entry) => entry.name === runtimeName && entry.version === catalogVersion,
+      ), `Existing connection catalog must remain version ${catalogVersion}`);
+      state.hold(await state.open(runtimeName, catalogVersion));
+      return { catalogHeld: state.database.version === catalogVersion };
     } catch (error) {
       state.dispose();
       throw error;
@@ -986,7 +989,7 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
     if (phase === "verify") {
       require(typeof state.baseline === "string", "Synthetic catalog checkpoint is absent");
       const catalogUnchanged = (await state.read(state.database, "catalog")) === state.baseline;
-      const reopened = await state.open(runtimeName, 4);
+      const reopened = await state.open(runtimeName, catalogVersion);
       let reopenedCatalogUnchanged;
       try {
         reopenedCatalogUnchanged = (await state.read(reopened, "catalog")) === state.baseline;
@@ -1017,7 +1020,7 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
       return {
         legacyConnectionUnchanged: !state.versionChanged && !state.unexpectedlyClosed,
         catalogUnchanged,
-        reopenedV4: reopened.version === 4,
+        reopenedAtCatalogVersion: reopened.version === catalogVersion,
         reopenedCatalogUnchanged,
         separateHintDatabase,
         hintRecordPresent,
@@ -1059,8 +1062,8 @@ export function scenarioSteps(remotePairing) {
       oldVersionRejected: true,
       temporaryDatabaseRemoved: true,
     }),
-    indexedDbStep("hold", "Hold the actual legacy version-4 catalog connection", {
-      legacyV4Held: true,
+    indexedDbStep("hold", "Hold the actual current-version catalog connection", {
+      catalogHeld: true,
     }),
     { action: "click", locator: 'role=button[name="Add environment"]' },
     { action: "type", locator: 'role=textbox[name="Host"]', text: remotePairing },
@@ -1087,8 +1090,8 @@ export function scenarioSteps(remotePairing) {
     { action: "wait", text: "Synthetic incompatible Jones host" },
     { action: "wait", text: "Source matches this app." },
     disabledPreference,
-    indexedDbStep("hold", "Hold the saved Off version-4 catalog connection", {
-      legacyV4Held: true,
+    indexedDbStep("hold", "Hold the saved Off current-version catalog connection", {
+      catalogHeld: true,
     }),
     indexedDbStep("checkpoint", "Capture the saved Off catalog before the authenticated check", {
       savedOffCatalogCaptured: true,
@@ -1105,7 +1108,7 @@ export function scenarioSteps(remotePairing) {
     indexedDbStep("verify", "New hint persistence preserves the held legacy catalog", {
       legacyConnectionUnchanged: true,
       catalogUnchanged: true,
-      reopenedV4: true,
+      reopenedAtCatalogVersion: true,
       reopenedCatalogUnchanged: true,
       separateHintDatabase: true,
       hintRecordPresent: true,
@@ -1395,6 +1398,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   control("show-client-notices");
   const noticeCount = (count) => steps.push({ action: "wait", text: `Client notices: ${count}` });
   const noticeText = `document.querySelector('[data-testid="notice-banners"]').textContent`;
+  const noticeCards = `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [data-slot="composer-banner"]'))`;
   const noticeBuild = (sha, version = "0.0.44-preview.20261009.1.1") => `(() => {
     const labels = [...document.querySelectorAll('[data-testid="notice-banners"] [aria-label]')]
       .filter(node => {
@@ -1407,13 +1411,13 @@ export function rendererSteps(origin, sourceSha, runId) {
   const noticeTitles = (label, titles) =>
     check(
       label,
-      `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [role="alert"]')).map(e => e.querySelector('.font-medium').textContent).sort()`,
+      `${noticeCards}.map(e => e.querySelector('.font-medium').textContent).sort()`,
       [...titles].sort(),
     );
-  const details = () =>
+  const details = (title) =>
     steps.push({
       action: "hover",
-      locator: '[data-testid="notice-banners"] >> role=button[name="Show notice details"]',
+      locator: `[data-testid="notice-banners"] >> role=button[name="Show details: ${title}"]`,
     });
   const syntheticSource = (sourceSha.startsWith("a") ? "b" : "a").repeat(39) + "b";
   noticeCount(1);
@@ -1422,7 +1426,7 @@ export function rendererSteps(origin, sourceSha, runId) {
     `document.querySelector('[data-testid="notice-branding"]').textContent === ${JSON.stringify(`Synthetic client 0.0.45-preview.20261011.1.1; exact source ${sourceSha}`)}`,
   );
   noticeTitles("Manual selection shows only Laptop", ["Laptop: Server update available"]);
-  details();
+  details("Laptop: Server update available");
   steps.push({ action: "wait", text: "Update this server to catch up." });
   capture(
     "client-notice-active-laptop",
@@ -1447,14 +1451,15 @@ export function rendererSteps(origin, sourceSha, runId) {
     "Laptop: Server update available",
     "Remote: Server update available",
   ]);
-  steps.push({
-    action: "hover",
-    locator: '[data-testid="notice-banners"] >> role=button[name="Show other notices"]',
-  });
   steps.push({ action: "wait", text: "Remote: Server update available" });
   check(
-    "Both automatic notices are visibly expanded",
-    `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [role="alert"]')).every(e => getComputedStyle(e).visibility === 'visible' && e.getBoundingClientRect().height > 0)`,
+    "Both automatic notice cards are visible",
+    `(() => {
+      const cards = ${noticeCards};
+      return cards.length === 2 && cards.every(card =>
+        getComputedStyle(card).visibility === 'visible' && card.getBoundingClientRect().height > 0
+      );
+    })()`,
   );
   capture(
     "client-notice-automatic-eligible",
@@ -1520,7 +1525,7 @@ export function rendererSteps(origin, sourceSha, runId) {
     "Stable guidance retains full version details and update-or-reload instructions",
     `${noticeBuild(syntheticSource, "9.0.0")} && ${noticeText}.includes('Update this app or reload an updated web client.')`,
   );
-  details();
+  details("Laptop: Client update available");
   steps.push({ action: "wait", text: "Update this app or reload an updated web client." });
   capture(
     "client-notice-stable-server",

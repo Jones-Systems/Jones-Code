@@ -4,16 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import * as NodeEvents from "node:events";
 
-export async function processIdentity(pid) {
-  if (!pid) return null;
-  try {
-    const value = await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8");
-    return value.slice(value.lastIndexOf(")") + 2).split(" ")[19];
-  } catch (error) {
-    if (["ENOENT", "ESRCH"].includes(error.code)) return null;
-    throw error;
-  }
-}
+import { processIdentity } from "./process-identity.mjs";
 
 export const stateParent = () =>
   NodePath.join(

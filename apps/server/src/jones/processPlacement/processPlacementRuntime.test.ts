@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 import { makeCodexAppServerSpawnCommand } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
@@ -58,7 +59,13 @@ it.effect(
     vi.mocked(Shell.resolveCommandPath).mockImplementation((command) => Effect.succeed(command));
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
     const raw = ChildProcessSpawner.make((command) => {
-      if (command._tag === "StandardCommand") calls.push(command);
+      if (command._tag === "StandardCommand")
+        calls.push({
+          command: command.command,
+          args: command.args.map((word) =>
+            Redacted.isRedacted(word) ? Redacted.value(word) : word,
+          ),
+        });
       return Effect.fail(
         PlatformError.systemError({
           _tag: "Unknown",

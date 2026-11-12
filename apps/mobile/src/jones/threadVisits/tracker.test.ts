@@ -1,5 +1,5 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import type { VisitThreadInput } from "@t3tools/client-runtime/state/threads";
+import type { VisitThreadInput } from "@t3tools/client-runtime/operations";
 import { claimThreadOpen } from "@t3tools/client-runtime/state/thread-search";
 import { suppressThreadReadDwell } from "@t3tools/client-runtime/jones/thread-read-dwell";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";

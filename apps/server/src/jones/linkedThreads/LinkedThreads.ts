@@ -491,15 +491,28 @@ const make = Effect.gen(function* () {
       Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
     );
   return LinkedThreads.of({
-    claimLaunch: (input: Claim) => provide(claimLaunch(input)),
-    recordRemoteLaunch: (input: Parameters<LinkedThreads["Service"]["recordRemoteLaunch"]>[0]) =>
-      provide(recordRemoteLaunch(input)),
-    list: (actor: LinkActor, input: LinkedThreadsListInput) => provide(list(actor, input)),
-    link: (actor: LinkActor, input: LinkInput) => provide(link(actor, input)),
-    unlink: (actor: LinkActor, input: UnlinkThreadsInput) => provide(unlink(actor, input)),
-    accept: (actor: LinkActor, input: AcceptThreadHandoffInput) => provide(accept(actor, input)),
-    recover: (actor: LinkActor, input: { readonly threadId: ThreadId }) =>
-      provide(recover(actor, input)),
+    claimLaunch: Effect.fn("LinkedThreads.claimLaunch")((input: Claim) =>
+      provide(claimLaunch(input)),
+    ),
+    recordRemoteLaunch: Effect.fn("LinkedThreads.recordRemoteLaunch")(
+      (input: Parameters<LinkedThreads["Service"]["recordRemoteLaunch"]>[0]) =>
+        provide(recordRemoteLaunch(input)),
+    ),
+    list: Effect.fn("LinkedThreads.list")((actor: LinkActor, input: LinkedThreadsListInput) =>
+      provide(list(actor, input)),
+    ),
+    link: Effect.fn("LinkedThreads.link")((actor: LinkActor, input: LinkInput) =>
+      provide(link(actor, input)),
+    ),
+    unlink: Effect.fn("LinkedThreads.unlink")((actor: LinkActor, input: UnlinkThreadsInput) =>
+      provide(unlink(actor, input)),
+    ),
+    accept: Effect.fn("LinkedThreads.accept")((actor: LinkActor, input: AcceptThreadHandoffInput) =>
+      provide(accept(actor, input)),
+    ),
+    recover: Effect.fn("LinkedThreads.recover")(
+      (actor: LinkActor, input: { readonly threadId: ThreadId }) => provide(recover(actor, input)),
+    ),
   });
 });
 export const layer = Layer.effect(LinkedThreads, make).pipe(Layer.provide(ProjectionStore.layer));

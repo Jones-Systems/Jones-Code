@@ -4,6 +4,7 @@ import {
   capacityCases,
 } from "../../../../../scripts/jones/direct-producers/finite-production.testkit.ts";
 
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt, expect } from "@effect/vitest";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
@@ -97,5 +98,5 @@ effectIt.effect(
           Effect.provide(f.layer.pipe(Layer.provideMerge(f.configured))),
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

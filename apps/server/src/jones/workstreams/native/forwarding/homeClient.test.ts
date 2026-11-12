@@ -239,7 +239,9 @@ it.effect(
   () => {
     let http = 0;
     const links = Layer.succeed(Links.PeerLinks, {
+      enabled: Effect.succeed(true),
       link: () => Effect.die("unused"),
+      describe: () => Effect.succeedNone,
       list: Effect.succeed([]),
       get: () => Effect.succeedNone,
       unlink: () => Effect.succeed(false),

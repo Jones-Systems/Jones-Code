@@ -222,6 +222,8 @@ it("returns only the qualified closed response while GitHub remains available wi
   }
 });
 
+const compiledDecodeSync1 = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
+
 it("upstream failures return fixed environment errors without origins, credentials, sessions or raw reports", async () => {
   const fixture = makeRegistrationFixture({
     readRegistrationContext: Effect.fail(
@@ -233,7 +235,7 @@ it("upstream failures return fixed environment errors without origins, credentia
     const result = await app.handler(readRequest());
     expect(result.status).toBe(500);
     const text = await result.text();
-    expect(Schema.decodeSync(Schema.fromJsonString(Schema.Unknown))(text)).toMatchObject({
+    expect(compiledDecodeSync1(text)).toMatchObject({
       _tag: "EnvironmentInternalError",
       code: "internal_error",
       reason: "internal_error",

@@ -19,6 +19,8 @@ import * as ServerSettings from "../../../serverSettings.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRunner.ts";
 
+const decodeLegacyOwnedTerminalControl = Schema.decodeSync(LegacyOwnedTerminalControl);
+
 it.effect("resolves setup scripts through the standalone project service", () => {
   const assertObservedCommand = (data: string | undefined, command: string) => {
     assert.ok(data);
@@ -104,7 +106,13 @@ it.effect("resolves setup scripts through the standalone project service", () =>
         Layer.mock(ProjectService.ProjectService)({
           getById: () => Effect.succeedSome(project),
         }),
-        Layer.mock(TerminalManager.TerminalManager)({ open, write, subscribe, closeIdle }),
+        Layer.mock(TerminalManager.TerminalManager)({
+          open,
+          write,
+          subscribe,
+          closeIdle,
+          getShell: () => Effect.succeed("/bin/bash"),
+        }),
         // `thread-linked` was started from a linked environment, `thread-trusted`
         // from one linked with full access; `thread-unread` cannot be read.
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
@@ -274,7 +282,7 @@ it.effect(
     const projectId = ProjectId.make("legacy:setup-owner:project");
     const releaseCommandId = CommandId.make("legacy:setup-owner:C");
     const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
-    const binding = Schema.decodeSync(LegacyOwnedTerminalControl)({
+    const binding = decodeLegacyOwnedTerminalControl({
       version: 1,
       threadId,
       runId: "legacy:setup-owner:run",

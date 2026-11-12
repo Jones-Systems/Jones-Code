@@ -40,6 +40,7 @@ const state = vi.hoisted(() => ({
   restartManager: null as unknown as () => void,
   projections: new Map<string, Atom.Writable<EnvironmentThreadState, EnvironmentThreadState>>(),
   retry: vi.fn(),
+  delivery: null as { drain: () => void; dispose: () => void } | null,
   remove: vi.fn(async (_message: QueuedThreadMessage) => {}),
   persisted: new Map<string, string>(),
   cleanups: [] as Array<() => void>,
@@ -50,32 +51,42 @@ const state = vi.hoisted(() => ({
   settings: vi.fn(),
   checkout: vi.fn(),
 }));
-vi.mock("react", () => ({
-  useCallback: <A>(callback: A) => callback,
-  useEffect: (effect: () => void | (() => void)) => {
-    const cleanup = effect();
-    if (cleanup) state.cleanups.push(cleanup);
-  },
-  useRef: <A>(current: A) => ({ current }),
-  useState: <A>(initial: A) => [initial, state.retry],
-}));
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
 vi.mock("@effect/atom-react", async () => {
   const { appAtomRegistry } = await import("../../state/atom-registry");
   return { useAtomValue: <A>(atom: Atom.Atom<A>) => appAtomRegistry.get(atom) };
 });
-vi.mock("../../state/session", () => ({
-  readEnvironmentScope: () => true,
-  useEnvironmentsWithScope: () => new Set(["drain-env"]),
-}));
-vi.mock("../../state/entities", () => ({
-  useProjects: () => [],
-  useThreadShells: () => [],
-  useServerConfigs: () => new Map(),
+vi.mock("../../state/session", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return {
+    readEnvironmentScope: () => true,
+    sessionHasScope: () => true,
+    environmentSession: { sessionStateAtom: () => Atom.make(true) },
+  };
+});
+vi.mock("../../state/projects", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { environmentProjects: { projectsAtom: Atom.make([]) } };
+});
+vi.mock("../../state/workspace", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return {
+    workspaceConnections: {
+      environmentsAtom: Atom.make([{ environmentId: "drain-env", connectionState: "connected" }]),
+    },
+  };
+});
+vi.mock("@t3tools/client-runtime/state/runtime", async (original) => ({
+  ...(await original<typeof import("@t3tools/client-runtime/state/runtime")>()),
+  runAtomCommand: (_registry: unknown, command: (input: unknown) => unknown, input: unknown) =>
+    command(input),
 }));
 vi.mock("../../state/server", async () => {
   const { Atom } = await import("effect/reactivity");
-  return { serverEnvironment: { configValueAtom: Atom.family(() => Atom.make(null)) } };
+  return {
+    serverEnvironment: { configValueAtom: Atom.family(() => Atom.make(null)) },
+    environmentServerConfigsAtom: Atom.make(new Map()),
+  };
 });
 vi.mock("../../state/threads", async () => {
   const { Atom } = await import("effect/reactivity");
@@ -118,10 +129,19 @@ vi.mock("../../state/use-remote-environment-registry", () => ({
   }),
 }));
 vi.mock("../../state/thread-outbox", async () => {
+  const { Atom } = await import("effect/reactivity");
   const { createThreadOutboxManager } = await import("../../state/thread-outbox-manager");
   const { appAtomRegistry } = await import("../../state/atom-registry");
   const { encodeQueuedThreadMessage, decodeQueuedThreadMessage } =
     await import("../../state/thread-outbox-model");
+  const managerAtom = Atom.make<ReturnType<typeof createThreadOutboxManager> | null>(null).pipe(
+    Atom.keepAlive,
+  );
+  const queuedMessagesByThreadKeyAtom = Atom.make((get) => {
+    const manager = get(managerAtom);
+    if (manager === null) throw new Error("Fixture manager is not initialized");
+    return get(manager.queuedMessagesByThreadKeyAtom);
+  });
   state.restartManager = () => {
     state.manager = createThreadOutboxManager({
       registry: appAtomRegistry,
@@ -144,13 +164,12 @@ vi.mock("../../state/thread-outbox", async () => {
         },
       },
     });
+    appAtomRegistry.set(managerAtom, state.manager);
   };
   state.restartManager();
   return {
     threadOutboxManager: {
-      get queuedMessagesByThreadKeyAtom() {
-        return state.manager.queuedMessagesByThreadKeyAtom;
-      },
+      queuedMessagesByThreadKeyAtom,
       load: () => state.manager.load(),
     },
     threadOutboxRevision: (id: MessageId) => state.manager.revisionOf(id),
@@ -175,7 +194,7 @@ vi.mock("../../state/use-thread-outbox", async () => {
     editingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
     dispatchingQueuedMessageIdAtom: Atom.make<MessageId | null>(null).pipe(Atom.keepAlive),
     useThreadOutboxMessages: () => appAtomRegistry.get(state.manager.queuedMessagesByThreadKeyAtom),
-    useThreadOutboxShellStatuses: () => new Map([["drain-env", "empty"]]),
+    threadOutboxShellStatusesAtom: Atom.make(new Map([["drain-env", "empty"]])),
   };
 });
 vi.mock("../../state/use-composer-drafts", async () => {
@@ -197,7 +216,7 @@ vi.mock("../../state/use-composer-drafts", async () => {
 import { appAtomRegistry } from "../../state/atom-registry";
 import { acknowledgedThreadMessagesAtom } from "../../state/acknowledged-thread-messages";
 import { dispatchingQueuedMessageIdAtom } from "../../state/use-thread-outbox";
-import { useThreadOutboxDrain } from "../../state/use-thread-outbox-drain";
+import { createThreadOutboxDelivery } from "../../state/threadOutboxDelivery";
 import { pendingThreadCreationOutcomesAtom } from "../../state/pending-thread-creation";
 import { threadComposerErrorsAtom } from "../../state/thread-composer-error";
 import { environmentThreadDetails } from "../../state/threads";
@@ -211,10 +230,20 @@ async function drain(messageId: MessageId) {
     else if (started && id === null) settled.resolve();
   });
   try {
-    useThreadOutboxDrain();
+    startDelivery();
     await settled.promise;
   } finally {
     unsubscribe();
+  }
+}
+function startDelivery() {
+  if (state.delivery) state.delivery.drain();
+  else {
+    state.delivery = createThreadOutboxDelivery();
+    state.cleanups.push(() => {
+      state.delivery?.dispose();
+      state.delivery = null;
+    });
   }
 }
 const unmount = () => state.cleanups.splice(0).forEach((cleanup) => cleanup());
@@ -376,34 +405,84 @@ describe("mobile outbox drain replay ordering", () => {
       const reloaded = Object.values(
         appAtomRegistry.get(state.manager.queuedMessagesByThreadKeyAtom),
       ).flat();
+      expect(reloaded).toHaveLength(2);
       expect(reloaded[0]?.issuance).toBeUndefined();
-      publishProjection(message, liveProjection(projection));
-      await drain(message.messageId);
-      expect(state.dispatch).not.toHaveBeenCalled();
-      expect(state.persisted.has(message.messageId)).toBe(false);
-      expect(
-        Object.values(appAtomRegistry.get(state.manager.queuedMessagesByThreadKeyAtom))
-          .flat()
-          .map((queued) => queued.messageId),
-      ).toEqual([next.messageId]);
-      unmount();
-      state.dispatch.mockResolvedValueOnce(AsyncResult.success(undefined));
-      await drain(next.messageId);
-      expect(state.dispatch.mock.calls.map(([request]) => request)).toEqual([
-        { environmentId: next.environmentId, input: prepared },
-      ]);
-      expect(state.prepare).not.toHaveBeenCalled();
-      expect(state.persisted.size).toBe(0);
-      expect(
-        Object.values(appAtomRegistry.get(state.manager.queuedMessagesByThreadKeyAtom)).flat(),
-      ).toEqual([]);
+      const reloadedNext = reloaded[1];
+      if (reloadedNext?.issuance?.state !== "issued")
+        throw new Error("The reloaded next envelope must remain issued");
+      const reloadedPrepared = reloadedNext.issuance.prepared;
+      expect(reloadedNext).toMatchObject({
+        environmentId: next.environmentId,
+        threadId: next.threadId,
+        commandId: next.commandId,
+        messageId: next.messageId,
+      });
+      expect(reloadedPrepared).toEqual(prepared);
+      const nextPersisted = state.persisted.get(next.messageId);
+      expect(nextPersisted).toBeDefined();
+      const removing = Promise.withResolvers<QueuedThreadMessage>();
+      const releaseRemoval = Promise.withResolvers<void>();
+      state.remove.mockImplementationOnce(async (row) => {
+        removing.resolve(row);
+        await releaseRemoval.promise;
+      });
+      try {
+        publishProjection(message, liveProjection(projection));
+        const legacyDrain = drain(message.messageId);
+        expect(await removing.promise).toMatchObject({
+          environmentId: message.environmentId,
+          threadId: message.threadId,
+          commandId: message.commandId,
+          messageId: message.messageId,
+        });
+        expect(appAtomRegistry.get(dispatchingQueuedMessageIdAtom)).toBe(message.messageId);
+        // This fixture owner goes away before storage releases the legacy slot.
+        unmount();
+        releaseRemoval.resolve();
+        await legacyDrain;
+        expect(state.dispatch).not.toHaveBeenCalled();
+        expect(state.persisted.has(message.messageId)).toBe(false);
+        expect(
+          Object.values(appAtomRegistry.get(state.manager.queuedMessagesByThreadKeyAtom))
+            .flat()
+            .map((queued) => queued.messageId),
+        ).toEqual([next.messageId]);
+        expect(state.persisted.get(next.messageId)).toBe(nextPersisted);
+        state.dispatch.mockResolvedValueOnce(AsyncResult.success(undefined));
+        await drain(next.messageId);
+        const expectedRequests = [{ environmentId: next.environmentId, input: prepared }];
+        expect(state.dispatch.mock.calls.map(([request]) => request)).toEqual(expectedRequests);
+        expect(state.dispatch.mock.calls[0]?.[0].input).toBe(reloadedPrepared);
+        expect(state.prepare).not.toHaveBeenCalled();
+        expect(state.upload).not.toHaveBeenCalled();
+        expect(state.validate).not.toHaveBeenCalled();
+        expect(state.settings).not.toHaveBeenCalled();
+        expect(state.checkout).not.toHaveBeenCalled();
+        expect(state.persisted.size).toBe(0);
+        expect(
+          Object.values(appAtomRegistry.get(state.manager.queuedMessagesByThreadKeyAtom)).flat(),
+        ).toEqual([]);
+        unmount();
+        state.restartManager();
+        expect(await state.manager.load()).toBe(true);
+        expect(state.persisted.size).toBe(0);
+        expect(
+          Object.values(appAtomRegistry.get(state.manager.queuedMessagesByThreadKeyAtom)).flat(),
+        ).toEqual([]);
+        startDelivery();
+        expect(state.dispatch.mock.calls.map(([request]) => request)).toEqual(expectedRequests);
+        expect(appAtomRegistry.get(dispatchingQueuedMessageIdAtom)).toBeNull();
+      } finally {
+        releaseRemoval.resolve();
+        unmount();
+      }
     },
   );
 
   it("keeps a legacy head unknown until its exact live projection arrives and wakes reconciliation", async () => {
     const { message, projection } = legacyFixture();
     await state.manager.enqueue(message);
-    useThreadOutboxDrain();
+    startDelivery();
     await state.manager.serialize(async () => {});
     expect(state.dispatch).not.toHaveBeenCalled();
     expect(state.persisted.has(message.messageId)).toBe(true);
@@ -412,10 +491,14 @@ describe("mobile outbox drain replay ordering", () => {
         ?.messageId,
     ).toBe(message.messageId);
     state.retry.mockClear();
+    const removed = Promise.withResolvers<void>();
+    const release = appAtomRegistry.subscribe(dispatchingQueuedMessageIdAtom, (id) => {
+      if (id === null && !state.persisted.has(message.messageId)) removed.resolve();
+    });
     publishProjection(message, liveProjection(projection));
-    expect(state.retry).toHaveBeenCalledOnce();
+    await removed.promise;
+    release();
     unmount();
-    await drain(message.messageId);
     expect(state.persisted.size).toBe(0);
     expect(state.dispatch).not.toHaveBeenCalled();
     expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});

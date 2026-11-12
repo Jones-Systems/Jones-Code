@@ -120,7 +120,9 @@ export const admissionLayer = Layer.unwrap(
       Effect.gen(function* () {
         const permission = yield* CurrentMemberRead;
         return Member.MemberReadAdmission.of({
-          current: () => Effect.succeed(permission.admission),
+          current: Effect.fn("Member.MemberReadAdmission.current")(() =>
+            Effect.succeed(permission.admission),
+          ),
         });
       }),
     ),

@@ -1,3 +1,4 @@
+import { ThreadNow } from "../../components/chat/ThreadNow";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   createDescendantApprovalAtoms,
@@ -22,7 +23,7 @@ import {
   ComposerBannerStack,
   type ComposerBannerStackItem,
 } from "../../components/chat/ComposerBannerStack";
-import { childInputBannerItem } from "../../components/chat/ThreadActivityBanners";
+import { childInputNowItem as childInputBannerItem } from "../../components/chat/ThreadActivityBanners";
 import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPendingUserInputPanel";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import { makeThreadFixture } from "../../test-fixtures";
@@ -189,7 +190,7 @@ function Harness({ h, coexist = false }: { h: ReturnType<typeof fixture>; coexis
   const questionItem = childInputBannerItem({
     childThreadInputs: item ? children.filter((child) => !child.hasPendingApprovals) : children,
     parentAwaitingUser: false,
-    onOpenThread: h.open,
+    onOpenThread: (threadId, environmentId) => h.open({ environmentId, threadId }),
   });
   const warning: ComposerBannerStackItem = {
     id: "other-warning",
@@ -197,15 +198,14 @@ function Harness({ h, coexist = false }: { h: ReturnType<typeof fixture>; coexis
     icon: null,
     title: "Other warning",
   };
+  const now = (
+    <ThreadNow attention={questionItem ?? null} work={null} syncPhase={null} goal={null} />
+  );
   return (
     <>
-      <ComposerBannerStack
-        items={[
-          ...(item ? [item] : []),
-          ...(coexist ? [warning] : []),
-          ...(questionItem ? [questionItem] : []),
-        ]}
-      />
+      {coexist ? now : null}
+      <ComposerBannerStack items={[...(item ? [item] : []), ...(coexist ? [warning] : [])]} />
+      {coexist ? null : now}
       {coexist ? <ParentQuestion h={h} /> : null}
     </>
   );
@@ -332,9 +332,23 @@ it("cycles scoped siblings with identical IDs and keeps urgent approval in front
   });
   h.registry.set(h.children, [...h.registry.get(h.children), question]);
   await using screen = await render(tree(h, true), { router: false });
-  const front = screen.container.querySelector('[data-composer-banner-drawer="true"]');
-  expect(front?.textContent).toContain("First child needs approval");
-  expect(front?.textContent).not.toContain("Other warning");
+  const expectAttachedCards = async (approval: string) => {
+    // Selection changes the approval card key: observe the current ordered wrappers.
+    const cards = screen.container.querySelectorAll<HTMLElement>(
+      '[data-composer-banner-stack="true"]',
+    );
+    expect(cards).toHaveLength(2);
+    expect(cards[0]?.textContent).toContain(approval);
+    expect(cards[0]?.textContent).not.toContain("Other warning");
+    expect(cards[1]?.textContent).toContain("Other warning");
+    await expect.element(page.elementLocator(cards[0]!)).toBeVisible();
+    await expect.element(page.elementLocator(cards[1]!)).toBeVisible();
+    await expect
+      .element(screen.getByRole("button", { name: "Approve", exact: true }))
+      .toBeEnabled();
+    await expect.element(screen.getByRole("button", { name: "Next", exact: true })).toBeEnabled();
+  };
+  await expectAttachedCards("First child needs approval");
   await screen.getByRole("textbox", { name: "Your answer" }).fill("Parent answer remains editable");
   await expect
     .element(screen.getByRole("textbox", { name: "Your answer" }))
@@ -343,14 +357,14 @@ it("cycles scoped siblings with identical IDs and keeps urgent approval in front
   await expect
     .element(screen.getByText("Second child needs approval", { exact: true }))
     .toBeVisible();
+  await expectAttachedCards("Second child needs approval");
   await screen.getByRole("button", { name: "Open", exact: true }).click();
   expect(h.open).toHaveBeenLastCalledWith(second);
   await screen.getByRole("button", { name: "Next", exact: true }).click();
   await expect
     .element(screen.getByText("First child needs approval", { exact: true }))
     .toBeVisible();
-  // Pointer entry expands the stack and hides its peek before a click can land.
-  await screen.getByRole("button", { name: "Show other notices" }).hover();
+  await expectAttachedCards("First child needs approval");
   await expect.element(screen.getByText("Other warning", { exact: true })).toBeVisible();
   await screen.getByRole("button", { name: "Question child", exact: true }).click();
   expect(h.open).toHaveBeenLastCalledWith({

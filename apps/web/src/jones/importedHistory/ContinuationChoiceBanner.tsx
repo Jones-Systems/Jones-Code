@@ -7,20 +7,19 @@ import {
   type ImportedHistoryDelivery,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { createImportedHistoryCommands } from "@t3tools/client-runtime/jones/imported-history/commands";
 import {
   createImportedHistoryChoiceController,
   importedHistoryReasonText,
   type ImportedHistoryChoiceState,
 } from "@t3tools/client-runtime/jones/imported-history/continuation";
-import { connectionAtomRuntime } from "../../connection/runtime";
 import { importedHistoryCorrelationStorage } from "../../composerDraftStore";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ComposerBanner } from "../../components/chat/ComposerBanner";
 import { Button } from "../../components/ui/button";
 import { randomUUID } from "../../lib/utils";
 
-export const importedHistoryCommands = createImportedHistoryCommands(connectionAtomRuntime);
+import { importedHistoryCommands } from "./commands";
+export { importedHistoryCommands } from "./commands";
 export type PreparedImportedHistoryChoice = {
   readonly delivery: ImportedHistoryDelivery;
   readonly reviewedBasis: string;
@@ -71,7 +70,7 @@ export function ContinuationChoiceBanner(props: {
   const busyRef = useRef(false);
   const scope = `${props.environmentId}:${props.threadId}`;
   const scopeRef = useRef<string | null>(scope);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Fence continuation actions to the committed thread scope and revoke that scope on unmount.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fence continuation actions to the committed thread scope and revoke that scope on unmount.
   useLayoutEffect(() => {
     scopeRef.current = scope;
     return () => {

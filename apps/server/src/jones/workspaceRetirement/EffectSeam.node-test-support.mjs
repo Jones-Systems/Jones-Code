@@ -25,7 +25,10 @@ export const uninterruptibleMask=f=>f(e=>e), orDie=e=>e;
 export const provideService=(tag,v)=>e=>effect(c=>e.run(new Map([...c,[tag,v]])));
 export const provide=layer=>e=>effect(async c=>{if(layer instanceof Map)return e.run(new Map([...c,...layer]));const v=await layer.value.run(c);return e.run(new Map([...c,[layer.tag,v]]))});
 export const context=()=>effect(async c=>c), serviceOption=tag=>effect(async c=>c.has(tag)?{_tag:'Some',value:c.get(tag)}:{_tag:'None'});
-export const runPromise=e=>e.run(new Map());
+// One identity per sequential root invocation; this interpreter has no child fibers.
+const rootFiber=Symbol('sequential-fixture-root');let nextRootFiber=1;
+export const fiberId=effect(c=>{const id=c.get(rootFiber);if(id===undefined)throw Error('Missing sequential root identity');return id});
+export const runPromise=e=>e.run(new Map([[rootFiber,nextRootFiber++]]));
 `,
   "effect/DateTime": `export const nowUnsafe=()=>new Date();export const toEpochMillis=value=>value.getTime();export const formatIso=value=>value.toISOString();`,
   "effect/Context": `import {effect} from 'effect/Effect';export const Service=()=>()=>class {static of(x){return x}static *[Symbol.iterator](){return yield effect(c=>{if(!c.has(this))throw Error('Missing test service '+this.name);return c.get(this)})}};export const Reference=(_key,options)=>class {static async run(c){return c.has(this)?c.get(this):options.defaultValue()}static *[Symbol.iterator](){return yield effect(c=>this.run(c))}};`,

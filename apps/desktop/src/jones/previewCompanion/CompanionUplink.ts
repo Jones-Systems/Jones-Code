@@ -8,7 +8,7 @@ import {
   type DesktopCompanionTicketResponse,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { NodeWS } from "@effect/platform-node/NodeSocket";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
@@ -44,6 +44,8 @@ export class CompanionUplink extends Context.Service<
     readonly retry: Effect.Effect<void>;
   }
 >()("@t3tools/desktop/jones/previewCompanion/CompanionUplink") {}
+
+const encodeBrowserCommand = Schema.encodeEffect(Schema.fromJsonString(DesktopBrowserCommand));
 
 function openSocket(url: string): CompanionSocket {
   const socket = new NodeWS.WebSocket(url, {
@@ -141,7 +143,7 @@ const make = Effect.gen(function* () {
       runFork(
         Effect.suspend(() =>
           isCurrent()
-            ? Schema.encodeEffect(Schema.fromJsonString(DesktopBrowserCommand))(command).pipe(
+            ? encodeBrowserCommand(command).pipe(
                 Effect.flatMap((line) =>
                   host.handleCommandLine(
                     line,
@@ -210,9 +212,15 @@ const make = Effect.gen(function* () {
   ).pipe(Effect.forkScoped);
   return CompanionUplink.of({
     getState: Effect.sync(controller.getState),
-    configure: (value, restart) => Effect.sync(() => controller.configure(value, restart)),
-    setReady: (ready, renderer) => Effect.sync(() => setReady(ready, renderer)),
-    completeTicket: (response) => Effect.sync(() => controller.completeTicket(response)),
+    configure: Effect.fn("CompanionUplink.configure")(function (value, restart) {
+      return Effect.sync(() => controller.configure(value, restart));
+    }),
+    setReady: Effect.fn("CompanionUplink.setReady")(function (ready, renderer) {
+      return Effect.sync(() => setReady(ready, renderer));
+    }),
+    completeTicket: Effect.fn("CompanionUplink.completeTicket")(function (response) {
+      return Effect.sync(() => controller.completeTicket(response));
+    }),
     retry: Effect.sync(controller.retry),
   });
 });

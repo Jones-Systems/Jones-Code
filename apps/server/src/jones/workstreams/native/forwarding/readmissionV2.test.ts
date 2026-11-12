@@ -31,6 +31,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as HttpServer from "effect/http/HttpServer";
 import * as NetAddress from "effect/net/NetAddress";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
 import * as Sessions from "../../../../persistence/AuthSessions.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
 import * as Config from "../../../../config.ts";
@@ -167,7 +168,7 @@ const scenario = () => {
     remove: () => Effect.die("unexpected secret remove"),
   });
   const base = Pins.nativeLayer.pipe(
-    Layer.provideMerge(Auth.layer),
+    Layer.provideMerge(Auth.layer.pipe(Layer.provide(ManagedPolicy.layerTest()))),
     Layer.provideMerge(Sessions.layer),
     Layer.provideMerge(
       Test.testLayer({ filename: NodePath.join(directory, "readmission.sqlite"), secrets }),

@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Option from "effect/Option";
 import * as SecretStore from "../../../auth/ServerSecretStore.ts";
 import * as SourceSetup from "./runtime/sourceSetup.ts";
@@ -162,7 +162,7 @@ export const keyLayer = Layer.effect(
   NativeKeyAdmin,
   Effect.gen(function* () {
     const secrets = yield* SecretStore.ServerSecretStore,
-      crypto = yield* Crypto.Crypto;
+      crypto = yield* SecureRandom.SecureRandom;
     const refuse = (code: string) => (cause: unknown) => new RegistryError({ code, cause });
     return NativeKeyAdmin.of({
       initialize: Effect.fn("NativeKeyAdmin.initialize")(function* (input) {
@@ -176,9 +176,7 @@ export const keyLayer = Layer.effect(
         const created: string[] = [];
         yield* Effect.gen(function* () {
           for (const name of names) {
-            const bytes = yield* crypto
-              .randomBytes(32)
-              .pipe(Effect.mapError(refuse("unavailable")));
+            const bytes = yield* crypto.randomBytes(32);
             yield* secrets
               .create(name, bytes)
               .pipe(
@@ -229,7 +227,7 @@ export const memberKeyLayer = Layer.effect(
   NativeMemberKeyAdmin,
   Effect.gen(function* () {
     const secrets = yield* SecretStore.ServerSecretStore,
-      crypto = yield* Crypto.Crypto,
+      crypto = yield* SecureRandom.SecureRandom,
       sql = yield* SqlClient.SqlClient;
     const refuse = (code: string) => (cause: unknown) => new RegistryError({ code, cause });
     return NativeMemberKeyAdmin.of({
@@ -278,9 +276,7 @@ export const memberKeyLayer = Layer.effect(
               if (Option.isSome(file) && file.value.byteLength !== 32)
                 return yield* new RegistryError({ code: "invalid_key" });
               if (Option.isNone(file)) {
-                const bytes = yield* crypto
-                  .randomBytes(32)
-                  .pipe(Effect.mapError(refuse("unavailable")));
+                const bytes = yield* crypto.randomBytes(32);
                 yield* secrets
                   .create(name, bytes)
                   .pipe(

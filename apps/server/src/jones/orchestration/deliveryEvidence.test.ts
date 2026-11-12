@@ -118,6 +118,9 @@ it.effect("only an exact typed durable dispatch receipt classifies acceptance or
     }
   }).pipe(Effect.provide(layer)),
 );
+const decodeOrchestrationV2ThreadLaunchError = Schema.decodeEffect(
+  Schema.toCodecJson(OrchestrationV2ThreadLaunchError),
+);
 
 it.effect("launch absence and failed reads leave a requested initial message unknown", () =>
   Effect.gen(function* () {
@@ -197,7 +200,7 @@ it.effect("launch absence and failed reads leave a requested initial message unk
       assert.equal(evidence.creation.status, row.expected);
       assert.equal(evidence.initialMessage.status, "unknown");
     }
-    const old = yield* Schema.decodeEffect(Schema.toCodecJson(OrchestrationV2ThreadLaunchError))({
+    const old = yield* decodeOrchestrationV2ThreadLaunchError({
       _tag: "OrchestrationV2ThreadLaunchError",
       commandId: input.commandId,
       projectId,

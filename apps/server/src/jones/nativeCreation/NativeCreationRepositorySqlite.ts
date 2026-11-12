@@ -9,6 +9,10 @@ import { makeNativeExecutionMethods } from "./NativeCreationExecutionSqlite.ts";
 import * as Authority from "./NativeCreationAuthority.ts";
 import * as Repository from "./NativeCreationRepository.ts";
 import {
+  recordCapturedRuntimeUseCreationAdmission,
+  recordCapturedRuntimeUseCreationMaterial,
+} from "../cleanup/RuntimeUseCreationStore.ts";
+import {
   nativeCreationCanonicalJson,
   nativeCreationSha256,
   validateNativeCreationPreparation,
@@ -38,6 +42,14 @@ const decodeEnrollmentRow = Schema.decodeUnknownEffect(
     enrolledAt: Schema.DateTimeUtcFromString,
   }),
 );
+const decodeNativeWorkspaceBasisJson = Schema.decodeEffect(
+  Schema.fromJsonString(Workspace.NativeWorkspaceBasis),
+);
+const decodeNativeWorkspaceVerifiedJson = Schema.decodeEffect(
+  Schema.fromJsonString(Workspace.NativeWorkspaceVerified),
+);
+const decodeNativeWorkspaceBasis = Schema.decodeEffect(Workspace.NativeWorkspaceBasis);
+const decodeNativeWorkspaceVerified = Schema.decodeEffect(Workspace.NativeWorkspaceVerified);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -426,9 +438,7 @@ const make = Effect.gen(function* () {
       basis_json: string;
     }>`SELECT basis_json FROM jones_native_workspace_admissions WHERE claim_id = ${claimId}`;
     if (rows.length !== 1) return yield* fail("Workspace path admission is missing");
-    return yield* Schema.decodeEffect(Schema.fromJsonString(Workspace.NativeWorkspaceBasis))(
-      rows[0]!.basis_json,
-    );
+    return yield* decodeNativeWorkspaceBasisJson(rows[0]!.basis_json);
   });
   const readWorkspaceVerified = Effect.fnUntraced(function* (claimId: string) {
     yield* workspaceEligible;
@@ -437,18 +447,14 @@ const make = Effect.gen(function* () {
     }>`SELECT receipt_json FROM jones_native_workspace_verified WHERE claim_id = ${claimId}`;
     if (rows.length === 0) return Option.none<Workspace.NativeWorkspaceVerified>();
     if (rows.length !== 1) return yield* fail("Workspace verification receipt is ambiguous");
-    return Option.some(
-      yield* Schema.decodeEffect(Schema.fromJsonString(Workspace.NativeWorkspaceVerified))(
-        rows[0]!.receipt_json,
-      ),
-    );
+    return Option.some(yield* decodeNativeWorkspaceVerifiedJson(rows[0]!.receipt_json));
   });
   const admitWorkspace = (claimId: string, input: Workspace.NativeWorkspaceBasis) =>
     sql
       .withTransaction(
         Effect.gen(function* () {
           yield* workspaceEligible;
-          const basis = yield* Schema.decodeEffect(Workspace.NativeWorkspaceBasis)(input, {
+          const basis = yield* decodeNativeWorkspaceBasis(input, {
             onExcessProperty: "error",
           });
           const { intent } = yield* readByClaim(claimId);
@@ -471,6 +477,9 @@ const make = Effect.gen(function* () {
             return;
           }
           yield* sql`INSERT INTO jones_native_workspace_admissions (claim_id,worktree_path,basis_json) VALUES (${claimId},${basis.worktreePath},${json})`;
+          yield* recordCapturedRuntimeUseCreationAdmission(intent, input).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
         }),
       )
       .pipe(Effect.mapError(mapRepositoryError));
@@ -479,7 +488,7 @@ const make = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           yield* workspaceEligible;
-          const verified = yield* Schema.decodeEffect(Workspace.NativeWorkspaceVerified)(input, {
+          const verified = yield* decodeNativeWorkspaceVerified(input, {
             onExcessProperty: "error",
           });
           const history = yield* readByClaim(verified.claimId);
@@ -539,6 +548,9 @@ const make = Effect.gen(function* () {
             return;
           }
           yield* sql`INSERT INTO jones_native_workspace_verified (claim_id,receipt_json) VALUES (${verified.claimId},${nativeCreationCanonicalJson(verified)})`;
+          yield* recordCapturedRuntimeUseCreationMaterial(input, history.effects).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
         }),
       )
       .pipe(Effect.mapError(mapRepositoryError));
@@ -555,33 +567,41 @@ const make = Effect.gen(function* () {
   });
   return Repository.NativeCreationRepository.of({
     ...executionMethods,
-    readWorkspaceClaim: (claimId) =>
-      sql
-        .withTransaction(
-          Effect.gen(function* () {
-            yield* workspaceEligible;
-            return yield* readByClaim(claimId);
-          }),
-        )
-        .pipe(Effect.mapError(mapRepositoryError)),
+    readWorkspaceClaim: Effect.fn("Repository.NativeCreationRepository.readWorkspaceClaim")(
+      (claimId) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* workspaceEligible;
+              return yield* readByClaim(claimId);
+            }),
+          )
+          .pipe(Effect.mapError(mapRepositoryError)),
+    ),
     admitWorkspace,
-    readWorkspaceAdmission: (claimId) =>
-      readWorkspaceAdmission(claimId).pipe(Effect.mapError(mapRepositoryError)),
-    readWorkspaceVerified: (claimId) =>
-      readWorkspaceVerified(claimId).pipe(Effect.mapError(mapRepositoryError)),
+    readWorkspaceAdmission: Effect.fn("Repository.NativeCreationRepository.readWorkspaceAdmission")(
+      (claimId) => readWorkspaceAdmission(claimId).pipe(Effect.mapError(mapRepositoryError)),
+    ),
+    readWorkspaceVerified: Effect.fn("Repository.NativeCreationRepository.readWorkspaceVerified")(
+      (claimId) => readWorkspaceVerified(claimId).pipe(Effect.mapError(mapRepositoryError)),
+    ),
     recordWorkspaceVerified,
     hasAutomationEnrollment,
-    isReservedCommandIdentity: (commandId) =>
+    isReservedCommandIdentity: Effect.fn(
+      "Repository.NativeCreationRepository.isReservedCommandIdentity",
+    )((commandId) =>
       sql`SELECT command_id FROM native_creation_reserved_command_identities WHERE command_id=${commandId}`.pipe(
         Effect.map((rows) => rows.length > 0),
         Effect.mapError(mapRepositoryError),
       ),
+    ),
     claim,
     readHistory,
     reserveCommand,
     recordNormalizedCommand,
-    getReservedCommand: (commandId) =>
-      getReserved(commandId).pipe(Effect.mapError(mapRepositoryError)),
+    getReservedCommand: Effect.fn("Repository.NativeCreationRepository.getReservedCommand")(
+      (commandId) => getReserved(commandId).pipe(Effect.mapError(mapRepositoryError)),
+    ),
     startEffect,
     completeEffect,
   });

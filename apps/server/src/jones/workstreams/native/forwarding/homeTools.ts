@@ -7,7 +7,7 @@ import { workstreamCapabilities } from "../registry/capabilities.ts";
 import * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as Wire from "@t3tools/contracts";
 import * as PeerAdmission from "./peerEffectAdmission.ts";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import { NativeStoreAuthorityPersistenceError } from "../../../../environment/nativeStoreAuthorityPersistence.ts";
 import * as Bindings from "../store/bindingStore.ts";
 import * as Effect from "effect/Effect";
@@ -51,7 +51,7 @@ const decodeCommand = Schema.decodeUnknownEffect(Schema.fromJsonString(Wire.Work
 const decodeReadback = Schema.decodeUnknownEffect(Forward.WorkstreamsForwardReadbackRequest);
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const make = Effect.gen(function* () {
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const home = yield* NativeHome,
     keys = yield* Keys.WorkstreamsKeyProvider,
     sql = yield* SqlClient.SqlClient;
@@ -103,16 +103,17 @@ const make = Effect.gen(function* () {
           return yield* new Keys.KeyUnavailable({ reason: "active_key_missing" });
         return preparedId;
       }),
-      get: (id) =>
+      get: Effect.fn("Keys.WorkstreamsKeyProvider.get")((id) =>
         Effect.suspend(() =>
           content.has(id)
             ? Effect.succeed(Uint8Array.from(content.get(id)!))
             : Effect.fail(missing()),
         ),
-      indexKey: (id) =>
-        id === home.registry_instance_id
-          ? Effect.succeed(Uint8Array.from(index))
-          : Effect.fail(missing()),
+      ),
+      indexKey: Effect.fn("Keys.WorkstreamsKeyProvider.indexKey")(function* (id) {
+        if (id !== home.registry_instance_id) return yield* missing();
+        return Uint8Array.from(index);
+      }),
     });
     const db = Database.layer.pipe(
       Layer.provideMerge(
@@ -166,7 +167,7 @@ const make = Effect.gen(function* () {
       Layer.provideMerge(Appearance.layer.pipe(Layer.provideMerge(registry))),
       Layer.provideMerge(Layer.succeed(NativeHome, home)),
       Layer.provideMerge(Layer.succeed(SqlClient.SqlClient, sql)),
-      Layer.provideMerge(Layer.succeed(Crypto.Crypto, crypto)),
+      Layer.provideMerge(Layer.succeed(Digest.Digest, crypto)),
     );
     return { graph, fence };
   });

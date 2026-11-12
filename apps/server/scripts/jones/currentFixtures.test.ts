@@ -206,6 +206,11 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 145, name: "WorkstreamsForwardReceipts" },
           { id: 146, name: "SettlementOriginRetention" },
           { id: 147, name: "QueueHolds" },
+          { id: 148, name: "NativeExecutionProcessCustody" },
+          { id: 149, name: "OrdinaryCheckoutProcessCustody" },
+          { id: 150, name: "AuthSessionClientMetadata" },
+          { id: 151, name: "WorkspaceRuntimeUses" },
+          { id: 152, name: "PeerLinksAdoption" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);
@@ -218,7 +223,8 @@ describe("receiving V2 synthetic fixtures", () => {
         NodeAssert.equal(result.capture?.runtime.pragmas.journal_mode, "wal");
         NodeAssert.equal(result.capture?.runtime.pragmas.foreign_keys, 1);
         NodeAssert.equal(result.capture?.runtime.pragmas.busy_timeout, 5000);
-        NodeAssert.equal(result.capture?.runtime.pragmas.journal_size_limit, 32 * 1024 * 1024);
+        // The server WAL limit follows upstream at 128 MiB.
+        NodeAssert.equal(result.capture?.runtime.pragmas.journal_size_limit, 128 * 1024 * 1024);
         NodeAssert.ok(result.receipt);
         const custody = fixtureCustodyReceipt(result.receipt);
         const validated = await validateSyntheticFixture({

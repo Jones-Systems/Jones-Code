@@ -1,3 +1,4 @@
+import * as Arr from "effect/Array";
 // @effect-diagnostics nodeBuiltinImport:off -- Explicit synthetic diagnostic emits JSON for its invoking harness.
 import * as NodeConsole from "node:console";
 import { expect, it } from "@effect/vitest";
@@ -53,7 +54,7 @@ const seed = Effect.fn("ShellRetentionDiagnostic.seed")(function* (rows: number)
   const expected = new Set<string>();
   // Some tasks reference missing or archived owners; retention leaves those out of the set.
   for (let offset = 0; offset < rows; offset += 100) {
-    const batch = Array.from({ length: Math.min(100, rows - offset) }, (_, batchIndex) => {
+    const batch = Arr.makeBy(Math.min(100, rows - offset), (batchIndex) => {
       const index = offset + batchIndex;
       const remote = index % 3 === 0;
       const bound = index % 2 === 0;

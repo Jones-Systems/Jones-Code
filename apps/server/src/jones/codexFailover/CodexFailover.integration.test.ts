@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -16,7 +17,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as CodexSchema from "effect-codex-app-server/schema";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -35,6 +36,7 @@ import * as Catalog from "../../provider/ProviderRegistry.ts";
 import { resolveCodexHomeLayout } from "../../provider/Drivers/CodexHomeLayout.ts";
 import * as Settings from "../../serverSettings.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as PortScanner from "../../preview/PortScanner.ts";
 import * as Evidence from "./CodexFailoverEvidence.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ControlAdmission from "../orchestration/ControlAdmission.ts";
@@ -193,10 +195,10 @@ const scenario = (mode: "chain" | "all-unavailable") =>
       }).pipe(Effect.map((config) => ({ account, config }))),
     );
     const clientFactory = yield* Codex.CodexAppServerClientFactory.pipe(
-      Effect.provide(Codex.layerAppServerClientFactory),
+      Effect.provide(Codex.layerAppServerClientFactory.pipe(Layer.provide(PortScanner.layerTest))),
     );
     const adapterDependencies = yield* Effect.context<
-      | Crypto.Crypto
+      | SecureRandom.SecureRandom
       | FileSystem.FileSystem
       | Path.Path
       | IdAllocator.IdAllocatorV2
@@ -252,6 +254,7 @@ const scenario = (mode: "chain" | "all-unavailable") =>
       Layer.provide(Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd })),
       Layer.provide(Layer.succeed(HostProcess.Environment, environment)),
       Layer.provide(Layer.succeed(HostProcess.HomeDirectory, homePath)),
+      Layer.provide(NodeCrypto.layer),
     );
     const runtime = Harness.layerWithRegistryAndServices(
       { name: `codex-failover-${mode}`, runtimePolicyOverride: { cwd } },
@@ -562,10 +565,10 @@ const scenario = (mode: "chain" | "all-unavailable") =>
 describe("Codex automatic account failover through the real server and subprocess adapter", () => {
   it.live(
     "cascades A → B → C across distinct provider threads and starts an inherited queued follower on C",
-    () => scenario("chain"),
+    () => scenario("chain").pipe(Effect.provide(NodeCrypto.layer)),
   );
   it.live(
     "exhausts A/B/C/D/E exactly once and terminates failed without duplicate continuation",
-    () => scenario("all-unavailable"),
+    () => scenario("all-unavailable").pipe(Effect.provide(NodeCrypto.layer)),
   );
 });

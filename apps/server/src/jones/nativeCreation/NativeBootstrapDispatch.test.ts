@@ -45,8 +45,11 @@ const principal = {
   method: "bearer-access-token" as const,
   scopes: new Set(["orchestration:operate" as const]),
 };
+const compiledDecodeEffect1 = Schema.decodeEffect(NativePreparationBinding);
+const compiledDecodeEffect2 = Schema.decodeEffect(NativeCreationHistoricalBinding);
+
 const fixture = Effect.gen(function* () {
-  const binding = yield* Schema.decodeEffect(NativePreparationBinding)({
+  const binding = yield* compiledDecodeEffect1({
     backend_instance: "synthetic-backend",
     environment_id: "synthetic-environment",
     project_id: "synthetic-project",
@@ -77,7 +80,7 @@ const fixture = Effect.gen(function* () {
     command_digest: nativeCreationSha256(nativeCreationCanonicalJson(command)),
   });
   const preparation = yield* validateNativeCreationPreparation(new TextEncoder().encode(canonical));
-  const historical = yield* Schema.decodeEffect(NativeCreationHistoricalBinding)({
+  const historical = yield* compiledDecodeEffect2({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -245,6 +248,9 @@ it.effect("foreign history denies bootstrap with zero claims or reservations", (
   }).pipe(Effect.provide(base)),
 );
 
+const compiledDecodeUnknownEffect3 = Schema.decodeUnknownEffect(NativeBootstrapSubmission);
+const compiledDecodeEffect4 = Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2Command));
+
 it.effect(
   "workspace success orders three native acceptances without claiming provider success",
   () =>
@@ -253,7 +259,7 @@ it.effect(
       const configured = yield* configure(value);
       const result = yield* withPrincipal(
         dispatchNativeBootstrap(
-          yield* Schema.decodeUnknownEffect(NativeBootstrapSubmission)(value.submission),
+          yield* compiledDecodeUnknownEffect3(value.submission),
           value.server,
         ),
       ).pipe(Effect.provide(configured.runtime));
@@ -285,9 +291,7 @@ it.effect(
       assert.isTrue(Option.isSome(reservation));
       if (Option.isNone(reservation))
         return yield* Effect.die("Expected accepted create reservation");
-      const create = yield* Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2Command))(
-        reservation.value.canonicalCommand,
-      );
+      const create = yield* compiledDecodeEffect4(reservation.value.canonicalCommand);
       assert.strictEqual(create.type, "thread.create");
       if (create.type !== "thread.create") return yield* Effect.die("Expected thread creation");
       const token = yield* Stage.issueNativeCreationStage(reservation.value.claimId, create).pipe(
@@ -327,6 +331,8 @@ it.effect("unknown workspace and duplicate incomplete claim never dispatch or re
   }).pipe(Effect.provide(base)),
 );
 
+const compiledDecodeEffect5 = Schema.decodeEffect(OrchestrationV2Command);
+
 it.effect("public dispatch refuses permanent native IDs before bodies are reserved", () =>
   Effect.gen(function* () {
     const value = yield* fixture;
@@ -357,7 +363,7 @@ it.effect("public dispatch refuses permanent native IDs before bodies are reserv
         yield* configured.repository.getReservedCommand(value.preparation.command.commandId),
       ),
     );
-    const command = yield* Schema.decodeEffect(OrchestrationV2Command)({
+    const command = yield* compiledDecodeEffect5({
       type: "thread.create",
       commandId: value.preparation.command.commandId,
       threadId: value.preparation.command.threadId,
@@ -436,7 +442,7 @@ it.effect("receiving bootstrap codec rejects historical command wire before effe
   Effect.gen(function* () {
     const value = yield* fixture;
     const configured = yield* configure(value);
-    yield* Schema.decodeUnknownEffect(NativeBootstrapSubmission)(value.preparation.command).pipe(
+    yield* compiledDecodeUnknownEffect3(value.preparation.command).pipe(
       Effect.flatMap((submission) =>
         withPrincipal(dispatchNativeBootstrap(submission, value.server)),
       ),

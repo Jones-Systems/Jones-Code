@@ -660,10 +660,10 @@ export function makeControlPlaneWorkstreamTransport(
           "receipt",
         ).pipe(
           Effect.map((receipt): WorkstreamReceiptRead => ({ kind: "receipt", receipt })),
-          Effect.catch((error) =>
-            error.cause instanceof VerifiedRecoveryResponse && error.cause.code === "not_found"
-              ? Effect.succeed<WorkstreamReceiptRead>({ kind: "absent" })
-              : Effect.fail(error),
+          Effect.catchIf(
+            (error) =>
+              error.cause instanceof VerifiedRecoveryResponse && error.cause.code === "not_found",
+            () => Effect.succeed<WorkstreamReceiptRead>({ kind: "absent" }),
           ),
         ),
       resubmitCommand: ({ body, idempotencyKey }) =>
@@ -678,11 +678,11 @@ export function makeControlPlaneWorkstreamTransport(
           "submit",
         ).pipe(
           Effect.map((receipt): WorkstreamRecoverySubmitResult => ({ kind: "receipt", receipt })),
-          Effect.catch((error) =>
-            error.cause instanceof VerifiedRecoveryResponse &&
-            error.cause.code === "idempotency_conflict"
-              ? Effect.succeed<WorkstreamRecoverySubmitResult>({ kind: "idempotency_conflict" })
-              : Effect.fail(error),
+          Effect.catchIf(
+            (error) =>
+              error.cause instanceof VerifiedRecoveryResponse &&
+              error.cause.code === "idempotency_conflict",
+            () => Effect.succeed<WorkstreamRecoverySubmitResult>({ kind: "idempotency_conflict" }),
           ),
         ),
       readAppearance: (input) =>
@@ -695,10 +695,9 @@ export function makeControlPlaneWorkstreamTransport(
           NodeCrypto.randomUUID(),
         ).pipe(
           Effect.map((page) => ({ supported: true as const, page })),
-          Effect.catch((error) =>
-            error.detail === "unsupported_appearance"
-              ? Effect.succeed({ supported: false as const })
-              : Effect.fail(error),
+          Effect.catchIf(
+            (error) => error.detail === "unsupported_appearance",
+            () => Effect.succeed({ supported: false as const }),
           ),
         ),
       saveAppearance: (input) =>

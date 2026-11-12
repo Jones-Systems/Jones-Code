@@ -1,3 +1,4 @@
+import { makeDeferredShellWorkstreamActivation } from "../jones/workstreams/deferredShellActivation.ts";
 import * as NativeReadExport from "../jones/workstreams/native/read/export.ts";
 import * as Stream from "effect/Stream";
 import * as Pull from "effect/Pull";
@@ -14,7 +15,6 @@ import {
 } from "@t3tools/contracts/jones/workstreamsHomeReadResult";
 import * as Schema from "effect/Schema";
 import { nativePersistenceLayer } from "../jones/workstreams/native/integration.ts";
-import { decodeRegistryBinding } from "@t3tools/shared/jones/workstreamsRegistryBinding";
 import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
 import * as WorkstreamOperationsLive from "../jones/workstreams/operations/live.ts";
 import { Activation } from "../jones/workstreams/operations/ports.ts";
@@ -130,13 +130,8 @@ const workstreamControlPlaneLayer = Layer.effect(
   Effect.gen(function* () {
     const { baseDir } = yield* ServerConfig;
     const activation = yield* Effect.sync(() => resolveWorkstreamActivation(baseDir));
-    const configured = makeControlPlaneWorkstreamTransport(activation);
-    // Operations use the registry instance ID, while the legacy gateway binding uses its origin.
-    const registryInstanceId =
-      activation.state === "enabled" && activation.value.registryBinding !== undefined
-        ? decodeRegistryBinding(activation.value.registryBinding).registry_instance_id
-        : null;
-    return { ...configured, registryInstanceId };
+    const configured = makeDeferredShellWorkstreamActivation(activation);
+    return configured;
   }),
 );
 
@@ -174,7 +169,21 @@ export const workstreamRegistrationContextLayerLive = Layer.effect(
   Effect.gen(function* () {
     const configured = yield* WorkstreamControlPlane;
     const authority = yield* NativeStoreAuthority.NativeStoreAuthority;
-    return makeWorkstreamsRegistrationContext({ ...configured.registrationContext, authority });
+    return makeWorkstreamsRegistrationContext({
+      get registrationContextVersion() {
+        return configured.registrationContext.registrationContextVersion;
+      },
+      get activationState() {
+        return configured.activationState;
+      },
+      get configuredBinding() {
+        return configured.registrationContext.configuredBinding;
+      },
+      get readRegistrationContext() {
+        return configured.registrationContext.readRegistrationContext;
+      },
+      authority,
+    });
   }),
 ).pipe(
   Layer.provide(workstreamNativeAuthorityLayerLive),
@@ -189,22 +198,26 @@ const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
         const configured = yield* WorkstreamControlPlane;
         // Reuse startup qualification. Do not re-open activation files or expose values here.
         return Activation.of({
-          registryId: configured.registryInstanceId,
-          status: {
-            state: configured.activationState,
-            missing_keys:
-              configured.activationState === "disabled"
-                ? [
-                    "T3_WORKSTREAM_CONTROL_PLANE_URL",
-                    "T3_WORKSTREAM_OWNER_ID",
-                    "T3_WORKSTREAM_PRINCIPAL_ID",
-                    "T3_WORKSTREAM_KEY_ID",
-                    "T3_WORKSTREAM_SIGNING_SECRET",
-                    "T3_WORKSTREAM_AUTHORIZATION_REVISION",
-                    "T3_WORKSTREAM_REGISTRY_BINDING",
-                    "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION",
-                  ]
-                : [],
+          get registryId() {
+            return configured.registryInstanceId;
+          },
+          get status() {
+            return {
+              state: configured.activationState,
+              missing_keys:
+                configured.activationState === "disabled"
+                  ? ([
+                      "T3_WORKSTREAM_CONTROL_PLANE_URL",
+                      "T3_WORKSTREAM_OWNER_ID",
+                      "T3_WORKSTREAM_PRINCIPAL_ID",
+                      "T3_WORKSTREAM_KEY_ID",
+                      "T3_WORKSTREAM_SIGNING_SECRET",
+                      "T3_WORKSTREAM_AUTHORIZATION_REVISION",
+                      "T3_WORKSTREAM_REGISTRY_BINDING",
+                      "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION",
+                    ] as const)
+                  : [],
+            };
           },
         });
       }),

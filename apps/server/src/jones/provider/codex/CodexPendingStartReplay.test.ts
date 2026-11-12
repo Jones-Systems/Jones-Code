@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -15,7 +16,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexReplay from "effect-codex-app-server/replay";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -34,6 +35,11 @@ import {
 } from "../../../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
 import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
 import { materializeCodexReplayAppIdentity } from "../../runtimeIdentity/CodexReplayIdentity.ts";
+
+const layerNodeServicesWithCrypto = Layer.merge(NodeServices.layer, NodeCrypto.layer);
+
+const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
+const decodeCodexTranscript = Schema.decodeUnknownSync(CodexReplay.CodexAppServerReplayTranscript);
 
 const rootThread = "pre-ack-thread";
 const rootTurn = "pre-ack-turn";
@@ -188,7 +194,7 @@ const turnStart = (id: number) =>
     },
   });
 const makeTranscript = (outcome: Outcome) =>
-  Schema.decodeUnknownSync(CodexReplay.CodexAppServerReplayTranscript)(
+  decodeCodexTranscript(
     materializeCodexReplayAppIdentity({
       provider: "codex",
       protocol: "codex.app-server",
@@ -390,16 +396,16 @@ describe("Codex pre-ACK item reader progress", () => {
       // Only filesystem dependencies are inert. The adapter, RPC correlation,
       // notification dispatch and serialized protocol reader are all real.
       const fileSystem = FileSystem.makeNoop({
-        makeTempDirectory: () => Effect.succeed("/synthetic/pre-ack-reader"),
+        makeTempDirectoryScoped: () => Effect.succeed("/synthetic/pre-ack-reader"),
         makeDirectory: () => Effect.void,
         exists: () => Effect.succeed(false),
       });
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
         instanceId: modelSelection.instanceId,
-        settings: yield* Schema.decodeEffect(CodexSettings)({}),
+        settings: yield* decodeCodexSettings({}),
         environment: {},
-        crypto: yield* Crypto.Crypto,
+        digest: yield* Digest.Digest,
         fileSystem,
         idAllocator: {
           ...idAllocator,
@@ -756,7 +762,7 @@ describe("Codex pre-ACK item reader progress", () => {
           IdAllocator.layer,
           McpProviderSessions.layer,
           ControlAdmission.layer,
-          NodeServices.layer,
+          layerNodeServicesWithCrypto,
         ),
       ),
     ),

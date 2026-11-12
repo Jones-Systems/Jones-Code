@@ -82,5 +82,18 @@ export const makeSearchWorkerProxy = Effect.fn("WorkspaceSearchIndex.proxy")(fun
         ),
       ),
   );
-  return { list, search, searchContents, refresh };
+  const refreshContent: WorkspaceSearchIndex["Service"]["refreshContent"] = Effect.fn(
+    "WorkspaceSearchIndex.refreshContent",
+  )(() =>
+    compute
+      .run(handle, "refreshContent", undefined)
+      .pipe(
+        Effect.mapError((cause) =>
+          cause.scanTimedOut
+            ? timeout()
+            : new WorkspaceSearchIndexRefreshFailed({ cwd: key.cwd, reason: cause.reason, cause }),
+        ),
+      ),
+  );
+  return { list, search, searchContents, refresh, refreshContent };
 });

@@ -1,9 +1,11 @@
+import { collectComposerModelMentions } from "@t3tools/client-runtime/composer-model-mentions";
 import type { AssistantCitation } from "@t3tools/contracts";
 import { oneSpaceThreadQuery } from "@t3tools/shared/jones/composerThreadQuery";
 import { collectAssistantCitations } from "@t3tools/shared/assistantCitations";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import {
   collectComposerInlineTokens,
+  composerMathRanges,
   type ComposerInlineToken,
 } from "@t3tools/shared/composerInlineTokens";
 
@@ -20,6 +22,12 @@ export type ComposerPromptSegment =
   | {
       type: "skill";
       name: string;
+      source: string;
+    }
+  | {
+      type: "model";
+      instanceId: string;
+      model: string;
       source: string;
     }
   | {
@@ -76,11 +84,32 @@ function forEachMentionMatch(
   });
 }
 
+// Like `$skill`, a typed reference waits for whitespace so `gpt-6` cannot chip while typing `gpt-6.1`.
+function collectModelTokens(text: string, inlineTokens: ReadonlyArray<ComposerInlineToken>) {
+  const mentions = collectComposerModelMentions(text).filter((mention) =>
+    /\s/.test(text[mention.end] ?? ""),
+  );
+  if (mentions.length === 0) return [];
+  const taken = [...inlineTokens, ...composerMathRanges(text)];
+  return mentions
+    .filter(
+      (mention) => !taken.some((range) => mention.start < range.end && mention.end > range.start),
+    )
+    .map((mention) => ({ ...mention, type: "model" as const }));
+}
+
 export function collectComposerPromptInlineTokens(text: string, queryCursor = text.length) {
   const query = oneSpaceThreadQuery(text, queryCursor, (char) => /\s/u.test(char));
-  const tokens = collectComposerInlineTokens(text).filter(
+  const allInlineTokens = collectComposerInlineTokens(text);
+  const inlineTokens = allInlineTokens.filter(
     (token) => token.type !== "mention" || token.start !== query?.rangeStart,
   );
+  // A mention held back for a thread query still claims its range, so a model never chips inside it.
+  const models = collectModelTokens(text, allInlineTokens);
+  const tokens =
+    models.length === 0
+      ? inlineTokens
+      : [...inlineTokens, ...models].sort((left, right) => left.start - right.start);
   const citations = collectAssistantCitations(text);
   const references = collectComposerContextReferences(text);
   if (citations.length === 0 && references.length === 0) return tokens;
@@ -129,6 +158,13 @@ function splitPromptTextIntoComposerSegments(text: string): ComposerPromptSegmen
       segments.push({
         type: "mention",
         path: match.value,
+        source: match.source,
+      });
+    } else if (match.type === "model") {
+      segments.push({
+        type: "model",
+        instanceId: match.instanceId,
+        model: match.model,
         source: match.source,
       });
     } else {

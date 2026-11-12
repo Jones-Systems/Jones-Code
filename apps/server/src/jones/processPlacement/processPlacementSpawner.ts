@@ -1,8 +1,9 @@
-import { claimScopedCommand } from "./scopedCommand.ts";
+import { claimScopedCommand, observeScopedCommandRetirement } from "./scopedCommand.ts";
 import { AgentScope, type AgentScopeShape } from "@t3tools/shared/AgentScope";
 import type * as Scope from "effect/Scope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -38,7 +39,10 @@ export function placeCommand(
         command: typeof shell === "string" ? shell : "/bin/sh",
         args: ["-c", [command.command, ...command.args].join(" ")],
       }
-    : { command: command.command, args: command.args };
+    : {
+        command: command.command,
+        args: command.args.map((word) => (Redacted.isRedacted(word) ? Redacted.value(word) : word)),
+      };
   const placed = placementCommand(
     payload.command,
     payload.args,
@@ -76,7 +80,11 @@ const placeScopedCommand: (
   if (retained !== undefined) {
     if (retained.stop === undefined)
       return yield* Effect.die(new ProcessPlacementError("scoped workload lifetime is required"));
-    yield* Effect.addFinalizer(() => retained.stop!.pipe(Effect.ignoreCause({ log: true })));
+    yield* Effect.addFinalizer(() =>
+      observeScopedCommandRetirement(command, scope, retained.stop!).pipe(
+        Effect.ignoreCause({ log: true }),
+      ),
+    );
     return command;
   }
   const shell = command.options.shell;
@@ -85,8 +93,23 @@ const placeScopedCommand: (
         command: typeof shell === "string" ? shell : "/bin/sh",
         args: ["-c", [command.command, ...command.args].join(" ")],
       }
-    : { command: command.command, args: command.args };
-  const placed = yield* scope.wrap({ ...payload, name: "workload", env: command.options.env });
+    : {
+        command: command.command,
+        args: command.args.map((word) => (Redacted.isRedacted(word) ? Redacted.value(word) : word)),
+      };
+  const placed = yield* scope.wrap({
+    ...payload,
+    name: "workload",
+    env:
+      command.options.env === undefined
+        ? undefined
+        : Object.fromEntries(
+            Object.entries(command.options.env).map(([key, value]) => [
+              key,
+              Redacted.isRedacted(value) ? Redacted.value(value) : value,
+            ]),
+          ),
+  });
   if (placed.stop === undefined)
     return yield* Effect.die(new ProcessPlacementError("scoped workload lifetime is required"));
   yield* Effect.addFinalizer(() => placed.stop!.pipe(Effect.ignoreCause({ log: true })));

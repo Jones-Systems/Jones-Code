@@ -405,10 +405,14 @@ export const ThreadMonitorFrame = Schema.Struct({
 export type ThreadMonitorFrame = typeof ThreadMonitorFrame.Type;
 export const threadMonitorFrameByteLength = (value: unknown): number =>
   new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(ThreadMonitorFrame, {
+  onExcessProperty: "error",
+});
+
 export function decodeThreadMonitorFrame(value: unknown): ThreadMonitorFrame {
   if (threadMonitorFrameByteLength(value) > THREAD_MONITOR_LIMITS.frameBytes)
     throw new Error("Monitor frame exceeds byte limit");
-  return Schema.decodeUnknownSync(ThreadMonitorFrame, { onExcessProperty: "error" })(value);
+  return compiledDecodeUnknownSync1(value);
 }
 export const ThreadMonitorNativeState = Schema.Struct({
   supported: Schema.Boolean,

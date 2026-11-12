@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as ManagedPolicy from "../../../../policy/ManagedPolicy.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
 import * as Config from "../../../../config.ts";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
@@ -25,7 +26,9 @@ const signing = Layer.succeed(
 );
 const services = Authentication.layer.pipe(
   Layer.provideMerge(Pins.nativeLayer),
-  Layer.provideMerge(Auth.layer.pipe(Layer.provide(signing))),
+  Layer.provideMerge(
+    Auth.layer.pipe(Layer.provide(ManagedPolicy.layerTest()), Layer.provide(signing)),
+  ),
   Layer.provideMerge(Test.testLayer()),
   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "nw-j3a-synthetic-" })),
   Layer.provideMerge(

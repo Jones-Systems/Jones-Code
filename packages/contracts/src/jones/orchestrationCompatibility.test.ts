@@ -79,6 +79,9 @@ describe("orchestration V2 contracts", () => {
   });
 });
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(OrchestrationV2RunAttemptJson);
+const compiledEncodeSync2 = Schema.encodeSync(OrchestrationV2RunAttemptJson);
+
 describe("provider settlement compatibility", () => {
   const settlement = {
     runAttemptId: "attempt-1",
@@ -103,8 +106,8 @@ describe("provider settlement compatibility", () => {
     "retains absent, explicit null and attributed settlement in persisted attempts: %s",
     (value) => {
       const input = { ...attempt, ...(value === undefined ? {} : { providerSettlement: value }) };
-      const decoded = Schema.decodeUnknownSync(OrchestrationV2RunAttemptJson)(input);
-      const encoded = Schema.encodeSync(OrchestrationV2RunAttemptJson)(decoded);
+      const decoded = compiledDecodeUnknownSync1(input);
+      const encoded = compiledEncodeSync2(decoded);
       expect(encoded).toEqual(input);
       expect(Object.hasOwn(encoded, "providerSettlement")).toBe(value !== undefined);
     },
@@ -113,7 +116,7 @@ describe("provider settlement compatibility", () => {
     "rejects nonterminal provider settlement %s",
     (status) => {
       expect(() =>
-        Schema.decodeUnknownSync(OrchestrationV2RunAttemptJson)({
+        compiledDecodeUnknownSync1({
           ...attempt,
           providerSettlement: { ...settlement, status },
         }),
@@ -124,7 +127,7 @@ describe("provider settlement compatibility", () => {
     for (const field of ["runAttemptId", "providerTurnId", "completedAt"]) {
       const incomplete = { ...settlement, [field]: null };
       expect(() =>
-        Schema.decodeUnknownSync(OrchestrationV2RunAttemptJson)({
+        compiledDecodeUnknownSync1({
           ...attempt,
           providerSettlement: incomplete,
         }),
@@ -157,14 +160,14 @@ describe("queued tool delivery command compatibility", () => {
   });
 });
 
+const compiledEncodeSync3 = Schema.encodeSync(OrchestrationV2ThreadLaunchWorkspaceStrategy);
+
 describe("worktree launch base", () => {
   const decode = Schema.decodeUnknownSync(OrchestrationV2ThreadLaunchWorkspaceStrategy);
 
   it("round-trips an omitted base for automatic server selection", () => {
     const input = { type: "worktree", branch: "feature", startFromOrigin: true };
-    expect(Schema.encodeSync(OrchestrationV2ThreadLaunchWorkspaceStrategy)(decode(input))).toEqual(
-      input,
-    );
+    expect(compiledEncodeSync3(decode(input))).toEqual(input);
   });
 
   it("preserves explicit bases and rejects blank bases", () => {

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NativeReadExport from "../jones/workstreams/native/read/export.ts";
 import { RegistryError } from "../jones/workstreams/native/registry/session.ts";
 import * as Stream from "effect/Stream";
@@ -221,11 +222,11 @@ const withHttpFixture = Effect.fn(function* (
     Layer.provide(workstreamResponseHeadersLayer),
     Layer.provideMerge(
       HttpPlatform.layer.pipe(
-        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         Layer.provideMerge(Etag.layerWeak),
       ),
     ),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   return yield* Effect.acquireUseRelease(
     Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
@@ -815,7 +816,7 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
             on: () => {},
             off: () => {},
           }),
-          NodeServices.layer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
         ),
       ),
     );

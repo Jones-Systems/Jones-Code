@@ -30,7 +30,6 @@
   ],
   "hookPaths": [
     "apps/server/src/httpCors.ts",
-    "apps/server/src/serverOwnership.ts",
     "apps/server/src/environment/ServerEnvironment.test.ts",
     "packages/shared/src/atomicWrite.ts",
     "packages/shared/src/atomicWrite.test.ts",

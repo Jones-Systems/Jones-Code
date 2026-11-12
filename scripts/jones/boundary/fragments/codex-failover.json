@@ -16,8 +16,8 @@
   "hookPaths": [
     "apps/mobile/src/state/thread-outbox-model.ts",
     "apps/mobile/src/state/thread-outbox.test.ts",
-    "apps/mobile/src/state/use-thread-outbox-drain.ts",
-    "apps/mobile/src/state/use-thread-outbox-drain.test.ts",
+    "apps/mobile/src/state/threadOutboxDelivery.ts",
+    "apps/mobile/src/state/threadOutboxDelivery.test.ts",
     "apps/mobile/src/state/use-composer-drafts.test.ts",
     "packages/client-runtime/src/operations/commands.ts",
     "packages/client-runtime/src/operations/commands.test.ts"
@@ -41,11 +41,11 @@
       "to": "apps/mobile/src/jones/threadConfiguration/modelSelection.ts"
     },
     {
-      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
       "to": "apps/mobile/src/jones/threadConfiguration/modelSelection.ts"
     },
     {
-      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
       "to": "apps/mobile/src/jones/threadConfiguration/queuedFollowUp.ts"
     },
     {
@@ -53,7 +53,7 @@
       "to": "apps/mobile/src/jones/threadConfiguration/modelSelection.ts"
     },
     {
-      "from": "apps/mobile/src/state/use-thread-outbox-drain.test.ts",
+      "from": "apps/mobile/src/state/threadOutboxDelivery.test.ts",
       "to": "apps/mobile/src/jones/threadConfiguration/queuedFollowUp.ts"
     },
     {
@@ -79,6 +79,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/jones/provider/codex/CodexCapacityContinuation.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/queuedCreation.ts"
     }
   ]
 }

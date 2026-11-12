@@ -144,7 +144,7 @@ export function useNativeWorkstreamReads(
   const connection = useAtomValue(atom);
   const key = binding === null ? null : JSON.stringify(binding);
   const [store] = useState(() => new NativeReadStore());
-  // oxlint-disable-next-line t3code/react-effect-budget -- pushes the current read scope into an external store before useSyncExternalStore reads it.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pushes the current read scope into an external store before useSyncExternalStore reads it.
   useLayoutEffect(() => {
     store.setScope({ registry, atom, connection, binding, key });
   }, [store, registry, atom, connection, binding, key]);

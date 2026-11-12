@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  codexCapacityRetriesExhausted,
+  CODEX_CAPACITY_RETRY_PROFILE,
+  codexCapacityFailureRetryable,
+  codexCapacityRetryPolicies,
   codexCapacityRetryPolicy,
+  isCodexCapacityError,
   makeCodexCapacityContinuation,
+  makeCodexCapacityRetryFacts,
   reduceCodexCapacityContinuation,
-  type CodexCapacityContinuationAction,
   type CodexCapacityContinuationBinding,
   type CodexCapacityContinuationSignal,
   type CodexCapacityContinuationState,
 } from "./CodexCapacityContinuation.ts";
+
+const CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model.";
 
 const binding: CodexCapacityContinuationBinding = {
   runId: "run-capacity",
@@ -28,396 +33,140 @@ function acknowledge(state: CodexCapacityContinuationState, nativeTurnId: string
   });
 }
 
-function nativeError(
-  state: CodexCapacityContinuationState,
-  nativeTurnId: string,
-  code: string | null = "serverOverloaded",
-  willRetry = false,
-  message?: string,
-) {
-  return reduceCodexCapacityContinuation(state, {
-    type: "nativeError",
-    binding,
-    nativeTurnId,
-    code,
-    willRetry,
-    ...(message === undefined ? {} : { message }),
+describe("Codex capacity retry policy", () => {
+  it("defaults to upstream's five retries with a 2 s delay doubling to 30 s", () => {
+    expect(CODEX_CAPACITY_RETRY_PROFILE).toBe("upstream");
+    expect(codexCapacityRetryPolicy).toBe(codexCapacityRetryPolicies.upstream);
+    expect(codexCapacityRetryPolicy.maxRetries).toBe(5);
+    expect([1, 2, 3, 4, 5, 6, 7].map(codexCapacityRetryPolicy.delayMs)).toEqual([
+      2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000,
+    ]);
   });
-}
 
-function complete(
-  state: CodexCapacityContinuationState,
-  nativeTurnId: string,
-  status: "completed" | "failed" | "interrupted" = "failed",
-) {
-  return reduceCodexCapacityContinuation(state, {
-    type: "nativeCompleted",
-    binding,
-    nativeTurnId,
-    status,
+  it("keeps the earlier Jones policy selectable as twelve retries at a fixed 5 s", () => {
+    const jones = codexCapacityRetryPolicies.jones;
+    expect(jones.maxRetries).toBe(12);
+    expect([1, 6, 12].map(jones.delayMs)).toEqual([5_000, 5_000, 5_000]);
   });
-}
+});
 
-function waitingForRetry() {
-  const started = acknowledge(makeCodexCapacityContinuation(binding), "turn-original");
-  return complete(nativeError(started.state, "turn-original").state, "turn-original").state;
-}
-
-function awaitingFinalRetry(retries: number = codexCapacityRetryPolicy.maxRetries) {
-  let state = makeCodexCapacityContinuation(binding);
-  for (let ordinal = 0; ordinal < retries; ordinal++) {
-    const nativeTurnId = `turn-${ordinal}`;
-    state = acknowledge(state, nativeTurnId).state;
-    expect(codexCapacityRetriesExhausted(state)).toBe(false);
-    state = nativeError(state, nativeTurnId).state;
-    expect(codexCapacityRetriesExhausted(state)).toBe(false);
-    state = complete(state, nativeTurnId).state;
-    expect(state.phase).toBe("waiting_retry");
-    expect(codexCapacityRetriesExhausted(state)).toBe(false);
-    state = reduceCodexCapacityContinuation(state, {
-      type: "retryReady",
-      binding,
-      retryOrdinal: ordinal + 1,
-    }).state;
-    expect(codexCapacityRetriesExhausted(state)).toBe(false);
-  }
-  return state;
-}
-
-describe("Codex capacity continuation", () => {
+describe("Codex capacity classification", () => {
   it.each([null, "other", "internalServerError"])(
-    "retries the exact model capacity error with generic code %s after five seconds",
+    "retries the exact model capacity error with generic code %s",
     (code) => {
-      let state = acknowledge(makeCodexCapacityContinuation(binding), "turn-original").state;
-      state = nativeError(
-        state,
-        "turn-original",
-        code,
-        false,
-        "Selected model is at capacity. Please try a different model.",
-      ).state;
-      expect(complete(state, "turn-original").actions).toEqual([
-        { type: "scheduleRetry", retryOrdinal: 1, delayMs: 5000 },
-      ]);
+      expect(isCodexCapacityError({ code, message: CAPACITY_MESSAGE })).toBe(true);
+      expect(
+        codexCapacityFailureRetryable({
+          nativeError: { code, message: CAPACITY_MESSAGE, willRetry: false },
+        }),
+      ).toBe(true);
+      expect(
+        codexCapacityFailureRetryable({ completionError: { code, message: CAPACITY_MESSAGE } }),
+      ).toBe(true);
     },
   );
+
+  it("retries serverOverloaded regardless of its message", () => {
+    expect(codexCapacityFailureRetryable({ completionError: { code: "serverOverloaded" } })).toBe(
+      true,
+    );
+  });
 
   it.each(["usageLimitExceeded", "rateLimitExceeded", "unauthorized", "badRequest", "unknown"])(
     "does not override the explicit %s classification with capacity text",
     (code) => {
-      let state = acknowledge(makeCodexCapacityContinuation(binding), "turn-original").state;
-      state = nativeError(
-        state,
-        "turn-original",
-        code,
-        false,
-        "Selected model is at capacity. Please try a different model.",
-      ).state;
-      expect(complete(state, "turn-original").actions).toEqual([
-        { type: "terminal", status: "failed", nativeTurnId: "turn-original" },
-      ]);
+      expect(
+        codexCapacityFailureRetryable({
+          nativeError: { code, message: CAPACITY_MESSAGE, willRetry: false },
+          completionError: { code, message: CAPACITY_MESSAGE },
+        }),
+      ).toBe(false);
     },
   );
-
-  it("preserves native retry ownership when completion repeats capacity evidence", () => {
-    const state = nativeError(
-      acknowledge(makeCodexCapacityContinuation(binding), "turn").state,
-      "turn",
-      "serverOverloaded",
-      true,
-    ).state;
-    expect(
-      reduceCodexCapacityContinuation(state, {
-        type: "nativeCompleted",
-        binding,
-        nativeTurnId: "turn",
-        status: "failed",
-        error: { code: "serverOverloaded" },
-      }).actions,
-    ).toEqual([{ type: "terminal", status: "failed", nativeTurnId: "turn" }]);
-  });
-
-  it("uses a noncapacity completion error instead of an earlier overload", () => {
-    const state = nativeError(
-      acknowledge(makeCodexCapacityContinuation(binding), "turn").state,
-      "turn",
-    ).state;
-    expect(
-      reduceCodexCapacityContinuation(state, {
-        type: "nativeCompleted",
-        binding,
-        nativeTurnId: "turn",
-        status: "failed",
-        error: { code: "usageLimitExceeded", message: "Quota exhausted" },
-      }).actions,
-    ).toEqual([{ type: "terminal", status: "failed", nativeTurnId: "turn" }]);
-  });
 
   it.each(["Selected model is unavailable", "The provider is at capacity", "Unknown error"])(
     "does not infer capacity from generic text: %s",
     (message) => {
-      let state = acknowledge(makeCodexCapacityContinuation(binding), "turn").state;
-      state = nativeError(state, "turn", "other", false, message).state;
-      expect(complete(state, "turn").actions).toEqual([
-        { type: "terminal", status: "failed", nativeTurnId: "turn" },
-      ]);
-    },
-  );
-
-  it("requires an acknowledged matching overload and failed completion before scheduling a retry", () => {
-    const started = acknowledge(makeCodexCapacityContinuation(binding), "turn-original");
-    expect(started.actions).toEqual([]);
-    const overloaded = nativeError(started.state, "turn-original");
-    expect(overloaded.actions).toEqual([]);
-    expect(complete(overloaded.state, "other-turn").actions).toEqual([]);
-    const failed = complete(overloaded.state, "turn-original");
-    expect(failed.actions).toEqual([{ type: "scheduleRetry", retryOrdinal: 1, delayMs: 5000 }]);
-    expect(failed.state.phase).toBe("waiting_retry");
-    expect(failed.state.binding).toEqual(binding);
-  });
-
-  it("allows exactly twelve delayed promptless retries and one logical terminal", () => {
-    let state = makeCodexCapacityContinuation(binding);
-    const actions: CodexCapacityContinuationAction[] = [];
-    for (let retryOrdinal = 0; retryOrdinal <= 12; retryOrdinal++) {
-      const nativeTurnId = `turn-${retryOrdinal}`;
-      state = acknowledge(state, nativeTurnId).state;
-      state = nativeError(state, nativeTurnId).state;
-      const failed = complete(state, nativeTurnId);
-      state = failed.state;
-      actions.push(...failed.actions);
-      if (retryOrdinal < 12) {
-        expect(failed.actions).toEqual([
-          { type: "scheduleRetry", retryOrdinal: retryOrdinal + 1, delayMs: 5000 },
-        ]);
-        const ready = reduceCodexCapacityContinuation(state, {
-          type: "retryReady",
-          binding,
-          retryOrdinal: retryOrdinal + 1,
-        });
-        expect(ready.actions).toEqual([
-          { type: "retry", retryOrdinal: retryOrdinal + 1, promptless: true },
-        ]);
-        actions.push(...ready.actions);
-        state = ready.state;
-      }
-    }
-    expect(actions.filter((action) => action.type === "scheduleRetry")).toHaveLength(12);
-    expect(actions.filter((action) => action.type === "retry")).toHaveLength(12);
-    expect(actions.filter((action) => action.type === "terminal")).toEqual([
-      { type: "terminal", status: "failed", nativeTurnId: "turn-12" },
-    ]);
-    expect(state.phase).toBe("terminal");
-    expect(codexCapacityRetriesExhausted(state)).toBe(true);
-    expect(complete(state, "turn-12").actions).toEqual([]);
-    expect(nativeError(state, "turn-12").actions).toEqual([]);
-    expect(
-      reduceCodexCapacityContinuation(state, {
-        type: "retryReady",
-        binding,
-        retryOrdinal: 13,
-      }).actions,
-    ).toEqual([]);
-  });
-
-  it.each([
-    { code: "serverOverloaded", willRetry: true },
-    { code: "rateLimitExceeded", willRetry: false },
-    { code: "usageLimitExceeded", willRetry: false },
-    { code: null, willRetry: false },
-  ])(
-    "preserves native retry ownership and other failures for $code/$willRetry",
-    ({ code, willRetry }) => {
-      let state = acknowledge(makeCodexCapacityContinuation(binding), "turn-original").state;
-      state = nativeError(state, "turn-original", code, willRetry).state;
-      expect(complete(state, "turn-original").actions).toEqual([
-        { type: "terminal", status: "failed", nativeTurnId: "turn-original" },
-      ]);
-    },
-  );
-
-  it.each(["completed", "interrupted"] as const)(
-    "does not retry a %s completion even after a terminal overload error",
-    (status) => {
-      let state = acknowledge(makeCodexCapacityContinuation(binding), "turn-original").state;
-      state = nativeError(state, "turn-original").state;
-      expect(complete(state, "turn-original", status).actions).toEqual([
-        { type: "terminal", status, nativeTurnId: "turn-original" },
-      ]);
-    },
-  );
-
-  it("does not infer capacity retry from a failed completion without the matching error", () => {
-    const state = acknowledge(makeCodexCapacityContinuation(binding), "turn-original").state;
-    const foreignError = nativeError(state, "other-turn");
-    expect(foreignError.state).toBe(state);
-    expect(complete(foreignError.state, "turn-original").actions).toEqual([
-      { type: "terminal", status: "failed", nativeTurnId: "turn-original" },
-    ]);
-  });
-
-  it("uses the latest matching error instead of retaining an obsolete overload", () => {
-    let state = acknowledge(makeCodexCapacityContinuation(binding), "turn-original").state;
-    state = nativeError(state, "turn-original").state;
-    state = nativeError(state, "turn-original", "serverOverloaded", true).state;
-    expect(complete(state, "turn-original").actions).toEqual([
-      { type: "terminal", status: "failed", nativeTurnId: "turn-original" },
-    ]);
-  });
-
-  it("correlates early error and completion only after the matching start reply", () => {
-    const initial = makeCodexCapacityContinuation(binding);
-    const earlyError = nativeError(initial, "turn-early");
-    expect(earlyError.actions).toEqual([]);
-    const earlyCompletion = complete(earlyError.state, "turn-early");
-    expect(earlyCompletion.actions).toEqual([]);
-    expect(earlyCompletion.state.phase).toBe("awaiting_start");
-    expect(acknowledge(earlyCompletion.state, "turn-early").actions).toEqual([
-      { type: "scheduleRetry", retryOrdinal: 1, delayMs: 5000 },
-    ]);
-    expect(initial.pendingNativeTurns).toEqual({});
-    expect(initial.nativeTurnId).toBeNull();
-  });
-
-  it("retains matching pre-ACK facts when completion arrives before its error", () => {
-    let state = complete(makeCodexCapacityContinuation(binding), "turn-early").state;
-    state = nativeError(state, "turn-early").state;
-    expect(acknowledge(state, "turn-early").actions).toEqual([
-      { type: "scheduleRetry", retryOrdinal: 1, delayMs: 5000 },
-    ]);
-  });
-
-  it("never combines the error and completion of different pre-ACK native turns", () => {
-    let state = nativeError(makeCodexCapacityContinuation(binding), "turn-error").state;
-    state = complete(state, "turn-completion").state;
-    expect(acknowledge(state, "turn-completion").actions).toEqual([
-      { type: "terminal", status: "failed", nativeTurnId: "turn-completion" },
-    ]);
-    const otherReply = acknowledge(state, "turn-error");
-    expect(otherReply.actions).toEqual([]);
-    expect(otherReply.state.phase).toBe("running");
-  });
-
-  it("ignores unmatched early completion when the actual reply identifies another turn", () => {
-    const early = complete(makeCodexCapacityContinuation(binding), "obsolete-turn", "completed");
-    const started = acknowledge(early.state, "actual-turn");
-    expect(started.actions).toEqual([]);
-    expect(started.state.nativeTurnId).toBe("actual-turn");
-    expect(started.state.pendingNativeTurns).toEqual({});
-    expect(complete(started.state, "obsolete-turn", "completed").actions).toEqual([]);
-    expect(complete(started.state, "actual-turn", "completed").actions).toEqual([
-      { type: "terminal", status: "completed", nativeTurnId: "actual-turn" },
-    ]);
-  });
-
-  it.each(["waiting_retry", "awaiting_start"] as const)(
-    "adopts an acknowledged autonomous successor from undispatched %s without requesting a send",
-    (phase) => {
-      let state = waitingForRetry();
-      if (phase === "awaiting_start")
-        state = reduceCodexCapacityContinuation(state, {
-          type: "retryReady",
-          binding,
-          retryOrdinal: 1,
-        }).state;
-      const adopted = reduceCodexCapacityContinuation(state, {
-        type: "nativeSuccessorAcknowledged",
-        binding,
-        nativeTurnId: "autonomous-turn",
-        startDispatched: false,
-      });
-      expect(adopted.actions).toEqual([]);
-      expect(adopted.state.phase).toBe("running");
-      expect(adopted.state.retryOrdinal).toBe(1);
-      expect(adopted.state.nativeTurnId).toBe("autonomous-turn");
       expect(
-        reduceCodexCapacityContinuation(adopted.state, {
-          type: "retryReady",
-          binding,
-          retryOrdinal: 1,
-        }).actions,
-      ).toEqual([]);
-      expect(complete(adopted.state, "turn-original").state).toBe(adopted.state);
-      expect(complete(adopted.state, "autonomous-turn", "completed").actions).toEqual([
-        { type: "terminal", status: "completed", nativeTurnId: "autonomous-turn" },
-      ]);
+        codexCapacityFailureRetryable({
+          nativeError: { code: "other", message, willRetry: false },
+          completionError: { code: "other", message },
+        }),
+      ).toBe(false);
     },
   );
 
-  it("rejects autonomous successors after cancellation and stale runtime binding", () => {
-    const waiting = waitingForRetry();
-    const signal = {
-      type: "nativeSuccessorAcknowledged",
-      binding,
-      nativeTurnId: "autonomous-turn",
-      startDispatched: false,
-    } as const;
+  it("preserves native retry ownership when completion repeats capacity evidence", () => {
     expect(
-      reduceCodexCapacityContinuation(waiting, {
-        ...signal,
-        binding: { ...binding, runtimeGeneration: "stale" },
-      }).state,
-    ).toBe(waiting);
-    const stopped = reduceCodexCapacityContinuation(waiting, {
-      type: "cancel",
-      binding,
-      reason: "stop",
-    }).state;
-    expect(reduceCodexCapacityContinuation(stopped, signal).state).toBe(stopped);
-    const initial = makeCodexCapacityContinuation(binding);
-    expect(reduceCodexCapacityContinuation(initial, signal).state).toBe(initial);
-    expect(
-      reduceCodexCapacityContinuation(waiting, { ...signal, nativeTurnId: "turn-original" }).state,
-    ).toBe(waiting);
+      codexCapacityFailureRetryable({
+        nativeError: { code: "serverOverloaded", willRetry: true },
+        completionError: { code: "serverOverloaded" },
+      }),
+    ).toBe(false);
   });
 
-  it("rejects obsolete native IDs and duplicate timer wakeups across a retry", () => {
-    const waiting = waitingForRetry();
-    const ready = reduceCodexCapacityContinuation(waiting, {
-      type: "retryReady",
-      binding,
-      retryOrdinal: 1,
+  it("uses a noncapacity completion error instead of an earlier overload", () => {
+    expect(
+      codexCapacityFailureRetryable({
+        nativeError: { code: "serverOverloaded", willRetry: false },
+        completionError: { code: "usageLimitExceeded", message: "Quota exhausted" },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not infer a capacity retry from a failure without error evidence", () => {
+    expect(codexCapacityFailureRetryable({})).toBe(false);
+  });
+
+  it("uses the latest native error per turn instead of an obsolete overload", () => {
+    const facts = makeCodexCapacityRetryFacts<object>();
+    const turn = {};
+    const other = {};
+    facts.observeNativeError(turn, { code: "serverOverloaded", willRetry: false });
+    expect(facts.retryable(turn, { code: "serverOverloaded" })).toBe(true);
+    facts.observeNativeError(turn, { code: "serverOverloaded", willRetry: true });
+    expect(facts.retryable(turn, { code: "serverOverloaded" })).toBe(false);
+    // Another turn's notification is not evidence for this one.
+    facts.observeNativeError(other, { code: "serverOverloaded", willRetry: true });
+    const fresh = {};
+    expect(facts.retryable(fresh, { code: "serverOverloaded" })).toBe(true);
+  });
+
+  it("reports one exhaustion per turn so failover is raised at most once", () => {
+    const facts = makeCodexCapacityRetryFacts<object>();
+    const turn = {};
+    expect(facts.takeExhausted(turn)).toBe(false);
+    facts.markExhausted(turn);
+    facts.markExhausted(turn);
+    expect(facts.takeExhausted(turn)).toBe(true);
+    expect(facts.takeExhausted(turn)).toBe(false);
+    expect(facts.takeExhausted({})).toBe(false);
+  });
+});
+
+describe("Codex capacity start owner", () => {
+  it("binds exactly one acknowledged native turn per start", () => {
+    const started = acknowledge(makeCodexCapacityContinuation(binding), "turn-original");
+    expect(started.phase).toBe("running");
+    expect(started.nativeTurnId).toBe("turn-original");
+    expect(acknowledge(started, "turn-other")).toBe(started);
+  });
+
+  it("starts a promptless continuation that never binds retired turns or stale replies", () => {
+    const continuation = makeCodexCapacityContinuation(binding, {
+      retryOrdinal: 2,
+      retiredNativeTurnIds: ["turn-0", "turn-1"],
     });
-    expect(ready.actions).toEqual([{ type: "retry", retryOrdinal: 1, promptless: true }]);
-    expect(
-      reduceCodexCapacityContinuation(ready.state, {
-        type: "retryReady",
-        binding,
-        retryOrdinal: 1,
-      }).actions,
-    ).toEqual([]);
-    expect(acknowledge(ready.state, "turn-original").state).toBe(ready.state);
-    expect(nativeError(ready.state, "turn-original").state).toBe(ready.state);
-    expect(complete(ready.state, "turn-original").state).toBe(ready.state);
-    const next = acknowledge(ready.state, "turn-retry");
-    expect(next.state.nativeTurnId).toBe("turn-retry");
-    expect(complete(next.state, "turn-original").state).toBe(next.state);
-    expect(complete(next.state, "turn-retry", "completed").actions).toEqual([
-      { type: "terminal", status: "completed", nativeTurnId: "turn-retry" },
-    ]);
-  });
-
-  it("rejects stale reply, unknown-start and timer tokens", () => {
-    const waiting = waitingForRetry();
-    expect(
-      reduceCodexCapacityContinuation(waiting, {
-        type: "retryReady",
-        binding,
-        retryOrdinal: 0,
-      }).state,
-    ).toBe(waiting);
-    const current = reduceCodexCapacityContinuation(waiting, {
-      type: "retryReady",
-      binding,
-      retryOrdinal: 1,
-    }).state;
+    expect(continuation.phase).toBe("awaiting_start");
+    expect(continuation.retryOrdinal).toBe(2);
+    expect(acknowledge(continuation, "turn-1")).toBe(continuation);
     for (const signal of [
-      { type: "startAcknowledged", binding, retryOrdinal: 0, nativeTurnId: "late-reply" },
-      { type: "startUnknown", binding, retryOrdinal: 0 },
+      { type: "startAcknowledged", binding, retryOrdinal: 1, nativeTurnId: "late-reply" },
+      { type: "startUnknown", binding, retryOrdinal: 1 },
     ] satisfies CodexCapacityContinuationSignal[]) {
-      expect(reduceCodexCapacityContinuation(current, signal).state).toBe(current);
+      expect(reduceCodexCapacityContinuation(continuation, signal)).toBe(continuation);
     }
-    expect(acknowledge(current, "actual-retry").state.phase).toBe("running");
+    expect(acknowledge(continuation, "turn-2").phase).toBe("running");
   });
 
   it.each([
@@ -426,265 +175,69 @@ describe("Codex capacity continuation", () => {
     "providerThreadId",
     "nativeThreadId",
     "runtimeGeneration",
-  ] as const)(
-    "rejects every stale %s correlation without cancelling the current request",
-    (key) => {
-      const state = makeCodexCapacityContinuation(binding);
-      const staleBinding = { ...binding, [key]: `stale-${key}` };
-      const signals: CodexCapacityContinuationSignal[] = [
-        { type: "startAcknowledged", binding: staleBinding, retryOrdinal: 0, nativeTurnId: "turn" },
-        {
-          type: "nativeError",
-          binding: staleBinding,
-          nativeTurnId: "turn",
-          code: "serverOverloaded",
-          willRetry: false,
-        },
-        { type: "nativeCompleted", binding: staleBinding, nativeTurnId: "turn", status: "failed" },
-        { type: "retryReady", binding: staleBinding, retryOrdinal: 1 },
-        { type: "cancel", binding: staleBinding, reason: "closed" },
-        { type: "startUnknown", binding: staleBinding, retryOrdinal: 0 },
-      ];
-      for (const signal of signals) {
-        const reduced = reduceCodexCapacityContinuation(state, signal);
-        expect(reduced.state).toBe(state);
-        expect(reduced.actions).toEqual([]);
-      }
-    },
-  );
-
-  it("holds a delayed dispatch when the actual runtime generation has changed", () => {
-    const waiting = waitingForRetry();
-    const staleWakeup = reduceCodexCapacityContinuation(waiting, {
-      type: "retryReady",
-      binding: { ...binding, runtimeGeneration: "replacement-generation" },
-      retryOrdinal: 1,
-    });
-    expect(staleWakeup.actions).toEqual([]);
-    expect(staleWakeup.state).toBe(waiting);
-    const cancelled = reduceCodexCapacityContinuation(waiting, {
-      type: "cancel",
-      binding,
-      reason: "runtime_changed",
-    });
-    expect(
-      reduceCodexCapacityContinuation(cancelled.state, {
-        type: "retryReady",
-        binding,
-        retryOrdinal: 1,
-      }).actions,
-    ).toEqual([]);
+  ] as const)("rejects every stale %s correlation without changing the request", (key) => {
+    const state = makeCodexCapacityContinuation(binding);
+    const staleBinding = { ...binding, [key]: `stale-${key}` };
+    const signals: CodexCapacityContinuationSignal[] = [
+      { type: "startAcknowledged", binding: staleBinding, retryOrdinal: 0, nativeTurnId: "turn" },
+      { type: "cancel", binding: staleBinding, reason: "closed" },
+      { type: "startUnknown", binding: staleBinding, retryOrdinal: 0 },
+    ];
+    for (const signal of signals) {
+      expect(reduceCodexCapacityContinuation(state, signal)).toBe(state);
+    }
   });
 
   it.each(["stop", "superseded", "closed", "runtime_changed"] as const)(
-    "prevents dispatch after %s during a retry delay and emits one logical disposition",
+    "records the %s cancellation reason once and ignores late replies",
     (reason) => {
-      const cancelled = reduceCodexCapacityContinuation(waitingForRetry(), {
+      const cancelled = reduceCodexCapacityContinuation(makeCodexCapacityContinuation(binding), {
         type: "cancel",
         binding,
         reason,
       });
-      expect(cancelled.actions).toEqual([
-        { type: "terminal", status: "interrupted", nativeTurnId: "turn-original", reason },
-      ]);
+      expect(cancelled.phase).toBe("terminal");
+      expect(cancelled.terminalReason).toBe(reason);
+      expect(acknowledge(cancelled, "late-turn")).toBe(cancelled);
       expect(
-        reduceCodexCapacityContinuation(cancelled.state, {
-          type: "retryReady",
-          binding,
-          retryOrdinal: 1,
-        }).actions,
-      ).toEqual([]);
-      expect(
-        reduceCodexCapacityContinuation(cancelled.state, {
-          type: "cancel",
-          binding,
-          reason,
-        }).actions,
-      ).toEqual([]);
+        reduceCodexCapacityContinuation(cancelled, { type: "cancel", binding, reason: "stop" }),
+      ).toBe(cancelled);
     },
   );
 
-  it("prevents an early completion from reviving a superseded unacknowledged start", () => {
-    const early = complete(
-      nativeError(makeCodexCapacityContinuation(binding), "early-turn").state,
-      "early-turn",
+  it("keeps an unknown start terminal so it is never replayed", () => {
+    const unknown = reduceCodexCapacityContinuation(
+      makeCodexCapacityContinuation(binding, { retryOrdinal: 1, retiredNativeTurnIds: ["t0"] }),
+      { type: "startUnknown", binding, retryOrdinal: 1 },
     );
-    const cancelled = reduceCodexCapacityContinuation(early.state, {
-      type: "cancel",
-      binding,
-      reason: "superseded",
-    });
-    expect(cancelled.state.pendingNativeTurns).toEqual({});
-    expect(acknowledge(cancelled.state, "early-turn").actions).toEqual([]);
-    expect(cancelled.actions).toEqual([
-      { type: "terminal", status: "interrupted", nativeTurnId: null, reason: "superseded" },
-    ]);
-  });
-
-  it("keeps an unknown start terminal despite early overload evidence and late replies", () => {
-    let state = nativeError(makeCodexCapacityContinuation(binding), "early-turn").state;
-    state = complete(state, "early-turn").state;
-    const unknown = reduceCodexCapacityContinuation(state, {
-      type: "startUnknown",
-      binding,
-      retryOrdinal: 0,
-    });
-    expect(unknown.actions).toEqual([
-      { type: "terminal", status: "unknown", nativeTurnId: null, reason: "start_unknown" },
-    ]);
-    expect(acknowledge(unknown.state, "early-turn").actions).toEqual([]);
-    expect(
-      reduceCodexCapacityContinuation(unknown.state, {
-        type: "retryReady",
-        binding,
-        retryOrdinal: 1,
-      }).actions,
-    ).toEqual([]);
-  });
-
-  it("does not retry a replacement whose native start is unknown", () => {
-    const ready = reduceCodexCapacityContinuation(waitingForRetry(), {
-      type: "retryReady",
-      binding,
-      retryOrdinal: 1,
-    });
-    const unknown = reduceCodexCapacityContinuation(ready.state, {
-      type: "startUnknown",
-      binding,
-      retryOrdinal: 1,
-    });
-    expect(unknown.actions).toEqual([
-      { type: "terminal", status: "unknown", nativeTurnId: null, reason: "start_unknown" },
-    ]);
-    expect(acknowledge(unknown.state, "late-retry").actions).toEqual([]);
-  });
-
-  it("copies the binding and leaves prior states and early facts immutable", () => {
-    const mutableBinding = { ...binding };
-    const initial = makeCodexCapacityContinuation(mutableBinding);
-    mutableBinding.runtimeGeneration = "replacement-generation";
-    expect(initial.binding).toEqual(binding);
-    expect(Object.isFrozen(initial.binding)).toBe(true);
-    const early = nativeError(initial, "turn-early");
-    const completed = complete(early.state, "turn-early");
-    expect(initial.pendingNativeTurns).toEqual({});
-    expect(early.state.pendingNativeTurns["turn-early"]).not.toHaveProperty("completion");
-    expect(Object.isFrozen(completed.state)).toBe(true);
-    expect(Object.isFrozen(completed.state.pendingNativeTurns)).toBe(true);
-    expect(Object.isFrozen(completed.state.pendingNativeTurns["turn-early"])).toBe(true);
-  });
-});
-
-describe("codexCapacityRetriesExhausted", () => {
-  it.each(["serverOverloaded", "other", null, "internalServerError"])(
-    "recognizes capacity exhaustion at the final retry with code %s",
-    (code) => {
-      let state = acknowledge(awaitingFinalRetry(), "turn-final").state;
-      state = nativeError(
-        state,
-        "turn-final",
-        code,
-        false,
-        "Selected model is at capacity. Please try a different model.",
-      ).state;
-      expect(codexCapacityRetriesExhausted(state)).toBe(false);
-      state = complete(state, "turn-final").state;
-      expect(codexCapacityRetriesExhausted(state)).toBe(true);
-    },
-  );
-
-  it("recognizes final capacity evidence supplied only by native completion", () => {
-    const state = acknowledge(awaitingFinalRetry(), "turn-final").state;
-    const failed = reduceCodexCapacityContinuation(state, {
-      type: "nativeCompleted",
-      binding,
-      nativeTurnId: "turn-final",
-      status: "failed",
-      error: {
-        code: null,
-        message: "Selected model is at capacity. Please try a different model.",
-      },
-    });
-    expect(codexCapacityRetriesExhausted(failed.state)).toBe(true);
-  });
-
-  it.each([
-    { code: "serverOverloaded", willRetry: true },
-    { code: "usageLimitExceeded", willRetry: false },
-    { code: "other", willRetry: false },
-    { code: null, willRetry: false },
-  ])(
-    "rejects noncapacity or native-owned final failures: $code/$willRetry",
-    ({ code, willRetry }) => {
-      let state = acknowledge(awaitingFinalRetry(), "turn-final").state;
-      state = nativeError(state, "turn-final", code, willRetry).state;
-      expect(codexCapacityRetriesExhausted(complete(state, "turn-final").state)).toBe(false);
-    },
-  );
-
-  it.each(["completed", "interrupted"] as const)("rejects %s at the retry limit", (status) => {
-    const state = nativeError(
-      acknowledge(awaitingFinalRetry(), "turn-final").state,
-      "turn-final",
-    ).state;
-    expect(codexCapacityRetriesExhausted(complete(state, "turn-final", status).state)).toBe(false);
-  });
-
-  it("rejects missing, stale and early capacity evidence at the retry limit", () => {
-    const awaiting = awaitingFinalRetry();
-    const early = complete(nativeError(awaiting, "turn-final").state, "turn-final").state;
-    expect(codexCapacityRetriesExhausted(early)).toBe(false);
-    const running = acknowledge(awaiting, "turn-final").state;
-    const stale = nativeError(running, "turn-0").state;
-    expect(codexCapacityRetriesExhausted(complete(stale, "turn-final").state)).toBe(false);
-    const staleBinding = reduceCodexCapacityContinuation(running, {
-      type: "nativeError",
-      binding: { ...binding, runtimeGeneration: "obsolete" },
-      nativeTurnId: "turn-final",
-      code: "serverOverloaded",
-      willRetry: false,
-    }).state;
-    expect(codexCapacityRetriesExhausted(complete(staleBinding, "turn-final").state)).toBe(false);
-  });
-
-  it.each(["stop", "superseded", "closed", "runtime_changed"] as const)(
-    "rejects %s cancellation while waiting for the final retry or its completion",
-    (reason) => {
-      let waiting = acknowledge(awaitingFinalRetry(), "turn-final").state;
-      waiting = nativeError(waiting, "turn-final").state;
-      const previousWaiting = complete(
-        nativeError(
-          acknowledge(
-            awaitingFinalRetry(codexCapacityRetryPolicy.maxRetries - 1),
-            "turn-before-final",
-          ).state,
-          "turn-before-final",
-        ).state,
-        "turn-before-final",
-      ).state;
-      expect(previousWaiting.phase).toBe("waiting_retry");
-      for (const state of [previousWaiting, waiting]) {
-        const canceled = reduceCodexCapacityContinuation(state, {
-          type: "cancel",
-          binding,
-          reason,
-        });
-        expect(codexCapacityRetriesExhausted(canceled.state)).toBe(false);
-      }
-    },
-  );
-
-  it("rejects unknown starts even after early capacity completion at the retry limit", () => {
-    const early = complete(
-      nativeError(awaitingFinalRetry(), "turn-final").state,
-      "turn-final",
-    ).state;
-    const unknown = reduceCodexCapacityContinuation(early, {
-      type: "startUnknown",
-      binding,
-      retryOrdinal: codexCapacityRetryPolicy.maxRetries,
-    }).state;
     expect(unknown.phase).toBe("terminal");
-    expect(codexCapacityRetriesExhausted(unknown)).toBe(false);
+    expect(unknown.terminalReason).toBe("start_unknown");
+    expect(acknowledge(unknown, "late-retry")).toBe(unknown);
+  });
+
+  it("does not mark an acknowledged start unknown", () => {
+    const started = acknowledge(makeCodexCapacityContinuation(binding), "turn");
+    expect(
+      reduceCodexCapacityContinuation(started, { type: "startUnknown", binding, retryOrdinal: 0 }),
+    ).toBe(started);
+  });
+
+  it("copies the binding and leaves prior states immutable", () => {
+    const mutableBinding = { ...binding };
+    const retired = ["turn-0"];
+    const initial = makeCodexCapacityContinuation(mutableBinding, {
+      retryOrdinal: 1,
+      retiredNativeTurnIds: retired,
+    });
+    mutableBinding.runtimeGeneration = "replacement-generation";
+    retired.push("turn-1");
+    expect(initial.binding).toEqual(binding);
+    expect(initial.retiredNativeTurnIds).toEqual(["turn-0"]);
+    expect(Object.isFrozen(initial)).toBe(true);
+    expect(Object.isFrozen(initial.binding)).toBe(true);
+    expect(Object.isFrozen(initial.retiredNativeTurnIds)).toBe(true);
+    const started = acknowledge(initial, "turn-1b");
+    expect(initial.phase).toBe("awaiting_start");
+    expect(Object.isFrozen(started)).toBe(true);
   });
 });

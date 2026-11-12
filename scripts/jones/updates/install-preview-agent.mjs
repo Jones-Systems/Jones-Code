@@ -434,11 +434,22 @@ export async function runScenario(client, scenario, report) {
       if (step.action === "navigate")
         await call("preview_navigate", { tabId, url: new URL(step.path, scenario.origin).href });
       else if (step.action === "click")
-        await call("preview_click", { tabId, locator: step.locator, timeoutMs: 15_000 });
+        await call("preview_act", {
+          action: "click",
+          tabId,
+          locator: step.locator,
+          timeoutMs: 15_000,
+        });
       else if (step.action === "hover")
-        await call("preview_hover", { tabId, locator: step.locator });
+        await call("preview_act", { action: "hover", tabId, locator: step.locator });
       else if (step.action === "type")
-        await call("preview_type", { tabId, locator: step.locator, text: step.text, clear: true });
+        await call("preview_act", {
+          action: "type",
+          tabId,
+          locator: step.locator,
+          text: step.text,
+          clear: true,
+        });
       else if (step.action === "wait")
         await call("preview_wait_for", { tabId, text: step.text, timeoutMs: 30_000 });
       else if (step.action === "capture") {

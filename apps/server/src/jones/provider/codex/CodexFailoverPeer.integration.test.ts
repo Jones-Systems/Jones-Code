@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -32,6 +33,7 @@ import * as Stream from "effect/Stream";
 import * as ServerConfig from "../../../config.ts";
 import * as CodexAdapterV2 from "../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { makeReplayServerConfig } from "../../../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
+import * as PortScanner from "../../../preview/PortScanner.ts";
 import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
 import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 
@@ -86,7 +88,9 @@ describe("Codex synthetic peer real adapter fixture qualification", () => {
           PATH: `${path.dirname(realNode)}${pathDelimiter}/usr/bin${pathDelimiter}/bin`,
         };
         const clientFactory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
-          Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
+          Effect.provide(
+            CodexAdapterV2.layerAppServerClientFactory.pipe(Layer.provide(PortScanner.layerTest)),
+          ),
         );
         const idAllocator = yield* IdAllocator.IdAllocatorV2;
         const attribution = yield* ProcessAttribution.ProcessAttribution;
@@ -374,6 +378,7 @@ describe("Codex synthetic peer real adapter fixture qualification", () => {
           ProviderEventLoggers.ProviderEventLoggers,
           ProviderEventLoggers.NoOpProviderEventLoggers,
         ),
+        Effect.provide(NodeCrypto.layer),
       ),
   );
 });

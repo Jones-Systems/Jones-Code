@@ -19,7 +19,7 @@ import { TraitsPicker } from "../../components/chat/TraitsPicker";
 import { useEnvironment, useEnvironments } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
-import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import { getCustomModelOptionsByInstance, selectsPlanAgent } from "../../modelSelection";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -353,7 +353,7 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
                   model={selected.model}
                   modelOptions={selected.options ?? []}
                   allowPromptInjectedEffort={false}
-                  planModeEnabled={false}
+                  includePlanAgent={selectsPlanAgent(selected.options)}
                   disabled={controlsDisabled}
                   triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                   onModelOptionsChange={(options) =>

@@ -329,7 +329,7 @@ it.layer(Layer.succeed(HostProcess.Platform, "linux"))(
             savedUid: 42,
           });
           const identify = vi.mocked(input.verify).mock.calls[0]![2];
-          const signal = new AbortController().signal;
+          const signal = yield* Effect.abortSignal;
           yield* Effect.promise(() => identify(signal));
           expect(input.runtime.identity).toHaveBeenCalledExactlyOnceWith(signal, "linux");
           expect(input.runtime.spawn).toHaveBeenCalledExactlyOnceWith(
