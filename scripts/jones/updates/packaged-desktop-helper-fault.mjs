@@ -13,6 +13,25 @@ export const packagedDesktopFaultPoints = Object.freeze([
 
 const sha = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 
+function exactKeys(record, keys) {
+  NodeAssert.ok(record && typeof record === "object" && !Array.isArray(record));
+  NodeAssert.deepEqual(Object.keys(record).sort(), [...keys].sort());
+}
+
+function immutable(record) {
+  if (record && typeof record === "object") {
+    for (const value of Object.values(record)) immutable(value);
+    Object.freeze(record);
+  }
+  return record;
+}
+
+const launchObservationNames = Object.freeze([
+  "launch-services.json",
+  "launch-return.json",
+  "launch-observation-failure.json",
+]);
+
 async function privatePath(root, filename, directory = false) {
   NodeAssert.equal(NodePath.resolve(filename), filename);
   NodeAssert.ok(filename.startsWith(root + NodePath.sep) || filename === root);
@@ -219,6 +238,7 @@ export async function preparePackagedDesktopHelperFault({
   await NodeFSP.mkdir(preload, { mode: 0o700 });
   const planBytes = Buffer.from(JSON.stringify(plan));
   const planPath = NodePath.join(preload, "fault-plan.json");
+  const launchInputs = new Map();
   await writeExclusive(
     NodePath.join(preload, "sitecustomize.py"),
     await NodeFSP.readFile(new URL("./packaged-desktop-helper-preload.py", import.meta.url)),
@@ -339,8 +359,182 @@ export async function preparePackagedDesktopHelperFault({
       NodeAssert.ok(receipt.state && typeof receipt.state === "object");
       return receipt.state;
     },
+    // These are helper observations, not live handles or authority to clean a
+    // launchd-born tree. Native custody must be acquired before launch effects.
+    async readLaunchObservation() {
+      NodeAssert.ok(deferred && observeRelaunch && point === "before-pair");
+      await NodeAssert.rejects(
+        NodeFSP.lstat(NodePath.join(preload, "launch-observation-failure.json")),
+        { code: "ENOENT" },
+      );
+      const inputs = new Map();
+      const read = async (filename, maximum = 16384) => {
+        const bytes = await readPrivate(fixtureRoot, filename, maximum);
+        const hash = sha(bytes);
+        if (launchInputs.has(filename)) NodeAssert.equal(hash, launchInputs.get(filename));
+        inputs.set(filename, hash);
+        return bytes;
+      };
+      NodeAssert.equal(sha(await read(planPath)), sha(planBytes));
+      const fault = await this.readReceipt();
+      exactKeys(fault, [
+        "protocol",
+        "kind",
+        "pid",
+        "point",
+        "function",
+        "phase",
+        "step",
+        "transactionId",
+        "planSha256",
+        "helperSha256",
+        "manifestSha256",
+        "intentSha256",
+        "journalSha256",
+        "beforePairStateSha256",
+      ]);
+      await read(NodePath.join(preload, "fault-receipt.json"));
+      const beforeRelaunch = await this.readRelaunchReceipt();
+      exactKeys(beforeRelaunch, [...Object.keys(fault), "faultReceiptSha256", "state"]);
+      const beforeBytes = await read(NodePath.join(preload, "before-relaunch.json"), 1024 * 1024);
+      NodeAssert.deepEqual(JSON.parse(beforeBytes), beforeRelaunch);
+      const quiet = JSON.parse(
+        await read(NodePath.join(preload, "before-pair-state.json"), 1024 * 1024),
+      );
+      exactKeys(quiet, [
+        "protocol",
+        "kind",
+        "processesStopped",
+        "state",
+        "pid",
+        "planSha256",
+        "transactionId",
+        "intentSha256",
+        "journalSha256",
+      ]);
+      NodeAssert.equal(quiet.protocol, 1);
+      const intentPath = NodePath.join(
+        active.home,
+        "runtime/jones-updates/transactions",
+        fault.transactionId,
+        "intent.json",
+      );
+      const actual = JSON.parse(await read(intentPath, 65536));
+      NodeAssert.equal(sha(await read(manifest, 65536)), plan.manifestSha256);
+      NodeAssert.equal(sha(await read(helper, 2 * 1024 * 1024)), helperSha256);
+      NodeAssert.equal(sha(await read(selection, 131072)), plan.selectionSha256);
+      NodeAssert.equal(sha(await read(intentPath, 65536)), fault.intentSha256);
+      const transaction = NodePath.dirname(intentPath);
+      NodeAssert.equal(actual.continuationReceipt, NodePath.join(transaction, "continuation.json"));
+      const claim = {
+        protocol: 1,
+        preparationClaimProtocol: 3,
+        transactionId: fault.transactionId,
+        stagedHandle: actual.staged.handle,
+        selectionPath: selection,
+        selectionSha256: plan.selectionSha256,
+        ...Object.fromEntries(
+          ["home", "profile", "databasePath", "environmentId"].map((key) => [key, active[key]]),
+        ),
+      };
+      NodeAssert.deepEqual(JSON.parse(await read(actual.continuationReceipt, 65536)), {
+        ...claim,
+        prepared: true,
+      });
+      for (const name of ["prepare-intent.json", "prepare-dispatched.json"])
+        NodeAssert.deepEqual(
+          JSON.parse(await read(NodePath.join(transaction, name), 65536)),
+          claim,
+        );
+      const servicesBytes = await read(NodePath.join(preload, "launch-services.json"));
+      const services = JSON.parse(servicesBytes);
+      const returned = JSON.parse(await read(NodePath.join(preload, "launch-return.json")));
+      for (const [record, kind, sequence, fields] of [
+        [services, "packaged-desktop-launch-services", 1, ["reply", "failure"]],
+        [
+          returned,
+          "packaged-desktop-launch-return",
+          2,
+          ["launchServicesSha256", "identity", "failure"],
+        ],
+      ]) {
+        exactKeys(record, [...Object.keys(fault), "sequence", "beforeRelaunchSha256", ...fields]);
+        for (const [key, value] of Object.entries(fault))
+          NodeAssert.deepEqual(record[key], key === "kind" ? kind : value);
+        NodeAssert.equal(record.sequence, sequence);
+        NodeAssert.equal(record.beforeRelaunchSha256, sha(beforeBytes));
+      }
+      NodeAssert.equal(returned.launchServicesSha256, sha(servicesBytes));
+      const reply = services.reply;
+      if (reply === null) {
+        NodeAssert.equal(services.failure, "launch-services-return-unproved");
+      } else {
+        NodeAssert.equal(services.failure, null);
+        NodeAssert.equal(reply.protocol, 1);
+        if (reply.status === "launched") {
+          exactKeys(reply, ["protocol", "status", "pid", "bundlePath", "executablePath"]);
+          NodeAssert.ok(
+            Number.isSafeInteger(reply.pid) && reply.pid > 0 && reply.pid <= 2147483647,
+          );
+          NodeAssert.notEqual(reply.pid, fault.pid);
+          for (const [key, expected] of [
+            ["bundlePath", active.appPath],
+            ["executablePath", active.executablePath],
+          ]) {
+            NodeAssert.equal(reply[key], expected);
+            NodeAssert.equal(NodePath.resolve(expected), expected);
+            NodeAssert.ok(expected.startsWith(fixtureRoot + NodePath.sep));
+            NodeAssert.equal(await NodeFSP.realpath(expected), expected);
+          }
+        } else if (reply.status === "failed") {
+          exactKeys(reply, ["protocol", "status", "domain", "code"]);
+          NodeAssert.match(reply.domain, /^[A-Za-z0-9_.-]{0,128}$/);
+          NodeAssert.ok(Number.isSafeInteger(reply.code));
+        } else {
+          exactKeys(reply, ["protocol", "status"]);
+          NodeAssert.equal(reply.status, "unavailable");
+        }
+      }
+      if (returned.identity === null) {
+        NodeAssert.equal(
+          returned.failure,
+          reply === null ? "launch-services-unproved" : "launch-validation-unproved",
+        );
+      } else {
+        NodeAssert.equal(returned.failure, null);
+        NodeAssert.equal(reply?.status, "launched");
+        exactKeys(returned.identity, ["pid", "startSec", "startUsec", "executable"]);
+        const identity = returned.identity;
+        NodeAssert.equal(identity.pid, reply.pid);
+        NodeAssert.equal(identity.executable, active.executablePath);
+        NodeAssert.ok(Number.isSafeInteger(identity.startSec) && identity.startSec > 0);
+        NodeAssert.ok(
+          Number.isSafeInteger(identity.startUsec) &&
+            identity.startUsec >= 0 &&
+            identity.startUsec < 1000000,
+        );
+      }
+      for (const [filename, hash] of inputs) {
+        NodeAssert.equal(sha(await readPrivate(fixtureRoot, filename, 2 * 1024 * 1024)), hash);
+        launchInputs.set(filename, hash);
+      }
+      await NodeAssert.rejects(
+        NodeFSP.lstat(NodePath.join(preload, "launch-observation-failure.json")),
+        { code: "ENOENT" },
+      );
+      return immutable({
+        beforeRelaunch,
+        launchServices: services,
+        launchReturn: returned,
+        externalDescendantSettlementRequired: true,
+        activationAllowed: false,
+        packagedDesktopMatrixPassed: false,
+      });
+    },
     async assertNoRelaunch() {
       NodeAssert.equal(observeRelaunch, true);
+      for (const name of launchObservationNames)
+        await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(preload, name)), { code: "ENOENT" });
       await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(preload, "before-relaunch.json")), {
         code: "ENOENT",
       });
