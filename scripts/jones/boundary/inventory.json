@@ -2926,7 +2926,8 @@
     "apps/server/src/jones/workstreams/testing/nativeHomeFixture.ts": "jones-owned",
     "apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts": "jones-owned",
     ".agents/skills/test-t3-app/references/sqlite-fixtures.md": "policy",
-    "scripts/jones/boundary/fragments/workstreams-native-home-fixture.json": "jones-owned"
+    "scripts/jones/boundary/fragments/workstreams-native-home-fixture.json": "jones-owned",
+    "scripts/jones/boundary/fragments/superseded-terminal-history.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

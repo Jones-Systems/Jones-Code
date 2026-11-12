@@ -422,6 +422,8 @@ const make = Effect.gen(function* () {
               );
             }
           }
+          const reportedStage = findRestartPreparationFailure(result.cause)?.stage ?? stage;
+          const terminalReason = sink.supersededTerminalTrace?.read({ threadId, ...request });
           const now = yield* DateTime.now;
           const eventBase = {
             threadId,
@@ -432,8 +434,14 @@ const make = Effect.gen(function* () {
           };
           const failure = {
             class: "provider_error" as const,
-            message: `Restart preparation failed during ${stage}. The replacement was not started. Stop the previous runtime before trying again.`,
-            code: null,
+            message:
+              reportedStage === "terminal"
+                ? "Restart preparation failed during terminal. Durable terminal confirmation for the previous provider turn is unavailable. The replacement was not started."
+                : `Restart preparation failed during ${reportedStage}. The replacement was not started. Stop the previous runtime before trying again.`,
+            code:
+              reportedStage === "terminal"
+                ? `restart_terminal_unpersisted_${terminalReason ?? "none_observed"}`
+                : null,
             retryable: false,
           };
           const failureEvents: ReadonlyArray<OrchestrationV2DomainEvent> = [
@@ -489,14 +497,18 @@ const make = Effect.gen(function* () {
             })
             .pipe(
               Effect.catchCause((cause) =>
-                Effect.fail(new RestartPreparationError({ threadId, stage, cause })),
+                Effect.fail(new RestartPreparationError({ threadId, stage: reportedStage, cause })),
               ),
             );
           return result;
         }),
       );
       if (Exit.isFailure(result))
-        return yield* new RestartPreparationError({ threadId, stage, cause: result.cause });
+        return yield* new RestartPreparationError({
+          threadId,
+          stage: findRestartPreparationFailure(result.cause)?.stage ?? stage,
+          cause: result.cause,
+        });
       yield* start;
     }),
     recordSteerFailure: Effect.fn("RestartPreparation.recordSteerFailure")(function* (

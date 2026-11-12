@@ -1,7 +1,7 @@
 import {
   type CommandId,
   type EventId,
-  type OrchestrationV2DomainEvent,
+  OrchestrationV2DomainEvent,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2ExecutionNodeJson,
   OrchestrationV2RunAttemptJson,
@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import type { ProviderAdapterV2Event } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -25,6 +26,8 @@ import {
   type RecordedStoredLifecycleEvent,
 } from "../../orchestration-v2/RecordedTypes.ts";
 
+import type { Reason } from "./SupersededTerminalTrace.ts";
+
 export interface HistoricalTerminalInput {
   readonly providerSessionId: ProviderSessionId;
   readonly providerInstanceId: ProviderInstanceId;
@@ -32,6 +35,55 @@ export interface HistoricalTerminalInput {
   readonly runId?: RunId;
   readonly event: Extract<ProviderAdapterV2Event, { type: "provider_turn.updated" }>;
   readonly terminal: OrchestrationV2DomainEvent;
+}
+
+export const isHistoricalTerminalRejection = (
+  selected: "ordinary" | OrchestrationV2DomainEvent | HistoricalTerminalRejection,
+): selected is HistoricalTerminalRejection =>
+  selected !== "ordinary" && (selected.type === "stale" || selected.type === "deferred");
+
+type HistoricalTerminalRejection = {
+  readonly type: "stale" | "deferred";
+  readonly reason: Reason;
+};
+const stale = (reason: Reason): HistoricalTerminalRejection => ({ type: "stale", reason });
+
+// Only an exact persisted historical terminal can replace an ordinary ingestion error.
+// Cancellation and unavailable/refused history preserve the original failure channel.
+export function retainHistoricalTerminalOnError<A, E, R, E2, R2>(
+  effect: Effect.Effect<ReadonlyArray<A>, E, R>,
+  historicalWrite:
+    | Effect.Effect<
+        {
+          readonly handled: boolean;
+          readonly persisted?: boolean;
+          readonly storedEvents: ReadonlyArray<A>;
+        },
+        E2,
+        R2
+      >
+    | undefined,
+): Effect.Effect<ReadonlyArray<A>, E, R | R2> {
+  return effect.pipe(
+    Effect.catchCause((cause) => {
+      if (historicalWrite === undefined || Cause.hasInterruptsOnly(cause))
+        return Effect.failCause(cause);
+      return historicalWrite.pipe(
+        Effect.catchCause((fallback) =>
+          Cause.hasInterruptsOnly(fallback)
+            ? Effect.failCause(
+                Cause.fromReasons<never>(fallback.reasons.filter(Cause.isInterruptReason)),
+              )
+            : Effect.failCause(cause),
+        ),
+        Effect.flatMap((result) =>
+          result.persisted === true || (result.handled && result.storedEvents.length > 0)
+            ? Effect.succeed(result.storedEvents)
+            : Effect.failCause(cause),
+        ),
+      );
+    }),
+  );
 }
 
 type Locator = {
@@ -67,6 +119,22 @@ export const make = Effect.gen(function* () {
   // This process-local locator is installed only after commit. Captured producers
   // cannot survive process loss; all authority is re-read from persisted rows.
   const locators = new Map<ThreadId, Locator>();
+  // Selection precedes the fallible append. Missing readback after that point
+  // stays unresolved; it cannot authorize another historical commit.
+  const retained = new WeakMap<HistoricalTerminalInput, OrchestrationV2DomainEvent>();
+  const encode = Schema.encodeEffect(Schema.fromJsonString(OrchestrationV2DomainEvent));
+  const readCommitted = Effect.fn("HistoricalTerminalHistory.readCommitted")(function* (
+    input: HistoricalTerminalInput,
+  ) {
+    const expected = retained.get(input);
+    if (expected === undefined) return undefined;
+    const stored = yield* events.read({ eventId: expected.id, limit: 1 }).pipe(Stream.runHead);
+    if (Option.isNone(stored) || stored.value.event.type !== "provider-turn.updated")
+      return "unavailable" as const;
+    return (yield* encode(stored.value.event)) === (yield* encode(expected))
+      ? stored.value
+      : ("unavailable" as const);
+  });
   const rememberCommitted = (
     effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>,
     stored: ReadonlyArray<RecordedStoredLifecycleEvent>,
@@ -120,7 +188,10 @@ export const make = Effect.gen(function* () {
       origin?.turn === undefined ||
       binding === undefined ||
       binding.runtimeGeneration === undefined ||
-      origin.producer.runtimeGeneration === undefined ||
+      origin.producer.runtimeGeneration === undefined
+    )
+      return stale("origin");
+    if (
       input.runId !== origin.turn.runId ||
       input.runId !== control.attempt.runId ||
       input.threadId !== binding.threadId ||
@@ -133,14 +204,20 @@ export const make = Effect.gen(function* () {
       turn.providerThreadId !== binding.providerThreadId ||
       control.attempt.providerInstanceId !== binding.providerInstanceId ||
       control.attempt.providerThreadId !== binding.providerThreadId ||
-      control.attempt.providerTurnId !== turn.id ||
+      control.attempt.providerTurnId !== turn.id
+    )
+      return stale("identity");
+    if (
       capture.threadId !== binding.threadId ||
       capture.providerThreadId !== binding.providerThreadId ||
       capture.providerSessionId !== binding.providerSessionId ||
       capture.providerInstanceId !== binding.providerInstanceId ||
       capture.driver !== binding.driver ||
       capture.nativeThreadId !== binding.nativeThreadId ||
-      capture.runtimeGeneration !== binding.runtimeGeneration ||
+      capture.runtimeGeneration !== binding.runtimeGeneration
+    )
+      return stale("capture");
+    if (
       terminal.threadId !== input.threadId ||
       terminal.runId !== input.runId ||
       terminal.nodeId !== turn.nodeId ||
@@ -157,15 +234,15 @@ export const make = Effect.gen(function* () {
       turn.nativeTurnRef.driver !== binding.driver ||
       turn.completedAt === null
     )
-      return "stale" as const;
+      return stale("projection_turn");
     const producer = yield* ProviderEventOrigin.revalidateProviderEventOrigin(event, {
       driver: binding.driver,
       instanceId: input.providerInstanceId,
       providerSessionId: input.providerSessionId,
       eventOriginMode: "captured",
     }).pipe(Effect.result);
-    if (producer._tag === "Failure") return "stale" as const;
-    if (locator === undefined) return "deferred" as const;
+    if (producer._tag === "Failure") return stale("origin");
+    if (locator === undefined) return { type: "deferred", reason: "locator" } as const;
     const effect = yield* outbox.get(locator.effectId);
     if (
       Option.isNone(effect) ||
@@ -173,7 +250,7 @@ export const make = Effect.gen(function* () {
       effect.value.threadId !== input.threadId ||
       effect.value.request.type !== "provider-turn.restart"
     )
-      return "stale" as const;
+      return stale("effect");
     const request = effect.value.request;
     if (
       request.runId !== input.runId ||
@@ -182,7 +259,7 @@ export const make = Effect.gen(function* () {
       request.providerThreadId !== binding.providerThreadId ||
       request.providerSessionId !== binding.providerSessionId
     )
-      return "stale" as const;
+      return stale("effect");
     const committed = Array.from(
       yield* events.readByCommandId({ commandId: locator.commandId }).pipe(Stream.runCollect),
     );
@@ -196,7 +273,7 @@ export const make = Effect.gen(function* () {
       created.payload.providerTurnId !== null ||
       created.payload.status !== "pending"
     )
-      return "stale" as const;
+      return stale("successor");
     const successor = created.payload;
     const recordedRun = committed.find(
       (stored) => stored.event.type === "run.updated" && stored.event.payload.id === input.runId,
@@ -228,7 +305,7 @@ export const make = Effect.gen(function* () {
       root.payload.providerThreadId !== successor.providerThreadId ||
       root.payload.status !== "pending"
     )
-      return "stale" as const;
+      return stale("successor");
     const runRows = yield* sql<{
       payload_json: string;
     }>`SELECT payload_json FROM orchestration_v2_projection_runs WHERE run_id = ${input.runId} AND thread_id = ${input.threadId}`;
@@ -239,7 +316,7 @@ export const make = Effect.gen(function* () {
       payload_json: string;
     }>`SELECT payload_json FROM orchestration_v2_projection_nodes WHERE node_id = ${successor.rootNodeId} AND thread_id = ${input.threadId}`;
     if (runRows[0] === undefined || attemptRows[0] === undefined || nodeRows[0] === undefined)
-      return "stale" as const;
+      return stale("successor");
     const currentRoot = yield* decodeNode(nodeRows[0].payload_json);
     const currentRun = yield* decodeRun(runRows[0].payload_json);
     const currentAttempt = yield* decodeAttempt(attemptRows[0].payload_json);
@@ -266,7 +343,7 @@ export const make = Effect.gen(function* () {
       currentAttempt.providerSettlement !== null ||
       (currentAttempt.status !== "pending" && currentAttempt.status !== "failed")
     )
-      return "stale" as const;
+      return stale("successor");
     const oldThread = control.providerThread;
     if (
       oldThread === undefined ||
@@ -279,7 +356,7 @@ export const make = Effect.gen(function* () {
         (oldThread.runtimeIdentity?.evidenceRevision === undefined ||
           oldThread.runtimeIdentity.evidenceRevision < capture.evidenceRevision))
     )
-      return "stale" as const;
+      return stale("replacement");
     if (request.sessionTransition?.type === "replace") {
       const replacement = committed.find(
         (stored) =>
@@ -296,13 +373,13 @@ export const make = Effect.gen(function* () {
         replacement.payload.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration ||
         replacement.payload.nativeThreadRef?.nativeId !== binding.nativeThreadId
       )
-        return "stale" as const;
+        return stale("replacement");
     } else {
       if (
         oldThread.providerSessionId !== binding.providerSessionId ||
         oldThread.providerInstanceId !== binding.providerInstanceId
       )
-        return "stale" as const;
+        return stale("replacement");
       if (successor.providerThreadId !== oldThread.id) {
         const replacement = committed.find(
           (stored) =>
@@ -317,7 +394,7 @@ export const make = Effect.gen(function* () {
           replacement?.type !== "provider-thread.updated" ||
           rows[0] === undefined
         )
-          return "stale" as const;
+          return stale("replacement");
         const current = yield* decodeThread(rows[0].payload_json);
         if (
           current.providerSessionId !== replacement.payload.providerSessionId ||
@@ -326,12 +403,12 @@ export const make = Effect.gen(function* () {
             replacement.payload.runtimeIdentity?.runtimeGeneration ||
           current.nativeThreadRef?.nativeId !== replacement.payload.nativeThreadRef?.nativeId
         )
-          return "stale" as const;
+          return stale("replacement");
       }
     }
     const finalOrigin = yield* origin.producer.revalidateCurrent.pipe(Effect.result);
-    if (finalOrigin._tag === "Failure") return "stale" as const;
-    return {
+    if (finalOrigin._tag === "Failure") return stale("origin");
+    const selected = {
       ...terminal,
       payload: {
         ...control.providerTurn,
@@ -340,6 +417,8 @@ export const make = Effect.gen(function* () {
         ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
       },
     };
+    retained.set(input, selected);
+    return selected;
   });
-  return { rememberCommitted, select };
+  return { rememberCommitted, select, readCommitted };
 });

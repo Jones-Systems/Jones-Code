@@ -109,8 +109,9 @@ const readers: ReadonlyArray<Reader> = [
     file: "orchestration/HistoricalTerminalHistory.ts",
     classification: "tolerate",
     after:
-      "Missing restart-command events leave the successor attempt undefined, so the terminal evidence is stale.",
-    proof: "none: needs the full provider fixture, reasoned from code",
+      "Missing restart command events refuse historical admission. Exact event-ID readback compares the retained selected event with Schema-encoded stored facts; missing, pruned or unavailable readback preserves the original failure, never proves absence or permits a new historical commit.",
+    proof:
+      "orchestration/HistoricalTerminalHistory.test.ts; orchestration/SupersededTerminal.integration.test.ts (authored, CI qualification required)",
   },
   {
     file: "orchestration/RestartPreparation.ts",

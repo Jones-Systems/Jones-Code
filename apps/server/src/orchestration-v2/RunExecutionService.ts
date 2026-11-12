@@ -1,3 +1,4 @@
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import {
   finalizationFailureItems,
   makeTerminalPublisher,
@@ -1510,6 +1511,15 @@ export const layer: Layer.Layer<
           Stream.filterEffect((event) =>
             ProviderEventOrigin.revalidateProviderEventOrigin(event, input.session).pipe(
               Effect.result,
+              Effect.tap((result) =>
+                result._tag === "Failure"
+                  ? SupersededTerminalTrace.recordTerminalRejection(
+                      eventSink.supersededTerminalTrace,
+                      event,
+                      "origin",
+                    )
+                  : Effect.void,
+              ),
               Effect.map((result) => result._tag === "Success"),
             ),
           ),
@@ -1614,7 +1624,14 @@ export const layer: Layer.Layer<
                   deliveredEvent,
                   input.session,
                 ).pipe(Effect.result);
-                if (currentOrigin._tag === "Failure") return;
+                if (currentOrigin._tag === "Failure") {
+                  yield* SupersededTerminalTrace.recordTerminalRejection(
+                    eventSink.supersededTerminalTrace,
+                    deliveredEvent,
+                    "origin",
+                  );
+                  return;
+                }
                 const ingest = providerEventIngestor.ingestNormalized({
                   analyticsContext: {
                     modelSelection: input.modelSelection,
