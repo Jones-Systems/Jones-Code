@@ -1,3 +1,4 @@
+import * as PersonalWorkstreams from "./jones/workstreams/personal/service.ts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
 import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
@@ -228,7 +229,6 @@ const makeConfigDiscoveryRpc = Effect.fn(function* (discoveries: {
         yield* ServerBrowser.ServerBrowser,
         () => Effect.void,
         { secretReferences: true },
-        () => Effect.succeed({}),
       ).pipe(Layer.provide(services)),
     ),
   );
@@ -887,6 +887,8 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  // Personal behavior uses real SQLite in its Jones-owned tests; fail if these config tests invoke it.
+  Layer.mock(PersonalWorkstreams.PersonalWorkstreams)({}),
   Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
   Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(ShellMaterialization.ShellMaterialization)({}),
@@ -1590,7 +1592,6 @@ it.effect.each([true, false, undefined] as const)(
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
             { secretReferences: true },
-            () => Effect.succeed({}),
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );
@@ -2389,7 +2390,6 @@ it.effect(
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
             { secretReferences: true },
-            () => Effect.succeed({}),
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );

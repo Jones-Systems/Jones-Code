@@ -211,6 +211,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 150, name: "AuthSessionClientMetadata" },
           { id: 151, name: "WorkspaceRuntimeUses" },
           { id: 152, name: "PeerLinksAdoption" },
+          { id: 153, name: "PersonalWorkstreams" },
           { id: 154, name: "StartRefusals" },
           { id: 155, name: "PeerWakeObligations" },
         ]);

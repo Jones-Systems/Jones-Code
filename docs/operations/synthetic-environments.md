@@ -16,7 +16,7 @@ can link configuration from another checkout; it is not part of this recipe.
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | One server, multiple clients            | Both clients observe the same server-owned mutation without a second write.                                                                                                                       |
 | Independent servers shown in one client | Read the owning server; assert the unrelated server is unchanged. Disconnects retain cached data under the [connection runtime](../internals/connection-runtime.md), without claiming it is live. |
-| Owner registry membership               | Read the registry's membership/reference separately from the thread's owning environment. Follow [workstream ownership](../user/workstreams.md).                                                  |
+| Workstream assignment                   | Read the assignment from the thread’s owning environment. Definitions synchronize through a client with write access to both copies; see [Workstreams](../user/workstreams.md).                   |
 
 Independent SQLite databases do not replicate merely because their rows appear
 in one UI. Pin state and workstream membership need their own assertions.

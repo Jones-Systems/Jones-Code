@@ -194,69 +194,6 @@
       "targets": []
     },
     {
-      "from": "apps/server/src/jones/workstreams/testing/sourceRenewalWorker.mjs",
-      "sourceSha256": "c636d1ac0ce9aeb69292aaaa6c26fa2a6d91f7a58a4bceb8fa43850d2fb9a0dc",
-      "expression": "NodeURL.pathToFileURL(require.resolve(name)).href",
-      "reason": "Artifact-local frozen external dependencies resolved with createRequire from the artifact server manifest. Source-local dependency/runtime qualification is pending; this disposition asserts only static loader ownership. Refreshed instance77 hashes; real artifact/consumer qualification remains HELD. Worker is copied to apps/server/.source-renewal-worker.mjs only in FUTURE opted-in preparation; import.meta.resolve resolves import-only contracts from that overlay.",
-      "anchors": [
-        {
-          "path": "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.ts",
-          "sha256": "293c1e58ab37277bb70991d8097b59f173dcb3c40606acfc09b0a9d22954e07c"
-        },
-        {
-          "path": "apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts",
-          "sha256": "55d66755d6c921f93c8920a6e83624ac75a83aeeb4735a1231122d8474105d2c"
-        }
-      ],
-      "targets": []
-    },
-    {
-      "from": "apps/server/src/jones/workstreams/testing/sourceRenewalWorker.mjs",
-      "sourceSha256": "c636d1ac0ce9aeb69292aaaa6c26fa2a6d91f7a58a4bceb8fa43850d2fb9a0dc",
-      "expression": "NodeURL.pathToFileURL(NodePath.join(root, name)).href",
-      "reason": "Finite test-only imports from verified OLD/NEW private fixture roots. These targets name source ownership, not execution of current checkout production bytes. Historical artifact input identities are separately recorded; qualification is blocked before consumer identity. Refreshed instance77 hashes; real artifact/consumer qualification remains HELD. Worker is copied to apps/server/.source-renewal-worker.mjs only in FUTURE opted-in preparation; import.meta.resolve resolves import-only contracts from that overlay.",
-      "anchors": [
-        {
-          "path": "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.ts",
-          "sha256": "293c1e58ab37277bb70991d8097b59f173dcb3c40606acfc09b0a9d22954e07c"
-        },
-        {
-          "path": "apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts",
-          "sha256": "55d66755d6c921f93c8920a6e83624ac75a83aeeb4735a1231122d8474105d2c"
-        }
-      ],
-      "targets": [
-        "apps/server/src/jones/workstreams/nativeProvider/service.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/testFixtures.ts",
-        "apps/server/src/jones/workstreams/enrollment/service.ts",
-        "apps/server/src/jones/workstreams/enrollment/credentialFile.ts",
-        "apps/server/src/persistence/AuthSessions.ts",
-        "apps/server/src/auth/SessionStore.ts",
-        "apps/server/src/auth/ServerSecretStore.ts",
-        "apps/server/src/persistence/Migrations.ts",
-        "apps/server/src/jones/persistence/Migrations/006_JonesWorkstreamsProviderEnrollments.ts",
-        "apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts",
-        "packages/shared/src/nodeSqliteClient.ts"
-      ]
-    },
-    {
-      "from": "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.test.ts",
-      "sourceSha256": "a5dada61410f5f16a768dc11df1e0ea84f6c5dbb8bdf734864225eb59d54f423",
-      "expression": "new URL(\"./sourceRenewalWorker.mjs\", import.meta.url).href",
-      "reason": "Finite mock-only import of worker cleanup factory. The direct-entry guard leaves artifact bootstrap and production imports inert during collection; child/process and artifact I/O boundaries are forbidden by mocks. Static unsupported-case accounting only, no artifact qualification.",
-      "anchors": [
-        {
-          "path": "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.ts",
-          "sha256": "293c1e58ab37277bb70991d8097b59f173dcb3c40606acfc09b0a9d22954e07c"
-        },
-        {
-          "path": "apps/server/src/jones/workstreams/testing/sourceRenewalWorker.mjs",
-          "sha256": "c636d1ac0ce9aeb69292aaaa6c26fa2a6d91f7a58a4bceb8fa43850d2fb9a0dc"
-        }
-      ],
-      "targets": ["apps/server/src/jones/workstreams/testing/sourceRenewalWorker.mjs"]
-    },
-    {
       "from": "scripts/lib/server-compile-cache.ts",
       "sourceSha256": "841e581e009b5fc1e938aee211735fe60a1d652b48fa504243d630c828244c3c",
       "expression": "NodeURL.pathToFileURL(NodePath.join(dist, cli)).href",
@@ -305,7 +242,7 @@
         },
         {
           "path": "apps/server/src/server.ts",
-          "sha256": "8ee212a57d99ef7e3904656e4eca2b59a02886c4f85a9770b5c5c70b85d6913d"
+          "sha256": "bdfcfa41a591907f0f0f30e28277e5e6be765869462c7a9380651b8182c4d6d5"
         },
         {
           "path": "scripts/prepare-server-compile-cache.cjs",

@@ -42,10 +42,6 @@ export async function runCliCommand() {
     enableCliCompileCache();
     const { runPreparationWorkerCommand } = await import("./jones/updates/preparation/worker.ts");
     await runPreparationWorkerCommand(process.argv.slice(3));
-  } else if (command === "__jones-native-authority-transition") {
-    const { runNativeAuthorityTransition } =
-      await import("./jones/workstreams/nativeAuthorityTransition.ts");
-    await runNativeAuthorityTransition();
   } else if (command === "__speech-worker") {
     const mode = process.argv[3];
     if (mode !== "discover" && mode !== "model") throw new Error("Unknown speech worker mode.");

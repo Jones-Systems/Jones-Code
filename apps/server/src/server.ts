@@ -1,7 +1,3 @@
-import * as WorkstreamPeerPins from "./jones/workstreams/native/runtime/peerSessionPins.ts";
-import * as WorkstreamPeerSetup from "./jones/workstreams/native/runtime/peerSetup.ts";
-import * as WorkstreamHomeBind from "./jones/workstreams/native/runtime/homeBind.ts";
-import * as WorkstreamPeerMcpAuthentication from "./jones/workstreams/native/runtime/peerMcpAuthentication.ts";
 import * as Scheduler from "./scheduling/Scheduler.ts";
 import * as WorkMode from "./jones/workMode/WorkMode.ts";
 import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
@@ -18,7 +14,6 @@ import * as FleetUpdates from "./jones/fleetUpdates/service.ts";
 import { fleetUpdatesHttpApiLayer } from "./jones/fleetUpdates/http.ts";
 import { importedHistoryHttpApiLayer } from "./jones/importedHistory/http.ts";
 import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
-import * as DesktopNativeOwner from "./jones/workstreams/DesktopNativeOwner.ts";
 import * as JonesHttp from "./jones/http/registration.ts";
 import * as JonesUpdates from "./jones/updates/service.ts";
 import { jonesUpdatesHttpApiLayer } from "./jones/updates/http.ts";
@@ -70,16 +65,8 @@ import {
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
-import {
-  workstreamSelectedServicesLayer,
-  workstreamStartupLayer,
-  workstreamHttpApiLayer,
-  workstreamNativeAuthorityLayerLive,
-  workstreamResponseHeadersLayer,
-} from "./workstreams/http.ts";
-import * as WorkstreamRecordedAdmission from "./jones/workstreams/native/runtime/admission.ts";
-import * as WorkstreamCurrentAuthority from "./jones/workstreams/native/runtime/currentAuthority.ts";
-import * as NativeWorkstreams from "./jones/workstreams/runtimeIntegration/native.ts";
+import * as PersonalWorkstreams from "./jones/workstreams/personal/service.ts";
+import * as PersonalHttp from "./jones/workstreams/personal/http.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
@@ -138,8 +125,6 @@ import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
-import * as NativeSourceStartup from "./jones/workstreams/native/runtime/startup.ts";
-import * as NativeSourceIntegration from "./jones/workstreams/native/integration.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -314,7 +299,6 @@ const layerNativeTelemetry = NativeTelemetryClient.layer.pipe(
   Layer.provide(ResourceMonitorBinary.layer),
 );
 const layerDesktopTelemetryReceiver = DesktopTelemetryReceiver.layer.pipe(
-  Layer.provide(DesktopNativeOwner.layer),
   Layer.provideMerge(layerServerSettings),
 );
 
@@ -637,28 +621,7 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
   }),
 );
 
-const layerNativeSourceLookup = Layer.unwrap(
-  Effect.map(NativeSourceStartup.Startup, (selection) =>
-    selection.mode === "native-home"
-      ? NativeSourceIntegration.nativeSourceEnrollmentLayer
-      : Layer.empty,
-  ),
-).pipe(
-  // Selection is memoized across the graph: the first consumer must qualify members too.
-  Layer.provideMerge(workstreamStartupLayer),
-  Layer.provideMerge(NativeSourceIntegration.nativePersistenceLayer),
-  Layer.provide(WorkstreamCurrentAuthority.layer),
-  Layer.provide(workstreamNativeAuthorityLayerLive),
-  Layer.provide(
-    PeerLinks.layer.pipe(
-      Layer.provide(layerServerEnvironment),
-      Layer.provide(ServerSecretStore.layer),
-    ),
-  ),
-);
-
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
-  Layer.provide(layerNativeSourceLookup),
   Layer.provide(layerScheduledTaskWebhookOrigin),
   Layer.provide(ProviderUsageAnalytics.layer),
   Layer.provide(layerCheckpointStore),
@@ -848,7 +811,6 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   Layer.provideMerge(layerRepositoryIdentityResolver),
   Layer.provideMerge(CodexManagedTokenBroker.layer),
   Layer.provideMerge(layerServerEnvironment),
-  Layer.provideMerge(workstreamNativeAuthorityLayerLive),
   Layer.provideMerge(layerAuth),
   Layer.provideMerge(Layer.mergeAll(AssetSigner.layer, EnvironmentKeys.layer)),
   Layer.provideMerge(ServerSecretStore.layer),
@@ -863,9 +825,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerRuntimeDependencies = NativeWorkstreams.nativeWorkstreamsRuntimeLayer.pipe(
-  Layer.provideMerge(layerNativeSourceLookup),
-  Layer.provide(workstreamNativeAuthorityLayerLive),
+const layerRuntimeDependencies = PersonalWorkstreams.layer.pipe(
   Layer.provideMerge(layerRuntimeCoreDependencies),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(JonesHttp.tokenAccountingLayer),
@@ -892,21 +852,6 @@ const layerCommandReadiness = HttpRouter.middleware(
   { global: true },
 );
 
-// Share the native authentication object registry with selected Workstreams reads.
-const layerWorkstreamPeerAuthentication = WorkstreamPeerMcpAuthentication.layer.pipe(
-  Layer.provideMerge(WorkstreamPeerPins.nativeLayer),
-);
-
-// Setup readiness is independent of ordinary home/member selection. This captures existing
-// selected SQL/auth/key resources, and qualification occurs only for an explicit setup call.
-const layerWorkstreamPeerSetup = Layer.effect(
-  WorkstreamHomeBind.HomeBind,
-  Effect.map(WorkstreamPeerSetup.PeerSetup, (setup) => setup.homeBind),
-).pipe(
-  Layer.provideMerge(WorkstreamPeerSetup.runtimeLayer),
-  Layer.provideMerge(NativeSourceIntegration.nativePersistenceLayer),
-);
-
 const layerMakeRoutes = Layer.mergeAll(
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
@@ -920,8 +865,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(queueCompatibilityHttpApiLayer),
       JonesHttp.provideConversationAndVoiceReview,
-      Layer.provide(workstreamHttpApiLayer),
-      Layer.provide(NativeWorkstreams.nativeWorkstreamsHttpApiLayer),
+      Layer.provide(PersonalHttp.layer),
       Layer.provide(JonesHttp.hostStatusHttpApiLayer),
       Layer.provide(JonesHttp.previewCompanionHttpApiLayer),
       Layer.provide(OrchestrationHttp.layer),
@@ -963,7 +907,6 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(ThreadResultMcpDependencies.layer),
     Layer.provide(ShellMaterialization.layer),
     Layer.provide(LinkedThreads.layer),
-    Layer.provide(workstreamResponseHeadersLayer),
     Layer.provide(
       PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
     ),
@@ -980,15 +923,8 @@ const layerMakeRoutes = Layer.mergeAll(
       ),
     ),
     Layer.provide(PreviewBrowser.layer),
-    Layer.provide(workstreamSelectedServicesLayer),
-    Layer.provide(layerWorkstreamPeerSetup),
-    Layer.provide(layerWorkstreamPeerAuthentication),
   )
   .pipe(
-    Layer.provideMerge(WorkstreamRecordedAdmission.recordedThreadLookupLayer),
-    Layer.provideMerge(WorkstreamCurrentAuthority.layer),
-    // Same layer identity as the gateway's, so the config descriptor reads the same authority.
-    Layer.provide(workstreamNativeAuthorityLayerLive),
     Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),
     // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
     Layer.provide(

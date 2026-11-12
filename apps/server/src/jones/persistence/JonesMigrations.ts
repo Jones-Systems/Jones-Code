@@ -80,6 +80,7 @@ import JonesMigration0149 from "./Migrations/149_JonesOrdinaryCheckoutProcessCus
 import JonesMigration0150 from "./Migrations/150_JonesAuthSessionClientMetadata.ts";
 import JonesMigration0151 from "./Migrations/151_JonesWorkspaceRuntimeUses.ts";
 import JonesMigration0152 from "./Migrations/152_JonesPeerLinksAdoption.ts";
+import JonesMigration0153 from "./Migrations/153_JonesPersonalWorkstreams.ts";
 import JonesMigration0154 from "./Migrations/154_JonesStartRefusals.ts";
 import JonesMigration0155 from "./Migrations/155_JonesPeerWakeObligations.ts";
 
@@ -137,6 +138,7 @@ export const jonesMigrationEntries = [
   [150, "AuthSessionClientMetadata", JonesMigration0150],
   [151, "WorkspaceRuntimeUses", JonesMigration0151],
   [152, "PeerLinksAdoption", JonesMigration0152],
+  [153, "PersonalWorkstreams", JonesMigration0153],
   [154, "StartRefusals", JonesMigration0154],
   [155, "PeerWakeObligations", JonesMigration0155],
 ] as const;
