@@ -80,6 +80,12 @@ it("refuses already-running downloads from host proof or conservative full commi
       sourceSha: "b".repeat(40),
       sourceTree: installed.tree,
       artifactId: 1,
+      workflow: "synthetic",
+      runId: 1,
+      runAttempt: 1,
+      artifactDigest: "d".repeat(64),
+      platform: "linux",
+      architecture: "x64",
       version: "new",
     },
   };

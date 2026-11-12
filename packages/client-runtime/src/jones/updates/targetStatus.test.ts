@@ -125,9 +125,9 @@ it.each(["available", "downloading", "staged"] as const)(
 );
 
 it("removes both install paths only for already-running staged builds", () => {
+  const { operation: _operation, ...idle } = state;
   const staged: JonesUpdateState = {
-    ...state,
-    operation: undefined,
+    ...idle,
     phase: "staged",
     currentVersion: "old",
     stagedHandle: "stage",
@@ -141,11 +141,17 @@ it("removes both install paths only for already-running staged builds", () => {
       sourceSha: source,
       sourceTree: "c".repeat(40),
       artifactId: 1,
+      workflow: "synthetic",
+      runId: 1,
+      runAttempt: 1,
+      artifactDigest: "d".repeat(64),
+      platform: "linux",
+      architecture: "x64",
       version: "new",
     },
   };
   for (const targetSource of [undefined, source]) {
-    const options = { canOperate: true, targetSource };
+    const options = { canOperate: true, ...(targetSource === undefined ? {} : { targetSource }) };
     expect(jonesTargetStatus({ state: staged, freshness: "fresh" }, options).actions.install).toBe(
       true,
     );
@@ -175,7 +181,7 @@ it("dates failed checks by their own receipt, clears stale generic failure after
     const observed = {
       ...state,
       checkedAt: "2099-01-01T00:00:00Z",
-      checkClassification,
+      ...(checkClassification === undefined ? {} : { checkClassification }),
       lastCheck: failed,
     };
     expect(jonesCheckOutcome(observed)).toMatchObject({
@@ -204,7 +210,11 @@ it("dates failed checks by their own receipt, clears stale generic failure after
     "incomplete-discovery",
   ] as const) {
     for (const lastCheck of [undefined, { outcome: "succeeded" as const, at: failed.at }]) {
-      const observed = { ...state, lastCheck, checkClassification: { ...failure, kind } };
+      const observed = {
+        ...state,
+        ...(lastCheck === undefined ? {} : { lastCheck }),
+        checkClassification: { ...failure, kind },
+      };
       expect(jonesCheckOutcome(observed)).toMatchObject({ kind, checkedAt: failure.checkedAt });
       expect(jonesCheckOutcome(observed)?.text).toContain("Jan 10, 2026, 10:00 AM EST");
     }
@@ -219,7 +229,7 @@ it("dates failed checks by their own receipt, clears stale generic failure after
       jonesCheckOutcome({
         ...state,
         checkedAt: failed.at,
-        lastCheck,
+        ...(lastCheck === undefined ? {} : { lastCheck }),
         checkClassification: { ...failure, checkedAt: "invalid" },
       })?.text,
     ).toBe("The update check failed. Check the connection or authentication.");

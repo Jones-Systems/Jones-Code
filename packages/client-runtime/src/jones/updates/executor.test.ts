@@ -356,7 +356,17 @@ describe("shared Jones action execution", () => {
         now: () => now,
       });
       if (prepared.kind !== "ready") throw new Error("Expected valid review");
-      f.setState({ ...f.state(), stagedAlreadyRunning: true });
+      const reviewed = f.host.readLatest();
+      f.host.readLatest
+        .mockClear()
+        .mockReturnValueOnce(reviewed)
+        .mockReturnValue({
+          ...reviewed,
+          observation: {
+            ...reviewed.observation,
+            state: { ...reviewed.observation.state!, stagedAlreadyRunning: true },
+          },
+        });
       const result = await executeJonesAction({
         environmentId: env,
         targetSource: source,
@@ -365,6 +375,7 @@ describe("shared Jones action execution", () => {
         host: f.host,
       });
       expect(result.kind).toBe("refused");
+      expect(f.host.readLatest).toHaveBeenCalledTimes(2);
       expect(f.host.start).not.toHaveBeenCalled();
       expect(f.host.legacy).not.toHaveBeenCalled();
     },
