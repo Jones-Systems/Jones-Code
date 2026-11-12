@@ -4,6 +4,18 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "accepted-terminal-recovery",
+      "tests": [
+        "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts",
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+        "packages/provider-core/src/server/jones/providerControlOutcome.test.ts"
+      ],
+      "scope": "Retain only the exact origin/route-revalidated logical turn.terminal before ingestion, with its ingestion effect and fallback completion time. Jones AcceptedTerminalRecovery owns transient classification, two read-admission retries, one original-finalization recovery owner, exponential 1s-30s delay and 10-minute warnings. Each actual pooled read inside ProviderEventIngestor is retried separately: subagent normalization/publication can write before its later model read, so ingestNormalized is never retried as a mid-run bundle. Successful terminal normalization is retained before publication so an empty fresh cleanup read cannot hide an uncertain original commit. Accepted terminal publication retains the original event batches and current-attempt atomic guards, tags each batch with a stable command identity, and reconciles an uncertain write through exact command/event readback before replay. Writer-owned turn-item ordinals and retained provider-thread identity are canonicalized explicitly for readback; no native identity/status/time/evidence is substituted. A successful finalization ownership read is retained with the original publication; its atomic writer guard still fences Stop/successors, and the false ownership branch retains interrupt-result pairing. Non-transient failures use terminal_finalization_failed while retaining accepted native settlement, snapshot and evidence, and write a separate local-error item so the native failure item is not overwritten. No provider operation, checkpoint policy, historical terminal/restart guard, schema, failure class, client or adapter change. The existing RunExecutionService.test.ts adverse assertion now expects waiting after a transient terminal-write failure; its harness adds only driver/readback seams, two function exports for type-only harness reuse, and Jones test registration. This accepted shared-test exception preserves the real consumer harness and its existing preterminal/unknown-control assertions. Jones tests import the existing EventSink, stores, ingestor, memory SQLite, thread-command and Git ports; testkit imports the upstream harness types only. New cases are authored, not locally executed; required Check must run them plus strict boundary, focused lint and shared/server typechecks."
+    },
+    {
       "id": "reader-admission-failures",
       "tests": [
         "packages/shared/src/jones/sqliteReaders/admissionFailure.test.ts",

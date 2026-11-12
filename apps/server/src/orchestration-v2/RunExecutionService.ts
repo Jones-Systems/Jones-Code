@@ -1,3 +1,8 @@
+import {
+  finalizationFailureItems,
+  makeTerminalPublisher,
+  recoverAcceptedTerminal,
+} from "../jones/orchestration/AcceptedTerminalRecovery.ts";
 import { appFailureCodeFromCause } from "../jones/orchestration/appFailureReason.ts";
 import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import { findEffectClaimLost, guardClaim } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
@@ -56,10 +61,7 @@ import {
   findProviderControlOutcomeUnknown,
 } from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import type { ProjectionStoreV2Error } from "./ProjectionStore.ts";
-import {
-  makeProviderFailure,
-  makeProviderFailureTurnItem,
-} from "@t3tools/provider-core/server/failure";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
@@ -679,6 +681,7 @@ export const layer: Layer.Layer<
     const scope = yield* Effect.scope;
     const checkpointService = yield* CheckpointService.CheckpointServiceV2;
     const eventSink = yield* EventSink.EventSinkV2;
+    const publishTerminal = yield* makeTerminalPublisher;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -701,6 +704,9 @@ export const layer: Layer.Layer<
         // Root turn snapshot written with the run when T3 ends the run itself.
         readonly abandonedProviderTurn?: OrchestrationV2ProviderTurn;
         readonly terminal: ProviderTerminalEvent;
+        readonly publicationTerminal?: ProviderTerminalEvent;
+        readonly acceptedNativeTerminal?: ProviderTerminalEvent;
+        readonly acceptedNativeCompletedAt?: DateTime.Utc;
         readonly completedAt?: DateTime.Utc;
         readonly persistProviderTurn?: boolean;
         readonly failureItemPersisted: boolean;
@@ -712,14 +718,19 @@ export const layer: Layer.Layer<
       }) {
         const completedAt =
           input.terminal.providerTurn?.completedAt ?? input.completedAt ?? (yield* DateTime.now);
+        const nativeTerminal = input.acceptedNativeTerminal ?? input.terminal;
+        const runtimeEvidence = nativeTerminal.runtimeEvidence;
         const providerSettlement =
-          input.terminal.evidenceKind === "local_failure"
+          nativeTerminal.evidenceKind === "local_failure"
             ? null
             : {
                 runAttemptId: input.attempt.id,
-                providerTurnId: input.terminal.providerTurnId,
-                status: input.terminal.status,
-                completedAt,
+                providerTurnId: nativeTerminal.providerTurnId,
+                status: nativeTerminal.status,
+                completedAt:
+                  nativeTerminal.providerTurn?.completedAt ??
+                  input.acceptedNativeCompletedAt ??
+                  completedAt,
               };
         const finalizedAttempt: OrchestrationV2RunAttempt | null = {
           ...input.attempt,
@@ -741,10 +752,8 @@ export const layer: Layer.Layer<
                 input.loadRunInterruptReason === undefined
                   ? undefined
                   : yield* input.loadRunInterruptReason();
-              yield* eventSink.writeWithEffects({
-                ...(input.terminal.runtimeEvidence === undefined
-                  ? {}
-                  : { runtimeEvidence: input.terminal.runtimeEvidence }),
+              const interruptResult = {
+                ...(runtimeEvidence === undefined ? {} : { runtimeEvidence }),
                 effects: [],
                 events: [
                   {
@@ -765,7 +774,14 @@ export const layer: Layer.Layer<
                     }),
                   },
                 ],
-              });
+              } satisfies Parameters<typeof eventSink.writeWithEffects>[0];
+              if (input.publicationTerminal === undefined)
+                yield* eventSink.writeWithEffects(interruptResult);
+              else
+                yield* publishTerminal(input.publicationTerminal, "interrupt-result", {
+                  type: "unconditional",
+                  input: interruptResult,
+                });
               yield* input.refreshAfterTurn;
             }
           }
@@ -823,9 +839,7 @@ export const layer: Layer.Layer<
         );
         // Stopped runs capture rollback points for the next message; enqueue before later starts on this effect lane.
         const finalization = {
-          ...(input.terminal.runtimeEvidence === undefined
-            ? {}
-            : { runtimeEvidence: input.terminal.runtimeEvidence }),
+          ...(runtimeEvidence === undefined ? {} : { runtimeEvidence }),
           effects:
             input.terminal.status === "completed" ||
             input.terminal.status === "interrupted" ||
@@ -911,30 +925,36 @@ export const layer: Layer.Layer<
                   },
                 ]
               : []),
-            ...(input.terminal.status === "failed" && !input.failureItemPersisted
-              ? [
-                  {
+            ...(yield* Effect.forEach(
+              finalizationFailureItems({
+                terminal: input.terminal,
+                ...(input.acceptedNativeTerminal === undefined
+                  ? {}
+                  : { acceptedNativeTerminal: input.acceptedNativeTerminal }),
+                ...(input.acceptedNativeCompletedAt === undefined
+                  ? {}
+                  : { acceptedNativeCompletedAt: input.acceptedNativeCompletedAt }),
+                failureItemPersisted: input.failureItemPersisted,
+                threadId: input.run.threadId,
+                runId: input.run.id,
+                nodeId: input.rootNode.id,
+                attemptId: input.attempt.id,
+                completedAt,
+              }),
+              (payload) =>
+                Effect.gen(function* () {
+                  return {
                     id: yield* allocateEventId(),
                     type: "turn-item.updated" as const,
                     threadId: input.run.threadId,
                     runId: input.run.id,
                     nodeId: input.rootNode.id,
                     providerInstanceId: input.run.providerInstanceId,
-                    occurredAt: completedAt,
-                    payload: makeProviderFailureTurnItem({
-                      driver: input.terminal.driver,
-                      threadId: input.run.threadId,
-                      runId: input.run.id,
-                      nodeId: input.rootNode.id,
-                      providerThreadId: input.terminal.providerThreadId,
-                      providerTurnId: input.terminal.providerTurnId,
-                      itemOrdinal: input.terminal.failureItemOrdinal,
-                      failure: input.terminal.failure,
-                      occurredAt: completedAt,
-                    }),
-                  },
-                ]
-              : []),
+                    occurredAt: payload.completedAt ?? completedAt,
+                    payload,
+                  };
+                }),
+            )),
             {
               id: runEventId,
               type: "run.updated",
@@ -965,25 +985,29 @@ export const layer: Layer.Layer<
             },
           ],
         } satisfies Parameters<typeof eventSink.writeWithEffects>[0];
-        const result = yield* eventSink.writeIfRunCurrent({
-          ...(input.terminal.runtimeEvidence === undefined
-            ? {}
-            : { runtimeEvidence: input.terminal.runtimeEvidence }),
+        const finalWrite = {
+          ...(runtimeEvidence === undefined ? {} : { runtimeEvidence }),
           threadId: input.run.threadId,
           runId: input.run.id,
           activeAttemptId: input.writeIfRunCurrent?.activeAttemptId ?? input.attempt.id,
           expectedStatus: input.writeIfRunCurrent?.expectedStatus ?? "running",
           events: finalization.events,
           effects: finalization.effects,
-        });
+        } satisfies Parameters<typeof eventSink.writeIfRunCurrent>[0];
+        const result = yield* input.publicationTerminal === undefined
+          ? eventSink.writeIfRunCurrent(finalWrite)
+          : publishTerminal(input.publicationTerminal, "finalization", {
+              type: "current",
+              input: finalWrite,
+            });
         if (!result.committed) {
           // Jones: a terminal whose provider thread lost its producer evidence still settles
           // its own current run. The same run check makes a second settlement impossible, and
           // the turn is written here because its own guarded update was rejected the same way.
-          if (input.terminal.runtimeEvidence === undefined) return;
-          const settled = yield* eventSink.writeIfRunCurrent({
-            runtimeEvidence: input.terminal.runtimeEvidence,
-            settleRunOnLostRuntimeEvidence: true,
+          if (runtimeEvidence === undefined) return;
+          const lostEvidenceWrite = {
+            runtimeEvidence,
+            settleRunOnLostRuntimeEvidence: true as const,
             threadId: input.run.threadId,
             runId: input.run.id,
             activeAttemptId: input.writeIfRunCurrent?.activeAttemptId ?? input.attempt.id,
@@ -1008,7 +1032,13 @@ export const layer: Layer.Layer<
                     ...finalization.events,
                   ],
             effects: finalization.effects,
-          });
+          } satisfies Parameters<typeof eventSink.writeIfRunCurrent>[0];
+          const settled = yield* input.publicationTerminal === undefined
+            ? eventSink.writeIfRunCurrent(lostEvidenceWrite)
+            : publishTerminal(input.publicationTerminal, "lost-evidence", {
+                type: "current",
+                input: lostEvidenceWrite,
+              });
           if (!settled.committed) return;
         }
         yield* input.refreshAfterTurn;
@@ -1135,6 +1165,13 @@ export const layer: Layer.Layer<
           return;
         }
         const terminalEvent = yield* Ref.make<ProviderTerminalEvent | null>(null);
+        const acceptedRootTerminal = yield* Ref.make<{
+          readonly event: ProviderTerminalEvent;
+          readonly completedAt: DateTime.Utc;
+          readonly ingest: ReturnType<
+            ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"]
+          >;
+        } | null>(null);
         const latestTurnItemOrdinal = yield* Ref.make(input.providerTurnOrdinal * 100);
         const latestProviderThread = yield* Ref.make(input.providerThread);
         const latestRootProviderTurn = yield* Ref.make<OrchestrationV2ProviderTurn | null>(null);
@@ -1188,6 +1225,19 @@ export const layer: Layer.Layer<
           ReadonlySet<OrchestrationV2TurnItem["id"]>
         >(new Set(inheritedBackgroundTurnItemsById.keys()));
         const openRunOwnedSubagents = yield* Ref.make(emptyOpenRunOwnedSubagentProjection());
+        let finalizationOwnership: boolean | undefined;
+        const shouldFinalizeRun = input.shouldFinalizeRun;
+        // Retain a successful ownership read with the original publication. The
+        // atomic writer still fences Stop and successors after that read.
+        const readFinalizationOwnership =
+          shouldFinalizeRun === undefined
+            ? undefined
+            : () =>
+                Effect.gen(function* () {
+                  if (finalizationOwnership !== undefined) return finalizationOwnership;
+                  finalizationOwnership = yield* shouldFinalizeRun();
+                  return finalizationOwnership;
+                });
         const finalizeRootRun = Effect.fn("RunExecutionService.finalizeRootRun")(function* (
           terminal: ProviderTerminalEvent,
           persistProviderTurn = true,
@@ -1197,16 +1247,17 @@ export const layer: Layer.Layer<
           }
           const providerThread = yield* Ref.get(latestProviderThread);
           const openSubagents = yield* Ref.get(openRunOwnedSubagents);
+          const accepted = yield* Ref.get(acceptedRootTerminal);
           yield* writeFinalRunEvents({
             run: input.run,
             rootNode: input.rootNode,
             checkpointScope: input.checkpointScope,
             providerThread,
             attempt: input.attempt,
-            ...(input.shouldFinalizeRun === undefined
+            ...(readFinalizationOwnership === undefined
               ? {}
               : {
-                  shouldFinalizeRun: input.shouldFinalizeRun,
+                  shouldFinalizeRun: readFinalizationOwnership,
                   // Stop may commit between the ownership read and this
                   // terminal write. Gate the events and checkpoint together.
                   writeIfRunCurrent: {
@@ -1224,6 +1275,8 @@ export const layer: Layer.Layer<
               : { loadRunInterruptReason: input.loadRunInterruptReason }),
             openRunOwnedSubagents: openSubagents,
             terminal,
+            publicationTerminal: accepted?.event ?? terminal,
+            ...(accepted === null ? {} : { completedAt: accepted.completedAt }),
             persistProviderTurn,
             writeIfRunCurrent: { activeAttemptId: input.attempt.id, expectedStatus: "running" },
             failureItemPersisted: terminal.status === "failed",
@@ -1235,6 +1288,22 @@ export const layer: Layer.Layer<
             yield* Ref.set(openRunOwnedSubagents, emptyOpenRunOwnedSubagentProjection());
           }
           yield* Ref.set(rootRunFinalized, true);
+        });
+        // Both run inside the consumer span, including its accepted-terminal recovery.
+        const rootTerminalSnapshot = Effect.fnUntraced(function* (event: ProviderTerminalEvent) {
+          const observed = yield* Ref.get(latestRootProviderTurn);
+          return observed !== null &&
+            observed.status === event.status &&
+            observed.id === event.providerTurnId &&
+            observed.completedAt !== null
+            ? { ...event, providerTurn: observed }
+            : event;
+        });
+        const completeRootTerminal = Effect.fnUntraced(function* (event: ProviderTerminalEvent) {
+          const terminal = yield* rootTerminalSnapshot(event);
+          yield* Ref.set(terminalEvent, terminal);
+          yield* Ref.set(rootTerminalSeen, true);
+          yield* finalizeRootRun(terminal, terminal === event);
         });
         // Runs for every provider event, including streamed text updates; avoid a per-event span.
         const trackChildLifecycle = Effect.fnUntraced(function* (
@@ -1546,7 +1615,7 @@ export const layer: Layer.Layer<
                   input.session,
                 ).pipe(Effect.result);
                 if (currentOrigin._tag === "Failure") return;
-                const storedEvents = yield* providerEventIngestor.ingestNormalized({
+                const ingest = providerEventIngestor.ingestNormalized({
                   analyticsContext: {
                     modelSelection: input.modelSelection,
                     runtimeMode: input.runtimePolicy.runtimeMode,
@@ -1582,6 +1651,14 @@ export const layer: Layer.Layer<
                         }
                     : {}),
                 });
+                if (deliveredEvent.type === "turn.terminal") {
+                  yield* Ref.set(acceptedRootTerminal, {
+                    event: deliveredEvent,
+                    completedAt: yield* DateTime.now,
+                    ingest,
+                  });
+                }
+                const storedEvents = yield* ingest;
                 storedEventCount = storedEvents.length;
                 if (
                   event.type === "turn.terminal" ||
@@ -1631,19 +1708,7 @@ export const layer: Layer.Layer<
                 );
               }
               if (event.type === "turn.terminal") {
-                const observedTurn = yield* Ref.get(latestRootProviderTurn);
-                const hasObservedTerminal =
-                  observedTurn !== null &&
-                  observedTurn.status === event.status &&
-                  observedTurn.id === event.providerTurnId &&
-                  observedTurn.completedAt !== null;
-                const snapshot =
-                  hasObservedTerminal && observedTurn !== null ? observedTurn : event.providerTurn;
-                const terminal =
-                  snapshot === undefined ? event : { ...event, providerTurn: snapshot };
-                yield* Ref.set(terminalEvent, terminal);
-                yield* Ref.set(rootTerminalSeen, true);
-                yield* finalizeRootRun(terminal, !hasObservedTerminal);
+                yield* completeRootTerminal(event);
               }
               yield* trackChildLifecycle(event, deliveredEvent !== null);
             }),
@@ -1681,6 +1746,30 @@ export const layer: Layer.Layer<
             (cause) => !Cause.hasInterruptsOnly(cause),
             (cause) =>
               Effect.gen(function* () {
+                if (yield* Ref.get(rootRunFinalized)) return;
+                const accepted = yield* Ref.get(acceptedRootTerminal);
+                const acceptedTerminal =
+                  accepted === null ? null : yield* rootTerminalSnapshot(accepted.event);
+                let failureCause = cause;
+                if (accepted !== null) {
+                  const recovered = yield* recoverAcceptedTerminal(
+                    Effect.gen(function* () {
+                      const stored = yield* accepted.ingest;
+                      confirmProviderControlTerminalIngested(accepted.event, stored.length);
+                      yield* completeRootTerminal(accepted.event);
+                    }).pipe(
+                      Effect.mapError(
+                        (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
+                      ),
+                    ),
+                    { runId: input.run.id, attemptId: input.attempt.id },
+                    cause,
+                  ).pipe(Effect.forkIn(scope), Effect.flatMap(Fiber.join), Effect.exit);
+                  if (Exit.isSuccess(recovered)) return;
+                  if (Cause.hasInterruptsOnly(recovered.cause))
+                    return yield* Effect.failCause(recovered.cause);
+                  failureCause = recovered.cause;
+                }
                 const completedAt = yield* DateTime.now;
                 yield* Effect.logWarning("orchestration V2 provider event ingestion failed", {
                   runId: input.run.id,
@@ -1692,7 +1781,9 @@ export const layer: Layer.Layer<
                 const rootProviderTurn = yield* Ref.get(latestRootProviderTurn);
                 // Stop background work too; the failed consumer cannot persist terminal events.
                 const abandonedProviderTurn =
-                  routing.rootProviderTurnId !== null && !routing.rootTurnEnded
+                  acceptedTerminal === null &&
+                  routing.rootProviderTurnId !== null &&
+                  !routing.rootTurnEnded
                     ? yield* input.session
                         .interruptTurn({
                           providerThread,
@@ -1740,12 +1831,27 @@ export const layer: Layer.Layer<
                     expectedStatus: "running",
                   },
                   openRunOwnedSubagents: openSubagents,
-                  ...(abandonedProviderTurn === null ? {} : { abandonedProviderTurn }),
+                  ...(acceptedTerminal === null
+                    ? abandonedProviderTurn === null
+                      ? {}
+                      : { abandonedProviderTurn }
+                    : {
+                        acceptedNativeTerminal: acceptedTerminal,
+                        ...(accepted === null
+                          ? {}
+                          : { acceptedNativeCompletedAt: accepted.completedAt }),
+                        ...(acceptedTerminal.providerTurn === undefined
+                          ? {}
+                          : { abandonedProviderTurn: acceptedTerminal.providerTurn }),
+                      }),
                   completedAt,
                   terminal: makeFailedTerminalEvent(
                     makeProviderFailure({
-                      cause: Cause.squash(cause),
-                      code: appFailureCodeFromCause(cause),
+                      cause: Cause.squash(failureCause),
+                      code:
+                        acceptedTerminal === null
+                          ? appFailureCodeFromCause(failureCause)
+                          : "terminal_finalization_failed",
                       class: "unknown",
                     }),
                     latestItemOrdinal + 1,

@@ -1,3 +1,5 @@
+import { registerAcceptedTerminalRecoveryTests } from "../jones/orchestration/AcceptedTerminalRecovery.testkit.ts";
+import * as SqlError from "effect/sql/SqlError";
 import { EventId } from "@t3tools/contracts";
 import {
   ProviderControlOutcomeUnknown,
@@ -4148,13 +4150,18 @@ it.effect("does not interrupt an ended provider when its terminal write fails", 
       beforeTerminalWrite: () =>
         Effect.gen(function* () {
           if ((yield* Ref.updateAndGet(writes, (count) => count + 1)) === 1) {
-            return yield* new EventSink.EventSinkWriteError({ eventCount: 1 });
+            return yield* new EventSink.EventSinkWriteError({
+              eventCount: 1,
+              cause: new SqlError.SqlError({
+                reason: new SqlError.LockTimeoutError({ cause: null }),
+              }),
+            });
           }
           return true;
         }),
     });
     assert.equal(yield* Ref.get(interrupts), 0);
-    assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
+    assert.deepEqual(observed, ["run:waiting", "pull-requests-refreshed"]);
   }),
 );
 
@@ -4333,8 +4340,11 @@ it.effect("keeps completed runs completed when pull request refresh fails", () =
   }),
 );
 
-function captureRootRunTermination(input: {
+registerAcceptedTerminalRecoveryTests(captureRootRunTermination, rootTerminalEvent);
+
+export function captureRootRunTermination(input: {
   readonly key: string;
+  readonly driver?: ProviderDriverKind;
   readonly providerTurnId?: ProviderTurnId | null;
   readonly shouldFinalizeRun: () => Effect.Effect<boolean, ProjectionStore.ProjectionStoreV2Error>;
   readonly rejectTerminalWrite?: boolean;
@@ -4406,6 +4416,7 @@ function captureRootRunTermination(input: {
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
           executionEventSinkLayer({
+            readByCommandId: () => Stream.empty,
             write: (payload) =>
               Effect.gen(function* () {
                 for (const event of payload.events) {
@@ -4517,7 +4528,7 @@ function captureRootRunTermination(input: {
         } as OrchestrationV2CheckpointScope,
         providerThread: {
           id: ids.providerThreadId,
-          driver,
+          driver: input.driver ?? driver,
         } as OrchestrationV2ProviderThread,
         attempt: {
           id: ids.attemptId,
@@ -4871,7 +4882,7 @@ function makeRunOwnedSubagentChildNodeFixture(input: {
   };
 }
 
-function rootTerminalEvent(
+export function rootTerminalEvent(
   ids: BackgroundScenarioIds,
   status: "completed" | "interrupted" | "cancelled" | "failed",
 ): Extract<ProviderAdapter.ProviderAdapterV2Event, { readonly type: "turn.terminal" }> {
