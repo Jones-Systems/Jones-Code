@@ -31,6 +31,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { SqliteReaderAdmissionError } from "@t3tools/shared/jones/sqliteReaders/admissionFailure";
@@ -95,8 +96,13 @@ export const historyScenario = ({
   consumer = false,
   missingEvidence = false,
   logicalOnly = false,
+  logicalAfterSnapshot = false,
   uncertainPublication = false,
   readback = "found",
+  accountSwitch = false,
+  reusedAccount = false,
+  replacementChange = "generation",
+  logicalCompanion = false,
 }: {
   readonly mode: (typeof modes)[number];
   readonly lockFailures?: number;
@@ -104,8 +110,20 @@ export const historyScenario = ({
   readonly consumer?: boolean;
   readonly missingEvidence?: boolean;
   readonly logicalOnly?: boolean;
+  readonly logicalAfterSnapshot?: boolean;
   readonly uncertainPublication?: boolean;
   readonly readback?: "found" | "missing" | "unavailable" | "mismatched";
+  readonly accountSwitch?: boolean;
+  readonly reusedAccount?: boolean;
+  readonly replacementChange?:
+    | "session"
+    | "instance"
+    | "conversation"
+    | "generation"
+    | "revision"
+    | "old-session"
+    | "old-instance";
+  readonly logicalCompanion?: boolean;
 }) => {
   const ordinaryRace = mode.startsWith("ordinary-") || normalizationFailure;
   const admissionFailure = new ProjectionStore.ProjectionStoreReadError({
@@ -114,6 +132,11 @@ export const historyScenario = ({
   });
   let pendingReadFailures = normalizationFailure ? 3 : 0;
   const receiptOrder: string[] = [];
+  const lossWarnings: string[] = [];
+  const logger = Logger.make<unknown, void>(({ message }) => {
+    const text = JSON.stringify(message);
+    if (text.includes("Provider terminal history was not persisted")) lossWarnings.push(text);
+  });
   const consumerClosed = Deferred.makeUnsafe<void>();
   let starts = 0;
   let interrupts = 0;
@@ -255,6 +278,20 @@ export const historyScenario = ({
       })),
       Layer.updateService(EventSink.EventSinkV2, (sink) => ({
         ...sink,
+        writeIfRunCurrent: (input) =>
+          (logicalOnly && !normalizationFailure
+            ? Deferred.succeed(ordinaryObserved, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseOrdinary)),
+              )
+            : Effect.void
+          ).pipe(Effect.andThen(sink.writeIfRunCurrent(input))),
+        writeIfProviderThreadOwner: (input) =>
+          (logicalOnly && !normalizationFailure
+            ? Deferred.succeed(ordinaryObserved, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseOrdinary)),
+              )
+            : Effect.void
+          ).pipe(Effect.andThen(sink.writeIfProviderThreadOwner(input))),
         write: (input) =>
           sink.write(input).pipe(
             Effect.flatMap((stored) => {
@@ -594,6 +631,19 @@ export const historyScenario = ({
     );
     const rebound = {
       ...providerThread,
+      ...(accountSwitch
+        ? {
+            id: ProviderThreadId.make("provider-thread:replacement-account"),
+            providerInstanceId: ProviderInstanceId.make("codex_replacement_account"),
+            runtimeIdentity: reusedAccount
+              ? {
+                  ...providerThread.runtimeIdentity!,
+                  runtimeGeneration: "target-account-generation",
+                  evidenceRevision: 7,
+                }
+              : undefined,
+          }
+        : {}),
       providerSessionId: ProviderSessionId.make("session:replacement"),
       status: "not_loaded" as const,
       updatedAt: terminalAt,
@@ -601,11 +651,21 @@ export const historyScenario = ({
     const replacementRootNodeId = NodeId.make("node:replacement");
     const successorAttempt = {
       ...successor,
+      ...(accountSwitch
+        ? { providerThreadId: rebound.id, providerInstanceId: rebound.providerInstanceId }
+        : {}),
       rootNodeId: replacementRootNodeId,
       attemptOrdinal: mode === "unrelated-successor" ? 3 : 2,
     };
     const nextRun = {
       ...run,
+      ...(accountSwitch
+        ? {
+            providerThreadId: rebound.id,
+            providerInstanceId: rebound.providerInstanceId,
+            modelSelection: { ...modelSelection, instanceId: rebound.providerInstanceId },
+          }
+        : {}),
       status: "starting" as const,
       activeAttemptId: replacementAttemptId,
       rootNodeId: replacementRootNodeId,
@@ -630,6 +690,7 @@ export const historyScenario = ({
           event("successor-node", "node.updated", {
             ...rootNode,
             id: replacementRootNodeId,
+            ...(accountSwitch ? { providerThreadId: rebound.id } : {}),
             rootNodeId: replacementRootNodeId,
             status: "pending",
             providerTurnId: null,
@@ -700,11 +761,31 @@ export const historyScenario = ({
       yield* sink.write({
         events: [
           event("changed-replacement", "provider-thread.updated", {
-            ...rebound,
-            runtimeIdentity: {
-              ...providerThread.runtimeIdentity!,
-              runtimeGeneration: "replacement-generation",
-            },
+            ...(replacementChange.startsWith("old-") ? providerThread : rebound),
+            ...(replacementChange === "session" || replacementChange === "old-session"
+              ? { providerSessionId: ProviderSessionId.make("session:changed") }
+              : replacementChange === "instance" || replacementChange === "old-instance"
+                ? { providerInstanceId: ProviderInstanceId.make("codex_changed") }
+                : replacementChange === "conversation"
+                  ? {
+                      nativeThreadRef: {
+                        ...rebound.nativeThreadRef!,
+                        nativeId: "changed-native-thread",
+                      },
+                    }
+                  : replacementChange === "revision"
+                    ? {
+                        runtimeIdentity: {
+                          ...rebound.runtimeIdentity!,
+                          evidenceRevision: (rebound.runtimeIdentity?.evidenceRevision ?? 0) + 1,
+                        },
+                      }
+                    : {
+                        runtimeIdentity: {
+                          ...providerThread.runtimeIdentity!,
+                          runtimeGeneration: "replacement-generation",
+                        },
+                      }),
           }),
         ],
       });
@@ -766,7 +847,12 @@ export const historyScenario = ({
           eventOriginMode: "captured",
           events: Stream.empty,
           subscribeEvents: Effect.succeed({
-            events: Stream.fromIterable([terminalEvent, logicalTerminalForIngestion]),
+            events: (ordinaryRace
+              ? Stream.empty
+              : Stream.fromEffect(Deferred.await(releaseOrdinary)).pipe(Stream.drain)
+            ).pipe(
+              Stream.concat(Stream.fromIterable([terminalEvent, logicalTerminalForIngestion])),
+            ),
             close: Deferred.succeed(consumerClosed, undefined).pipe(Effect.asVoid),
           }),
           startTurn: () =>
@@ -809,7 +895,7 @@ export const historyScenario = ({
     }
     const ordinaryIngestion =
       ordinaryRace && !consumer ? yield* ingest.pipe(Effect.forkScoped) : undefined;
-    if (ordinaryIngestion !== undefined || consumer) {
+    if (ordinaryIngestion !== undefined || (consumer && ordinaryRace)) {
       yield* Deferred.await(ordinaryObserved);
       receiptOrder.push("pending-read");
       yield* pendingRestart!;
@@ -880,6 +966,15 @@ export const historyScenario = ({
               })
             : ingest
     ).pipe(Effect.exit);
+    if (logicalCompanion)
+      yield* ingestor.ingestNormalized({
+        providerSessionId,
+        providerInstanceId,
+        threadId: ids.threadId,
+        runId: ids.runId,
+        nodeId: ids.rootNodeId,
+        event: logicalTerminalForIngestion,
+      });
     const exhausted = lockFailures === 3;
     if (uncertainPublication && readback !== "found") {
       assert.isTrue(Exit.isFailure(result));
@@ -913,6 +1008,20 @@ export const historyScenario = ({
       assert.isTrue(Exit.isSuccess(result));
     }
     const stored = Exit.isSuccess(result) ? result.value : [];
+    if (logicalAfterSnapshot) {
+      assert.isTrue(Exit.isSuccess(result));
+      assert.deepEqual(
+        yield* ingestor.ingestNormalized({
+          providerSessionId,
+          providerInstanceId,
+          threadId: ids.threadId,
+          runId: ids.runId,
+          nodeId: ids.rootNodeId,
+          event: logicalTerminalForIngestion,
+        }),
+        [],
+      );
+    }
     if (lockFailures > 0) {
       assert.equal(remainingLockFailures, 0);
       assert.equal(historicalTransactions, 3);
@@ -948,18 +1057,28 @@ export const historyScenario = ({
       "advanced-successor": "successor",
       "changed-replacement": "replacement",
     };
-    const expectedReason = expectedReasons[mode];
+    const expectedReason = missingEvidence || logicalOnly ? "ineligible" : expectedReasons[mode];
+    const traceKey = {
+      threadId: ids.threadId,
+      runId: ids.runId,
+      providerThreadId: ids.providerThreadId,
+      providerTurnId: ids.rootProviderTurnId,
+      interruptedAttemptId: ids.attemptId,
+    };
+    if ((consumer && !normalizationFailure) || logicalAfterSnapshot) {
+      assert.isUndefined(sink.supersededTerminalTrace!.read(traceKey));
+      assert.deepEqual(lossWarnings, []);
+    }
+    if (consumer && normalizationFailure) {
+      // The snapshot bypasses normalization after restart; the following logical
+      // terminal exhausts the injected reads before consumer recovery retries it.
+      assert.equal(pendingReadFailures, 0);
+      assert.equal(sink.supersededTerminalTrace!.read(traceKey), "ineligible");
+      assert.equal(lossWarnings.length, 1);
+    }
     if (expectedReason !== undefined && !exhausted)
-      assert.equal(
-        sink.supersededTerminalTrace!.read({
-          threadId: ids.threadId,
-          runId: ids.runId,
-          providerThreadId: ids.providerThreadId,
-          providerTurnId: ids.rootProviderTurnId,
-          interruptedAttemptId: ids.attemptId,
-        }),
-        expectedReason,
-      );
+      assert.equal(sink.supersededTerminalTrace!.read(traceKey), expectedReason);
+    if (missingEvidence || logicalOnly) assert.isAbove(lossWarnings.length, 0);
     assert.equal(after.providerTurns[0]?.status, admitted ? "interrupted" : "running");
     if (!consumer && !uncertainPublication) assert.equal(stored.length, admitted ? 1 : 0);
     assert.equal((yield* sink.latestSequence()) - sequence, admitted ? 1 : 0);
@@ -1022,5 +1141,8 @@ export const historyScenario = ({
       assert.equal((yield* sink.latestSequence()) - sequence, 1);
       assert.equal(publishedAfter().length, 1);
     }
-  }).pipe(Effect.provide(testLayer), Effect.scoped);
+  }).pipe(
+    Effect.provide(Layer.mergeAll(testLayer, Logger.layer([logger], { mergeWithExisting: false }))),
+    Effect.scoped,
+  );
 };

@@ -201,7 +201,7 @@
       "anchors": [
         {
           "path": "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.ts",
-          "sha256": "8cce9f6b813b12ad3f34c1c9e6d487fcec82d63cca932d78ce24cf7307b92f6b"
+          "sha256": "293c1e58ab37277bb70991d8097b59f173dcb3c40606acfc09b0a9d22954e07c"
         },
         {
           "path": "apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts",
@@ -218,7 +218,7 @@
       "anchors": [
         {
           "path": "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.ts",
-          "sha256": "8cce9f6b813b12ad3f34c1c9e6d487fcec82d63cca932d78ce24cf7307b92f6b"
+          "sha256": "293c1e58ab37277bb70991d8097b59f173dcb3c40606acfc09b0a9d22954e07c"
         },
         {
           "path": "apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts",
@@ -241,13 +241,13 @@
     },
     {
       "from": "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.test.ts",
-      "sourceSha256": "2ff79d70d841ab31f689ab591cfc186b1a6c89762e9016fa7047bfe9b2824906",
+      "sourceSha256": "a5dada61410f5f16a768dc11df1e0ea84f6c5dbb8bdf734864225eb59d54f423",
       "expression": "new URL(\"./sourceRenewalWorker.mjs\", import.meta.url).href",
       "reason": "Finite mock-only import of worker cleanup factory. The direct-entry guard leaves artifact bootstrap and production imports inert during collection; child/process and artifact I/O boundaries are forbidden by mocks. Static unsupported-case accounting only, no artifact qualification.",
       "anchors": [
         {
           "path": "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.ts",
-          "sha256": "8cce9f6b813b12ad3f34c1c9e6d487fcec82d63cca932d78ce24cf7307b92f6b"
+          "sha256": "293c1e58ab37277bb70991d8097b59f173dcb3c40606acfc09b0a9d22954e07c"
         },
         {
           "path": "apps/server/src/jones/workstreams/testing/sourceRenewalWorker.mjs",
