@@ -189,7 +189,16 @@ it.effect(
 
       assert.deepStrictEqual(yield* runMigrations(), []);
 
-      assert.deepStrictEqual(yield* jonesLedger, [...ledgerBefore, [153, "PersonalWorkstreams"]]);
+      const expectedLedger = [
+        ...ledgerBefore,
+        [153, "PersonalWorkstreams"],
+        ...JonesMigrations.jonesMigrationEntries
+          .filter(([id]) => id > 153)
+          .map(([id, name]) => [id, name]),
+      ];
+      assert.deepStrictEqual(yield* jonesLedger, expectedLedger);
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* jonesLedger, expectedLedger);
       assert.deepStrictEqual(yield* jonesLinks, legacy);
       // No cleanup or repair: residue is neither read, rewritten nor removed.
       assert.deepStrictEqual(yield* upstreamLinks, upstreamBefore);

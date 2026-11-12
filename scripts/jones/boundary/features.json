@@ -321,6 +321,7 @@
         "apps/server/src/jones/goals/preserveGoalConversation.test.ts",
         "apps/server/src/jones/goals/CodexGoalControl.test.ts",
         "apps/server/src/jones/goals/GoalControl.test.ts",
+        "apps/server/src/jones/goals/GoalControl.integration.test.ts",
         "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
         "packages/contracts/src/jones/threadGoal.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
@@ -3282,6 +3283,11 @@
       "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered."
     },
     {
+      "id": "active-workspace-handoff",
+      "tests": ["apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts"],
+      "scope": "A workspace metadata change records the existing run.interrupt before detaching a live session owned by a running run. Handoff interruption requires a live session at planning and control; its existing session-release permit remains held through confirmed native control and durable settlement. A genuine stream failure that removes the session before planning or control retains failure settlement and the provider_failure queue hold. Explicit Stop and subagent control retain their existing behavior. These shared-file hooks use existing private orchestrator, effect-worker and session lifecycle machinery rather than duplicate it. The Jones-owned fake-provider integration exercises actual handoff, session removal, ingestion and continuation, including failure before planning, before control and after lease acquisition. A separate per-runtime outcome permit orders observed stream-failure ownership before release waits against handoff settlement admission after control; settlement rechecks captured runtime identity and the current run-attempt binding. Deterministic fixtures establish this transition only, not historical cause or live native qualification."
+    },
+    {
       "id": "preparation-history-reconciliation",
       "tests": [
         "apps/server/src/jones/updates/preparation/cleanupDemand.test.ts",
@@ -3328,6 +3334,20 @@
         "packages/provider-core/src/server/notification.test.ts"
       ],
       "scope": "ETS-P v5: immutable notification wake/attempt/epoch binding, atomic post-certification peer hold, query-level retention, single-use accepted Codex witness/probe release, lifecycle fences and counted held duty. Shared EventSink and B certification edits only connect the Jones consumer. No wire enum, provider-start or linked-origin ownership changes."
+    },
+    {
+      "id": "server-swap-cli",
+      "tests": [
+        "apps/server-swap-cli/core.test.cjs",
+        "apps/server-swap-cli/native.test.cjs",
+        "apps/server-swap-cli/transport.test.cjs",
+        "apps/server-swap-cli/prepare.test.cjs",
+        "apps/server-swap-cli/fleet.test.cjs",
+        "apps/server-swap-cli/cli.test.cjs",
+        "apps/server-swap-cli/host-process.test.cjs",
+        "apps/server-swap-cli/build.test.cjs"
+      ],
+      "scope": "Standalone maintainer CLI for digest-bound server-swap preparation and finalization, journaled intent and recovery, native configuration/runtime identity validation, and ordered SSH fleet control. The original 79 synthetic tests and focused canonical HostProcess/compiled-bridge parity tests cover rollback fences, reverse states, resume/reconciliation, current runtime readback, and CLI/transport seams. This feature does not change application runtime/updater/shared modules, expose MCP or scheduled-task entry points, or establish live host, client, provider-session, or exact-version data compatibility qualification. Operator guidance is docs/operations/server-swap-cli.md."
     }
   ]
 }

@@ -491,6 +491,7 @@
         "apps/server/src/jones/goals/preserveGoalConversation.test.ts",
         "apps/server/src/jones/goals/CodexGoalControl.test.ts",
         "apps/server/src/jones/goals/GoalControl.test.ts",
+        "apps/server/src/jones/goals/GoalControl.integration.test.ts",
         "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
         "packages/contracts/src/jones/threadGoal.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
@@ -516,7 +517,7 @@
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/goals/preserveGoalConversation.test.ts apps/server/src/jones/goals/CodexGoalControl.test.ts apps/server/src/jones/goals/GoalControl.test.ts apps/server/src/jones/goals/GoalStartDispatch.test.ts packages/contracts/src/jones/threadGoal.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts packages/shared/src/t3McpToolPresentation.test.ts apps/server/src/jones/goals/stopTarget.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/orchestration-v2/pullRequestWatch.test.ts apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/goals/preserveGoalConversation.test.ts apps/server/src/jones/goals/CodexGoalControl.test.ts apps/server/src/jones/goals/GoalControl.test.ts apps/server/src/jones/goals/GoalControl.integration.test.ts apps/server/src/jones/goals/GoalStartDispatch.test.ts packages/contracts/src/jones/threadGoal.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts packages/shared/src/t3McpToolPresentation.test.ts apps/server/src/jones/goals/stopTarget.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/orchestration-v2/pullRequestWatch.test.ts apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts --filter @t3tools/provider-core --filter @t3tools/shared --filter t3 --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
@@ -5226,6 +5227,18 @@
       ]
     },
     {
+      "id": "jones-active-workspace-handoff",
+      "tests": ["apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts"],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/orchestration-v2/EffectWorker.ts apps/server/src/orchestration-v2/ProviderSessionManager.ts --threads=1",
+        "vp fmt --check --threads=1 apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/orchestration-v2/EffectWorker.ts apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
       "id": "jones-preparation-history-reconciliation",
       "tests": [
         "apps/server/src/jones/updates/preparation/cleanupDemand.test.ts",
@@ -5284,6 +5297,24 @@
       "commands": [
         "vp test run apps/server/src/jones/threadResultDependencies/WakeObligations.test.ts apps/server/src/jones/threadResultDependencies/WakeObligations.integration.test.ts apps/server/src/jones/threadResultDependencies/DependencyStore.test.ts apps/server/src/jones/threadResultDependencies/DependencyReactor.test.ts apps/server/src/jones/threadResultDependencies/Orchestrator.integration.test.ts apps/server/src/jones/threadResultDependencies/Settlement.test.ts apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/orchestration-v2/ContextHandoffService.test.ts packages/provider-core/src/server/notification.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
+      "id": "jones-server-swap-cli",
+      "tests": [
+        "apps/server-swap-cli/core.test.cjs",
+        "apps/server-swap-cli/native.test.cjs",
+        "apps/server-swap-cli/transport.test.cjs",
+        "apps/server-swap-cli/prepare.test.cjs",
+        "apps/server-swap-cli/fleet.test.cjs",
+        "apps/server-swap-cli/cli.test.cjs",
+        "apps/server-swap-cli/host-process.test.cjs",
+        "apps/server-swap-cli/build.test.cjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 apps/server-swap-cli/core.test.cjs apps/server-swap-cli/native.test.cjs apps/server-swap-cli/transport.test.cjs apps/server-swap-cli/prepare.test.cjs apps/server-swap-cli/fleet.test.cjs apps/server-swap-cli/cli.test.cjs apps/server-swap-cli/host-process.test.cjs apps/server-swap-cli/build.test.cjs",
         "node scripts/jones/check-boundary.ts --strict",
         "git diff --check"
       ]
