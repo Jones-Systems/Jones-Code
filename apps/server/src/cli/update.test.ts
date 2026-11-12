@@ -1,6 +1,6 @@
 import { assertReleaseUpdateAllowed } from "./update.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
-import { cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
+import { cliArchiveFileName, cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
 import * as Fiber from "effect/Fiber";
 import { isJonesBootServiceCgroup } from "./update.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -499,6 +499,22 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
       const runtime = pinnedRuntimePaths(path, baseDir, version, "linux");
       yield* fs.makeDirectory(runtime.versionDir, { recursive: true });
       yield* fs.writeFileString(runtime.entryPath, "");
+      // Jones reuses an installed runtime only with verified local provenance for its bytes.
+      yield* fs.writeFileString(
+        path.join(runtime.versionDir, ".jones-provenance.json"),
+        JSON.stringify({
+          schema: 1,
+          repository: "Jones-Systems/Jones-Code",
+          source: "a".repeat(40),
+          version,
+          platform: "linux",
+          architecture: "x64",
+          artifact: cliArchiveFileName(version, "linux-x64"),
+          sha256: "b".repeat(64),
+          // SHA-256 of the empty fixture executable.
+          entrySha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        }),
+      );
       yield* fs.writeFileString(runtime.sentinelPath, `${version}\n`);
       const unitPath = path.join(baseDir, "t3code.service");
       const logPath = path.join(baseDir, "boot-service.log");
@@ -558,6 +574,7 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
     }).pipe(
       Effect.scoped,
       Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provideService(HostProcess.Architecture, "x64"),
       Effect.provideService(HostProcess.Environment, { PATH: "" }),
     ),
   );
