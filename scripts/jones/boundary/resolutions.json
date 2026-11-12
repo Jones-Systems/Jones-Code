@@ -60,7 +60,7 @@
     },
     {
       "from": "apps/server/src/jones/platformCompatibility/testkit/RpcInitialMemory.fixture.mjs",
-      "sourceSha256": "31059aef05a3c0a9dabed6c3c11823f62988479004fe0b400e437e7a75415a87",
+      "sourceSha256": "71e61ba30792cb27a2e53cedd2546ce0d23279ea9c6977e55be81c403cb5ec89",
       "expression": "NodeURL.pathToFileURL(require.resolve(\"effect/\" + name))",
       "reason": "Jones-restored subprocess fixture resolves Effect modules from its caller-supplied synthetic workspace; external dependency loader is unsupported.",
       "anchors": [
@@ -73,7 +73,7 @@
     },
     {
       "from": "apps/server/src/jones/platformCompatibility/testkit/RpcInitialMemory.fixture.mjs",
-      "sourceSha256": "31059aef05a3c0a9dabed6c3c11823f62988479004fe0b400e437e7a75415a87",
+      "sourceSha256": "71e61ba30792cb27a2e53cedd2546ce0d23279ea9c6977e55be81c403cb5ec89",
       "expression": "NodeURL.pathToFileURL(root + \"/apps/server/src/\" + file + \".ts\")",
       "reason": "Jones-restored subprocess fixture loads a finite local module list from a caller-supplied root. Source-byte binding fixes that list; each listed target still receives boundary checking.",
       "anchors": [],

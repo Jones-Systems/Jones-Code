@@ -132,7 +132,7 @@ it.effect("routes peer reads to readers and sees uncommitted link updates", () =
       const links = Context.get(context, PeerLinks.PeerLinks);
       const sql = Context.get(context, SqlClient.SqlClient);
       yield* sql`
-      INSERT INTO peer_environment_links (
+      INSERT INTO jones_peer_environment_links (
         environment_id, secret_name, label, urls_json, access, linked_at, expires_at, fenced
       ) VALUES (
         ${box.environmentId}, 'test-secret', 'Box', '[]', 'auto',
@@ -143,13 +143,13 @@ it.effect("routes peer reads to readers and sees uncommitted link updates", () =
       yield* links.list.pipe(trace);
       expect(Option.getOrThrow(yield* links.get(box.environmentId).pipe(trace)).label).toBe("Box");
       const reads = queries.filter(({ query }) =>
-        query.includes("SELECT * FROM peer_environment_links"),
+        query.includes('SELECT * FROM "jones_peer_environment_links"'),
       );
       expect(reads).toHaveLength(2);
       expect(reads.map((row) => row.connection)).toEqual(["reader", "reader"]);
       yield* sql.withTransaction(
         Effect.gen(function* () {
-          yield* sql`UPDATE peer_environment_links SET label = 'Uncommitted box'`;
+          yield* sql`UPDATE jones_peer_environment_links SET label = 'Uncommitted box'`;
           expect(Option.getOrThrow(yield* links.get(box.environmentId)).label).toBe(
             "Uncommitted box",
           );
@@ -271,7 +271,7 @@ it.effect("a link whose row cannot be stored keeps none of its token", () =>
       );
       const a = yield* makeA(laptop, noted);
       yield* a.sql`
-        CREATE TRIGGER refuse_link BEFORE INSERT ON peer_environment_links
+        CREATE TRIGGER refuse_link BEFORE INSERT ON jones_peer_environment_links
         BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END
       `;
       const pairing = yield* b.auth.issuePairingCredential();
@@ -510,7 +510,7 @@ it.effect("tells the agent to link again once the peer revokes the link or it ex
 
       // A link stored before links were marked: its session there is not a
       // link's, so the peer would not fence its work even though it can.
-      yield* a.sql`UPDATE peer_environment_links SET fenced = 0`;
+      yield* a.sql`UPDATE jones_peer_environment_links SET fenced = 0`;
       // Linking again is its only way back, as for an expired link.
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["expired"]);
       const legacy = yield* probe(a).pipe(Effect.flip);
@@ -687,7 +687,7 @@ it.effect("names an untrusted certificate instead of calling the peer something 
       const pairing = yield* b.auth.issuePairingCredential();
       yield* a.links.link({ url: b.url, pairingCode: pairing.credential, access: "auto" });
       yield* a.sql`
-        UPDATE peer_environment_links
+        UPDATE jones_peer_environment_links
         SET urls_json = ${JSON.stringify([untrusted, b.url])}
         WHERE environment_id = ${box.environmentId}
       `;

@@ -347,6 +347,8 @@
     "apps/server/scripts/acp-mock-agent.ts": "accepted-shared",
     "apps/server/scripts/acp-replay-agent.ts": "accepted-shared",
     "apps/server/scripts/acpReplayStatusPublication.ts": "jones-owned",
+    "apps/server/scripts/migrate-dev-db.test.ts": "jones-tests-in-upstream",
+    "apps/server/scripts/migrate-dev-db.ts": "hook",
     "apps/server/scripts/verify-background-live.ts": "accepted-shared",
     "apps/server/src/ServerSettingsPersistence.test.ts": "jones-owned",
     "apps/server/src/ServerSettingsPersistence.ts": "accepted-shared",
@@ -645,6 +647,7 @@
     "apps/server/src/jones/orchestration/threadReferenceTail.test.ts": "jones-owned",
     "apps/server/src/jones/ordinaryCheckout/CheckoutPermitAdapter.ts": "jones-owned",
     "apps/server/src/jones/peerPersistence/PeerPersistence.test.ts": "jones-owned",
+    "apps/server/src/jones/peerPersistence/table.ts": "jones-owned",
     "apps/server/src/jones/peerTransport/InFlight.ts": "jones-owned",
     "apps/server/src/jones/peerTransport/LinkedMcpProbe.testkit.ts": "jones-owned",
     "apps/server/src/jones/peerTransport/LinkedMessageOrigin.test.ts": "jones-owned",
@@ -4084,6 +4087,14 @@
     {
       "from": "apps/web/src/components/chat/MarkdownTable.tsx",
       "to": "apps/web/src/jones/markdownTables/useMarkdownTableExpansion.tsx"
+    },
+    {
+      "from": "apps/server/src/peer/PeerLinkRequests.test.ts",
+      "to": "apps/server/src/jones/peerPersistence/table.ts"
+    },
+    {
+      "from": "apps/server/scripts/migrate-dev-db.ts",
+      "to": "apps/server/src/jones/peerPersistence/table.ts"
     },
     {
       "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",

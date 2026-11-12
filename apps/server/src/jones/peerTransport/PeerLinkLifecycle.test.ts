@@ -48,7 +48,7 @@ const insert = (sql: SqlClient.SqlClient, environmentId: string, url: string) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
     yield* sql`
-      INSERT INTO peer_environment_links (
+      INSERT INTO jones_peer_environment_links (
         environment_id, secret_name, label, urls_json, access, linked_at, expires_at,
         last_reached_at, last_error, fenced
       ) VALUES (
@@ -119,17 +119,17 @@ it.effect("both old-generation outcome writes are ignored after replacement or u
       expect(yield* links.currentGeneration(environmentId)).toEqual(
         Option.some(resolved.generation),
       );
-      yield* sql`UPDATE peer_environment_links SET secret_name = 'replacement', last_error = 'current failure', last_reached_at = NULL`;
+      yield* sql`UPDATE jones_peer_environment_links SET secret_name = 'replacement', last_error = 'current failure', last_reached_at = NULL`;
       yield* links.recordOutcome(environmentId, resolved.generation, { error: null });
       yield* links.recordOutcome(environmentId, resolved.generation, { error: "obsolete failure" });
       const [row] = yield* sql<{
         last_error: string | null;
         last_reached_at: string | null;
-      }>`SELECT last_error, last_reached_at FROM peer_environment_links`;
+      }>`SELECT last_error, last_reached_at FROM jones_peer_environment_links`;
       expect(row).toEqual({ last_error: "current failure", last_reached_at: null });
       yield* links.recordOutcome(environmentId, "replacement", { error: null });
       expect(Option.getOrThrow(yield* links.get(environmentId)).lastError).toBeNull();
-      yield* sql`DELETE FROM peer_environment_links WHERE environment_id = ${environmentId}`;
+      yield* sql`DELETE FROM jones_peer_environment_links WHERE environment_id = ${environmentId}`;
       yield* links.recordOutcome(environmentId, "replacement", { error: "after unlink" });
       expect(yield* links.currentGeneration(environmentId)).toEqual(Option.none());
     }),

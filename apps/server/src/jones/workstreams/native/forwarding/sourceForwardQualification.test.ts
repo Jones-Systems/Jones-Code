@@ -34,9 +34,7 @@ import * as Links from "../../../../peer/PeerLinks.ts";
 import * as ServerSettings from "../../../../serverSettings.ts";
 import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import { runMigrations } from "../../../../persistence/Migrations.ts";
-// Peer links live in upstream's table since the Jones adoption migration.
-import peerLinksTable from "../../../../persistence/Migrations/070_PeerLinks.ts";
-import peerLinkFence from "../../../../persistence/Migrations/071_PeerLinkFence.ts";
+import peerLinksMigration from "../../../persistence/Migrations/119_JonesPeerEnvironmentLinks.ts";
 import { NativeHome } from "../mode/authorityMode.ts";
 import * as Pins from "../runtime/peerSessionPins.ts";
 import * as Supplied from "./suppliedEvidence.ts";
@@ -226,7 +224,9 @@ const harness = () => {
               return yield* Effect.die("Resolution inside writer");
             if (control.relinkAtResolve)
               yield* sql
-                .unsafe("UPDATE peer_environment_links SET secret_name='replacement-generation'")
+                .unsafe(
+                  "UPDATE jones_peer_environment_links SET secret_name='replacement-generation'",
+                )
                 .pipe(Effect.orDie);
             const generation = yield* actual.currentGeneration(environmentId);
             if (Option.isNone(generation)) return yield* Effect.die("Missing fixture generation");
@@ -270,10 +270,9 @@ const fixture = Effect.gen(function* () {
   yield* TestClock.setTime(Date.parse(now));
   yield* runMigrations({ toMigrationInclusive: 54 });
   const sql = yield* SqlClient.SqlClient;
-  yield* peerLinksTable;
-  yield* peerLinkFence;
+  yield* peerLinksMigration;
   yield* sql.unsafe(
-    "INSERT INTO peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('member:test','home-to-source-generation','synthetic-source','[\"https://source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
+    "INSERT INTO jones_peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('member:test','home-to-source-generation','synthetic-source','[\"https://source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
   );
   const native = yield* Pins.NativePeerSessions;
   const issued = yield* (yield* Auth.EnvironmentAuth).issueMcpClientSession({
@@ -551,7 +550,7 @@ it.effect("checks generation after remote response and locally inside writer", (
     const f = yield* fixture;
     h.control.beforeReply = () =>
       f.sql
-        .unsafe("UPDATE peer_environment_links SET secret_name='replacement'")
+        .unsafe("UPDATE jones_peer_environment_links SET secret_name='replacement'")
         .pipe(Effect.asVoid, Effect.orDie);
     expect((yield* f.within(f.service.prepare(input, f.pin)).pipe(Effect.result))._tag).toBe(
       "Failure",
@@ -563,7 +562,7 @@ it.effect("checks generation after remote response and locally inside writer", (
         yield* f.sql.withTransaction(
           Effect.gen(function* () {
             yield* f.sql.unsafe(
-              "UPDATE peer_environment_links SET secret_name='replacement-again'",
+              "UPDATE jones_peer_environment_links SET secret_name='replacement-again'",
             );
             expect((yield* p.checkCurrent().pipe(Effect.result))._tag).toBe("Failure");
           }),
@@ -747,10 +746,10 @@ it.effect(
         .pipe(Effect.forkChild);
       yield* Deferred.await(entered);
       yield* f.sql.withTransaction(
-        f.sql.unsafe("UPDATE peer_environment_links SET last_error='unrelated-commit'"),
+        f.sql.unsafe("UPDATE jones_peer_environment_links SET last_error='unrelated-commit'"),
       );
       const rows = yield* f.sql.unsafe<{ last_error: string }>(
-        "SELECT last_error FROM peer_environment_links",
+        "SELECT last_error FROM jones_peer_environment_links",
       );
       expect(rows[0]?.last_error).toBe("unrelated-commit");
       yield* Deferred.succeed(release, undefined);

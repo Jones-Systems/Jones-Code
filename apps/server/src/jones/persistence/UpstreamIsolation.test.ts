@@ -255,6 +255,41 @@ it.effect("Jones migrations leave upstream schema and ledger unchanged", () =>
   }).pipe(Effect.provide(memory)),
 );
 
+it.effect("Jones migrations leave every upstream row unchanged with Jones links present", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: upstreamThrough });
+    // Run the Jones track to its links table, then seed a link the later entries could copy.
+    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 119));
+    yield* sql`INSERT INTO jones_peer_environment_links ${sql.insert({
+      environment_id: "synthetic-isolation-env",
+      secret_name: "peer-link-synthetic-isolation",
+      label: "Synthetic",
+      urls_json: '["https://synthetic-isolation.invalid"]',
+      access: "auto",
+      linked_at: "2026-10-01T00:00:00.000Z",
+      expires_at: "2027-10-01T00:00:00.000Z",
+      fenced: 1,
+    })}`;
+    const upstreamTables = (yield* readObjects).filter(
+      ({ type, name }) => type === "table" && !isJonesTable(name),
+    );
+    assert.isTrue(upstreamTables.some(({ name }) => name === "peer_environment_links"));
+    // Some upstream tables have no rowid, so compare each table's rows as a sorted multiset.
+    const rows = Effect.forEach(upstreamTables, ({ name }) =>
+      sql
+        .unsafe(`SELECT * FROM "${name}"`)
+        .pipe(Effect.map((found) => found.map((row) => JSON.stringify(row)).toSorted())),
+    );
+    const before = yield* rows;
+
+    yield* runMigrations();
+
+    // Schema and ledger checks alone let a Jones migration copy rows into upstream tables.
+    assert.deepStrictEqual(yield* rows, before);
+  }).pipe(Effect.provide(memory)),
+);
+
 it.effect("upstream pruning and deletes are not blocked by Jones evidence", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -379,7 +414,6 @@ it.effect(
         [149, "OrdinaryCheckoutProcessCustody"],
         [150, "AuthSessionClientMetadata"],
         [151, "WorkspaceRuntimeUses"],
-        [152, "PeerLinksAdoption"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

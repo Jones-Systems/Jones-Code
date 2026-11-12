@@ -25,9 +25,7 @@ import * as Links from "../../../../peer/PeerLinks.ts";
 import * as ServerSettings from "../../../../serverSettings.ts";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
-// Peer links live in upstream's table since the Jones adoption migration.
-import peerLinksTable from "../../../../persistence/Migrations/070_PeerLinks.ts";
-import peerLinkFence from "../../../../persistence/Migrations/071_PeerLinkFence.ts";
+import migration from "../../../persistence/Migrations/119_JonesPeerEnvironmentLinks.ts";
 import * as Fixture from "../runtime/peerEffectRecovery.testkit.ts";
 import * as Origins from "../runtime/peerEffectOrigin.ts";
 import * as Source from "./peerEffectSource.ts";
@@ -156,7 +154,7 @@ const harness = (githubSource: string | null = "github:test") => {
             if (control.relinkAtResolve)
               yield* sql
                 .unsafe(
-                  "UPDATE peer_environment_links SET secret_name='replacement-home-to-source'",
+                  "UPDATE jones_peer_environment_links SET secret_name='replacement-home-to-source'",
                 )
                 .pipe(Effect.orDie);
             const generation = yield* actual.currentGeneration(environmentId);
@@ -241,10 +239,9 @@ const withinRecovery = <A, E, R>(
   use: (recovery: Recovery.PeerEffectRecovery["Service"]) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
-    yield* peerLinksTable;
-    yield* peerLinkFence;
+    yield* migration;
     yield* f.sql.unsafe(
-      "INSERT INTO peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('source:test','home-to-source:original','synthetic-source','[\"https://retained-source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
+      "INSERT INTO jones_peer_environment_links (environment_id,secret_name,label,urls_json,access,linked_at,expires_at,fenced) VALUES ('source:test','home-to-source:original','synthetic-source','[\"https://retained-source.invalid\"]','full-access','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z',1)",
     );
     h.control.parent = (request) => ({
       contract: Parent.WORKSTREAMS_SOURCE_READMISSION_CONTRACT_V3,

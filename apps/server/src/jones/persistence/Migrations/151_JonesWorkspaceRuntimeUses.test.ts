@@ -35,7 +35,6 @@ it.effect(
       const released = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
         [151, "WorkspaceRuntimeUses"],
-        [152, "PeerLinksAdoption"],
       ]);
       assert.deepStrictEqual(
         (yield* objects).filter(({ name }) => !name.startsWith("jones_workspace_runtime_")),
