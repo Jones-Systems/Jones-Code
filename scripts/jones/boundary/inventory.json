@@ -3143,7 +3143,11 @@
     "docs/user/t3-connect-troubleshooting.md": "policy",
     "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts": "jones-owned",
     "apps/server/src/jones/orchestration/WorkspacePreparationRead.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/workspace-preparation-reads.json": "jones-owned"
+    "scripts/jones/boundary/fragments/workspace-preparation-reads.json": "jones-owned",
+    "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/ContextHandoffBudget.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ContextHandoffDelivery.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

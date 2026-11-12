@@ -1,5 +1,10 @@
 import * as Exit from "effect/Exit";
 import { pipe } from "effect/Function";
+import {
+  HistoryNotApplied,
+  PromptNotApplied,
+  historyInjectionRejection,
+} from "../../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import { codexCommandApprovalOptions } from "../../jones/threadMonitor/codexCommandApprovalOptions.ts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DocumentText from "../../provider/DocumentText.ts";
@@ -2559,6 +2564,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           /** The root an original start's ACK registered; it owns any later local terminal. */
           acknowledgedContext?: ActiveCodexTurnContext;
           startDispatched: boolean;
+          /**
+           * Jones: turn/start reached Codex. Capacity bookkeeping may clear
+           * startDispatched after a definitive foreign reply; this never clears.
+           */
+          startSent: boolean;
           lateStartDispatch?: CodexStartDispatch | undefined;
           pendingStartCancelled?: Deferred.Deferred<void> | undefined;
           terminalEmitted: boolean;
@@ -2592,6 +2602,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ...(continuation === undefined ? {} : { continuationOf: continuation.of }),
           terminalEmitted: false,
           startDispatched: false,
+          startSent: false,
         });
         const capacityByThread = new Map<string, CapacityRequest>();
         const capacityByTurn = new Map<string, CapacityRequest>();
@@ -8594,6 +8605,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           )
             return;
           request.startDispatched = true;
+          request.startSent = true;
           const producer = currentProducer;
           // Completion can retire the old context while the start is in flight.
           // Keep its ownership across the reply, as in upstream's start path.
@@ -8983,7 +8995,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       threadId: turnInput.threadId,
                       providerThreadId: turnInput.providerThread.id,
                       runId: turnInput.runId,
-                      cause,
+                      cause:
+                        request === undefined || !request.startSent
+                          ? new PromptNotApplied({ cause })
+                          : cause,
                     }),
               ),
             );
@@ -9757,26 +9772,36 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           injectHistory: Effect.fn("CodexAdapterV2.injectHistory")(
             function* (input) {
-              if (hasUnknownNativeStart())
-                return yield* toProtocolError(
-                  "Codex has an unconfirmed native effect; history injection is not safe.",
-                );
-              yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
-                threadId: input.providerThread.appThreadId,
-                runtimeGeneration: currentProducer.generation,
-              });
-              const threadId = yield* getNativeThreadId(input.providerThread);
-              return yield* client
+              const prepared = yield* Effect.gen(function* () {
+                if (hasUnknownNativeStart())
+                  return yield* toProtocolError(
+                    "Codex has an unconfirmed native effect; history injection is not safe.",
+                  );
+                const producer = (yield* CodexProducerContext) ?? currentProducer;
+                yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                  threadId: input.providerThread.appThreadId,
+                  runtimeGeneration: producer.generation,
+                });
+                const threadId = yield* getNativeThreadId(input.providerThread);
+                const items = historyResponseItems(input.messages, input.context);
+                yield* requestAdmission("thread/inject_items", { threadId }, producer);
+                return { producer, threadId, items };
+              }).pipe(Effect.mapError((cause) => new HistoryNotApplied({ cause })));
+              return yield* prepared.producer.client
                 .request("thread/inject_items", {
-                  threadId,
-                  items: historyResponseItems(input.messages, input.context),
+                  threadId: prepared.threadId,
+                  items: prepared.items,
                 })
                 .pipe(
                   Effect.as(true),
-                  // Retry only unknown-method errors, which precede history mutation. Transport or payload errors leave delivery ambiguous.
                   Effect.catchTags({
-                    CodexAppServerRequestError: (error) =>
-                      error.code === -32601 ? Effect.succeed(false) : Effect.fail(error),
+                    CodexAppServerRequestError: (error) => {
+                      const outcome = historyInjectionRejection(error);
+                      if (outcome === "unsupported") return Effect.succeed(false);
+                      return Effect.fail(
+                        outcome === "not_applied" ? new HistoryNotApplied({ cause: error }) : error,
+                      );
+                    },
                   }),
                 );
             },
