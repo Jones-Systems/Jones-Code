@@ -1476,7 +1476,7 @@ async function qualify(v) {
     const allocated = await registryCall(outputs, [
       "allocate",
       "--producer",
-      "workspace-lifecycle-dev-proof",
+      "swl-lifecycle-dev-proof",
       "--owner",
       v.projectId,
       "--purpose",
