@@ -160,6 +160,7 @@ import * as Bindings from "../store/bindingStore.ts";
 import * as Database from "../store/sql.ts";
 import * as Envelope from "../crypto/envelope.ts";
 import * as Keys from "../crypto/keyProvider.ts";
+import * as Admin from "../cli.ts";
 import * as Owner from "../runtime/setupOwner.ts";
 import * as Setup from "../runtime/peerSetup.ts";
 import * as Files from "../runtime/peerSetupRequestFile.ts";
@@ -267,38 +268,23 @@ const fixture = Effect.gen(function* () {
         );
         NodeFS.mkdirSync(f.secretsDir, { mode: 0o700 });
         for (const [name, key] of [
-          ...Test.secrets(),
+          ...[...Test.secrets()].filter(
+            ([name]) => env === "home:test" || name !== "workstreams-content-key-test-local",
+          ),
           ["server-signing-key", new Uint8Array(32).fill(env === "home:test" ? 41 : 51)] as const,
         ])
           NodeFS.writeFileSync(NodePath.join(f.secretsDir, name + ".bin"), key, { mode: 0o600 });
       }
-      const readSecret = (name: string) =>
-        controls.beforeSecret(env, name).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              if (!/^[A-Za-z0-9._:-]+$/.test(name))
-                throw new Error("invalid synthetic secret name");
-              const path = NodePath.join(f.secretsDir, name + ".bin");
-              return NodeFS.existsSync(path)
-                ? Option.some(new Uint8Array(NodeFS.readFileSync(path)))
-                : Option.none<Uint8Array>();
-            }),
-          ),
-        );
-      const secrets = Layer.succeed(Secrets.ServerSecretStore, {
-        get: readSecret,
-        getOrCreateRandom: (name) =>
-          readSecret(name).pipe(
-            Effect.flatMap((value) =>
-              Option.isSome(value)
-                ? Effect.succeed(value.value)
-                : Effect.die("missing existing fixture key"),
-            ),
-          ),
-        set: () => Effect.die("no fixture key mutation"),
-        create: () => Effect.die("no fixture key creation"),
-        remove: () => Effect.die("no fixture key removal"),
-      });
+      const secrets = Layer.effect(
+        Secrets.ServerSecretStore,
+        Effect.gen(function* () {
+          const store = yield* Secrets.make;
+          return Secrets.ServerSecretStore.of({
+            ...store,
+            get: (name) => controls.beforeSecret(env, name).pipe(Effect.andThen(store.get(name))),
+          });
+        }),
+      );
       const storage = Layer.mergeAll(
         Registry.layer,
         PinRecords.layer,
@@ -344,9 +330,9 @@ const fixture = Effect.gen(function* () {
           yield* m129;
           const sql = yield* SqlClient.SqlClient;
           yield* sql`CREATE TABLE jones_workstreams_setup_writer_probe(value TEXT)`;
-          yield* sql`INSERT INTO jones_workstreams_keys(key_id,registry_instance_id,scope,state,created_at)
-        VALUES ('test-local',${home.registry_instance_id},'local','active',${Test.now})`;
           if (env === "home:test") {
+            yield* sql`INSERT INTO jones_workstreams_keys(key_id,registry_instance_id,scope,state,created_at)
+          VALUES ('test-local',${home.registry_instance_id},'local','active',${Test.now})`;
             yield* sql`INSERT INTO jones_workstreams_keys(key_id,registry_instance_id,scope,state,created_at)
           VALUES ('test-home',${home.registry_instance_id},'home','active',${Test.now})`;
             const registry = yield* Registry.RegistryStore;
@@ -371,6 +357,23 @@ const fixture = Effect.gen(function* () {
               permissions: JSON.stringify(["workstreams:read", "workstreams:write"]),
               state: "active",
             });
+          } else {
+            yield* Effect.gen(function* () {
+              yield* (yield* Admin.NativeMemberKeyAdmin).initialize({
+                registry: { ...home, canonical_origin: "https://native.workstreams.invalid" },
+                local_key_id: "test-local",
+              });
+            }).pipe(Effect.provide(Admin.memberKeyLayer));
+            const keys = yield* Keys.WorkstreamsKeyProvider;
+            const id = yield* keys.activeKeyId({ ...home, key_scope: "local" });
+            expect(id).toBe("test-local");
+            expect(yield* keys.get(id)).toEqual(
+              new Uint8Array(
+                NodeFS.readFileSync(
+                  NodePath.join(f.secretsDir, "workstreams-content-key-test-local.bin"),
+                ),
+              ),
+            );
           }
         }).pipe(Effect.provide(context));
       NodeFS.chmodSync(f.dbPath, 0o600);

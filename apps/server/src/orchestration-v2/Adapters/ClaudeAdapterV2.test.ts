@@ -80,6 +80,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { findProviderControlOutcomeUnknown } from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import { Tool } from "effect/ai";
+import { ChildProcessSpawner } from "effect/process";
 import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -1482,96 +1483,101 @@ describe("ClaudeAdapterV2 executable path", () => {
 });
 
 describe("ClaudeAdapterV2 resumeThread", () => {
-  it.effect("fails for a transcript without messages so a fresh session replaces it", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const configDir = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-claude-empty-session-",
-        });
-        const projectDir = path.join(configDir, "projects", "-workspace");
-        yield* fileSystem.makeDirectory(projectDir, { recursive: true });
-        yield* fileSystem.writeFileString(
-          path.join(projectDir, "native-thread-empty.jsonl"),
-          [
-            `{"type":"last-prompt","lastPrompt":"hello","sessionId":"native-thread-empty"}`,
-            `{"type":"atis-latch","atis":"","sessionId":"native-thread-empty"}`,
-            `{"type":"cost-state","sessionId":"native-thread-empty","totalCostUSD":0}`,
-            "",
-          ].join("\n"),
-        );
-        yield* fileSystem.writeFileString(
-          path.join(projectDir, "native-thread-saved.jsonl"),
-          `{"type":"user","message":{"role":"user","content":"hello"},"sessionId":"native-thread-saved"}\n`,
-        );
-        const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
-          instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
-          settings: DEFAULT_CLAUDE_SETTINGS,
-          environment: { CLAUDE_CONFIG_DIR: configDir },
-          attachmentsDir: configDir,
-          fileSystem,
-          path,
-          random: yield* SecureRandom.SecureRandom,
-          idAllocator: yield* IdAllocator.IdAllocatorV2,
-          queryRunner: {
-            allocateSessionId: Effect.succeed("native-thread-empty"),
-            open: () => Effect.die("unused"),
-            forkSession: () => Effect.die("unused"),
-            subagentLaunchToolUseId: () => Effect.succeed(null),
-            assertComplete: Effect.void,
-          },
-        });
-        const threadId = ThreadId.make("thread-claude-empty-session");
-        const runtime = yield* adapter.openSession({
-          threadId,
-          providerSessionId: ProviderSessionId.make("provider-session-claude-empty-session"),
-          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-          runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
-        });
-        const providerThread = yield* runtime.ensureThread({
-          threadId,
-          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-          runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
-        });
-
-        const error = yield* Effect.flip(runtime.resumeThread({ providerThread }));
-        assert.equal(error._tag, "ProviderAdapterResumeThreadError");
-
-        const saved = yield* runtime.resumeThread({
-          providerThread: {
-            ...providerThread,
-            nativeThreadRef: {
-              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-              nativeId: "native-thread-saved",
-              strength: "strong",
+  it.effect.each(["config", "HOME"] as const)(
+    "fails for a transcript without messages using %s so a fresh session replaces it",
+    (binding) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const configDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-empty-session-",
+          });
+          const providerHome = path.join(configDir, "native-home");
+          const nativeConfig = binding === "HOME" ? path.join(providerHome, ".claude") : configDir;
+          const projectDir = path.join(nativeConfig, "projects", "-workspace");
+          yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+          yield* fileSystem.writeFileString(
+            path.join(projectDir, "native-thread-empty.jsonl"),
+            [
+              `{"type":"last-prompt","lastPrompt":"hello","sessionId":"native-thread-empty"}`,
+              `{"type":"atis-latch","atis":"","sessionId":"native-thread-empty"}`,
+              `{"type":"cost-state","sessionId":"native-thread-empty","totalCostUSD":0}`,
+              "",
+            ].join("\n"),
+          );
+          yield* fileSystem.writeFileString(
+            path.join(projectDir, "native-thread-saved.jsonl"),
+            `{"type":"user","message":{"role":"user","content":"hello"},"sessionId":"native-thread-saved"}\n`,
+          );
+          const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+            instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+            settings: DEFAULT_CLAUDE_SETTINGS,
+            environment:
+              binding === "HOME" ? { HOME: providerHome } : { CLAUDE_CONFIG_DIR: configDir },
+            attachmentsDir: configDir,
+            fileSystem,
+            path,
+            random: yield* SecureRandom.SecureRandom,
+            idAllocator: yield* IdAllocator.IdAllocatorV2,
+            queryRunner: {
+              allocateSessionId: Effect.succeed("native-thread-empty"),
+              open: () => Effect.die("unused"),
+              forkSession: () => Effect.die("unused"),
+              subagentLaunchToolUseId: () => Effect.succeed(null),
+              assertComplete: Effect.void,
             },
-          },
-        });
-        assert.equal(saved.nativeThreadRef?.nativeId, "native-thread-saved");
+          });
+          const threadId = ThreadId.make("thread-claude-empty-session");
+          const runtime = yield* adapter.openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make("provider-session-claude-empty-session"),
+            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+            runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
+          });
+          const providerThread = yield* runtime.ensureThread({
+            threadId,
+            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+            runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
+          });
 
-        const missing = yield* runtime.resumeThread({
-          providerThread: {
-            ...providerThread,
-            nativeThreadRef: {
-              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-              nativeId: "native-thread-missing",
-              strength: "strong",
+          const error = yield* Effect.flip(runtime.resumeThread({ providerThread }));
+          assert.equal(error._tag, "ProviderAdapterResumeThreadError");
+
+          const saved = yield* runtime.resumeThread({
+            providerThread: {
+              ...providerThread,
+              nativeThreadRef: {
+                driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                nativeId: "native-thread-saved",
+                strength: "strong",
+              },
             },
-          },
-        });
-        assert.equal(missing.nativeThreadRef?.nativeId, "native-thread-missing");
-      }),
-    ).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
+          });
+          assert.equal(saved.nativeThreadRef?.nativeId, "native-thread-saved");
+
+          const missing = yield* runtime.resumeThread({
+            providerThread: {
+              ...providerThread,
+              nativeThreadRef: {
+                driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                nativeId: "native-thread-missing",
+                strength: "strong",
+              },
+            },
+          });
+          assert.equal(missing.nativeThreadRef?.nativeId, "native-thread-missing");
+        }),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
-    ),
   );
 });
 
@@ -2478,6 +2484,50 @@ describe("ClaudeAdapterV2 attachments", () => {
 });
 
 describe("ClaudeAdapterV2 native fork", () => {
+  it.effect("sends HOME-only forks to an isolated worker before touching the server SDK", () => {
+    let workerSelected = false;
+    return Effect.gen(function* () {
+      const fork = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi
+            .spyOn(ClaudeSdk, "forkSession")
+            .mockRejectedValue(new Error("Server SDK must not run")),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const calls = fork.mock.calls.length;
+      const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
+      const result = yield* Effect.exit(
+        runner.forkSession({
+          sessionId: "synthetic-home-fork",
+          options: { dir: "/workspace" },
+          environment: { HOME: "/synthetic/provider-home" },
+          threadId: ThreadId.make("synthetic-home-fork"),
+          providerSessionId: ProviderSessionId.make("synthetic-home-fork"),
+        }),
+      );
+      assert.isTrue(workerSelected);
+      assert.isTrue(Exit.isFailure(result));
+      assert.equal(fork.mock.calls.length, calls);
+    }).pipe(
+      Effect.provide(ClaudeAdapterV2.layerQueryRunner.pipe(Layer.provide(PortScanner.layerTest))),
+      Effect.provideService(
+        ProviderEventLoggers.ProviderEventLoggers,
+        ProviderEventLoggers.NoOpProviderEventLoggers,
+      ),
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => {
+          workerSelected = true;
+          return Effect.die("Synthetic worker selected");
+        }),
+      ),
+      Effect.provideService(HostProcess.Environment, { HOME: "/synthetic/server-home" }),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.scoped,
+    );
+  });
+
   it.effect("forks at the source assistant cursor and resumes the forked session", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -5017,18 +5067,19 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     );
 
     // regression: #21806 bypass policy reads the custom home and project, never ambient ~/.claude
-    it.effect(
-      "combines a normalized custom home with project policy without reading the ambient user tier",
-      () =>
+    it.effect.each(["config", "HOME"] as const)(
+      "combines %s with project policy without reading the ambient user tier",
+      (binding) =>
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const home = yield* fileSystem.makeTempDirectoryScoped({
             prefix: "t3-claude-policy-home-",
           });
-          yield* fileSystem.makeDirectory(path.join(home, "profile"));
+          const profile = binding === "HOME" ? ".claude" : "profile";
+          yield* fileSystem.makeDirectory(path.join(home, profile));
           yield* fileSystem.writeFileString(
-            path.join(home, "profile", "settings.json"),
+            path.join(home, profile, "settings.json"),
             `{
           // Claude accepts comments and trailing commas.
           "permissions": { "disableBypassPermissionsMode": "disable", },
@@ -5040,7 +5091,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             sources: [{ source: "project", settings: { disableAutoMode: "disable" } }],
           });
           const harness = yield* makeWakeHarnessWithOptions({
-            settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: " ~/profile " },
+            settings: {
+              ...DEFAULT_CLAUDE_SETTINGS,
+              homePath: binding === "HOME" ? "" : " ~/profile ",
+            },
+            environment: binding === "HOME" ? { HOME: home } : {},
           }).pipe(Effect.provideService(HostProcess.HomeDirectory, home));
           yield* harness.runtime.startTurn(
             makeClaudeTestTurnInput({
@@ -10190,15 +10245,23 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ];
   }
 
-  const makeTaskToolHarnessWithOptions = (environment: NodeJS.ProcessEnv = {}) =>
+  const makeTaskToolHarnessWithOptions = (
+    environment: NodeJS.ProcessEnv = {},
+    nativeHome = false,
+  ) =>
     Effect.gen(function* () {
-      const configDir = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
+      const root = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
         prefix: "t3-claude-tasks-",
       });
+      const configDir = nativeHome ? NodePath.join(root, ".claude") : root;
       const path = yield* Path.Path;
       const harness = yield* makeWakeHarnessWithOptions({
         environment: {
-          CLAUDE_CONFIG_DIR: path.relative(CLAUDE_TEST_RUNTIME_POLICY.cwd ?? ".", configDir),
+          ...(nativeHome
+            ? { HOME: root }
+            : {
+                CLAUDE_CONFIG_DIR: path.relative(CLAUDE_TEST_RUNTIME_POLICY.cwd ?? ".", configDir),
+              }),
           ...environment,
         },
       });
@@ -10426,25 +10489,35 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect.each([
-    {
-      tool: updateTask({ taskId: "2", status: "completed" }),
-      listId: undefined,
-      directory: WAKE_NATIVE_SESSION,
-      status: "completed",
-    },
-    {
-      tool: createTask("2", "Implement"),
-      listId: " list/ID ",
-      directory: "list-ID",
-      status: "pending",
-    },
-  ] as const)(
-    "recovers persisted tasks on the first $tool.name after restart",
-    ({ tool, listId, directory, status }) =>
+  it.effect.each(
+    [false, true].flatMap(
+      (nativeHome) =>
+        [
+          {
+            nativeHome,
+            tool: updateTask({ taskId: "2", status: "completed" }),
+            listId: undefined,
+            directory: WAKE_NATIVE_SESSION,
+            status: "completed",
+          },
+          {
+            nativeHome,
+            tool: createTask("2", "Implement"),
+            listId: " list/ID ",
+            directory: "list-ID",
+            status: "pending",
+          },
+        ] as const,
+    ),
+  )(
+    "recovers persisted tasks on the first $tool.name after restart (native HOME=$nativeHome)",
+    ({ tool, listId, directory, status, nativeHome }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const harness = yield* makeTaskToolHarnessWithOptions({ CLAUDE_CODE_TASK_LIST_ID: listId });
+        const harness = yield* makeTaskToolHarnessWithOptions(
+          { CLAUDE_CODE_TASK_LIST_ID: listId },
+          nativeHome,
+        );
         const tasksDir = `${harness.configDir}/tasks/${directory}`;
         yield* fs.makeDirectory(tasksDir, { recursive: true });
         // The native tool has already written its result before emitting the SDK frame.

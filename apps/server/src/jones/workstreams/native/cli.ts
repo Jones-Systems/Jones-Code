@@ -201,18 +201,27 @@ export const keyLayer = Layer.effect(
   }),
 );
 
+interface MemberKeyRow {
+  readonly key_id: string;
+  readonly registry_instance_id: string;
+  readonly scope: string;
+  readonly state: string;
+  readonly created_at: string;
+}
+
 export class NativeMemberKeyAdmin extends Context.Service<
   NativeMemberKeyAdmin,
   {
     readonly initialize: (
       input: MemberKeyInit,
+      options?: { readonly resume: boolean },
     ) => Effect.Effect<{ readonly created: readonly string[] }, RegistryError>;
   }
 >()("t3/jones/workstreams/native/cli/NativeMemberKeyAdmin") {}
 /**
  * A member holds no registry copy, only the active `local` key row (no FK to a registry row) and its
- * key file for the home's registry id. Any registry row or key row for that id, or an existing file,
- * refuses. The row write and the readback share one transaction; a failed run removes only its file.
+ * key file for the home's registry id. Resume explicitly adopts an orphan file or an exact active row.
+ * A failed transaction may have committed: reconcile outside it before removing an owned file.
  */
 export const memberKeyLayer = Layer.effect(
   NativeMemberKeyAdmin,
@@ -222,54 +231,108 @@ export const memberKeyLayer = Layer.effect(
       sql = yield* SqlClient.SqlClient;
     const refuse = (code: string) => (cause: unknown) => new RegistryError({ code, cause });
     return NativeMemberKeyAdmin.of({
-      initialize: Effect.fn("NativeMemberKeyAdmin.initialize")(function* (input) {
+      initialize: Effect.fn("NativeMemberKeyAdmin.initialize")(function* (input, options) {
         yield* decodeMemberKeyInit(input).pipe(Effect.mapError(refuse("invalid_request")));
         const key_id = input.local_key_id,
           registry_instance_id = input.registry.registry_instance_id,
           name = `workstreams-content-key-${key_id}`;
-        let created = false;
-        yield* sql
+        let created: Uint8Array | undefined;
+        let insertedAt: string | undefined;
+        const readRows = Effect.fn("NativeMemberKeyAdmin.readRows")(
+          () =>
+            sql<MemberKeyRow>`SELECT key_id, registry_instance_id, scope, state, created_at FROM jones_workstreams_keys
+          WHERE key_id = ${key_id} OR registry_instance_id = ${registry_instance_id}`,
+        );
+        const exactRow = (rows: ReadonlyArray<MemberKeyRow>) =>
+          rows.length === 1 &&
+          rows[0]!.key_id === key_id &&
+          rows[0]!.registry_instance_id === registry_instance_id &&
+          rows[0]!.scope === "local" &&
+          rows[0]!.state === "active";
+        const sameBytes = (a: Uint8Array, b: Uint8Array) =>
+          a.byteLength === b.byteLength && a.every((byte, index) => byte === b[index]);
+        return yield* sql
           .withTransaction(
             Effect.gen(function* () {
-              const [existing] = yield* sql<{ registries: number; keys: number }>`SELECT
-                (SELECT count(*) FROM jones_workstreams_registries WHERE registry_instance_id = ${registry_instance_id}) AS registries,
-                (SELECT count(*) FROM jones_workstreams_keys WHERE key_id = ${key_id} OR registry_instance_id = ${registry_instance_id}) AS keys`;
+              const [existing] = yield* sql<{ registries: number }>`SELECT
+                count(*) AS registries FROM jones_workstreams_registries WHERE registry_instance_id = ${registry_instance_id}`;
               if (existing!.registries !== 0)
                 return yield* new RegistryError({ code: "already_initialized" });
-              if (existing!.keys !== 0) return yield* new RegistryError({ code: "key_exists" });
-              if (
-                Option.isSome(yield* secrets.get(name).pipe(Effect.mapError(refuse("unavailable"))))
-              )
+              const rows = yield* readRows();
+              const file = yield* secrets.get(name).pipe(Effect.mapError(refuse("unavailable")));
+              if (rows.some((row) => row.key_id === key_id) && Option.isNone(file))
+                return yield* new RegistryError({ code: "key_file_missing" });
+              if (rows.length !== 0) {
+                if (!options?.resume || !exactRow(rows))
+                  return yield* new RegistryError({ code: "key_exists" });
+                if (Option.isNone(file))
+                  return yield* new RegistryError({ code: "key_file_missing" });
+                if (file.value.byteLength !== 32)
+                  return yield* new RegistryError({ code: "invalid_key" });
+                return { created: [] };
+              }
+              if (Option.isSome(file) && !options?.resume)
                 return yield* new RegistryError({ code: "key_exists" });
-              const bytes = yield* crypto.randomBytes(32);
-              yield* secrets
-                .create(name, bytes)
-                .pipe(
-                  Effect.mapError((cause) =>
-                    refuse(
-                      SecretStore.isSecretAlreadyExistsError(cause) ? "key_exists" : "unavailable",
-                    )(cause),
-                  ),
-                );
-              created = true;
+              if (Option.isSome(file) && file.value.byteLength !== 32)
+                return yield* new RegistryError({ code: "invalid_key" });
+              if (Option.isNone(file)) {
+                const bytes = yield* crypto.randomBytes(32);
+                yield* secrets
+                  .create(name, bytes)
+                  .pipe(
+                    Effect.mapError((cause) =>
+                      refuse(
+                        SecretStore.isSecretAlreadyExistsError(cause)
+                          ? "key_exists"
+                          : "unavailable",
+                      )(cause),
+                    ),
+                  );
+                created = bytes;
+              }
               const at = DateTime.formatIso(yield* DateTime.now);
+              insertedAt = at;
               yield* sql`INSERT INTO jones_workstreams_keys ${sql.insert({ key_id, registry_instance_id, scope: "local", state: "active", created_at: at })}`;
               // The no-replace trigger ignores a duplicate key id silently; read the row back.
-              const rows = yield* sql<{ key_id: string }>`SELECT key_id FROM jones_workstreams_keys
-                WHERE registry_instance_id = ${registry_instance_id} AND scope = 'local' AND state = 'active'`;
-              if (rows.length !== 1 || rows[0]!.key_id !== key_id)
+              const written = yield* readRows();
+              if (!exactRow(written) || written[0]!.created_at !== at)
                 return yield* new RegistryError({ code: "unavailable" });
+              return { created: created ? [name] : [] };
             }),
           )
           .pipe(
             Effect.mapError((cause) =>
               isRegistryError(cause) ? cause : new RegistryError({ code: "unavailable", cause }),
             ),
-            Effect.tapError(() =>
-              created ? secrets.remove(name).pipe(Effect.ignore) : Effect.void,
+            Effect.catch((error) =>
+              Effect.gen(function* () {
+                if (!created) return yield* error;
+                const readback = yield* Effect.result(readRows());
+                if (readback._tag === "Failure")
+                  return yield* new RegistryError({
+                    code: "outcome_unknown",
+                    cause: readback.failure,
+                  });
+                if (
+                  exactRow(readback.success) &&
+                  insertedAt !== undefined &&
+                  readback.success[0]!.created_at === insertedAt
+                )
+                  return { created: [name] };
+                if (readback.success.length !== 0)
+                  return yield* new RegistryError({ code: "outcome_unknown", cause: error });
+                const file = yield* secrets
+                  .get(name)
+                  .pipe(Effect.mapError(refuse("outcome_unknown")));
+                if (Option.isSome(file)) {
+                  if (!sameBytes(file.value, created))
+                    return yield* new RegistryError({ code: "outcome_unknown", cause: error });
+                  yield* secrets.remove(name).pipe(Effect.mapError(refuse("outcome_unknown")));
+                }
+                return yield* error;
+              }),
             ),
           );
-        return { created: [name] };
       }),
     });
   }),
@@ -327,6 +390,12 @@ export const registryCommand = <E, R, SE, SR, TE, TR, KE, KR, ME, MR>(
           Command.make("member-init", {
             home: Flag.String("home"),
             keyProvider: Flag.String("key-provider"),
+            resume: Flag.Boolean("resume").pipe(
+              Flag.withDefault(false),
+              Flag.withDescription(
+                "Reuse a valid orphan key or accept an exact existing member key and row.",
+              ),
+            ),
             request: Flag.String("request").pipe(
               Flag.withDescription(
                 "JSON {registry, local_key_id}: the home's registry and this member's local key id.",
@@ -342,7 +411,9 @@ export const registryCommand = <E, R, SE, SR, TE, TR, KE, KR, ME, MR>(
                   onExcessProperty: "error",
                 });
                 const result = yield* Effect.gen(function* () {
-                  return yield* (yield* NativeMemberKeyAdmin).initialize(input);
+                  return yield* (yield* NativeMemberKeyAdmin).initialize(input, {
+                    resume: flags.resume,
+                  });
                 }).pipe(
                   Effect.provide(
                     memberKeyBootstrap({ home: flags.home, keyProvider: flags.keyProvider }),

@@ -3105,7 +3105,13 @@
     "apps/server/src/jones/workspaceRetirement/ProducerSessionObservation.ts": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts": "jones-owned",
     "scripts/jones/direct-producers/resolve.ts": "jones-owned",
-    "scripts/jones/direct-producers/resolve.test.ts": "jones-owned"
+    "scripts/jones/direct-producers/resolve.test.ts": "jones-owned",
+    "apps/server/src/provider/Drivers/ClaudeHome.ts": "accepted-shared",
+    "apps/server/src/provider/Drivers/ClaudeHome.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/Drivers/ClaudeDriver.ts": "accepted-shared",
+    "apps/server/integration/jones-e2e/workspaceLifecycleDev.entrypoint.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs": "jones-owned",
+    "scripts/jones/boundary/fragments/workspace-lifecycle-dev-proof.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

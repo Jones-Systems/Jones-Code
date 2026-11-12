@@ -102,12 +102,67 @@ const listPage = (ids: string[], next: string | null = null) =>
     { context, items: ids.map(workstream), next_cursor: next },
     structuredClone(envelope),
   );
-const deferred = () => {
-  let resolve!: (value: unknown) => void;
-  const promise = new Promise<unknown>((r) => {
+const deferred = <T = unknown>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((r, j) => {
     resolve = r;
+    reject = j;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
+};
+const placementFixture = async (
+  attestedAt = "2026-10-24T23:59:00Z",
+  expiresAt = "2026-10-25T00:01:00Z",
+  observedAt = at,
+) => {
+  const identities = [{ source_instance_id: "env:a", native_thread_id: "thread:a" }];
+  const request = nativeReadRequest(
+    { route: "placements", params: { identities } },
+    "workstreams-t3-placement/2.0.0",
+  );
+  const inventorySha256 = await digest(
+    new TextEncoder().encode(t3PlacementInventoryJson(identities)),
+  );
+  const page = {
+    ...result("placements", null, {
+      ...envelope,
+      provenance: { ...envelope.provenance, observed_at: observedAt },
+    }),
+    placement_contract: "workstreams-t3-placement/2.0.0",
+    value: {
+      context: { ...context, principal_id: "principal", authorization_revision: 1 },
+      inventory_sha256: inventorySha256,
+      items: [
+        {
+          membership_id: "m1",
+          workstream_id: "a",
+          native_reference_id: "ref:a",
+          kind: "primary",
+          ...identities[0]!,
+          attestation_version: 1,
+          attested_at: attestedAt,
+          expires_at: expiresAt,
+          evidence_sha256: "a".repeat(64),
+          source_binding_version: 1,
+          authority_namespace: "namespace:a",
+          store_generation: 1,
+          attestation_source: "native",
+          evidence_contract: "workstreams-t3-provider/2.0.0",
+        },
+      ],
+      next_cursor: null,
+      provenance: {
+        authority: "native-home",
+        registry_instance_id: envelope.registry.registry_instance_id,
+        home_environment_id: "env:a",
+        home_generation: 7,
+        served_by_environment_id: "env:a",
+        observed_at: observedAt,
+      },
+    },
+  };
+  return { request, page, inventorySha256 };
 };
 describe("native consumer reads", () => {
   it("publishes only the complete list, preserves envelopes and does not infer source attestation", async () => {
@@ -345,6 +400,121 @@ describe("native consumer reads", () => {
       await rejected;
     },
   );
+  it.each([
+    ["scope", "pending", "mismatch"],
+    ["scope", "pending", "rejection"],
+    ["scope", "cached", "mismatch"],
+    ["scope", "cached", "rejection"],
+    ["request", "pending", "mismatch"],
+    ["request", "pending", "rejection"],
+    ["request", "cached", "mismatch"],
+    ["request", "cached", "rejection"],
+  ])("keeps a %s successor %s after obsolete hash %s", async (replacement, state, failure) => {
+    const { request, page, inventorySha256 } = await placementFixture();
+    const hashing = deferred(),
+      oldHash = deferred<string>(),
+      successorRead = deferred();
+    const outage = { code: "offline" };
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(page)
+      .mockReturnValueOnce(successorRead.promise)
+      .mockRejectedValueOnce(outage)
+      .mockResolvedValue(page);
+    const client = new NativeWorkstreamReader({
+      scope,
+      read,
+      isTransientError: (cause) => cause === outage,
+      sha256: vi
+        .fn()
+        .mockImplementationOnce(() => {
+          hashing.resolve(null);
+          return oldHash.promise;
+        })
+        .mockResolvedValue(inventorySha256),
+    });
+    const obsolete = client.complete(request);
+    const rejected = expect(obsolete).rejects.toThrow(
+      failure === "mismatch" ? "inventory digest mismatch" : "hash failed",
+    );
+    await hashing.promise;
+    if (replacement === "scope") {
+      client.setScope({ ...scope, binding: { ...scope.binding, authorizationRevision: 2 } });
+      page.authorization_revision = 2;
+      page.value.context.authorization_revision = 2;
+    }
+    const successor = client.complete(request);
+    if (state === "cached") {
+      successorRead.resolve(page);
+      await successor;
+    }
+    if (failure === "mismatch") oldHash.resolve("0".repeat(64));
+    else oldHash.reject(new Error("hash failed"));
+    await rejected;
+    if (state === "pending") successorRead.resolve(page);
+    expect(await successor).toMatchObject({
+      stale: false,
+      readOnly: false,
+      items: [{ membership_id: "m1" }],
+    });
+    expect(await client.complete(request)).toMatchObject({
+      stale: true,
+      readOnly: true,
+      items: [{ membership_id: "m1" }],
+    });
+    expect(await client.complete(request)).toMatchObject({ stale: false, readOnly: false });
+    expect(read).toHaveBeenCalledTimes(4);
+  });
+  it.each(["abort", "invalidate"])(
+    "preserves the %s fence during failed validation",
+    async (kind) => {
+      const { request, page } = await placementFixture();
+      const hashing = deferred(),
+        hash = deferred<string>(),
+        controller = new AbortController();
+      const read = vi.fn().mockResolvedValue(page);
+      const client = new NativeWorkstreamReader({
+        scope,
+        read,
+        sha256: () => {
+          hashing.resolve(null);
+          return hash.promise;
+        },
+      });
+      const pending = client.complete(request, controller.signal);
+      const rejected = expect(pending).rejects.toThrow("hash failed");
+      await hashing.promise;
+      if (kind === "abort") controller.abort();
+      else client.invalidate();
+      hash.reject(new Error("hash failed"));
+      await rejected;
+      if (kind === "invalidate") {
+        await expect(client.list()).rejects.toThrow("Refresh native authorization");
+        expect(read).toHaveBeenCalledTimes(1);
+      } else {
+        read.mockResolvedValue(listPage(["recovered"]));
+        expect((await client.list()).items[0]!.workstream_id).toBe("recovered");
+      }
+    },
+  );
+  it.each(["mismatch", "rejection"])(
+    "invalidates the current scope after hash %s",
+    async (failure) => {
+      const { request, page } = await placementFixture();
+      const client = new NativeWorkstreamReader({
+        scope,
+        read: async () => page,
+        sha256: async () => {
+          if (failure === "rejection") throw new Error("hash failed");
+          return "0".repeat(64);
+        },
+      });
+      await expect(client.complete(request)).rejects.toThrow(
+        failure === "mismatch" ? "inventory digest mismatch" : "hash failed",
+      );
+      await expect(client.list()).rejects.toThrow("Refresh native authorization");
+    },
+  );
   it("does not let an overly broad outage classifier retain data after revocation", async () => {
     const client = new NativeWorkstreamReader({
       scope,
@@ -457,6 +627,55 @@ describe("detail collections and native placement proofs", () => {
     expect((await client.complete(request)).items).toHaveLength(2);
     await expect(client.complete(request)).rejects.toThrow("Wrong workstream collection");
   });
+  it.each([
+    ["attestation before", "2026-10-25T00:00:00.000001Z", "2026-10-25T00:00:01Z", true],
+    ["attestation equal", "2026-10-25T00:00:00.000002Z", "2026-10-25T00:00:01Z", true],
+    ["attestation after", "2026-10-25T00:00:00.000003Z", "2026-10-25T00:00:01Z", false],
+    ["expiry before", "2026-10-24T23:59:59Z", "2026-10-25T00:00:00.000001Z", false],
+    ["expiry equal", "2026-10-24T23:59:59Z", "2026-10-25T00:00:00.000002Z", false],
+    ["expiry after", "2026-10-24T23:59:59Z", "2026-10-25T00:00:00.000003Z", true],
+  ] as const)(
+    "compares placement %s at microsecond precision",
+    async (_name, attestedAt, expiresAt, accepted) => {
+      const { request, page } = await placementFixture(
+        attestedAt,
+        expiresAt,
+        "2026-10-25T00:00:00.000002Z",
+      );
+      const validated = validateNativeReadResult(page, request, scope, digest);
+      if (accepted) expect((await validated).route).toBe("placements");
+      else await expect(validated).rejects.toThrow("expired or observed in the future");
+    },
+  );
+  it.each(["", ".0", ".00", ".000", ".0000", ".00000", ".000000"])(
+    "treats supported fractional encoding %s as the same instant",
+    async (fraction) => {
+      const instant = `2026-10-25T00:00:00${fraction}Z`;
+      const valid = await placementFixture(instant, "2026-10-25T00:00:00.000001Z");
+      expect((await validateNativeReadResult(valid.page, valid.request, scope, digest)).route).toBe(
+        "placements",
+      );
+      const expired = await placementFixture("2026-10-24T23:59:59Z", instant);
+      await expect(
+        validateNativeReadResult(expired.page, expired.request, scope, digest),
+      ).rejects.toThrow("expired");
+    },
+  );
+  it.each(["+00:00", "-04:00", "+05:30"])(
+    "continues rejecting unsupported timestamp offset %s",
+    async (offset) => {
+      const { request, page } = await placementFixture();
+      for (const field of ["attested_at", "expires_at"] as const) {
+        const changed = structuredClone(page);
+        changed.value.items[0]![field] = `2026-10-25T00:00:00.000002${offset}`;
+        await expect(validateNativeReadResult(changed, request, scope, digest)).rejects.toThrow();
+      }
+      const changed = structuredClone(page);
+      changed.envelope.provenance.observed_at = `2026-10-25T00:00:00.000002${offset}`;
+      changed.value.provenance.observed_at = changed.envelope.provenance.observed_at;
+      await expect(validateNativeReadResult(changed, request, scope, digest)).rejects.toThrow();
+    },
+  );
   it("requires v2 markers for nonempty native placement proofs and rejects expired or foreign proof identity", async () => {
     const identities = [{ source_instance_id: "env:a", native_thread_id: "thread:a" }];
     const request = nativeReadRequest(

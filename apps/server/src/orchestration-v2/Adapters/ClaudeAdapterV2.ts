@@ -208,6 +208,8 @@ import {
   makeClaudeEnvironment,
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
+  resolveClaudeUserHome,
+  usesClaudeHostConfig,
 } from "../../provider/Drivers/ClaudeHome.ts";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
@@ -1121,13 +1123,7 @@ const decodeClaudeHistoryFork = Schema.decodeUnknownEffect(
   ),
 );
 
-const claudeConfigDirOf = (
-  path: Path.Path,
-  environment: NodeJS.ProcessEnv,
-  homeDirectory: string,
-) => path.resolve(environment.CLAUDE_CONFIG_DIR ?? path.join(homeDirectory, ".claude"));
-
-// The SDK reads CLAUDE_CONFIG_DIR from process.env. Isolate custom homes in a
+// The SDK reads HOME and CLAUDE_CONFIG_DIR from process.env. Isolate custom homes in a
 // worker so concurrent providers keep the server's environment.
 const runClaudeWorker = Effect.fn("runClaudeWorker")(function* (input: {
   readonly method: "forkSession";
@@ -1662,11 +1658,7 @@ export const layerQueryRunner: Layer.Layer<
             options: input.options,
           },
         });
-        const hostEnvironment = yield* HostProcess.Environment;
-        const homeDirectory = yield* HostProcess.HomeDirectory;
-        const usesHostConfig =
-          claudeConfigDirOf(path, input.environment, homeDirectory) ===
-          claudeConfigDirOf(path, hostEnvironment, homeDirectory);
+        const usesHostConfig = yield* usesClaudeHostConfig(input.environment);
         const fork: Effect.Effect<
           ForkSessionResult & { readonly headMessageId?: string },
           unknown
@@ -4945,7 +4937,7 @@ const readClaudeTaskList = Effect.fnUntraced(
     const configDirOverride = input.environment.CLAUDE_CONFIG_DIR?.trim();
     const configDir = configDirOverride
       ? path.resolve(input.cwd ?? ".", configDirOverride)
-      : yield* resolveClaudeHomePath({ homePath: "" });
+      : yield* resolveClaudeHomePath({ homePath: "" }, input.environment);
     const listId = input.environment.CLAUDE_CODE_TASK_LIST_ID?.trim() || input.nativeThreadId;
     const directory = path.join(configDir, "tasks", listId.replace(/[^a-zA-Z0-9_-]/g, "-"));
     const tasks = new Map<string, Omit<OrchestrationV2PlanStep, "id">>();
@@ -5043,11 +5035,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
     adapterOptions.settings,
     adapterOptions.environment,
   ).pipe(Effect.provideService(Path.Path, path));
-  const hostEnvironment = yield* HostProcess.Environment;
   const hostPlatform = yield* HostProcess.Platform;
   const customHome =
     adapterOptions.settings.homePath.trim().length > 0 ||
-    adapterOptions.environment.CLAUDE_CONFIG_DIR !== hostEnvironment.CLAUDE_CONFIG_DIR;
+    !(yield* usesClaudeHostConfig(adapterOptions.environment));
   const announcedBypassDowngrades = new Set<ThreadId>();
   const readBypassSettings = (filePath: string) =>
     fileSystem.readFileString(filePath).pipe(
@@ -5153,7 +5144,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         .pipe(Effect.orElseSucceed(() => false));
       if (isCheckout) {
         const root = yield* mainCheckoutRoot(directory);
-        return root === (yield* HostProcess.HomeDirectory) ? cwd : root;
+        return root === (yield* resolveClaudeUserHome(adapterOptions.environment)) ? cwd : root;
       }
       if (path.dirname(directory) === directory) return cwd;
     }
@@ -12741,9 +12732,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         ) {
           const configuredDir = adapterOptions.environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
           const projectsDir = path.join(
-            configuredDir.length > 0
-              ? path.resolve(session.cwd, configuredDir)
-              : path.join(yield* HostProcess.HomeDirectory, ".claude"),
+            configuredDir.length > 0 ? path.resolve(session.cwd, configuredDir) : homePath,
             "projects",
           );
           // Any message in any transcript copy means Claude may still resume it.
@@ -13484,7 +13473,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const path = yield* Path.Path;
     const random = yield* SecureRandom.SecureRandom;
     const binaryPath = yield* resolveClaudeSdkExecutablePath(
-      expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
+      expandHomePath(config.binaryPath, yield* resolveClaudeUserHome(claudeEnvironment)),
       claudeEnvironment,
     );
     return yield* makeClaudeAdapterV2({
