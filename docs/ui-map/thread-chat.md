@@ -82,10 +82,12 @@ behavior, telemetry collection, or provider configuration changed.
 When a goal and background work coexist, the background-work banner and its
 Stop action precede the goal in the collapsed composer stack. Expand **Show
 other notices** to reach goal controls. Child questions and urgent notices
-retain their priority. Verify this with a synthetic goal and an awaited child,
-then Stop and inspect the held queue before attempting Settle. A queued user
-message or blocking approval must still prevent settlement. This journey is
-source-discovered and unverified until candidate-bound runtime evidence is recorded.
+retain their priority. Browser verification used an isolated synthetic result
+wait beside an active goal: Stop remained visible, and keyboard expansion made
+the goal's Clear control reachable. Settle persisted across reload. Server
+integration tests cover Stop, held queues, subsequent Settle and legitimate
+queued-message/approval blockers. Native mobile and packaged desktop remain
+unverified; the projection fixture does not prove live provider termination.
 
 An explicit expected-result request keeps its sender **Waiting** after the
 foreground turn ends. The pending-work banner identifies the expected response.
