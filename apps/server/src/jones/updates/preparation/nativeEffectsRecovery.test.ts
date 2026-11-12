@@ -700,7 +700,7 @@ it("synthetic qualified cleanup inspects, guards consent, retains proof and admi
     }
     await home.remove();
   }
-}, 60_000);
+});
 
 it("holds a symlinked effects record even when the target has the expected bytes", async () =>
   fixture(async (f) => {

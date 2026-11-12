@@ -20,13 +20,19 @@ import {
   refreshFleetDesktopState,
 } from "./runtime";
 
-export function FleetEnrollmentControls({
-  environmentId,
-  label,
-}: {
+interface FleetEnrollmentControlsProps {
   readonly environmentId: EnvironmentId;
   readonly label: string;
-}) {
+}
+
+export function FleetEnrollmentControls(props: FleetEnrollmentControlsProps) {
+  return <FleetEnrollmentControlsForHost key={props.environmentId} {...props} />;
+}
+
+function FleetEnrollmentControlsForHost({
+  environmentId,
+  label,
+}: FleetEnrollmentControlsProps) {
   const state = useAtomValue(fleetDesktopState);
   const storageError = useAtomValue(fleetStatusError);
   const publication = useAtomValue(fleetPublication);
@@ -45,8 +51,6 @@ export function FleetEnrollmentControls({
     if (!supported) return;
     let cancelled = false;
     const request = ++statusRequest.current;
-    setStatus(null);
-    setStatusObservedAt(undefined);
     void Promise.all([refreshFleetDesktopState(), fleetHost(environmentId, { action: "status" })])
       .then(([, next]) => {
         if (!cancelled && request === statusRequest.current) {

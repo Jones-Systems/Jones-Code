@@ -438,8 +438,9 @@ describe("Connect session diagnostics", () => {
       }),
   );
 
-  for (const scenario of ["bootstrap_refused", "token_refused", "descriptor_mismatch"] as const) {
-    it.effect(`keeps ${scenario} separate and does not claim later stages`, () =>
+  it.effect.each(["bootstrap_refused", "token_refused", "descriptor_mismatch"] as const)(
+    "keeps %s separate and does not claim later stages",
+    (scenario) =>
       Effect.gen(function* () {
         const test = yield* harness(scenario);
         yield* test.supervisor.connect;
@@ -466,8 +467,7 @@ describe("Connect session diagnostics", () => {
           "RPC readiness: not checked",
         );
       }),
-    );
-  }
+  );
 
   it("never promotes an opening socket or an old failure into ready evidence", () => {
     for (const state of [
