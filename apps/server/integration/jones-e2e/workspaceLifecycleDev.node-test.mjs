@@ -373,11 +373,10 @@ function validateOperator(v) {
   return v;
 }
 
-// Preparation exports committed source without borrowing a checkout's history or
-// dependencies. A bounded explicit file manifest binds those bytes AND the exact
-// Git tree without writing Git objects. V1 records blobs as {path,mode,sha256};
-// V2 additionally permits {path,mode:"160000",oid} for absent/empty gitlink slots.
-// Gitlinks bind only commit OIDs, never unexported submodule contents.
+// Bind committed/exported bytes and exact Git trees without writing Git objects
+// or borrowing history/dependencies. Closed V1 blobs: {path,mode,sha256};
+// V2 raw gitlinks: {path,mode:"160000",oid}, with absent/empty exported slots.
+// Gitlinks bind commit OIDs only, never unexported submodule contents.
 async function verifyExport(root, manifestPath, manifestSha256, commit, tree) {
   const manifest = await readJson(manifestPath, 8 * MiB, manifestSha256);
   exact(manifest, ["schema", "commit", "tree", "files"]);
