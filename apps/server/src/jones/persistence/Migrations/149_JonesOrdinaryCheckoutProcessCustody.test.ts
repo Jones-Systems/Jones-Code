@@ -3,7 +3,10 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
-import { runMigrations as runUpstreamMigrations } from "../../../persistence/Migrations.ts";
+import {
+  migrationManifest,
+  runMigrations as runUpstreamMigrations,
+} from "../../../persistence/Migrations.ts";
 import { runJonesMigrations } from "../JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../JonesMigrations.ts";
 import upgrade, {
@@ -12,11 +15,13 @@ import upgrade, {
 } from "./149_JonesOrdinaryCheckoutProcessCustody.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
+const throughUpgrade = jonesMigrationEntries.filter(([id]) => id <= 149);
 const beforeUpgrade = jonesMigrationEntries.filter(([id]) => id < 149);
 
 it.effect("fresh migration installs store-qualified views and preserves the released ledger", () =>
   Effect.gen(function* () {
-    yield* runUpstreamMigrations();
+    yield* runUpstreamMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
+    yield* runJonesMigrations(throughUpgrade);
     const sql = yield* SqlClient.SqlClient;
     const [trigger] = yield* sql<{
       readonly sql: string;
@@ -45,12 +50,12 @@ it.effect("fresh migration installs store-qualified views and preserves the rele
       { migration_id: 147, name: "QueueHolds" },
       { migration_id: 148, name: "NativeExecutionProcessCustody" },
       { migration_id: 149, name: "OrdinaryCheckoutProcessCustody" },
-      { migration_id: 150, name: "AuthSessionClientMetadata" },
-      { migration_id: 151, name: "WorkspaceRuntimeUses" },
-      { migration_id: 152, name: "PeerLinksAdoption" },
-      { migration_id: 153, name: "PersonalWorkstreams" },
     ]);
-    yield* runUpstreamMigrations();
+    assert.deepStrictEqual(yield* runJonesMigrations(throughUpgrade), []);
+    assert.deepStrictEqual(
+      yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=136 ORDER BY migration_id`,
+      ledger,
+    );
     assert.strictEqual(
       (yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=149`).length,
       1,
