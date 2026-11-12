@@ -91,7 +91,7 @@ export function useThreadActionMenu(input: {
     deleteThread,
     markThreadUnread,
   } = useThreadActions();
-  const stopThreadSession = useOrchestrationCommand(threadEnvironment.stopSession, {
+  const stopThread = useOrchestrationCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
@@ -233,7 +233,7 @@ export function useThreadActionMenu(input: {
         }
         case "stop-thread":
           await reportFailure("Failed to stop thread", () =>
-            stopThreadSession({
+            stopThread({
               environmentId: threadRef.environmentId,
               input: { threadId: threadRef.threadId },
             }),
