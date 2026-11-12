@@ -66,7 +66,7 @@ import {
 import {
   decodeServicePreflightResult,
   qualifiedServicePreflightFailure,
-} from "./cloud/servicePreflight.ts";
+} from "./jones/cloud/servicePreflightResult.ts";
 import type { MigrationPlan } from "./jones/updates/migrationPlan.ts";
 import {
   archiveUpdateOperation,
