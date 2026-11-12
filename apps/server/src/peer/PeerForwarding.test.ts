@@ -242,7 +242,11 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
         Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Sqlite.layerMemory),
-        Layer.provide(Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({})),
+        Layer.provide(
+          Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
+            getByCommandId: () => Effect.succeedNone,
+          }),
+        ),
         Layer.provide(Layer.mock(EventSink.EventSinkV2)({})),
         Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)({})),
       )
@@ -347,7 +351,9 @@ const makeLaptop = Effect.gen(function* () {
       Layer.mergeAll(
         Layer.mock(ProviderRegistry.ProviderRegistry)({}),
         Sqlite.layerMemory,
-        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({}),
+        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
+          getByCommandId: () => Effect.succeedNone,
+        }),
         Layer.mock(EventSink.EventSinkV2)({}),
         Layer.mock(Orchestrator.OrchestratorV2)({}),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),

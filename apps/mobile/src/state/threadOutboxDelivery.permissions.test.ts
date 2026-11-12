@@ -93,6 +93,9 @@ vi.mock("./threads", async () => {
   state.threadShells = Atom.make<ReadonlyArray<unknown>>([state.thread]).pipe(Atom.keepAlive);
   return {
     threadEnvironment: {
+      // Messages dispatch prepared turns; the preceding /compact still uses startTurn.
+      // Both reach the server, so one mock records their relative order.
+      startTurn: state.start,
       dispatchPreparedTurn: state.start,
       prepareTurn: state.prepareTurn,
       updateMetadata: state.metadata,
@@ -156,6 +159,7 @@ vi.mock("./use-composer-drafts", async () => {
       state.draftText += `\n${input.text}`;
     }),
     replaceComposerDraftAttachments: vi.fn(),
+    setFreshSessionPending: vi.fn(),
     undoComposerDraftMerge: vi.fn(),
     updateComposerDraftSettings: vi.fn(),
     waitForComposerDraftsLoaded: vi.fn(),
@@ -567,4 +571,65 @@ describe("queued task operation access", () => {
       expect(remaining()).toEqual([queued]);
     },
   );
+});
+
+describe("compaction before a queued send", () => {
+  const compactTurn = {
+    commandId: "command:compact",
+    message: {
+      messageId: "message:compact",
+      role: "user",
+      text: "/compact",
+      attachments: [],
+      idleCompaction: "onReturn",
+    },
+    dispatchMode: "queue",
+  };
+
+  // Jones: once /compact is accepted and the message is issued, a retry redelivers the
+  // persisted prepared message rather than repeating the pre-send /compact.
+  it("queues /compact ahead of the message and retries the issued message without another /compact", async () => {
+    setOperateGrant("secondary", true);
+    const queued = message({ compactBeforeSend: true, dispatchMode: "queue" });
+    await state.manager.enqueue(queued);
+    state.start
+      .mockResolvedValueOnce(AsyncResult.success({}))
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("Socket is not connected"))));
+    await runDrain();
+    expect(state.prepareTurn).toHaveBeenCalledOnce();
+    expect(state.prepareTurn.mock.calls[0]?.[0].input).toMatchObject({
+      commandId: "command",
+      dispatchMode: "queue",
+    });
+    const retained = remaining()[0];
+    expect(remaining()).toHaveLength(1);
+    expect(retained).toMatchObject({ ...queued, issuance: { state: "issued" } });
+    if (retained?.issuance?.state !== "issued") throw new Error("Expected retained issued row");
+    expect(retained.issuance.prepared).toBe(state.start.mock.calls[1]?.[0].input);
+
+    // A restarted app delivers the persisted message again.
+    state.cleanups.splice(0).forEach((cleanup) => cleanup());
+    await runDrain();
+    const prepared = retained.issuance.prepared;
+    expect(state.start.mock.calls.map(([call]) => call.input)).toEqual([
+      expect.objectContaining(compactTurn),
+      prepared,
+      prepared,
+    ]);
+    expect(state.prepareTurn).toHaveBeenCalledOnce();
+    expect(remaining()).toEqual([]);
+  });
+
+  it("holds the message when its /compact cannot be sent", async () => {
+    setOperateGrant("secondary", true);
+    const queued = message({ compactBeforeSend: true, dispatchMode: "queue" });
+    await state.manager.enqueue(queued);
+    state.start.mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail(new Error("Socket is not connected"))),
+    );
+    await runDrain();
+    expect(state.start).toHaveBeenCalledOnce();
+    expect(state.start.mock.calls[0]?.[0].input).toMatchObject(compactTurn);
+    expect(remaining()).toEqual([queued]);
+  });
 });

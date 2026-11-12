@@ -6,17 +6,20 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 
-import { dependencies, makeFixture } from "./backgroundGitAdmission.fixture.ts";
-import { asBackgroundGitWork } from "./backgroundGitAdmission.ts";
+import {
+  asBackgroundGitWork,
+  dependencies,
+  makeFixture,
+} from "./backgroundGitAdmission.fixture.ts";
 
 describe("background Git admission", () => {
   it.effect(
-    "caps marked Git at four while retaining eight shared permits and timeout bypasses",
+    "caps marked Git at the upstream lane of two while foreground keeps eight permits and timeout bypasses",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
           const backgroundLabels = Array.from({ length: 8 }, (_, index) => `background-${index}`);
-          const foregroundLabels = Array.from({ length: 5 }, (_, index) => `foreground-${index}`);
+          const foregroundLabels = Array.from({ length: 9 }, (_, index) => `foreground-${index}`);
           const fixture = yield* makeFixture([
             ...backgroundLabels,
             ...foregroundLabels,
@@ -30,7 +33,7 @@ describe("background Git admission", () => {
               concurrency: "unbounded",
             },
           ).pipe(asBackgroundGitWork, Effect.forkScoped);
-          const firstBackground = yield* Effect.forEach(Array.from({ length: 4 }), () =>
+          const firstBackground = yield* Effect.forEach(Array.from({ length: 2 }), () =>
             Queue.take(fixture.starts),
           );
           expect(firstBackground.every((label) => label.startsWith("background-"))).toBe(true);
@@ -44,7 +47,7 @@ describe("background Git admission", () => {
               concurrency: "unbounded",
             },
           ).pipe(Effect.forkScoped);
-          const firstForeground = yield* Effect.forEach(Array.from({ length: 4 }), () =>
+          const firstForeground = yield* Effect.forEach(Array.from({ length: 8 }), () =>
             Queue.take(fixture.starts),
           );
           expect(firstForeground.every((label) => label.startsWith("foreground-"))).toBe(true);
@@ -61,10 +64,10 @@ describe("background Git admission", () => {
           expect(yield* Queue.take(fixture.starts)).toBe("long-timeout");
           yield* fixture.releaseAll;
           expect(yield* Fiber.join(background)).toHaveLength(8);
-          expect(yield* Fiber.join(foreground)).toHaveLength(5);
+          expect(yield* Fiber.join(foreground)).toHaveLength(9);
           yield* Fiber.join(unlimited);
           yield* Fiber.join(long);
-          expect(fixture.peakBackground()).toBe(4);
+          expect(fixture.peakBackground()).toBe(2);
           expect(fixture.started.filter((label) => label.startsWith("background-"))).toHaveLength(
             8,
           );
@@ -89,12 +92,12 @@ describe("background Git admission", () => {
           ],
           { concurrency: "unbounded" },
         ).pipe(asBackgroundGitWork, Effect.forkScoped);
-        yield* Effect.forEach(Array.from({ length: 4 }), () => Queue.take(fixture.starts));
+        yield* Effect.forEach(Array.from({ length: 2 }), () => Queue.take(fixture.starts));
         yield* Effect.yieldNow;
         expect(yield* Queue.size(fixture.starts)).toBe(0);
         yield* fixture.releaseAll;
         expect(yield* Fiber.join(work)).toHaveLength(6);
-        expect(fixture.peakBackground()).toBe(4);
+        expect(fixture.peakBackground()).toBe(2);
         expect(fixture.started).toHaveLength(6);
       }),
     ).pipe(Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
@@ -103,7 +106,7 @@ describe("background Git admission", () => {
   it.effect("cancels queued work without spawning and returns running and shared permits", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const heldLabels = Array.from({ length: 4 }, (_, index) => `background-held-${index}`);
+        const heldLabels = Array.from({ length: 2 }, (_, index) => `background-held-${index}`);
         const foregroundLabels = Array.from({ length: 4 }, (_, index) => `foreground-${index}`);
         const fixture = yield* makeFixture([
           ...heldLabels,
@@ -114,7 +117,7 @@ describe("background Git admission", () => {
         const held = yield* Effect.forEach(heldLabels, (label) =>
           fixture.run(label).pipe(asBackgroundGitWork, Effect.forkScoped),
         );
-        yield* Effect.forEach(Array.from({ length: 4 }), () => Queue.take(fixture.starts));
+        yield* Effect.forEach(Array.from({ length: 2 }), () => Queue.take(fixture.starts));
         const cancelled = yield* fixture
           .run("background-cancelled")
           .pipe(asBackgroundGitWork, Effect.forkScoped);
@@ -138,7 +141,7 @@ describe("background Git admission", () => {
         yield* Effect.forEach(held.slice(1), Fiber.join);
         yield* Fiber.join(next);
         yield* Fiber.join(foreground);
-        expect(fixture.peakBackground()).toBe(4);
+        expect(fixture.peakBackground()).toBe(2);
       }),
     ).pipe(Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
   );

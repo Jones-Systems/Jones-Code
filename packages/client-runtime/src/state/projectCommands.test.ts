@@ -55,8 +55,8 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* () {
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
     target: new BearerConnectionTarget({
       environmentId: ENVIRONMENT_ID,
-      label: "Project commands environment",
-      connectionId: "project-commands-connection",
+      label: "Test",
+      connectionId: "test",
     }),
     session: yield* SubscriptionRef.make(
       Option.some({

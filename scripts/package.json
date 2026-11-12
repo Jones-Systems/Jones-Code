@@ -5,7 +5,7 @@
   "scripts": {
     "typecheck": "vp run tsrs:typecheck",
     "typecheck:native": "node jones/tsrs/typecheck.ts --noEmit",
-    "test": "vp test run --config ../vite.config.ts --dir . && node --test --test-concurrency=1 jones/performance/*.node-test.mjs jones/mobile/*.node-test.mjs jones/worktree-setup/*.node-test.mjs jones/test-scratch/*.node-test.mjs jones/incremental-typecheck/*.node-test.mjs jones/tsrs/*.node-test.mjs"
+    "test": "vp test run --config ../vite.config.ts --dir . && node --test --test-concurrency=1 jones/performance/*.node-test.mjs jones/mobile/*.node-test.mjs jones/worktree-setup/*.node-test.mjs jones/test-scratch/*.node-test.mjs jones/incremental-typecheck/*.node-test.mjs jones/tsrs/*.node-test.mjs jones/direct-producers/*.node-test.mjs"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
@@ -19,7 +19,7 @@
     "playwright-core": "1.60.0",
     "plist": "catalog:",
     "pngjs": "7.0.0",
-    "sharp": "0.35.4"
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

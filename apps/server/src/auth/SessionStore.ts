@@ -28,6 +28,7 @@ import * as Option from "effect/Option";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as PayloadSigner from "./PayloadSigner.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import {
   REUSABLE_DEV_SESSION_EXPIRES_AT,
@@ -39,8 +40,6 @@ import {
   base64UrlEncode,
   resolveLegacySessionCookieName,
   resolveSessionCookieName,
-  signPayload,
-  timingSafeEqualBase64Url,
 } from "./utils.ts";
 
 export interface IssuedSession {
@@ -536,7 +535,7 @@ export const makeReservedBearerSessionMaterializer = Effect.gen(function* () {
     .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause })));
   if (Option.isNone(secret) || secret.value.byteLength !== 32)
     return yield* new SessionCredentialIssueError({ cause: "signing_key_missing" });
-  const signingSecret = secret.value;
+  const signer = yield* PayloadSigner.fromSecret(secret.value);
   return (expected: AuthSessions.CreateAuthSessionInput) =>
     Effect.gen(function* () {
       const row = yield* authSessions
@@ -586,7 +585,7 @@ export const makeReservedBearerSessionMaterializer = Effect.gen(function* () {
       );
       return {
         sessionId: expected.sessionId,
-        token: `${payload}.${signPayload(payload, signingSecret)}`,
+        token: `${payload}.${yield* signer.sign(payload)}`,
         method: "bearer-access-token",
         client: toClientMetadata(expected.client),
         expiresAt: expected.expiresAt,
@@ -603,7 +602,9 @@ export const make = Effect.gen(function* () {
   const authSessions = yield* AuthSessions.AuthSessionRepository;
   const sql = yield* SqlClient.SqlClient;
   const presentation = yield* makeSessionPresentation;
-  const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
+  const signer = yield* PayloadSigner.fromSecret(
+    yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32),
+  );
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
   // Newest session per DPoP key. A live socket moves to it at expiry, so a
@@ -788,7 +789,7 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
-      const signature = signPayload(encodedPayload, signingSecret);
+      const signature = yield* signer.sign(encodedPayload);
       const client = input?.client ?? createDefaultClientMetadata();
       const sessionRecord = {
         sessionId,
@@ -900,8 +901,7 @@ export const make = Effect.gen(function* () {
         return yield* new MalformedSessionTokenError({});
       }
 
-      const expectedSignature = signPayload(encodedPayload, signingSecret);
-      if (!timingSafeEqualBase64Url(signature, expectedSignature)) {
+      if (!(yield* signer.verify(encodedPayload, signature))) {
         return yield* new InvalidSessionTokenSignatureError({});
       }
 
@@ -988,7 +988,7 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
-    const signature = signPayload(encodedPayload, signingSecret);
+    const signature = yield* signer.sign(encodedPayload);
     return {
       token: `${encodedPayload}.${signature}`,
       expiresAt,
@@ -1003,8 +1003,7 @@ export const make = Effect.gen(function* () {
       return yield* new MalformedWebSocketTokenError({});
     }
 
-    const expectedSignature = signPayload(encodedPayload, signingSecret);
-    if (!timingSafeEqualBase64Url(signature, expectedSignature)) {
+    if (!(yield* signer.verify(encodedPayload, signature))) {
       return yield* new InvalidWebSocketTokenSignatureError({});
     }
 

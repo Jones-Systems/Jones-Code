@@ -14,17 +14,11 @@ import { SqlError, classifySqliteError } from "effect/sql/SqlError";
 
 import type { SqliteReadPriority } from "../sqliteReadPriority.ts";
 import type { SqliteReaderObservation, SqliteReaderPoolOptions } from "../sqliteReaderContracts.ts";
+import { SqliteReaderAdmissionError } from "./admissionFailure.ts";
 
-type AdmissionFailure =
-  | "queue-full"
-  | "queue-timeout"
-  | "reader-unavailable"
-  | "checkpoint-held"
-  | "generation-retired";
-
-const admissionError = (reason: AdmissionFailure) =>
+const admissionError = (reason: SqliteReaderAdmissionError["reason"]) =>
   new SqlError({
-    reason: classifySqliteError(new Error(reason), {
+    reason: classifySqliteError(new SqliteReaderAdmissionError({ reason }), {
       message: "SQLite reader admission failed",
       operation: "acquire",
     }),

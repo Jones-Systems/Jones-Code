@@ -90,14 +90,6 @@
       "to": "apps/web/src/jones/pendingSends/composerRecovery.ts"
     },
     {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "apps/web/src/jones/pendingSends/composerRecovery.ts"
-    },
-    {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
-    },
-    {
       "from": "apps/web/src/components/chat/useThreadLifecycle.tsx",
       "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
     },
@@ -168,10 +160,6 @@
     {
       "from": "apps/server/src/provider/EventNdjsonLogger.ts",
       "to": "apps/server/src/jones/provider/diagnosticLogging/SegmentBuffer.ts"
-    },
-    {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "packages/client-runtime/src/jones/planCreationOperation.ts"
     }
   ]
 }

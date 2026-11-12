@@ -1,3 +1,15 @@
+import * as NativeExportProtocol from "../jones/workstreams/native/forwarding/homeExportProtocol.ts";
+import * as NativePeerMcpAuthentication from "../jones/workstreams/native/runtime/peerMcpAuthentication.ts";
+import * as NativeReadMcp from "../jones/mcp/workstreams/nativeReads.ts";
+import * as NativeBindMcp from "../jones/mcp/workstreams/nativeBinds.ts";
+import * as NativeSetupMcp from "../jones/mcp/workstreams/nativeSetups.ts";
+import * as NativeForwardMcp from "../jones/mcp/workstreams/nativeForwards.ts";
+import * as NativeHomeForward from "../jones/workstreams/native/forwarding/homeForwardPort.ts";
+import * as NativeSourceReadmission from "../jones/workstreams/native/forwarding/sourceReadmissionPort.ts";
+import * as NativeRetainedSource from "../jones/workstreams/native/forwarding/retainedSourceEffectPort.ts";
+import * as NativePeerSetup from "../jones/workstreams/native/runtime/peerSetup.ts";
+import * as NativeHomeBind from "../jones/workstreams/native/runtime/homeBind.ts";
+import * as NativeReadProtocol from "../jones/workstreams/native/forwarding/homeReadProtocol.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as ThreadResultMcpDependencies from "../jones/threadResultDependencies/McpDependencies.ts";
 import { WorkstreamToolkit } from "../jones/mcp/workstreams/tools.ts";
@@ -249,8 +261,10 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     Effect.map((settings) => settings.linkedEnvironmentsEnabled),
     Effect.orElseSucceed(() => false),
   );
-  return Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
-    const request = yield* HttpServerRequest.HttpServerRequest;
+  const nativePeer = yield* Effect.serviceOption(NativePeerMcpAuthentication.PeerMcpAuthentication);
+  const authenticateRequest = Effect.fn("McpHttpServer.authenticateRequest")(function* (
+    request: HttpServerRequest.HttpServerRequest,
+  ) {
     const authorization = request.headers.authorization;
     const token = parseBearerToken(request) ?? "";
     const invocation =
@@ -292,11 +306,21 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         },
         { status: 400, headers: { "cache-control": "no-store" } },
       );
+    return attributed;
+  });
+  // Untraced: a span here would wrap the tool call; the HTTP server span already covers it.
+  return Effect.fnUntraced(function* (httpEffect) {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const admitted = yield* authenticateRequest(request);
+    if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
+    // Native peer pins are keyed on this exact scope object, so register the object that is
+    // provided as McpInvocationContext below, never an earlier or copied scope.
+    if (Option.isSome(nativePeer)) yield* nativePeer.value.register(request, admitted);
     return yield* httpEffect.pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, attributed),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, admitted),
       Effect.provideService(
         IncomingLinkedRequestContext,
-        bindLinkedRequestContext(attributed, request.headers[LINKED_REQUEST_CONTEXT_HEADER]),
+        bindLinkedRequestContext(admitted, request.headers[LINKED_REQUEST_CONTEXT_HEADER]),
       ),
       Effect.map(normalizeMcpHttpResponse),
     );
@@ -317,8 +341,12 @@ const MAX_SNAPSHOT_IDENTIFIER_CHARS = 2_048;
 
 const encodeJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const utf8Length = (text: string) => Buffer.byteLength(text, "utf8");
-const cutText = (text: string, max: number) =>
-  text.length > max ? `${text.slice(0, max)}…` : text;
+const cutText = (text: string, max: number) => {
+  if (text.length <= max) return text;
+  // Half an emoji serializes to a lone surrogate escape, which provider JSON parsers reject.
+  const last = text.charCodeAt(max - 1);
+  return `${text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max)}…`;
+};
 
 const cutEntryStrings = <A>(entry: A): A =>
   typeof entry === "object" && entry !== null
@@ -608,11 +636,19 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
                   readonly width: number;
                   readonly height: number;
                 };
+                readonly fullScreenshot?: { readonly data: string };
               };
-              const { screenshot, ...page } = snapshot;
+              const { screenshot, fullScreenshot, ...page } = snapshot;
               const png = new Uint8Array(Buffer.from(screenshot.data, "base64"));
               const screenshotPath =
-                payload?.save === true ? yield* saveScreenshot(snapshot.url, png) : undefined;
+                payload?.save === true
+                  ? yield* saveScreenshot(
+                      snapshot.url,
+                      fullScreenshot
+                        ? new Uint8Array(Buffer.from(fullScreenshot.data, "base64"))
+                        : png,
+                    )
+                  : undefined;
               // Providers replay images on later requests, and some reject them; include images only when requested.
               const includeImage = payload?.includeImage === true;
               if (screenshotPath !== undefined && !includeImage) {
@@ -1085,6 +1121,36 @@ const decodeThreadReadArguments = Schema.decodeUnknownEffect(
   { onExcessProperty: "error" },
 );
 
+/** Each tool call gets a span named for its tool; arguments stay out, as they carry prompts and IDs. */
+const withToolSpans = Effect.fn("McpHttpServer.withToolSpans")(function* <A, E, R>(
+  registration: Effect.Effect<A, E, R>,
+) {
+  const server = yield* McpServer.McpServer;
+  const tracingServer = McpServer.McpServer.of({
+    ...server,
+    addTool: Effect.fn("McpServer.addTool")(function (options) {
+      const name = options.tool.name;
+      return server.addTool({
+        ...options,
+        // Never the current span: Toolkit.handle annotates that one with the raw arguments.
+        handle: (payload) =>
+          Effect.useSpan(
+            `mcp.tool.${name}`,
+            {
+              attributes: {
+                "rpc.system": "mcp",
+                "rpc.method": "tools/call",
+                "mcp.tool.name": name,
+              },
+            },
+            () => options.handle(payload),
+          ),
+      });
+    }),
+  });
+  return yield* registration.pipe(Effect.provideService(McpServer.McpServer, tracingServer));
+});
+
 /** `McpServer.registerToolkit` advertises the full codec schema; agents get the compact one. */
 const withAdvertisedSchemas = Effect.fn("McpHttpServer.withAdvertisedSchemas")(function* <
   Tools extends Record<string, Tool.Any>,
@@ -1150,7 +1216,9 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
 ) =>
   Layer.effectDiscard(
     withToolAnalytics(
-      withAdvertisedSchemas(toolkit, McpServer.registerToolkit(decodeAsAdvertised(toolkit))),
+      withToolSpans(
+        withAdvertisedSchemas(toolkit, McpServer.registerToolkit(decodeAsAdvertised(toolkit))),
+      ),
     ),
   ).pipe(
     Layer.provide(
@@ -1166,7 +1234,7 @@ const imageToolRegistration = <Tools extends Record<string, Tool.Any>, A, E, R, 
   register: Effect.Effect<A, E, R>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
 ) =>
-  Layer.effectDiscard(withToolAnalytics(register)).pipe(
+  Layer.effectDiscard(withToolAnalytics(withToolSpans(register))).pipe(
     Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)),
   );
 
@@ -1311,8 +1379,90 @@ export const layerWorkstreamToolkit = toolkitRegistration(
   workstreamHandlers,
 ).pipe(Layer.provide(workstreamBackendLayer));
 
+export const layerNativeHomeReadToolkit = Layer.merge(
+  Layer.unwrap(
+    Effect.map(Effect.serviceOption(NativeReadProtocol.HomeReadProtocol), (protocol) =>
+      Option.isNone(protocol)
+        ? Layer.empty
+        : toolkitRegistration(NativeReadMcp.toolkit, NativeReadMcp.handlers).pipe(
+            Layer.provide(Layer.succeed(NativeReadProtocol.HomeReadProtocol, protocol.value)),
+          ),
+    ),
+  ),
+  Layer.unwrap(
+    Effect.map(Effect.serviceOption(NativeExportProtocol.HomeExportProtocol), (protocol) =>
+      Option.isNone(protocol)
+        ? Layer.empty
+        : toolkitRegistration(NativeReadMcp.exportToolkit, NativeReadMcp.exportHandlers).pipe(
+            Layer.provide(Layer.succeed(NativeExportProtocol.HomeExportProtocol, protocol.value)),
+          ),
+    ),
+  ),
+);
+
+/** Only a qualified application composition may supply this producer. No default is installed. */
+export const layerNativeHomeBindToolkit = Layer.unwrap(
+  Effect.map(Effect.serviceOption(NativeHomeBind.HomeBind), (producer) =>
+    Option.isNone(producer)
+      ? Layer.empty
+      : toolkitRegistration(NativeBindMcp.toolkit, NativeBindMcp.handlers).pipe(
+          Layer.provide(Layer.succeed(NativeHomeBind.HomeBind, producer.value)),
+        ),
+  ),
+);
+
+export const layerNativeHomeForwardToolkit = Layer.unwrap(
+  Effect.map(Effect.serviceOption(NativeHomeForward.HomeTools), (home) =>
+    Option.isNone(home)
+      ? Layer.empty
+      : toolkitRegistration(NativeForwardMcp.homeToolkit, NativeForwardMcp.homeHandlers).pipe(
+          Layer.provide(Layer.succeed(NativeHomeForward.HomeTools, home.value)),
+        ),
+  ),
+);
+
+export const layerNativeSourceReadmissionToolkit = Layer.unwrap(
+  Effect.map(Effect.serviceOption(NativeSourceReadmission.SourceReadmission), (source) =>
+    Option.isNone(source)
+      ? Layer.empty
+      : toolkitRegistration(NativeForwardMcp.sourceToolkit, NativeForwardMcp.sourceHandlers).pipe(
+          Layer.provide(Layer.succeed(NativeSourceReadmission.SourceReadmission, source.value)),
+        ),
+  ),
+);
+
+/** Absent until an application supplies the genuine retained-command source producer. */
+export const layerNativeRetainedSourceToolkit = Layer.unwrap(
+  Effect.map(Effect.serviceOption(NativeRetainedSource.RetainedSourceEffects), (source) =>
+    Option.isNone(source)
+      ? Layer.empty
+      : toolkitRegistration(
+          NativeForwardMcp.retainedSourceToolkit,
+          NativeForwardMcp.retainedSourceHandlers,
+        ).pipe(
+          Layer.provide(Layer.succeed(NativeRetainedSource.RetainedSourceEffects, source.value)),
+        ),
+  ),
+);
+
+const layerNativePeerSetupToolkit = Layer.unwrap(
+  Effect.map(Effect.serviceOption(NativePeerSetup.PeerSetup), (setup) =>
+    Option.isNone(setup)
+      ? Layer.empty
+      : toolkitRegistration(NativeSetupMcp.toolkit, NativeSetupMcp.handlers).pipe(
+          Layer.provide(Layer.succeed(NativePeerSetup.PeerSetup, setup.value)),
+        ),
+  ),
+);
+
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
+  layerNativeHomeForwardToolkit,
+  layerNativeSourceReadmissionToolkit,
+  layerNativeRetainedSourceToolkit,
+  layerNativePeerSetupToolkit,
+  layerNativeHomeBindToolkit,
+  layerNativeHomeReadToolkit,
   Layer.unwrap(
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

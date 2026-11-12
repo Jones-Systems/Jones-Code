@@ -1,5 +1,9 @@
 import { makeRemoteAdmissionHttpGroup } from "./remoteAdmissionHttp.ts";
 import {
+  WorkstreamsPeerSetupOwnerRequest,
+  WorkstreamsPeerSetupResult,
+} from "./workstreamsPeerSetup.ts";
+import {
   WorkstreamsNativeOwnerRequest,
   WorkstreamsNativeOwnerResponse,
 } from "./workstreamsNativeOwner.ts";
@@ -28,6 +32,8 @@ import {
   JonesOperationReadInput,
   JonesOperationReceipt,
   JonesOperationReadResult,
+  JonesRecoverCleanupInput,
+  JonesRecoverCleanupResult,
   JonesRecoveryPreflightInput,
   JonesRecoveryPreflight,
 } from "./jonesOperations.ts";
@@ -430,6 +436,22 @@ export const makeJonesHttpGroups = ({
 
   class EnvironmentWorkstreamsNativeHttpApi extends HttpApiGroup.make("workstreamsNative")
     .add(
+      HttpApiEndpoint.post(
+        "peerSetupOwnerOperations",
+        "/api/workstreams/native/peer-setup/v1/operations",
+        {
+          headers: OptionalBearerHeaders,
+          payload: WorkstreamsPeerSetupOwnerRequest,
+          success: WorkstreamsPeerSetupResult,
+          error: [
+            EnvironmentScopeRequiredError,
+            EnvironmentInternalError,
+            EnvironmentHttpBadRequestError,
+          ],
+        },
+      ).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
       HttpApiEndpoint.post("ownerOperations", "/api/workstreams/native/owner/v1/operations", {
         headers: OptionalBearerHeaders,
         payload: WorkstreamsNativeOwnerRequest,
@@ -671,6 +693,14 @@ export const makeJonesHttpGroups = ({
         headers: OptionalBearerHeaders,
         payload: JonesOperationReadInput,
         success: JonesOperationReadResult,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recoverCleanup", "/api/jones-updates/operations/recover-cleanup", {
+        headers: OptionalBearerHeaders,
+        payload: JonesRecoverCleanupInput,
+        success: JonesRecoverCleanupResult,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
     )

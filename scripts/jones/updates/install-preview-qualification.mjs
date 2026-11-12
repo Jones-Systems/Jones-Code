@@ -756,6 +756,9 @@ export async function serveRendererFixture(directory) {
 export async function indexedDbBrowserProof(phase, syntheticOrigin) {
   const slot = "__jonesLegacyIndexedDbProof";
   const runtimeName = "t3code:connection-runtime";
+  // The current catalog version (apps/web/src/connection/storage.ts DATABASE_VERSION, upstream 5).
+  // Jones compatibility hints must never bump it while an existing connection is held.
+  const catalogVersion = 5;
   const hintName = "t3code:connection-compatibility-hints";
   const require = (condition, message) => {
     if (!condition) throw new Error(message);
@@ -862,9 +865,9 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
       require(!(await indexedDB.databases()).some(
         (entry) => entry.name === temporaryName,
       ), "Owned IndexedDB control name already exists");
-      state.hold(await state.open(temporaryName, 4, 0));
+      state.hold(await state.open(temporaryName, catalogVersion, 0));
       require(state.temporaryOwned, "IndexedDB control creation was not owned");
-      await state.open(temporaryName, 5, 4);
+      await state.open(temporaryName, catalogVersion + 1, catalogVersion);
       let closed = false;
       try {
         state.database.transaction("probe", "readonly");
@@ -873,7 +876,7 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
       }
       let oldVersionRejected = false;
       try {
-        await state.open(temporaryName, 4);
+        await state.open(temporaryName, catalogVersion);
       } catch (error) {
         oldVersionRejected = error.name === "VersionError";
       }
@@ -908,10 +911,10 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
     window[slot] = state;
     try {
       require((await indexedDB.databases()).some(
-        (entry) => entry.name === runtimeName && entry.version === 4,
-      ), "Existing connection catalog must remain version 4");
-      state.hold(await state.open(runtimeName, 4));
-      return { legacyV4Held: state.database.version === 4 };
+        (entry) => entry.name === runtimeName && entry.version === catalogVersion,
+      ), `Existing connection catalog must remain version ${catalogVersion}`);
+      state.hold(await state.open(runtimeName, catalogVersion));
+      return { catalogHeld: state.database.version === catalogVersion };
     } catch (error) {
       state.dispose();
       throw error;
@@ -987,7 +990,7 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
     if (phase === "verify") {
       require(typeof state.baseline === "string", "Synthetic catalog checkpoint is absent");
       const catalogUnchanged = (await state.read(state.database, "catalog")) === state.baseline;
-      const reopened = await state.open(runtimeName, 4);
+      const reopened = await state.open(runtimeName, catalogVersion);
       let reopenedCatalogUnchanged;
       try {
         reopenedCatalogUnchanged = (await state.read(reopened, "catalog")) === state.baseline;
@@ -1018,7 +1021,7 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
       return {
         legacyConnectionUnchanged: !state.versionChanged && !state.unexpectedlyClosed,
         catalogUnchanged,
-        reopenedV4: reopened.version === 4,
+        reopenedAtCatalogVersion: reopened.version === catalogVersion,
         reopenedCatalogUnchanged,
         separateHintDatabase,
         hintRecordPresent,
@@ -1060,8 +1063,8 @@ export function scenarioSteps(remotePairing) {
       oldVersionRejected: true,
       temporaryDatabaseRemoved: true,
     }),
-    indexedDbStep("hold", "Hold the actual legacy version-4 catalog connection", {
-      legacyV4Held: true,
+    indexedDbStep("hold", "Hold the actual current-version catalog connection", {
+      catalogHeld: true,
     }),
     { action: "click", locator: 'role=button[name="Add environment"]' },
     { action: "type", locator: 'role=textbox[name="Host"]', text: remotePairing },
@@ -1088,8 +1091,8 @@ export function scenarioSteps(remotePairing) {
     { action: "wait", text: "Synthetic incompatible Jones host" },
     { action: "wait", text: "Source matches this app." },
     disabledPreference,
-    indexedDbStep("hold", "Hold the saved Off version-4 catalog connection", {
-      legacyV4Held: true,
+    indexedDbStep("hold", "Hold the saved Off current-version catalog connection", {
+      catalogHeld: true,
     }),
     indexedDbStep("checkpoint", "Capture the saved Off catalog before the authenticated check", {
       savedOffCatalogCaptured: true,
@@ -1106,7 +1109,7 @@ export function scenarioSteps(remotePairing) {
     indexedDbStep("verify", "New hint persistence preserves the held legacy catalog", {
       legacyConnectionUnchanged: true,
       catalogUnchanged: true,
-      reopenedV4: true,
+      reopenedAtCatalogVersion: true,
       reopenedCatalogUnchanged: true,
       separateHintDatabase: true,
       hintRecordPresent: true,
@@ -1405,6 +1408,9 @@ export function rendererSteps(origin, sourceSha, runId) {
     "Plan Stop binds the exact running host operation and cannot complete on request alone",
     `(() => { const op = s.installPlan.current.devices[0].operations.at(-1); const stop = s.calls.filter(c => c.action === 'fixture-host-operationStop').at(-1); return stop?.input.input.operationId === op.operationId && typeof op.receipt.stop?.stopId === 'string' && stop.input.input.stopId === op.receipt.stop.stopId && op.receipt.phase === 'stop-requested' && !s.installPlan.view.complete; })()`,
   );
+  control("host-VPS-held");
+  steps.push({ action: "wait", text: "Stop not confirmed" });
+  capture("plan-held-outcome", ["Install status", "Stop not confirmed", "unreaped"]);
   control("host-VPS-stopped");
   steps.push({ action: "wait", text: "Stopped · nothing installed" });
   planCheck(

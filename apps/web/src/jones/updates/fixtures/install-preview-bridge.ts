@@ -15,6 +15,9 @@ const SCENARIOS = [
   "bootstrap-required",
   "initial-race",
   "build-review",
+  // A verified Laptop with hosts mid-install, failed, stalled and unreachable.
+  "progress",
+  "source-proof",
 ] as const;
 const OUTCOMES = ["accept", "reject", "refuse"] as const;
 export type FixtureOutcome = (typeof OUTCOMES)[number];
@@ -222,6 +225,14 @@ export function installPreviewBridge(
     version: "0.0.45-preview.20261011.3.1",
   };
   const builds = [latest, alternative];
+  if (selectedScenario === "progress") {
+    plan.showcaseStepProgress();
+    installStatusStore.open();
+  }
+  if (selectedScenario === "source-proof") {
+    plan.showcaseSourceProof();
+    installStatusStore.open();
+  }
   const bridge = {
     ...(installPlansSupported
       ? { installPlan: plan.request, onInstallPlan: plan.onInstallPlan }

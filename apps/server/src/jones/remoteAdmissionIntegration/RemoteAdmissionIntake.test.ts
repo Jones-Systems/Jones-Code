@@ -23,10 +23,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import migrateCore from "../persistence/Migrations/116_JonesRemoteAdmission.ts";
 import migrateIntegration from "../persistence/Migrations/118_JonesRemoteAdmissionIntegration.ts";
+import migrateResults from "../persistence/Migrations/133_JonesThreadResultDependencies.ts";
 import * as Admission from "../remoteAdmission/RemoteAdmission.ts";
 import * as Intake from "./RemoteAdmissionIntake.ts";
 import { isRemoteAdmissionOwner } from "./owner.ts";
@@ -96,12 +98,20 @@ const sessions = Layer.succeed(EnvironmentAuth.EnvironmentAuth, {
   listSessions: () =>
     Effect.succeed([{ sessionId: AuthSessionId.make("remote") } as AuthClientSession]),
 } as unknown as EnvironmentAuth.EnvironmentAuth["Service"]);
-const fixture = <E>(evaluate: Admission.RemoteAdmissionEvaluator<E>) =>
+// The same schema plus thread-result requests, which add the columns that tie an admission
+// to a result request.
+const memoryWithResultRequests = Layer.effectDiscard(
+  migrateCore.pipe(Effect.andThen(migrateIntegration), Effect.andThen(migrateResults)),
+).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
+const fixture = <E>(
+  evaluate: Admission.RemoteAdmissionEvaluator<E>,
+  database: typeof memory = memory,
+) =>
   Intake.layer.pipe(
     Layer.provide(providers),
     Layer.provideMerge(Admission.layerWithEvaluator(evaluate)),
     Layer.provide(sessions),
-    Layer.provideMerge(memory),
+    Layer.provideMerge(database),
   );
 const enable = (intake: Intake.RemoteAdmissionIntake["Service"]) =>
   intake.updatePolicy({
@@ -528,25 +538,49 @@ it("owner classification accepts administrative browser pairing and desktop bear
 });
 
 it("all remote task and queue mutation surfaces are screened while cancellation passes", () => {
-  for (const operation of [
-    "t3_thread_launch",
-    "t3_thread_send",
-    "delegate_task",
-    "create_threads",
-    "t3_queue_edit",
-    "t3_queue_reorder",
-    "t3_queue_promote_to_steer",
-    "t3_pending_request_respond",
-    "run_scheduled_task_now",
-  ])
-    expect(screensRemoteOperation(operation, {})).toBe(true);
-  for (const operation of [
-    "task_cancel",
-    "t3_queue_cancel",
-    "t3_thread_interrupt",
-    "t3_remote_admission_cancel",
-  ])
-    expect(screensRemoteOperation(operation, {})).toBe(false);
+  for (const [operation, params] of [
+    ["t3_thread_launch", {}],
+    ["t3_thread_send", {}],
+    ["delegate_task", {}],
+    ["create_threads", {}],
+    ["t3_queue", { action: "edit" }],
+    ["t3_queue", { action: "reorder" }],
+    ["t3_queue", { action: "promote_to_steer" }],
+    ["t3_pending_request", { action: "respond" }],
+    ["run_scheduled_task_now", {}],
+  ] as const)
+    expect(
+      screensRemoteOperation(operation, params),
+      `${operation} ${JSON.stringify(params)}`,
+    ).toBe(true);
+  for (const [operation, params] of [
+    ["task_cancel", {}],
+    ["t3_queue", { action: "cancel" }],
+    ["t3_thread_interrupt", {}],
+    ["t3_remote_admission_cancel", {}],
+  ] as const)
+    expect(
+      screensRemoteOperation(operation, params),
+      `${operation} ${JSON.stringify(params)}`,
+    ).toBe(false);
+});
+
+it("action tools screen each call by its action, so reads and the configuration read pass", () => {
+  for (const [operation, params, screened] of [
+    ["t3_queue", { action: "list" }, false],
+    ["t3_queue", { action: "read" }, false],
+    ["t3_pending_request", { action: "list" }, false],
+    ["t3_pending_request", { action: "read" }, false],
+    ["t3_thread_configure", {}, false],
+    ["t3_thread_configure", { modelSelection: { instanceId: "codex", model: "gpt-5" } }, true],
+    ["t3_thread_transfer", { action: "status" }, false],
+    ["t3_thread_transfer", { action: "fork" }, true],
+    ["t3_thread_transfer", { action: "merge_back" }, true],
+  ] as const)
+    expect(
+      screensRemoteOperation(operation, params),
+      `${operation} ${JSON.stringify(params)}`,
+    ).toBe(screened);
 });
 
 it.effect(
@@ -584,7 +618,7 @@ it.effect("an owner approval cannot dispatch a changed project, model, or queue 
     let configuration = { workspace: "/synthetic/a", model: "first", queue: "reviewed bytes" };
     let calls = 0;
     intake.register(
-      "t3_queue_promote_to_steer",
+      "t3_queue",
       () =>
         Effect.sync(() => {
           calls++;
@@ -592,7 +626,7 @@ it.effect("an owner approval cannot dispatch a changed project, model, or queue 
         }),
       () => Effect.succeed(configuration),
     );
-    yield* intake.invoke("t3_queue_promote_to_steer", input, invocation).pipe(Effect.ignore);
+    yield* intake.invoke("t3_queue", input, invocation).pipe(Effect.ignore);
     const record = (yield* intake.snapshot()).pending[0]!;
     configuration = { workspace: "/synthetic/b", model: "second", queue: "changed bytes" };
     expect(
@@ -648,7 +682,7 @@ it.effect(
       let configuration = "queued";
       let calls = 0;
       intake.register(
-        "t3_queue_promote_to_steer",
+        "t3_queue",
         () =>
           Effect.sync(() => {
             calls++;
@@ -657,10 +691,10 @@ it.effect(
           }),
         () => Effect.succeed({ configuration }),
       );
-      expect(yield* intake.invoke("t3_queue_promote_to_steer", input, invocation)).toEqual({
+      expect(yield* intake.invoke("t3_queue", input, invocation)).toEqual({
         sequence: 7,
       });
-      expect(yield* intake.invoke("t3_queue_promote_to_steer", input, invocation)).toEqual({
+      expect(yield* intake.invoke("t3_queue", input, invocation)).toEqual({
         sequence: 7,
       });
       expect(calls).toBe(1);
@@ -1261,3 +1295,220 @@ it.effect("B1-10: operation, session and namespace still select independent admi
     ),
   );
 });
+
+// A claim an earlier process made and never closed: `dispatching`, with no live handler here.
+const leaveDispatching = (id: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE jones_remote_admissions SET status = 'dispatching', command_id = ${`admission:${id}`} WHERE id = ${id}`;
+  });
+const admissionState = (id: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const [row] = yield* sql<{
+      status: string;
+    }>`SELECT status FROM jones_remote_admissions WHERE id = ${id}`;
+    const results = yield* sql<{
+      result_json: string;
+    }>`SELECT result_json FROM jones_remote_admission_results WHERE admission_id = ${id}`;
+    return {
+      status: row?.status,
+      results: results.map((result) => JSON.parse(result.result_json)),
+    };
+  });
+const heldLaunch = (calls: { count: number }) =>
+  Effect.gen(function* () {
+    const intake = yield* Intake.RemoteAdmissionIntake;
+    yield* enable(intake);
+    intake.register(
+      "t3_thread_launch",
+      () =>
+        Effect.sync(() => {
+          calls.count++;
+        }),
+      target,
+    );
+    yield* intake.invoke("t3_thread_launch", input, invocation).pipe(Effect.ignore);
+    const record = (yield* intake.snapshot()).pending[0]!;
+    yield* leaveDispatching(record.id);
+    return { intake, record };
+  });
+
+it.effect(
+  "startup closes a claim an earlier process left dispatching without running its handler",
+  () =>
+    Effect.gen(function* () {
+      const calls = { count: 0 };
+      const { intake, record } = yield* heldLaunch(calls);
+      expect((yield* admissionState(record.id)).status).toBe("dispatching");
+      yield* intake.resumeApproved();
+      const closed = yield* admissionState(record.id);
+      expect(closed.status).toBe("dispatched");
+      expect(closed.results).toHaveLength(1);
+      expect(closed.results[0].ok).toBe(false);
+      expect(closed.results[0].value.code).toBe("orchestration_error");
+      // The sender now gets a terminal answer, not a pending claim, and the work is not rerun.
+      const retried = yield* intake
+        .invoke("t3_thread_launch", input, invocation)
+        .pipe(Effect.asVoid, Effect.flip);
+      expect(retried.code).toBe("orchestration_error");
+      expect(retried.message).toContain("may or may not have taken effect");
+      expect(retried.remoteAdmission).toBeUndefined();
+      expect(calls.count).toBe(0);
+      // Recovery is idempotent.
+      yield* intake.resumeApproved();
+      expect(yield* admissionState(record.id)).toEqual(closed);
+    }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);
+
+it.effect("a sender retry closes a claim left dispatching by an earlier process", () =>
+  Effect.gen(function* () {
+    const calls = { count: 0 };
+    const { intake, record } = yield* heldLaunch(calls);
+    const first = yield* intake
+      .invoke("t3_thread_launch", input, invocation)
+      .pipe(Effect.asVoid, Effect.flip);
+    expect(first.code).toBe("orchestration_error");
+    expect((yield* admissionState(record.id)).status).toBe("dispatched");
+    // The recorded failure is the answer to every later retry of the same key.
+    const second = yield* intake
+      .invoke("t3_thread_launch", input, invocation)
+      .pipe(Effect.asVoid, Effect.flip);
+    expect(second).toEqual(first);
+    expect((yield* admissionState(record.id)).results).toHaveLength(1);
+    expect(calls.count).toBe(0);
+    // A withdrawal now reports the closed request rather than a claim in progress.
+    expect((yield* intake.withdraw(record, "remote")).status).toBe("dispatched");
+  }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);
+
+it.effect("startup keeps a result that was recorded before the claim was closed", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const calls = { count: 0 };
+    const { intake, record } = yield* heldLaunch(calls);
+    const receipt = { threadId: "original-child", launchKey: "original-launch" };
+    yield* sql`INSERT INTO jones_remote_admission_results (admission_id, result_json) VALUES (${record.id}, ${JSON.stringify({ ok: true, value: receipt })})`;
+    yield* intake.resumeApproved();
+    const closed = yield* admissionState(record.id);
+    expect(closed.status).toBe("dispatched");
+    expect(closed.results).toEqual([{ ok: true, value: receipt }]);
+    expect(yield* intake.invoke("t3_thread_launch", input, invocation)).toEqual(receipt);
+    expect(calls.count).toBe(0);
+  }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);
+
+it.effect("a stored result that does not match its schema fails the retry instead of casting", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const calls = { count: 0 };
+    const { intake, record } = yield* heldLaunch(calls);
+    yield* sql`INSERT INTO jones_remote_admission_results (admission_id, result_json) VALUES (${record.id}, '{"ok":"yes"}')`;
+    const retried = yield* intake
+      .invoke("t3_thread_launch", input, invocation)
+      .pipe(Effect.asVoid, Effect.flip);
+    expect(retried.code).toBe("orchestration_error");
+    expect(calls.count).toBe(0);
+    expect((yield* admissionState(record.id)).status).toBe("dispatching");
+  }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);
+
+const insertAdmission = (
+  id: string,
+  status: string,
+  updatedAt: string,
+  extra: { readonly originEnvironmentId?: string; readonly operationId?: string } = {},
+) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const commandId =
+      status === "dispatching" || status === "dispatched" ? `admission:${id}` : null;
+    yield* sql`INSERT INTO jones_remote_admissions
+      (id, client_id, idempotency_key, request_digest, binding_digest, envelope_json, status, command_id, created_at, updated_at)
+      VALUES (${id}, 'remote', ${id}, 'request', 'binding', '{}', ${status}, ${commandId}, ${updatedAt}, ${updatedAt})`;
+    if (extra.operationId !== undefined)
+      yield* sql`UPDATE jones_remote_admissions SET origin_environment_id = ${extra.originEnvironmentId ?? "sender"}, operation_id = ${extra.operationId} WHERE id = ${id}`;
+    if (status === "dispatched")
+      yield* sql`INSERT INTO jones_remote_admission_results (admission_id, result_json) VALUES (${id}, '{"ok":true,"value":{}}')`;
+  });
+const admissionIds = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return (yield* sql<{ id: string }>`SELECT id FROM jones_remote_admissions ORDER BY id`).map(
+    (row) => row.id,
+  );
+});
+const resultIds = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return (yield* sql<{
+    admission_id: string;
+  }>`SELECT admission_id FROM jones_remote_admission_results ORDER BY admission_id`).map(
+    (row) => row.admission_id,
+  );
+});
+const prunedNow = Date.parse("2026-11-10T12:00:00.000Z");
+const cutoff = "2026-10-11T12:00:00.000Z";
+const ago = "2026-09-01T00:00:00.000Z";
+
+it.effect("startup prunes only terminal admissions last changed before the retention cutoff", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(prunedNow);
+    const intake = yield* Intake.RemoteAdmissionIntake;
+    for (const status of ["denied", "cancelled", "dispatched"])
+      yield* insertAdmission(`old-${status}`, status, ago);
+    for (const status of ["evaluating", "passed", "held"])
+      yield* insertAdmission(`old-${status}`, status, ago);
+    yield* insertAdmission("edge-denied", "denied", cutoff);
+    yield* insertAdmission("recent-dispatched", "dispatched", "2026-11-01T00:00:00.000Z");
+    yield* intake.resumeApproved();
+    // Terminal and past the window: gone, with their results. Unfinished work is never
+    // pruned however old, and a terminal row inside the window is kept.
+    expect(yield* admissionIds).toEqual([
+      "edge-denied",
+      "old-evaluating",
+      "old-held",
+      "old-passed",
+      "recent-dispatched",
+    ]);
+    expect(yield* resultIds).toEqual(["recent-dispatched"]);
+  }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);
+
+it.effect("startup prunes a terminal backlog larger than one batch", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(prunedNow);
+    const intake = yield* Intake.RemoteAdmissionIntake;
+    yield* Effect.forEach(
+      Array.from({ length: 450 }, (_, index) => String(index).padStart(3, "0")),
+      (id) => insertAdmission(`old-${id}`, id < "300" ? "dispatched" : "denied", ago),
+    );
+    yield* insertAdmission("old-held", "held", ago);
+    yield* intake.resumeApproved();
+    expect(yield* admissionIds).toEqual(["old-held"]);
+    expect(yield* resultIds).toEqual([]);
+  }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);
+
+it.effect("startup keeps a terminal admission while its thread-result request is pending", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(prunedNow);
+    const intake = yield* Intake.RemoteAdmissionIntake;
+    const sql = yield* SqlClient.SqlClient;
+    const request = (id: string, operationId: string, state: string) =>
+      sql`INSERT INTO jones_thread_result_requests
+        (request_id, target_thread_id, message_id, command_id, origin_kind, origin_environment_id, origin_thread_id, origin_label, operation_id, state, changed_sequence, created_at, updated_at)
+        VALUES (${id}, 'target', ${`message-${id}`}, ${`command-${id}`}, 'linked', 'sender', 'origin', 'Origin', ${operationId}, ${state}, 1, ${ago}, ${ago})`;
+    yield* insertAdmission("awaited", "dispatched", ago, { operationId: "operation-1" });
+    yield* insertAdmission("fulfilled", "dispatched", ago, { operationId: "operation-2" });
+    yield* insertAdmission("unrelated", "denied", ago, { operationId: "operation-3" });
+    yield* insertAdmission("ordinary", "dispatched", ago);
+    yield* request("request-1", "operation-1", "pending");
+    yield* request("request-2", "operation-2", "fulfilled");
+    yield* intake.resumeApproved();
+    expect(yield* admissionIds).toEqual(["awaited"]);
+    expect(yield* resultIds).toEqual(["awaited"]);
+    // Once the request is answered the admission follows at the next startup.
+    yield* sql`UPDATE jones_thread_result_requests SET state = 'fulfilled' WHERE request_id = 'request-1'`;
+    yield* intake.resumeApproved();
+    expect(yield* admissionIds).toEqual([]);
+  }).pipe(Effect.provide(fixture(() => Effect.succeed(hold), memoryWithResultRequests))),
+);

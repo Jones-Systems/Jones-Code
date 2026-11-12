@@ -256,7 +256,7 @@ If never accepted, its tombstone preserves the real action, source and correlati
 has no `acceptedAt`, and authorizes no effect. A fence cannot overwrite an accepted
 operation. A timeout, missing receipt, missing payload or absent job does not
 prove no effect; unknown and held work stays unresolved until exact native or
-target evidence settles it. Check again reads evidence and never turns absence
+target evidence settles it. Refresh now reads evidence and never turns absence
 into Retry or completion. Directive expiry likewise requires matching target
 proof; it is not a synthetic operation fence.
 
@@ -355,6 +355,44 @@ unindexed attempt installable. Background cleanup retains its handle until both 
 and artifact roots are proved reclaimed or absent. Unknown or conflicting evidence
 still holds replacement.
 
+## Progress record and check record
+
+The update state carries an optional `progress` record for the current or last
+download or install. The [step catalog](../../apps/server/src/jones/updates/progress.ts)
+belongs to the server; clients render `stepIndex` of `stepCount` and the step
+labels they receive and never assume a count.
+
+| Kind     | Steps (key, phase)                                                                                                                                                                                   |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| download | `download` (download), `verify-stage` (verify)                                                                                                                                                       |
+| install  | `mark-threads` (prep, only when continuing running threads), `verify-runtime`, `startup-readiness`, `capture-continuity` (prep), `launcher-handoff`, `restart` (install), `confirm-restart` (verify) |
+
+Install steps follow the steps the qualified install already reports; `restart`
+starts when the launcher accepts the handoff. A finished record has phase `done`
+or `failed`; a failure names its step and carries a bounded `error.code` and
+message. Checks never change the record.
+
+Each change is written best effort to `runtime/jones-update-progress.json`:
+owner-only scratch, fsync, rename, at most 4 KiB. A failed write never fails an
+update. On startup the next server reads that record and settles it: an install
+record for the launcher's reported operation finishes at `confirm-restart` as
+`done`, or `failed` with `rolled-back` or `launcher-failed`. Any other unfinished
+record belongs to an exited process and fails as `interrupted`, or as
+`outcome-unavailable` after a handoff the launcher reported nothing for.
+
+The record rides the authenticated read-scope long-poll. `reportedAt` is the
+host clock when the long-poll answered, so a client can compare it with
+`updatedAt` and `stepStartedAt` without trusting its own clock. Older hosts omit
+the key and older clients ignore it. An incompatible change uses a new key, not
+`schema: 2`.
+
+Each check also records `lastCheck` (`at`, `outcome` of `succeeded` or `failed`,
+and a sanitized `reason` for a failure) and logs the failure with its target and
+whether a build was staged. A check that throws while a build is staged keeps the
+stage and records a `failure` classification; the next successful check clears
+it. `stagedAlreadyRunning: true` marks a staged build whose source or tree is the
+one already running, so installing it would change nothing.
+
 ## Client update uncertainty
 
 Web and mobile controls persist bounded operation bindings before sending an update
@@ -441,6 +479,13 @@ recovery. Desktop Quit and updater handoff allow the same server shutdown grace
 and await the captured backend exit, including after forced escalation; expiration
 of the grace alone does not establish closure. Ordinary restart recovery keeps
 queued runs held.
+
+Startup recovery then [closes records left open](../../apps/server/src/jones/orchestration/OrphanedRunRecords.ts)
+under work that already ended (a terminal run, or a provider-native subagent's ended
+runless root turn), marking provider turns, nodes and their turn items `interrupted`.
+Work open by design stays open: queued and held runs, message-capable questions, todo
+lists and plans, active subagent rows, and background items. Planned update continuity
+treats its receipts like recovery's own.
 
 Shutdown releases captured provider sessions concurrently, retaining the existing
 30-second bound for each session scope. The launcher gives the child 75 seconds

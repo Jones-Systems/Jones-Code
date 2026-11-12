@@ -255,6 +255,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           <ComposerBanner.Body className="ps-6 pe-4 pb-1 wrap-anywhere sm:ps-5.5">
             <ChatMarkdown
               text={activeQuestion.question}
+              lineBreaks
               cwd={cwd}
               threadRef={threadRef}
               className={cn("pt-2 text-foreground/85", questionTextAlign)}

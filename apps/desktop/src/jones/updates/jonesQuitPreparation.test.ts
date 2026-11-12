@@ -1,14 +1,20 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Each fixture owns and closes its loopback HTTP server.
 import * as NodeHttp from "node:http";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 import { expect } from "vite-plus/test";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import { prepareAndStopAllPoolInstances } from "../../app/DesktopApp.ts";
 import { prepareLocalBackendsForQuit } from "./jonesQuitPreparation.ts";
+
+// Quit preparation derives the backend credential through `Mac`.
+const layerTest = (instances: Parameters<typeof DesktopBackendPool.layerTest>[0]) =>
+  Layer.mergeAll(DesktopBackendPool.layerTest(instances), NodeCrypto.layerMac);
 
 function makeInstance(input: {
   readonly id: string;
@@ -104,9 +110,7 @@ it.live("prepares every ready owned loopback backend without requiring installer
   withBackend(200, (listener, paths) =>
     Effect.gen(function* () {
       const instances = ["primary", "wsl"].map((id) => makeInstance({ id, listener }));
-      yield* prepareLocalBackendsForQuit().pipe(
-        Effect.provide(DesktopBackendPool.layerTest(instances)),
-      );
+      yield* prepareLocalBackendsForQuit().pipe(Effect.provide(layerTest(instances)));
       expect(paths.filter((path) => path === "/api/jones-updates/prepare-quit")).toHaveLength(2);
     }),
   ),
@@ -121,9 +125,7 @@ it.live("skips not-ready, unconfigured, non-loopback and non-http instances", ()
         makeInstance({ id: "remote", listener: listener.replace("127.0.0.1", "192.0.2.1") }),
         makeInstance({ id: "https", listener: listener.replace("http:", "https:") }),
       ];
-      yield* prepareLocalBackendsForQuit().pipe(
-        Effect.provide(DesktopBackendPool.layerTest(instances)),
-      );
+      yield* prepareLocalBackendsForQuit().pipe(Effect.provide(layerTest(instances)));
       expect(paths).toEqual([]);
     }),
   ),
@@ -144,7 +146,7 @@ it.live.each([200, 404, 500])("prepares before stop and still stops after HTTP %
       });
       // Exercise the actual app hook in an uninterruptible finalizer.
       yield* Effect.scoped(Effect.addFinalizer(() => prepareAndStopAllPoolInstances())).pipe(
-        Effect.provide(DesktopBackendPool.layerTest([instance])),
+        Effect.provide(layerTest([instance])),
       );
       expect(paths.at(-1)).toBe("stop");
     }),
@@ -168,9 +170,7 @@ it.live("tolerates a refused connection and still stops", () =>
           stopped = true;
         }),
     });
-    yield* prepareAndStopAllPoolInstances().pipe(
-      Effect.provide(DesktopBackendPool.layerTest([instance])),
-    );
+    yield* prepareAndStopAllPoolInstances().pipe(Effect.provide(layerTest([instance])));
     expect(stopped).toBe(true);
   }),
 );
@@ -188,10 +188,7 @@ it.effect("bounds even an uninterruptible finalizer's preparation wait at three 
     });
     const fiber = yield* Effect.scoped(
       Effect.addFinalizer(() => prepareAndStopAllPoolInstances()),
-    ).pipe(
-      Effect.provide(DesktopBackendPool.layerTest([{ ...instance, snapshot: Effect.never }])),
-      Effect.forkChild,
-    );
+    ).pipe(Effect.provide(layerTest([{ ...instance, snapshot: Effect.never }])), Effect.forkChild);
     yield* TestClock.adjust("2999 millis");
     expect(stopped).toBe(false);
     yield* TestClock.adjust("1 millis");

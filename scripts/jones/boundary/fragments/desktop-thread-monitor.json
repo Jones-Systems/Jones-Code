@@ -60,10 +60,6 @@
       "to": "apps/web/src/jones/threadMonitor/MonitorToggle.tsx"
     },
     {
-      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
-      "to": "apps/web/src/jones/threadMonitor/planFollowUp.ts"
-    },
-    {
       "from": "apps/web/src/connection/platform.ts",
       "to": "apps/web/src/jones/threadMonitor/store.ts"
     },

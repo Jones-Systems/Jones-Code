@@ -8,11 +8,16 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as ServerConfig from "../../config.ts";
+import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import { makeGitVcsDriverCore } from "../../vcs/GitVcsDriverCore.ts";
 
 export const dependencies = ServerConfig.layerTest(process.cwd(), {
   prefix: "background-git-admission-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
+
+// Marks work for the upstream background Git lane, as settlement sweeps and PR discovery do.
+export const asBackgroundGitWork = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.provideService(effect, GitVcsDriver.BackgroundGitWork, true);
 
 export const makeFixture = Effect.fn("GitAdmissionFixture.make")(function* (
   labels: readonly string[],

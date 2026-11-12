@@ -567,8 +567,10 @@ describe("mobile evidence-aware editable recovery", () => {
         branch: null,
         worktreePath: null,
       });
+      const noPendingThreadIdsAtom = Atom.make((): ReadonlySet<ThreadId> => new Set());
       const releaseReconciliation = drafts.subscribeComposerDraftModelReconciliation({
         registry: appAtomRegistry,
+        pendingThreadIdsAtom: () => noPendingThreadIdsAtom,
         threadRefsAtom: Atom.make([
           { environmentId: message.environmentId, threadId: message.threadId },
         ]),

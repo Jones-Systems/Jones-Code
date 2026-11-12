@@ -7,9 +7,13 @@ import { jonesTargetStatus } from "../updates/targetStatus.ts";
 import {
   deviceSettled,
   deviceState,
+  matchesPlanTarget,
+  planCompletion,
+  deviceStateWithRunningTarget,
   isPlanComplete,
   type InstallPlanDeviceState,
 } from "./model.ts";
+import { installProgressView, progressForOperation, type InstallProgressView } from "./progress.ts";
 
 const copy: Record<InstallPlanDeviceState, string> = {
   removed: "Removed · never started",
@@ -40,14 +44,43 @@ export interface InstallPlanDeviceObservation {
   readonly canOperate: boolean;
 }
 
+/** Ledger states whose own text must stay visible over host step progress. */
+const LEDGER_TEXT_WINS = new Set<InstallPlanDeviceState>([
+  "held",
+  "unknown",
+  "stop-requested",
+  "fenced",
+]);
+const ALREADY_RUNNING_TEXT = "Downloaded · already running this build";
+
+function rowProgress(
+  observation: JonesUpdateObservation | undefined,
+  latestOperationId: string | undefined,
+  planless: boolean,
+): InstallProgressView | undefined {
+  const progress = progressForOperation(observation?.state?.progress, latestOperationId, planless);
+  return progress === undefined ? undefined : installProgressView(progress, observation?.heardAt);
+}
+
+type ActiveWork = "install" | "download" | undefined;
+function activeWork(phase: string, progress: InstallProgressView | undefined): ActiveWork {
+  if (progress?.active) return progress.kind;
+  if (phase === "installing") return "install";
+  if (phase === "downloading" || phase === "verifying") return "download";
+  return undefined;
+}
+
 export function installPlanPresentation(
   state: JonesInstallPlanState,
   options: {
     readonly now: number;
     readonly devices?: ReadonlyMap<EnvironmentId, InstallPlanDeviceObservation>;
     readonly laptop?: JonesUpdateObservation;
+    /** The plan is a local preview with no ledger, so any host progress is shown. */
+    readonly planless?: boolean;
   },
 ) {
+  const planless = options.planless === true;
   const plan = state.current ?? state.last;
   const readOnly = state.readOnly !== undefined || state.current === null;
   if (plan === null)
@@ -61,7 +94,6 @@ export function installPlanPresentation(
       summary: "No update plan",
     };
   const rows = plan.devices.map((device) => {
-    const phase = deviceState(plan, device, options.now);
     const observed = options.devices?.get(device.environmentId);
     const status =
       observed === undefined
@@ -81,30 +113,94 @@ export function installPlanPresentation(
       observed.observation.state?.capability.operations === 1;
     const latest = device.operations.at(-1);
     const lastDownload = device.operations.filter((o) => o.step === "download").at(-1);
+    const receipt = latest?.receipt;
+    const recoveredDownload =
+      receipt?.code === "cleanup-recovered" &&
+      receipt.jobId !== undefined &&
+      (receipt.phase === "interrupted" || receipt.phase === "stopped");
     const retryDownload =
-      latest?.step === "download" && ["failed", "refused"].includes(latest.receipt?.phase ?? "");
-    let text = copy[phase];
+      latest?.step === "download" &&
+      (recoveredDownload || receipt?.phase === "failed" || receipt?.phase === "refused");
+    const retryInstall =
+      latest?.step === "install" && (receipt?.phase === "failed" || receipt?.phase === "refused");
+    const stage = lastDownload?.receipt?.staged;
+    const hostState = observed?.observation.state;
+    const confirmedInstall = device.operations.some(
+      ({ step, operationId, receipt }) =>
+        step === "install" &&
+        receipt?.phase === "completed" &&
+        receipt.updateId === operationId &&
+        receipt.outcome?.status === "committed",
+    );
+    const matchesTarget = matchesPlanTarget(plan, device, hostState);
+    const runningTarget = observed?.observation.freshness === "fresh" && matchesTarget;
+    const targetBuildRunning = !confirmedInstall && runningTarget;
+    const ledgerPhase = deviceState(plan, device, options.now);
+    const phase = deviceStateWithRunningTarget(plan, device, runningTarget, options.now);
+    const supersedable =
+      deviceStateWithRunningTarget(plan, device, true, options.now) !== ledgerPhase;
+    const heardAt = observed?.observation.heardAt;
+    const cachedTarget =
+      observed?.observation.freshness !== "fresh" &&
+      matchesTarget &&
+      heardAt !== undefined &&
+      Number.isFinite(heardAt);
+    const sourceText = runningTarget
+      ? "Updated · running the selected source"
+      : cachedTarget
+        ? `Last confirmed running the selected source · ${relativeAge(heardAt!, options.now)}`
+        : undefined;
+    const sourceHeadline = supersedable && sourceText !== undefined;
+    const matchingRetryStage =
+      lastDownload?.receipt?.phase === "completed" &&
+      stage !== undefined &&
+      stage.stagedHandle === hostState?.stagedHandle &&
+      stage.sourceSha === plan.target.sourceSha &&
+      stage.sourceTree === plan.target.sourceTree &&
+      hostState.provenance?.sourceSha === stage.sourceSha &&
+      hostState.provenance.sourceTree === stage.sourceTree;
+    let text = copy[ledgerPhase];
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";
     if (phase === "directive") text = `Getting ${device.label} ready…`;
-    if (phase === "ended")
+    if (ledgerPhase === "ended")
       text =
         lastDownload?.receipt?.staged !== undefined &&
         observed?.observation.freshness === "fresh" &&
         observed.observation.state?.stagedHandle === lastDownload?.receipt?.staged?.stagedHandle
           ? "Stopped · kept staged files"
           : "Stopped · nothing installed";
-    if (["held", "blocked", "not-updated"].includes(phase) && latest?.receipt?.code !== undefined)
+    if (
+      ["held", "blocked", "not-updated"].includes(ledgerPhase) &&
+      latest?.receipt?.code !== undefined
+    )
       text += ` · ${latest.receipt.code}`;
+    const alreadyRunning =
+      phase === "staged" &&
+      observed?.observation.freshness === "fresh" &&
+      hostState?.stagedAlreadyRunning === true;
+    if (alreadyRunning) text = ALREADY_RUNNING_TEXT;
+    const attemptText = sourceHeadline
+      ? `This plan's attempt: ${text}${latest?.receipt?.code !== undefined && !text.endsWith(latest.receipt.code) ? ` · ${latest.receipt.code}` : ""}`
+      : undefined;
+    const progress = rowProgress(observed?.observation, latest?.operationId, planless);
+    if (progress?.text !== undefined && !LEDGER_TEXT_WINS.has(phase)) text = progress.text;
+    if (sourceHeadline) text = sourceText!;
     return {
+      attemptText,
+      sourceText: sourceHeadline ? undefined : sourceText,
       environmentId: device.environmentId,
       label: device.label,
       phase,
       copyKey: `device.${phase}`,
       text,
+      targetBuildRunning,
       downloadLabel: retryDownload ? "Retry download" : `Download on ${device.label}`,
-      settled: deviceSettled(plan, device),
+      installLabel: retryInstall ? "Retry install" : `Install on ${device.label}`,
+      settled: phase === "updated-elsewhere" || deviceSettled(plan, device),
       status,
+      activeWork: sourceHeadline ? undefined : activeWork(phase, progress),
+      ...(progress === undefined ? {} : { progress }),
       ...(latest === undefined ? {} : { operationId: latest.operationId }),
       actions: {
         remove: !readOnly && device.membership === "selected" && device.operations.length === 0,
@@ -112,7 +208,12 @@ export function installPlanPresentation(
           mutable &&
           ["stopped", "not-updated"].includes(phase) &&
           status?.actions.download === true,
-        install: mutable && phase === "staged" && status?.actions.install === true,
+        install:
+          mutable &&
+          phase === "staged" &&
+          !alreadyRunning &&
+          status?.actions.install === true &&
+          (!retryInstall || matchingRetryStage),
         stop:
           mutable &&
           phase === "downloading" &&
@@ -182,6 +283,21 @@ export function installPlanPresentation(
     preview: `Goes first · ${plan.target.version} available`,
   };
   const complete = isPlanComplete(plan);
+  const laptopAlreadyRunning =
+    laptopPhase === "staged" && laptopState?.stagedAlreadyRunning === true;
+  const laptopProgress = rowProgress(
+    options.laptop?.freshness === "fresh" ? options.laptop : undefined,
+    laptopOperation?.operationId,
+    planless,
+  );
+  const laptopText =
+    laptopOperation?.step === "download" && laptopPhase === "refused"
+      ? "Download request did not start"
+      : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
+        ? "Install didn't finish"
+        : laptopAlreadyRunning
+          ? ALREADY_RUNNING_TEXT
+          : (laptopCopy[laptopPhase] ?? "Not confirmed");
   const laptopActions = {
     download:
       !readOnly &&
@@ -192,6 +308,7 @@ export function installPlanPresentation(
     install:
       !readOnly &&
       (laptopPhase === "staged" || retryLaptopInstall) &&
+      !laptopAlreadyRunning &&
       plan.laptop.gate === undefined &&
       plan.laptop.gateClosed === undefined &&
       laptopState?.capability.install === true &&
@@ -213,25 +330,41 @@ export function installPlanPresentation(
     readOnly,
     rows,
     complete,
-    headerDoneVisible: !readOnly && complete,
+    headerDoneVisible:
+      !readOnly &&
+      (complete ||
+        planCompletion(
+          plan,
+          new Map([...(options.devices ?? [])].map(([id, value]) => [id, value.observation])),
+        ).completable),
     laptop: {
       phase: laptopPhase,
       copyKey: `laptop.${laptopPhase}`,
       text:
-        laptopOperation?.step === "download" && laptopPhase === "refused"
-          ? "Download request did not start"
-          : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
-            ? "Install didn't finish"
-            : (laptopCopy[laptopPhase] ?? "Not confirmed"),
+        laptopProgress?.text !== undefined && laptopPhase !== "held"
+          ? laptopProgress.text
+          : laptopText,
       downloadLabel: retryLaptopDownload ? "Retry download" : "Download on Laptop",
       actions: laptopActions,
+      ...(laptopProgress === undefined ? {} : { progress: laptopProgress }),
       ...(laptopOperation === undefined ? {} : { operationId: laptopOperation.operationId }),
     },
     gateText: "Others wait until Laptop is updated and verified.",
-    summary: complete
-      ? "Update plan finished"
-      : `${selected.filter((r) => r.settled).length} of ${selected.length} devices settled`,
+    summary: complete ? "Update plan finished" : planSummary(selected),
   };
+}
+
+/** Header summary such as "1 installing · 2 of 3 done". */
+export function planSummary(
+  rows: readonly { readonly settled: boolean; readonly activeWork: ActiveWork }[],
+) {
+  const installing = rows.filter((row) => row.activeWork === "install").length;
+  const downloading = rows.filter((row) => row.activeWork === "download").length;
+  return [
+    ...(installing > 0 ? [`${installing} installing`] : []),
+    ...(downloading > 0 ? [`${downloading} downloading`] : []),
+    `${rows.filter((row) => row.settled).length} of ${rows.length} done`,
+  ].join(" · ");
 }
 
 export function recoveryPreflightPresentation(preflight: JonesRecoveryPreflight, label: string) {
@@ -244,4 +377,12 @@ export function recoveryPreflightPresentation(preflight: JonesRecoveryPreflight,
     reason: preflight.policies.cloneOrCopy.reason ?? preflight.clone.reason,
     stop: true,
   };
+}
+
+function relativeAge(at: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
 }

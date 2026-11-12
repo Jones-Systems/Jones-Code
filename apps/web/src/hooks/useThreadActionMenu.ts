@@ -45,6 +45,7 @@ import {
 } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
+import { configuredHostedAppUrl } from "../hostedPairing";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
@@ -97,7 +98,7 @@ export function useThreadActionMenu(input: {
     markThreadUnread,
     turnThreadIntoProject,
   } = useThreadActions();
-  const stopThreadSession = useOrchestrationCommand(threadEnvironment.stopSession, {
+  const stopThread = useOrchestrationCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
@@ -249,7 +250,7 @@ export function useThreadActionMenu(input: {
         }
         case "stop-thread":
           await reportFailure("Failed to stop thread", () =>
-            stopThreadSession({
+            stopThread({
               environmentId: threadRef.environmentId,
               input: { threadId: threadRef.threadId },
             }),
@@ -329,7 +330,9 @@ export function useThreadActionMenu(input: {
           }
           return;
         case "copy-thread":
-          void copyThreadReference(threadChipCopyTarget(threadRef, thread.title));
+          void copyThreadReference(
+            threadChipCopyTarget(threadRef, thread.title, configuredHostedAppUrl()),
+          );
           return;
         case "copy-thread-id":
           copyThreadIdToClipboard(thread.id, { threadId: thread.id });

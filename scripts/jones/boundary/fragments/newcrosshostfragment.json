@@ -111,6 +111,10 @@
       "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/childResultHolds.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
       "to": "apps/server/src/jones/remoteDelegation/ObservationHooks.ts"
     },
@@ -149,6 +153,10 @@
     {
       "from": "apps/server/src/peer/PeerLinks.ts",
       "to": "apps/server/src/jones/peerTransport/InFlight.ts"
+    },
+    {
+      "from": "apps/server/src/peer/RemoteDelegation.ts",
+      "to": "apps/server/src/jones/remoteDelegation/FollowerSupervision.ts"
     }
   ]
 }

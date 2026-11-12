@@ -23,7 +23,8 @@ import { JONES_TRIAGE_REPOSITORY_URL } from "../jones/triage/bindings.ts";
 const GIT_ENV = {
   GIT_TERMINAL_PROMPT: "0",
   GIT_ASKPASS: "",
-  LC_ALL: "C",
+  // English messages without overriding LC_CTYPE, which a global post-checkout hook inherits.
+  LANGUAGE: "C",
 } satisfies NodeJS.ProcessEnv;
 
 /** Starts in-app triage sessions: the same files `t3 triage` writes, plus a source clone. */

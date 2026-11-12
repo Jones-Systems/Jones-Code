@@ -15,13 +15,19 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
 import {
   ExecutionSessionRevalidationError,
+  ExecutionSessionRevalidationUnavailableError,
   prepareExecutionSession,
 } from "./prepareExecutionSession.ts";
+
+const isRevalidationUnavailable = Schema.is(ExecutionSessionRevalidationUnavailableError);
+const isRevalidationError = Schema.is(ExecutionSessionRevalidationError);
+const isEventSinkWriteError = Schema.is(Sink.EventSinkWriteError);
 
 it.effect(
   "retirement persists the released identity before returning for restart and handoff; retries keep event IDs",
@@ -76,7 +82,7 @@ it.effect(
 
 function makeFixture(
   transition: "restart_and_resume" | "create_with_handoff" | "switch_model_in_session" | "reuse",
-  fault?: "detach" | "persist" | "stale" | "selection",
+  fault?: "detach" | "persist" | "stale" | "selection" | "read" | "read-persist" | "read-stale",
   continuation = false,
   retirement?: {
     readonly marked: boolean;
@@ -124,7 +130,14 @@ function makeFixture(
             cause: "Selection changed while retirement was pending.",
           }),
         )
-      : Effect.void,
+      : fault === "read" || fault === "read-persist" || fault === "read-stale"
+        ? Effect.fail(
+            new ExecutionSessionRevalidationUnavailableError({
+              runId: projection.runs[0]!.id,
+              cause: new Error("private database read"),
+            }),
+          )
+        : Effect.void,
   ).pipe(
     Effect.tap(
       Effect.sync(() => {
@@ -148,6 +161,8 @@ function makeFixture(
         }),
         Layer.mock(Sessions.ProviderSessionManagerV2)({
           awaitThreadRetirement: () => retirement?.wait ?? Effect.void,
+          // No live runtime reports background work, so released sessions detach.
+          get: () => Effect.succeedNone,
           hasRetiredWriter: () => Effect.succeed(retirement?.marked ?? false),
           detach: Effect.fn("PrepareExecutionSessionTest.detach")(function* ({
             providerSessionId,
@@ -169,9 +184,9 @@ function makeFixture(
             function* (input) {
               order.push("persist");
               writes.push(input);
-              if (fault === "persist")
+              if (fault === "persist" || fault === "read-persist")
                 return yield* new Sink.EventSinkWriteError({ eventCount: input.events.length });
-              return { committed: fault !== "stale", storedEvents: [] };
+              return { committed: fault !== "stale" && fault !== "read-stale", storedEvents: [] };
             },
           ),
         }),
@@ -214,6 +229,40 @@ it.effect(
       assert.equal(result._tag, "Failure");
       assert.deepEqual(fixture.order, ["detach"]);
       assert.deepEqual(fixture.writes, []);
+    }),
+);
+
+it.effect("a failed read after retirement stays unavailable rather than a selection mismatch", () =>
+  Effect.gen(function* () {
+    const fixture = makeFixture("restart_and_resume", "read");
+    const error = yield* Effect.flip(fixture.start);
+    assert.isTrue(isRevalidationUnavailable(error));
+    assert.notInclude(String(error), "selection changed");
+    assert.notInclude(String(error), "private database read");
+    assert.deepEqual(fixture.order, ["detach", "persist"]);
+    assert.deepEqual(
+      fixture.writes[0]!.events.map((event) => event.type),
+      ["provider-session.detached"],
+    );
+  }),
+);
+
+it.effect.each(["read-persist", "read-stale"] as const)(
+  "recording completed retirement after an unavailable read still refuses %s before open",
+  (fault) =>
+    Effect.gen(function* () {
+      const fixture = makeFixture("restart_and_resume", fault);
+      const error = yield* Effect.flip(fixture.start);
+      assert.isTrue(
+        fault === "read-persist" ? isEventSinkWriteError(error) : isRevalidationError(error),
+      );
+      assert.deepEqual(fixture.order, ["detach", "persist"]);
+      assert.equal(fixture.writes[0]!.expectedStatus, "starting");
+      assert.equal(fixture.writes[0]!.activeAttemptId, fixture.projection.runs[0]!.activeAttemptId);
+      assert.deepEqual(
+        fixture.writes[0]!.events.map((event) => event.type),
+        ["provider-session.detached"],
+      );
     }),
 );
 

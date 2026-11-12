@@ -41,6 +41,7 @@ import * as Catalog from "../../provider/ProviderRegistry.ts";
 import { resolveCodexHomeLayout } from "../../provider/Drivers/CodexHomeLayout.ts";
 import * as Settings from "../../serverSettings.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as PortScanner from "../../preview/PortScanner.ts";
 import * as Evidence from "../codexFailover/CodexFailoverEvidence.ts";
 import * as Option from "effect/Option";
 import * as ControlAdmission from "../orchestration/ControlAdmission.ts";
@@ -224,7 +225,7 @@ const scenario = (
       }).pipe(Effect.map((settings) => ({ account, settings }))),
     );
     const clientFactory = yield* Codex.CodexAppServerClientFactory.pipe(
-      Effect.provide(Codex.layerAppServerClientFactory),
+      Effect.provide(Codex.layerAppServerClientFactory.pipe(Layer.provide(PortScanner.layerTest))),
     );
     const adapterDependencies = yield* Effect.context<
       | SecureRandom.SecureRandom

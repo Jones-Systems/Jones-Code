@@ -33,6 +33,12 @@ import {
 import * as Repository from "./NativeCreationRepository.ts";
 import * as RepositorySqlite from "./NativeCreationRepositorySqlite.ts";
 
+const decodePreparationBinding = Schema.decodeEffect(NativePreparationBinding);
+const decodeHistoricalBinding = Schema.decodeEffect(NativeCreationHistoricalBinding);
+const decodeCommand = Schema.decodeEffect(OrchestrationV2Command);
+const decodeExecutionReference = Schema.decodeEffect(NativeCreationExecutionReferenceV2);
+const decodeWholeOperationEvidence = Schema.decodeEffect(NativeCreationWholeOperationEvidence);
+
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 it.effect("records additive fork migration 3 without changing upstream migration identity", () =>
   Effect.gen(function* () {
@@ -82,10 +88,19 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 137, name: "NativeCreationLeaseRenewal" },
         { migration_id: 138, name: "WorkspaceRetirement" },
         { migration_id: 139, name: "ConversationWorkspace" },
-        { migration_id: 140, name: "NativeExecutionProcessCustody" },
-        { migration_id: 141, name: "OrdinaryCheckoutProcessCustody" },
-        { migration_id: 142, name: "AuthSessionClientMetadata" },
-        { migration_id: 143, name: "WorkspaceRuntimeUses" },
+        { migration_id: 140, name: "WorkstreamsNative" },
+        { migration_id: 141, name: "WorkstreamsSourceEnrollments" },
+        { migration_id: 142, name: "WorkstreamsRollupAttempts" },
+        { migration_id: 143, name: "WorkstreamsPeerSessionPins" },
+        { migration_id: 144, name: "WorkstreamsMemberBindings" },
+        { migration_id: 145, name: "WorkstreamsForwardReceipts" },
+        { migration_id: 146, name: "SettlementOriginRetention" },
+        { migration_id: 147, name: "QueueHolds" },
+        { migration_id: 148, name: "NativeExecutionProcessCustody" },
+        { migration_id: 149, name: "OrdinaryCheckoutProcessCustody" },
+        { migration_id: 150, name: "AuthSessionClientMetadata" },
+        { migration_id: 151, name: "WorkspaceRuntimeUses" },
+        { migration_id: 152, name: "PeerLinksAdoption" },
       ],
     );
     assert.deepEqual(
@@ -121,25 +136,13 @@ const upgradeRepository = RepositorySqlite.layer.pipe(Layer.provideMerge(release
 
 const compiledMainSchema11 = Schema.decodeEffect(ProviderRuntimeBinding);
 
-const compiledMainSchema10 = Schema.decodeEffect(NativeCreationWholeOperationEvidence);
-
-const compiledMainSchema9 = Schema.decodeEffect(NativeCreationExecutionReferenceV2);
-
-const compiledMainSchema8 = Schema.decodeEffect(OrchestrationV2Command);
-
-const compiledMainSchema7 = Schema.decodeEffect(OrchestrationV2Command);
-
-const compiledMainSchema6 = Schema.decodeEffect(NativeCreationHistoricalBinding);
-
-const compiledMainSchema5 = Schema.decodeEffect(NativePreparationBinding);
-
 const nativeUpgradeFixture = Effect.gen(function* () {
   const now = "2026-11-05T12:00:00.000Z";
   yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(now)));
   const sql = yield* SqlClient.SqlClient;
   const repository = yield* Repository.NativeCreationRepository;
   const outbox = yield* Outbox.EffectOutboxV2;
-  const binding = yield* compiledMainSchema5({
+  const binding = yield* decodePreparationBinding({
     backend_instance: "lease-upgrade-backend",
     environment_id: "lease-upgrade-environment",
     project_id: "lease-upgrade-project",
@@ -173,7 +176,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
       }),
     ),
   );
-  const historical = yield* compiledMainSchema6({
+  const historical = yield* decodeHistoricalBinding({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -207,7 +210,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
     },
     Effect.succeed(historical),
   );
-  const command = yield* compiledMainSchema7({
+  const command = yield* decodeCommand({
     type: "prepared-run.release",
     commandId: `${prepared.commandId}:native:v2:message`,
     threadId: prepared.threadId,
@@ -226,15 +229,11 @@ const nativeUpgradeFixture = Effect.gen(function* () {
     beforeUpgrade,
   );
   const legacyBefore = yield* sql`SELECT * FROM jones_native_creation_execution_starts`;
-  assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-    [137, "NativeCreationLeaseRenewal"],
-    [138, "WorkspaceRetirement"],
-    [139, "ConversationWorkspace"],
-    [140, "NativeExecutionProcessCustody"],
-    [141, "OrdinaryCheckoutProcessCustody"],
-    [142, "AuthSessionClientMetadata"],
-    [143, "WorkspaceRuntimeUses"],
-  ]);
+  // Every Jones migration after the released 136, in ledger order.
+  assert.deepStrictEqual(
+    yield* runJonesMigrations(jonesMigrationEntries),
+    jonesMigrationEntries.filter(([id]) => id >= 137).map(([id, name]) => [id, name]),
+  );
   assert.deepStrictEqual(
     yield* sql`SELECT * FROM jones_native_creation_execution_starts`,
     legacyBefore,
@@ -243,7 +242,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
     prepared.commandId,
     command.commandId,
   ]);
-  const normalized = yield* compiledMainSchema8({
+  const normalized = yield* decodeCommand({
     type: "message.dispatch",
     createdBy: "user",
     creationSource: "server",
@@ -257,7 +256,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
   });
   yield* repository.recordNormalizedCommand(claimId, normalized);
   yield* repository.reserveCommand(claimId, command);
-  const reference = yield* compiledMainSchema9({
+  const reference = yield* decodeExecutionReference({
     version: 2,
     claimId,
     stageCommandId: command.commandId,
@@ -322,7 +321,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
     expectedClaim,
   );
   assert.strictEqual(start.status, "started");
-  const evidence = yield* compiledMainSchema10({
+  const evidence = yield* decodeWholeOperationEvidence({
     version: 1,
     outcome: "confirmed_success",
     effectId: reference.effectId,

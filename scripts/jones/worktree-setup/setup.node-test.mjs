@@ -5,9 +5,11 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeStream from "node:stream";
 import * as NodeTest from "node:test";
+import { recordCompletion } from "../../../apps/server/src/jones/workspaceRetirement/CompletionObservation.ts";
 import { availableBytes, parseOptions, runSetupWorktree, setupWorktree } from "./setup.ts";
 
 const GIB = 1024n ** 3n;
+const SINK_TEST_DEADLINE_MS = 10_000;
 async function fixture(run) {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-setup-"));
   const cleanups = [];
@@ -467,6 +469,9 @@ NodeTest.test(
           ),
         );
       const harness = lifecycleHarness(worktree, onCleanup);
+      // This case asserts the records, not the sink's 100 ms bound; a slow host must not drop them.
+      harness.dependencies.record = (observation) =>
+        recordCompletion(observation, undefined, SINK_TEST_DEADLINE_MS);
       NodeAssert.equal(await harness.run([], project), 0);
       NodeAssert.equal(readRecords()[0].status, "succeeded");
       NodeAssert.equal(readRecords()[0].proofStatus, "deferred");

@@ -1,4 +1,9 @@
-import { OrchestratorMcpFailure, PeerLinkError, type EnvironmentId } from "@t3tools/contracts";
+import {
+  OrchestratorMcpFailure,
+  PeerLinkError,
+  type EnvironmentId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -11,8 +16,12 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
-import type { PeerMcpClient } from "../../peer/PeerMcpClient.ts";
-import { encodeLinkedMessageOrigin, LINKED_MESSAGE_ORIGIN_HEADER } from "./LinkedMessageOrigin.ts";
+import type { PeerCallLimits, PeerMcpClient } from "../../peer/PeerMcpClient.ts";
+import {
+  encodeLinkedMessageOrigin,
+  LINKED_MESSAGE_ORIGIN_HEADER,
+  type LinkedMessageOrigin,
+} from "./LinkedMessageOrigin.ts";
 import * as InFlight from "./InFlight.ts";
 import {
   fitLinkedRequestContext,
@@ -22,6 +31,50 @@ import {
   requestHeaderBytes,
   UNCONTROLLED_HEADER_ALLOWANCE,
 } from "./LinkedRequestContext.ts";
+
+export interface SendReceiptLookupInput<S extends Schema.Decoder<unknown>> {
+  readonly environmentId: EnvironmentId;
+  readonly expectedGeneration: string;
+  readonly origin: LinkedMessageOrigin;
+  readonly limits: PeerCallLimits;
+  readonly request: {
+    readonly threadId: ThreadId;
+    /** The exact forwarded key captured for SEND, not a new caller key. */
+    readonly clientRequestId: string;
+    readonly requestDigest: string;
+  };
+  readonly success: S;
+}
+
+/** Internal transport adapter; receiver availability and receipt evidence are separate. */
+export const lookupSendReceipt = Effect.fn("PeerMcpTransport.lookupSendReceipt")(function* <
+  S extends Schema.Decoder<unknown>,
+>(client: Pick<PeerMcpClient["Service"], "call">, input: SendReceiptLookupInput<S>) {
+  if (
+    typeof input.expectedGeneration !== "string" ||
+    input.expectedGeneration.trim().length === 0 ||
+    input.origin === undefined ||
+    input.origin === null
+  ) {
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "Exact SEND receipt lookup requires its captured peer generation and origin.",
+    });
+  }
+  return yield* client.call({
+    environmentId: input.environmentId,
+    expectedGeneration: input.expectedGeneration,
+    tool: "t3_thread_send_receipt_lookup",
+    arguments: {
+      threadId: input.request.threadId,
+      clientRequestId: input.request.clientRequestId,
+      requestDigest: input.request.requestDigest,
+    },
+    limits: input.limits,
+    origin: input.origin,
+    success: input.success,
+  });
+});
 
 /** The protocol negotiated by this client with the peer's `/mcp`. */
 const PROTOCOL_VERSION = "2025-06-18";
@@ -65,6 +118,16 @@ const decodeToolResult = Schema.decodeUnknownEffect(ToolResult);
 const decodeInitialization = Schema.decodeUnknownEffect(Initialization);
 const decodeFailure = Schema.decodeUnknownOption(Failure);
 const decodeTextFailure = Schema.decodeUnknownOption(Schema.fromJsonString(Failure));
+/**
+ * Failures the peer itself answered with: an authenticated reply that refuses
+ * this one call. The link works, so they must not be recorded as a link failure.
+ */
+const peerRefusals = new WeakSet<object>();
+const peerRefusal = (fields: ConstructorParameters<typeof OrchestratorMcpFailure>[0]) => {
+  const failure = new OrchestratorMcpFailure(fields);
+  peerRefusals.add(failure);
+  return failure;
+};
 const malformed = () =>
   new OrchestratorMcpFailure({
     code: "orchestration_error",
@@ -141,7 +204,7 @@ const readEnvelope = Effect.fn("PeerMcpTransport.readEnvelope")(function* (
   if (envelope.error !== undefined) {
     const refused = decodeFailure(envelope.error.data);
     return yield* refused._tag === "Some"
-      ? new OrchestratorMcpFailure(refused.value)
+      ? peerRefusal(refused.value)
       : new OrchestratorMcpFailure({
           code: "orchestration_error",
           message:
@@ -365,6 +428,12 @@ export const make = Effect.gen(function* () {
           Effect.mapError(fromLinkError),
           Effect.tapError(() => retireObsolete(input.environmentId).pipe(Effect.ignore)),
         );
+        if (
+          input.expectedGeneration !== undefined &&
+          input.expectedGeneration !== resolved.generation
+        ) {
+          return yield* changed();
+        }
         generation = resolved.generation;
         const limitHeader = {
           [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
@@ -444,12 +513,14 @@ export const make = Effect.gen(function* () {
           const refused = hasStructured
             ? decodeFailure(result.structuredContent)
             : decodeTextFailure(text);
-          return yield* refused._tag === "Some"
-            ? new OrchestratorMcpFailure(refused.value)
-            : new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: text || "The linked environment refused the call.",
-              });
+          return yield* peerRefusal(
+            refused._tag === "Some"
+              ? refused.value
+              : {
+                  code: "orchestration_error",
+                  message: text || "The linked environment refused the call.",
+                },
+          );
         }
         return yield* (
           hasStructured
@@ -471,7 +542,10 @@ export const make = Effect.gen(function* () {
         Effect.tapError((error) =>
           generation === undefined
             ? Effect.void
-            : links.recordOutcome(input.environmentId, generation, { error: error.message }),
+            : links.recordOutcome(input.environmentId, generation, {
+                // A refusal is still an answer: the link works, so only this call fails.
+                error: peerRefusals.has(error) ? null : error.message,
+              }),
         ),
         Effect.tap(() =>
           generation === undefined

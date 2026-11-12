@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   currentT3Placement,
+  liveT3PlacementsCurrent,
   type LiveT3Placements,
   type WorkstreamAssignmentIndex,
 } from "@t3tools/client-runtime/state/workstreams";
@@ -40,7 +41,10 @@ export function mobileMembershipBlock(input: {
     return "Workstreams are read-only.";
   if (input.conflictingThreadKeys.has(input.threadKey))
     return "This thread has conflicting Workstream assignments. Changes are blocked until it is re-verified.";
-  if (input.snapshot.placements?.readiness !== "ready")
+  if (
+    input.snapshot.placements?.readiness !== "ready" ||
+    !liveT3PlacementsCurrent(input.snapshot.placements)
+  )
     return "Thread assignment requires current verified enrollment.";
   return null;
 }
@@ -68,7 +72,8 @@ export function planNativeMembership(input: {
     context.authorization_revision !== binding.authorizationRevision ||
     context.server_generation !== binding.serverGeneration ||
     context.registry_version !== binding.registryVersion ||
-    input.placements.readiness !== "ready"
+    input.placements.readiness !== "ready" ||
+    !liveT3PlacementsCurrent(input.placements)
   )
     throw new Error("Thread placement binding changed. Refresh before changing membership.");
   const key = nativeWorkstreamThreadKey(input.thread.environmentId, input.thread.id);

@@ -1,9 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The fixture owns one loopback listener and closes it after the request.
 import * as NodeHttp from "node:http";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
-import { expect } from "vite-plus/test";
+import { expect, vi } from "vite-plus/test";
 import {
   DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS,
   currentDesktopBootstrapToken,
@@ -78,20 +79,20 @@ it.effect("derives the rotating credential a long-running backend still accepts"
     const secret = "fixture-secret";
     const launchedAt = Date.UTC(2026, 9, 17, 15, 37, 39);
     const installAt = Date.UTC(2026, 9, 18, 14, 39, 28);
-    const frozen = currentDesktopBootstrapToken(secret, launchedAt);
+    const frozen = yield* currentDesktopBootstrapToken(secret, launchedAt);
     expect(installAt - launchedAt).toBeLessThan(2 * DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS);
     // The token frozen into the launch config has already left the accepted windows.
-    expect(isValidDesktopBootstrapToken(secret, frozen, installAt)).toBe(false);
+    expect(yield* isValidDesktopBootstrapToken(secret, frozen, installAt)).toBe(false);
     yield* TestClock.setTime(installAt);
     const credential = yield* jonesNativeBootstrapCredential({
       desktopBootstrapToken: frozen,
       desktopBootstrapSecret: secret,
     });
-    expect(isValidDesktopBootstrapToken(secret, credential, installAt)).toBe(true);
+    expect(yield* isValidDesktopBootstrapToken(secret, credential, installAt)).toBe(true);
     expect(yield* jonesNativeBootstrapCredential({ desktopBootstrapToken: "legacy" })).toBe(
       "legacy",
     );
-  }),
+  }).pipe(Effect.provide(NodeCrypto.layerMac)),
 );
 
 it("names the refused step without returning response bodies", async () =>
@@ -140,6 +141,7 @@ it("sends the durable attempt independently of the staged artifact to the native
     body: string;
     authorization: string | undefined;
   }> = [];
+  using socketTimeout = vi.spyOn(NodeHttp.ClientRequest.prototype, "setTimeout");
   const server = NodeHttp.createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -194,6 +196,7 @@ it("sends the durable attempt independently of the staged artifact to the native
       currentVersion: "1.0.0",
     });
     expect(requests[1]!.authorization).toBe("Bearer fixture-access");
+    expect(socketTimeout.mock.calls.map(([ms]) => ms)).toEqual([30_000, 60_000]);
   } finally {
     await new Promise<void>((resolve) => {
       server.close(() => resolve());

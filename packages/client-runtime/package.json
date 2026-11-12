@@ -611,6 +611,18 @@
       "types": "./src/jones/activity/reportLanes.ts",
       "default": "./src/jones/activity/reportLanes.ts"
     },
+    "./jones/workstreams/native-lifetime": {
+      "types": "./src/jones/workstreams/nativeLifetime.ts",
+      "default": "./src/jones/workstreams/nativeLifetime.ts"
+    },
+    "./jones/workstreams/native-http": {
+      "types": "./src/jones/workstreams/nativeHttp.ts",
+      "default": "./src/jones/workstreams/nativeHttp.ts"
+    },
+    "./jones/workstreams/native-lifetime-testing": {
+      "types": "./src/jones/workstreams/nativeLifetime.testkit.ts",
+      "default": "./src/jones/workstreams/nativeLifetime.testkit.ts"
+    },
     "./jones/thread-monitor": {
       "types": "./src/jones/threadMonitor/index.ts",
       "default": "./src/jones/threadMonitor/index.ts"
@@ -654,6 +666,38 @@
     "./state/workstreams": {
       "types": "./src/state/workstreams/index.ts",
       "default": "./src/state/workstreams/index.ts"
+    },
+    "./composer-model-mentions": {
+      "types": "./src/composerModelMentions.ts",
+      "default": "./src/composerModelMentions.ts"
+    },
+    "./model-search": {
+      "types": "./src/modelSearch.ts",
+      "default": "./src/modelSearch.ts"
+    },
+    "./state/environmentHttpAuth": {
+      "types": "./src/state/environmentHttpAuth.ts",
+      "default": "./src/state/environmentHttpAuth.ts"
+    },
+    "./state/connectMcpApproval": {
+      "types": "./src/state/connectMcpApproval.ts",
+      "default": "./src/state/connectMcpApproval.ts"
+    },
+    "./state/context-window": {
+      "types": "./src/state/contextWindow.ts",
+      "default": "./src/state/contextWindow.ts"
+    },
+    "./pull-request-reply": {
+      "types": "./src/pullRequestReply.ts",
+      "default": "./src/pullRequestReply.ts"
+    },
+    "./pull-request-reviewers": {
+      "types": "./src/pullRequestReviewers.ts",
+      "default": "./src/pullRequestReviewers.ts"
+    },
+    "./provider-instance-ids": {
+      "types": "./src/providerInstanceIds.ts",
+      "default": "./src/providerInstanceIds.ts"
     }
   },
   "scripts": {
@@ -673,6 +717,7 @@
     "@t3tools/provider-muse": "workspace:*",
     "@t3tools/provider-opencode": "workspace:*",
     "@t3tools/provider-pi": "workspace:*",
+    "@t3tools/secret-provider-definitions": "workspace:*",
     "@t3tools/shared": "workspace:*",
     "@t3tools/source-control-core": "workspace:*",
     "@t3tools/source-control-definitions": "workspace:*",

@@ -7,6 +7,7 @@ import * as Exit from "effect/Exit";
 import type { Connection } from "effect/sql/SqlConnection";
 import { makeCheckpointReaderAdmission, makeReaderPool, type ReaderSlot } from "./admission.ts";
 import type { SqliteReaderPoolOptions } from "../sqliteReaderContracts.ts";
+import { findSqliteReaderAdmissionFailure } from "./admissionFailure.ts";
 
 const options = (size: 2 | 3): SqliteReaderPoolOptions => ({
   size,
@@ -141,6 +142,7 @@ it.effect("bounds checkpoint waiting by the original queue deadline", () =>
     );
     const error = yield* Effect.scoped(acquire(pool, "background")).pipe(Effect.flip);
     assert.include(String(error.reason.cause), "checkpoint-held");
+    assert.equal(findSqliteReaderAdmissionFailure(error)?.reason, "checkpoint-held");
     yield* bridge.update({ generation: 1, state: "open" });
     assert.equal((yield* Effect.scoped(acquire(pool, "background"))).slotId, 1);
   }).pipe(Effect.scoped),

@@ -20,7 +20,7 @@ export function describeDesktopBackgroundPreparation(preparation: DesktopPrepara
   const target = preparation.targetVersion ?? "The newest build";
   switch (preparation.phase) {
     case "off":
-      return "When on, newer builds download and verify while you work. Installing stays your choice.";
+      return "Download and verify newer builds while you work. Installing stays your choice.";
     case "unavailable":
       return preparation.reason ?? "This app cannot install Jones builds, so nothing is prepared.";
     case "blocked":

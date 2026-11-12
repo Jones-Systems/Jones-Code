@@ -13,6 +13,7 @@ import {
   parseTailscaleServeRoutesTo,
   parseTailscaleSshEnabled,
   parseTailscaleStatus,
+  readTailscaleServeConfigJson,
   readTailscaleSshEnabled,
   readTailscaleStatus,
   TailscaleCommandExitError,
@@ -339,7 +340,8 @@ describe("tailscale", () => {
       yield* readTailscaleStatus.pipe(Effect.provide(layer));
       yield* readTailscaleSshEnabled.pipe(Effect.provide(layer));
       yield* ensureTailscaleServe({ localPort: 45_678 }).pipe(Effect.provide(layer));
-      assert.deepEqual(killGraces, [500, 500, 500]);
+      yield* readTailscaleServeConfigJson.pipe(Effect.provide(layer));
+      assert.deepEqual(killGraces, [500, 500, 500, 500]);
     });
   });
 });

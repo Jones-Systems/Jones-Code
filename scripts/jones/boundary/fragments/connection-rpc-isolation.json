@@ -11,7 +11,9 @@
     "packages/client-runtime/src/jones/sync/producerGuard.ts",
     "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
     "patches/effect@4.1.2.patch",
-    "packages/client-runtime/src/jones/connection/unusedAuthorization.ts"
+    "packages/client-runtime/src/jones/connection/unusedAuthorization.ts",
+    "packages/client-runtime/src/jones/sync/sessionResubscribe.ts",
+    "packages/client-runtime/src/jones/sync/sessionResubscribe.test.ts"
   ],
   "hookPaths": [
     "packages/client-runtime/src/connection/driver.ts",
@@ -56,6 +58,10 @@
     {
       "from": "packages/client-runtime/src/state/threads.ts",
       "to": "packages/client-runtime/src/jones/sync/producerGuard.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/rpc/client.ts",
+      "to": "packages/client-runtime/src/jones/sync/sessionResubscribe.ts"
     }
   ]
 }

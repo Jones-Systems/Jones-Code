@@ -8,6 +8,7 @@ import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts"
 import {
   CommandId,
   ChatAttachment,
+  type GitCommandError,
   MessageId,
   ProjectId,
   ThreadId,
@@ -17,14 +18,19 @@ import {
   type WorktreeMcpHandoffResult,
   type WorktreeMcpSetupScriptStatus,
   type WorktreeMcpStatusResult,
+  type VcsListRefsInput,
+  type VcsListRefsResult,
 } from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type * as PlatformError from "effect/PlatformError";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -54,6 +60,12 @@ export class WorktreeMcpService extends Context.Service<
     readonly status: (
       scope: McpInvocationScope,
     ) => Effect.Effect<WorktreeMcpStatusResult, WorktreeMcpFailure>;
+    readonly listRefs: (
+      input: Omit<VcsListRefsInput, "cwd"> & {
+        readonly worktreePath: string | null;
+        readonly workspaceRoot: string;
+      },
+    ) => Effect.Effect<VcsListRefsResult, GitCommandError | PlatformError.PlatformError>;
   }
 >()("t3/mcp/WorktreeMcpService") {}
 
@@ -94,6 +106,7 @@ export const make = Effect.gen(function* () {
   const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
   const conversationPolicy = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
   const lookupProvenance = yield* WorkspaceProvenance.optionalLookup;
+  const fileSystem = yield* FileSystem.FileSystem;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -157,10 +170,14 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const readDefaultStartFromOrigin = serverSettings.getSettings.pipe(
-    Effect.map((settings) => settings.newWorktreesStartFromOrigin),
-    asOperationFailed("Unable to read server settings"),
-  );
+  const readDefaultStartFromOrigin = (projectId: ProjectId) =>
+    serverSettings.getSettings.pipe(
+      Effect.map(
+        (settings) =>
+          resolveProjectSettings(settings, projectId).settings.newWorktreesStartFromOrigin,
+      ),
+      asOperationFailed("Unable to read server settings"),
+    );
 
   const handoffIds = (scope: McpThreadInvocationScope) =>
     random.uuidV4().pipe(
@@ -246,7 +263,8 @@ export const make = Effect.gen(function* () {
       baseRef = localStatus.refName;
     }
 
-    const startFromOrigin = input.startFromOrigin ?? (yield* readDefaultStartFromOrigin);
+    const startFromOrigin =
+      input.startFromOrigin ?? (yield* readDefaultStartFromOrigin(project.id));
 
     let worktreeBaseRef = baseRef;
     let baseRefName = baseRef;
@@ -508,7 +526,7 @@ export const make = Effect.gen(function* () {
         if (baseRef === undefined)
           return yield* failure("invalid_request", "Select a base ref for the handoff.");
         let revision = baseRef;
-        if (input.startFromOrigin ?? (yield* readDefaultStartFromOrigin)) {
+        if (input.startFromOrigin ?? (yield* readDefaultStartFromOrigin(project.id))) {
           const remote = yield* gitWorkflow
             .fetchWorktreeBaseCommit({ cwd: project.workspaceRoot, refName: baseRef })
             .pipe(asOperationFailed("Unable to fetch handoff base"));
@@ -778,7 +796,7 @@ export const make = Effect.gen(function* () {
       const projection = yield* loadThread(scope);
       const project = yield* loadProject(scope, projection.thread.projectId);
 
-      const defaultStartFromOrigin = yield* readDefaultStartFromOrigin;
+      const defaultStartFromOrigin = yield* readDefaultStartFromOrigin(project.id);
 
       const provenance = yield* lookupProvenance({ threadId: scope.thread.threadId });
       const binding = Option.isSome(conversationPolicy)
@@ -932,13 +950,26 @@ export const make = Effect.gen(function* () {
         ),
       ),
     );
-  return WorktreeMcpService.of({ handoff, status, attachForTerminal, attachForTurn });
+
+  const listRefs: WorktreeMcpService["Service"]["listRefs"] = Effect.fn(
+    "WorktreeMcpService.listRefs",
+  )(function* ({ worktreePath, workspaceRoot, ...refs }) {
+    // Storage cleanup removes a worktree but keeps its path on the thread.
+    const cwd =
+      worktreePath !== null && (yield* fileSystem.exists(worktreePath))
+        ? worktreePath
+        : workspaceRoot;
+    return yield* gitWorkflow.listRefs({ ...refs, cwd });
+  });
+
+  return WorktreeMcpService.of({ handoff, status, attachForTerminal, attachForTurn, listRefs });
 });
 
 export const layer: Layer.Layer<
   WorktreeMcpService,
   never,
   | SecureRandom.SecureRandom
+  | FileSystem.FileSystem
   | ThreadManagementService.ThreadManagementService
   | ProjectService.ProjectService
   | ServerSettings.ServerSettingsService

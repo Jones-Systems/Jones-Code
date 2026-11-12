@@ -50,6 +50,7 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
+import { settleRunOfIdleTurn } from "../jones/orchestration/IdleTurnSettlement.ts";
 import {
   actionWorkerLane,
   makeActionWorkerAdmission,
@@ -270,6 +271,26 @@ export const layerExecutor: Layer.Layer<
               );
           case "provider-turn.interrupt": {
             const request = effect.request;
+            // Jones: a failed interrupt of an idle adapter's turn still settles that turn's run.
+            const settleIdleRun =
+              request.subagent !== undefined
+                ? Effect.void
+                : settleRunOfIdleTurn({
+                    session: providerSessions.get(request.providerSessionId, {
+                      touchActivity: false,
+                    }),
+                    providerTurnId: request.providerTurnId,
+                    settleRun: Effect.suspend(() =>
+                      threads.dispatch({
+                        type: "thread.background-work.settle",
+                        commandId: CommandId.make(`${effect.id}:idle-run-settled`),
+                        threadId: effect.threadId,
+                        providerThreadId: request.providerThreadId,
+                        providerTurnId: request.providerTurnId,
+                        runOnly: true,
+                      }),
+                    ),
+                  }).pipe(Effect.ignore);
             return providerTurnControl
               .interrupt({
                 threadId: effect.threadId,
@@ -311,6 +332,9 @@ export const layerExecutor: Layer.Layer<
                     ),
                   () => Effect.succeed({ unresponsive: false, outcome: undefined } as const),
                 ),
+                // Jones: any other failed interrupt settles the run when the runtime reports the
+                // turn idle, then still fails so the effect keeps its retry or failure handling.
+                Effect.tapError(() => settleIdleRun),
                 Effect.andThen(({ unresponsive, outcome }) =>
                   unresponsive
                     ? threads.dispatch({
@@ -478,8 +502,11 @@ export const layerExecutor: Layer.Layer<
                           text: message.text,
                           ...(message.context ? { context: message.context } : {}),
                           attachments: message.attachments,
+                          // A delegated-task question is a new turn on the thread's selection;
+                          // other notifications stay on the run they were meant to reach.
                           ...(message.delegatedCompletion === undefined &&
-                          message.notification === undefined
+                          (message.notification === undefined ||
+                            message.notification.source.kind === "delegated_task")
                             ? {}
                             : { modelSelection: run.modelSelection }),
                           dispatchMode: {

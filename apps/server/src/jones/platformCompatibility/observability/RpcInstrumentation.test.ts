@@ -287,3 +287,34 @@ it.effect("labels the Jones CI read with its pull request owner", () =>
     }),
   ),
 );
+
+it.effect("records vcs.listRefs as a vcs RPC span around the driver span", () =>
+  withTelemetry((ended) =>
+    Effect.gen(function* () {
+      const group = groupOf(WS_METHODS.vcsListRefs);
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.vcsListRefs, () =>
+              Effect.succeed({
+                refs: [],
+                isRepo: true,
+                hasPrimaryRemote: false,
+                nextCursor: null,
+                totalCount: 0,
+              }).pipe(Effect.withSpan("listRefs")),
+            ),
+            readOnlyConnection,
+          ),
+        ),
+      );
+      yield* client[WS_METHODS.vcsListRefs]({ cwd: "/workspace/list-refs" });
+      const [span] = rpcSpans(ended);
+      assert.equal(span?.name, "ws.rpc.vcs.listRefs");
+      assert.equal(span?.attributes.get("rpc.aggregate"), "vcs");
+      assert.equal(span?.attributes.get("rpc.stream"), false);
+      const driverSpan = ended.find((candidate) => candidate.name === "listRefs");
+      assert.equal(parentSpanId(driverSpan), span?.spanId);
+    }),
+  ),
+);

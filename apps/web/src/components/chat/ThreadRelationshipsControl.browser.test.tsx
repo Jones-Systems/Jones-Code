@@ -5,10 +5,22 @@ import { AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
+import "~/index.css";
+
 const state = vi.hoisted(() => ({
   projection: null as unknown,
   commandSucceeds: false,
   relatedShells: [] as unknown[],
+  threadTitles: {} as Record<string, string>,
+  archivedThreads: [] as unknown[],
+}));
+
+vi.mock(import("../../state/query"), async (original) => ({
+  ...(await original()),
+  useEnvironmentQuery: ((atom: unknown) =>
+    atom === null
+      ? { data: null, isSuccess: false, isPending: false }
+      : { data: state.threadTitles, isSuccess: true, isPending: false }) as never,
 }));
 
 vi.mock(import("@effect/atom-react"), async (original) => ({
@@ -35,7 +47,9 @@ vi.mock(import("../../state/environments"), async (original) => ({
   useEnvironmentProviders: (() => new Map()) as never,
 }));
 vi.mock(import("../../lib/archivedThreadsState"), () => ({
-  useArchivedThreadSnapshots: (() => ({ snapshots: [] })) as never,
+  useArchivedThreadSnapshots: (() => ({
+    snapshots: [{ environmentId: "environment", snapshot: { threads: state.archivedThreads } }],
+  })) as never,
 }));
 vi.mock(import("../../state/use-atom-command"), () => ({
   useAtomCommand: (() => async () =>
@@ -90,6 +104,8 @@ const threadId = ThreadId.make("fork");
 function setup() {
   state.commandSucceeds = false;
   state.relatedShells = [];
+  state.threadTitles = { source: "Source" };
+  state.archivedThreads = [];
   state.projection = {
     thread: {
       id: threadId,
@@ -158,7 +174,10 @@ it.each([
 
   const runAction = async () => {
     if (action === "merge") {
-      await screen.getByRole("button", { name: "Merge back to source conversation" }).click();
+      // Jones lists Merge in the Parents row, beneath where the persistent error toast appears.
+      const merge = screen.getByRole("button", { name: "Merge back to source conversation" });
+      await act(() => merge.element().focus());
+      await userEvent.keyboard("{Enter}");
     } else {
       await screen.getByRole("button", { name: "More thread actions" }).click();
       await page.getByRole("menuitem", { name: "Disconnect agent session" }).click();
@@ -318,32 +337,43 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
         remoteChild: {
           environmentId: remoteEnvId,
           threadId: remoteThreadId,
-          label: "Remote VM",
+          label: "Remote VM with a long machine name in the office",
         },
       },
     ],
   };
   await using screen = await render(
-    <ThreadRelationshipsPanel
-      environmentId={environmentId}
-      threadId={threadId}
-      showLineage
-      showSideChats={false}
-    />,
+    <div style={{ width: 320 }}>
+      <ThreadRelationshipsPanel
+        environmentId={environmentId}
+        threadId={threadId}
+        showLineage
+        showSideChats={false}
+      />
+    </div>,
     { router: "/environment/fork" },
   );
 
+  // A finished remote task sits with the other finished agents, not in its own list.
+  await expect
+    .element(screen.getByRole("button", { name: new RegExp(longTitle) }))
+    .not.toBeInTheDocument();
   const previous = [...screen.container.querySelectorAll<HTMLButtonElement>("button")].find(
     (button) => button.textContent?.includes("Previous agents"),
   );
   if (previous?.getAttribute("aria-expanded") === "false") await act(() => previous.click());
   const row = screen.getByRole("button", { name: new RegExp(longTitle) });
-  await userEvent.hover(row);
+  // A long environment label must not squeeze the title out of the row.
+  expect(
+    page.getByText(longTitle, { exact: true }).element().getBoundingClientRect().width,
+  ).toBeGreaterThan(0);
+  // Jones disables an unreachable row and wraps it in the tooltip trigger, which takes the hover.
+  await userEvent.hover(row.element().closest('[data-slot="tooltip-trigger"]')!);
   await vi.waitFor(() =>
     expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(longTitle),
   );
   expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(
-    "Runs on Remote VM. Connect to it to open the thread there.",
+    "Runs on Remote VM with a long machine name in the office. Connect to it to open the thread there.",
   );
 
   await row.click({ force: true });
@@ -375,7 +405,8 @@ it("shows a delegated-from thread's full title in its tooltip even when its envi
   );
 
   const row = screen.getByRole("button", { name: new RegExp(longTitle) });
-  await userEvent.hover(row);
+  // Jones disables the parent button and wraps it in the tooltip trigger, which takes the hover.
+  await userEvent.hover(row.element().closest('[data-slot="tooltip-trigger"]')!);
   await vi.waitFor(() =>
     expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(longTitle),
   );
@@ -385,4 +416,43 @@ it("shows a delegated-from thread's full title in its tooltip even when its envi
 
   await row.click({ force: true });
   expect(screen.router?.state.location.pathname).toBe("/environment/fork");
+});
+
+it("hides a deleted fork and keeps unloaded and archived forks with their current titles", async () => {
+  setup();
+  const projection = makeThreadProjectionFixture();
+  state.threadTitles = { "unloaded-fork": "Unloaded fork", "archived-fork": "Archived fork" };
+  state.archivedThreads = [
+    {
+      ...projection.thread,
+      id: ThreadId.make("archived-fork"),
+      title: "Old archived title",
+      archivedAt: projection.thread.updatedAt,
+      lineage: { parentThreadId: projection.thread.id, relationshipToParent: "fork" },
+    },
+  ];
+  state.projection = {
+    ...projection,
+    contextTransfers: ["deleted-fork", "unloaded-fork", "archived-fork"].map((id) => ({
+      sourceThreadId: projection.thread.id,
+      targetThreadId: ThreadId.make(id),
+      status: "pending",
+    })),
+  };
+  await using screen = await render(
+    <ThreadRelationshipsPanel
+      environmentId={environmentId}
+      threadId={projection.thread.id}
+      showLineage
+      showSideChats
+    />,
+  );
+  // Jones folds these forks into Linked groups that start collapsed.
+  for (const toggle of screen.container.querySelectorAll<HTMLButtonElement>(
+    '[data-linked-group] > button[aria-expanded="false"]',
+  ))
+    await act(() => toggle.click());
+  await expect.element(screen.getByText("Unloaded fork", { exact: true })).toBeVisible();
+  await expect.element(screen.getByText("Archived fork", { exact: true })).toBeVisible();
+  await expect.element(screen.getByText("deleted-fork", { exact: true })).not.toBeInTheDocument();
 });

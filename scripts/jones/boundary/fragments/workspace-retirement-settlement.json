@@ -32,6 +32,8 @@
     "apps/server/src/jones/workspaceRetirement/ScheduledTaskAdmission.ts",
     "apps/server/src/jones/workspaceRetirement/ScriptCompletionProtocol.ts",
     "apps/server/src/jones/workspaceRetirement/SettlementAdmission.ts",
+    "apps/server/src/jones/workspaceRetirement/SettlementRecovery.test.ts",
+    "apps/server/src/jones/workspaceRetirement/SettlementRecovery.ts",
     "apps/server/src/jones/workspaceRetirement/TerminalCwdObservation.ts"
   ],
   "hookPaths": [],
@@ -176,6 +178,10 @@
     {
       "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
       "to": "apps/server/src/jones/persistence/JonesTablePresence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/SettlementRecovery.ts"
     }
   ]
 }

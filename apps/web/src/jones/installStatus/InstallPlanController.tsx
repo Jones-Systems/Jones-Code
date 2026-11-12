@@ -11,6 +11,7 @@ import { installStatusStore, type InstallStatusStore, type InstallStatusDevice }
 import { bindInstallPlanServices, requestInstallPlan, type InstallPlanServices } from "./services";
 import { claimantId, openInstallStatus } from "./entrypoints";
 import { productionInstallPlanServices } from "./production";
+import { startInstallStatusPoller } from "./InstallStatusPoller";
 import { RecoveryReview } from "./recoveryReview";
 import { webJonesJournal, reconcileNativeJonesDuty } from "./executionJournal";
 
@@ -48,7 +49,8 @@ export function startInstallPlanController(
     },
     operation: async (id, request) => {
       const result = await services.operation(id, request);
-      if ("binding" in result) throw new Error("Unexpected recovery result for an operation.");
+      if ("binding" in result || "recoveredCleanup" in result)
+        throw new Error("Unexpected recovery result for an operation.");
       return result;
     },
     host: services.host,
@@ -155,9 +157,10 @@ export function InstallPlanController() {
   useEffect(() => {
     const bridge = window.desktopBridge;
     if (bridge?.installPlan === undefined) return;
-    const controller = startInstallPlanController(
-      productionInstallPlanServices(bridge, () => current.current),
-    );
+    const services = productionInstallPlanServices(bridge, () => current.current);
+    const controller = startInstallPlanController(services);
+    // Status refresh is separate from the plan runner's pass: it only reads hosts.
+    const poller = startInstallStatusPoller(services);
     const subscribedIds: readonly string[] = JSON.parse(ids);
     const stops = current.current
       .filter(({ environmentId }) => subscribedIds.includes(environmentId))
@@ -170,6 +173,7 @@ export function InstallPlanController() {
       ]);
     return () => {
       for (const stop of stops) stop();
+      poller.close();
       controller.close();
     };
   }, [ids]);

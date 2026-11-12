@@ -138,6 +138,22 @@ const dependencies = Layer.mergeAll(
 );
 const orchestratorLayer = Orchestrator.layer.pipe(Layer.provideMerge(dependencies));
 const testLayer = WorkMode.layer.pipe(Layer.provideMerge(orchestratorLayer));
+// The planned-update recovery test keeps its pre-restart orchestrator alive beside the
+// post-restart one. Production has one orchestrator, and it always has planned continuity,
+// so this test's original orchestrator shares the continuity the restarted one uses.
+const plannedContinuityLayer = PlannedUpdateContinuity.layer.pipe(
+  Layer.provide(ThreadCommands.layer),
+  Layer.provide(dependencies),
+);
+const plannedTestLayer = WorkMode.layer.pipe(
+  Layer.provideMerge(
+    Orchestrator.layer.pipe(
+      Layer.provide(plannedContinuityLayer),
+      Layer.provideMerge(dependencies),
+    ),
+  ),
+  Layer.provideMerge(plannedContinuityLayer),
+);
 
 const plannedBinding = {
   baseDir: "/synthetic",
@@ -163,9 +179,14 @@ const plannedProof: PlannedUpdateContinuity.PlannedUpdateProof = {
   },
 };
 const capturePlannedUpdate = Effect.gen(function* () {
+  const continuity = yield* PlannedUpdateContinuity.make.pipe(Effect.provide(ThreadCommands.layer));
+  return yield* captureWith(continuity);
+});
+const captureWith = Effect.fn("WorkModeTest.captureWith")(function* (
+  continuity: PlannedUpdateContinuity.PlannedUpdateContinuity["Service"],
+) {
   const settings = yield* ServerSettings.ServerSettingsService;
   yield* settings.updateSettings({ continueThreadsAfterServerUpdate: true });
-  const continuity = yield* PlannedUpdateContinuity.make.pipe(Effect.provide(ThreadCommands.layer));
   yield* continuity.capture({
     operationId: plannedOperationId,
     binding: plannedBinding,
@@ -1040,7 +1061,7 @@ it.effect.each([
       assert.deepEqual(yield* projections.getRecoveryThreadIds("planned-update-queued-runs"), [
         threadId,
       ]);
-      const continuity = yield* capturePlannedUpdate;
+      const continuity = yield* captureWith(yield* PlannedUpdateContinuity.PlannedUpdateContinuity);
       const recovery = yield* ProviderRuntimeRecovery.make;
       if (trigger === "shutdown") yield* recovery.prepareForShutdown;
       yield* recovery.reconcile(trigger);
@@ -1114,7 +1135,7 @@ it.effect.each([
       assert.equal(Option.isSome(releaseReceipt), !stop);
       if (stop) assert.isTrue(after.runs.find((run) => run.id === queued.id)?.queueHeld);
       else assert.deepEqual(yield* continuity.queueThreadIds, []);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(plannedTestLayer)),
 );
 
 it.effect.each([

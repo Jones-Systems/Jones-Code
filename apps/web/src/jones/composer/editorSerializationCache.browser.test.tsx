@@ -145,9 +145,13 @@ it("invalidates for content, marks, skill chips, undo, redo and controlled repla
     expect(counts.serialize).toHaveBeenCalledTimes(1);
     expect(changed.mock.lastCall?.[0]).toBe(expected);
     counts.serialize.mockClear();
+    const beforeFocus = editor.state.doc;
     await act(async () => editorRef.current?.focusAt(0));
     editorRef.current?.readSelectionRange();
-    expect(counts.serialize).not.toHaveBeenCalled();
+    // Leaving styled text collapses its shown Markdown source into a new document.
+    expect(counts.serialize.mock.calls).toEqual(
+      editor.state.doc === beforeFocus ? [] : [[editor.state.doc]],
+    );
   }
   await changesDoc(() => editor.commands.insertContent("x"), "xhello world");
   await act(async () => {
@@ -200,7 +204,9 @@ it("recomputes chip and Markdown cursor coordinates from the cached map", async 
   });
   expect(changed).toHaveBeenLastCalledWith("$review **bold**", 5, 11, false, []);
   expect(editorRef.current?.readSelectionRange()).toEqual({ start: 11, end: 11 });
-  expect(counts.serialize).not.toHaveBeenCalled();
+  // Entering bold text shows its Markdown source, a new document serialized once.
+  expect(editor.state.doc.textContent).toContain("**bold**");
+  expect(counts.serialize.mock.calls).toEqual([[editor.state.doc]]);
 });
 
 it("isolates callback and snapshot context arrays from a warmed cache", async () => {

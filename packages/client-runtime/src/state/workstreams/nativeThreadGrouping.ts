@@ -1,11 +1,6 @@
-import type {
-  MembershipEpisode,
-  NativeReference,
-  T3ThreadPlacement,
-  T3WorkstreamMetadata,
-} from "@t3tools/contracts";
+import type { MembershipEpisode, NativeReference, T3WorkstreamMetadata } from "@t3tools/contracts";
 import type { WorkstreamAssignmentIndex } from "./assignmentIndex.ts";
-import { currentT3Placement } from "./placements.ts";
+import { currentT3Placement, type LiveT3PlacementItem } from "./placements.ts";
 
 export interface WorkstreamThreadLike {
   readonly environmentId: string;
@@ -98,7 +93,7 @@ export function attestedNativeThreadKey(
 }
 
 const trustedCurrentPlacement = (
-  placement: T3ThreadPlacement,
+  placement: LiveT3PlacementItem,
   trustedNowMs: number,
   trustedEnvironments: ReadonlyMap<string, TrustedT3EnvironmentAttestation>,
 ): boolean => {
@@ -120,7 +115,7 @@ interface NativeThreadGroupingInput<Thread extends WorkstreamThreadLike> {
   readonly workstreams: readonly T3WorkstreamMetadata[];
   readonly memberships?: readonly MembershipEpisode[];
   readonly references?: readonly NativeReference[];
-  readonly placements?: readonly T3ThreadPlacement[];
+  readonly placements?: readonly LiveT3PlacementItem[];
   readonly threads: readonly Thread[];
   readonly trustedNow: string;
   readonly trustedEnvironments: ReadonlyMap<string, TrustedT3EnvironmentAttestation>;

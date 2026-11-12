@@ -622,8 +622,7 @@ const makeReader = Effect.fnUntraced(function* (
           if (retiring === cleanup) retiring = undefined;
         });
       }
-      // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
-      if (unavailable) return Effect.succeed(undefined);
+      if (unavailable) return Effect.undefined;
       unavailable = permanent;
       if (permanent) onUnavailable();
       if (!permanent) {
@@ -638,10 +637,8 @@ const makeReader = Effect.fnUntraced(function* (
     });
 
   const acquire = Effect.suspend((): Effect.Effect<Connection | undefined> => {
-    // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
-    if (closed || unavailable || retiring !== undefined) return Effect.succeed(undefined);
-    // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
-    if (clock.monotonicTimeNanosUnsafe() < retryAt) return Effect.succeed(undefined);
+    if (closed || unavailable || retiring !== undefined) return Effect.undefined;
+    if (clock.monotonicTimeNanosUnsafe() < retryAt) return Effect.undefined;
     let reader: NonNullable<typeof current>;
     try {
       reader = current ?? start();
@@ -661,8 +658,7 @@ const makeReader = Effect.fnUntraced(function* (
       (startup): Effect.Effect<Connection | undefined> =>
         // A late ready event must not hand out a worker retired by another acquire timeout.
         closed || unavailable || current !== reader
-          ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
-            Effect.succeed(undefined)
+          ? Effect.undefined
           : Option.isSome(startup) && startup.value.type === "ready"
             ? Effect.sync(() => {
                 retryDelayMs = 1000;
@@ -729,7 +725,7 @@ const makeReader = Effect.fnUntraced(function* (
 const CHECKPOINT_FRAMES = 1000;
 const CHECKPOINT_IDLE_MS = 100;
 const CHECKPOINT_BUSY_TIMEOUT_MS = 1000;
-const CHECKPOINT_BACKPRESSURE_FRAMES = 10 * CHECKPOINT_FRAMES;
+const CHECKPOINT_BACKPRESSURE_FRAMES = 32_768;
 
 const readSafeSqliteInteger = (value: unknown) => {
   const number = typeof value === "bigint" ? Number(value) : value;
@@ -883,7 +879,7 @@ const startCheckpointWorker = Effect.fnUntraced(function* (
   }
   const frames = writer.prepare("PRAGMA wal_checkpoint(NOOP)");
   const sizeLimit = writer.prepare("PRAGMA journal_size_limit");
-  const started = yield* Effect.try(
+  const started = Result.try(
     () =>
       new NodeWorkerThreads.Worker(checkpointWorkerSource, {
         eval: true,
@@ -895,9 +891,9 @@ const startCheckpointWorker = Effect.fnUntraced(function* (
           idleMs: CHECKPOINT_IDLE_MS,
         },
       }),
-  ).pipe(Effect.result);
+  );
   if (Result.isFailure(started)) {
-    yield* warn(String(started.failure.cause));
+    yield* warn(String(started.failure));
     return undefined;
   }
   const worker = started.success;

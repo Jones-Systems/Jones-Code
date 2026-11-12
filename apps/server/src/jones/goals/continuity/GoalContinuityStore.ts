@@ -100,8 +100,14 @@ export class GoalContinuityStore extends Context.Service<
 >()("t3/jones/goals/continuity/GoalContinuityStore") {}
 const isGoalContinuityError = Schema.is(GoalContinuityError);
 
+// Retain the runtime cause for admission checks without changing the public error schema.
 const storageError = (cause: unknown) =>
-  isGoalContinuityError(cause) ? cause : new GoalContinuityError({ reason: "unavailable" });
+  isGoalContinuityError(cause)
+    ? cause
+    : Object.defineProperty(new GoalContinuityError({ reason: "unavailable" }), "cause", {
+        value: cause,
+        enumerable: false,
+      });
 const corrupt = () => new GoalContinuityError({ reason: "corrupt_snapshot" });
 const stale = () => new GoalContinuityError({ reason: "stale" });
 const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(ContinuitySnapshot));

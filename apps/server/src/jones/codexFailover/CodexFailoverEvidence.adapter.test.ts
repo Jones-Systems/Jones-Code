@@ -585,79 +585,79 @@ it.effect.each(scenarios)("records $name before the terminal is observable", (sc
   }).pipe(Effect.scoped, Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
-it.effect(
-  "records exhausted capacity with code other on the logical turn after promptless retries",
-  () =>
-    Effect.gen(function* () {
-      const capacityMessage = "Selected model is at capacity. Please try a different model.";
-      const entries = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." });
-      for (let retry = 0; retry <= codexCapacityRetryPolicy.maxRetries; retry++) {
-        const turnId = retry === 0 ? nativeTurnId : `capacity-retry-${retry}`;
-        if (retry > 0) {
-          entries.push(
-            {
-              type: "expect_outbound",
-              frame: {
-                id: 3 + retry,
-                method: "turn/start",
-                params: {
-                  threadId: nativeThreadId,
-                  input: [],
-                  cwd: "/workspace",
-                  model: "gpt-5.4",
-                  collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
-                  approvalPolicy: "never",
-                  approvalsReviewer: "user",
-                  sandboxPolicy: { type: "dangerFullAccess" },
-                  summary: "detailed",
-                },
-              },
-            },
-            {
-              type: "emit_inbound",
-              frame: {
-                id: 3 + retry,
-                result: { turn: makeCodexReplayTurn({ id: turnId, status: "inProgress" }) },
-              },
-            },
-            {
-              type: "emit_inbound",
-              frame: {
-                method: "turn/started",
-                params: {
-                  threadId: nativeThreadId,
-                  turn: makeCodexReplayTurn({ id: turnId, status: "inProgress" }),
-                },
-              },
-            },
-          );
-        }
+it.effect("records exhausted capacity once with code other on the final continuation turn", () =>
+  Effect.gen(function* () {
+    const capacityMessage = "Selected model is at capacity. Please try a different model.";
+    const entries = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." });
+    for (let retry = 0; retry <= codexCapacityRetryPolicy.maxRetries; retry++) {
+      const turnId = retry === 0 ? nativeTurnId : `capacity-retry-${retry}`;
+      if (retry > 0) {
         entries.push(
-          notification(turnId, capacityMessage, "other"),
-          completion(turnId, capacityMessage, "other"),
+          {
+            type: "expect_outbound",
+            frame: {
+              id: 3 + retry,
+              method: "turn/start",
+              params: {
+                threadId: nativeThreadId,
+                input: [],
+                cwd: "/workspace",
+                model: "gpt-5.4",
+                collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                approvalPolicy: "never",
+                approvalsReviewer: "user",
+                sandboxPolicy: { type: "dangerFullAccess" },
+                summary: "detailed",
+              },
+            },
+          },
+          {
+            type: "emit_inbound",
+            frame: {
+              id: 3 + retry,
+              result: { turn: makeCodexReplayTurn({ id: turnId, status: "inProgress" }) },
+            },
+          },
+          {
+            type: "emit_inbound",
+            frame: {
+              method: "turn/started",
+              params: {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: turnId, status: "inProgress" }),
+              },
+            },
+          },
         );
       }
-      const harness = yield* openHarness(entries);
-      yield* harness.runtime.startTurn(harness.turnInput);
-      for (let retry = 0; retry < codexCapacityRetryPolicy.maxRetries; retry++) {
-        yield* Queue.take(harness.retryReady);
-        yield* TestClock.adjust(codexCapacityRetryPolicy.delayMs);
-      }
-      const { event, rows } = yield* harness.terminal;
-      assert.equal(event.status, "failed");
-      assert.lengthOf(rows, 1);
-      assert.equal(rows[0]!.provider_turn_id, event.providerTurnId);
-      assert.equal(event.providerTurnId, harness.providerTurnIds[0]);
-      assert.equal(
-        event.providerTurn?.nativeTurnRef?.nativeId,
-        `capacity-retry-${codexCapacityRetryPolicy.maxRetries}`,
+      entries.push(
+        notification(turnId, capacityMessage, "other"),
+        completion(turnId, capacityMessage, "other"),
       );
-      assert.equal(rows[0]!.disposition, "unavailable");
-      assert.lengthOf(harness.recorded, 1);
-      assert.isTrue(harness.recorded[0]!.capacityExhausted);
-      assert.equal(harness.recorded[0]!.rawErrorInfo, "other");
-      assert.equal(harness.recorded[0]!.attemptId, harness.turnInput.attemptId);
-    }).pipe(Effect.scoped, Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
+    }
+    const harness = yield* openHarness(entries);
+    yield* harness.runtime.startTurn(harness.turnInput);
+    for (let retry = 0; retry < codexCapacityRetryPolicy.maxRetries; retry++) {
+      yield* Queue.take(harness.retryReady);
+      yield* TestClock.adjust(codexCapacityRetryPolicy.delayMs(retry + 1));
+    }
+    const { event, rows } = yield* harness.terminal;
+    assert.equal(event.status, "failed");
+    assert.lengthOf(rows, 1);
+    assert.equal(rows[0]!.provider_turn_id, event.providerTurnId);
+    // Upstream's capacity lifecycle ends the run on the last continuation turn.
+    assert.equal(event.providerTurnId, harness.providerTurnIds.at(-1));
+    assert.lengthOf(new Set(harness.providerTurnIds), codexCapacityRetryPolicy.maxRetries + 1);
+    assert.equal(
+      event.providerTurn?.nativeTurnRef?.nativeId,
+      `capacity-retry-${codexCapacityRetryPolicy.maxRetries}`,
+    );
+    assert.equal(rows[0]!.disposition, "unavailable");
+    assert.lengthOf(harness.recorded, 1);
+    assert.isTrue(harness.recorded[0]!.capacityExhausted);
+    assert.equal(harness.recorded[0]!.rawErrorInfo, "other");
+    assert.equal(harness.recorded[0]!.attemptId, harness.turnInput.attemptId);
+  }).pipe(Effect.scoped, Effect.provide(dependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
 );
 
 it.effect("the recorder blocks contrary HTTP info even when passed capacityExhausted", () =>

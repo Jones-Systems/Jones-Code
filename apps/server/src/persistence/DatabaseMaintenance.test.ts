@@ -34,8 +34,6 @@ import {
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
 import * as Sqlite from "./Sqlite.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
-import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
-import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 
 const encodeNativeProviderEnrollment = Schema.encodeEffect(
   Schema.fromJsonString(NativeProviderEnrollmentBinding),
@@ -129,6 +127,77 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
       }).pipe(Effect.scoped),
     );
 
+    it.effect("runs a repair requested from Settings once and keeps its failure for Settings", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-requested-reclaim-" });
+        const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
+        const files = DatabaseMaintenance.reclaimFiles(path, dbPath);
+        yield* Effect.void.pipe(Effect.provide(Sqlite.layerFromPath(dbPath)));
+        const autoVacuum = Effect.flatMap(
+          SqlClient.SqlClient,
+          (sql) => sql<{ readonly auto_vacuum: number }>`PRAGMA auto_vacuum`,
+        ).pipe(
+          Effect.map((rows) => rows[0]?.auto_vacuum),
+          Effect.provide(NodeSqliteClient.layer({ filename: dbPath, readonly: true })),
+        );
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`PRAGMA auto_vacuum = NONE`;
+          yield* sql`VACUUM`;
+          yield* sql`CREATE TABLE retained_data (value TEXT)`;
+          yield* sql`INSERT INTO retained_data VALUES ('keep')`;
+        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+
+        // Every server exit runs this; without a request it must leave the database alone.
+        yield* DatabaseMaintenance.runRequestedReclaim(dbPath);
+        assert.equal(yield* autoVacuum, 0);
+
+        yield* fs.writeFileString(files.request, "");
+        yield* fs.writeFileString(files.failure, "an earlier failure");
+        yield* DatabaseMaintenance.runRequestedReclaim(dbPath);
+        assert.isFalse(yield* fs.exists(files.request));
+        assert.isFalse(yield* fs.exists(files.failure));
+        assert.equal(yield* autoVacuum, 2);
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          assert.deepEqual(yield* sql`SELECT value FROM retained_data`, [{ value: "keep" }]);
+        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath, readonly: true })));
+
+        const brokenPath = path.join(baseDir, "broken", "statev2.sqlite");
+        const broken = DatabaseMaintenance.reclaimFiles(path, brokenPath);
+        yield* fs.makeDirectory(path.dirname(brokenPath));
+        yield* fs.writeFileString(brokenPath, "not a database");
+        yield* fs.writeFileString(broken.request, "");
+        yield* DatabaseMaintenance.runRequestedReclaim(brokenPath);
+        assert.isFalse(
+          yield* fs.exists(broken.request),
+          "a failed repair must not rerun on every exit",
+        );
+        assert.equal(
+          yield* fs.readFileString(broken.failure),
+          new DatabaseMaintenance.DatabaseCompactError({ path: brokenPath, cause: null }).message,
+        );
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("refuses a repair whose copies would not fit on disk", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dbPath = path.join(
+          yield* fs.makeTempDirectoryScoped({ prefix: "t3-reclaim-space-" }),
+          "statev2.sqlite",
+        );
+        assert.isNull(yield* DatabaseMaintenance.reclaimSpaceShortfall(dbPath, 1024));
+        const huge = 2 ** 60;
+        const shortfall = yield* DatabaseMaintenance.reclaimSpaceShortfall(dbPath, huge);
+        assert.isAtLeast(shortfall?.neededBytes ?? 0, huge);
+        assert.isBelow(shortfall?.freeBytes ?? Infinity, huge);
+      }).pipe(Effect.scoped),
+    );
+
     it.effect(
       "refuses pre-107 offline compaction before superseded settlement evidence can be pruned",
       () =>
@@ -141,10 +210,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
             "statev2.sqlite",
           );
           const connection = NodeSqliteClient.layer({ filename: dbPath });
-          const offline = ProjectionMaintenance.layer.pipe(
-            Layer.provideMerge(Layer.merge(EventStore.layer, ProjectionStore.layer)),
-            Layer.provideMerge(connection),
-          );
+          const offline = EventStore.layer.pipe(Layer.provideMerge(connection));
           const readEvidence = Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient;
             return {
@@ -161,7 +227,6 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
             yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
             yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 106));
             const events = yield* EventStore.EventStoreV2;
-            const projections = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
             const at = DateTime.makeUnsafe(now);
             const threadId = ThreadId.make(request.identity.native_id);
             const instanceId = ProviderInstanceId.make("codex");
@@ -237,8 +302,6 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
                 },
               ],
             });
-            assert.isTrue((yield* projections.rebuild).valid);
-            assert.isTrue((yield* projections.verify).valid);
             assert.deepEqual(
               yield* sql`SELECT name FROM sqlite_master WHERE name = 'jones_workstreams_settlement_proofs'`,
               [],
@@ -272,17 +335,8 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         const ledger = yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
-          const projections = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
-          assert.isTrue((yield* projections.rebuild).valid);
           return yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-        }).pipe(
-          Effect.provide(
-            ProjectionMaintenance.layer.pipe(
-              Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
-              Layer.provideMerge(NodeSqliteClient.layer({ filename: dbPath })),
-            ),
-          ),
-        );
+        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
         const result = yield* maintenance.compact(dbPath);
         assert.equal(result.deletedEventCount, 0);
         yield* Effect.gen(function* () {
@@ -306,17 +360,8 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         const maintenance = yield* DatabaseMaintenance.DatabaseMaintenance;
         const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-compact-" });
         const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
-        yield* Effect.flatMap(
-          ProjectionMaintenance.ProjectionMaintenanceV2,
-          (projections) => projections.rebuild,
-        ).pipe(
-          Effect.provide(
-            ProjectionMaintenance.layer.pipe(
-              Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
-              Layer.provideMerge(Sqlite.layerFromPath(dbPath)),
-            ),
-          ),
-        );
+        // Opening the database migrates it.
+        yield* Effect.void.pipe(Effect.provide(Sqlite.layerFromPath(dbPath)));
         yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* sql`PRAGMA auto_vacuum = NONE`;

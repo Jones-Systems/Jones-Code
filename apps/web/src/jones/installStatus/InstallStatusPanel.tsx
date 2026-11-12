@@ -12,20 +12,30 @@ import {
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
+import { deviceStatusActive } from "@t3tools/client-runtime/jones/install-plan";
 import { cn } from "../../lib/utils";
 import { useInstallPlan } from "./useInstallPlan";
 import { installStatusStore, type InstallStatusStore } from "./panelUi";
-import { panelPresentation } from "./presentation";
+import {
+  deviceAttention,
+  deviceHeardAt,
+  deviceLiveness,
+  packageCheckLine,
+  panelPresentation,
+} from "./presentation";
+import { Elapsed, HeardAgo } from "./Elapsed";
+import { ProgressSteps } from "./ProgressSteps";
 import { selectionFor } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
-import { performPanelAction, type PanelAction } from "./actions";
 import {
-  INSTALL_PLAN_GO,
-  INSTALL_PLAN_INFO,
-  INSTALL_PLAN_WAIT,
-  lastSeenLabel,
-  lastUpdateLabel,
-} from "./copy";
+  inspectPanelCleanup,
+  performPanelAction,
+  recoverPanelCleanup,
+  type CleanupInspection,
+  type PanelAction,
+} from "./actions";
+import { finishPlan } from "./finishPlan";
+import { INSTALL_PLAN_GO, INSTALL_PLAN_INFO, INSTALL_PLAN_WAIT, lastUpdateLabel } from "./copy";
 
 interface EditDraft {
   readonly planId: string;
@@ -42,6 +52,11 @@ export function InstallStatusPanel({
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [detail, setDetail] = useState<EnvironmentId | "laptop" | null>(null);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
+  const [cleanupInspection, setCleanupInspection] = useState<{
+    readonly key: string;
+    readonly inspection: CleanupInspection;
+    readonly recovery?: "released" | "released-plan-unconfirmed" | "unproved";
+  } | null>(null);
   const descriptionId = useId();
   const view = panelPresentation(snapshot, snapshot.updatedAt);
   if (!snapshot.open || snapshot.native === null) return null;
@@ -80,8 +95,16 @@ export function InstallStatusPanel({
             : "Fresh operations and enrollment capability are required."))
         : undefined;
     const row = view.rows.find((r) => r.environmentId === environmentId);
+    const active = deviceStatusActive(device?.observation, member);
+    const health = snapshot.pollHealth[environmentId];
+    const liveness = deviceLiveness(device, health, snapshot.updatedAt);
     return {
       environmentId,
+      active,
+      liveness,
+      attention: deviceAttention(row?.progress, liveness, snapshot.updatedAt),
+      heardAt: deviceHeardAt(device, health),
+      checkLine: packageCheckLine(row, device, active, snapshot.updatedAt),
       label: member?.label ?? device?.label ?? "Device",
       selection,
       locked,
@@ -204,17 +227,7 @@ export function InstallStatusPanel({
             size="micro"
             aria-label="Done with update plan"
             disabled={pending.has("dismiss")}
-            onClick={() =>
-              void perform("dismiss", async () => {
-                const result = await requestInstallPlan({
-                  type: "dismiss",
-                  planId: plan.planId,
-                  expectedRevision: plan.revision,
-                });
-                if (result.refused !== undefined) throw new Error(result.refused.message);
-                store.update({ open: false, showLast: true, previewSelection: [] });
-              })
-            }
+            onClick={() => void perform("dismiss", () => finishPlan(plan.planId))}
           >
             Done
           </Button>
@@ -245,6 +258,15 @@ export function InstallStatusPanel({
             <span>Laptop</span>
             <span className="ml-auto min-w-0 truncate text-right text-muted-foreground">
               {view.laptop?.text}
+              {view.laptop?.progress?.active ? (
+                <>
+                  {" · "}
+                  <Elapsed
+                    since={view.laptop.progress.stepStartedAt}
+                    skewMs={view.laptop.progress.skewMs}
+                  />
+                </>
+              ) : null}
             </span>
             <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
           </button>
@@ -285,6 +307,7 @@ export function InstallStatusPanel({
           {detail === "laptop" ? (
             <div className="space-y-1 px-2 pb-2 text-2xs text-muted-foreground">
               <p>{view.laptop?.text}</p>
+              {view.laptop?.progress ? <ProgressSteps progress={view.laptop.progress} /> : null}
               {view.laptop?.operationId ? <OperationId value={view.laptop.operationId} /> : null}
               {plan.laptop.operations.at(-1)?.result?.code ? (
                 <p>Code: {plan.laptop.operations.at(-1)!.result!.code}</p>
@@ -294,17 +317,22 @@ export function InstallStatusPanel({
               ) : null}
               {view.laptop?.phase === "held" ? (
                 <p>
-                  The download process has not proved exit. Existing app and data are preserved; no
-                  new work starts. Check again for an exact outcome.
+                  Laptop update is on hold while the previous attempt is being verified. Check the
+                  outcome before starting another attempt.
                 </p>
               ) : null}
               {!view.readOnly ? (
                 <Button
                   variant="ghost-muted"
                   size="micro"
+                  disabled={pending.has("laptop:check")}
                   onClick={() => action("laptop", "check")}
                 >
-                  Check again
+                  {pending.has("laptop:check")
+                    ? "Checking outcome…"
+                    : view.laptop?.phase === "held"
+                      ? "Check update outcome"
+                      : "Refresh now"}
                 </Button>
               ) : null}
             </div>
@@ -388,19 +416,40 @@ export function InstallStatusPanel({
           </div>
           <ul className="m-0 list-none p-0">
             {choices.map((choice) => {
-              const { environmentId, label, row, device } = choice;
+              const { environmentId, label, row, device, attention } = choice;
               const included = selected.has(environmentId);
+              const silent =
+                attention.kind === "unreachable" || attention.kind === "restart-silent";
               const text = editing
                 ? included
                   ? "Waits for Laptop"
                   : "Not included"
                 : (row?.text ??
                   (choice.reason === undefined ? "Not included" : `Can't join · ${choice.reason}`));
+              const lineText =
+                !editing &&
+                silent &&
+                row?.attemptText === undefined &&
+                row?.sourceText === undefined
+                  ? attention.text
+                  : text;
+              const timer =
+                !editing && !silent && row?.attemptText === undefined && row?.progress?.active
+                  ? row.progress
+                  : undefined;
               const open = detail === environmentId && !editing;
               const held = row?.phase === "held" || row?.phase === "unknown";
               const receipt = plan.devices
                 .find((d) => d.environmentId === environmentId)
                 ?.operations.at(-1)?.receipt;
+              const inspectKey =
+                receipt?.phase === "held" &&
+                receipt.code === "cleanup-unconfirmed" &&
+                receipt.jobId !== undefined &&
+                receipt.action.kind !== "install"
+                  ? `${plan.planId}:${environmentId}:${receipt.operationId}:${receipt.updatedAt}:cleanup`
+                  : null;
+              const cleanup = cleanupInspection?.key === inspectKey ? cleanupInspection : null;
               return (
                 <li key={environmentId}>
                   <div className="flex min-w-0 items-center gap-1">
@@ -437,25 +486,56 @@ export function InstallStatusPanel({
                         ) : (
                           <span
                             aria-hidden
+                            data-liveness={choice.liveness.kind}
+                            data-attention={attention.kind}
                             className={cn(
                               "size-1.5 shrink-0 rounded-full border border-muted-foreground",
                               !included && "bg-muted-foreground opacity-50",
+                              timer !== undefined && "border-primary bg-primary",
+                              silent && "border-warning bg-warning opacity-100",
                             )}
                           />
                         )}
                         <span className={cn("shrink-0", !included && "text-muted-foreground")}>
                           {label}
                         </span>
-                        <span className="ml-auto min-w-0 truncate text-right text-2xs text-muted-foreground">
-                          {text}
+                        <span
+                          className={cn(
+                            "ml-auto min-w-0 truncate text-right text-2xs text-muted-foreground",
+                            silent && "text-warning",
+                          )}
+                          data-row-text
+                        >
+                          {lineText}
+                          {timer !== undefined ? (
+                            <>
+                              {" · "}
+                              <Elapsed since={timer.stepStartedAt} skewMs={timer.skewMs} />
+                            </>
+                          ) : null}
                         </span>
                         <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
                       </TooltipTrigger>
                       <TooltipPopup>
-                        {editing && choice.reason !== undefined ? choice.reason : text}
+                        {editing && choice.reason !== undefined ? choice.reason : lineText}
                       </TooltipPopup>
                     </Tooltip>
                   </div>
+                  {!editing && (attention.kind === "quiet" || attention.kind === "stalled") ? (
+                    <p
+                      className="flex items-center gap-1 px-3 pb-1 text-2xs text-muted-foreground"
+                      role="status"
+                      data-attention-line={attention.kind}
+                    >
+                      {attention.kind === "stalled" ? (
+                        <TriangleAlertIcon className="size-3 shrink-0 text-warning/70" />
+                      ) : null}
+                      {attention.text}
+                    </p>
+                  ) : null}
+                  {!editing && row?.sourceText ? (
+                    <p className="px-3 pb-1 text-2xs text-muted-foreground">{row.sourceText}</p>
+                  ) : null}
                   {editing && choice.reason !== undefined ? (
                     <p
                       id={`${descriptionId}-${environmentId}`}
@@ -469,14 +549,14 @@ export function InstallStatusPanel({
                       className="space-y-1 px-3 pb-2 text-2xs text-muted-foreground"
                       aria-label={`${label} update status`}
                     >
-                      <p>{text}</p>
+                      <p>{lineText}</p>
+                      {row?.progress ? <ProgressSteps progress={row.progress} /> : null}
+                      {row?.attemptText ? <p>{row.attemptText}</p> : null}
                       {device?.observation.freshness !== "fresh" ? (
-                        <p>
-                          {device?.observation.message ?? "Fresh status unavailable."}{" "}
-                          {lastSeenLabel(device?.lastObservedAt)}
-                        </p>
+                        <p>{device?.observation.message ?? "Fresh status unavailable."}</p>
                       ) : null}
-                      {row?.status?.check ? <p>{row.status.check.text}</p> : null}
+                      {choice.checkLine === undefined ? null : <p>{choice.checkLine}</p>}
+                      {device === undefined ? null : <HeardAgo at={choice.heardAt} />}
                       {row?.operationId ? <OperationId value={row.operationId} /> : null}
                       {receipt?.code ? <p>Code: {receipt.code}</p> : null}
                       {receipt?.message ? <p>{receipt.message}</p> : null}
@@ -487,12 +567,76 @@ export function InstallStatusPanel({
                       ) : null}
                       {held ? (
                         <p>
-                          Existing app and data are preserved. No retry is sent. Check again for the
-                          exact operation receipt; use Connections for host reconciliation.
+                          {receipt?.code === "cleanup-unconfirmed"
+                            ? "The host has yet to confirm cleanup from this attempt."
+                            : "The host has yet to confirm the outcome of this attempt."}{" "}
+                          Check the operation receipt. If the hold remains, open Connections for
+                          this host.
+                        </p>
+                      ) : null}
+                      {cleanup !== null ? (
+                        <p role="status">
+                          {cleanup.recovery === "unproved"
+                            ? "Cleanup release is unconfirmed. Check the update outcome before trying again."
+                            : cleanup.recovery === "released"
+                              ? "The cleanup hold was released."
+                              : cleanup.recovery === "released-plan-unconfirmed"
+                                ? "The host released the cleanup hold. Check the update outcome to refresh this plan."
+                                : cleanup.inspection.status === "eligible"
+                                  ? "Inspection confirmed the prior disk image is absent. The update remains on hold."
+                                  : "Inspection could not confirm cleanup. The update remains on hold."}
                         </p>
                       ) : null}
                       {!view.readOnly ? (
                         <div className="flex flex-wrap gap-1">
+                          {inspectKey !== null && receipt !== undefined && device?.canOperate ? (
+                            <Button
+                              variant="outline"
+                              size="micro"
+                              disabled={pending.has(inspectKey)}
+                              onClick={() =>
+                                void perform(inspectKey, async () => {
+                                  setCleanupInspection(null);
+                                  const inspection = await inspectPanelCleanup(
+                                    environmentId,
+                                    receipt.operationId,
+                                  );
+                                  setCleanupInspection({ key: inspectKey, inspection });
+                                })
+                              }
+                            >
+                              {pending.has(inspectKey) ? "Inspecting cleanup…" : "Inspect cleanup"}
+                            </Button>
+                          ) : null}
+                          {inspectKey !== null &&
+                          receipt !== undefined &&
+                          device?.canOperate &&
+                          cleanup?.inspection.recoveryToken !== undefined ? (
+                            <Button
+                              variant="outline"
+                              size="micro"
+                              disabled={pending.has(inspectKey)}
+                              onClick={() => {
+                                const token = cleanup.inspection.recoveryToken;
+                                if (token === undefined) return;
+                                void perform(inspectKey, async () => {
+                                  const recovery = await recoverPanelCleanup(
+                                    environmentId,
+                                    receipt,
+                                    token,
+                                  );
+                                  if (recovery !== "cancelled")
+                                    setCleanupInspection({
+                                      key: inspectKey,
+                                      inspection: { status: "eligible" },
+                                      recovery,
+                                    });
+                                });
+                              }}
+                            >
+                              Recover cleanup
+                            </Button>
+                          ) : null}
                           {row?.actions.remove ? (
                             <Button
                               variant="outline"
@@ -518,7 +662,7 @@ export function InstallStatusPanel({
                               disabled={pending.has(`${environmentId}:install`)}
                               onClick={() => action(environmentId, "install")}
                             >
-                              Install on {label}
+                              {row.installLabel}
                             </Button>
                           ) : null}
                           {row?.actions.stop ? (
@@ -543,9 +687,14 @@ export function InstallStatusPanel({
                           <Button
                             variant="ghost-muted"
                             size="micro"
+                            disabled={pending.has(`${environmentId}:check`)}
                             onClick={() => action(environmentId, "check")}
                           >
-                            Check again
+                            {pending.has(`${environmentId}:check`)
+                              ? "Checking outcome…"
+                              : held
+                                ? "Check update outcome"
+                                : "Refresh now"}
                           </Button>
                         </div>
                       ) : null}

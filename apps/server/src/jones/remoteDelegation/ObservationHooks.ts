@@ -18,6 +18,7 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
+import { isTerminalStatus, terminalRetentionCutoffMillis } from "./shared.ts";
 
 type Questions = RemoteBlockingQuestions["requests"];
 interface Row {
@@ -54,7 +55,10 @@ const encodeNotices = Schema.encodeEffect(
 const isOpen = (task: OrchestrationV2Subagent) =>
   task.result === null &&
   task.completionDelivery?.state !== "disposed" &&
-  !["completed", "failed", "cancelled", "interrupted"].includes(task.status);
+  !isTerminalStatus(task.status);
+const endedBefore = (task: OrchestrationV2Subagent, cutoffMillis: number) =>
+  DateTime.toEpochMillis(task.updatedAt) < cutoffMillis &&
+  (task.completedAt === null || DateTime.toEpochMillis(task.completedAt) < cutoffMillis);
 const matches = (task: OrchestrationV2Subagent, observation: RemoteTaskObservation) =>
   task.remoteChild?.environmentId === observation.environmentId &&
   task.remoteChild.threadId === observation.threadId &&
@@ -246,7 +250,7 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
               commandId: CommandId.make(`server:remote-question:${key}`),
               threadId: parentThreadId,
               messageId: MessageId.make(`message:remote-question:${key}`),
-              text: `Delegated task ${taskId} is blocked on a question in linked environment ${observation.environmentId}. Read it with t3_pending_request_read using environmentId ${observation.environmentId}, threadId ${observation.threadId}, requestId ${request.requestId}. Answer through t3_pending_request_respond with those same IDs when the answer follows from the task or the user's instructions; otherwise ask the user. If it is no longer pending, it was answered or dismissed.`,
+              text: `Delegated task ${taskId} is blocked on a question in linked environment ${observation.environmentId}. Read it with t3_pending_request action read using environmentId ${observation.environmentId}, threadId ${observation.threadId}, requestId ${request.requestId}. Answer through t3_pending_request action respond with those same IDs when the answer follows from the task or the user's instructions; otherwise ask the user. If it is no longer pending, it was answered or dismissed.`,
               notification: {
                 source: { kind: "delegated_task", taskIds: [taskId] },
                 outcome: "updated",
@@ -261,15 +265,57 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
         }),
       )
       .pipe(Effect.mapError(failed));
+  /**
+   * Startup recovery touches only rows that can still do work: an owed signal or notice, or a
+   * task that has not ended. A drained row whose task ended before the retention cutoff is
+   * deleted. An absent task proves nothing, since a projection rebuild also removes it.
+   */
   const recoverRemoteTaskQuestions = Effect.gen(function* () {
     if (!(yield* tables("jones_remote_task_observations"))) return;
+    const cutoff = yield* terminalRetentionCutoffMillis;
     const rows = yield* sql<{
       parent_thread_id: ThreadId;
       task_id: NodeId;
+      // Present whenever signal_pending is 1, which is the only time it is read.
       observation_json: string;
       signal_pending: number;
-    }>`SELECT parent_thread_id, task_id, observation_json, signal_pending FROM jones_remote_task_observations`;
+      owed: number;
+    }>`SELECT parent_thread_id, task_id, signal_pending,
+        CASE WHEN signal_pending = 1 THEN observation_json END AS observation_json,
+        notices_json != '[]' AS owed
+      FROM jones_remote_task_observations ORDER BY parent_thread_id, task_id`;
+    // One read per parent, however many of its tasks have rows.
+    const tasksOf = new Map<ThreadId, ReadonlyArray<OrchestrationV2Subagent>>();
     for (const row of rows) {
+      if (row.signal_pending !== 1 && row.owed !== 1) {
+        if (!tasksOf.has(row.parent_thread_id))
+          tasksOf.set(
+            row.parent_thread_id,
+            yield* projections.getThreadRecords(row.parent_thread_id, ["subagents"]).pipe(
+              Effect.map((parent) => parent.subagents),
+              // A parent that is gone has no tasks to find.
+              Effect.catchTags({
+                ProjectionStoreThreadNotFoundError: () =>
+                  Effect.succeed<ReadonlyArray<OrchestrationV2Subagent>>([]),
+              }),
+            ),
+          );
+        const task = tasksOf
+          .get(row.parent_thread_id)
+          ?.find((candidate) => candidate.id === row.task_id);
+        if (task === undefined) continue;
+        if (!isOpen(task)) {
+          if (endedBefore(task, cutoff))
+            yield* sql`DELETE FROM jones_remote_task_observations WHERE parent_thread_id = ${row.parent_thread_id} AND task_id = ${row.task_id} AND signal_pending = 0 AND notices_json = '[]'`.pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Unable to prune a finished remote task observation.", {
+                  cause,
+                }),
+              ),
+            );
+          continue;
+        }
+      }
       if (row.signal_pending === 1)
         yield* observeRemoteTask({
           parentThreadId: row.parent_thread_id,

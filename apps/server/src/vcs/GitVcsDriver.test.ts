@@ -200,6 +200,7 @@ it.effect("checkpoint capture skips untracked nested repositories without a comm
       `160000 commit ${nestedHead}\tcommitted\n`,
     );
     assert.deepEqual(yield* fileSystem.readFile(path.join(gitDir, "index")), originalIndex);
+    assert.isTrue(yield* driver.checkpoints.restoreCheckpoint({ cwd, checkpointRef }));
     assert.strictEqual(
       yield* fileSystem.readFileString(path.join(cwd, nested, "private.txt")),
       "nested\n",
@@ -283,18 +284,11 @@ it.effect("checkpoint recovery discovers nested HEAD independently of inherited 
     const { cwd, git, gitDir, checkpointRef } = yield* makeCheckpointFixture(driver, root);
     yield* git(["init", "empty"]);
     const originalIndex = yield* fs.readFile(path.join(gitDir, "index"));
-    yield* Effect.acquireUseRelease(
-      Effect.sync(() => {
-        const previous = process.env.GIT_DIR;
-        process.env.GIT_DIR = gitDir;
-        return previous;
+    yield* driver.checkpoints.captureCheckpoint({ cwd, checkpointRef }).pipe(
+      Effect.provideService(HostProcess.Environment, {
+        ...(yield* HostProcess.Environment),
+        GIT_DIR: gitDir,
       }),
-      () => driver.checkpoints.captureCheckpoint({ cwd, checkpointRef }),
-      (previous) =>
-        Effect.sync(() => {
-          if (previous === undefined) delete process.env.GIT_DIR;
-          else process.env.GIT_DIR = previous;
-        }),
     );
     assert.strictEqual((yield* git(["show", `${checkpointRef}:file.txt`])).stdout, "unstaged\n");
     assert.strictEqual((yield* git(["ls-tree", "-r", checkpointRef, "--", "empty"])).stdout, "");
@@ -326,6 +320,26 @@ it.effect("checkpoint capture still fails when a clean filter rejects a file", (
     }
     assert.deepEqual(yield* fileSystem.readFile(path.join(gitDir, "index")), originalIndex);
     assert.isFalse(yield* driver.checkpoints.hasCheckpointRef({ cwd, checkpointRef }));
+  }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
+);
+
+it.effect("checkpoint capture keeps LF files that core.safecrlf would refuse to commit", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const driver = yield* GitVcsDriver.makeVcsDriverShape();
+    const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-checkpoint-safecrlf-" });
+    const { cwd, git, gitDir, checkpointRef } = yield* makeCheckpointFixture(driver, root);
+    yield* fileSystem.writeFileString(path.join(cwd, ".gitattributes"), "*.txt text eol=crlf\n");
+    yield* git(["config", "core.safecrlf", "true"]);
+    yield* fileSystem.writeFileString(path.join(cwd, "untracked.txt"), "new\n");
+    const originalIndex = yield* fileSystem.readFile(path.join(gitDir, "index"));
+
+    yield* driver.checkpoints.captureCheckpoint({ cwd, checkpointRef });
+
+    assert.strictEqual((yield* git(["show", `${checkpointRef}:file.txt`])).stdout, "unstaged\n");
+    assert.strictEqual((yield* git(["show", `${checkpointRef}:untracked.txt`])).stdout, "new\n");
+    assert.deepEqual(yield* fileSystem.readFile(path.join(gitDir, "index")), originalIndex);
   }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
 );
 
@@ -1385,6 +1399,8 @@ it.effect("restores empty checkpoints without changing paths outside the workspa
       yield* fileSystem.writeFileString(path.join(cwd, "ignored.txt"), "keep\n");
       yield* fileSystem.makeDirectory(path.join(cwd, "untracked"));
       yield* fileSystem.writeFileString(path.join(cwd, "untracked", "file.txt"), "remove\n");
+      yield* fileSystem.writeFileString(path.join(cwd, "untracked", ".gitignore"), "hidden.txt\n");
+      yield* fileSystem.writeFileString(path.join(cwd, "untracked", "hidden.txt"), "remove\n");
       assert.isTrue(
         yield* driver.checkpoints.restoreCheckpoint({ cwd, checkpointRef, fallbackToHead: false }),
       );
@@ -1402,6 +1418,91 @@ it.effect("restores empty checkpoints without changing paths outside the workspa
         });
         assert.strictEqual(staged.stdout.trim(), "outside.txt");
       }
+      yield* fileSystem.writeFileString(path.join(cwd, "checkpoint.txt"), "checkpoint\n");
+      yield* driver.checkpoints.captureCheckpoint({ cwd, checkpointRef });
+      yield* fileSystem.writeFileString(path.join(cwd, "checkpoint.txt"), "later\n");
+      let deepest = cwd;
+      for (let depth = 0; depth < 4; depth++) {
+        yield* fileSystem.writeFileString(path.join(deepest, ".gitignore"), "d/.gitignore\n");
+        deepest = path.join(deepest, "d");
+        yield* fileSystem.makeDirectory(deepest);
+      }
+      yield* fileSystem.writeFileString(path.join(deepest, ".gitignore"), "hidden.txt\n");
+      yield* fileSystem.writeFileString(path.join(deepest, "hidden.txt"), "remove\n");
+      const incomplete = yield* driver.checkpoints
+        .restoreCheckpoint({ cwd, checkpointRef, fallbackToHead: false })
+        .pipe(Effect.flip);
+      assert.strictEqual(incomplete._tag, "VcsProcessExitError");
+      assert.strictEqual(
+        yield* fileSystem.readFileString(path.join(cwd, "checkpoint.txt")),
+        "checkpoint\n",
+      );
+      assert.strictEqual(
+        (yield* driver.execute({
+          operation: "test",
+          cwd,
+          args: ["diff", "--cached", "--name-only", "--", "."],
+        })).stdout,
+        "",
+      );
+      if (nested) {
+        assert.strictEqual(
+          (yield* driver.execute({
+            operation: "test",
+            cwd: root,
+            args: ["diff", "--cached", "--name-only"],
+          })).stdout.trim(),
+          "outside.txt",
+        );
+      }
+    }
+  }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
+);
+
+it.effect("restores a checkpoint before the first commit without staging its files", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const driver = yield* GitVcsDriver.makeVcsDriverShape();
+    for (const nested of [false, true]) {
+      const temporaryRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-unborn-restore-",
+      });
+      // Checkpoints refuse Git's primary checkout; an orphan linked worktree is still unborn.
+      const repository = path.join(temporaryRoot, "repository");
+      const root = path.join(temporaryRoot, "worktree");
+      yield* fileSystem.makeDirectory(repository);
+      yield* runGit(repository, ["init"]);
+      yield* runGit(repository, ["config", "user.email", "test@test.com"]);
+      yield* runGit(repository, ["config", "user.name", "Test"]);
+      yield* runGit(repository, ["worktree", "add", "--orphan", "-b", "unborn-test", root]);
+      if (nested) {
+        yield* fileSystem.writeFileString(path.join(root, "outside.txt"), "staged\n");
+        yield* runGit(root, ["add", "outside.txt"]);
+      }
+      const cwd = nested ? path.join(root, "nested") : root;
+      yield* fileSystem.makeDirectory(cwd, { recursive: true });
+      yield* fileSystem.writeFileString(path.join(cwd, "file.txt"), "original\n");
+      const checkpointRef = CheckpointRef.make("refs/t3/checkpoints/unborn");
+      yield* driver.checkpoints.captureCheckpoint({ cwd, checkpointRef });
+      yield* fileSystem.writeFileString(path.join(cwd, "file.txt"), "changed\n");
+      yield* fileSystem.writeFileString(path.join(cwd, "added.txt"), "new\n");
+
+      assert.isTrue(
+        yield* driver.checkpoints.restoreCheckpoint({ cwd, checkpointRef, fallbackToHead: false }),
+      );
+
+      assert.strictEqual(
+        yield* fileSystem.readFileString(path.join(cwd, "file.txt")),
+        "original\n",
+      );
+      assert.isFalse(yield* fileSystem.exists(path.join(cwd, "added.txt")));
+      const staged = yield* driver.execute({
+        operation: "test",
+        cwd: root,
+        args: ["diff", "--cached", "--name-only"],
+      });
+      assert.strictEqual(staged.stdout.trim(), nested ? "outside.txt" : "");
     }
   }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
 );

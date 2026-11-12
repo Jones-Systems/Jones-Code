@@ -131,7 +131,11 @@ it.live(
               params: {
                 threadId: second.frame.params.threadId,
                 excludeTurns: true,
-                config: { "tools.update_plan.enabled": true, mcp_optional_startup_grace_ms: 10000 },
+                config: {
+                  "tools.update_plan.enabled": true,
+                  mcp_optional_startup_grace_ms: 10000,
+                  "features.concurrent_reasoning_summaries": true,
+                },
               },
             },
           },
@@ -279,7 +283,7 @@ it.live(
             ),
           );
           const before = yield* decodeEvidence(
-            (yield* call("t3_thread_configuration")).structuredContent,
+            (yield* call("t3_thread_configure")).structuredContent,
           );
           assert.isNotNull(before.executionPrecondition);
           const receipt = yield* decodeReceipt(

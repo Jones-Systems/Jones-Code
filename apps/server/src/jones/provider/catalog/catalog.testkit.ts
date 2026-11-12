@@ -146,6 +146,7 @@ export const makeCatalogHarness = Effect.fn("CatalogTest.makeHarness")(function*
     Effect.provideService(SecretResolver.SecretResolver, {
       read: (references) => Effect.succeed(references.map(() => undefined)),
       invalidate: () => Effect.void,
+      label: (provider) => Effect.succeed(provider),
     }),
   );
   const fs = yield* FileSystem.FileSystem;
@@ -171,6 +172,7 @@ export const makeCatalogHarness = Effect.fn("CatalogTest.makeHarness")(function*
           // Hold the unrelated background fetch; the service scope owns its interruption.
           refresh: Effect.never,
           forceRefresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
+          refreshOnDemand: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
           refreshInBackground: Effect.void,
         }),
       ),

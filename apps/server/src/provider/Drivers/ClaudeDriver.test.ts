@@ -57,6 +57,35 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
 const layerTest = ProviderHostLive.layer.pipe(Layer.provideMerge(layerDeps));
 
 it.layer(layerTest)("ClaudeDriver evaluator capability", (it) => {
+  it.effect("binds a default native account to provider HOME without changing server HOME", () =>
+    Effect.gen(function* () {
+      const original = {
+        HOME: process.env.HOME,
+        CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+      };
+      const fs = yield* FileSystem.FileSystem;
+      const providerHome = yield* fs.makeTempDirectoryScoped({ prefix: "claude-driver-home-" });
+      const instance = yield* ClaudeDriver.create({
+        instanceId: ProviderInstanceId.make("synthetic-native-default"),
+        displayName: "Synthetic native default",
+        environment: [{ name: "HOME", value: providerHome, sensitive: false }],
+        enabled: false,
+        config: { ...ClaudeDriver.defaultConfig(), enabled: false, homePath: "" },
+      }).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.die("Disabled binding must not spawn")),
+        ),
+      );
+      expect(instance.continuationIdentity.continuationKey).toBe(
+        `claude:home:${providerHome}/.claude`,
+      );
+      expect({ HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR }).toEqual(
+        original,
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.effect.each([
     { launchArgs: "", supported: true },
     { launchArgs: "--tools Read Bash --setting-sources user,local", supported: true },

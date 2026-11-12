@@ -44,6 +44,24 @@ it.layer(NodeServices.layer)("writeFileStringAtomically", (it) => {
       }),
   );
 
+  it.effect("applies an explicit private mode before publishing each replacement", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const platform = yield* HostProcess.Platform;
+      const root = yield* fs.makeTempDirectory({ prefix: "nw-atomic-private-" });
+      const filePath = path.join(root, "private.json");
+      yield* writeFileStringAtomically({ filePath, contents: "first", mode: 0o600 });
+      if (platform !== "win32") {
+        assert.strictEqual((yield* fs.stat(filePath)).mode & 0o777, 0o600);
+        yield* fs.chmod(filePath, 0o664);
+      }
+      yield* writeFileStringAtomically({ filePath, contents: "second", mode: 0o600 });
+      assert.strictEqual(yield* fs.readFileString(filePath), "second");
+      if (platform !== "win32") assert.strictEqual((yield* fs.stat(filePath)).mode & 0o777, 0o600);
+    }),
+  );
+
   it.effect("keeps a symlinked file linked and rewrites its destination", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -156,6 +174,7 @@ it.layer(NodeServices.layer)("writeFileStringAtomically", (it) => {
 
       yield* TestClock.adjust("100 millis");
       assert.isTrue(Exit.isFailure(yield* Fiber.join(stale)));
+      assert.strictEqual(attempts, 1);
       assert.strictEqual(yield* fs.readFileString(filePath), "newer");
       assert.deepStrictEqual(yield* fs.readDirectory(root), ["settings.json"]);
     }),

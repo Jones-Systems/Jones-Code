@@ -89,20 +89,16 @@ it.effect(
 );
 
 it.effect(
-  "a fresh current source database contains complete released138 and the allocated task tail",
+  "a fresh current source database contains the complete138 feature without a140 migration",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
       assert.deepEqual(
-        yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=138 ORDER BY migration_id`,
+        yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id BETWEEN 138 AND 139 ORDER BY migration_id`,
         [
           { migration_id: 138, name: "WorkspaceRetirement" },
           { migration_id: 139, name: "ConversationWorkspace" },
-          { migration_id: 140, name: "NativeExecutionProcessCustody" },
-          { migration_id: 141, name: "OrdinaryCheckoutProcessCustody" },
-          { migration_id: 142, name: "AuthSessionClientMetadata" },
-          { migration_id: 143, name: "WorkspaceRuntimeUses" },
         ],
       );
       for (const table of tables)

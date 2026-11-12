@@ -6,6 +6,7 @@ import * as ProcessRunner from "../../processRunner.ts";
 import * as Provenance from "../workspaceLifecycle/Provenance.ts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as DateTime from "effect/DateTime";
 import {
@@ -18,8 +19,9 @@ import * as Projections from "../../orchestration-v2/ProjectionStore.ts";
 import * as Registry from "../workspaceLifecycle/RegistryCli.ts";
 import { Configuration } from "../workspaceLifecycle/Configuration.ts";
 import * as Schema from "effect/Schema";
-import { exists, git, inside, readBounded } from "./Filesystem.ts";
+import { canonical, exists, git, inside, readBounded } from "./Filesystem.ts";
 import { binding } from "./OutputAttestation.ts";
+import { outputObligations, resolveProductions } from "./ProducerFinalizer.ts";
 import { Receipts, layer, RetirementError, type RetirementReceipt } from "./Receipts.ts";
 import { qualify, type QualificationInput } from "./Qualification.ts";
 import type { Probe } from "./ConsumerProbe.ts";
@@ -109,6 +111,21 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
     });
   let firstGeneration: string | null | undefined;
   let outputs: readonly Registry.OutputRecord[] = [];
+  const nativeOutputs = yield* Effect.tryPromise({
+    try: async () => {
+      await resolveProductions(request.worktree);
+      const records = await outputObligations(request.worktree);
+      if (records.some((record) => canonical(record.binding) !== canonical(bound)))
+        throw new Error("identity_mismatch");
+      return records;
+    },
+    catch: (cause) =>
+      new RetirementError({
+        target: request.worktree,
+        reason: "native_output_observation_unavailable",
+        cause,
+      }),
+  }).pipe(Effect.result);
   const mapError = Effect.mapError((cause: unknown) =>
     compiledMain3acaCodec16(cause)
       ? cause
@@ -392,6 +409,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
     );
   }).pipe(mapError);
   const result = yield* Effect.gen(function* () {
+    if (Result.isFailure(nativeOutputs)) return yield* nativeOutputs.failure;
     if (!request.execute) {
       yield* scriptGate;
       const input = yield* observe;
@@ -523,9 +541,47 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
     ),
   );
   const qualification = "qualification" in result ? result.qualification : null;
+  const nativeDetails: WorkspaceRetirementOutcome["details"] = Result.isFailure(nativeOutputs)
+    ? [
+        {
+          reason: "native_output_observation_unavailable",
+          target: request.worktree,
+          root: request.worktree,
+          fact: "Current-incarnation native output obligations could not be observed.",
+          missingFact: "current_incarnation_native_output_obligations",
+          lineage: [],
+          nextAction:
+            "Read this checkout's native producer records with their owning adapter before reevaluating retirement.",
+        },
+      ]
+    : nativeOutputs.success.flatMap((record) =>
+        (record.roots.length ? record.roots : [record.binding.path]).map((root) => ({
+          reason: record.roots.length ? "obligation" : "producer_outputs_unknown",
+          target: record.binding.path,
+          root,
+          fact: `${record.producer} production ${record.id}, owned by ${record.owner}, recorded status ${record.status} and outcome ${record.outcome}; reasons: ${record.reasons.join(", ") || "none"}.${record.roots.length ? "" : " Output roots were not recorded."}`,
+          missingFact: record.roots.length ? null : "declared_output_roots",
+          lineage: [
+            {
+              productionId: record.id,
+              producer: record.producer,
+              owner: record.owner,
+              worktree: record.binding.path,
+              gitDirectory: record.binding.git_dir,
+              rootDevice: String(record.binding.dev),
+              rootInode: String(record.binding.ino),
+              adminId: record.binding.admin_id,
+              ...(record.binding.breadcrumb_id === null
+                ? {}
+                : { breadcrumbId: record.binding.breadcrumb_id }),
+            },
+          ],
+          nextAction: `Have the recorded producer owner run node scripts/jones/direct-producers/resolve.ts --worktree '${record.binding.path.replaceAll("'", "'\\''")}' --json on the workspace-owning server; reobserve the reported holder or host limitation, then reevaluate this checkout.`,
+        })),
+      );
   const outcome: WorkspaceRetirementOutcome = {
     state: result.state,
-    reasonCodes: result.reasons,
+    reasonCodes: [...new Set([...result.reasons, ...nativeDetails.map((detail) => detail.reason)])],
     receiptId: "id" in result ? result.id : null,
     fingerprint: qualification?.fingerprint ?? null,
     paths: qualification
@@ -540,9 +596,13 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
       : [],
     details: [
       ...(qualification?.details ?? []),
+      ...nativeDetails,
       ...result.reasons
         .filter(
-          (reason) => !(qualification?.details ?? []).some((detail) => detail.reason === reason),
+          (reason) =>
+            ![...(qualification?.details ?? []), ...nativeDetails].some(
+              (detail) => detail.reason === reason,
+            ),
         )
         .map((reason) => ({
           reason,
@@ -566,12 +626,19 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
               : "Resolve this named target fact, then request a fresh proposal.",
         })),
     ],
-    outputObligations: outputs.map((r) => ({
-      id: r.id,
-      path: r.path,
-      owner: r.owner,
-      state: r.state,
-    })),
+    outputObligations: [
+      ...outputs.map((r) => ({ id: r.id, path: r.path, owner: r.owner, state: r.state })),
+      ...(Result.isFailure(nativeOutputs)
+        ? []
+        : nativeOutputs.success.flatMap((record) =>
+            record.roots.map((path) => ({
+              id: record.id,
+              path,
+              owner: record.owner,
+              state: record.status === "active" ? "active" : "unresolved",
+            })),
+          )),
+    ],
   };
   if (request.threadId) {
     const t = yield* projections.getThread(ThreadId.make(request.threadId));

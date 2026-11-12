@@ -15,6 +15,7 @@ import {
   loadCompleteWorkstreamReferences,
   mergeLivePlacements,
   nativePlacementBatches,
+  planNativePlacementBatches,
   reconcileWorkstreamCommands,
   reuseNativePlacementIdentitySnapshot,
   workstreamListErrorMessage,
@@ -26,6 +27,7 @@ import {
   WorkstreamActionError,
   workstreamFailureMessage,
   workstreamOperationFailure,
+  workstreamCommandNoEffect,
 } from "../jones/workstreams/workstreamActionSnapshot";
 import { placements } from "../components/workstreams/nativeWorkstreamActions.fixtures";
 
@@ -112,7 +114,7 @@ describe("proof request batching", () => {
       ],
     ]);
     expect(JSON.stringify(batches)).not.toContain("private");
-    expect(nativePlacementBatches([...threads].reverse())).toEqual(batches);
+    expect(nativePlacementBatches(threads.toReversed())).toEqual(batches);
     expect(nativePlacementBatches([])).toEqual([]);
   });
 
@@ -198,6 +200,18 @@ describe("proof request batching", () => {
     expect(first).not.toContain("old-1004");
     expect(batches.flat()).toHaveLength(threads.length);
     expect(nativePlacementBatches(threads.toReversed(), { preferred })).toEqual(batches);
+  });
+
+  it("counts an identity too large for any request as skipped instead of dropping it", () => {
+    const oversized = { environmentId: "env", id: "x".repeat(T3_PLACEMENT_MAX_REQUEST_BYTES) };
+    const normal = { environmentId: "env", id: "ok" };
+    const plan = planNativePlacementBatches([oversized, normal]);
+    expect(plan.skippedIdentities).toBe(1);
+    expect(plan.batches.flat()).toEqual([{ source_instance_id: "env", native_thread_id: "ok" }]);
+    expect(nativePlacementBatches([oversized, normal])).toEqual(plan.batches);
+    expect(planNativePlacementBatches([normal]).skippedIdentities).toBe(0);
+    expect(planNativePlacementBatches([oversized]).batches).toEqual([]);
+    expect(planNativePlacementBatches([oversized]).skippedIdentities).toBe(1);
   });
 
   it("merges proof batches only when their contexts and trust snapshots agree", () => {
@@ -621,5 +635,27 @@ describe("Workstream assignment diagnostics", () => {
     expect(workstreamFailureMessage(new WorkstreamActionError("unknown"))).toContain(
       "effect is unknown",
     );
+  });
+});
+
+describe("definitive Workstream POST refusals", () => {
+  it.each(["workstream_command_not_current", "version_conflict"])(
+    "recognizes the decoded %s refusal as stale",
+    (message) => {
+      expect(workstreamCommandNoEffect(new EnvironmentHttpConflictError({ message }))).toBe(
+        "stale",
+      );
+    },
+  );
+
+  it("keeps ambiguous and malformed failures unknown", () => {
+    for (const cause of [
+      new EnvironmentHttpConflictError({ message: "idempotency_conflict" }),
+      new Error("version_conflict"),
+      { message: "version_conflict" },
+      { _tag: "EnvironmentHttpConflictError", message: 409 },
+    ]) {
+      expect(workstreamCommandNoEffect(cause)).toBeNull();
+    }
   });
 });

@@ -215,7 +215,7 @@ export function buildThreadActionMenuItems(
       id: "stop-thread",
       label: "Stop thread",
       icon: "square",
-      // Session liveness is checked by the stop command when selected.
+      // Result dependencies can still need releasing without a live provider session.
       disabled: !state.canOperate,
       separatorBefore:
         !state.supports.titleRegeneration && !state.assignmentItems && !state.supports.snooze,
@@ -264,12 +264,12 @@ export function buildThreadActionMenuItems(
             children: [
               {
                 id: "auto-settle:enabled" as const,
-                label: "Enabled",
+                label: "Follow settings",
                 checked: state.autoSettleEnabled,
               },
               {
                 id: "auto-settle:disabled" as const,
-                label: "Disabled",
+                label: "Never",
                 checked: !state.autoSettleEnabled,
               },
             ],

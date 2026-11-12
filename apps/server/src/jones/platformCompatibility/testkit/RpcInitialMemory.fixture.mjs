@@ -90,6 +90,8 @@ function start(ready) {
       streamStoredEventsFrom: () => live,
     }),
     Layer.mock(Events.OrchestrationEventStore)({
+      // Nothing is pruned, so replay from sequence 0 stays answerable from the event log.
+      prunedThroughSequence: Effect.succeed(0),
       latestAgentSequence: () => Effect.succeed(1),
       getAgentReplayStats: () =>
         Effect.succeed({

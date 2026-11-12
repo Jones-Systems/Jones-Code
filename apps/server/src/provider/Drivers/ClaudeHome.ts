@@ -12,12 +12,29 @@ import { readClaudeSettingsEnv } from "./ClaudeSkills.ts";
 
 const quotePath = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
+export const resolveClaudeUserHome = Effect.fn("resolveClaudeUserHome")(function* (
+  environment?: NodeJS.ProcessEnv,
+) {
+  return environment?.HOME ?? (yield* HostProcess.HomeDirectory);
+});
+
+export const usesClaudeHostConfig = Effect.fn("usesClaudeHostConfig")(function* (
+  environment: NodeJS.ProcessEnv,
+) {
+  const hostEnvironment = yield* HostProcess.Environment;
+  return (
+    (yield* resolveClaudeUserHome(environment)) ===
+      (yield* resolveClaudeUserHome(hostEnvironment)) &&
+    environment.CLAUDE_CONFIG_DIR === hostEnvironment.CLAUDE_CONFIG_DIR
+  );
+});
+
 export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function* (
   config: Pick<ClaudeSettings, "homePath">,
   environment?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<string, never, Path.Path> {
   const path = yield* Path.Path;
-  const home = yield* HostProcess.HomeDirectory;
+  const home = yield* resolveClaudeUserHome(environment);
   const homePath = config.homePath.trim();
   if (homePath.length > 0) {
     return path.resolve(expandHomePath(homePath, home));
@@ -37,7 +54,7 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   const resolvedBaseEnv = baseEnv ?? process.env;
   const homePath = config.homePath.trim();
   if (homePath.length === 0) return resolvedBaseEnv;
-  const resolvedHomePath = yield* resolveClaudeHomePath(config);
+  const resolvedHomePath = yield* resolveClaudeHomePath(config, resolvedBaseEnv);
   return {
     ...resolvedBaseEnv,
     // Changing HOME hides macOS Keychain credentials; use CLAUDE_CONFIG_DIR to keep login access.
@@ -76,6 +93,9 @@ export const mergeClaudeProcessEnvironment = Effect.fn("mergeClaudeProcessEnviro
     CLAUDE_CODE_ENTRYPOINT: "t3-code",
   };
   for (const name of CLAUDE_HOST_SESSION_VARIABLES) delete baseEnvironment[name];
+  // The desktop runs the server as Node through Electron. Commands Claude runs inherit its env, so
+  // an Electron app they start (T3 Code itself, VS Code) would run as Node and exit.
+  delete baseEnvironment.ELECTRON_RUN_AS_NODE;
   const environment = yield* mergeProviderInstanceEnvironment(instanceEnvironment, baseEnvironment);
   const settingsEntrypoint = (yield* readClaudeSettingsEnv(config, undefined, environment))
     .CLAUDE_CODE_ENTRYPOINT;

@@ -16,6 +16,10 @@ import nativeLeaseRenewal from "../persistence/Migrations/137_JonesNativeCreatio
 import workspaceRetirement from "../persistence/Migrations/138_JonesWorkspaceRetirement.ts";
 import { readMigrationPlan } from "./migrationPlan.ts";
 
+/** Upstream migration IDs from `first` through the newest one this build ships. */
+const upstreamFrom = (first: number) =>
+  migrationManifest.map(([id]) => id).filter((id) => id >= first);
+
 const manifest = {
   upstream: [
     [1, "Initial"],
@@ -364,7 +368,7 @@ it.effect(
 );
 
 it.effect(
-  "upgrades a retained upstream-63 installation through 64–77 and preserves rows on failure",
+  "upgrades a retained upstream-63 installation through the latest upstream migration and preserves rows on failure",
   () =>
     Effect.gen(function* () {
       const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-install-migrations-"));
@@ -432,7 +436,7 @@ it.effect(
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
           migrationPlan: {
-            pendingUpstream: [64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77],
+            pendingUpstream: upstreamFrom(64),
             pendingJones: [latestJones[0]],
           },
         });
@@ -442,7 +446,7 @@ it.effect(
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
           migrationPlan: {
-            pendingUpstream: [64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77],
+            pendingUpstream: upstreamFrom(64),
             pendingJones: [latestJones[0]],
           },
         });
@@ -455,7 +459,7 @@ it.effect(
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
           migrationPlan: {
-            pendingUpstream: [70, 71, 72, 73, 74, 75, 76, 77],
+            pendingUpstream: upstreamFrom(70),
             pendingJones: [latestJones[0]],
           },
         });

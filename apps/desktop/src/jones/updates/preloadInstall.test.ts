@@ -40,6 +40,7 @@ vi.mock("electron-updater", () => ({ autoUpdater: {} }));
 let bridge: DesktopBridge;
 beforeAll(async () => {
   vi.stubGlobal("window", { addEventListener: vi.fn() });
+  vi.stubGlobal("document", Object.assign(new EventTarget(), { fullscreenElement: null }));
   await import("../../preload.ts");
   bridge = mocks.expose.mock.calls.find(([name]) => name === "desktopBridge")![1];
 });

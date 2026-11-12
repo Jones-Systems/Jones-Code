@@ -11,6 +11,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import { CliError } from "effect/cli";
 import { HttpClient } from "effect/http";
 import * as Schema from "effect/Schema";
 
@@ -54,7 +55,8 @@ export interface BootServiceIdentity {
   readonly description: string;
 }
 
-const DEFAULT_BOOT_SERVICE_IDENTITY: BootServiceIdentity = {
+/** The upstream service names. Only pure renderers and tests default to it. */
+export const UPSTREAM_BOOT_SERVICE_IDENTITY: BootServiceIdentity = {
   systemdUnitFile: BOOT_SERVICE_UNIT_FILE,
   launchdLabel: BOOT_SERVICE_LAUNCHD_LABEL,
   description: "T3 Code server",
@@ -114,7 +116,7 @@ export interface BootServicePlan {
 /** Pure renderer: service units cannot rely on the user's shell or PATH. */
 export function renderBootServiceUnit(
   plan: BootServicePlan,
-  identity: BootServiceIdentity = DEFAULT_BOOT_SERVICE_IDENTITY,
+  identity: BootServiceIdentity = UPSTREAM_BOOT_SERVICE_IDENTITY,
 ): string {
   // The user manager has no reliable network-online target; server networking retries itself.
   return [
@@ -171,7 +173,7 @@ function escapeXmlText(value: string): string {
 export function renderBootServicePlist(
   plan: BootServicePlan,
   options: { readonly homeDir: string; readonly environmentPath: string },
-  identity: BootServiceIdentity = DEFAULT_BOOT_SERVICE_IDENTITY,
+  identity: BootServiceIdentity = UPSTREAM_BOOT_SERVICE_IDENTITY,
 ): string {
   // KeepAlive/ThrottleInterval mirror Restart=always/RestartSec=5; launchd has no crash-loop burst limit.
   // ExitTimeOut matches systemd and exceeds the child's 75s grace; a longer queued stop keeps the transaction held.
@@ -593,8 +595,29 @@ export class BootServiceBootstrapRequiredError extends Schema.TaggedError<BootSe
   }
 }
 
+export const formatBootServiceBaseDirOption = (baseDir: string) =>
+  `--base-dir '${baseDir.replaceAll("'", `'"'"'`)}'`;
+
+export class BootServiceOtherBaseDirError extends Schema.TaggedError<BootServiceOtherBaseDirError>()(
+  "BootServiceOtherBaseDirError",
+  {
+    installedBaseDir: Schema.String,
+    baseDir: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `The T3 Code service on this machine serves ${this.installedBaseDir}, not ${this.baseDir}. Pass ${formatBootServiceBaseDirOption(this.installedBaseDir)} to manage it, or run \`t3 service uninstall ${formatBootServiceBaseDirOption(this.installedBaseDir)}\` first to move it; both data directories are kept.`;
+  }
+
+  // A refusal the user fixes by rerunning, so the CLI prints the message, not a stack trace.
+  override get [CliError.userMessage]() {
+    return this.message;
+  }
+}
+
 export type BootServiceError =
   | BootServiceUnsupportedError
+  | BootServiceOtherBaseDirError
   | BootServiceCommandError
   | BootServiceInstallError
   | BootServicePrerequisiteError
@@ -608,6 +631,8 @@ export interface BootServiceStatus {
   readonly current: boolean;
   readonly installedVersion?: string;
   readonly installedBaseDir?: string;
+  /** Set when the installed unit serves a different T3 home than this CLI. */
+  readonly otherBaseDir?: string;
   readonly problems?: ReadonlyArray<BootServiceProblem>;
   readonly unitPath: string;
   readonly logPath: string;
@@ -649,7 +674,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   readonly logsDir: string;
   readonly cliVersion: string;
   readonly host?: BootServiceHost;
-  readonly identity?: BootServiceIdentity;
+  readonly identity: BootServiceIdentity;
   readonly environment?: Readonly<Record<string, string>>;
   readonly allowEnableLinger?: boolean;
   readonly runtimeMode?: "verified-private-artifact";
@@ -665,7 +690,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const homeDir = yield* Config.String("HOME").pipe(Config.withDefault(""));
   const xdgConfigHome = yield* Config.String("XDG_CONFIG_HOME").pipe(Config.withDefault(""));
   const installerPath = yield* Config.String("PATH").pipe(Config.withDefault(""));
-  const identity = input.identity ?? DEFAULT_BOOT_SERVICE_IDENTITY;
+  const identity = input.identity;
   const runningInsideService =
     (yield* Config.String(BOOT_SERVICE_UNIT_ENV).pipe(Config.withDefault(""))) ===
     identity.systemdUnitFile;
@@ -734,6 +759,13 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const logPath = path.join(input.logsDir, BOOT_SERVICE_LOG_FILE);
   const statePath = path.join(input.baseDir, "runtime", SERVICE_STATE_FILE);
   const restartPendingPath = path.join(input.baseDir, "runtime", SERVICE_RESTART_PENDING_FILE);
+  const otherBaseDirOf = (unit: string) => {
+    const installedBaseDir = bootServiceBaseDirOf(unit);
+    return installedBaseDir !== undefined &&
+      path.resolve(installedBaseDir) !== path.resolve(input.baseDir)
+      ? installedBaseDir
+      : undefined;
+  };
   const writeDurably = (filePath: string, contents: string) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -883,6 +915,15 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     readonly start?: boolean;
   }) {
     const manager = yield* requireManager;
+    // The unit is per user. Rewriting one that serves another home moves the
+    // service onto this home's data, which looks like every thread vanished.
+    const existingUnit = yield* fs.readFileString(unitPath).pipe(Effect.option);
+    const installedBaseDir = Option.isSome(existingUnit)
+      ? otherBaseDirOf(existingUnit.value)
+      : undefined;
+    if (installedBaseDir !== undefined) {
+      return yield* new BootServiceOtherBaseDirError({ installedBaseDir, baseDir: input.baseDir });
+    }
     const exists = (file: string) =>
       fs.exists(file).pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
     // Qualification is checked before administrative probes, downloads or
@@ -1240,6 +1281,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       ? serviceStateActiveVersion(stateText.value)
       : undefined;
     const installedBaseDir = bootServiceBaseDirOf(unit);
+    const otherBaseDir = otherBaseDirOf(unit);
     const normalizeUnit = (contents: string) =>
       detectedManager.kind === "launchd"
         ? contents.replace(/(<key>PATH<\/key>\n\s*<string>)[^<]*(<\/string>)/, "$1$2")
@@ -1252,6 +1294,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       installed: true,
       ...(installedVersion === undefined ? {} : { installedVersion }),
       ...(installedBaseDir === undefined ? {} : { installedBaseDir }),
+      ...(otherBaseDir === undefined ? {} : { otherBaseDir }),
       problems,
       current:
         problems.length === 0 &&
@@ -1277,7 +1320,7 @@ export const layer = (input: {
   readonly logsDir: string;
   readonly cliVersion: string;
   readonly host?: BootServiceHost;
-  readonly identity?: BootServiceIdentity;
+  readonly identity: BootServiceIdentity;
   readonly environment?: Readonly<Record<string, string>>;
   readonly allowEnableLinger?: boolean;
 }) => Layer.effect(BootService, make(input));

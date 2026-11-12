@@ -11,6 +11,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { SqlError, classifySqliteError } from "effect/sql/SqlError";
+import {
+  findSqliteReaderAdmissionFailure,
+  SqliteReaderAdmissionError,
+} from "@t3tools/shared/jones/sqliteReaders/admissionFailure";
 import migration from "../../persistence/Migrations/134_JonesGoalContinuity.ts";
 import migration124 from "../../persistence/Migrations/124_JonesTaskContinuations.ts";
 import * as Store from "./GoalContinuityStore.ts";
@@ -51,6 +56,24 @@ function initial(): ContinuitySnapshot {
 const database = NodeSqliteClient.layer({ filename: ":memory:" });
 const setup = Layer.effectDiscard(migration).pipe(Layer.provideMerge(database));
 const layer = Store.layer.pipe(Layer.provideMerge(setup));
+
+it.effect(
+  "preserves admission causes in storage wrappers without adding public continuity fields",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* Store.GoalContinuityStore;
+      const sql = new SqlError({
+        reason: classifySqliteError(new SqliteReaderAdmissionError({ reason: "checkpoint-held" })),
+      });
+      for (const operation of [store.readOnly, store.transaction]) {
+        const error = yield* operation(Effect.fail(sql)).pipe(Effect.flip);
+        expect(error._tag).toBe("GoalContinuityError");
+        expect(error.reason).toBe("unavailable");
+        expect(findSqliteReaderAdmissionFailure(error)?.reason).toBe("checkpoint-held");
+        expect(Object.keys(error)).not.toContain("cause");
+      }
+    }).pipe(Effect.provide(layer)),
+);
 const expected = (snapshot: ContinuitySnapshot) => ({
   goalId: snapshot.intent.goalId,
   revision: snapshot.intent.revision,

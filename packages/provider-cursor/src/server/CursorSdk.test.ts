@@ -6,6 +6,7 @@ import { vi } from "vite-plus/test";
 import * as CursorSdk from "./CursorSdk.ts";
 
 // Shaped like the SDK's minified class: the constructor is not named after the error.
+// Mimics the Cursor SDK's own native Error class.
 class o extends Error {
   override name = "WriteIterableClosedError";
 }

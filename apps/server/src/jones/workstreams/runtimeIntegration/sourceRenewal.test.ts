@@ -21,6 +21,7 @@ import {
   type WorkstreamsNativeContext,
   type WorkstreamsRegistrationContextT3Source,
 } from "@t3tools/contracts";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -187,6 +188,7 @@ const sourceStore = Effect.fn("SourceRenewalTest.sourceStore")(function* (
       getOrCreateRandom: () => Effect.die("fixture must not initialize keys"),
       remove: () => Effect.die("fixture must not remove keys"),
     }),
+    Effect.provide(EffectNodeCrypto.layerMac),
   );
   const providerPorts = {
     ...makeProviderFixture().ports,

@@ -25,6 +25,7 @@ vi.mock("../../state/environments", () => ({
 vi.mock("./useEvaluatorProviders", () => ({
   useEvaluatorProviders: () => (providerDataKnown ? providers : null),
 }));
+vi.mock("../../components/settings/settingsLayout", () => import("./settingsLayoutTestStub"));
 vi.mock("../../state/server", () => ({ EMPTY_SERVER_PROVIDERS: [] }));
 vi.mock("../../hooks/useSettings", () => ({
   useEnvironmentSettings: () => ({
@@ -163,31 +164,38 @@ function setup(name: string) {
   };
 }
 const button = (container: HTMLElement, text: string) =>
-  [...container.querySelectorAll("button")].find((entry) => entry.textContent === text)!;
+  [...container.querySelectorAll("button")].find(
+    (entry) => entry.textContent === text || entry.getAttribute("aria-label") === text,
+  )!;
+const saveButton = (container: HTMLElement) =>
+  [...container.querySelectorAll("button")].find((entry) => entry.textContent === "Save model");
+const effort = (container: HTMLElement) =>
+  container.querySelector<HTMLButtonElement>('[aria-label="Evaluator effort"]')!;
+const mediumSelection: ModelSelection = {
+  ...selection,
+  options: [
+    { id: "reasoningEffort", value: "medium" },
+    { id: "serviceTier", value: "default" },
+  ],
+};
 
 it("saves the complete exact Codex account selection and keeps request articles and decisions out of Settings", async () => {
   using _fixture = setup("settings-exact");
   await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
-  expect(screen.container.textContent).toContain("Receiving environment: Synthetic receiver");
+  expect(screen.container.textContent).toContain(
+    "Screens incoming tasks on Synthetic receiver before they start",
+  );
+  expect(screen.container.textContent).toContain("Uses Synthetic Codex account.");
   expect(screen.container.querySelector("article")).toBeNull();
   expect(screen.container.textContent).not.toContain("Inspect synthetic project");
+  expect(screen.container.textContent).not.toContain("Evaluator policy is enabled");
   const picker = screen.container.querySelector<HTMLButtonElement>(
     '[aria-label="Evaluator model"]',
   )!;
   expect(picker.dataset.instances).toBe(instanceId);
   await act(async () => picker.click());
-  await act(async () => button(screen.container, "Save model").click());
-  expect(request).toHaveBeenCalledWith(environmentId, {
-    action: "policy",
-    input: {
-      enabled: true,
-      expectedRevision: "synthetic-policy",
-      modelSelection: selection,
-    },
-  });
-  await act(async () =>
-    screen.container.querySelector<HTMLButtonElement>('[aria-label="Evaluator effort"]')!.click(),
-  );
+  expect(saveButton(screen.container)).toBeUndefined();
+  await act(async () => effort(screen.container).click());
   await act(async () => button(screen.container, "Save model").click());
   expect(request).toHaveBeenLastCalledWith(environmentId, { action: "snapshot" });
   expect(request).toHaveBeenCalledWith(environmentId, {
@@ -195,14 +203,25 @@ it("saves the complete exact Codex account selection and keeps request articles 
     input: {
       enabled: true,
       expectedRevision: "synthetic-policy",
-      modelSelection: {
-        ...selection,
-        options: [
-          { id: "reasoningEffort", value: "medium" },
-          { id: "serviceTier", value: "default" },
-        ],
-      },
+      modelSelection: mediumSelection,
     },
+  });
+});
+
+it("offers Save for an unsaved default selection", async () => {
+  using fixture = setup("settings-default");
+  request.mockResolvedValue({
+    ...fixture.snapshot,
+    policy: { ...fixture.snapshot.policy, enabled: false, modelSelection: null },
+  });
+  await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
+  await act(async () => button(screen.container, "Save model").click());
+  expect(request).toHaveBeenCalledWith(environmentId, {
+    action: "policy",
+    input: expect.objectContaining({
+      enabled: false,
+      modelSelection: expect.objectContaining({ instanceId, model: "gpt-6.1-sol" }),
+    }),
   });
 });
 
@@ -221,7 +240,9 @@ it("shows a saved unavailable selection without replacing it or permitting Save"
   });
   await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
   expect(screen.container.textContent).toContain("retired-model (Unavailable)");
-  expect(screen.container.textContent).toContain("missing-account / retired-model");
+  expect(screen.container.textContent).toContain("missing-account / retired-model is unavailable");
+  expect(saveButton(screen.container)).toBeUndefined();
+  await act(async () => button(screen.container, "retired-model (Unavailable)").click());
   const save = button(screen.container, "Save model");
   expect(save.getAttribute("aria-disabled")).toBe("true");
   await act(async () => save.click());
@@ -231,9 +252,7 @@ it("shows a saved unavailable selection without replacing it or permitting Save"
 it("keeps a safe load error and unsaved effort, disables writes, then recovers without hidden or overlapping polls", async () => {
   using fixture = setup("settings-recovery");
   await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
-  await act(async () =>
-    screen.container.querySelector<HTMLButtonElement>('[aria-label="Evaluator effort"]')!.click(),
-  );
+  await act(async () => effort(screen.container).click());
   fixture.visibility.mockReturnValue("hidden");
   await fixture.poll();
   expect(request).toHaveBeenCalledTimes(1);
@@ -288,9 +307,8 @@ it.each([
     });
     await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
     expect(screen.container.textContent).toContain(message);
-    expect(screen.container.textContent).toContain("Evaluator policy is unknown");
-    expect(screen.container.textContent).toContain("Evaluator provider availability is unknown");
-    expect(screen.container.textContent).not.toContain("No providers advertise");
+    expect(screen.container.textContent).toContain("Unknown");
+    expect(screen.container.textContent).not.toContain("No supported providers");
     expect(screen.container.textContent).not.toContain("synthetic-detail");
     expect(screen.container.textContent).not.toContain("Retrying automatically");
     expect(screen.container.querySelector('[aria-label="Evaluate remote requests"]')).toBeNull();
@@ -310,12 +328,16 @@ it.each([
       policy: { ...fixture.snapshot.policy, enabled: false },
     });
     await act(async () => button(screen.container, "Refresh").click());
-    expect(screen.container.textContent).toContain("Evaluator policy is disabled");
+    const toggle = screen.container.querySelector<HTMLElement>(
+      '[aria-label="Evaluate remote requests"]',
+    )!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
     expect(screen.container.querySelector('[role="alert"]')).toBeNull();
-    await act(async () => button(screen.container, "Save model").click());
+    expect(saveButton(screen.container)).toBeUndefined();
+    await act(async () => toggle.click());
     expect(request).toHaveBeenCalledWith(environmentId, {
       action: "policy",
-      input: { enabled: false, expectedRevision: "synthetic-policy", modelSelection: selection },
+      input: { enabled: true, expectedRevision: "synthetic-policy", modelSelection: selection },
     });
     const beforePoll = request.mock.calls.length;
     await fixture.poll();
@@ -333,21 +355,20 @@ it("keeps provider absence unknown until a current provider source succeeds", as
   };
   request.mockResolvedValue(emptyPolicy);
   await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
-  expect(screen.container.textContent).toContain("Evaluator provider availability is unknown");
-  expect(screen.container.textContent).not.toContain("No providers advertise");
-  await act(async () => button(screen.container, "Save model").click());
+  expect(screen.container.textContent).toContain("Provider availability is unknown");
+  expect(screen.container.textContent).not.toContain("No supported providers");
+  expect(saveButton(screen.container)).toBeUndefined();
   expect(request).toHaveBeenCalledTimes(1);
   providers = [];
   providerDataKnown = true;
   await fixture.poll();
-  expect(screen.container.textContent).toContain(
-    "No providers advertise remote evaluation support",
-  );
+  expect(screen.container.textContent).toContain("No supported providers");
 });
 
 it("shows retained policy as last known and blocks settings during a current read", async () => {
   using fixture = setup("settings-last-known");
   await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
+  await act(async () => effort(screen.container).click());
   let resolve!: (value: typeof fixture.snapshot) => void;
   request.mockImplementationOnce(
     () =>
@@ -356,13 +377,13 @@ it("shows retained policy as last known and blocks settings during a current rea
       }),
   );
   await fixture.poll();
-  expect(screen.container.textContent).toContain(
-    "Current evaluator policy is unknown. Last known: enabled",
-  );
+  expect(screen.container.textContent).toContain("Last known: enabled");
+  expect(button(screen.container, "Save model").getAttribute("aria-disabled")).toBe("true");
   await act(async () => button(screen.container, "Save model").click());
   expect(request).toHaveBeenCalledTimes(2);
   await act(async () => resolve(fixture.snapshot));
-  expect(screen.container.textContent).toContain("Evaluator policy is enabled");
+  expect(screen.container.textContent).not.toContain("Last known");
+  expect(button(screen.container, "Save model").getAttribute("aria-disabled")).toBe("false");
 });
 
 it("explains unavailable owner controls on hover and focus and guards keyboard activation", async () => {
@@ -388,9 +409,7 @@ it("explains unavailable owner controls on hover and focus and guards keyboard a
   expect(document.activeElement).toBe(control);
   await userEvent.keyboard("{Enter}");
   await userEvent.keyboard(" ");
-  await act(async () => button(screen.container, "Save model").focus());
-  await userEvent.keyboard("{Enter}");
-  await userEvent.keyboard(" ");
+  expect(saveButton(screen.container)).toBeUndefined();
   expect(request).toHaveBeenCalledTimes(1);
 });
 
@@ -402,18 +421,15 @@ it("explains missing remote evaluation support without inferring an integration 
     policy: { ...fixture.snapshot.policy, enabled: false, modelSelection: null },
   });
   await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
-  expect(screen.container.textContent).toContain(
-    "Only provider instances that advertise tool-free remote evaluation can be selected.",
-  );
-  expect(screen.container.textContent).toContain("Does not advertise remote evaluation support.");
+  const disclosure = button(screen.container, "1 provider unavailable for remote evaluation");
+  await act(async () => disclosure.click());
+  expect(screen.container.textContent).toContain("Not supported.");
   expect(screen.container.textContent).not.toContain("This Codex CLI integration");
   expect(screen.container.textContent).not.toContain("Managed Codex (ChatGPT authorization)");
   expect(screen.container.textContent).not.toContain("qualified Claude integrations");
-  expect(screen.container.textContent).toContain(
-    "No providers advertise remote evaluation support",
-  );
+  expect(screen.container.textContent).toContain("No supported providers");
   expect(screen.container.querySelector('[aria-label="Evaluator model"]')).toBeNull();
-  await act(async () => button(screen.container, "Save model").click());
+  expect(saveButton(screen.container)).toBeUndefined();
   expect(request).toHaveBeenCalledTimes(1);
 });
 
@@ -429,18 +445,14 @@ it("lists only rejected instances with their first snapshot-supported reason onc
         enabled: false,
         installed: false,
       },
-      "Does not advertise remote evaluation support.",
+      "Not supported.",
     ],
     [
       "Unqualified Claude",
       { driver: ProviderDriverKind.make("claudeAgent"), supportsRemoteRequestEvaluation: false },
-      "Does not advertise remote evaluation support.",
+      "Not supported.",
     ],
-    [
-      "Older instance",
-      { supportsRemoteRequestEvaluation: undefined },
-      "Does not advertise remote evaluation support.",
-    ],
+    ["Older instance", { supportsRemoteRequestEvaluation: undefined }, "Not supported."],
     [
       "Unavailable instance",
       {
@@ -506,6 +518,10 @@ it("lists only rejected instances with their first snapshot-supported reason onc
   expect(list()).toBeNull();
   providerDataKnown = true;
   await fixture.poll();
+  expect(list()).toBeNull();
+  await act(async () =>
+    button(screen.container, `${cases.length} providers unavailable for remote evaluation`).click(),
+  );
   const rows = [...list()!.querySelectorAll("li")].map((row) => row.textContent);
   expect(rows).toHaveLength(cases.length);
   for (const [name, , reason] of cases) {
@@ -516,4 +532,5 @@ it("lists only rejected instances with their first snapshot-supported reason onc
   providerDataKnown = false;
   await fixture.poll();
   expect(list()).toBeNull();
+  expect(screen.container.textContent).not.toContain("providers unavailable");
 });

@@ -1,5 +1,20 @@
 import { makeDeferredShellWorkstreamActivation } from "../jones/workstreams/deferredShellActivation.ts";
-
+import * as NativeReadExport from "../jones/workstreams/native/read/export.ts";
+import * as Stream from "effect/Stream";
+import * as Pull from "effect/Pull";
+import * as NativeMemberServices from "../jones/workstreams/native/runtime/memberServices.ts";
+import { nativeMemberPreparationLayer } from "../jones/workstreams/native/integration.ts";
+import * as HttpCompatibility from "../jones/workstreams/native/compat/http.ts";
+import * as NativeStartup from "../jones/workstreams/native/runtime/startup.ts";
+import * as NativeRuntimeEntry from "../jones/workstreams/native/runtime/entry.ts";
+import * as MemberPlacements from "../jones/workstreams/native/read/memberPlacements.ts";
+import * as NativeReads from "../jones/workstreams/native/read/routes.ts";
+import {
+  WORKSTREAMS_HOME_READ_RESULT_CONTRACT,
+  WorkstreamsHomeReadResult,
+} from "@t3tools/contracts/jones/workstreamsHomeReadResult";
+import * as Schema from "effect/Schema";
+import { nativePersistenceLayer } from "../jones/workstreams/native/integration.ts";
 import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
 import * as WorkstreamOperationsLive from "../jones/workstreams/operations/live.ts";
 import { Activation } from "../jones/workstreams/operations/ports.ts";
@@ -45,6 +60,8 @@ import {
   makeWorkstreamsRegistrationContext,
 } from "../jones/workstreams/registrationContext/service.ts";
 
+const decodeNativeReadResult = Schema.decodeUnknownEffect(WorkstreamsHomeReadResult);
+
 export const WORKSTREAM_RESPONSE_HEADERS = {
   "cache-control": "private, no-store",
   "x-content-type-options": "nosniff",
@@ -73,7 +90,8 @@ export const withWorkstreamBodyLimit = <A, E, R>(
   request: { readonly originalUrl: string; readonly method: string },
 ): Effect.Effect<A, E, R> =>
   request.method === "POST" &&
-  workstreamHttpPath(request.originalUrl) === "/api/workstreams/thread-placements"
+  (workstreamHttpPath(request.originalUrl) === "/api/workstreams/thread-placements" ||
+    workstreamHttpPath(request.originalUrl) === "/api/workstreams/native/v1/read")
     ? effect.pipe(
         Effect.provideService(
           HttpIncomingMessage.MaxBodySize,
@@ -87,7 +105,14 @@ export const workstreamResponseHeadersLayer = HttpRouter.middleware(
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       if (isWorkstreamHttpTarget(request.originalUrl)) yield* appendWorkstreamResponseHeaders;
-      return yield* withWorkstreamBodyLimit(httpEffect, request);
+      return yield* HttpCompatibility.withResponseContract(
+        withWorkstreamBodyLimit(httpEffect, request),
+        {
+          method: request.method,
+          path: workstreamHttpPath(request.originalUrl),
+          headers: request.headers,
+        },
+      );
     }),
   { global: true },
 );
@@ -165,7 +190,7 @@ export const workstreamRegistrationContextLayerLive = Layer.effect(
   Layer.provide(workstreamControlPlaneLayer),
 );
 
-export const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
+const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
   Layer.provide(
     Layer.effect(
       Activation,
@@ -199,6 +224,29 @@ export const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe
     ),
   ),
   Layer.provide(workstreamControlPlaneLayer),
+);
+
+// Resolve explicit native selection before constructing any Control Plane service.
+export const workstreamStartupLayer = NativeStartup.layer.pipe(
+  Layer.provide(nativeMemberPreparationLayer),
+  Layer.provide(nativePersistenceLayer),
+);
+export const workstreamSelectedServicesLayer = NativeStartup.chooseLayer({
+  legacy: () =>
+    Layer.mergeAll(
+      workstreamGatewayLayerLive,
+      workstreamRegistrationContextLayerLive,
+      workstreamOperationsLayerLive.pipe(
+        Layer.provide(workstreamGatewayLayerLive),
+        Layer.provide(workstreamRegistrationContextLayerLive),
+      ),
+    ),
+  home: NativeStartup.homeServicesLayer,
+  member: NativeMemberServices.layer,
+  unavailable: NativeStartup.unavailableServicesLayer,
+}).pipe(
+  Layer.provideMerge(workstreamStartupLayer),
+  Layer.provide(workstreamNativeAuthorityLayerLive),
 );
 
 const internal = <A>(
@@ -312,10 +360,82 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
           return yield* internal("appearanceSave", gateway.saveAppearance(args.payload));
         }),
       )
+      .handle("nativeRead", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const native = yield* Effect.serviceOption(NativeReads.AuthorizedReads);
+          const unavailable = () =>
+            new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" });
+          if (Option.isNone(native)) return yield* unavailable();
+          const result = yield* native.value
+            .read(args.payload.request, args.payload.placement_contract)
+            .pipe(Effect.mapError(unavailable));
+          return yield* decodeNativeReadResult(
+            { contract: WORKSTREAMS_HOME_READ_RESULT_CONTRACT, ...result },
+            { onExcessProperty: "error" },
+          ).pipe(Effect.mapError(unavailable));
+        }),
+      )
+      .handle("nativeExport", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const native = yield* Effect.serviceOption(NativeReadExport.ReadExport);
+          const unavailable = () =>
+            new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" });
+          if (Option.isNone(native)) return yield* unavailable();
+          // Acquire and authorize the first bytes before committing success headers.
+          // The request scope owns the pull through EOF, failure or client cancellation.
+          const pull = yield* Stream.toPull(native.value.stream(args.query.page_size));
+          const first = yield* Pull.catchDone(pull, () => Effect.fail(unavailable())).pipe(
+            Effect.mapError(unavailable),
+          );
+          return HttpServerResponse.stream(
+            Stream.concat(Stream.fromIterable(first), Stream.fromPull(Effect.succeed(pull))).pipe(
+              Stream.encodeText,
+              Stream.mapError(unavailable),
+            ),
+            { contentType: "application/x-ndjson", headers: WORKSTREAM_RESPONSE_HEADERS },
+          );
+        }),
+      )
       .handle("threadPlacements", (args) =>
-        read(args.endpoint.name).pipe(
-          Effect.andThen(internal("threadPlacements", gateway.readThreadPlacements(args.payload))),
-        ),
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const contract = args.headers["x-t3-workstreams-placement-contract"];
+          if (contract === undefined)
+            return yield* internal("threadPlacements", gateway.readThreadPlacements(args.payload));
+          const native = yield* Effect.serviceOption(NativeRuntimeEntry.Entry);
+          const member = yield* Effect.serviceOption(MemberPlacements.MemberPlacements);
+          const unavailable = () =>
+            new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" });
+          if (Option.isSome(native))
+            return yield* native.value
+              .placementResponse(args.payload, contract)
+              .pipe(Effect.mapError(unavailable));
+          if (Option.isSome(member))
+            return yield* member.value
+              .load(args.payload, contract)
+              .pipe(Effect.mapError(unavailable));
+          return yield* unavailable();
+        }),
+      )
+      .handle("legacyReceiptLookup", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const native = yield* Effect.serviceOption(NativeRuntimeEntry.Entry);
+          if (Option.isNone(native))
+            return yield* new EnvironmentHttpConflictError({
+              message: "workstreams_legacy_receipts_unavailable",
+            });
+          return yield* native.value.lookupLegacyReceipt(args.payload).pipe(
+            Effect.mapError(
+              () =>
+                new EnvironmentHttpConflictError({
+                  message: "workstreams_legacy_receipts_unavailable",
+                }),
+            ),
+          );
+        }),
       )
       .handle("list", (args) =>
         read(args.endpoint.name).pipe(
@@ -384,6 +504,7 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
       .handle("command", (args) =>
         read(args.endpoint.name).pipe(
           Effect.andThen(internal("command", gateway.pollCommand(args.params.commandId))),
+          Effect.tap(HttpCompatibility.receiptStatus),
         ),
       )
       .handle("submit", (args) =>
@@ -392,15 +513,14 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
           // Only gateway checks before dispatch establish no effect; transport and replay failures do not.
           return yield* gateway.submit(args.payload.command).pipe(
+            Effect.tap(HttpCompatibility.receiptStatus),
             Effect.catch(
               (
                 error,
               ): Effect.Effect<never, EnvironmentHttpConflictError | EnvironmentInternalError> =>
                 error.reason === "version-conflict" || error.reason === "authorization-not-current"
-                  ? Effect.fail(
-                      new EnvironmentHttpConflictError({
-                        message: "workstream_command_not_current",
-                      }),
+                  ? Effect.flatMap(HttpCompatibility.conflictMessage(error.reason), (message) =>
+                      Effect.fail(new EnvironmentHttpConflictError({ message })),
                     )
                   : failEnvironmentInternal("internal_error", {
                       operation: "submit",

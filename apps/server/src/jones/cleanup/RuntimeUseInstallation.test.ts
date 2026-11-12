@@ -20,7 +20,7 @@ import {
   runtimeUseCoverageSource,
 } from "./RuntimeUseInstallation.ts";
 
-const prior = jonesMigrationEntries.filter(([id]) => id < 143);
+const prior = jonesMigrationEntries.filter(([id]) => id < 151);
 const fixture = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.gen(function* () {
     yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
@@ -144,7 +144,7 @@ it.effect(
         const basis = yield* readRuntimeUseInstallation();
         assert.isNotNull(basis);
         assert.deepStrictEqual(basis?.globalEventWatermark, { kind: "empty" });
-        assert.deepStrictEqual(basis?.migration, { id: 143, name: "WorkspaceRuntimeUses" });
+        assert.deepStrictEqual(basis?.migration, { id: 151, name: "WorkspaceRuntimeUses" });
         assert.strictEqual(basis?.coverageSourceSha256, digest(runtimeUseCoverageSource));
         const rows =
           yield* sql`SELECT id,basis_json,basis_sha256 FROM jones_workspace_runtime_installation`;
@@ -210,19 +210,23 @@ it.effect(
 );
 
 it.effect(
-  "an already-applied142 without its atomic basis stays ineligible without schema or history repair",
+  "an already-applied 151 without its atomic basis stays ineligible without schema or history repair",
   () =>
     fixture(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* runJonesMigrations([
           ...prior,
-          [143, "WorkspaceRuntimeUses", createRuntimeUseSchema],
+          [151, "WorkspaceRuntimeUses", createRuntimeUseSchema],
         ]);
         const before = yield* sql`SELECT type,name,sql FROM sqlite_master ORDER BY name`;
         yield* appendSyntheticEvent(25, 2, "thread");
         assert.isNull(yield* readRuntimeUseInstallation());
-        assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+        // Rerunning through 151 must not repair it; later migrations are out of scope here.
+        assert.deepStrictEqual(
+          yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 151)),
+          [],
+        );
         yield* refused(sql.withTransaction(createRuntimeUseInstallation));
         assert.deepStrictEqual(
           yield* sql`SELECT type,name,sql FROM sqlite_master ORDER BY name`,
@@ -263,7 +267,7 @@ it.effect("unexpected journal-prefix objects abort the entire original migration
         before,
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=143`,
+        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=151`,
         [],
       );
     }),

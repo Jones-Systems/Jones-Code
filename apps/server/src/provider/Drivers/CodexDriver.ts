@@ -1,6 +1,7 @@
 import { CodexSettings, ProviderDriverKind } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import type * as Signature from "effect/crypto/Signature";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -81,6 +82,7 @@ function makeCodexMaintenanceResolver(sharedHomePath: string) {
   return makePackageManagedProviderMaintenanceResolver({
     provider: DRIVER_KIND,
     npmPackageName: "@openai/codex",
+    mise: { tool: "codex" },
     nativeUpdate: {
       args: ["update"],
       isCommandPath: (commandPath) => codexStandaloneHome(commandPath) !== null,
@@ -102,6 +104,7 @@ export type CodexDriverEnv =
   | ResetCreditCoordinator.ResetCreditCoordinator
   | Digest.Digest
   | SecureRandom.SecureRandom
+  | Signature.Signature
   | FileSystem.FileSystem
   | HttpClient.HttpClient
   | ProviderLatestVersions.ProviderLatestVersions
@@ -215,6 +218,11 @@ export const CodexDriver: ProviderDriver<
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         compatibility: installation.compatibility,
+        // The picker shows each model's catalog default effort; dispatch reads the same
+        // catalog so a turn without an explicit effort sends the effort that was shown.
+        getModelCatalog: Effect.suspend(() =>
+          snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+        ),
       },
     ).pipe(
       Effect.mapError(

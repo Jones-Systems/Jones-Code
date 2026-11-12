@@ -49,6 +49,8 @@ export class DesktopBrowserChannel extends Context.Service<
       readonly attachmentGeneration: number;
     } | null>;
     readonly isAttached: (key: DesktopTabKey) => Effect.Effect<boolean>;
+    /** Whether a desktop window draws the tab on screen, which no streamed viewer counts. */
+    readonly isShown: (key: DesktopTabKey) => boolean;
     readonly endpoint: (key: DesktopTabKey) => Effect.Effect<string, never, Scope.Scope>;
     readonly pointer: (
       key: DesktopTabKey,
@@ -141,6 +143,8 @@ const make = Effect.gen(function* () {
     }
   >();
   let attachmentGeneration = 0;
+  // Missing reports protect desktop tabs until the renderer explicitly marks them hidden.
+  const shownTabs = new Map<string, boolean>();
   /** CDP frames from the desktop, per tab, for the endpoint connected to it. */
   const inbound = new Map<string, Queue.Queue<string>>();
   const writeLock = yield* Semaphore.make(1);
@@ -168,6 +172,7 @@ const make = Effect.gen(function* () {
       pointer: Effect.fn("DesktopBrowserChannel.pointer")(function () {
         return Effect.void;
       }),
+      isShown: () => false,
     });
   }
 
@@ -211,14 +216,19 @@ const make = Effect.gen(function* () {
           return PubSub.publish(changes, { key, attached: true });
         case "detached": {
           attachedTabs.delete(id);
+          shownTabs.delete(id);
           const queue = inbound.get(id);
           return (queue ? Queue.shutdown(queue) : Effect.void).pipe(
             Effect.andThen(PubSub.publish(changes, { key, attached: false })),
           );
         }
+        case "shown":
+          shownTabs.set(id, event.shown);
+          return Effect.void;
       }
     }),
     Effect.catchCause((cause) => Effect.logWarning("desktop browser channel stopped", { cause })),
+    Effect.ensuring(Effect.sync(() => shownTabs.clear())),
     Effect.forkScoped,
   );
 
@@ -262,6 +272,7 @@ const make = Effect.gen(function* () {
     isAttached: Effect.fn("DesktopBrowserChannel.isAttached")(function (key) {
       return Effect.sync(() => attachedTabs.has(keyOf(key)));
     }),
+    isShown: (key) => shownTabs.get(keyOf(key)) ?? true,
     endpoint,
     turn: Effect.fn("DesktopBrowserChannel.turn")(function (threadId, active) {
       return command({ type: "turn", threadId, active });

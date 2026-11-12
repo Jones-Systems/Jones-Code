@@ -158,7 +158,7 @@ describe("environment cache removal", () => {
 
 describe("independent compatibility hint database", () => {
   it.effect(
-    "keeps runtime opens at version 4 and opens a separate hint database across reloads",
+    "keeps runtime opens at the upstream catalog version 5 and opens a separate hint database across reloads",
     () =>
       Effect.gen(function* () {
         vi.stubGlobal("window", {});
@@ -169,7 +169,7 @@ describe("independent compatibility hint database", () => {
         }> = [];
         const open = vi.fn((name: string, version: number) => {
           const isHints = name === "t3code:connection-compatibility-hints";
-          expect(version).toBe(isHints ? 1 : 4);
+          expect(version).toBe(isHints ? 1 : 5);
           if (!isHints) expect(name).toBe("t3code:connection-runtime");
           const close = vi.fn();
           const database = Object.assign(new EventTarget(), {
@@ -209,9 +209,9 @@ describe("independent compatibility hint database", () => {
           }).pipe(Effect.provide(ConnectionStorage.layer));
         }
         expect(open.mock.calls).toEqual([
-          ["t3code:connection-runtime", 4],
+          ["t3code:connection-runtime", 5],
           ["t3code:connection-compatibility-hints", 1],
-          ["t3code:connection-runtime", 4],
+          ["t3code:connection-runtime", 5],
           ["t3code:connection-compatibility-hints", 1],
         ]);
         for (const connection of opened) expect(connection.close).toHaveBeenCalledOnce();

@@ -21,6 +21,7 @@ import type {
 } from "@t3tools/contracts/jones/fleet-updates";
 import * as Schema from "effect/Schema";
 import type { JonesUpdateObservation } from "../updates/jonesUpdates.ts";
+import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 
 const terminal = new Set<JonesOperationReceipt["phase"]>([
   "completed",
@@ -304,6 +305,11 @@ export function applyEdit(
   return { plan: changed ? { ...plan, devices, revision: plan.revision + 1 } : plan, applied };
 }
 
+/** Whether a ledger operation still awaits its directive or a terminal receipt. */
+export function operationOutstanding(operation: JonesInstallPlanHostOperation): boolean {
+  return outstanding(operation);
+}
+
 function outstanding(operation: JonesInstallPlanHostOperation): boolean {
   return operation.step === "directive"
     ? operation.directive === undefined
@@ -394,6 +400,35 @@ export function deviceState(
     : "queued";
 }
 
+/**
+ * Settled ledger states that fresh proof of the target running on the host overrides. A later
+ * install by another operation can leave an older interrupted or staged download as the latest
+ * record; held, unknown and fenced records still require reading the exact operation.
+ */
+const SUPERSEDABLE_BY_RUNNING_TARGET: ReadonlySet<InstallPlanDeviceState> = new Set([
+  "not-updated",
+  "stopped",
+  "ended",
+  "staged",
+  "blocked",
+  "rolled-back",
+]);
+
+/** The row state once fresh host status proves the plan target is the running source. */
+export function deviceStateWithRunningTarget(
+  plan: JonesInstallPlan,
+  device: JonesInstallPlanDevice,
+  targetRunning: boolean,
+  now: number = Number.POSITIVE_INFINITY,
+): InstallPlanDeviceState {
+  const state = deviceState(plan, device, now);
+  return targetRunning &&
+    !device.operations.some(outstanding) &&
+    SUPERSEDABLE_BY_RUNNING_TARGET.has(state)
+    ? "updated-elsewhere"
+    : state;
+}
+
 export function deviceSettled(plan: JonesInstallPlan, device: JonesInstallPlanDevice): boolean {
   if (device.operations.some(outstanding)) return false;
   return [
@@ -419,6 +454,43 @@ export function isPlanComplete(plan: JonesInstallPlan): boolean {
         !d.operations.some(outstanding) && (d.membership === "removed" || deviceSettled(plan, d)),
     )
   );
+}
+
+export function matchesPlanTarget(
+  plan: JonesInstallPlan,
+  device: JonesInstallPlanDevice,
+  state: JonesUpdateState | null | undefined,
+): boolean {
+  return (
+    state?.environmentId === device.environmentId &&
+    state.installedSource?.repository === plan.target.repository &&
+    state.installedSource.sha === plan.target.sourceSha &&
+    state.installedSource.tree === plan.target.sourceTree
+  );
+}
+
+/** Fresh proof can finish retained stages; completion itself remains ledger-only. */
+export function planCompletion(
+  plan: JonesInstallPlan,
+  observations: ReadonlyMap<EnvironmentId, JonesUpdateObservation>,
+) {
+  const candidates = plan.devices.filter((device) => {
+    const observation = observations.get(device.environmentId);
+    return (
+      device.membership === "selected" &&
+      deviceState(plan, device) === "staged" &&
+      !device.operations.some(outstanding) &&
+      observation?.freshness === "fresh" &&
+      matchesPlanTarget(plan, device, observation.state)
+    );
+  });
+  const completable = isPlanComplete({
+    ...plan,
+    devices: plan.devices.map((device) =>
+      candidates.includes(device) ? { ...device, ended: { at: plan.createdAt } } : device,
+    ),
+  });
+  return { candidates, completable };
 }
 
 export function canSupersede(plan: JonesInstallPlan): boolean {

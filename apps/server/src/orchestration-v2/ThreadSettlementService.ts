@@ -1,5 +1,6 @@
 import * as RetirementReceipts from "../jones/workspaceRetirement/Receipts.ts";
 import * as RetirementRuntime from "../jones/workspaceRetirement/Runtime.ts";
+import * as SettlementRecovery from "../jones/workspaceRetirement/SettlementRecovery.ts";
 import * as RetirementConfig from "../config.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Scope from "effect/Scope";
@@ -17,7 +18,7 @@ import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   CommandId,
   isOrchestrationV2WorkActive,
-  type ThreadId,
+  ThreadId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
@@ -29,12 +30,13 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
-import { asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
 import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import { beforeCleanup } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { workModeSettlementActivity } from "../jones/workMode/Settlement.ts";
@@ -43,10 +45,13 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+
+const isRetirementError = Schema.is(RetirementReceipts.RetirementError);
 
 export interface SettlementPullRequest {
   readonly state: "open" | "closed" | "merged";
@@ -186,10 +191,17 @@ export function isSnoozed(
 ): boolean {
   const snoozedUntilMs = toMillis(thread.snoozedUntil);
   if (snoozedUntilMs === null || snoozedUntilMs <= nowMs) return false;
-  if (thread.pendingRuntimeRequest !== null) return false;
   // Same as the client: a waiting guest message wakes the thread, and the snooze stays stored.
   if ((thread.pendingGuestMessageCount ?? 0) > 0) return false;
   const snoozedAtMs = toMillis(thread.snoozedAt);
+  if (
+    thread.pendingRuntimeRequest !== null &&
+    (thread.pendingRuntimeRequest.kind !== "user_input" ||
+      snoozedAtMs === null ||
+      DateTime.toEpochMillis(thread.pendingRuntimeRequest.createdAt) > snoozedAtMs)
+  ) {
+    return false;
+  }
   const completedAtMs = toMillis(thread.latestRunCompletedAt);
   const wokeOnError =
     thread.status === "failed" &&
@@ -310,6 +322,7 @@ export const make = Effect.gen(function* () {
   const pullRequests = yield* PullRequestService.PullRequestService;
   const random = yield* SecureRandom.SecureRandom;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   // A shell merge or close sends no event, and the branch lookup caches an open pull request for
   // a minute, so these threads' next lookup reads the host fresh.
   const shellClosedThreads = new Set<ThreadId>();
@@ -443,12 +456,14 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const project = projects.get(thread.projectId);
           if (project === undefined || thread.branch === null) return;
-          const worktreeExists =
-            thread.worktreePath !== null &&
-            (yield* fileSystem.exists(thread.worktreePath).pipe(Effect.orElseSucceed(() => false)));
+          // A worktree folder can outlive its .git, and git there fails with not_a_repository.
+          // An unreadable .git keeps the worktree, so git fails there and the thread is skipped.
           lookupCwdByThreadId.set(
             thread.id,
-            worktreeExists && thread.worktreePath !== null
+            thread.worktreePath !== null &&
+              (yield* fileSystem
+                .exists(path.join(thread.worktreePath, ".git"))
+                .pipe(Effect.orElseSucceed(() => true)))
               ? thread.worktreePath
               : project.workspaceRoot,
           );
@@ -542,9 +557,10 @@ export const make = Effect.gen(function* () {
         const cwd = lookupCwdByThreadId.get(thread.id);
         if (summary.state !== "open" && thread.branch !== null && cwd !== undefined) {
           if (!(yield* wouldSettle(group, terminal))) return undefined;
-          const current = yield* git
-            .branchPullRequest({ cwd, branch: thread.branch }, { refresh: true })
-            .pipe(asBackgroundGitWork);
+          const current = yield* git.branchPullRequest(
+            { cwd, branch: thread.branch },
+            { refresh: true },
+          );
           const project = projects.get(thread.projectId);
           if (
             current?.state === "open" &&
@@ -562,9 +578,7 @@ export const make = Effect.gen(function* () {
         return yield* Effect.die(new Error("thread project not found"));
       }
       const refresh = group.filter((member) => shellClosedThreads.delete(member.id)).length > 0;
-      return yield* git
-        .branchPullRequest({ cwd, branch: thread.branch }, { refresh })
-        .pipe(asBackgroundGitWork);
+      return yield* git.branchPullRequest({ cwd, branch: thread.branch }, { refresh });
     });
 
     yield* Effect.forEach(
@@ -595,6 +609,7 @@ export const make = Effect.gen(function* () {
     threadId?: ThreadId,
   ) =>
     sweep(mergedPullRequest, threadId).pipe(
+      Effect.provideService(GitVcsDriver.BackgroundGitWork, true),
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterruptsOnly(cause),
         (cause) =>
@@ -605,7 +620,9 @@ export const make = Effect.gen(function* () {
     );
   // A thread that just stopped must not wait behind a full sweep or another thread's host
   // reads: clients hold it in Working only briefly, so a late settle makes it appear and then vanish.
-  const fullSweeps = yield* makeDrainableWorker(() => runSweep(null));
+  const fullSweeps = yield* makeDrainableWorker(() =>
+    runSweep(null).pipe(Effect.andThen(recoverSettlements)),
+  );
   const threadSweeps = yield* FiberSet.make<void>();
   const threadSweepSlots = yield* Semaphore.make(8);
   // One sweep per thread at a time; events during a running sweep coalesce into one more pass.
@@ -635,10 +652,23 @@ export const make = Effect.gen(function* () {
 
   // Skip settle scripts in shared checkouts where other threads may still work.
   const cleanUpSettledThread = Effect.fn("ThreadSettlementServiceV2.cleanUpSettledThread")(
-    function* (threadId: ThreadId) {
+    function* ({
+      threadId,
+      expected,
+    }: {
+      threadId: ThreadId;
+      expected?: RetirementReceipts.SettlementIntent;
+    }) {
       const settled = yield* projections.getThread(threadId);
       if (settled.settledOverride !== "settled") return;
-      yield* terminals.closeIdle({ threadId });
+      if (
+        expected &&
+        (settled.worktreePath !== expected.worktree ||
+          settled.settledAt === null ||
+          DateTime.formatIso(settled.settledAt) !== expected.settled_at)
+      )
+        return;
+      yield* terminals.closeOnSettle({ threadId });
       const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
       const afterClose = yield* projections.getThread(threadId);
       if (
@@ -652,7 +682,14 @@ export const make = Effect.gen(function* () {
       if (worktreePath === null || !(yield* fileSystem.exists(worktreePath))) return;
       // Recheck after closing and worktree I/O; re-engaged threads must not be cleaned up.
       const thread = yield* projections.getThread(threadId);
-      if (thread.settledOverride !== "settled") return;
+      if (
+        thread.settledOverride !== "settled" ||
+        thread.worktreePath !== worktreePath ||
+        thread.projectId !== settled.projectId ||
+        thread.branch !== settled.branch ||
+        toMillis(thread.settledAt) !== toMillis(settled.settledAt)
+      )
+        return;
       const settledAtMs = toMillis(thread.settledAt);
       if (
         settledAtMs === null ||
@@ -668,6 +705,7 @@ export const make = Effect.gen(function* () {
               DateTime.formatIso(thread.settledAt!),
             );
       if (retirement !== null && retirementIntent === null) return;
+      if (expected && retirementIntent?.event_id !== expected.event_id) return;
       if (retirementIntent !== null && retirementIntent.script_state !== "pending") return;
       yield* withOperation(
         {
@@ -698,30 +736,36 @@ export const make = Effect.gen(function* () {
       if (
         retirement !== null &&
         retirementIntent !== null &&
-        !(yield* retirement.startScript(retirementIntent.event_id))
+        !(yield* retirement.startScript(retirementIntent.event_id, expected !== undefined))
       )
         return;
       if (retirement !== null && retirementIntent !== null)
-        yield* retirement.outcome(retirementIntent.event_id, {
-          state: "held",
-          reasonCodes: ["settle_script_pending"],
-          receiptId: null,
-          fingerprint: null,
-          paths: [],
-          details: [
-            {
-              reason: "settle_script_pending",
-              target: worktreePath,
-              root: worktreePath,
-              fact: "The durable settle-script intent has started and its completion is pending.",
-              missingFact: "durable_settle_script_completion",
-              lineage: [{ threadId }],
-              nextAction:
-                "Wait for the actual script completion; ten minutes without completion holds retirement.",
-            },
-          ],
-          outputObligations: [],
-        });
+        yield* retirement
+          .outcome(retirementIntent.event_id, {
+            state: "held",
+            reasonCodes: ["settle_script_pending"],
+            receiptId: null,
+            fingerprint: null,
+            paths: [],
+            details: [
+              {
+                reason: "settle_script_pending",
+                target: worktreePath,
+                root: worktreePath,
+                fact: "The durable settle-script intent has started and its completion is pending.",
+                missingFact: "durable_settle_script_completion",
+                lineage: [{ threadId }],
+                nextAction:
+                  "Wait for the actual script completion; ten minutes without completion holds retirement.",
+              },
+            ],
+            outputObligations: [],
+          })
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Settle-script observation unavailable", { threadId, cause }),
+            ),
+          );
       const run = yield* projectScripts
         .runForThread({
           threadId,
@@ -733,25 +777,48 @@ export const make = Effect.gen(function* () {
         .pipe(
           Effect.tapError(() =>
             retirement !== null && retirementIntent !== null
-              ? retirement.finishScript(retirementIntent.event_id, "failed", null)
+              ? retirement
+                  .outcome(
+                    retirementIntent.event_id,
+                    SettlementRecovery.held(
+                      retirementIntent,
+                      "settle_script_holder_unverified",
+                      "Script launch failed after durable issuance; its effects are unknown.",
+                      "Verify actual script completion or exact holder absence; do not replay this intent.",
+                    ),
+                  )
+                  .pipe(Effect.ignore)
               : Effect.void,
           ),
         );
       settleActionRunAt.set(threadId, settledAtMs);
-      const complete = (exitCode: number | null) =>
+      const complete = (exitCode: number) =>
         retirement !== null && retirementIntent !== null
           ? retirement
               .finishScript(
                 retirementIntent.event_id,
-                exitCode === 0 ? "completed" : exitCode === null ? "cancelled" : "failed",
+                exitCode === 0 ? "completed" : "failed",
                 exitCode,
               )
               .pipe(Effect.andThen(recordRetirementProposal(thread, worktreePath)))
           : Effect.void;
       if (run.status === "started" && run.completion) {
         yield* run.completion.pipe(
-          Effect.tap((result) => complete(result.exitCode)),
-          Effect.catch(() => complete(null)),
+          Effect.orElseSucceed(() => ({ exitCode: null })),
+          Effect.flatMap((result) => {
+            if (result.exitCode !== null) return complete(result.exitCode);
+            return retirement !== null && retirementIntent !== null
+              ? retirement.outcome(
+                  retirementIntent.event_id,
+                  SettlementRecovery.held(
+                    retirementIntent,
+                    "settle_script_holder_unverified",
+                    "The script completion observer ended without a command exit result.",
+                    "Observe actual command completion or verify the exact native holder and descendants absent; do not replay this intent.",
+                  ),
+                )
+              : Effect.void;
+          }),
           Effect.catch((cause) =>
             Effect.logWarning("Durable settle-script completion held", { threadId, cause }),
           ),
@@ -759,7 +826,7 @@ export const make = Effect.gen(function* () {
         );
       } else if (run.status !== "started") yield* complete(0);
     },
-    (effect, threadId) =>
+    (effect, { threadId }) =>
       effect.pipe(
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterruptsOnly(cause),
@@ -772,10 +839,47 @@ export const make = Effect.gen(function* () {
       ),
   );
 
+  const recoverSettlements =
+    retirement === null
+      ? Effect.void
+      : yield* SettlementRecovery.make(
+          retirement,
+          (intent) =>
+            cleanUpSettledThread({
+              threadId: ThreadId.make(intent.thread_id),
+              expected: intent,
+            }).pipe(
+              Effect.mapError((cause) =>
+                isRetirementError(cause)
+                  ? cause
+                  : new RetirementReceipts.RetirementError({
+                      reason: "settlement_resume_unavailable",
+                      target: intent.worktree,
+                      cause,
+                    }),
+              ),
+            ),
+          (thread, worktree) =>
+            recordRetirementProposal(thread, worktree).pipe(
+              Effect.mapError((cause) =>
+                isRetirementError(cause)
+                  ? cause
+                  : new RetirementReceipts.RetirementError({
+                      reason: "settlement_proposal_unavailable",
+                      target: worktree,
+                      cause,
+                    }),
+              ),
+            ),
+        ).pipe(
+          Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
+          Effect.map((recover) => recover()),
+        );
+
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
       case "thread.settled":
-        return cleanUpSettledThread(event.threadId);
+        return cleanUpSettledThread({ threadId: event.threadId });
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
       case "provider-session.detached":
@@ -835,7 +939,14 @@ export const make = Effect.gen(function* () {
     }
     const settingsChanges = yield* settingsService.subscribeChanges;
     const mergedPullRequests = yield* pullRequests.subscribeMerges;
-    const events = orchestrator.streamDomainEvents;
+    // Capture the replay baseline before admitting sweep side effects or delayed subscription.
+    const events = yield* orchestrator.acquireDomainEvents.pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Settlement event baseline unavailable; durable sweeps retain recovery", {
+          cause,
+        }).pipe(Effect.as(Stream.empty)),
+      ),
+    );
     const initialSettings = yield* settingsService.getSettings.pipe(Effect.orDie);
     let lastSettlementSettings = autoSettlementSettingsKey(initialSettings);
     yield* forkParked(

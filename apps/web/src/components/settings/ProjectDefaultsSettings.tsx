@@ -188,7 +188,6 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 model={selection.model}
                 modelOptions={selection.options ?? []}
                 allowPromptInjectedEffort={false}
-                planModeEnabled={settings.planModeEnabled}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                 onModelOptionsChange={(options) =>
                   setModel(createModelSelection(selection.instanceId, selection.model, options))
@@ -305,7 +304,6 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 model={fallbackSelection.model}
                 modelOptions={fallbackSelection.options ?? []}
                 allowPromptInjectedEffort={false}
-                planModeEnabled={settings.planModeEnabled}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                 onModelOptionsChange={(options) =>
                   updateSettings({
@@ -332,7 +330,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
         settingKeys={["worktreeAllocation"]}
         mixed={mixedAllocation}
         title="Worktree allocation"
-        description="On write starts with source tools. Attach a worktree for source changes or terminals. Explicit workspace choices still apply."
+        description="Attach a worktree at launch, or when a thread first changes source or opens a terminal."
         control={
           <Select
             items={[

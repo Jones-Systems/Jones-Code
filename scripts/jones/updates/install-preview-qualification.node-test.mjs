@@ -765,7 +765,7 @@ function indexedDbExpressionFixture({ disabledEnvironmentIds = ["synthetic-remot
     credentials: ["DO-NOT-PUBLISH"],
   });
   const data = new Map([
-    [runtimeName, { version: 4, stores: new Map([["catalog", catalog]]) }],
+    [runtimeName, { version: 5, stores: new Map([["catalog", catalog]]) }],
     [
       hintName,
       {
@@ -840,7 +840,8 @@ function indexedDbExpressionFixture({ disabledEnvironmentIds = ["synthetic-remot
       events.push(["open", name, version]);
       const request = {};
       const complete = () => {
-        if (failUpgrade && version === 5) {
+        // The upgrade control bumps one past the current catalog version.
+        if (failUpgrade && version === 6) {
           request.error = { name: "AbortError" };
           request.onerror?.();
           return;
@@ -937,11 +938,11 @@ function indexedDbExpressionFixture({ disabledEnvironmentIds = ["synthetic-remot
 }
 
 NodeTest.test(
-  "native IDB scenario holds v4 across real pairing and check, then releases before hard reload",
+  "native IDB scenario holds the current catalog across real pairing and check, then releases before hard reload",
   () => {
     const steps = scenarioSteps("http://fixture.invalid/pair#token=DO-NOT-PUBLISH");
     const at = (label) => steps.findIndex((step) => step.label === label);
-    const hold = at("Hold the actual legacy version-4 catalog connection");
+    const hold = at("Hold the actual current-version catalog connection");
     const checkpoint = at("Capture the saved Off catalog before the authenticated check");
     const verify = at("New hint persistence preserves the held legacy catalog");
     const close = at("Release the legacy catalog handle before hard reload");
@@ -958,7 +959,7 @@ NodeTest.test(
     NodeAssert.ok(close > verify);
     NodeAssert.deepEqual(steps[close + 1], { action: "navigate", path: "/settings/connections" });
     const seed = at("Save Off for the exact isolated synthetic target");
-    const seededHold = at("Hold the saved Off version-4 catalog connection");
+    const seededHold = at("Hold the saved Off current-version catalog connection");
     NodeAssert.ok(hold < seed && seed < seededHold && seededHold < checkpoint);
     NodeAssert.deepEqual(steps[seed + 2], { action: "navigate", path: "/settings/connections" });
     NodeAssert.equal(steps.filter((step) => step.action === "navigate").length, 3);
@@ -1070,7 +1071,7 @@ NodeTest.test(
       fixture.events.filter(([action]) => action === "delete"),
       [["delete", "jones-install-preview-idb-owned-negative"]],
     );
-    NodeAssert.deepEqual(await fixture.run("hold"), { legacyV4Held: true });
+    NodeAssert.deepEqual(await fixture.run("hold"), { catalogHeld: true });
     await fixture.run("checkpoint");
     const result = await fixture.run("verify");
     NodeAssert.ok(Object.values(result).every((value) => value === true));
@@ -1137,7 +1138,7 @@ NodeTest.test(
     NodeAssert.equal(fixture.window.__jonesLegacyIndexedDbProof, undefined);
     const collision = indexedDbExpressionFixture();
     collision.data.set("jones-install-preview-idb-owned-negative", {
-      version: 4,
+      version: 5,
       stores: new Map(),
     });
     await NodeAssert.rejects(collision.run("upgrade-control"), /already exists/);
@@ -1166,11 +1167,11 @@ NodeTest.test(
       NodeAssert.ok(fixture.data.has(fixture.runtimeName));
       NodeAssert.ok(fixture.data.has(fixture.hintName));
     }
-    for (const version of [null, 5]) {
+    for (const version of [null, 4, 6]) {
       const fixture = indexedDbExpressionFixture();
       if (version === null) fixture.data.delete(fixture.runtimeName);
       else fixture.data.get(fixture.runtimeName).version = version;
-      await NodeAssert.rejects(fixture.run("hold"), /must remain version 4/);
+      await NodeAssert.rejects(fixture.run("hold"), /must remain version 5/);
       NodeAssert.equal(fixture.events.length, 0);
       NodeAssert.equal(fixture.window.__jonesLegacyIndexedDbProof, undefined);
     }

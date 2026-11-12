@@ -21,6 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 import { idleThreadProjection, liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -162,7 +163,7 @@ it.effect(
         expect(commands[0].text).toContain(
           `environmentId ${observation.environmentId}, threadId ${observation.threadId}, requestId request:remote`,
         );
-        expect(commands[0].text).toContain("t3_pending_request_respond");
+        expect(commands[0].text).toContain("t3_pending_request action respond");
         expect(commands[0].senderThreadId).toBeUndefined();
         expect(yield* Ref.get(f.signals)).toBe(1);
         expect(
@@ -292,6 +293,129 @@ it.effect("ignores orphaned sidecar rows and mismatched remote bindings", () =>
       expect(yield* f.hooks.readRemoteTaskObservation(parentThreadId, taskId)).toBeUndefined();
       yield* f.hooks.recoverRemoteTaskQuestions;
       expect(yield* Ref.get(f.commands)).toEqual([]);
+    }),
+  ).pipe(Effect.provide(database)),
+);
+
+const day = 24 * 60 * 60 * 1000;
+const now = Date.parse("2026-11-10T12:00:00.000Z");
+const endedTask = (id: string, daysAgo: number): OrchestrationV2Subagent => ({
+  ...task,
+  id: NodeId.make(id),
+  status: "completed",
+  result: "Done.",
+  completedAt: DateTime.makeUnsafe(now - daysAgo * day),
+  updatedAt: DateTime.makeUnsafe(now - daysAgo * day),
+});
+const insertRow = (
+  f: { readonly sql: SqlClient.SqlClient },
+  id: string,
+  signalPending: 0 | 1,
+  notices = "[]",
+) =>
+  f.sql`INSERT INTO jones_remote_task_observations (parent_thread_id, task_id, observation_json, notices_json, signal_pending)
+    VALUES (${parentThreadId}, ${id}, ${JSON.stringify(observation)}, ${notices}, ${signalPending})`;
+const rowIds = (f: { readonly sql: SqlClient.SqlClient }) =>
+  f.sql<{
+    task_id: string;
+  }>`SELECT task_id FROM jones_remote_task_observations ORDER BY task_id`.pipe(
+    Effect.map((rows) => rows.map((row) => row.task_id)),
+  );
+
+it.effect(
+  "startup recovery deletes the drained row of a task that ended before the retention cutoff and skips the rest",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* migration;
+        yield* TestClock.setTime(now);
+        const f = yield* fixture;
+        yield* Ref.update(f.parent, (parent) => ({
+          ...parent,
+          subagents: [
+            endedTask("task:ended-old", 60),
+            endedTask("task:ended-recent", 10),
+            { ...task, id: NodeId.make("task:still-open") },
+          ],
+        }));
+        for (const id of ["task:ended-old", "task:ended-recent", "task:still-open", "task:absent"])
+          yield* insertRow(f, id, 0);
+        yield* f.hooks.recoverRemoteTaskQuestions;
+        // Ended and past the window: gone. Ended inside it, still open, or not in the
+        // projection at all: kept.
+        expect(yield* rowIds(f)).toEqual(["task:absent", "task:ended-recent", "task:still-open"]);
+        const commands = yield* Ref.get(f.commands);
+        // Only the open task is reconciled; ended tasks with nothing owed cause no work.
+        expect(commands).toHaveLength(1);
+        expect(commands[0]).toMatchObject({
+          type: "message.dispatch",
+          notification: { source: { kind: "delegated_task", taskIds: ["task:still-open"] } },
+        });
+      }),
+    ).pipe(Effect.provide(database)),
+);
+
+it.effect("keeps an ended task's row until its owed notices are reconciled, then prunes it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* migration;
+      yield* TestClock.setTime(now);
+      const f = yield* fixture;
+      yield* Ref.update(f.parent, (parent) => ({
+        ...parent,
+        subagents: [endedTask("task:ended-old", 60)],
+      }));
+      yield* insertRow(
+        f,
+        "task:ended-old",
+        0,
+        JSON.stringify(observation.blockingQuestions.requests),
+      );
+      yield* f.hooks.recoverRemoteTaskQuestions;
+      expect(yield* rowIds(f)).toEqual(["task:ended-old"]);
+      expect(
+        (yield* f.sql<{
+          notices_json: string;
+        }>`SELECT notices_json FROM jones_remote_task_observations`)[0]?.notices_json,
+      ).toBe("[]");
+      yield* f.hooks.recoverRemoteTaskQuestions;
+      expect(yield* rowIds(f)).toEqual([]);
+      expect(yield* Ref.get(f.commands)).toEqual([]);
+    }),
+  ).pipe(Effect.provide(database)),
+);
+
+it.effect("never deletes a row whose parent thread cannot be read", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* migration;
+      yield* TestClock.setTime(now);
+      const f = yield* fixture;
+      yield* insertRow(f, "task:ended-old", 0);
+      yield* Ref.set(f.missingParent, true);
+      yield* f.hooks.recoverRemoteTaskQuestions;
+      expect(yield* rowIds(f)).toEqual(["task:ended-old"]);
+    }),
+  ).pipe(Effect.provide(database)),
+);
+
+it.effect("prunes every drained ended row of a parent in one startup pass", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* migration;
+      yield* TestClock.setTime(now);
+      const f = yield* fixture;
+      const ids = Array.from(
+        { length: 25 },
+        (_, index) => `task:ended-${String(index).padStart(2, "0")}`,
+      );
+      yield* Ref.update(f.parent, (parent) => ({
+        ...parent,
+        subagents: ids.map((id) => endedTask(id, 90)),
+      }));
+      for (const id of ids) yield* insertRow(f, id, 0);
+      yield* f.hooks.recoverRemoteTaskQuestions;
+      expect(yield* rowIds(f)).toEqual([]);
     }),
   ).pipe(Effect.provide(database)),
 );

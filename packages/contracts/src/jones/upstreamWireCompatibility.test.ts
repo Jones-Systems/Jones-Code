@@ -108,12 +108,10 @@ describe("Jones fields on imported upstream wire codecs", () => {
 describe("foundation upgrade compatibility", () => {
   it("decodes old design settings while preserving Jones client defaults", () => {
     const decode = Schema.decodeUnknownSync(ClientSettingsSchema);
+    // Upstream removed both old design toggles; stored values decode to current defaults.
     for (const redesignEnabled of [true, false]) {
       for (const legacySidebarEnabled of [true, false]) {
-        expect(decode({ redesignEnabled, legacySidebarEnabled })).toEqual({
-          ...decode({}),
-          legacySidebarEnabled,
-        });
+        expect(decode({ redesignEnabled, legacySidebarEnabled })).toEqual(decode({}));
         expect(decode({ redesignEnabled, legacySidebarEnabled }).promptsDefaultStage).toBe(
           "pending",
         );

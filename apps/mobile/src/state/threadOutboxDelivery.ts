@@ -27,10 +27,10 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  MessageId,
   managedRuntimeModeDenial,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type EnvironmentId,
-  type MessageId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -510,6 +510,9 @@ export async function restoreRejectedQueuedMessage(
       ...(queuedMessage.interactionMode &&
       currentDraft.interactionMode === mergedDraft.interactionMode
         ? { interactionMode: queuedMessage.interactionMode }
+        : {}),
+      ...(queuedMessage.freshContext && currentDraft.freshContext === mergedDraft.freshContext
+        ? { freshContext: true }
         : {}),
       ...(creation && currentDraft.workspaceSelection === mergedDraft.workspaceSelection
         ? {
@@ -1061,6 +1064,37 @@ export function createThreadOutboxDelivery(): {
       settings,
       currentConfig.providers,
     );
+    if (queuedMessage.compactBeforeSend === true) {
+      if (!hasAccess()) return true;
+      // Queued, since steering a running turn with a compaction is rejected.
+      const compactionResult = await runDeliveryCommand(threadEnvironment.startTurn, {
+        environmentId: queuedMessage.environmentId,
+        input: {
+          commandId: settingsCommandId(queuedMessage, "compact"),
+          creationSource: "mobile",
+          threadId: queuedMessage.threadId,
+          message: {
+            messageId: MessageId.make(`${queuedMessage.messageId}:compact`),
+            role: "user",
+            text: "/compact",
+            attachments: [],
+            idleCompaction: "onReturn",
+          },
+          modelSelection: sendSettings.modelSelection,
+          runtimeMode: sendSettings.runtimeMode,
+          interactionMode: sendSettings.interactionMode,
+          createdAt: queuedMessage.createdAt,
+          dispatchMode: "queue",
+        },
+      });
+      if (AsyncResult.isFailure(compactionResult) && !hasAccess()) return true;
+      const compactionFailure = reportCommandFailure(queuedMessage, compactionResult, "start-turn");
+      if (compactionFailure?.action === "retry") return false;
+      if (compactionFailure?.action === "restore") {
+        return restoreQueuedMessage(persistedMessage, compactionFailure.message);
+      }
+      if (!isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision)) return true;
+    }
     if (!hasAccess()) return true;
     return prepareAndDeliverMessage(
       persistedMessage,

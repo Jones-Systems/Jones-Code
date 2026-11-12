@@ -73,6 +73,9 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as WsHttpClient from "effect/http/HttpClient";
 import * as WsWorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as WsVcsProcess from "../vcs/VcsProcess.ts";
+import * as WsAssetSigner from "../assets/AssetSigner.ts";
+import * as WsProviderInstallation from "../provider/providerInstallation.ts";
+import * as WsTextGenerators from "../textGeneration/TextGenerators.ts";
 import * as WsCodexInstallation from "../provider/CodexInstallation.ts";
 import * as WsAntigravityInstallation from "../provider/AntigravityInstallation.ts";
 import * as WsApplicationEventStore from "../persistence/OrchestrationEventStore.ts";
@@ -183,6 +186,21 @@ import {
   RecordedRunJson,
   RecordedThreadBoundedSnapshot,
 } from "./RecordedTypes.ts";
+
+// Building the GitHub source-control layer reads gh's Unix socket setting; none is configured here.
+// Any other VCS process from these transport scenarios is still a defect.
+const wsVcsProcessMock = Layer.mock(WsVcsProcess.VcsProcess)({
+  run: (input) =>
+    input.operation === "GitHubHttpClient.config"
+      ? Effect.succeed({
+          exitCode: ChildProcessSpawner.ExitCode(1),
+          stdout: "",
+          stderr: "",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        })
+      : Effect.die(`Unexpected VCS process ${input.operation}`),
+});
 
 const decodeThread = Schema.decodeUnknownSync(RecordedAppThreadJson);
 const decodeRun = Schema.decodeUnknownSync(RecordedRunJson);
@@ -687,7 +705,10 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsCodexInstallation.CodexInstallation)({
       managedDirectory: "/synthetic-unused-codex",
     }),
-    Layer.mock(WsVcsProcess.VcsProcess)({}),
+    wsVcsProcessMock,
+    Layer.mock(WsAssetSigner.AssetSigner)({}),
+    Layer.mock(WsProviderInstallation.ProviderInstallation)({}),
+    Layer.mock(WsTextGenerators.TextGenerators)({}),
     Layer.mock(WsWorkspacePaths.WorkspacePaths)({}),
     Layer.succeed(
       WsHttpClient.HttpClient,
@@ -1643,7 +1664,10 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
           Layer.mock(WsCodexInstallation.CodexInstallation)({
             managedDirectory: "/synthetic-unused-codex",
           }),
-          Layer.mock(WsVcsProcess.VcsProcess)({}),
+          wsVcsProcessMock,
+          Layer.mock(WsAssetSigner.AssetSigner)({}),
+          Layer.mock(WsProviderInstallation.ProviderInstallation)({}),
+          Layer.mock(WsTextGenerators.TextGenerators)({}),
           Layer.mock(WsWorkspacePaths.WorkspacePaths)({}),
           Layer.succeed(
             WsHttpClient.HttpClient,

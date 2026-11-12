@@ -140,6 +140,13 @@ export function WorkstreamPicker({
     };
   }, [waiting, joinedId, onClose]);
   const pending = busy || (waiting != null && operationOpen(waiting));
+  const blocked =
+    controller.stale === true || controller.data?.stale === true
+      ? "Cached Workstreams are stale and read-only. Refresh before assigning."
+      : controller.assignmentAvailability?.(thread).state === "unavailable"
+        ? (controller.assignmentAvailability(thread).reason ??
+          "Assignment unavailable. Check Workstreams setup.")
+        : null;
   return (
     <Dialog
       open
@@ -163,11 +170,16 @@ export function WorkstreamPicker({
               placeholder="Search or create Workstream"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              disabled={pending}
+              disabled={pending || blocked !== null}
             />
             {pending ? (
               <p role="status" className="text-sm text-muted-foreground">
                 {waiting ? operationMessage(waiting) : "Saving Workstream change…"}
+              </p>
+            ) : null}
+            {blocked ? (
+              <p role="status" className="text-sm text-muted-foreground">
+                {blocked}
               </p>
             ) : null}
             {message ? (
@@ -189,7 +201,7 @@ export function WorkstreamPicker({
                   key={item.workstreamId}
                   variant="ghost"
                   size="sm"
-                  disabled={pending}
+                  disabled={pending || blocked !== null}
                   onClick={() => void run({ kind: "existing", id: item.workstreamId })}
                 >
                   {item.name}
@@ -200,7 +212,7 @@ export function WorkstreamPicker({
                 <Button
                   variant="ghost"
                   size="sm"
-                  disabled={pending}
+                  disabled={pending || blocked !== null}
                   onClick={() => void run({ kind: "create", name })}
                 >
                   Create '{name}'
@@ -209,7 +221,7 @@ export function WorkstreamPicker({
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={pending}
+                disabled={pending || blocked !== null}
                 onClick={() => void run({ kind: "existing", id: null })}
               >
                 Unassigned

@@ -558,6 +558,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           ),
       });
     }).pipe(
+      Effect.withSpan("server.shutdown"),
       Effect.catchCause((cause) =>
         Effect.logWarning("V2 orchestration shutdown reconciliation failed", {
           cause: Cause.pretty(cause),

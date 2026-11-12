@@ -559,6 +559,14 @@ it.effect(
             assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
           }
         }
+        if (mode === "live") {
+          yield* orchestrator.dispatch({
+            type: "thread.snooze",
+            commandId: CommandId.make("snooze-live-control"),
+            threadId,
+            snoozedUntil: "2099-07-25T09:00:00.000Z",
+          });
+        }
         yield* orchestrator.dispatch(
           mode === "live"
             ? {
@@ -583,6 +591,8 @@ it.effect(
         assert.equal(response.node?.status, mode === "live" ? "completed" : "cancelled");
         assert.equal(response.item?.status, mode === "live" ? "completed" : "cancelled");
         if (mode === "live") {
+          assert.isNull((yield* projections.getThread(threadId)).snoozedUntil);
+          assert.isNull((yield* projections.getThread(threadId)).snoozedAt);
           assert.deepEqual(response.request?.answers, normalizedAnswers);
           assert.equal(response.item?.type, "user_input_request");
           if (response.item?.type === "user_input_request") {
@@ -950,6 +960,202 @@ it.effect("settles only the stopped run's background work, once", () =>
       `${commandItem(2)}:running`,
       `${commandItem(3)}:running`,
     ]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("a run-only settlement ends a stalled run once and leaves its background work", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:idle-run-settle");
+    const providerThreadId = ProviderThreadId.make("provider-thread:idle-run-settle");
+    const runId = RunId.make("run:idle-run-settle");
+    const attemptId = RunAttemptId.make("attempt:idle-run-settle");
+    const nodeId = NodeId.make("node:idle-run-settle");
+    const providerTurnId = ProviderTurnId.make("provider-turn:idle-run-settle");
+    const itemId = TurnItemId.make("turn-item:idle-run-settle");
+    const now = yield* DateTime.now;
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-idle-run-settle"),
+      threadId,
+      projectId: ProjectId.make("project:idle-run-settle"),
+      title: "Idle run settle",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:provider-thread"),
+      type: "provider-thread.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: providerThreadId,
+        driver: adapter.driver,
+        providerInstanceId: instanceId,
+        providerSessionId: null,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "active",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:run"),
+      type: "run.created",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId: instanceId,
+        modelSelection,
+        providerThreadId,
+        userMessageId: MessageId.make("message:idle-run-settle"),
+        rootNodeId: nodeId,
+        activeAttemptId: attemptId,
+        status: "running",
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    });
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:attempt"),
+      type: "run-attempt.created",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: attemptId,
+        runId,
+        attemptOrdinal: 1,
+        rootNodeId: nodeId,
+        providerInstanceId: instanceId,
+        providerThreadId,
+        providerTurnId,
+        reason: "initial",
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      },
+    });
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:node"),
+      type: "node.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: nodeId,
+        threadId,
+        runId,
+        parentNodeId: null,
+        rootNodeId: nodeId,
+        kind: "root_turn",
+        status: "running",
+        countsForRun: true,
+        providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      },
+    });
+    // The projection never saw the turn end, which is what leaves the run running.
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:turn"),
+      type: "provider-turn.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: providerTurnId,
+        providerThreadId,
+        nodeId,
+        runAttemptId: attemptId,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      },
+    });
+    yield* projections.apply({
+      id: EventId.make("idle-run-settle:item"),
+      type: "turn-item.updated",
+      threadId,
+      runId,
+      occurredAt: now,
+      payload: {
+        id: itemId,
+        threadId,
+        runId,
+        nodeId,
+        providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 10,
+        status: "running",
+        title: "Background command",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "command_execution",
+        input: "sleep 60",
+      },
+    });
+    const state = Effect.map(projections.getThreadProjection(threadId), (projection) => ({
+      run: projection.runs.find((run) => run.id === runId)?.status,
+      attempt: projection.attempts.find((attempt) => attempt.id === attemptId)?.status,
+      turn: projection.providerTurns.find((turn) => turn.id === providerTurnId)?.status,
+      item: projection.turnItems.find((item) => item.id === itemId)?.status,
+    }));
+    const settleRunOnly = {
+      type: "thread.background-work.settle",
+      commandId: CommandId.make("stop-idle-run:idle-run-settled"),
+      threadId,
+      providerThreadId,
+      providerTurnId,
+      runOnly: true,
+    } as const;
+    const settled = yield* orchestrator.dispatch(settleRunOnly);
+    assert.isAbove(settled.storedEvents.length, 0);
+    assert.deepEqual(yield* state, {
+      run: "interrupted",
+      attempt: "interrupted",
+      turn: "interrupted",
+      item: "running",
+    });
+    const repeated = yield* orchestrator.dispatch({
+      ...settleRunOnly,
+      commandId: CommandId.make("stop-idle-run-again:idle-run-settled"),
+    });
+    assert.lengthOf(repeated.storedEvents, 0, "an already settled run is not settled again");
+    // A confirmed stop still ends the background work the run-only settlement left alone.
+    yield* orchestrator.dispatch({
+      type: "thread.background-work.settle",
+      commandId: CommandId.make("stop-idle-run:background-work-settled"),
+      threadId,
+      providerThreadId,
+      providerTurnId,
+    });
+    assert.equal((yield* state).item, "interrupted");
   }).pipe(Effect.provide(layerTest)),
 );
 
@@ -1534,6 +1740,92 @@ it.effect("explicit settle clears snooze atomically and stays idempotent after r
     } as const;
     assert.deepInclude(yield* projections.getThreadShell(threadId), active);
     assert.deepInclude((yield* projections.getThreadProjection(threadId)).thread, active);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("keeps a snooze when a live question is cancelled or an approval is answered", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const now = yield* DateTime.now;
+    for (const kind of ["user_input", "command"] as const) {
+      const threadId = ThreadId.make(`thread:snoozed-live-${kind}`);
+      const requestId = RuntimeRequestId.make(`request:snoozed-live-${kind}`);
+      const sessionId = ProviderSessionId.make(`session:snoozed-live-${kind}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create-snoozed-live-${kind}`),
+        threadId,
+        projectId: ProjectId.make("project:snoozed-live"),
+        title: "Deferred question",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.snooze",
+        commandId: CommandId.make(`snooze-live-${kind}`),
+        threadId,
+        snoozedUntil: "2099-07-25T09:00:00.000Z",
+      });
+      const before = yield* projections.getThread(threadId);
+      yield* projections.apply({
+        id: EventId.make(`attach-snoozed-live-${kind}`),
+        type: "provider-session.attached",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: sessionId,
+          driver: adapter.driver,
+          providerInstanceId: instanceId,
+          status: "ready",
+          cwd: "/repo",
+          model: modelSelection.model,
+          capabilities: CodexProviderCapabilitiesV2,
+          createdAt: now,
+          updatedAt: now,
+          lastError: null,
+        },
+      });
+      yield* projections.apply({
+        id: EventId.make(`request-snoozed-live-${kind}`),
+        type: "runtime-request.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: requestId,
+          nodeId: NodeId.make(`node:snoozed-live-${kind}`),
+          providerTurnId: null,
+          nativeRequestRef: null,
+          kind,
+          status: "pending",
+          responseCapability: { type: "live", providerSessionId: sessionId },
+          createdAt: now,
+          resolvedAt: null,
+        },
+      });
+      const commandId = CommandId.make(`respond-snoozed-live-${kind}`);
+      yield* orchestrator.dispatch({
+        type: "runtime-request.respond",
+        commandId,
+        threadId,
+        requestId,
+        decision: kind === "user_input" ? "cancel" : "accept",
+      });
+      const after = yield* projections.getThread(threadId);
+      assert.deepEqual(after.snoozedUntil, before.snoozedUntil);
+      assert.deepEqual(after.snoozedAt, before.snoozedAt);
+      assert.equal((yield* projections.getRuntimeRequest(threadId, requestId))?.status, "resolved");
+      assert.equal(
+        (yield* outbox.listByCommandId(commandId))[0]?.request.type,
+        "runtime-request.respond",
+      );
+    }
   }).pipe(Effect.provide(layerTest)),
 );
 

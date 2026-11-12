@@ -1,3 +1,4 @@
+import { WorkstreamsHttpResponseContractHeaders } from "./workstreamsHttp.ts";
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -23,6 +24,9 @@ import {
   JonesUpdateRecordRetiredInput,
 } from "./jonesUpdates.ts";
 
+const decodeUpdateInstall = Schema.decodeSync(JonesUpdateInstallInput);
+const decodeUpdateCapability = Schema.decodeSync(JonesUpdateCapability);
+
 // The public API metadata is also consumed by independently upgraded clients.
 // Keep the Jones routes and authentication identity stable through relocation.
 describe("Jones environment HTTP registration", () => {
@@ -43,6 +47,7 @@ describe("Jones environment HTTP registration", () => {
       "workstreams",
       "workstreamsNative",
       "projects",
+      "voice",
       "connect",
       "conversationLibrary",
       "jonesUpdates",
@@ -96,6 +101,9 @@ describe("Jones environment HTTP registration", () => {
       ["operationRead", "POST", "/api/workstreams/operations/read"],
       ["setupStatus", "GET", "/api/workstreams/setup-status"],
       ["threadPlacements", "POST", "/api/workstreams/thread-placements"],
+      ["nativeRead", "POST", "/api/workstreams/native/v1/read"],
+      ["nativeExport", "GET", "/api/workstreams/native/v1/export"],
+      ["legacyReceiptLookup", "POST", "/api/workstreams/legacy-receipts/v1/lookup"],
       ["list", "GET", "/api/workstreams"],
       ["references", "GET", "/api/workstreams/references"],
       ["reference", "GET", "/api/workstreams/references/:nativeReferenceId"],
@@ -120,7 +128,9 @@ describe("Jones environment HTTP registration", () => {
       ["operationStop", "POST", "/api/jones-updates/operations/stop"],
       ["operationFence", "POST", "/api/jones-updates/operations/fence"],
       ["operationRead", "POST", "/api/jones-updates/operations/read"],
+      ["recoverCleanup", "POST", "/api/jones-updates/operations/recover-cleanup"],
       ["recoveryPreflight", "POST", "/api/jones-updates/recovery-preflight"],
+      ["peerSetupOwnerOperations", "POST", "/api/workstreams/native/peer-setup/v1/operations"],
       ["ownerOperations", "POST", "/api/workstreams/native/owner/v1/operations"],
       ["context", "GET", "/api/workstreams/native/v1/context"],
       ["attestations", "POST", "/api/workstreams/native/v1/attestations"],
@@ -135,9 +145,26 @@ describe("Jones environment HTTP registration", () => {
       authorization: Schema.optionalKey(Schema.String),
       dpop: Schema.optionalKey(Schema.String),
     });
+    const placementHeaders = Schema.Struct({
+      ...bearerHeaders.fields,
+      "x-t3-workstreams-placement-contract": Schema.optionalKey(
+        Schema.Literal("workstreams-t3-placement/2.0.0"),
+      ),
+    });
+    const responseHeaders = Schema.Struct({
+      ...bearerHeaders.fields,
+      ...WorkstreamsHttpResponseContractHeaders.fields,
+    });
     for (const endpoint of routes) {
       expect(endpoint.middlewares.has(EnvironmentAuthenticatedAuth)).toBe(true);
-      expect(endpoint.headers?.ast).toEqual(bearerHeaders.ast);
+      expect(endpoint.headers?.ast).toEqual(
+        endpoint === groups.workstreams.endpoints.threadPlacements
+          ? placementHeaders.ast
+          : endpoint === groups.workstreams.endpoints.command ||
+              endpoint === groups.workstreams.endpoints.submit
+            ? responseHeaders.ast
+            : bearerHeaders.ast,
+      );
     }
   });
 });
@@ -173,8 +200,6 @@ it("requires a nonnegative integer count in quit preparation responses", () => {
   }
 });
 
-const compiledDecodeSync1 = Schema.decodeSync(JonesUpdateInstallInput);
-
 it("requires an explicit native attempt without changing ordinary install requests", () => {
   const base = { stagedHandle: "a".repeat(64), environmentId: "fixture", currentVersion: "1.0.0" };
   const decode = Schema.decodeUnknownSync(JonesNativePrepareInput);
@@ -184,10 +209,8 @@ it("requires an explicit native attempt without changing ordinary install reques
     ...base,
     transactionId: "b".repeat(64),
   });
-  expect(compiledDecodeSync1(base)).toEqual(base);
+  expect(decodeUpdateInstall(base)).toEqual(base);
 });
-
-const compiledDecodeSync2 = Schema.decodeSync(JonesUpdateCapability);
 
 it("selects an exact source by full commit only and keeps older capability shapes decodable", () => {
   const decode = Schema.decodeUnknownSync(JonesUpdateExactInput);
@@ -197,8 +220,8 @@ it("selects an exact source by full commit only and keeps older capability shape
     expect(() => decode({ targetSource: invalid })).toThrow();
   expect(() => decode({})).toThrow();
   const legacy = { check: true, download: true, install: false };
-  expect(compiledDecodeSync2(legacy)).toEqual(legacy);
-  expect(compiledDecodeSync2({ ...legacy, exactSource: true })).toEqual({
+  expect(decodeUpdateCapability(legacy)).toEqual(legacy);
+  expect(decodeUpdateCapability({ ...legacy, exactSource: true })).toEqual({
     ...legacy,
     exactSource: true,
   });
@@ -237,7 +260,7 @@ it("requires the complete immutable binding for an optional staged replacement",
     exactSource: true,
     replaceStaged: true,
   };
-  expect(compiledDecodeSync2(capability)).toEqual(capability);
+  expect(decodeUpdateCapability(capability)).toEqual(capability);
 });
 
 it("accepts both explicitly versioned registration responses on the local HTTP boundary", () => {

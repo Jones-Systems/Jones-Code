@@ -106,6 +106,45 @@ it.effect.each([
   ),
 );
 
+const twoProcessTranscript: AcpReplayTranscript = {
+  ...transcript,
+  scenario: "two-process-status",
+  entries: [
+    { type: "runtime_exit", status: "success" },
+    { type: "runtime_exit", status: "success" },
+  ],
+};
+
+it.effect.each([
+  { label: "a recorded process exit", raw: '{"cursor":1,"total":2}', processExit: true, ok: true },
+  { label: "the whole recording", raw: '{"cursor":2,"total":2}', processExit: true, ok: true },
+  { label: "a strict check at a process exit", raw: '{"cursor":1,"total":2}', ok: false },
+  { label: "an unstarted process", raw: '{"cursor":0,"total":2}', processExit: true, ok: false },
+  {
+    label: "a failed process exit",
+    raw: '{"cursor":1,"total":2,"failure":{"detail":"mismatch"}}',
+    processExit: true,
+    ok: false,
+  },
+])("judges $label against one process's frames", ({ raw, processExit, ok }) =>
+  scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-acp-status-process-" });
+      const statusPath = path.join(directory, "status.json");
+      yield* fs.writeFileString(statusPath, raw);
+      const exit = yield* makeAcpReplayCompletenessAssertion(
+        fs,
+        statusPath,
+        twoProcessTranscript,
+        processExit === true ? { processExitCompletes: true } : {},
+      ).pipe(Effect.exit);
+      assert.equal(exit._tag === "Success", ok);
+    }),
+  ),
+);
+
 // Pause the real writer after opening its final checkpoint but before writing
 // any bytes. This deterministically exposes the old truncate-before-read race.
 const publicationGate = String.raw`

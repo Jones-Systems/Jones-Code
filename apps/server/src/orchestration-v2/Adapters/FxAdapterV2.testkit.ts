@@ -17,6 +17,8 @@ import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
@@ -35,7 +37,13 @@ function layerFxProviderAdapterRegistryReplay(
   transcript: AcpReplayTranscript,
   options: { readonly replayGate?: ProviderReplayGate } = {},
 ) {
-  const layerHost = TestProviderHost.layer().pipe(
+  // Production hosts carry the Jones app identity into runtime instructions, and the replay
+  // transcript expects those exact instructions.
+  const layerHost = Layer.effect(
+    ProviderHost.ProviderHost,
+    Effect.map(ProviderHost.ProviderHost, (host) => ({ ...host, appIdentity: APP_IDENTITY })),
+  ).pipe(
+    Layer.provide(TestProviderHost.layer()),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 
@@ -46,7 +54,7 @@ function layerFxProviderAdapterRegistryReplay(
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const replayGate = options.replayGate;
       const replayDir = yield* fileSystem
-        .makeTempDirectory({
+        .makeTempDirectoryScoped({
           prefix: `t3-orchestration-v2-fx-replay-${transcript.scenario}-`,
         })
         .pipe(Effect.orDie);

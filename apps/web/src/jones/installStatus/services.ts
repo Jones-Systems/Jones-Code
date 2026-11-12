@@ -10,6 +10,7 @@ import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import type {
   JonesOperationReadResult,
   JonesOperationReceipt,
+  JonesRecoverCleanupResult,
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
@@ -30,7 +31,12 @@ export interface InstallPlanServices {
   readonly operation: (
     environmentId: EnvironmentId,
     request: JonesOperationCommand,
-  ) => Promise<JonesOperationReceipt | JonesOperationReadResult | JonesRecoveryPreflight>;
+  ) => Promise<
+    | JonesOperationReceipt
+    | JonesOperationReadResult
+    | JonesRecoveryPreflight
+    | JonesRecoverCleanupResult
+  >;
   readonly stop: (
     environmentId: EnvironmentId,
     request: JonesStopCommand,
@@ -42,6 +48,8 @@ export interface InstallPlanServices {
   readonly confirm: JonesExecutorHost["confirm"];
   readonly chooseRecovery: NonNullable<JonesExecutorHost["chooseRecovery"]>;
   readonly now: () => number;
+  /** Ask a waiting update status stream to read now; it never interrupts a live long-poll. */
+  readonly kick?: (environmentId: EnvironmentId) => void;
 }
 let active: { services: InstallPlanServices; store: InstallStatusStore } | undefined;
 export function bindInstallPlanServices(services: InstallPlanServices, store = installStatusStore) {

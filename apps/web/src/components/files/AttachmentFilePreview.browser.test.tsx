@@ -20,9 +20,18 @@ vi.mock(import("pdfjs-dist"), async (original) => {
   };
 });
 
-const { refresh, assetUrlState } = vi.hoisted(() => ({
-  refresh: vi.fn<() => Promise<string | null>>(),
-  assetUrlState: vi.fn<() => import("~/assets/assetUrls").AssetUrlState>(),
+// Prepare the real worker before tests; Vite's worker transform adds a large inline source map.
+const { refresh, assetUrlState, pdfWorkerUrl } = await vi.hoisted(async () => {
+  const { default: source } = await import("pdfjs-dist/build/pdf.worker.min.mjs?raw");
+  return {
+    refresh: vi.fn<() => Promise<string | null>>(),
+    assetUrlState: vi.fn<() => import("~/assets/assetUrls").AssetUrlState>(),
+    pdfWorkerUrl: URL.createObjectURL(new Blob([source], { type: "text/javascript" })),
+  };
+});
+
+vi.mock(import("pdfjs-dist/build/pdf.worker.min.mjs?url"), () => ({
+  default: pdfWorkerUrl,
 }));
 
 vi.mock(import("~/assets/assetUrls"), async (original) => ({
@@ -3020,6 +3029,40 @@ it("clamps workspace PDF scroll when pages shrink or disappear", async () => {
   await anchor(1, 1);
   await screen.rerender(preview(urls.original, "five"));
   await anchor(1, 3);
+});
+
+it("keeps a workspace PDF's page, offset and zoom when a new revision reloads it", async () => {
+  using fixture = await workspacePdfPreview();
+  const { preview, urls } = fixture;
+  await using screen = await render(preview(urls.original, "one"));
+  const { region, offset, scrollTo, goTo, anchor, zoom, setZoom } = pdfScroll(screen);
+  await anchor(1, 3);
+  using workers = vi.spyOn(window, "Worker");
+  // Jones previews workspace PDFs in PdfPreview; zoom far enough to scroll sideways in this panel.
+  await setZoom("300");
+  await goTo(2);
+  const savedZoom = zoom().value;
+  await scrollTo({ top: region().scrollTop + 100, left: 80 });
+  await vi.waitFor(() => expect(region().scrollLeft).toBe(80));
+  const savedOffset = offset(2);
+
+  // A taller first page moves page 2, so only a page-relative restore lands on the same spot.
+  await screen.rerender(preview(urls.updated, "two"));
+  await anchor(2, 3);
+  await vi.waitFor(() => {
+    expect(region().textContent).toContain("Updated budget");
+    expect(zoom().value).toBe(savedZoom);
+    expect(region().scrollLeft).toBe(80);
+    expect(offset(2)).toBeCloseTo(savedOffset, 0);
+  });
+  expect(workers).not.toHaveBeenCalled();
+
+  await screen.rerender(preview(urls.updated, "two", "/repo/another.pdf"));
+  await anchor(1, 3);
+  await vi.waitFor(() => {
+    expect(zoom().value).toBe("100");
+    expect(region().scrollTop).toBe(0);
+  });
 });
 
 it("unwraps one text attachment without turning off the word wrap setting", async () => {

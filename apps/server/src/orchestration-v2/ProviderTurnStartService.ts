@@ -24,8 +24,10 @@ import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import {
   ExecutionSessionRevalidationError,
+  ExecutionSessionRevalidationUnavailableError,
   prepareExecutionSession,
 } from "../jones/threadConfiguration/prepareExecutionSession.ts";
+import { appFailureCodeFromCause } from "../jones/orchestration/appFailureReason.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
@@ -123,6 +125,10 @@ export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStart
 ) {}
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
+const isExecutionSessionRevalidationUnavailable = Schema.is(
+  ExecutionSessionRevalidationUnavailableError,
+);
+const isExecutionSessionRevalidationError = Schema.is(ExecutionSessionRevalidationError);
 const isProviderAdapterOpenSessionError = Schema.is(
   ProviderAdapter.ProviderAdapterOpenSessionError,
 );
@@ -302,8 +308,7 @@ export const layer: Layer.Layer<
                 const request = turnItems.find((item) => item.type === "run_interrupt_request");
                 return request?.type === "run_interrupt_request" ? request.message : undefined;
               }),
-              // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
-              Effect.catchCause(() => Effect.succeed(undefined)),
+              Effect.catchCause(() => Effect.undefined),
             ),
       };
     };
@@ -692,27 +697,53 @@ export const layer: Layer.Layer<
           readonly message?: string;
         }) {
           const nestedCause = "cause" in failed.error ? failed.error.cause : undefined;
+          const unavailable = isExecutionSessionRevalidationUnavailable(failed.error)
+            ? failed.error
+            : isExecutionSessionRevalidationUnavailable(nestedCause)
+              ? nestedCause
+              : undefined;
+          const changed =
+            isExecutionSessionRevalidationError(failed.error) ||
+            isExecutionSessionRevalidationError(nestedCause);
           yield* settleRunBeforeStart({
-            signal: failed.signal,
+            signal:
+              unavailable !== undefined
+                ? "provider-run-state-unavailable"
+                : changed
+                  ? "provider-selection-changed-before-open"
+                  : failed.signal,
             status: "failed",
             now: yield* DateTime.now,
             providerInstanceId: run.providerInstanceId,
             itemProviderThreadId: providerThread?.id ?? initialProviderThreadId,
             item: {
               type: "error",
-              title: failed.title,
-              failure: makeProviderFailure({
-                cause: failed.error,
-                message:
-                  failed.message ??
-                  knownProviderFailureMessage(failed.error) ??
-                  (nestedCause instanceof Error
-                    ? nestedCause.message
-                    : typeof nestedCause === "string"
-                      ? nestedCause
-                      : failed.error.message),
-                class: "provider_error",
-              }),
+              title:
+                unavailable !== undefined
+                  ? "Provider start could not verify its run state"
+                  : changed
+                    ? "Provider selection changed before opening"
+                    : failed.title,
+              failure:
+                unavailable !== undefined
+                  ? makeProviderFailure({
+                      class: "unknown",
+                      code: appFailureCodeFromCause(unavailable),
+                      retryable: true,
+                      message: unavailable.message,
+                    })
+                  : makeProviderFailure({
+                      cause: failed.error,
+                      message:
+                        failed.message ??
+                        knownProviderFailureMessage(failed.error) ??
+                        (nestedCause instanceof Error
+                          ? nestedCause.message
+                          : typeof nestedCause === "string"
+                            ? nestedCause
+                            : failed.error.message),
+                      class: "provider_error",
+                    }),
             },
           });
           if (terminalStartFailure(failed.error)) return yield* Effect.fail(failed.error);
@@ -762,6 +793,34 @@ export const layer: Layer.Layer<
       const continuityRequirement = yield* Effect.result(
         goalContinuity.requirementFor(environmentId, projection.thread.id),
       );
+      if (continuityRequirement._tag === "Failure") {
+        const code = appFailureCodeFromCause(continuityRequirement.failure);
+        if (code !== undefined) {
+          if (input.willRetry === true)
+            return yield* new ProviderTurnStartError({
+              runId,
+              cause: continuityRequirement.failure,
+            });
+          yield* settleRunBeforeStart({
+            signal: "goal-continuity-unavailable",
+            status: "failed",
+            now: yield* DateTime.now,
+            providerInstanceId: run.providerInstanceId,
+            itemProviderThreadId: providerThread.id,
+            item: {
+              type: "error",
+              title: "Continuity check unavailable",
+              failure: makeProviderFailure({
+                class: "unknown",
+                code,
+                retryable: true,
+                message: "The continuity check could not be read. No provider work was started.",
+              }),
+            },
+          });
+          return;
+        }
+      }
       const continuityRefusal =
         continuityRequirement._tag === "Failure"
           ? "unavailable"
@@ -1026,7 +1085,13 @@ export const layer: Layer.Layer<
         .getRuntimeRecoveryProjection(projection.thread.id)
         .pipe(Effect.map(selectInheritedBackgroundItems));
       const revalidateReplacement = Effect.gen(function* () {
-        const current = yield* projectionStore.getRuntimeRecoveryProjection(run.threadId);
+        const current = yield* projectionStore
+          .getRuntimeRecoveryProjection(run.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new ExecutionSessionRevalidationUnavailableError({ runId, cause }),
+            ),
+          );
         const latest = current.runs.find((candidate) => candidate.id === run.id);
         if (
           latest?.activeAttemptId !== attempt.id ||
@@ -1034,11 +1099,11 @@ export const layer: Layer.Layer<
           latest.providerInstanceId !== run.providerInstanceId ||
           !modelSelectionsEqual(latest.modelSelection, run.modelSelection)
         )
-          return yield* new ProviderTurnStartError({
+          return yield* new ExecutionSessionRevalidationError({
             runId,
             cause: "The run attempt or provider selection changed during retirement.",
           });
-      }).pipe(Effect.mapError((cause) => new ExecutionSessionRevalidationError({ runId, cause })));
+      });
       const preparation = yield* Effect.result(
         prepareExecutionSession(run, providerThread, projection, revalidateReplacement).pipe(
           Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, providerSessions),
@@ -1136,15 +1201,9 @@ export const layer: Layer.Layer<
           return;
         }
       }
-      // A side chat shares its parent's worktree; the turn that gets its context asks before acting.
       const resolvedPolicy = yield* runtimePolicy
         .resolve({
-          thread:
-            projection.thread.lineage.sideChat === true &&
-            (sideChatHandoff !== undefined ||
-              !projection.runs.some((previous) => previous.ordinal < run.ordinal))
-              ? { ...projection.thread, runtimeMode: "approval-required" }
-              : projection.thread,
+          thread: projection.thread,
           modelSelection: run.modelSelection,
         })
         .pipe(Effect.result);
@@ -1670,10 +1729,24 @@ export const layer: Layer.Layer<
             (candidate) => candidate.ordinal > sourceRun.ordinal && isActiveRun(candidate),
           );
           if (!sourceBusy) {
+            // Rolled-back turns are no longer in the source conversation, so they cannot bound a fork.
+            const rolledBackAttemptIds = new Set(
+              sourceProjection.attempts
+                .filter((attempt) =>
+                  sourceProjection.runs.some(
+                    (candidate) =>
+                      candidate.id === attempt.runId && candidate.status === "rolled_back",
+                  ),
+                )
+                .map((attempt) => attempt.id),
+            );
             return yield* loadFromProvider(
               session.forkThread({
                 sourceProviderThread,
-                sourceProviderTurns: sourceProjection.providerTurns,
+                sourceProviderTurns: sourceProjection.providerTurns.filter(
+                  (turn) =>
+                    turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId),
+                ),
                 targetThreadId: projection.thread.id,
                 modelSelection: run.modelSelection,
                 runtimePolicy: resolvedRuntimePolicy,
@@ -1886,6 +1959,14 @@ export const layer: Layer.Layer<
         resumedHandoffContext = undefined;
         resumedRetryHandoff = [];
         if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
+        // Another client is still writing to the native thread. A fresh
+        // session here would silently split the conversation from it.
+        if (
+          resumed._tag === "Failure" &&
+          resumed.failure._tag === "ProviderAdapterThreadInUseError"
+        ) {
+          return yield* loadFromProvider(Effect.fail(resumed.failure));
+        }
 
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {
           driver: session.driver,

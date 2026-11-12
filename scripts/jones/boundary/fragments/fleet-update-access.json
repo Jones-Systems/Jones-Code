@@ -56,6 +56,7 @@
     "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
     "apps/server/src/jones/updates/preparation/Preparation.testkit.ts",
     "apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts",
+    "apps/server/src/jones/updates/preparation/packagedDarwinStageRepro.ts",
     "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx"
   ],
   "hookPaths": [

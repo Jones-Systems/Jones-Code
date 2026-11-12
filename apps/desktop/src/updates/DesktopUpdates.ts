@@ -40,6 +40,7 @@ import { currentJonesDesktopOwner } from "../jones/updates/jonesNativeStartup.ts
 import { errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import type * as Mac from "effect/crypto/Mac";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -495,7 +496,8 @@ export const make = Effect.gen(function* () {
     !mockUpdates &&
     /-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(environment.appVersion)
   ) {
-    const context = yield* Effect.context<never>();
+    // The native preparation credential derives its rotating token through `Mac`.
+    const context = yield* Effect.context<Mac.Mac>();
     const processEnv = yield* HostProcess.Environment;
     const executablePath = yield* HostProcess.ExecutablePath;
     const profile = yield* DesktopUserData.resolveUserDataPath(environment);

@@ -99,6 +99,10 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
         (environment_id, secret_name, label, urls_json, access, linked_at, expires_at)
         VALUES ('environment-box', 'peer-link-box', 'Box', '["https://box.example"]', 'auto',
           '2026-08-01', '2027-08-01')`;
+      yield* sql`INSERT INTO jones_peer_environment_links
+        (environment_id, secret_name, label, urls_json, access, linked_at, expires_at)
+        VALUES ('environment-jones-box', 'peer-link-jones-box', 'Jones box',
+          '["https://jones-box.example"]', 'auto', '2026-08-01', '2027-08-01')`;
     }),
   );
   return databasePath;
@@ -142,7 +146,8 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
               (SELECT COUNT(*) FROM scheduled_task_webhook_replay_keys) +
                 (SELECT COUNT(*) FROM scheduled_task_webhook_pending) AS webhooks,
               (SELECT COUNT(*) FROM orchestration_v2_projection_context_transfers) AS transfers,
-              (SELECT COUNT(*) FROM peer_environment_links) AS links`;
+              (SELECT COUNT(*) FROM peer_environment_links) +
+                (SELECT COUNT(*) FROM jones_peer_environment_links) AS links`;
           return { threads, events, sessions, leftovers };
         }),
       );

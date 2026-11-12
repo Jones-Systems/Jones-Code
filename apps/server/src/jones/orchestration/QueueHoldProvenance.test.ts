@@ -275,6 +275,20 @@ describe("automatic queue hold recorded provenance", () => {
       }),
     ]).toEqual([]);
   });
+  it("retains holds when history is pruned the way the upstream pruner does", () => {
+    const f = fixture();
+    const head = f.events.at(-1)!;
+    // Upstream keeps thread.created, running run.updated and each stream's newest event.
+    const pruned = f.events.filter(
+      ({ event }, index) =>
+        event.type === "thread.created" ||
+        (event.type === "run.updated" && event.payload.status === "running") ||
+        index === f.events.length - 1,
+    );
+    expect(pruned.length).toBeLessThan(f.events.length);
+    expect(eligible(f)).toEqual([f.queued.id]);
+    expect(eligible(f, pruned, f.receipts, head)).toEqual([]);
+  });
   it("retains holds with truncated history or ambiguous zero-sequence Stop receipts", () => {
     const f = fixture();
     expect(eligible(f, f.events.slice(1))).toEqual([]);

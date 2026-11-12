@@ -7,6 +7,9 @@ import {
   JonesRecoveryPolicy,
   JonesSourceSha,
 } from "./jonesOperations.ts";
+import { JonesUpdateLastCheck, JonesUpdateProgress } from "./jonesUpdateProgress.ts";
+
+export * from "./jonesUpdateProgress.ts";
 
 export const JonesUpdatePhase = Schema.Literals([
   "checking",
@@ -224,6 +227,11 @@ export const JonesUpdateState = Schema.Struct({
     }),
   ),
   policy: Schema.optionalKey(JonesUpdatePolicy),
+  /** Structured download or install steps. Older hosts omit it; older clients ignore it. */
+  progress: Schema.optionalKey(JonesUpdateProgress),
+  lastCheck: Schema.optionalKey(JonesUpdateLastCheck),
+  /** The staged build's source or tree is the one already running; installing it changes nothing. */
+  stagedAlreadyRunning: Schema.optionalKey(Schema.Literal(true)),
 });
 export type JonesUpdateState = typeof JonesUpdateState.Type;
 

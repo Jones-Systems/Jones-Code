@@ -248,6 +248,11 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
     resolveRuntime: runtime.resolve,
+    // The picker shows each model's catalog default effort; dispatch reads the same
+    // catalog so a turn without an explicit effort sends the effort that was shown.
+    getModelCatalog: Effect.suspend(() =>
+      snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+    ),
   }).pipe(
     Effect.mapError(
       (cause) =>
@@ -293,6 +298,11 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       protect("generateThreadTitle", nativeGeneration.generateThreadTitle(value)),
     generateReviewGuide: (value) =>
       protect("generateReviewGuide", nativeGeneration.generateReviewGuide(value)),
+    generateTranscriptionPostProcessing: (value) =>
+      protect(
+        "generateTranscriptionPostProcessing",
+        nativeGeneration.generateTranscriptionPostProcessing(value),
+      ),
   };
   return {
     instanceId,

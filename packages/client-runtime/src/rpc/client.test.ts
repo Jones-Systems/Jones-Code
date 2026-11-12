@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   ScheduledTaskId,
   type RelayClientInstallProgressEvent,
+  type ServerConfig,
   type ServerLifecycleStreamEvent,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { RpcClientError } from "effect/rpc";
 
@@ -30,6 +32,7 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import {
   EnvironmentRpcRequestObserver,
   RpcPermissionGuard,
+  refreshVcsBranch,
   requestGuarded,
   runStream,
   subscribe,
@@ -456,7 +459,7 @@ describe("environment RPC", () => {
   );
 
   it.effect.each(["input", "stream"] as const)(
-    "does not classify %s subscription defects as expected failures",
+    "reports %s subscription defects and resubscribes on the next session",
     (where) =>
       Effect.gen(function* () {
         const defect = new Error("subscription invariant failed");
@@ -464,25 +467,35 @@ describe("environment RPC", () => {
         let inputs = 0;
         let streams = 0;
         const observedDefects: unknown[] = [];
-        const client = {
+        const defectObserved = yield* Deferred.make<void>();
+        const resubscribed = yield* Deferred.make<void>();
+        const firstClient = {
           [WS_METHODS.subscribeTerminalMetadata]: () => {
             streams += 1;
             return where === "stream" ? Stream.die(defect) : Stream.never;
           },
         } as unknown as WsRpcProtocolClient;
+        const secondClient = {
+          [WS_METHODS.subscribeTerminalMetadata]: () => {
+            Deferred.doneUnsafe(resubscribed, Effect.void);
+            return Stream.never;
+          },
+        } as unknown as WsRpcProtocolClient;
         const { activeSession, supervisor } = yield* makeHarness();
 
-        yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-        const exit = yield* subscribeDynamicWithSession(
+        yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
+        const subscriptionFiber = yield* subscribeDynamicWithSession(
           WS_METHODS.subscribeTerminalMetadata,
           () =>
-            Effect.sync(() => {
+            Effect.suspend(() => {
               inputs += 1;
-            }).pipe(Effect.andThen(where === "input" ? Effect.die(defect) : Effect.succeed({}))),
+              return where === "input" && inputs === 1 ? Effect.die(defect) : Effect.succeed({});
+            }),
           {
             onDefect: (cause) =>
               Effect.sync(() => {
                 observedDefects.push(Cause.squash(cause));
+                Deferred.doneUnsafe(defectObserved, Effect.void);
               }),
             onExpectedFailure: () =>
               Effect.sync(() => {
@@ -493,18 +506,91 @@ describe("environment RPC", () => {
         ).pipe(
           Stream.runDrain,
           Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-          Effect.exit,
+          Effect.forkChild,
         );
+        yield* Deferred.await(defectObserved);
 
-        expect(Exit.isFailure(exit)).toBe(true);
-        if (Exit.isFailure(exit)) {
-          expect(Cause.hasDies(exit.cause)).toBe(true);
-          expect(Cause.squash(exit.cause)).toBe(defect);
-        }
         expect(inputs).toBe(1);
         expect(streams).toBe(where === "input" ? 0 : 1);
         expect(expectedFailureCount).toBe(0);
         expect(observedDefects).toEqual([defect]);
+
+        // Let the defect settle before the next session arrives, as it does on a real device.
+        yield* TestClock.adjust("1 second");
+        expect(subscriptionFiber.pollUnsafe()).toBeUndefined();
+        yield* SubscriptionRef.set(activeSession, Option.some(session(secondClient)));
+        yield* Deferred.await(resubscribed);
+        yield* Fiber.interrupt(subscriptionFiber);
+
+        expect(inputs).toBe(2);
       }),
   );
 });
+
+it.effect.each([true, false])(
+  "refreshes branches using the connected server capability (%s)",
+  (supported) =>
+    Effect.gen(function* () {
+      const { activeSession, supervisor } = yield* makeHarness();
+      const inputs: unknown[] = [];
+      const client = {
+        [supported ? WS_METHODS.vcsRefreshBranch : WS_METHODS.vcsRefreshStatus]: (
+          input: unknown,
+        ) => {
+          inputs.push(input);
+          return Effect.void;
+        },
+      } as unknown as WsRpcProtocolClient;
+      yield* SubscriptionRef.set(
+        activeSession,
+        Option.some({
+          ...session(client),
+          initialConfig: Effect.succeed({
+            environment: { capabilities: supported ? { vcsBranchStatus: true } : {} },
+          } as ServerConfig),
+        }),
+      );
+      expect(
+        yield* refreshVcsBranch({ cwd: "/repo" }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        ),
+      ).toBeUndefined();
+      expect(inputs).toEqual(supported ? [{ cwd: "/repo" }] : []);
+    }).pipe(Effect.scoped),
+);
+
+it.effect("binds branch capability selection and execution to one session", () =>
+  Effect.gen(function* () {
+    const { activeSession, supervisor } = yield* makeHarness();
+    const configRequested = yield* Deferred.make<void>();
+    const config = yield* Deferred.make<ServerConfig>();
+    const executed = yield* Deferred.make<void>();
+    const original = {
+      [WS_METHODS.vcsRefreshBranch]: () =>
+        Deferred.succeed(executed, undefined).pipe(Effect.asVoid),
+    } as unknown as WsRpcProtocolClient;
+    const replacement = {
+      [WS_METHODS.vcsRefreshStatus]: () => Effect.succeed({ refName: "replacement" }),
+    } as unknown as WsRpcProtocolClient;
+    yield* SubscriptionRef.set(
+      activeSession,
+      Option.some({
+        ...session(original),
+        initialConfig: Deferred.succeed(configRequested, undefined).pipe(
+          Effect.andThen(Deferred.await(config)),
+        ),
+      }),
+    );
+    const refresh = yield* refreshVcsBranch({ cwd: "/repo" }).pipe(
+      Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(configRequested);
+    yield* SubscriptionRef.set(activeSession, Option.some(session(replacement)));
+    yield* Deferred.succeed(config, {
+      environment: { capabilities: { vcsBranchStatus: true } },
+    } as ServerConfig);
+    expect(yield* Fiber.join(refresh)).toBeUndefined();
+    yield* Deferred.await(executed);
+  }).pipe(Effect.scoped),
+);

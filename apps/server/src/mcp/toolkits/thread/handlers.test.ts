@@ -156,7 +156,7 @@ it.effect("blocks foreign text edits and answers while preserving self controls 
       expect(denied.result).toMatchObject({ code: "capability_denied" });
     }
     expect(commands).toEqual([]);
-    const configuration = yield* invoke("t3_thread_configuration", { threadId: peerId });
+    const configuration = yield* invoke("t3_thread_configure", { threadId: peerId });
     expect(configuration.result).toMatchObject({ threadMessagesBlocked: true });
     for (const threadId of [callerId, peerId]) {
       if (threadId === peerId)
@@ -187,4 +187,108 @@ it.effect("blocks foreign text edits and answers while preserving self controls 
       });
     }
   }),
+);
+
+it.effect(
+  "t3_queue promote_to_steer sends a bounded batch with its counts, and one message without queuedRunIds",
+  () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:batch-steer");
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const scope: McpInvocationContext.McpInvocationScope = {
+        environmentId: EnvironmentId.make("environment:batch-steer"),
+        requestNamespace: "session:batch-steer",
+        thread: { threadId, providerSessionId: "session:batch-steer", providerInstanceId },
+        client: undefined,
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1,
+      };
+      const shell = {
+        ...v2PullRequestThread({
+          id: threadId,
+          projectId: ProjectId.make("project:batch-steer"),
+          title: "Batch steer",
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          pullRequests: [],
+          latestUserMessageAt: null,
+          createdAt: "2026-10-04T00:00:00Z",
+          updatedAt: "2026-10-04T00:00:00Z",
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+        }),
+        activeRunId: RunId.make("run:active"),
+      };
+      const projection = emptyProjection({
+        type: "thread.created",
+        id: EventId.make("fixture:batch-steer"),
+        threadId,
+        occurredAt: shell.createdAt,
+        payload: { ...shell, lastVisitedAt: null } satisfies OrchestrationV2AppThread,
+      });
+      const commands: OrchestrationV2ServerCommand[] = [];
+      const batches: unknown[] = [];
+      const layer = Layer.mergeAll(
+        Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({}),
+        NodeCrypto.layer,
+        Layer.mock(ThreadSearch.ThreadSearch)({}),
+        Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: () => Effect.succeed(shell),
+          getProjectThreadRecords: () => Effect.succeed(projection),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              commands.push(command);
+              return { sequence: commands.length, storedEvents: [] };
+            }),
+          promoteQueuedBatch: (input) =>
+            Effect.sync(() => {
+              batches.push(input);
+              return { sequence: 9, promotedCount: input.queuedRunIds.length, remainingCount: 1 };
+            }),
+        }),
+      );
+      const toolkit = yield* ThreadToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ThreadHandlers.layer).pipe(Layer.provide(layer)),
+        ),
+      );
+      const call = (args: Parameters<typeof toolkit.handle<"t3_queue">>[1]) =>
+        toolkit.handle("t3_queue", args).pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.map((results) => results.at(-1)!),
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provide(layer),
+        );
+      const first = RunId.make("run:queued-1");
+      const second = RunId.make("run:queued-2");
+      const target = RunId.make("run:active");
+      const base = { action: "promote_to_steer", queuedRunId: first, targetRunId: target } as const;
+
+      const batch = yield* call({ ...base, queuedRunIds: [first, second] });
+      expect(batch.isFailure).toBe(false);
+      expect(batch.result).toEqual({ sequence: 9, promotedCount: 2, remainingCount: 1 });
+      expect(batches).toMatchObject([
+        { threadId, targetRunId: target, queuedRunIds: [first, second] },
+      ]);
+      expect(commands).toEqual([]);
+
+      const single = yield* call(base);
+      expect(single.isFailure).toBe(false);
+      expect(single.result).toEqual({ sequence: 1 });
+      expect(commands).toMatchObject([
+        { type: "queued-message.promote-to-steer", queuedRunId: first, targetRunId: target },
+      ]);
+
+      const misordered = yield* call({ ...base, queuedRunIds: [second, first] });
+      expect(misordered.isFailure).toBe(true);
+      expect(misordered.result).toMatchObject({ code: "invalid_request" });
+      expect(batches).toHaveLength(1);
+      expect(commands).toHaveLength(1);
+    }),
 );

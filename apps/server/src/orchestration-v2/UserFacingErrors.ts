@@ -1,6 +1,7 @@
 import { PROVIDER_DISPLAY_NAMES, type ProviderDriverKind } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 import * as SqlError from "effect/sql/SqlError";
+import { findSqliteReaderAdmissionFailure } from "@t3tools/shared/jones/sqliteReaders/admissionFailure";
 
 const GENERIC_ERROR_PREFIXES = [
   "Failed to dispatch orchestration V2 command",
@@ -33,6 +34,9 @@ function databaseErrorMessage(value: unknown): string | undefined {
     }
     cause = cause.cause;
   }
+
+  if (findSqliteReaderAdmissionFailure(value) !== undefined)
+    return "The server was too busy to read its database. Check the server logs if this continues.";
 
   return "The T3 Code server could not complete this database request. Retry once; if it still fails, check the server logs for the database error.";
 }

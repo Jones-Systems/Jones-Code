@@ -1,10 +1,47 @@
 import { assert, it } from "@effect/vitest";
-import { CommandId, MessageId } from "@t3tools/contracts";
+import { CommandId, EnvironmentId, MessageId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Changes from "./DependencyChanges.ts";
 import { roster } from "./Projection.ts";
 import { notification } from "./Wake.ts";
 import * as Fixture from "./testkit.ts";
+
+const deliverQueuedWake = Effect.fnUntraced(function* (
+  f: Effect.Success<typeof Fixture.seed>,
+  key: string,
+) {
+  const input = yield* f.send(key);
+  yield* f.sql.withTransaction(
+    f.store.answer(f.receiver.id, input.requestId, "fulfilled", "Delivered result", null),
+  );
+  const dependency = (yield* f.store.get(`dependency:${key}`))!;
+  const run = f.run(`${key}-wake`, f.waiter.id, "queued", 2);
+  const wake = { ...f.message(`${key}-wake-message`, run), notification: notification(dependency) };
+  yield* f.sink.commitCommand({
+    commandId: CommandId.make(`accept:${key}-wake`),
+    threadId: f.waiter.id,
+    commandType: "message.dispatch",
+    acceptedAt: Fixture.time,
+    dependencyWake: {
+      dependencyId: dependency.dependencyId,
+      generation: dependency.generation,
+      waiterThreadId: f.waiter.id,
+      messageId: wake.id,
+    },
+    events: [
+      f.event({
+        type: "run.created",
+        threadId: f.waiter.id,
+        runId: run.id,
+        payload: { ...run, userMessageId: wake.id },
+      }),
+      f.event({ type: "message.updated", threadId: f.waiter.id, runId: run.id, payload: wake }),
+    ],
+    effects: [],
+  });
+  return { dependency, run: { ...run, userMessageId: wake.id }, wake };
+});
 
 it.effect(
   "a completed foreground retains explicit result waiting; active work suppresses only presentation",
@@ -492,29 +529,179 @@ it.effect("a Stop winning the wake race rolls back the entire stale wake command
   }).pipe(Effect.provide(Fixture.layer)),
 );
 
-it.effect("a dependency opened after settlement planning rejects the accepting transaction", () =>
+it.effect.each([
+  "exact queued wake",
+  "missing wake id",
+  "missing message",
+  "missing run",
+  "foreign message",
+  "foreign run",
+  "live run",
+] as const)("settlement duty planning requires an exact queued wake binding: %s", (binding) =>
   Effect.gen(function* () {
     const f = yield* Fixture.seed;
+    const { dependency, run, wake } = yield* deliverQueuedWake(f, "planned-wake");
+    const unrelated = f.run("unrelated-queued-run", f.waiter.id, "queued", 3);
+    yield* f.sink.write({
+      events: [
+        f.event({
+          type: "run.created",
+          threadId: f.waiter.id,
+          runId: unrelated.id,
+          payload: unrelated,
+        }),
+      ],
+    });
+    switch (binding) {
+      case "missing wake id":
+        yield* f.sql`UPDATE jones_thread_result_dependencies SET wake_message_id = NULL WHERE dependency_id = ${dependency.dependencyId}`;
+        break;
+      case "missing message":
+        yield* f.sql`DELETE FROM orchestration_v2_projection_messages WHERE message_id = ${wake.id}`;
+        break;
+      case "missing run":
+        yield* f.sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${run.id}`;
+        break;
+      case "foreign message":
+        yield* f.sql`UPDATE orchestration_v2_projection_messages SET thread_id = ${f.receiver.id} WHERE message_id = ${wake.id}`;
+        break;
+      case "foreign run":
+        yield* f.sql`UPDATE orchestration_v2_projection_runs SET thread_id = ${f.receiver.id} WHERE run_id = ${run.id}`;
+        break;
+      case "live run":
+        yield* f.sql`UPDATE orchestration_v2_projection_runs SET status = 'running' WHERE run_id = ${run.id}`;
+        break;
+    }
+    const before =
+      yield* f.sql`SELECT * FROM orchestration_v2_projection_runs WHERE run_id = ${run.id}`;
+    assert.equal(
+      (yield* f.store.dutiesAfterQueuedWakeCancellations(f.waiter.id, new Set())).outgoing,
+      1,
+    );
+    assert.equal(
+      (yield* f.store.dutiesAfterQueuedWakeCancellations(f.waiter.id, new Set([unrelated.id])))
+        .outgoing,
+      1,
+    );
+    assert.equal(
+      (yield* f.store.dutiesAfterQueuedWakeCancellations(f.waiter.id, new Set([run.id]))).outgoing,
+      binding === "exact queued wake" ? 0 : 1,
+    );
+    assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 1);
+    assert.equal((yield* f.store.get(dependency.dependencyId))?.state, "delivered");
+    assert.deepEqual(
+      yield* f.sql`SELECT * FROM orchestration_v2_projection_runs WHERE run_id = ${run.id}`,
+      before,
+    );
+  }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect("planned wake cancellations retain sending, awaiting and resolved duties", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const { run } = yield* deliverQueuedWake(f, "cancelled-wake");
+    yield* f.send("other-awaiting");
+    const resolved = yield* f.send("other-resolved");
+    yield* f.sql.withTransaction(
+      f.store.answer(f.receiver.id, resolved.requestId, "fulfilled", "Not yet delivered", null),
+    );
+    yield* f.sql.withTransaction(
+      f.store.prepare({
+        dependencyId: "other-sending",
+        operationId: "other-sending-operation",
+        waiterThreadId: f.waiter.id,
+        waiterRunId: f.waiterRun.id,
+        targetEnvironmentId: "peer",
+        targetThreadId: f.receiver.id,
+        targetLabel: "Remote receiver",
+        forwardedRequestKey: "planned-send-key",
+        requestDigest: "planned-send-digest",
+        waiterGeneration: 0,
+        scope: {
+          environmentId: EnvironmentId.make("local"),
+          requestNamespace: "planned-cancellations",
+          thread: {
+            threadId: f.waiter.id,
+            providerSessionId: "planned-session",
+            providerInstanceId: f.waiter.providerInstanceId,
+          },
+        },
+      }),
+    );
+    assert.deepEqual(
+      yield* f.store.dutiesAfterQueuedWakeCancellations(f.waiter.id, new Set([run.id])),
+      { outgoing: 3, owed: 0 },
+    );
+    assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 4);
+  }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect("a dependency opened after queued-wake cancellation planning rolls back settlement", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const changes = yield* Changes.DependencyChanges;
+    const { dependency, run } = yield* deliverQueuedWake(f, "settle-planned-wake");
+    const events = [
+      f.event({
+        type: "run.updated",
+        threadId: f.waiter.id,
+        runId: run.id,
+        payload: { ...run, status: "cancelled", completedAt: Fixture.time },
+      }),
+      f.event({
+        type: "thread.settled",
+        threadId: f.waiter.id,
+        payload: { ...f.waiter, settledAt: Fixture.time },
+      }),
+    ];
+    assert.equal(
+      (yield* f.store.dutiesAfterQueuedWakeCancellations(f.waiter.id, new Set([run.id]))).outgoing,
+      0,
+    );
+    // Another thread accepts a dependency after the planner has staged the cancellation.
     yield* f.send("settle-race");
+    const sequence = yield* f.store.sequence;
+    const generation = yield* f.store.waiterGeneration(f.waiter.id);
+    const publishedGeneration = changes.generation(f.waiter.id);
+    const commandId = CommandId.make("stale-settle-plan");
     const rejected = yield* f.sink
       .commitCommand({
-        commandId: CommandId.make("stale-settle-plan"),
+        commandId,
         threadId: f.waiter.id,
         commandType: "thread.settle",
         acceptedAt: Fixture.time,
-        events: [
-          f.event({
-            type: "thread.settled",
+        events,
+        effects: [
+          {
+            id: "stale-settle-cleanup",
+            commandId,
             threadId: f.waiter.id,
-            payload: { ...f.waiter, settledAt: Fixture.time },
-          }),
+            request: { type: "terminal.cleanup" },
+          },
         ],
-        effects: [],
       })
       .pipe(Effect.exit);
     assert.isTrue(Exit.isFailure(rejected));
     assert.equal((yield* f.projection.getThread(f.waiter.id)).settledAt, null);
     assert.equal((yield* f.store.get("dependency:settle-race"))?.state, "awaiting");
+    assert.equal((yield* f.store.get(dependency.dependencyId))?.state, "delivered");
+    assert.equal(
+      (yield* f.projection.getThreadRecords(f.waiter.id, ["runs"])).runs.find(
+        (candidate) => candidate.id === run.id,
+      )?.status,
+      "queued",
+    );
+    assert.equal(yield* f.store.waiterGeneration(f.waiter.id), generation);
+    assert.equal(changes.generation(f.waiter.id), publishedGeneration);
+    assert.equal(yield* f.store.sequence, sequence);
+    assert.deepEqual(
+      yield* f.sql`SELECT * FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
+      [],
+    );
+    assert.deepEqual(
+      yield* f.sql`SELECT * FROM orchestration_v2_effect_outbox WHERE command_id = ${commandId}`,
+      [],
+    );
   }).pipe(Effect.provide(Fixture.layer)),
 );
 

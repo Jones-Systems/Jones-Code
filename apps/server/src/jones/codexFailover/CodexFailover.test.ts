@@ -105,6 +105,7 @@ const registry = Registry.ProviderRegistry.of({
   refresh: () => Effect.succeed(catalog),
   reloadSecretsAndRefresh: () => Effect.succeed(catalog),
   invalidateModelCaches: () => Effect.void,
+  refreshModelCatalog: Effect.void,
   refreshInstance: () => Effect.succeed(catalog),
   refreshAfterUpdate: () => Effect.succeed(catalog),
   refreshWorkspaceSnapshot: () => Effect.succeed(catalog),

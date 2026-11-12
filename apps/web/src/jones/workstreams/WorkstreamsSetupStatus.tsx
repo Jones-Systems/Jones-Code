@@ -6,15 +6,27 @@ import { supportsWorkstreamOperations } from "@t3tools/client-runtime/jones/work
 import { primaryEnvironmentIdAtom } from "../../state/primaryEnvironment";
 import { environmentSession } from "../../state/session";
 import { Atom } from "effect/reactivity";
-import { SettingsPageContainer, SettingsSection } from "../../components/settings/settingsLayout";
+import { SettingsRow, SettingsSection } from "../../components/settings/settingsLayout";
 import { Button } from "../../components/ui/button";
+import { RefreshIcon } from "../../components/ui/refresh-icon";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { environmentOperationsTransport } from "./environmentWorkstreamsRequest";
 
-import { SetupStatusContent } from "./SetupStatusContent";
+import { SetupStatusContent, SetupStatusLine } from "./SetupStatusContent";
+import {
+  nativeWorkstreamsCapability,
+  type NativeWorkstreamsCapability,
+} from "@t3tools/client-runtime/state/workstreams";
 const emptyConfig = Atom.make(null);
-function SetupStatusRequest({ environmentId }: { environmentId: EnvironmentId | null }) {
+function SetupStatusRequest({
+  environmentId,
+  capability,
+}: {
+  environmentId: EnvironmentId | null;
+  capability: NativeWorkstreamsCapability | null;
+}) {
   const [status, setStatus] = useState<WorkstreamSetupStatus | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read setup capability for the selected environment and abort when its identity changes.
   useEffect(() => {
     if (!environmentId) return;
@@ -25,17 +37,40 @@ function SetupStatusRequest({ environmentId }: { environmentId: EnvironmentId | 
         if (!abort.signal.aborted) setStatus(next);
       })
       .catch(() => {
-        if (!abort.signal.aborted)
-          setMessage("Offline or unavailable. Check this environment's connection, then refresh.");
+        if (!abort.signal.aborted) setFailed(true);
       });
     return () => abort.abort();
   }, [environmentId]);
-  return status ? (
-    <SetupStatusContent status={status} />
+  if (status) return <SetupStatusContent status={status} capability={capability} />;
+  return failed ? (
+    <SetupStatusLine tone="error" badge="Offline">
+      Couldn’t reach this environment. Check its connection, then refresh.
+    </SetupStatusLine>
   ) : (
-    <p role="status">{message ?? "Checking Workstreams setup…"}</p>
+    <p role="status">Checking setup…</p>
   );
 }
+
+function RefreshSetupButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            size="icon-xs"
+            variant="ghost-muted"
+            aria-label="Refresh setup status"
+            onClick={onClick}
+          >
+            <RefreshIcon />
+          </Button>
+        }
+      />
+      <TooltipPopup side="top">Refresh setup status</TooltipPopup>
+    </Tooltip>
+  );
+}
+
 export function WorkstreamsSetupStatus() {
   const environmentId = useAtomValue(primaryEnvironmentIdAtom);
   const config = useAtomValue(
@@ -44,27 +79,25 @@ export function WorkstreamsSetupStatus() {
   const supported = supportsWorkstreamOperations(config?.environment.capabilities);
   const [revision, setRevision] = useState(0);
   return (
-    <SettingsPageContainer>
-      <SettingsSection title="Workstreams setup" variant="plain">
-        {!supported ? (
-          <p className="text-sm text-muted-foreground">
-            Setup diagnosis requires a server with Workstream operations support. Legacy Workstreams
-            remain available.
-          </p>
-        ) : (
-          <>
+    <SettingsSection title="Workstreams">
+      {!supported ? (
+        <SettingsRow
+          title="Setup status"
+          description="This server doesn’t support setup diagnosis. Legacy Workstreams still work."
+        />
+      ) : (
+        <SettingsRow
+          title="Setup status"
+          status={
             <SetupStatusRequest
               key={`${environmentId}:${revision}`}
               environmentId={environmentId}
+              capability={nativeWorkstreamsCapability(config?.environment.capabilities)}
             />
-            <div className="mt-3">
-              <Button size="sm" variant="outline" onClick={() => setRevision((value) => value + 1)}>
-                Refresh setup status
-              </Button>
-            </div>
-          </>
-        )}
-      </SettingsSection>
-    </SettingsPageContainer>
+          }
+          control={<RefreshSetupButton onClick={() => setRevision((value) => value + 1)} />}
+        />
+      )}
+    </SettingsSection>
   );
 }

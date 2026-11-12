@@ -10,7 +10,11 @@ import {
 } from "@t3tools/contracts";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 import { ReasoningEffortShortcuts } from "./ReasoningEffortShortcuts";
-import { useTraitsSelection, readPromptUltrathink } from "../../components/chat/TraitsPicker";
+import {
+  useTraitsSelection,
+  readPromptUltrathink,
+  type TraitsPersistence,
+} from "../../components/chat/TraitsPicker";
 import { getComposerEffectiveTraitsOptions } from "../../components/chat/composerProviderState";
 
 const instanceId = ProviderInstanceId.make("reasoning-test");
@@ -40,7 +44,9 @@ let root: Screen;
 let onPromptChange = vi.fn<(prompt: string) => void>();
 
 async function render(
-  overrides: Partial<ComponentProps<typeof ReasoningEffortShortcuts>> & { prompt?: string } = {},
+  overrides: Partial<
+    Omit<ComponentProps<typeof ReasoningEffortShortcuts>, keyof TraitsPersistence>
+  > & { prompt?: string } = {},
   descriptors: ReadonlyArray<ProviderOptionDescriptor> = [effort, fast],
   withMenu = false,
 ) {
@@ -61,7 +67,6 @@ async function render(
     promptUltrathink: readPromptUltrathink(overrides.prompt ?? ""),
     onPromptEdit: (edit: (prompt: string) => string) =>
       onPromptChange(edit(overrides.prompt ?? "")),
-    planModeEnabled: true,
     visible: true,
     ...overrides,
   };
@@ -250,7 +255,6 @@ describe("reasoning effort shortcuts", () => {
         options: [{ id: "reasoningEffort", value: "medium" }],
       },
       defaultDriverKind: ProviderDriverKind.make("codex"),
-      planModeEnabled: true,
     });
     await render({
       ...resolved,
@@ -354,7 +358,6 @@ describe("reasoning effort shortcuts", () => {
         ],
         promptUltrathink: readPromptUltrathink("Explain"),
         onPromptEdit: (edit) => onPromptChange(edit("Explain")),
-        planModeEnabled: true,
         allowPromptInjectedEffort: false,
       });
       return (

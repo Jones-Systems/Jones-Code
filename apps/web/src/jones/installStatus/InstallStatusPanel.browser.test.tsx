@@ -7,6 +7,9 @@ import { act, render, type Screen } from "../../../test/render";
 import "../../index.css";
 import { InstallStatusPanel } from "./InstallStatusPanel";
 import { startInstallPlanController } from "./InstallPlanController";
+import { startInstallStatusPoller } from "./InstallStatusPoller";
+import { bindInstallPlanServices, type InstallPlanServices } from "./services";
+import { STATUS_POLL_CADENCE } from "@t3tools/client-runtime/jones/install-plan";
 import { handOffJonesTargets, routeInstallStatusPill } from "./entrypoints";
 import { createScriptedInstallPlan, FIXTURE_HOSTS } from "../updates/fixtures/install-preview-plan";
 
@@ -56,7 +59,16 @@ function initialDesktop(): DesktopUpdateState {
     },
   };
 }
-async function setup(options: { refuseFirstDownload?: boolean } = {}) {
+const fixtureRecoveryToken = "22222222-2222-4222-8222-222222222222";
+
+async function setup(
+  options: {
+    refuseFirstDownload?: boolean;
+    refuseFirstInstall?: boolean;
+    loseCleanupReply?: boolean;
+    refuseCleanupReport?: boolean;
+  } = {},
+) {
   let desktop = initialDesktop();
   const updates = new Set<(value: DesktopUpdateState) => void>();
   const calls: { action: string; input?: unknown }[] = [];
@@ -70,7 +82,22 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
     record: (action, input) => calls.push({ action, input }),
   });
   const bridge = {
-    installPlan: fixture.request,
+    installPlan: async (request: Parameters<typeof fixture.request>[0]) => {
+      if (
+        options.refuseCleanupReport &&
+        request.type === "report" &&
+        request.evidence.kind === "receipt" &&
+        request.evidence.receipt.code === "cleanup-recovered"
+      )
+        return {
+          state: fixture.snapshot(),
+          refused: {
+            code: "storage" as const,
+            message: "Fixture plan storage refused the receipt.",
+          },
+        };
+      return fixture.request(request);
+    },
     onInstallPlan: fixture.onInstallPlan,
     getUpdateState: async () => desktop,
     onUpdateState: (listener: (value: DesktopUpdateState) => void) => {
@@ -82,6 +109,7 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
   };
   const services = fixture.services(bridge);
   let refused: JonesOperationReceipt | undefined;
+  let released: JonesOperationReceipt | undefined;
   let readObserved!: () => void;
   const receiptRead = new Promise<void>((resolve) => (readObserved = resolve));
   const controller = startInstallPlanController(
@@ -89,10 +117,11 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
       ...services,
       operation: async (id, command) => {
         if (
-          options.refuseFirstDownload &&
           refused === undefined &&
           command.action === "operationStart" &&
-          command.input.action.kind !== "install"
+          (command.input.action.kind === "install"
+            ? options.refuseFirstInstall
+            : options.refuseFirstDownload)
         ) {
           calls.push({
             action: "fixture-host-operationStart",
@@ -109,13 +138,43 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
           return refused;
         }
         const result = await services.operation(id, command);
+        if (command.action === "recoverCleanup" && options.loseCleanupReply) {
+          const held = fixture
+            .snapshot()
+            .current?.devices.find((d) => d.environmentId === id)
+            ?.operations.at(-1)?.receipt;
+          if (
+            held?.operationId !== command.input.operationId ||
+            held.jobId !== command.input.jobId ||
+            command.input.recoveryToken !== fixtureRecoveryToken
+          )
+            throw new Error("Fixture recovery binding changed.");
+          released = {
+            ...held,
+            phase: "interrupted",
+            code: "cleanup-recovered",
+            message: "Cleanup was verified and the preparation hold was released.",
+          };
+          throw new Error("Fixture lost the recovery response.");
+        }
         if (command.action === "operationRead" && "receipts" in result) {
           readObserved();
           return {
+            ...(command.input.inspectCleanup === undefined
+              ? {}
+              : {
+                  cleanupInspection: {
+                    operationId: command.input.inspectCleanup,
+                    status: "eligible" as const,
+                    ...(options.loseCleanupReply ? { recoveryToken: fixtureRecoveryToken } : {}),
+                  },
+                }),
             receipts: result.receipts.map((entry) =>
               refused !== undefined && entry.operationId === refused.operationId
                 ? { ...entry, receipt: refused }
-                : entry,
+                : released !== undefined && entry.operationId === released.operationId
+                  ? { ...entry, receipt: released }
+                  : entry,
             ),
           };
         }
@@ -152,6 +211,8 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
   };
   return {
     fixture,
+    services,
+    releaseReadback: () => released,
     bridge,
     screen,
     calls,
@@ -234,7 +295,7 @@ describe("Install status receipt fixture", () => {
     expect(original.receipt?.acceptedAt).toBeUndefined();
     const sent = () => calls.filter((call) => call.action === "fixture-host-operationStart");
     expect(sent()).toHaveLength(1);
-    await click(screen, "Check again");
+    await click(screen, "Refresh now");
     await act(() => world.receiptRead);
     expect(calls.filter((call) => call.action === "fixture-host-operationRead")).toHaveLength(1);
     expect(sent()).toHaveLength(1);
@@ -440,11 +501,248 @@ describe("Install status receipt fixture", () => {
     expect(screen.container.textContent).not.toContain("Retry");
     expect(visibleDone(screen)).toHaveLength(0);
     const sent = calls.filter((c) => c.action === "fixture-host-operationStart").length;
-    await click(screen, "Check again");
+    expect(screen.container.textContent).toContain("The host has yet to confirm the outcome");
+    await click(screen, "Check update outcome");
     expect(calls.filter((c) => c.action === "fixture-host-operationStart")).toHaveLength(sent);
     await act(() => fixture.settleHost("VPS", "stopped"));
     expect(screen.container.textContent).toContain("Stopped · nothing installed");
     expect(visibleDone(screen)).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    "reads back the exact Mini recovery without retry (report refused: %s)",
+    async (refuseCleanupReport) => {
+      await using world = await setup({ loseCleanupReply: true, refuseCleanupReport });
+      const { screen, fixture, controller, calls } = world;
+      await click(screen, "Edit");
+      await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+      await click(screen, "Done");
+      await click(screen, "Download on Laptop");
+      await world.stageLaptop();
+      await click(screen, "Install on Laptop");
+      await world.commitLaptop();
+      controller.wake();
+      await expect
+        .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase)
+        .toBe("running");
+      await act(() => fixture.settleHost("Mini", "held", "cleanup-unconfirmed"));
+      await click(screen, "Mini update details");
+      const held = fixture.snapshot().current!.devices[0]!.operations.at(-1)!.receipt!;
+      const first = calls.length;
+      await click(screen, "Inspect cleanup");
+      await expect
+        .poll(() => screen.container.textContent)
+        .toContain(
+          "Inspection confirmed the prior disk image is absent. The update remains on hold.",
+        );
+      expect(calls.slice(first).filter(({ action }) => action.startsWith("fixture-host-"))).toEqual(
+        [
+          {
+            action: "fixture-host-operationRead",
+            input: {
+              environmentId: held.environmentId,
+              input: {
+                environmentId: held.environmentId,
+                operationIds: [held.operationId],
+                inspectCleanup: held.operationId,
+              },
+            },
+          },
+        ],
+      );
+      expect(fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt).toEqual(held);
+      const confirmStart = calls.length;
+      await click(screen, "Recover cleanup");
+      if (refuseCleanupReport) {
+        await expect
+          .poll(() => screen.container.textContent)
+          .toContain(
+            "The host released the cleanup hold. Check the update outcome to refresh this plan.",
+          );
+        expect(fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt).toEqual(held);
+      } else {
+        await expect
+          .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt)
+          .toMatchObject({
+            operationId: held.operationId,
+            jobId: held.jobId,
+            phase: "interrupted",
+            code: "cleanup-recovered",
+          });
+      }
+      const recoveryCalls = calls
+        .slice(confirmStart)
+        .filter(({ action }) => action === "fixture-review" || action.startsWith("fixture-host-"));
+      expect(recoveryCalls.map(({ action }) => action)).toEqual([
+        "fixture-review",
+        "fixture-host-recoverCleanup",
+        "fixture-host-operationRead",
+      ]);
+      expect(recoveryCalls[0]?.input).toMatchObject({
+        message: expect.stringContaining(held.operationId),
+      });
+      expect(recoveryCalls[1]?.input).toEqual({
+        environmentId: held.environmentId,
+        input: {
+          environmentId: held.environmentId,
+          operationId: held.operationId,
+          jobId: held.jobId,
+          recoveryToken: fixtureRecoveryToken,
+          confirmed: true,
+        },
+      });
+      expect(recoveryCalls[2]?.input).toEqual({
+        environmentId: held.environmentId,
+        input: { environmentId: held.environmentId, operationIds: [held.operationId] },
+      });
+      if (!refuseCleanupReport) {
+        const released = world.releaseReadback();
+        expect(released).toBeDefined();
+        await act(() => fixture.publishHostReceipt(released!));
+        const hostStarts = () =>
+          calls.filter(({ action }) => action === "fixture-host-operationStart");
+        expect(hostStarts()).toHaveLength(1);
+        await click(screen, "Retry download");
+        await expect.poll(() => hostStarts().length).toBe(2);
+        const operations = fixture.snapshot().current!.devices[0]!.operations;
+        expect(operations).toHaveLength(2);
+        expect(operations[0]?.receipt).toEqual(released);
+        expect(operations[1]?.operationId).not.toBe(held.operationId);
+      }
+    },
+  );
+
+  it("offers Retry install for a refused VPS install and reviews the same stage with a fresh ID", async () => {
+    await using world = await setup({ refuseFirstInstall: true });
+    const { screen, fixture, controller, calls } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include VPS" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    controller.wake();
+    const operations = () => fixture.snapshot().current?.devices[0]?.operations;
+    await expect.poll(() => operations()?.at(-1)?.receipt?.phase).toBe("running");
+    await act(() => fixture.settleHost("VPS", "staged"));
+    await click(screen, "VPS update details");
+    await click(screen, "Install on VPS");
+    await expect.poll(() => operations()?.at(-1)?.receipt?.phase).toBe("refused");
+    const refused = operations()!.at(-1)!;
+    const staged = operations()![0]!.receipt!;
+    expect(staged.staged).toBeDefined();
+    await act(() =>
+      fixture.publishHostReceipt({
+        ...staged,
+        staged: { ...staged.staged!, stagedHandle: "different-stage" },
+      }),
+    );
+    expect(screen.container.textContent).not.toContain("Retry install");
+    await act(() => fixture.publishHostReceipt(staged));
+    const startCount = calls.filter(
+      ({ action }) => action === "fixture-host-operationStart",
+    ).length;
+    expect(startCount).toBe(2);
+    const beforeRetry = calls.length;
+    await click(screen, "Retry install");
+    await expect.poll(() => operations()?.at(-1)?.receipt?.phase).toBe("running");
+    const retry = operations()!.at(-1)!;
+    expect(retry.operationId).not.toBe(refused.operationId);
+    expect(retry.receipt?.action).toEqual(refused.receipt?.action);
+    expect(calls.filter(({ action }) => action === "fixture-host-operationStart")).toHaveLength(
+      startCount + 1,
+    );
+    expect(
+      calls
+        .slice(beforeRetry)
+        .filter(
+          ({ action }) => action === "fixture-review" || action === "fixture-host-operationStart",
+        )
+        .map(({ action }) => action),
+    ).toEqual(["fixture-review", "fixture-host-operationStart"]);
+    const beforeCheck = calls.length;
+    await click(screen, "Refresh now");
+    await expect
+      .poll(
+        () =>
+          calls
+            .slice(beforeCheck)
+            .find(
+              ({ action, input }) =>
+                action === "fixture-host-operationRead" &&
+                JSON.stringify(input).includes("refreshInstallOutcome"),
+            )?.input,
+      )
+      .toEqual({
+        environmentId: retry.receipt!.environmentId,
+        input: {
+          environmentId: retry.receipt!.environmentId,
+          operationIds: [retry.operationId],
+          refreshInstallOutcome: retry.operationId,
+        },
+      });
+    expect(calls.filter(({ action }) => action === "fixture-host-operationStart")).toHaveLength(
+      startCount + 1,
+    );
+  });
+
+  it("Done finishes an already-running retained stage and allows a new plan", async () => {
+    await using world = await setup();
+    const { screen, fixture, controller, services, calls } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include VPS" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    await expect
+      .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase)
+      .toBe("running");
+    await act(() => fixture.settleHost("VPS", "staged"));
+    controller.close();
+    const devices = () =>
+      services.devices().map((device) => ({
+        ...device,
+        observation: {
+          ...device.observation,
+          state: {
+            ...device.observation.state!,
+            installedSource: {
+              repository: "Jones-Systems/Jones-Code" as const,
+              sha: source,
+              tree: "d".repeat(40),
+            },
+          },
+        },
+      }));
+    const unbind = bindInstallPlanServices({ ...services, devices }, fixture.store);
+    try {
+      await act(() => fixture.store.update({ devices: devices() }));
+      expect(visibleDone(screen)).toHaveLength(1);
+      const before = calls.length;
+      await click(screen, "Done with update plan");
+      await expect.poll(() => fixture.snapshot().current).toBeNull();
+      expect(
+        calls
+          .slice(before)
+          .filter((c) => c.action === "fixture-installPlan")
+          .map((c) => (c.input as { type: string }).type),
+      ).toEqual(["read", "end", "dismiss"]);
+      expect(fixture.store.get().open).toBe(false);
+      const previous = fixture.snapshot().last!;
+      const started = await fixture.request({
+        type: "start",
+        origin: "update-button",
+        target: previous.target,
+        select: [],
+      });
+      expect(started.refused).toBeUndefined();
+      expect(started.state.current?.planId).not.toBe(previous.planId);
+    } finally {
+      unbind();
+    }
   });
 
   it("keeps unsupported devices out and uses a neutral dashed separator before and after Laptop verification", async () => {
@@ -511,5 +809,286 @@ describe("Install status receipt fixture", () => {
     ]);
     expect(world.calls.filter((c) => c.action === "fixture-host-operationStart")).toHaveLength(0);
     expect(world.calls.filter((c) => c.action === "fixture-laptop-download")).toHaveLength(1);
+  });
+});
+
+/** Manual refresh timers: `fire` runs every due refresh wait but never a refresh timeout. */
+function manualTimers() {
+  const timers = new Map<number, { run: () => void; ms: number }>();
+  let next = 0;
+  return {
+    setTimer: (run: () => void, ms: number) => {
+      timers.set(++next, { run, ms });
+      return next;
+    },
+    clearTimer: (handle: unknown) => {
+      timers.delete(handle as number);
+    },
+    fire() {
+      const due = [...timers].filter(([, timer]) => timer.ms !== STATUS_POLL_CADENCE.timeoutMs);
+      for (const [id] of due) timers.delete(id);
+      for (const [, timer] of due) timer.run();
+    },
+    /** Pending refresh timeouts, which `fire` leaves alone. */
+    timeouts: () =>
+      [...timers.values()].filter((timer) => timer.ms === STATUS_POLL_CADENCE.timeoutMs).length,
+    fireTimeouts() {
+      const due = [...timers].filter(([, timer]) => timer.ms === STATUS_POLL_CADENCE.timeoutMs);
+      for (const [id] of due) timers.delete(id);
+      for (const [, timer] of due) timer.run();
+    },
+  };
+}
+
+/** Records every service call the poller makes, so a test can prove a tick only reads. */
+function recordingServices(services: InstallPlanServices) {
+  const effects: string[] = [];
+  const recorded: InstallPlanServices = {
+    ...services,
+    bridge: {
+      ...services.bridge,
+      installPlan: async (request) => {
+        effects.push(`installPlan:${request.type}`);
+        return services.bridge.installPlan!(request);
+      },
+    },
+    observe: (id) => {
+      effects.push(`observe:${id}`);
+      return services.observe(id);
+    },
+    operation: (id, command) => {
+      effects.push(
+        `operation:${command.action}${"refreshInstallOutcome" in command.input ? ":outcome" : ""}`,
+      );
+      return services.operation(id, command);
+    },
+    legacy: (id, request) => {
+      effects.push(`legacy:${request.action}`);
+      return services.legacy(id, request);
+    },
+    stop: (id, command) => {
+      effects.push("stop");
+      return services.stop(id, command);
+    },
+    host: (id, request) => {
+      effects.push(`host:${request.action}`);
+      return services.host(id, request);
+    },
+    confirm: (message) => {
+      effects.push("confirm");
+      return services.confirm(message);
+    },
+  };
+  return { services: recorded, effects };
+}
+
+describe("Install status automatic refresh", () => {
+  it("reads an active device's ledger operation without a click and never mutates", async () => {
+    await using world = await setup();
+    const { screen, fixture, calls } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    await expect
+      .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase)
+      .toBe("running");
+    const { services, effects } = recordingServices(fixture.services(world.bridge));
+    const timers = manualTimers();
+    const poller = startInstallStatusPoller(services, {
+      store: fixture.store,
+      attention: () => true,
+      subscribeAttention: () => () => {},
+      subscribeOnline: () => () => {},
+      poller: { ...timers, random: () => 0.5 },
+    });
+    try {
+      const reads = () => calls.filter((c) => c.action === "fixture-host-operationRead").length;
+      const before = reads();
+      const started = calls.filter((c) => c.action === "fixture-host-operationStart").length;
+      await act(() => timers.fire());
+      await expect.poll(reads).toBeGreaterThan(before);
+      await expect.poll(() => effects.includes("operation:operationRead")).toBe(true);
+      const allowed = /^(observe:|operation:operationRead$|installPlan:(read|report)$)/;
+      expect(effects.filter((effect) => !allowed.test(effect))).toEqual([]);
+      expect(calls.filter((c) => c.action === "fixture-host-operationStart")).toHaveLength(started);
+    } finally {
+      poller.close();
+    }
+  });
+
+  it("shows Can't reach after three failed refreshes and clears it on the next success", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    const mini = FIXTURE_HOSTS.find((h) => h.label === "Mini")!.environmentId;
+    const base = fixture.services(world.bridge);
+    let failing = true;
+    const timers = manualTimers();
+    const poller = startInstallStatusPoller(
+      {
+        ...base,
+        observe: async (id) => {
+          if (failing && id === mini) throw new Error("Mini is unreachable.");
+          return base.observe(id);
+        },
+      },
+      {
+        store: fixture.store,
+        attention: () => true,
+        subscribeAttention: () => () => {},
+        subscribeOnline: () => () => {},
+        poller: { ...timers, random: () => 0.5 },
+      },
+    );
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await act(() => timers.fire());
+        await expect.poll(() => fixture.store.get().pollHealth[mini]?.failures).toBe(attempt);
+      }
+      await expect.poll(() => screen.container.textContent).toContain("Can't reach · ");
+      failing = false;
+      await act(() => timers.fire());
+      await expect.poll(() => fixture.store.get().pollHealth[mini]?.failures).toBe(0);
+      await expect.poll(() => screen.container.textContent).not.toContain("Can't reach");
+    } finally {
+      poller.close();
+    }
+  });
+
+  it("keeps a host reachable when its operation read times out behind the queue but the stream is fresh", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    await expect
+      .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase)
+      .toBe("running");
+    const mini = FIXTURE_HOSTS.find((h) => h.label === "Mini")!.environmentId;
+    const base = fixture.services(world.bridge);
+    const timers = manualTimers();
+    const poller = startInstallStatusPoller(
+      {
+        ...base,
+        // The status stream keeps hearing Mini; only the queued operation read never answers.
+        observe: async (id) => {
+          const device = await base.observe(id);
+          return { ...device, observation: { ...device.observation, heardAt: base.now() } };
+        },
+        operation: (id, command) =>
+          id === mini && command.action === "operationRead"
+            ? new Promise<never>(() => {})
+            : base.operation(id, command),
+      },
+      {
+        store: fixture.store,
+        attention: () => true,
+        subscribeAttention: () => () => {},
+        subscribeOnline: () => () => {},
+        poller: { ...timers, random: () => 0.5 },
+      },
+    );
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await act(() => timers.fire());
+        await expect.poll(() => timers.timeouts()).toBeGreaterThan(0);
+        await expect
+          .poll(async () => {
+            await act(() => timers.fireTimeouts());
+            return fixture.store.get().pollHealth[mini]?.failures;
+          })
+          .toBe(attempt);
+      }
+      expect(fixture.store.get().pollHealth[mini]?.failures).toBe(3);
+      expect(screen.container.textContent).not.toContain("Can't reach");
+      expect(
+        screen.container
+          .querySelector('[aria-label="Mini update details"] [data-liveness]')
+          ?.getAttribute("data-liveness"),
+      ).toBe("live");
+    } finally {
+      poller.close();
+    }
+  });
+});
+
+describe("Install status step progress", () => {
+  const rowText = (screen: Screen, label: string) =>
+    screen.container
+      .querySelector(`[aria-label="${label} update details"] [data-row-text]`)
+      ?.textContent?.trim();
+
+  it("keeps source proof above attempt progress and dates cached proof", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    await act(() => fixture.showcaseSourceProof());
+    expect(rowText(screen, "VPS")).toBe("Updated · running the selected source");
+    expect(rowText(screen, "Mini")).toBe("Updated · running the selected source");
+    expect(rowText(screen, "Test")).toBe("Last confirmed running the selected source · 5m ago");
+    expect(rowText(screen, "Studio")).toContain("Stop not confirmed");
+    expect(visibleDone(screen)).toHaveLength(0);
+    await click(screen, "VPS update details");
+    const detail = screen.container.querySelector('[aria-label="VPS update status"]')!;
+    expect(detail.textContent).toContain("This plan's attempt: Not updated · cleanup-recovered");
+    expect(detail.querySelector('input[aria-label="Operation ID"]')).not.toBeNull();
+    expect(detail.querySelectorAll("[data-step-status]")).toHaveLength(2);
+    expect(screen.container.textContent).not.toContain("Target build is running");
+  });
+
+  it("shows one glanceable line per device and a summary of active work", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    await act(() => fixture.showcaseStepProgress());
+    await expect.poll(() => rowText(screen, "VPS")).toMatch(/^Preparing 3 of 7 · 1:4[0-5]$/);
+    expect(rowText(screen, "Mini")).toBe("Install failed at step 3 of 7");
+    expect(rowText(screen, "Test")).toMatch(/^Downloading · (6:59|7:0[0-3])$/);
+    expect(rowText(screen, "Studio")).toBe("Can't reach · last heard 18m ago");
+    expect(screen.container.textContent).toContain("No progress for 4m");
+    expect(screen.container.textContent).toContain("2 installing · 1 downloading · 0 of 4 done");
+    // Only running rows mount a timer; the failed and unreachable rows do not.
+    expect(screen.container.querySelectorAll("[data-row-text] [data-elapsed]")).toHaveLength(2);
+  });
+
+  it("lists steps with durations, a live timer for the current step and the failure", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    await act(() => fixture.showcaseStepProgress());
+    await click(screen, "VPS update details");
+    const detail = screen.container.querySelector<HTMLElement>('[aria-label="VPS update status"]')!;
+    const steps = [...detail.querySelectorAll<HTMLElement>("[data-step-status]")];
+    expect(steps.map((step) => step.dataset.stepStatus)).toEqual([
+      "done",
+      "done",
+      "current",
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+    ]);
+    expect(steps[0]!.textContent).toContain("Mark running threads");
+    expect(steps[0]!.textContent).toContain("0:20");
+    const timer = () => steps[2]!.querySelector("[data-elapsed]")?.textContent;
+    const first = timer();
+    expect(first).toMatch(/^1:4[0-5]$/);
+    await expect.poll(timer, { timeout: 4_000 }).not.toBe(first);
+    expect(detail.textContent).toMatch(/Last heard \d+s ago/);
+    expect(detail.querySelector('input[aria-label="Operation ID"]')).not.toBeNull();
+    expect(detail.textContent).toContain("Refresh now");
+
+    await click(screen, "Mini update details");
+    const failed = screen.container.querySelector<HTMLElement>(
+      '[aria-label="Mini update status"]',
+    )!;
+    const failedStep = failed.querySelector<HTMLElement>('[data-step-status="failed"]')!;
+    expect(failedStep.textContent).toContain("Check startup readiness");
+    expect(failedStep.textContent).toContain("did not report ready within 60 seconds");
+    expect(failed.querySelectorAll("[data-elapsed]")).toHaveLength(0);
   });
 });

@@ -26,6 +26,8 @@ export interface SourceControlMediaRequest {
   readonly url: string;
   /** Request headers to forward, such as `range`. */
   readonly headers: Readonly<Record<string, string>>;
+  /** `owner/name` of the change request the media is in, else of the checkout it was shown in. */
+  readonly repository?: string;
 }
 
 export interface SourceControlCiReader {
@@ -89,6 +91,8 @@ export interface SourceControlDriverInstance {
   readonly signIn?: SourceControlSignIn;
   /** Whether the server's account on `host` starred `repository` (`owner/name`). */
   readonly isRepositoryStarred?: (host: string, repository: string) => Effect.Effect<boolean>;
+  /** Stars `repository` as the server's account on `host`; false when the forge refused. */
+  readonly starRepository?: (host: string, repository: string) => Effect.Effect<boolean>;
 }
 
 /** What the server gives every driver. A driver builds anything else it needs itself. */

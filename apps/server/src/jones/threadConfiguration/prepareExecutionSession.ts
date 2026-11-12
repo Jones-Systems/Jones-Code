@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
@@ -25,6 +26,47 @@ export class ExecutionSessionRevalidationError extends Schema.TaggedError<Execut
   }
 }
 
+/** Mirrors the orchestrator's probe: a failed probe cannot confirm that the work ended. */
+const sessionHasBackgroundWork = Effect.fn("jones.prepareExecutionSession.backgroundWork")(
+  function* (
+    sessions: Sessions.ProviderSessionManagerV2["Service"],
+    detaching: OrchestrationV2ThreadProjection["providerSessions"][number],
+    providerThreads: OrchestrationV2ThreadProjection["providerThreads"],
+  ) {
+    const session = yield* sessions
+      .get(detaching.id)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    if (Option.isNone(session)) return false;
+    const runtime = session.value;
+    const probes =
+      !detaching.capabilities.sessions.supportsMultipleProviderThreadsPerSession &&
+      runtime.hasPendingBackgroundWork !== undefined
+        ? [runtime.hasPendingBackgroundWork]
+        : providerThreads.flatMap((providerThread) =>
+            providerThread.providerSessionId === detaching.id &&
+            runtime.hasPendingBackgroundWorkForThread !== undefined
+              ? [runtime.hasPendingBackgroundWorkForThread(providerThread)]
+              : [],
+          );
+    for (const probe of probes) {
+      if (yield* probe.pipe(Effect.catchCause(() => Effect.succeed(true)))) return true;
+    }
+    return false;
+  },
+);
+
+export class ExecutionSessionRevalidationUnavailableError extends Schema.TaggedError<ExecutionSessionRevalidationUnavailableError>()(
+  "ExecutionSessionRevalidationUnavailableError",
+  { runId: RunId, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "Provider start could not read the current run state after retirement. No provider work was started.";
+  }
+}
+const isExecutionSessionRevalidationUnavailable = Schema.is(
+  ExecutionSessionRevalidationUnavailableError,
+);
+
 /** Runs only at normal start; retirement and its durable binding removal precede replacement. */
 export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession")(function* (
   run: OrchestrationV2Run,
@@ -33,7 +75,10 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     OrchestrationV2ThreadProjection,
     "thread" | "runs" | "providerThreads" | "providerSessions"
   >,
-  revalidateReplacement: Effect.Effect<void, ExecutionSessionRevalidationError> = Effect.void,
+  revalidateReplacement: Effect.Effect<
+    void,
+    ExecutionSessionRevalidationError | ExecutionSessionRevalidationUnavailableError
+  > = Effect.void,
 ) {
   const transitions = yield* Switch.ProviderSwitchServiceV2;
   const sessions = yield* Sessions.ProviderSessionManagerV2;
@@ -45,6 +90,13 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     const retired = projection.providerSessions.find((session) => session.id === providerSessionId);
     if (retired === undefined)
       return yield* Effect.fail("Released session has no captured identity.");
+    // Detaching ends background work in the provider process. A handoff runs in its own session,
+    // so a busy one stays up; the queue holds a busy restart before it reaches admission.
+    if (
+      plan.transition.type !== "restart_and_resume" &&
+      (yield* sessionHasBackgroundWork(sessions, retired, projection.providerThreads))
+    )
+      continue;
     yield* sessions.detach({
       providerSessionId,
       threadId: run.threadId,
@@ -75,7 +127,26 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       instanceId: run.modelSelection.instanceId,
     }) ?? Effect.void
   );
-  yield* revalidateReplacement;
+  const revalidation = yield* Effect.result(revalidateReplacement);
+  if (revalidation._tag === "Failure") {
+    // Only a completed detach may be recorded here. The manager's retired-writer fence
+    // also covers pending retirement, so it cannot substitute for that completion.
+    if (isExecutionSessionRevalidationUnavailable(revalidation.failure) && events.length > 0) {
+      const result = yield* sink.writeIfRunCurrent({
+        threadId: run.threadId,
+        runId: run.id,
+        activeAttemptId: run.activeAttemptId,
+        expectedStatus: "starting",
+        events,
+      });
+      if (!result.committed)
+        return yield* new ExecutionSessionRevalidationError({
+          runId: run.id,
+          cause: "Run changed before completed retirement could be recorded.",
+        });
+    }
+    return yield* revalidation.failure;
+  }
   const retiredWriter =
     provider.providerSessionId !== null &&
     (yield* (

@@ -192,6 +192,12 @@ function lastRunSummary(
   return entries.map((entry) => `${entry.label}: ${entry.counts}`).join(" · ");
 }
 
+const COVERAGE_LABEL = {
+  declared_cache: "Discard declared caches",
+  dependency_reproduction: "Discard reproducible dependencies",
+  format_recognized: "Discard recognized format files",
+} as const;
+
 function factsWithKeys<A>(values: readonly A[], identity: (value: A) => string) {
   const occurrences = new Map<string, number>();
   return values.map((value) => {
@@ -237,43 +243,6 @@ function CleanupResults({
                 <span className={`block ${entry.outcome === "failed" ? "text-destructive" : ""}`}>
                   {entry.reason}
                 </span>
-                {entry.retirement?.receiptId && (
-                  <span className="block">
-                    Receipt: {entry.retirement.receiptId} · {entry.retirement.state}
-                  </span>
-                )}
-                {factsWithKeys(entry.retirement?.details ?? [], (detail) =>
-                  JSON.stringify([
-                    detail.target,
-                    detail.root,
-                    detail.reason,
-                    detail.fact,
-                    detail.missingFact,
-                    detail.nextAction,
-                    detail.lineage.map(lineageIdentity),
-                  ]),
-                ).map(({ value: detail, key }) => (
-                  <span key={key} className="block">
-                    <code>{detail.root}</code>: {detail.fact}{" "}
-                    {detail.missingFact ? `Missing: ${detail.missingFact}. ` : ""}
-                    {detail.nextAction}
-                    {factsWithKeys(detail.lineage, lineageIdentity).map(
-                      ({ value: lineage, key }) => (
-                        <span key={key} className="block">
-                          {Object.entries(lineage)
-                            .map(([key, value]) => `${key}: ${value}`)
-                            .join(" · ")}
-                        </span>
-                      ),
-                    )}
-                  </span>
-                ))}
-                {entry.retirement?.outputObligations.map((output) => (
-                  <span key={output.id} className="block">
-                    Output {output.id}: <code>{output.path}</code> · Owner {output.owner} ·{" "}
-                    {output.state}
-                  </span>
-                ))}
                 <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-border/60 pl-3">
                   <span>Machine</span>
                   <span className="text-foreground/80">{environmentLabel}</span>
@@ -328,7 +297,55 @@ function CleanupResults({
                 )}
               </>
             }
-          />
+          >
+            {entry.retirement &&
+              (entry.retirement.receiptId ||
+                entry.retirement.details.length > 0 ||
+                entry.retirement.outputObligations.length > 0) && (
+                <details className="pb-2 text-xs text-muted-foreground wrap-anywhere select-text">
+                  <summary className="cursor-pointer">Retirement details</summary>
+                  <span className="mt-1 block space-y-1">
+                    {entry.retirement.receiptId && (
+                      <span className="block">
+                        Receipt: {entry.retirement.receiptId} · {entry.retirement.state}
+                      </span>
+                    )}
+                    {factsWithKeys(entry.retirement.details, (detail) =>
+                      JSON.stringify([
+                        detail.target,
+                        detail.root,
+                        detail.reason,
+                        detail.fact,
+                        detail.missingFact,
+                        detail.nextAction,
+                        detail.lineage.map(lineageIdentity),
+                      ]),
+                    ).map(({ value: detail, key }) => (
+                      <span key={key} className="block">
+                        <code>{detail.root}</code>: {detail.fact}{" "}
+                        {detail.missingFact ? `Missing: ${detail.missingFact}. ` : ""}
+                        {detail.nextAction}
+                        {factsWithKeys(detail.lineage, lineageIdentity).map(
+                          ({ value: lineage, key }) => (
+                            <span key={key} className="block">
+                              {Object.entries(lineage)
+                                .map(([key, value]) => `${key}: ${value}`)
+                                .join(" · ")}
+                            </span>
+                          ),
+                        )}
+                      </span>
+                    ))}
+                    {entry.retirement.outputObligations.map((output) => (
+                      <span key={output.id} className="block">
+                        Output {output.id}: <code>{output.path}</code> · Owner {output.owner} ·{" "}
+                        {output.state}
+                      </span>
+                    ))}
+                  </span>
+                </details>
+              )}
+          </SettingsRow>
         );
       })}
       {report.omittedCount > 0 && (
@@ -798,7 +815,7 @@ export function WorktreeCleanupSection() {
                     ]
                       .filter(Boolean)
                       .join(". ")}
-                    description="Retire worktrees this many days after their thread settles, its settle script durably finishes, and its final checkpoint completes. Set 0 days for the next cleanup. Branches and history are kept. Disabling this rule stops settlement retirement only. To stop all automatic checkout removal, disable every applicable cleanup cause in the effective project and environment settings."
+                    description="Remove worktrees this many days after their thread settles and its final checkpoint completes. Branches and history are kept."
                     serverScoped={!isProjectScope}
                     control={
                       <RetentionControl
@@ -821,7 +838,7 @@ export function WorktreeCleanupSection() {
                     <SettingsRow
                       title="Settled checkout scope"
                       managedPaths={lockablePath("worktreeSettledScope")}
-                      description="Contained allows only commits reachable from another retained reference. Branch-retained also keeps unique commits on the saved branch or recovery references."
+                      description="Contained requires every commit to be reachable elsewhere. Branch retained also accepts the saved branch."
                       serverScoped={!isProjectScope}
                       control={
                         <Select
@@ -847,18 +864,12 @@ export function WorktreeCleanupSection() {
                       <SettingsRow
                         key={coverage}
                         managedPaths={lockablePath("worktreeCoveredDiscard")}
-                        title={
-                          coverage === "declared_cache"
-                            ? "Discard declared caches"
-                            : coverage === "dependency_reproduction"
-                              ? "Discard reproducible dependencies"
-                              : "Discard recognized format files"
-                        }
-                        description="Applies only to ignored content that passes the selected class checks. Includes additions; sensitive content and nested repositories stay protected."
+                        title={COVERAGE_LABEL[coverage]}
+                        description="Ignored content only. Sensitive files and nested repositories stay protected."
                         serverScoped={!isProjectScope}
                         control={
                           <Switch
-                            aria-label={`Discard ${coverage}`}
+                            aria-label={COVERAGE_LABEL[coverage]}
                             checked={settings.worktreeCoveredDiscard.includes(coverage)}
                             onCheckedChange={(checked) =>
                               updateWorktree({
@@ -899,8 +910,8 @@ export function WorktreeCleanupSection() {
                     settings.worktreeKeepWhen === "any-local-files"
                       ? "Keeps any untracked or ignored content."
                       : settings.worktreeKeepWhen === "tracked-changes"
-                        ? "Keeps tracked edits. Individually enumerates up to 10,000 untracked paths and ignored roots for journaled disposal. Sensitive paths require exact confirmation; nested repositories and live consumers stay protected."
-                        : "Keeps tracked edits and untracked files. Ignored roots require producer proof, preservation or the selected coverage classes. Sensitive paths stay protected."
+                        ? "Keeps tracked edits. Removes untracked and ignored files; sensitive paths need confirmation."
+                        : "Keeps edits and untracked files. Removes only ignored files that are safe to discard."
                   }
                   serverScoped={!isProjectScope}
                   control={
@@ -1005,7 +1016,7 @@ export function StorageCleanupSections() {
             <SettingsRow
               title="Install retention"
               status={installRetentionMixed}
-              description="Propose keeps all install material. Retire permits an exact approved plan after recovery checks; it does not authorize removal by itself. Active and previous recovery pairs stay protected."
+              description="Propose keeps old installs. Retire allows approved cleanup; recovery installs stay protected."
               serverScoped
               control={
                 <Select

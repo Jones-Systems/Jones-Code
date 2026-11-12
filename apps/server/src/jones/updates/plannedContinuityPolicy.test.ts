@@ -122,7 +122,7 @@ it("preserves preexisting holds and recognizes later Stop or hold even without n
   const ids = continuationRunIds(snapshot, projection);
   for (const command_type of [
     "queue.hold",
-    "turn.interrupt",
+    "run.interrupt",
     "thread.runtime.stop",
     "thread.metadata.update",
     "message.dispatch",
@@ -168,15 +168,24 @@ it("recognizes only the exact internal recovery receipt for the captured thread 
   const snapshot = capture(projection)!;
   const ids = continuationRunIds(snapshot, projection);
   const accepted_at = "2026-10-10T10:00:00.000Z";
-  for (const trigger of ["startup", "shutdown"]) {
+  for (const [command_type, trigger, foreignType] of [
+    ["provider-runtime.reconcile", "startup", "provider-runtime.reconcile-orphaned-records"],
+    ["provider-runtime.reconcile", "shutdown", "provider-runtime.reconcile-orphaned-records"],
+    [
+      "provider-runtime.reconcile-orphaned-records",
+      "orphaned-records",
+      "provider-runtime.reconcile",
+    ],
+  ] as const) {
     const receipt = {
-      command_type: "provider-runtime.reconcile",
+      command_type,
       command_id: `command:runtime-reconcile:${trigger}:${snapshot.threadId}:${accepted_at}`,
       accepted_at,
     };
     expect(changesPlannedControl(receipt, snapshot, ids)).toBe(false);
     for (const patch of [
       { command_type: "thread.stop" },
+      { command_type: foreignType },
       { command_id: receipt.command_id.replace(snapshot.threadId, "other-thread") },
       { command_id: `${receipt.command_id}:extra` },
       { command_id: receipt.command_id.replace(trigger, "unknown") },
@@ -244,7 +253,7 @@ it("ignores a recovery-cancelled provider wake without ignoring a user Stop or h
   const snapshot = capture(recovered)!;
   expect(snapshot.sourceRunId).toBe(root.id);
   expect(canReleasePlannedQueue(snapshot, recovered)).toBe(true);
-  for (const command_type of ["turn.interrupt", "thread.runtime.stop", "queue.hold"])
+  for (const command_type of ["run.interrupt", "thread.runtime.stop", "queue.hold"])
     expect(
       changesPlannedControl(
         { command_id: "explicit-user-control", command_type },

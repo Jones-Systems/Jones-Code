@@ -1,5 +1,10 @@
 import type { ReservationRecord } from "./Reservation.ts";
-import { DutyIdentityJson, NativeDutyOwnerJson, RetirementReceiptJson } from "./DurableCodecs.ts";
+import {
+  DutyIdentityJson,
+  NativeDutyOwnerJson,
+  RetirementReceiptJson,
+  SettlementHolderJson,
+} from "./DurableCodecs.ts";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -57,6 +62,14 @@ export interface SettlementIntent {
   script_completed_at: string | null;
   script_exit_code: number | null;
 }
+export const settlementClaimId = (event: string) => `settlement-intent:${event}`;
+export interface RecoverableSettlement extends SettlementIntent {
+  cursor: number;
+  identity_json: string | null;
+  native_owner_json: string | null;
+  holder_json: string | null;
+  needs_outcome: number | null;
+}
 export interface JournalEntry {
   path: string;
   kind: "untracked" | "ignored";
@@ -109,13 +122,29 @@ export class Receipts extends Context.Service<
       worktree: string,
       settledAt: string,
     ) => Effect.Effect<SettlementIntent | null, RetirementError>;
-    readonly startScript: (event: string) => Effect.Effect<boolean, RetirementError>;
+    readonly startScript: (
+      event: string,
+      recovery?: boolean,
+    ) => Effect.Effect<boolean, RetirementError>;
+    readonly recoveryBatch: (
+      after: number,
+    ) => Effect.Effect<readonly RecoverableSettlement[], RetirementError>;
+    readonly cancelAbsentScript: (
+      event: string,
+      holder: string,
+    ) => Effect.Effect<boolean, RetirementError>;
+    readonly cancelPendingScript: (event: string) => Effect.Effect<void, RetirementError>;
     readonly finishScript: (
       event: string,
       state: Exclude<SettlementScriptState, "pending" | "running">,
       exit: number | null,
     ) => Effect.Effect<void, RetirementError>;
     readonly outcome: (event: string, result: unknown) => Effect.Effect<void, RetirementError>;
+    readonly recoveryOutcome: (
+      event: string,
+      state: SettlementScriptState,
+      result: unknown,
+    ) => Effect.Effect<void, RetirementError>;
     readonly begin: (receipt: RetirementReceipt) => Effect.Effect<void, RetirementError>;
     readonly finish: (receipt: RetirementReceipt) => Effect.Effect<void, RetirementError>;
     readonly journal: (
@@ -144,6 +173,9 @@ const compiledMain3acaCodec4 = Schema.encodeEffect(NativeDutyOwnerJson);
 const compiledMain3acaCodec3 = Schema.encodeEffect(NativeDutyOwnerJson);
 
 const compiledMain3acaCodec2 = Schema.encodeEffect(DutyIdentityJson);
+const decodeSettlementHolder = Schema.decodeEffect(SettlementHolderJson);
+const decodeDutyIdentity = Schema.decodeEffect(DutyIdentityJson);
+const encodeNativeDutyOwner = Schema.encodeEffect(NativeDutyOwnerJson);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -233,30 +265,113 @@ const make = Effect.gen(function* () {
         yield* sql<SettlementIntent>`SELECT * FROM jones_workspace_retirement_intents WHERE thread_id=${thread} AND worktree=${worktree} AND settled_at=${settledAt} ORDER BY rowid DESC LIMIT 1`;
       return rows[0] ?? null;
     }, mapError("workspace")),
-    startScript: Effect.fn("WorkspaceRetirement.startScript")(function* (event) {
+    recoveryBatch: Effect.fn("WorkspaceRetirement.recoveryBatch")(function* (after) {
+      return yield* sql<RecoverableSettlement>`SELECT i.*,i.rowid AS cursor,d.identity_json,d.native_owner_json,c.holder_json,
+        (i.outcome_json IS NULL OR json_extract(i.outcome_json,'$.reasonCodes[0]') IN ('settle_script_pending','settle_script_recovery_pending')) AS needs_outcome
+        FROM jones_workspace_retirement_intents i
+        LEFT JOIN jones_workspace_duty_claims c ON c.claim_id='settlement-intent:'||i.event_id AND c.worktree=i.worktree AND c.owner=i.thread_id AND c.kind='settlement-intent'
+        LEFT JOIN jones_workspace_duty_identity d ON d.claim_id=c.claim_id
+        WHERE i.rowid>${after} AND (i.script_state IN ('pending','running') OR i.outcome_json IS NULL OR json_extract(i.outcome_json,'$.reasonCodes[0]') IN ('settle_script_pending','settle_script_recovery_pending')) ORDER BY i.rowid LIMIT 100`;
+    }, mapError("workspace")),
+    cancelAbsentScript: Effect.fn("WorkspaceRetirement.cancelAbsentScript")(function* (
+      event,
+      holder,
+    ) {
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const rows =
+            yield* sql`UPDATE jones_workspace_retirement_intents SET script_state='cancelled',script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())}
+          WHERE event_id=${event} AND script_state='running' AND EXISTS
+          (SELECT 1 FROM jones_workspace_duty_claims WHERE claim_id=${settlementClaimId(event)} AND holder_json=${holder} AND released_at IS NULL) RETURNING event_id`;
+          if (!rows.length) return false;
+          yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE claim_id=${settlementClaimId(event)} AND holder_json=${holder} AND released_at IS NULL`;
+          return true;
+        }),
+      );
+    }, mapError("workspace")),
+    cancelPendingScript: Effect.fn("WorkspaceRetirement.cancelPendingScript")(function* (event) {
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const rows =
+            yield* sql`UPDATE jones_workspace_retirement_intents SET script_state='cancelled',script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE event_id=${event} AND script_state='pending' RETURNING event_id`;
+          if (rows.length)
+            yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE claim_id=${settlementClaimId(event)} AND released_at IS NULL`;
+        }),
+      );
+    }, mapError("workspace")),
+    startScript: Effect.fn("WorkspaceRetirement.startScript")(function* (event, recovery = false) {
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           const rows = yield* sql<{
             script_state: string;
             worktree: string;
-          }>`SELECT script_state,worktree FROM jones_workspace_retirement_intents WHERE event_id=${event}`;
-          if (!rows[0])
+            thread_id: string;
+            settled_at: string;
+          }>`SELECT script_state,worktree,thread_id,settled_at FROM jones_workspace_retirement_intents WHERE event_id=${event}`;
+          const intent = rows[0];
+          if (!intent)
             return yield* new RetirementError({
               reason: "settlement_intent_missing",
               target: event,
             });
-          if (rows[0].script_state !== "pending") return false;
-          yield* writable(rows[0].worktree);
+          if (intent.script_state !== "pending") return false;
+          yield* writable(intent.worktree);
+          const captured = yield* sql<{
+            identity_json: string;
+            holder_json: string;
+          }>`SELECT i.identity_json,c.holder_json FROM jones_workspace_duty_identity i JOIN jones_workspace_duty_claims c ON c.claim_id=i.claim_id WHERE c.claim_id=${settlementClaimId(event)} AND c.released_at IS NULL`;
+          if (recovery && !captured.length)
+            return yield* new RetirementError({
+              reason: "settlement_incarnation_unverified",
+              target: intent.worktree,
+            });
+          if (captured[0]) {
+            const holder = yield* decodeSettlementHolder(captured[0].holder_json);
+            const currentThread =
+              yield* sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=${intent.thread_id}
+              AND json_extract(payload_json,'$.settledOverride')='settled' AND json_extract(payload_json,'$.settledAt')=${intent.settled_at}
+              AND json_extract(payload_json,'$.worktreePath')=${intent.worktree} AND json_extract(payload_json,'$.projectId')=${holder.projectId}
+              AND json_extract(payload_json,'$.branch') IS ${holder.branch}`;
+            if (holder.eventId !== event || !currentThread.length) return false;
+            const prior = yield* decodeDutyIdentity(captured[0].identity_json);
+            const current = yield* Effect.promise(() => dutyIdentity(intent.worktree));
+            if (
+              (recovery && (prior.status !== "bound" || current.status !== "bound")) ||
+              (prior.status === "bound" &&
+                current.status === "bound" &&
+                prior.incarnation !== current.incarnation)
+            )
+              return yield* new RetirementError({
+                reason: "settlement_incarnation_changed",
+                target: intent.worktree,
+              });
+            const native = yield* Effect.promise(() => inProcessOwner(event));
+            yield* sql`UPDATE jones_workspace_duty_identity SET native_owner_json=${yield* encodeNativeDutyOwner(native)} WHERE claim_id=${settlementClaimId(event)}`;
+          }
           yield* sql`UPDATE jones_workspace_retirement_intents SET script_state='running',script_started_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE event_id=${event}`;
           return true;
         }),
       );
     }, mapError("workspace")),
     finishScript: Effect.fn("WorkspaceRetirement.finishScript")(function* (event, state, exit) {
-      yield* sql`UPDATE jones_workspace_retirement_intents SET script_state=${state},script_exit_code=${exit},script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE event_id=${event} AND script_state='running'`;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const rows =
+            yield* sql`UPDATE jones_workspace_retirement_intents SET script_state=${state},script_exit_code=${exit},script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE event_id=${event} AND script_state='running' RETURNING event_id`;
+          if (rows.length)
+            yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE claim_id=${settlementClaimId(event)} AND released_at IS NULL`;
+        }),
+      );
     }, mapError("workspace")),
     outcome: Effect.fn("WorkspaceRetirement.outcome")(function* (event, result) {
       yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${yield* compiledMain3acaCodec5(result)} WHERE event_id=${event}`;
+    }, mapError("workspace")),
+    recoveryOutcome: Effect.fn("WorkspaceRetirement.recoveryOutcome")(function* (
+      event,
+      state,
+      result,
+    ) {
+      yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${yield* compiledMain3acaCodec5(result)} WHERE event_id=${event} AND script_state=${state}`;
     }, mapError("workspace")),
     begin: Effect.fn("WorkspaceRetirement.begin")(function* (receipt) {
       yield* sql.withTransaction(

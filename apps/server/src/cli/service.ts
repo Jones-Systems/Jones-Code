@@ -125,6 +125,13 @@ export const reconcileServiceAt = Effect.fn("cli.service.reconcileAt")(function*
 ) {
   const service = yield* BootService.BootService;
   const status = yield* service.status;
+  // Before the downgrade check, which reads this home's state, not the service's.
+  if (status.otherBaseDir !== undefined) {
+    return yield* new BootService.BootServiceOtherBaseDirError({
+      installedBaseDir: status.otherBaseDir,
+      baseDir,
+    });
+  }
   if (status.installed && status.current) {
     return { changed: false, status } satisfies ServiceReconcileResult;
   }
@@ -197,6 +204,14 @@ function formatServiceStatus(
   }
   if (!status.installed) {
     return "T3 Code service\n  Status: not installed\n  Next: Run `t3 service install`.";
+  }
+  if (status.otherBaseDir !== undefined) {
+    return [
+      "T3 Code service",
+      "  Status: installed for another T3 home",
+      `  Base dir: ${status.otherBaseDir}`,
+      `  Next: Pass \`${BootService.formatBootServiceBaseDirOption(status.otherBaseDir)}\` to manage it.`,
+    ].join("\n");
   }
   const installedVersion = status.installedVersion ?? cliVersion;
   const problems = (status.problems ?? []).map(
@@ -310,7 +325,9 @@ const serviceRestartCommand = Command.make("restart", projectLocationFlags).pipe
             ? `Restarted the T3 Code service${onVersion}.`
             : outcome === "queued"
               ? `Queued a restart of the T3 Code service${onVersion}. This session runs inside the service and disconnects when it goes down.\nLogs: ${status.logPath}`
-              : "T3 Code service is not installed.",
+              : status.otherBaseDir !== undefined
+                ? `The T3 Code service serves ${status.otherBaseDir}, so it was not restarted. Pass \`${BootService.formatBootServiceBaseDirOption(status.otherBaseDir)}\` to restart it.`
+                : "T3 Code service is not installed.",
         );
       }),
     ),
@@ -324,6 +341,22 @@ const serviceUninstallCommand = Command.make("uninstall", projectLocationFlags).
       flags,
       Effect.gen(function* () {
         const service = yield* BootService.BootService;
+        const path = yield* Path.Path;
+        const { baseDir } = yield* ServerConfig.ServerConfig;
+        // An unreadable unit stays removable; only a unit known to serve another home is kept.
+        const installedBaseDir = yield* service.status.pipe(
+          Effect.map((status) => status.installedBaseDir),
+          Effect.orElseSucceed(() => undefined),
+        );
+        if (
+          installedBaseDir !== undefined &&
+          path.resolve(installedBaseDir) !== path.resolve(baseDir)
+        ) {
+          yield* Console.log(
+            `The T3 Code service serves ${installedBaseDir}, so it was not removed. Pass \`${BootService.formatBootServiceBaseDirOption(installedBaseDir)}\` to remove it.`,
+          );
+          return;
+        }
         const removed = yield* service.uninstall;
         yield* Console.log(
           removed ? "Removed the T3 Code service." : "T3 Code service is not installed.",
@@ -344,9 +377,10 @@ const serviceStatusCommand = Command.make("status", projectLocationFlags).pipe(
         const status = yield* service.status;
         const protection =
           status.installed && (yield* HostProcess.Platform) === "linux"
-            ? yield* ServiceProtection.readProtection(path.dirname(status.unitPath)).pipe(
-                Effect.provide(ProcessRunner.layer),
-              )
+            ? yield* ServiceProtection.readProtection(
+                path.dirname(status.unitPath),
+                path.basename(status.unitPath),
+              ).pipe(Effect.provide(ProcessRunner.layer))
             : undefined;
         yield* Console.log(formatServiceStatus(status, packageJson.version, protection));
       }),
@@ -390,18 +424,27 @@ const serviceProtectCommand = Command.make("protect", {
         flags,
         Effect.gen(function* () {
           const uid = yield* HostProcess.UserId;
-          const remote = yield* ServiceProtection.detectRemoteAccessUnits;
           const { unitPath } = yield* (yield* BootService.BootService).status;
+          const path = yield* Path.Path;
+          // Drop-ins beside an adopted system unit belong to the system manager, not to this user.
+          if (path.dirname(unitPath) === ServiceProtection.SYSTEM_UNIT_DIR) {
+            return yield* Console.log(
+              "This service runs under the system manager. `t3 service protect` covers user services only.",
+            );
+          }
+          const remote = yield* ServiceProtection.detectRemoteAccessUnits;
           if (uid === undefined || remote === undefined || unitPath === "") {
             return yield* Console.log(unsupported);
           }
-          const userUnitDir = (yield* Path.Path).dirname(unitPath);
+          const userUnitDir = path.dirname(unitPath);
+          const unitFile = path.basename(unitPath);
 
           if (flags.undo) {
             const installed = yield* ServiceProtection.installedProtection(
               ServiceProtection.protectionPlan({
                 uid,
                 userUnitDir,
+                unitFile,
                 remoteAccessUnits: ServiceProtection.REMOTE_ACCESS_UNITS,
               }),
             );
@@ -442,6 +485,7 @@ const serviceProtectCommand = Command.make("protect", {
           const plan = ServiceProtection.protectionPlan({
             uid,
             userUnitDir,
+            unitFile,
             remoteAccessUnits: protectRemote ? remote : [],
           });
           yield* Console.log(

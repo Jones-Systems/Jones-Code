@@ -3,7 +3,6 @@ import type { SourceRequest } from "../../../jones/conversationWorkspace/SourceB
 import * as WorkspaceProvenance from "../../../jones/workspaceLifecycle/Provenance.ts";
 import { OrchestratorMcpFailure, WorktreeMcpFailure } from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import * as GitWorkflow from "../../../git/GitWorkflowService.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import { readThread, unavailable } from "../../threadAccess.ts";
 import * as Effect from "effect/Effect";
@@ -69,9 +68,13 @@ const handlers = {
           code: "invalid_request",
           message: "The project was not found.",
         });
-      const git = yield* GitWorkflow.GitWorkflowService;
-      const result = yield* git
-        .listRefs({ ...refs, cwd: thread.worktreePath ?? project.value.workspaceRoot })
+      const service = yield* WorktreeMcpService.WorktreeMcpService;
+      const result = yield* service
+        .listRefs({
+          ...refs,
+          worktreePath: thread.worktreePath,
+          workspaceRoot: project.value.workspaceRoot,
+        })
         .pipe(Effect.mapError(unavailable));
       const lookup = yield* WorkspaceProvenance.optionalLookup;
       const provenance = yield* lookup(

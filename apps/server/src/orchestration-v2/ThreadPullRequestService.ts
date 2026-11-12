@@ -14,14 +14,15 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitManager from "../git/GitManager.ts";
-import { asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
@@ -105,6 +106,7 @@ export const make = Effect.gen(function* () {
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const random = yield* SecureRandom.SecureRandom;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
   const pendingBackfill = new Map<ThreadId, number>();
 
@@ -191,21 +193,22 @@ export const make = Effect.gen(function* () {
               refresh: request.refresh,
             });
           if (first.branch !== null && repository === null) return finishBackfill(group);
-          const worktreeExists =
-            first.worktreePath !== null && (yield* fileSystem.exists(first.worktreePath));
+          // A worktree folder can outlive its .git, and git there fails with not_a_repository.
+          // An unreadable .git keeps the worktree rather than failing the whole group.
           const cwd =
-            worktreeExists && first.worktreePath !== null
+            first.worktreePath !== null &&
+            (yield* fileSystem
+              .exists(path.join(first.worktreePath, ".git"))
+              .pipe(Effect.orElseSucceed(() => true)))
               ? first.worktreePath
               : project.workspaceRoot;
           const detected =
             first.branch === null
               ? null
-              : yield* git
-                  .branchPullRequest(
-                    { cwd, branch: first.branch },
-                    { refresh: request.refresh, confirmTerminal: false },
-                  )
-                  .pipe(asBackgroundGitWork);
+              : yield* git.branchPullRequest(
+                  { cwd, branch: first.branch },
+                  { refresh: request.refresh, confirmTerminal: false },
+                );
           if (detected !== null && !pullRequestMatchesProject(detected, resolvedProject)) {
             return finishBackfill(group);
           }
@@ -280,9 +283,10 @@ export const make = Effect.gen(function* () {
           if (updates.length === 0) return;
 
           if (detected !== null && first.branch !== null) {
-            const current = yield* git
-              .branchPullRequest({ cwd, branch: first.branch }, { freshGitState: true })
-              .pipe(asBackgroundGitWork);
+            const current = yield* git.branchPullRequest(
+              { cwd, branch: first.branch },
+              { freshGitState: true },
+            );
             const currentIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot, {
               refresh: true,
             });
@@ -355,20 +359,16 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  // Each thread whose item still waits in the worker queue, and whether any
-  // request it absorbed asked for a refresh. The item removes its entry when it
-  // starts, so an event arriving while it runs queues a follow-up.
-  const queuedThreadRefresh = new Map<ThreadId, boolean>();
-
-  const startRequest = (request: RefreshRequest): RefreshRequest => {
-    if (request.threadId === null) return request;
-    const refresh = queuedThreadRefresh.get(request.threadId);
-    queuedThreadRefresh.delete(request.threadId);
-    return refresh === undefined ? request : { ...request, refresh };
-  };
+  // At most one queued request per thread, so a turn end's events share one lookup.
+  // A request after that lookup starts queues another, so later host changes are still read.
+  const queuedThreadRequests = new Map<ThreadId, { threadId: ThreadId; refresh: boolean }>();
 
   const worker = yield* makeDrainableWorker((request: RefreshRequest) =>
-    Effect.suspend(() => synchronize(startRequest(request))).pipe(
+    Effect.suspend(() => {
+      if (request.threadId !== null) queuedThreadRequests.delete(request.threadId);
+      return synchronize(request);
+    }).pipe(
+      Effect.provideService(GitVcsDriver.BackgroundGitWork, true),
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterruptsOnly(cause),
         (cause) =>
@@ -379,16 +379,19 @@ export const make = Effect.gen(function* () {
     ),
   );
 
-  // A request for a thread whose item still waits joins it, so a turn's
-  // `checkpoint.captured` and terminal `run.updated` queued behind other work
-  // cost one lookup. Recording the entry before the offer, uninterruptibly,
-  // keeps an interrupted event from leaving an entry no queued item will clear.
+  // Recording the entry before the offer, uninterruptibly, keeps an interrupted
+  // event from leaving an entry no queued item will clear.
   const enqueueThread = (threadId: ThreadId, refresh: boolean) =>
     Effect.uninterruptible(
       Effect.suspend(() => {
-        const queued = queuedThreadRefresh.get(threadId);
-        queuedThreadRefresh.set(threadId, queued === true || refresh);
-        return queued === undefined ? worker.enqueue({ threadId, refresh }) : Effect.void;
+        const queued = queuedThreadRequests.get(threadId);
+        if (queued !== undefined) {
+          queued.refresh ||= refresh;
+          return Effect.void;
+        }
+        const request = { threadId, refresh };
+        queuedThreadRequests.set(threadId, request);
+        return worker.enqueue(request);
       }),
     );
 

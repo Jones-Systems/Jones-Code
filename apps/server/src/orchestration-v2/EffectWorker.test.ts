@@ -46,6 +46,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { CurrentEffectClaim, guardClaim } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
 import { LifecycleConfiguration } from "../jones/workspaceLifecycle/NativeSource.ts";
 import { ProviderControlOutcomeUnknown } from "@t3tools/provider-core/server/jones/providerControlOutcome";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
 import * as NativeRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
 import * as NativeExecution from "../jones/nativeCreation/NativeCreationProviderExecution.ts";
@@ -151,6 +152,7 @@ function layerExecutorFor(input: {
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
   readonly detach?: ProviderSessionManager.ProviderSessionManagerV2Shape["detach"];
+  readonly getSession?: ProviderSessionManager.ProviderSessionManagerV2Shape["get"];
   readonly captureStartFailure?: ProviderTurnStartService.ProviderTurnStartServiceV2Shape["captureStartFailure"];
   readonly getReceipt?: CommandReceiptStore.CommandReceiptStoreV2Shape["getByCommandId"];
 }) {
@@ -175,7 +177,7 @@ function layerExecutorFor(input: {
         isMcpCallerAttached: () => Effect.succeed(false),
         shutdown: Effect.void,
         open: () => Effect.die("unused open"),
-        get: () => Effect.succeedNone,
+        get: input.getSession ?? (() => Effect.succeedNone),
         isLive: () => Effect.succeed(false),
         close: () => Effect.void,
         closeInstance: () => Effect.void,
@@ -183,6 +185,7 @@ function layerExecutorFor(input: {
         detach: input.detach ?? (() => record("detach")),
         otherWorkingThreads: () => Effect.succeed([]),
         releaseUnlessBusy: () => Effect.succeed(true),
+        subscribePromptSuggestion: () => Stream.empty,
       }),
     ),
     Layer.succeed(
@@ -294,6 +297,7 @@ it.effect(
               open: unexpectedPreview,
               reportStatus: unexpectedPreview,
               markHeadless: unexpectedPreview,
+              announce: unexpectedPreview,
               requestReveal: unexpectedPreview,
               resize: unexpectedPreview,
               adjust: unexpectedPreview,
@@ -380,6 +384,73 @@ it("does not retry pure interrupt races where the turn is already gone", () => {
     ),
   );
 });
+
+it.effect.each([
+  { title: "settles only the run when the adapter reports the turn idle", probe: "idle" },
+  { title: "settles nothing while the adapter still runs the turn", probe: "active" },
+  { title: "settles nothing when the adapter cannot report the turn", probe: "unsupported" },
+  { title: "settles nothing without a live session", probe: "no-session" },
+] as const)("a failed root interrupt $title", ({ probe }) =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const probedTurns: Array<string> = [];
+    const isTurnActive = (turnId: ProviderTurnId) =>
+      Effect.sync(() => {
+        probedTurns.push(turnId);
+        return probe === "active";
+      });
+    const probed: Pick<ProviderAdapter.ProviderAdapterV2SessionRuntime, "isTurnActive"> =
+      probe === "unsupported" ? {} : { isTurnActive };
+    const session = probed as ProviderAdapter.ProviderAdapterV2SessionRuntime;
+    const layer = layerExecutorFor({
+      events,
+      // The idle adapter's query retirement never confirmed, so the interrupt outcome is unknown.
+      interrupt: () =>
+        new ProviderTurnControlService.ProviderTurnControlError({
+          threadId,
+          operation: "interrupt",
+          providerTurnId,
+          cause: new ProviderControlOutcomeUnknown({
+            driver: "claudeAgent",
+            providerSessionId: oldSessionId,
+            nativeThreadId: "captured-native",
+            operation: "retire",
+          }),
+        }),
+      getSession: () => (probe === "no-session" ? Effect.succeedNone : Effect.succeedSome(session)),
+      threads: {
+        dispatch: (command) =>
+          Ref.update(events, (current) => [
+            ...current,
+            command.type === "thread.background-work.settle"
+              ? `${command.commandId}:${command.runOnly === true ? "run-only" : "background"}`
+              : command.type,
+          ]).pipe(Effect.as({ sequence: 1, storedEvents: [] })),
+      },
+    });
+    const effect = {
+      ...restartEffect(now, { type: "detach" }),
+      request: {
+        type: "provider-turn.interrupt" as const,
+        providerSessionId: oldSessionId,
+        providerThreadId,
+        providerTurnId,
+      },
+    };
+    const exit = yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      return yield* Effect.exit(executor.execute(effect));
+    }).pipe(Effect.provide(layer));
+    assert.isTrue(Exit.isFailure(exit), "the unconfirmed interrupt still fails its effect");
+    assert.deepEqual(probedTurns, probe === "idle" || probe === "active" ? [providerTurnId] : []);
+    // Background work is never settled on an unknown outcome; only the idle turn's run is.
+    assert.deepEqual(
+      yield* Ref.get(events),
+      probe === "idle" ? [`${effect.id}:idle-run-settled:run-only`] : [],
+    );
+  }),
+);
 
 it.effect.each([
   {
@@ -1699,6 +1770,7 @@ it.effect(
               open: unexpectedPreview,
               reportStatus: unexpectedPreview,
               markHeadless: unexpectedPreview,
+              announce: unexpectedPreview,
               requestReveal: unexpectedPreview,
               resize: unexpectedPreview,
               adjust: unexpectedPreview,

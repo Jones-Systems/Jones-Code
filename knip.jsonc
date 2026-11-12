@@ -82,6 +82,7 @@
         "scripts/jones/sqliteHealth.worker.ts",
         "src/jones/cloud/*.ts",
         "src/jones/updates/*.ts",
+        "src/jones/updates/preparation/packagedDarwinStageRepro.ts",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
         "scripts/fetch-expo-schema.ts",
@@ -91,6 +92,7 @@
         // The physical-host operator and relay launch these fixtures by filename.
         "integration/jones-e2e/physicalHost.ts",
         "integration/jones-e2e/physicalHost.worker.ts",
+        "integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
         "src/provider/testFixtures/*.mjs",
         "src/jones/workstreams/operations/fullAppFixture.ts",
         // Staged native creation substrate is consumed by the deferred L39 execution slice.
@@ -112,6 +114,7 @@
         "@t3tools/web",
         "@napi-rs/keyring",
         "ffi-rs",
+        "transcribe-cpp",
       ],
     },
     "apps/desktop": {
@@ -212,10 +215,13 @@
       // Fonts are configured as asset paths; Expo autolinks the native packages.
       "ignoreDependencies": [
         "@expo-google-fonts/dm-sans",
-        "@t3tools/mobile-highlights-native",
         "@t3tools/mobile-review-diff-native",
         "@t3tools/mobile-terminal-native",
       ],
+    },
+    "apps/mobile/modules/t3-highlights": {
+      // Nitrogen discovers HybridObject specifications by filename.
+      "entry": ["src/*.nitro.ts!"],
     },
     "apps/mobile/modules/t3-source-text": {
       // React Native codegen discovers component specifications by filename.

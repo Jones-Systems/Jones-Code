@@ -453,6 +453,8 @@ it.layer(TestLayer)("settlement restore", (it) => {
             },
           ],
         });
+        // Upstream settle-after-run commands carry the thread event sequence they settle at.
+        const settleSequence = yield* orchestrator.getThreadEventSequence(threadId);
         if (mode === "after-run")
           yield* (yield* ThreadManagement.ThreadManagementService).settleAfterRun({
             projectId,
@@ -461,7 +463,9 @@ it.layer(TestLayer)("settlement restore", (it) => {
           });
         yield* Queue.take(settledEvents);
         const settleCommandId =
-          mode === "self" ? `${prefix}-request:settle` : `server:settle-after-run:${run.id}`;
+          mode === "self"
+            ? `${prefix}-request:settle`
+            : `server:settle-after-run:${run.id}:${settleSequence}`;
         assert.equal((yield* rowFor(threadId))?.settle_command_id, settleCommandId);
         assert.equal(
           (yield* restore(threadId, settleCommandId, `${prefix}-restore`)).outcome,

@@ -38,6 +38,9 @@
     "apps/server/src/jones/updates/JonesUpdater.ts",
     "apps/server/src/jones/updates/capabilityReceipt.test.ts",
     "apps/server/src/jones/updates/capabilityReceipt.ts",
+    "apps/server/src/jones/updates/checkRecord.ts",
+    "apps/server/src/jones/updates/progress.test.ts",
+    "apps/server/src/jones/updates/progress.ts",
     "apps/server/src/jones/updates/http.test.ts",
     "apps/server/src/jones/updates/http.ts",
     "apps/server/src/jones/updates/migrationPlan.test.ts",
@@ -90,6 +93,7 @@
     "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
     "apps/server/src/jones/cloud/capturedProcess.ts",
     "apps/server/src/jones/cloud/capturedProcess.test.ts",
+    "apps/server/src/jones/cloud/servicePreflightResult.ts",
     "apps/server/src/jones/cloud/stoppedServerOwnership.ts",
     "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
     "apps/server/src/jones/cloud/ownedScratch.ts",
@@ -422,6 +426,14 @@
     {
       "from": "apps/server/src/cloud/servicePreflight.ts",
       "to": "apps/server/src/jones/updates/migrationPlan.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/servicePreflight.ts",
+      "to": "apps/server/src/jones/cloud/servicePreflightResult.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/servicePreflightResult.ts"
     },
     {
       "from": "apps/server/src/serviceLauncher.ts",

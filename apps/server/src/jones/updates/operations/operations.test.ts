@@ -210,6 +210,7 @@ async function make(
     }),
   });
   const refreshPolicy = vi.fn(async () => {});
+  const reconcileNative = vi.fn(async (_operationId: string) => native);
   const operations = createTargetOperations({
     key: base,
     ledger,
@@ -217,7 +218,7 @@ async function make(
     preparation,
     refreshPolicy,
     install,
-    reconcileNative: async () => native,
+    reconcileNative,
     onFailure: () => {},
     ...(recoveryEnabled
       ? { recovery: { validate: recovery.validate, observed: async () => "clone" as const } }
@@ -236,6 +237,7 @@ async function make(
     admissionReserved: admissionReserved.promise,
     prepareStarted: prepareStarted.promise,
     refreshPolicy,
+    reconcileNative,
     receiptAt: (phase: JonesOperationReceipt["phase"]) => {
       const current = receipts.get(input.operationId);
       return current?.phase === phase
@@ -580,6 +582,73 @@ describe("target operations", () => {
       await f.operations.reconcile();
       expect((await f.receipt())?.phase).toBe("completed");
     }));
+  it.each(["handed-off", "completed"] as const)(
+    "refreshes only the exact manually requested terminal launcher outcome from %s",
+    async (phase) =>
+      fixture(async (f) => {
+        const action = {
+          kind: "install",
+          stagedHandle: "stage",
+          currentVersion: "old",
+          targetSource: candidate.source,
+        } as const;
+        const binding = {
+          environmentId: input.environmentId,
+          expectedInstalledSource: input.expectedInstalledSource,
+          stagedHandle: action.stagedHandle,
+          currentVersion: action.currentVersion,
+          targetSource: action.targetSource,
+        };
+        const id = input.operationId;
+        const other = NodeCrypto.randomUUID();
+        await f.ledger.accept({ ...input, action });
+        await f.ledger.accept({ ...input, operationId: other, action });
+        await f.ledger.transition(id, (r) => ({ ...r, phase: "running" }));
+        const held = await f.ledger.transition(id, (r) => ({
+          ...r,
+          phase,
+          updateId: id,
+          ...(phase === "handed-off" ? { code: "launcher-unconfirmed" } : {}),
+        }));
+        const unrelated = await f.ledger.read(other);
+        const read = { environmentId: input.environmentId, operationIds: [id] };
+        const refresh = { ...read, refreshInstallOutcome: id };
+        expect((await f.operations.read(read)).receipts[0]?.receipt).toEqual(held);
+        await f.operations.read({ ...refresh, operationIds: [id, other] });
+        expect(f.reconcileNative).not.toHaveBeenCalled();
+
+        f.setNative({ state: "pending", operationId: id, binding, updateId: id });
+        expect((await f.operations.read(refresh)).receipts[0]?.receipt).toEqual(held);
+        const outcome = {
+          status: "committed",
+          fromVersion: "old",
+          targetVersion: candidate.version,
+        } as const;
+        const committed = {
+          state: "committed",
+          operationId: id,
+          binding,
+          updateId: id,
+          outcome,
+        } as const;
+        f.setNative({ ...committed, binding: { ...binding, stagedHandle: "other-stage" } });
+        expect((await f.operations.read(refresh)).receipts[0]?.receipt).toEqual(held);
+
+        f.setNative(committed);
+        const result = (await f.operations.read(refresh)).receipts[0]?.receipt;
+        expect(result).toMatchObject({
+          operationId: id,
+          phase: "completed",
+          updateId: id,
+          outcome,
+        });
+        expect(result?.code).toBeUndefined();
+        expect(await f.receipt()).toEqual(result);
+        expect(await f.ledger.read(other)).toEqual(unrelated);
+        expect(f.reconcileNative.mock.calls).toEqual([[id], [id], [id]]);
+        expect(f.install).not.toHaveBeenCalled();
+      }),
+  );
   it("holds a restarted download whose worker release is unknown", async () =>
     fixture(async (f) => {
       await f.ledger.accept(input);
