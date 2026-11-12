@@ -1728,7 +1728,29 @@ export const layer: Layer.Layer<
                 yield* completeRootTerminal(event);
               }
               yield* trackChildLifecycle(event, deliveredEvent !== null);
-            }),
+            }).pipe(
+              // Recover before this stream unwinds so late child/background events
+              // still pass through its existing lifecycle and stop decisions.
+              Effect.catchCauseIf(
+                (cause) => !Cause.hasInterruptsOnly(cause),
+                (cause) =>
+                  Effect.gen(function* () {
+                    const terminal = yield* Ref.get(acceptedRootTerminal);
+                    if (terminal === null || terminal.event !== event)
+                      return yield* Effect.failCause(cause);
+                    yield* recoverAcceptedTerminal(
+                      Effect.gen(function* () {
+                        const stored = yield* terminal.ingest;
+                        confirmProviderControlTerminalIngested(terminal.event, stored.length);
+                        yield* completeRootTerminal(terminal.event);
+                      }),
+                      { runId: input.run.id, attemptId: input.attempt.id },
+                      cause,
+                    ).pipe(Effect.forkIn(scope), Effect.flatMap(Fiber.join));
+                    yield* trackChildLifecycle(event, true);
+                  }),
+              ),
+            ),
           ),
           // Also after events this run does not accept, such as a child handed to another run.
           Stream.tap(() =>
@@ -1767,26 +1789,7 @@ export const layer: Layer.Layer<
                 const accepted = yield* Ref.get(acceptedRootTerminal);
                 const acceptedTerminal =
                   accepted === null ? null : yield* rootTerminalSnapshot(accepted.event);
-                let failureCause = cause;
-                if (accepted !== null) {
-                  const recovered = yield* recoverAcceptedTerminal(
-                    Effect.gen(function* () {
-                      const stored = yield* accepted.ingest;
-                      confirmProviderControlTerminalIngested(accepted.event, stored.length);
-                      yield* completeRootTerminal(accepted.event);
-                    }).pipe(
-                      Effect.mapError(
-                        (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
-                      ),
-                    ),
-                    { runId: input.run.id, attemptId: input.attempt.id },
-                    cause,
-                  ).pipe(Effect.forkIn(scope), Effect.flatMap(Fiber.join), Effect.exit);
-                  if (Exit.isSuccess(recovered)) return;
-                  if (Cause.hasInterruptsOnly(recovered.cause))
-                    return yield* Effect.failCause(recovered.cause);
-                  failureCause = recovered.cause;
-                }
+                const failureCause = cause;
                 const completedAt = yield* DateTime.now;
                 yield* Effect.logWarning("orchestration V2 provider event ingestion failed", {
                   runId: input.run.id,

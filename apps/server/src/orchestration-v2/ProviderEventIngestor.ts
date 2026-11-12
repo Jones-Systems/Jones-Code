@@ -33,6 +33,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -803,16 +804,14 @@ export const layer: Layer.Layer<
         /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
         Effect.fnUntraced(
           function* (input) {
-            if (
-              (input.event.type === "provider_turn.updated" ||
-                input.event.type === "turn.terminal") &&
-              !isHistoricalTerminalCandidate(input.event)
-            )
-              yield* SupersededTerminalTrace.recordTerminalRejection(
-                eventSink.supersededTerminalTrace,
-                input.event,
-                "ineligible",
-              );
+            const recordIneligibleRejection = isHistoricalTerminalCandidate(input.event)
+              ? Effect.void
+              : SupersededTerminalTrace.recordTerminalRejection(
+                  eventSink.supersededTerminalTrace,
+                  input.event,
+                  "ineligible",
+                );
+            let ordinaryRejected = false;
             let historicalInput: HistoricalTerminalInput | undefined;
             let historicalWrite:
               | Effect.Effect<
@@ -883,7 +882,9 @@ export const layer: Layer.Layer<
                     ),
                     Effect.map((historical) => historical.storedEvents),
                   )
-                : Effect.succeed(storedEvents);
+                : (ordinaryRejected ? recordIneligibleRejection : Effect.void).pipe(
+                    Effect.as(storedEvents),
+                  );
             const ordinary = Effect.gen(function* () {
               const events = yield* input.event.type === "turn.terminal"
                 ? normalizeTerminal(input.event, normalize(input))
@@ -931,6 +932,7 @@ export const layer: Layer.Layer<
                     events,
                   })
                   .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
+                ordinaryRejected = !ownerResult.committed;
                 return ownerResult.storedEvents;
               }
               if (input.writeIfRunCurrent === undefined) {
@@ -961,12 +963,17 @@ export const layer: Layer.Layer<
                     })
                   : eventSink.writeIfRunCurrent(terminalWrite).pipe(retryLockTimeout)
               ).pipe(Effect.mapError(mapWriteError));
+              ordinaryRejected = !result.committed;
               return result.storedEvents;
             });
             return yield* ordinary.pipe(
               Effect.matchCauseEffect({
                 onFailure: (cause) =>
-                  retainHistoricalTerminalOnError(Effect.failCause(cause), historicalWrite),
+                  retainHistoricalTerminalOnError(Effect.failCause(cause), historicalWrite).pipe(
+                    Effect.tapCause((failure) =>
+                      Cause.hasInterruptsOnly(failure) ? Effect.void : recordIneligibleRejection,
+                    ),
+                  ),
                 onSuccess: retainRejectedTerminal,
               }),
             );

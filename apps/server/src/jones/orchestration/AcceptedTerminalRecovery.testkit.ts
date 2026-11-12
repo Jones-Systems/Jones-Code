@@ -1,10 +1,13 @@
 import { assert, it } from "@effect/vitest";
 import {
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
+  ProviderThreadId,
   ProviderTurnId,
   ThreadId,
+  type OrchestrationV2TurnItem,
   type ProviderRuntimeEvidenceCapture,
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -14,13 +17,19 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SqlError from "effect/sql/SqlError";
 import { SqliteReaderAdmissionError } from "@t3tools/shared/jones/sqliteReaders/admissionFailure";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderEventIngestor from "../../orchestration-v2/ProviderEventIngestor.ts";
+import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type {
   captureRootRunTermination,
   rootTerminalEvent,
@@ -145,6 +154,275 @@ export function registerAcceptedTerminalRecoveryTests(
       assert.equal(result.events.filter((event) => event.type === "run-attempt.updated").length, 1);
       if (scenario.seam === "write") assert.equal(yield* Ref.get(reads), 1);
     }),
+  );
+
+  it.effect.each([
+    { status: "completed", seam: "ingestion" },
+    { status: "completed", seam: "ownership" },
+    { status: "failed", seam: "ingestion" },
+    { status: "failed", seam: "write" },
+  ] as const)(
+    "accepted $status recovery at $seam retains the subscription through late child output",
+    (scenario) => {
+      const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
+        Layer.provideMerge(SqlitePersistence.layerMemory),
+      );
+      const dependencies = Layer.mergeAll(
+        stores,
+        EventSink.layer.pipe(Layer.provide(stores)),
+        IdAllocator.layer,
+        ThreadCommandExecutor.layer,
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      );
+      return Effect.gen(function* () {
+        const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const waitingForLateEvent = yield* Deferred.make<void>();
+        const releaseLateEvents = yield* Deferred.make<void>();
+        const finalized = yield* Deferred.make<void>();
+        const driver = ProviderDriverKind.make("codex");
+        const completedAt = DateTime.makeUnsafe("2026-11-11T23:00:00Z");
+        const drain = makeProviderControlTerminalDrain();
+        let original: ReturnType<typeof terminalEvent> | undefined;
+        let finalItem: OrchestrationV2TurnItem | undefined;
+        let childTurnId: ProviderTurnId | undefined;
+        let terminalIngests = 0;
+        let subscriptions = 0;
+        let ownershipReads = 0;
+        let writes = 0;
+        let starts = 0;
+        let interrupts = 0;
+        const result = yield* capture({
+          key: `accepted-lifetime:${scenario.status}:${scenario.seam}`,
+          shouldFinalizeRun: () =>
+            Effect.suspend(() =>
+              ++ownershipReads === 1 && scenario.seam === "ownership"
+                ? Effect.fail(
+                    new ProjectionStore.ProjectionStoreReadError({
+                      threadId: ThreadId.make("thread:accepted-lifetime"),
+                      cause: admission(),
+                    }),
+                  )
+                : Effect.succeed(true),
+            ),
+          beforeTerminalWrite: () =>
+            Effect.suspend(() =>
+              ++writes === 1 && scenario.seam === "write"
+                ? Effect.fail(busyWrite())
+                : Effect.succeed(true),
+            ),
+          refreshAfterTurn: Deferred.succeed(finalized, undefined).pipe(Effect.asVoid),
+          startTurn: () =>
+            Effect.sync(() => {
+              starts++;
+            }),
+          interruptTurn: () =>
+            Effect.sync(() => {
+              interrupts++;
+            }),
+          ingestNormalized: (input) =>
+            Effect.gen(function* () {
+              if (input.event.type === "turn.terminal") {
+                assert.strictEqual(input.event, original);
+                if (++terminalIngests === 1 && scenario.seam === "ingestion")
+                  return yield* new ProviderEventIngestor.ProviderEventNormalizeError({
+                    providerSessionId: input.providerSessionId,
+                    threadId: input.threadId,
+                    providerEvent: input.event,
+                    cause: admission(),
+                  });
+                return [];
+              }
+              return yield* ingestor.ingestNormalized(input);
+            }),
+          events: (ids) => {
+            subscriptions++;
+            childTurnId = ProviderTurnId.make(`${ids.rootProviderTurnId}:child`);
+            const childProviderThreadId = ProviderThreadId.make(`${ids.providerThreadId}:child`);
+            const childNode = {
+              id: ids.subagentNodeId,
+              threadId: ids.threadId,
+              runId: ids.runId,
+              parentNodeId: ids.rootNodeId,
+              rootNodeId: ids.rootNodeId,
+              kind: "subagent" as const,
+              status: "running" as const,
+              countsForRun: false,
+              providerThreadId: childProviderThreadId,
+              providerTurnId: childTurnId,
+              nativeItemRef: null,
+              runtimeRequestId: null,
+              checkpointScopeId: null,
+              startedAt: completedAt,
+              completedAt: null,
+            };
+            const childTurn = {
+              id: childTurnId,
+              providerThreadId: childProviderThreadId,
+              nodeId: ids.subagentNodeId,
+              runAttemptId: null,
+              nativeTurnRef: null,
+              ordinal: 1,
+              status: "running" as const,
+              startedAt: completedAt,
+              completedAt: null,
+            };
+            const runningItem = {
+              id: ids.itemId,
+              threadId: ids.threadId,
+              runId: ids.runId,
+              nodeId: ids.subagentNodeId,
+              providerThreadId: childProviderThreadId,
+              providerTurnId: childTurnId,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1,
+              type: "command_execution" as const,
+              status: "running" as const,
+              title: "Child background work",
+              input: "synthetic command",
+              output: "partial",
+              startedAt: completedAt,
+              completedAt: null,
+              updatedAt: completedAt,
+            };
+            finalItem = {
+              ...runningItem,
+              status: "completed",
+              output: "late final child output",
+              exitCode: 0,
+              completedAt,
+            };
+            original = {
+              ...terminalEvent(ids, scenario.status),
+              ...(scenario.status === "failed" ? { childTurnsContinue: true } : {}),
+              providerTurn: {
+                ...childTurn,
+                id: ids.rootProviderTurnId,
+                providerThreadId: ids.providerThreadId,
+                nodeId: ids.rootNodeId,
+                runAttemptId: ids.attemptId,
+                status: scenario.status,
+                completedAt,
+              },
+            };
+            drain.capture(original);
+            return Stream.fromIterable([
+              {
+                type: "app_thread.created",
+                driver,
+                appThread: {
+                  id: ids.threadId,
+                  projectId: ProjectId.make("project:accepted-lifetime"),
+                  title: "Accepted terminal lifetime",
+                  createdBy: "user",
+                  creationSource: "web",
+                  providerInstanceId: ProviderInstanceId.make("codex"),
+                  modelSelection: {
+                    instanceId: ProviderInstanceId.make("codex"),
+                    model: "synthetic",
+                  },
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  branch: null,
+                  worktreePath: null,
+                  branchPullRequest: null,
+                  activeOrderKey: null,
+                  activeProviderThreadId: ids.providerThreadId,
+                  lineage: {
+                    parentThreadId: null,
+                    relationshipToParent: null,
+                    rootThreadId: ids.threadId,
+                  },
+                  forkedFrom: null,
+                  createdAt: completedAt,
+                  updatedAt: completedAt,
+                  archivedAt: null,
+                  settledOverride: null,
+                  settledAt: null,
+                  lastVisitedAt: null,
+                  deletedAt: null,
+                },
+              },
+              { type: "node.updated", driver, node: childNode },
+              { type: "provider_turn.updated", driver, providerTurn: childTurn },
+              { type: "turn_item.updated", driver, turnItem: runningItem },
+              original,
+            ] satisfies ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>).pipe(
+              Stream.concat(
+                Stream.fromEffect(
+                  Deferred.succeed(waitingForLateEvent, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseLateEvents)),
+                  ),
+                ).pipe(
+                  Stream.flatMap(() =>
+                    Stream.fromIterable([
+                      { type: "turn_item.updated", driver, turnItem: finalItem! },
+                      {
+                        type: "node.updated",
+                        driver,
+                        node: { ...childNode, status: "completed", completedAt },
+                      },
+                      {
+                        type: "provider_turn.updated",
+                        driver,
+                        providerTurn: { ...childTurn, status: "completed", completedAt },
+                      },
+                    ] satisfies ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>),
+                  ),
+                ),
+              ),
+            );
+          },
+          afterStart: (closed) =>
+            Effect.gen(function* () {
+              yield* Effect.raceFirst(Deferred.await(waitingForLateEvent), Deferred.await(closed));
+              assert.isFalse(yield* Deferred.isDone(closed));
+              assert.isTrue(yield* Deferred.isDone(finalized));
+              yield* Deferred.succeed(releaseLateEvents, undefined);
+            }),
+        });
+        yield* drain.awaitIngested;
+        const persisted = yield* projections.getThreadRecords(finalItem!.threadId, [
+          "turnItems",
+          "providerTurns",
+        ]);
+        const item = persisted.turnItems.find((item) => item.id === finalItem!.id);
+        assert.equal(item?.status, "completed");
+        assert.equal(
+          item?.type === "command_execution" ? item.output : null,
+          "late final child output",
+        );
+        assert.equal(
+          persisted.providerTurns.find((turn) => turn.id === childTurnId)?.status,
+          "completed",
+        );
+        assert.equal(result.events.filter((event) => event.type === "run-attempt.updated").length, 1);
+        assert.equal(result.events.filter((event) => event.type === "run.updated").length, 1);
+        assert.deepEqual(result.observed, [
+          `run:${scenario.status === "completed" ? "waiting" : "failed"}`,
+          "pull-requests-refreshed",
+        ]);
+        const settlement = result.events.find((event) => event.type === "run-attempt.updated")
+          ?.payload.providerSettlement;
+        assert.equal(settlement?.status, scenario.status);
+        assert.deepEqual(settlement?.completedAt, completedAt);
+        assert.equal(result.committedEffects.length, scenario.status === "completed" ? 1 : 0);
+        assert.equal(starts, 1);
+        assert.equal(interrupts, 0);
+        assert.equal(subscriptions, 1);
+        assert.equal(terminalIngests, 2);
+        assert.equal(ownershipReads, scenario.seam === "ownership" ? 2 : 1);
+        assert.equal(writes, scenario.seam === "write" ? 2 : 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            dependencies,
+            ProviderEventIngestor.layer.pipe(Layer.provide(dependencies)),
+          ),
+        ),
+      );
+    },
   );
 
   it.effect.each(["Stop", "successor"] as const)(
