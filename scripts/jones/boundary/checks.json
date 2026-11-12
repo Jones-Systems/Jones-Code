@@ -2161,7 +2161,11 @@
       "id": "jones-connection-diagnostics",
       "tests": [
         "apps/web/src/jones/observability/clientTracing.test.ts",
-        "packages/client-runtime/src/rpc/session.test.ts"
+        "packages/client-runtime/src/rpc/session.test.ts",
+        "apps/server/src/cloud/ConnectReachability.test.ts",
+        "apps/server/src/jones/cloud/connectProbeEvidence.test.ts",
+        "packages/client-runtime/src/connection/diagnosis.test.ts",
+        "packages/client-runtime/src/jones/connection/sessionDiagnostic.test.ts"
       ],
       "commands": [
         "cd apps/web && vp test run --project unit src/jones/observability/clientTracing.test.ts --maxWorkers=1",
@@ -2169,7 +2173,9 @@
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp lint apps/web/src/observability/clientTracing.ts apps/web/src/jones/observability/clientTracing.test.ts packages/client-runtime/src/rpc/session.ts packages/client-runtime/src/rpc/session.test.ts",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/server/src/cloud/ConnectReachability.test.ts apps/server/src/jones/cloud/connectProbeEvidence.test.ts packages/client-runtime/src/connection/diagnosis.test.ts packages/client-runtime/src/jones/connection/sessionDiagnostic.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck"
       ]
     },
     {
@@ -2291,7 +2297,9 @@
         "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
         "apps/server/src/jones/updates/handoffOutcome.test.ts",
         "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx",
-        "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts"
+        "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts",
+        "apps/web/src/jones/fleetUpdates/publicationStatus.test.ts",
+        "apps/web/src/jones/fleetUpdates/FleetController.test.tsx"
       ],
       "commands": [
         "vp test run apps/desktop/src/jones/fleetUpdates/store.test.ts apps/server/src/jones/fleetUpdates/service.test.ts apps/server/src/jones/fleetUpdates/store.test.ts apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.test.tsx apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts",
@@ -2299,7 +2307,8 @@
         "vp test run apps/server/src/environment/ServerEnvironment.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project browser src/jones/fleetUpdates/JonesBlockedHostUpdates.browser.test.tsx src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/updates/followerPolicy.test.ts apps/server/src/jones/updates/hostWork.test.ts apps/server/src/jones/updates/UpdateAdmissionFence.test.ts apps/server/src/jones/updates/UpdateAdmissionFence.webhook.test.ts apps/web/src/jones/fleetUpdates/followerStatus.test.ts apps/server/src/jones/updates/handoffOutcome.test.ts",
-        "vp test run apps/server/src/jones/updates/preparation/protocol.test.ts apps/server/src/jones/updates/preparation/sweep.test.ts apps/server/src/jones/updates/preparation/supervisor.test.ts apps/server/src/jones/updates/preparation/stage.test.ts apps/server/src/jones/updates/preparation/responsiveness.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/server/src/jones/updates/preparation/protocol.test.ts apps/server/src/jones/updates/preparation/sweep.test.ts apps/server/src/jones/updates/preparation/supervisor.test.ts apps/server/src/jones/updates/preparation/stage.test.ts apps/server/src/jones/updates/preparation/responsiveness.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/fleetUpdates/publicationStatus.test.ts apps/web/src/jones/fleetUpdates/FleetController.test.tsx apps/web/src/jones/fleetUpdates/followerStatus.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -4975,7 +4984,8 @@
       "id": "jones-native-effects-recovery",
       "tests": [
         "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts",
-        "apps/server/src/jones/updates/preparation/lifecycle.test.ts"
+        "apps/server/src/jones/updates/preparation/lifecycle.test.ts",
+        "scripts/jones/updates/interrupted-staging-fixture.node-test.mjs"
       ],
       "commands": [
         "vp test run apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts apps/server/src/jones/updates/preparation/lifecycle.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -4983,7 +4993,8 @@
         "vp fmt --check apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts apps/server/src/bin.ts scripts/smoke-cli-archive.ts",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/scripts typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "node --test --test-concurrency=1 scripts/jones/updates/interrupted-staging-fixture.node-test.mjs"
       ]
     },
     {
@@ -5619,6 +5630,24 @@
         "vp fmt --check --threads=1 apps/server/src/jones/workstreams/testing/nativeHomeFixture.ts apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts .agents/skills/test-t3-app/references/sqlite-fixtures.md",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-preparation-history-reconciliation",
+      "tests": [
+        "apps/server/src/jones/updates/preparation/cleanupDemand.test.ts",
+        "apps/server/src/jones/updates/preparation/lifecycle.test.ts",
+        "apps/server/src/jones/updates/preparation/supervisor.test.ts",
+        "apps/server/src/jones/updates/preparation/sweep.test.ts",
+        "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
+        "apps/server/src/jones/updates/operations/operations.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/updates/preparation/cleanupDemand.test.ts apps/server/src/jones/updates/preparation/lifecycle.test.ts apps/server/src/jones/updates/preparation/supervisor.test.ts apps/server/src/jones/updates/preparation/sweep.test.ts apps/server/src/jones/updates/preparation/responsiveness.test.ts apps/server/src/jones/updates/operations/operations.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
       ]
     }
   ]

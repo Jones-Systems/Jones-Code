@@ -8,7 +8,7 @@ describe("following host status line", () => {
   it("names the laptop's build and why an install waits", () => {
     expect(
       describeFollower({ protocol: 1, leaderSource: null, state: "waiting-for-leader" }, time),
-    ).toBe("Waiting for this laptop's installed build");
+    ).toBe("Waiting for the laptop to report a build");
     expect(
       describeFollower(
         {
@@ -24,7 +24,7 @@ describe("following host status line", () => {
       "Ready to install bbbbbbb when the host is quiet · Waiting for terminal commands (1) to finish. · not before 10:30",
     );
     expect(describeFollower({ protocol: 1, leaderSource, state: "current" }, time)).toBe(
-      "On this laptop's build bbbbbbb",
+      "On the last build the laptop reported bbbbbbb",
     );
     expect(
       describeFollower(

@@ -46,6 +46,76 @@ async function attempt(
 }
 
 describe("preparation sweep", () => {
+  it("skips thousands of released locks but locks unknown, unreaped and never-started history", async () => {
+    const fixture = await home();
+    const directory = NodePath.join(fixture.base, "runtime", "jones-preparation", "lifecycle");
+    await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+    for (let batch = 0; batch < 20; batch++)
+      await Promise.all(
+        Array.from({ length: 100 }, (_, i) => {
+          const id = `00000000-0000-4000-8000-${String(batch * 100 + i).padStart(12, "0")}`;
+          return file(
+            NodePath.join(directory, `${id}.json`),
+            JSON.stringify({
+              schema: 1,
+              jobId: id,
+              kind: "stage",
+              state: "released",
+              worker: { pid: 54321, processGroup: 54321 },
+            }),
+          );
+        }),
+      );
+    const unknown = "11111111-1111-4111-8111-111111111111";
+    const unreaped = "22222222-2222-4222-8222-222222222222";
+    const reserved = "33333333-3333-4333-8333-333333333333";
+    await file(NodePath.join(directory, `${unknown}.json`), "{");
+    const launch = await preparationLifecycle(fixture.base, unreaped).reserve("stage");
+    await launch.started({ pid: process.pid, processGroup: process.pid });
+    await preparationLifecycle(fixture.base, reserved).reserve("stage");
+    const scratch = NodePath.join(fixture.base, "runtime", "versions", ".jones-stage-held");
+    await file(NodePath.join(scratch, "payload", "t3"));
+    await withQualifiedRuntimeLock(fixture.base, preparationJobLock(reserved), async () => {
+      const result = await sweepPreparationLeftovers({
+        baseDir: fixture.base,
+        cacheRoot: fixture.cacheRoot,
+        keepJob: NodeCrypto.randomUUID(),
+      });
+      expect(result).toMatchObject({ removed: 0, retained: 0, failed: 0 });
+      expect(await exists(scratch)).toBe(true);
+    });
+    expect(
+      (await NodeFSP.readdir(NodePath.join(fixture.base, "runtime", "jones-preparation")))
+        .filter((name) => name.startsWith("job-owner-"))
+        .toSorted(),
+    ).toEqual(
+      [unknown, unreaped, reserved]
+        .map((id) => `${NodePath.basename(preparationJobLock(id))}.sqlite`)
+        .toSorted(),
+    );
+  });
+
+  it("never treats a never-started record as immutable even without remaining job scratch", async () => {
+    const fixture = await home();
+    const id = NodeCrypto.randomUUID();
+    const launch = await preparationLifecycle(fixture.base, id).reserve("stage");
+    const scratch = NodePath.join(fixture.base, "runtime", "versions", ".jones-stage-reserved");
+    await file(NodePath.join(scratch, "payload", "t3"));
+    const sweep = () =>
+      sweepPreparationLeftovers({
+        baseDir: fixture.base,
+        cacheRoot: fixture.cacheRoot,
+        keepJob: NodeCrypto.randomUUID(),
+      });
+    await withQualifiedRuntimeLock(fixture.base, preparationJobLock(id), async () => {
+      await sweep();
+      expect(await exists(scratch)).toBe(true);
+      await launch.spawning();
+    });
+    await sweep(); // Missing spawn identity must be re-read as unknown, never cached as safe.
+    expect(await exists(scratch)).toBe(true);
+  });
+
   it("removes only leftovers whose owner is gone", async () => {
     const fixture = await home();
     const jobs = preparationJobsDirectory(fixture.base);

@@ -72,9 +72,9 @@ async function createTwoHostCampaign(
       environmentId === enrollment.environmentId ? enrollment : secondEnrollment;
     const operationId =
       request.action === "status" ? request.operationId : request.input.operationId;
-    if (operationId === undefined) throw new Error("Expected an exact operation.");
+    // Enrollment observation has no operation ID. Only operation requests select a receipt.
     if (request.action === "stage")
-      operations.set(operationId, {
+      operations.set(request.input.operationId, {
         input: request.input,
         phase: "staged",
         currentVersion: "old",
@@ -82,6 +82,7 @@ async function createTwoHostCampaign(
         continueRunningThreads: false,
       });
     if (request.action === "activate") {
+      const operationId = request.input.operationId;
       const operation = operations.get(operationId)!;
       activations.push(environmentId);
       if (refusals.has(environmentId)) {
@@ -101,7 +102,7 @@ async function createTwoHostCampaign(
       environmentId,
       enrollment: selectedEnrollment,
       operationProtocol: 1,
-      operation: operations.get(operationId) ?? null,
+      operation: operationId === undefined ? null : (operations.get(operationId) ?? null),
       update: {
         source: "jones-actions",
         channel: "jones-main",
