@@ -2,6 +2,8 @@ import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type { JonesUpdateObservation } from "./jonesUpdates.ts";
 import {
   jonesCandidatePresentation,
+  jonesStagedAlreadyRunning,
+  JONES_STAGED_ALREADY_RUNNING_MESSAGE,
   jonesUpdatePresentation,
   resolveJonesExactSourceAction,
 } from "./jonesUpdates.ts";
@@ -15,6 +17,39 @@ const checkText = {
   "incomplete-discovery": "Discovery was incomplete. Check again for more evidence.",
   failure: "The update check failed. Check the connection or authentication.",
 } as const;
+
+const checkTime = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+export function jonesCheckOutcome(state: JonesUpdateState | null) {
+  const classification = state?.checkClassification;
+  const lastCheck = state?.lastCheck;
+  const failed = lastCheck?.outcome === "failed";
+  if (
+    !failed &&
+    (classification === undefined ||
+      (lastCheck?.outcome === "succeeded" && classification.kind === "failure"))
+  )
+    return undefined;
+  const kind = failed ? "failure" : classification!.kind;
+  const checkedAt = failed ? lastCheck.at : classification!.checkedAt;
+  const timestamp = Date.parse(checkedAt);
+  return {
+    kind,
+    text: Number.isFinite(timestamp)
+      ? `${checkText[kind]} Checked ${checkTime.format(timestamp)}.`
+      : checkText[kind],
+    checkedAt,
+    bounded: classification?.discovery?.bounded ?? false,
+  };
+}
 
 export interface JonesTargetStatusOptions {
   readonly canOperate?: boolean;
@@ -43,7 +78,9 @@ export function jonesTargetStatus(
     capability !== null &&
     !held &&
     !unknown;
+  const alreadyRunning = state !== null && jonesStagedAlreadyRunning(state);
   const reasons: string[] = [];
+  if (alreadyRunning) reasons.push(JONES_STAGED_ALREADY_RUNNING_MESSAGE);
   if (!fresh) reasons.push(observation.message ?? "Waiting for fresh host status.");
   if (!options.canOperate) reasons.push("This session cannot change updates.");
   if (capability === undefined || capability === null)
@@ -67,7 +104,7 @@ export function jonesTargetStatus(
       });
       if (decision.status === "ready") {
         download = decision.step.kind === "download" || decision.step.kind === "download-exact";
-        install = decision.step.kind === "install";
+        install = !alreadyRunning && decision.step.kind === "install";
       } else reasons.push(decision.message);
     } else if (!jonesUpdatePresentation(effective).busy) {
       download =
@@ -76,6 +113,7 @@ export function jonesTargetStatus(
         state.phase === "available" &&
         state.provenance !== undefined;
       install =
+        !alreadyRunning &&
         capability!.install &&
         state.stagedHandle !== undefined &&
         state.currentVersion !== undefined;

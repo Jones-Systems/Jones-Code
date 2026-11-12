@@ -1269,9 +1269,13 @@
       "id": "connection-diagnostics",
       "tests": [
         "apps/web/src/jones/observability/clientTracing.test.ts",
-        "packages/client-runtime/src/rpc/session.test.ts"
+        "packages/client-runtime/src/rpc/session.test.ts",
+        "apps/server/src/cloud/ConnectReachability.test.ts",
+        "apps/server/src/jones/cloud/connectProbeEvidence.test.ts",
+        "packages/client-runtime/src/connection/diagnosis.test.ts",
+        "packages/client-runtime/src/jones/connection/sessionDiagnostic.test.ts"
       ],
-      "scope": "Tracing initialization can retry after failure, and each RPC probe records its target environment. Two minimal shared-code repairs avoid duplicating upstream tracer/session ownership; session regressions reuse the existing virtual WebSocket harness. No connection policy or runtime adoption changes."
+      "scope": "Tracing initialization can retry after failure, and each RPC probe records its target environment. Two minimal shared-code repairs avoid duplicating upstream tracer/session ownership; session regressions reuse the existing virtual WebSocket harness. No connection policy or runtime adoption changes. Host self-probe status and bounded allowlisted HTTP evidence remain distinct from local descriptor identity and authenticated client reachability. Shared classifier and diagnosis hooks call Jones-owned helpers; existing shared tests cover those integration seams. Synthetic shared authorization, HTTP session read and RPC readiness fixtures exercise the real service owners without issuing production credentials; absent per-stage evidence remains unchecked."
     },
     {
       "id": "connection-rpc-isolation",
@@ -1353,8 +1357,12 @@
         "packages/contracts/src/jones/ipcUpdateReports.test.ts",
         "apps/server/src/environment/ServerEnvironment.test.ts",
         "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx",
-        "apps/server/src/jones/updates/preparation/stage.test.ts"
-      ]
+        "apps/server/src/jones/updates/preparation/stage.test.ts",
+        "apps/web/src/jones/fleetUpdates/publicationStatus.test.ts",
+        "apps/web/src/jones/fleetUpdates/FleetController.test.tsx",
+        "apps/web/src/jones/fleetUpdates/followerStatus.test.ts"
+      ],
+      "scope": "Publication observations validate source, environment, enrollment and autonomous-follow authority before campaign handoff. Directive-held or uncertain publication preserves accepted-operation reconciliation and blocks new dispatch. Native withheld reasons and independent per-host receipt observations remain visible, including stale or missing evidence; installed-source labels never authorize publication."
     },
     {
       "id": "update-continuity",
@@ -3708,6 +3716,19 @@
       "id": "workstreams-native-home-fixture",
       "tests": ["apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts"],
       "scope": "Explicit empty private Linux synthetic home prepared by real authority enrollment, registry key/init and SessionStore/source-setup services; startup selects native and reads an empty HTTP projection. Synthetic receipts attest no packaged runtime or installation."
+    },
+    {
+      "id": "preparation-history-reconciliation",
+      "tests": [
+        "apps/server/src/jones/updates/preparation/cleanupDemand.test.ts",
+        "apps/server/src/jones/updates/preparation/lifecycle.test.ts",
+        "apps/server/src/jones/updates/preparation/supervisor.test.ts",
+        "apps/server/src/jones/updates/preparation/sweep.test.ts",
+        "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
+        "apps/server/src/jones/updates/operations/operations.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts"
+      ],
+      "scope": "Reservation and launch remain under the existing job lock; immutable owner-controlled released evidence bypasses historical SQLite locks. Coalesced cleanup demand bounds failure retries, follows underlying worker settlement, and quiesces for expected retention and standing holds. History files are retained and still scanned linearly. Scale, race, cancellation and refusal cases are synthetic source coverage, not measured VPS latency."
     }
   ]
 }

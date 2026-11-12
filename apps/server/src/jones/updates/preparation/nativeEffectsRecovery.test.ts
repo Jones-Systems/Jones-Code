@@ -8,6 +8,19 @@ import { jonesCandidateHandle, type JonesStagedArtifact } from "@t3tools/shared/
 import { withQualifiedRuntimeLock } from "../../cloud/qualifiedRuntime.ts";
 import { preparationLifecycle } from "./lifecycle.ts";
 import { PREPARATION_LOCK, preparationJobLock } from "./protocol.ts";
+import { sweepPreparationLeftovers } from "./sweep.ts";
+import {
+  makePreparationSupervisor,
+  type PreparationJoin,
+  type PreparationWorkerExit,
+} from "./supervisor.ts";
+import {
+  actionsFixture,
+  BASELINE,
+  fixtureHost,
+  makePreparationHome,
+  sourceWorkerCommand,
+} from "./Preparation.testkit.ts";
 import {
   inspectHeldPreparationCleanup,
   recoverNativeEffects,
@@ -493,6 +506,201 @@ it("retains lifecycle when full artifact qualification refuses", async () =>
     await expect(f.inspect()).rejects.toThrow("invalid archive digest");
     expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
   }));
+
+it.each([
+  "unqualified 47cad979",
+  "abrupt native kill (missing result)",
+  "missing effects",
+] as const)(
+  "synthetic interrupted staging holds %s with evidence retained and zero stage replay",
+  async (scenario) =>
+    fixture(
+      async (f) => {
+        const jobs = NodePath.join(f.base, "runtime", "jones-preparation", "jobs");
+        const result = NodePath.join(jobs, jobId, "result.json");
+        if (scenario === "abrupt native kill (missing result)") await NodeFSP.unlink(result);
+        if (scenario === "missing effects") await NodeFSP.unlink(f.effects);
+        const files = [
+          NodePath.join(jobs, jobId, "request.json"),
+          f.lifecycle,
+          ...(scenario === "missing effects" ? [] : [f.effects]),
+          f.payload,
+          NodePath.join(NodePath.dirname(f.payload), "github-artifact.zip"),
+          NodePath.join(NodePath.dirname(f.payload), "jones-actions-stage.json"),
+          NodePath.join(f.cache, "completed", `${f.handle}.json`),
+          ...(scenario === "abrupt native kill (missing result)" ? [] : [result]),
+        ];
+        const before = await Promise.all(files.map((file) => NodeFSP.readFile(file)));
+        let nativeCalls = 0;
+        let artifactValidations = 0;
+        f.dependencies.plist = async () => {
+          nativeCalls++;
+          throw new Error("Unqualified evidence must not reach native inspection.");
+        };
+        f.dependencies.validateArtifact = async () => {
+          artifactValidations++;
+          throw new Error("Unqualified evidence must not reach artifact validation.");
+        };
+        const launches: string[] = [];
+        const supervisor = makePreparationSupervisor({
+          baseDir: f.base,
+          cacheRoot: f.cache,
+          command: { file: NodePath.join(f.base, "must-not-launch"), args: [] },
+          observe: (exit) => launches.push(exit.kind),
+        });
+        try {
+          for (let repeat = 0; repeat < 2; repeat++) {
+            expect(await preparationLifecycle(f.base, jobId).release(() => true)).toBe(
+              "cleanup-unconfirmed",
+            );
+            await expect(f.inspect()).rejects.toThrow();
+            await expect(f.apply("0".repeat(64))).rejects.toThrow();
+            const replay = supervisor.start(
+              {
+                kind: "stage",
+                candidate: f.candidate,
+                cacheRoot: f.cache,
+                dbPath: NodePath.join(f.base, "state.sqlite"),
+                activeVersion: f.candidate.version,
+                host: { platform: "darwin", architecture: "arm64" },
+              },
+              { jobId: NodeCrypto.randomUUID() },
+            );
+            await expect(replay.outcome).rejects.toMatchObject({ reason: "unreaped" });
+            expect((await replay.settled).kind).toBe("not-started");
+            const sweep = await sweepPreparationLeftovers({
+              baseDir: f.base,
+              cacheRoot: f.cache,
+              keepJob: NodeCrypto.randomUUID(),
+            });
+            expect(sweep.retainedJobIds).toContain(jobId);
+            expect(await Promise.all(files.map((file) => NodeFSP.readFile(file)))).toEqual(before);
+          }
+        } finally {
+          // Join failure cleanup before the fixture removes its synthetic root, even on assertion failure.
+          await supervisor.sweep().catch(() => undefined);
+        }
+        expect(launches).not.toContain("stage");
+        expect(nativeCalls).toBe(0);
+        expect(artifactValidations).toBe(0);
+        expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+        await expect(
+          NodeFSP.lstat(
+            NodePath.join(f.base, "runtime", "jones-preparation-recovery", `${jobId}.json`),
+          ),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+        if (scenario === "abrupt native kill (missing result)")
+          await expect(NodeFSP.lstat(result)).rejects.toMatchObject({ code: "ENOENT" });
+        if (scenario === "missing effects")
+          await expect(NodeFSP.lstat(f.effects)).rejects.toMatchObject({ code: "ENOENT" });
+      },
+      scenario === "unqualified 47cad979" ? "47cad979dcb769e511581e6de9e1aa5be99fd461" : undefined,
+    ),
+);
+
+it("synthetic qualified cleanup inspects, guards consent, retains proof and admits a fresh source-worker stage", async () => {
+  const home = await makePreparationHome();
+  let supervisor: ReturnType<typeof makePreparationSupervisor> | undefined;
+  let settled: Promise<PreparationJoin> | undefined;
+  const controller = new AbortController();
+  const exits: PreparationWorkerExit[] = [];
+  try {
+    const f = await setup(home.base, "8dd90ff9e3d41e7ba9ac1c81bceb4f973734314b");
+    const effects = await NodeFSP.readFile(f.effects);
+    const held = {
+      phase: "held",
+      code: "cleanup-unconfirmed",
+      jobId,
+      expectedInstalledSource: f.candidate.installedSource,
+      action: {
+        kind: "download",
+        sourceSha: f.candidate.source,
+        artifactId: f.candidate.artifactId,
+      },
+    } as const;
+    const inspected = await f.inspect();
+    expect(inspected.state).toBe("eligible");
+    const recover = await inspectHeldPreparationCleanup(home.base, held, f.dependencies);
+    expect(recover).toBeTypeOf("function");
+    expect(
+      await recover!(() => {
+        throw new Error("Consent no longer covers this operation.");
+      }),
+    ).toBe(false);
+    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+    expect(await recover!(() => {})).toBe(true);
+    const proof = await NodeFSP.readFile(inspected.proofPath);
+    expect(JSON.parse(proof.toString()).proofSha256).toBe(inspected.proofSha256);
+    expect(await NodeFSP.readFile(f.effects)).toEqual(effects);
+    const sweep = await sweepPreparationLeftovers({
+      baseDir: home.base,
+      cacheRoot: home.cacheRoot,
+      keepJob: NodeCrypto.randomUUID(),
+    });
+    expect(sweep.failed).toBe(0);
+    expect(sweep.retainedJobIds).not.toContain(jobId);
+    await expect(
+      NodeFSP.lstat(NodePath.join(home.base, "runtime", "jones-preparation", "jobs", jobId)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    const actions = await actionsFixture(home);
+    supervisor = makePreparationSupervisor({
+      baseDir: home.base,
+      cacheRoot: home.cacheRoot,
+      command: sourceWorkerCommand,
+      env: actions.env,
+      observe: (exit) => exits.push(exit),
+      limits: { graceMs: 1_000, reapMs: 5_000 },
+    });
+    const restage = supervisor.start(
+      {
+        kind: "stage",
+        candidate: actions.candidate,
+        cacheRoot: home.cacheRoot,
+        dbPath: home.dbPath,
+        activeVersion: BASELINE,
+        host: fixtureHost,
+      },
+      {
+        jobId: NodeCrypto.randomUUID(),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45_000)]),
+      },
+    );
+    settled = restage.settled;
+    const outcome = await restage.outcome;
+    expect((await restage.settled).kind).toBe("completed");
+    expect(outcome.staged.receipt.sourceSha).toBe(actions.candidate.source);
+    expect(await NodeFSP.readFile(inspected.proofPath)).toEqual(proof);
+    expect(await NodeFSP.readFile(f.effects)).toEqual(effects);
+  } finally {
+    controller.abort(new Error("Synthetic restage cleanup"));
+    try {
+      const join = await settled;
+      if (join !== undefined) expect(["completed", "stopped", "not-started"]).toContain(join.kind);
+      if (supervisor) {
+        expect((await supervisor.sweep()).failed).toBe(0);
+        expect(await supervisor.unreleasedJobs?.()).toEqual([]);
+      }
+      for (const exit of exits) {
+        expect(exit.reaped).toBe(true);
+        const workerPid = exit.pid;
+        if (workerPid === undefined || workerPid <= 1)
+          throw new Error("Restage worker identity is unproved.");
+        for (const pid of [workerPid, -workerPid]) {
+          let absent = false;
+          try {
+            process.kill(pid, 0);
+          } catch (cause) {
+            absent = (cause as NodeJS.ErrnoException).code === "ESRCH";
+          }
+          expect(absent).toBe(true);
+        }
+      }
+    } catch (cause) {
+      throw new Error(`Restage cleanup unproved; retained ${home.root}`, { cause });
+    }
+    await home.remove();
+  }
+});
 
 it("holds a symlinked effects record even when the target has the expected bytes", async () =>
   fixture(async (f) => {

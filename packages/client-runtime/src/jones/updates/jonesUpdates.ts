@@ -865,6 +865,17 @@ export function resolveJonesExactSourceAction(
   );
 }
 
+export const JONES_STAGED_ALREADY_RUNNING_MESSAGE =
+  "The downloaded build is already running on this host. Nothing to install.";
+
+export function jonesStagedAlreadyRunning(state: JonesUpdateState): boolean {
+  return (
+    state.stagedHandle !== undefined &&
+    (state.stagedAlreadyRunning === true ||
+      compareJonesSource(state.installedSource, state.provenance) === "matches")
+  );
+}
+
 /** Revalidates the selected download after an installation confirmation. */
 export function jonesInstallRefusal(
   clicked: JonesUpdateInstallInput,
@@ -880,6 +891,7 @@ export function jonesInstallRefusal(
     state.currentVersion !== clicked.currentVersion
   )
     return "The host or downloaded build changed while confirmation was open.";
+  if (jonesStagedAlreadyRunning(state)) return JONES_STAGED_ALREADY_RUNNING_MESSAGE;
   if (!state.capability.install) return capabilityRefusal(state, "install");
   return jonesFollowerHold(state);
 }

@@ -11,12 +11,13 @@ import {
 } from "../../cloud/qualifiedRuntime.ts";
 import {
   PREPARATION_LOCK,
+  preparationJobLock,
   preparationJobsDirectory,
   type PreparationJob,
   type PreparationPhase,
 } from "./protocol.ts";
 import { adoptVerifiedStage } from "./rebind.ts";
-import { preparationLifecycle } from "./lifecycle.ts";
+import { preparationLifecycle, readTerminalRelease } from "./lifecycle.ts";
 import { sweepPreparationLeftovers } from "./sweep.ts";
 import { PREPARATION_PROTOCOL, RESULT_FILE, writeDurableJson } from "./protocol.ts";
 import {
@@ -96,6 +97,156 @@ const blocked = (reason: QualifiedRuntimeBlockedError["reason"]) => (cause: unkn
 const stoppedFor = (reason: PreparationWorkerError["reason"]) => (cause: unknown) =>
   cause instanceof PreparationWorkerError && cause.reason === reason;
 
+it("locks only unresolved history among thousands of released jobs, without caching unknowns", async () => {
+  const fixture = await home();
+  const directory = NodePath.join(fixture.base, "runtime", "jones-preparation", "lifecycle");
+  await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+  const released = Array.from(
+    { length: 3000 },
+    (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+  );
+  const record = (id: string) =>
+    JSON.stringify({
+      schema: 1,
+      jobId: id,
+      kind: "stage",
+      state: "released",
+      worker: { pid: 54321, processGroup: 54321 },
+    });
+  for (let i = 0; i < released.length; i += 100)
+    await Promise.all(
+      released
+        .slice(i, i + 100)
+        .map((id) =>
+          NodeFSP.writeFile(NodePath.join(directory, `${id}.json`), record(id), { mode: 0o600 }),
+        ),
+    );
+  const unknown = "11111111-1111-4111-8111-111111111111";
+  const unreaped = "22222222-2222-4222-8222-222222222222";
+  const live = "33333333-3333-4333-8333-333333333333";
+  await NodeFSP.mkdir(NodePath.join(preparationJobsDirectory(fixture.base), unknown), {
+    recursive: true,
+  });
+  const launch = await preparationLifecycle(fixture.base, unreaped).reserve("stage");
+  await launch.started({ pid: process.pid, processGroup: process.pid });
+  await preparationLifecycle(fixture.base, live).reserve("stage");
+  const supervisor = makePreparationSupervisor({
+    baseDir: fixture.base,
+    cacheRoot: fixture.cacheRoot,
+    command: { file: "unused", args: [] },
+  });
+  await withQualifiedRuntimeLock(fixture.base, preparationJobLock(live), async () => {
+    expect((await supervisor.unreleasedJobs!()).toSorted()).toEqual([unknown, unreaped, live]);
+  });
+  const locks = (await NodeFSP.readdir(NodePath.join(fixture.base, "runtime", "jones-preparation")))
+    .filter((name) => name.startsWith("job-owner-"))
+    .toSorted();
+  expect(locks).toEqual(
+    [unknown, unreaped, live]
+      .map((id) => `${NodePath.basename(preparationJobLock(id))}.sqlite`)
+      .toSorted(),
+  );
+  await NodeFSP.writeFile(NodePath.join(directory, `${unknown}.json`), record(unknown), {
+    mode: 0o600,
+  });
+  expect(await supervisor.unreleasedJobs!()).toEqual([unreaped]);
+});
+
+it.each(["scratch", "reserved"])(
+  "keeps new %s under the owner lock during a concurrent sweep",
+  async (pause) => {
+    const fixture = await home();
+    const jobId = "44444444-4444-4444-8444-444444444444";
+    const jobDir = NodePath.join(preparationJobsDirectory(fixture.base), jobId);
+    let release!: () => void;
+    let entered!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reserved = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    // Native ESM namespace properties are not configurable in the CI runner. Import the
+    // supervisor and competing sweep through the same mocked module graph and lock owner.
+    vi.resetModules();
+    vi.doMock("node:fs/promises", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:fs/promises")>();
+      return {
+        ...actual,
+        mkdir: async (...args: Parameters<typeof actual.mkdir>) => {
+          const result = await actual.mkdir(...args);
+          if (String(args[0]) === (pause === "scratch" ? jobDir : NodePath.join(jobDir, "tmp"))) {
+            entered();
+            await barrier;
+          }
+          return result;
+        },
+      };
+    });
+    try {
+      const { makePreparationSupervisor: makeRacingSupervisor } = await import("./supervisor.ts");
+      const { sweepPreparationLeftovers: competingSweep } = await import("./sweep.ts");
+      const supervisor = makeRacingSupervisor({
+        baseDir: fixture.base,
+        cacheRoot: fixture.cacheRoot,
+        command: sourceWorkerCommand,
+      });
+      const controller = new AbortController();
+      const job = supervisor.start(
+        { kind: "sweep", cacheRoot: fixture.cacheRoot },
+        { jobId, signal: controller.signal },
+      );
+      const outcome = job.outcome.catch(() => undefined);
+      try {
+        await reserved;
+        expect(await readTerminalRelease(fixture.base, jobId)).toBe(false);
+        const swept = await competingSweep({
+          baseDir: fixture.base,
+          cacheRoot: fixture.cacheRoot,
+          keepJob: "55555555-5555-4555-8555-555555555555",
+        });
+        expect(swept.retainedJobIds).toEqual([jobId]);
+        expect(await NodeFSP.readdir(jobDir)).toEqual(pause === "scratch" ? [] : ["tmp"]);
+        controller.abort(new Error("Reservation race checked."));
+        release();
+        expect(await job.settled).toEqual({ jobId, kind: "not-started" });
+        await outcome;
+        expect(await jobsLeft(fixture)).toEqual([]);
+      } finally {
+        controller.abort();
+        release();
+        await job.settled;
+        await outcome;
+      }
+    } finally {
+      vi.doUnmock("node:fs/promises");
+      vi.resetModules();
+    }
+  },
+);
+
+it("leaves no reservation or scratch when the job lock is already owned", async () => {
+  const fixture = await home();
+  const jobId = "88888888-8888-4888-8888-888888888888";
+  const supervisor = makePreparationSupervisor({
+    baseDir: fixture.base,
+    cacheRoot: fixture.cacheRoot,
+    command: sourceWorkerCommand,
+  });
+  await NodeFSP.mkdir(preparationJobsDirectory(fixture.base), { recursive: true });
+  await withQualifiedRuntimeLock(fixture.base, preparationJobLock(jobId), async () => {
+    const job = supervisor.start({ kind: "sweep", cacheRoot: fixture.cacheRoot }, { jobId });
+    await expect(job.outcome).rejects.toSatisfy(blocked("busy"));
+    expect(await job.settled).toEqual({ jobId, kind: "not-started" });
+  });
+  expect(await jobsLeft(fixture)).toEqual([]);
+  await expect(
+    NodeFSP.stat(
+      NodePath.join(fixture.base, "runtime", "jones-preparation", "lifecycle", `${jobId}.json`),
+    ),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 describe("preparation worker command", () => {
   it("starts a single executable as itself and a script install through its entry", () => {
     expect(
@@ -150,6 +301,27 @@ describe("preparation worker command", () => {
 });
 
 describe("real preparation worker", () => {
+  it("sweeps once after successful stage settlement and then quiesces", async () => {
+    const fixture = await home();
+    const actions = await actionsFixture(fixture);
+    const exits: PreparationWorkerExit[] = [];
+    const supervisor = makePreparationSupervisor({
+      baseDir: fixture.base,
+      cacheRoot: fixture.cacheRoot,
+      command: sourceWorkerCommand,
+      env: actions.env,
+      observe: (exit) => exits.push(exit),
+    });
+    await expect(supervisor.run(stageJob(fixture, actions))).resolves.toMatchObject({
+      kind: "stage",
+    });
+    await supervisor.sweepIfNeeded?.();
+    expect(exits.map((exit) => exit.kind)).toEqual(["stage", "sweep"]);
+    for (let tick = 0; tick < 20; tick++) await supervisor.sweepIfNeeded?.();
+    expect(exits.map((exit) => exit.kind)).toEqual(["stage", "sweep"]);
+    expect(await jobsLeft(fixture)).toEqual([]);
+  });
+
   it("verifies a staged runtime in its own low-priority process and leaves no job storage", async () => {
     const fixture = await home();
     const staged = await stageFixtureRuntime(fixture);
@@ -474,7 +646,8 @@ it("exposes a real settlement join independently of an aborted caller", async ()
     expect(exits[0]).toMatchObject({ jobId, reaped: true, stopped: "cancelled" });
     expect(alive(worker)).toBe(false);
     expect(alive(gh)).toBe(false);
-    await supervisor.sweep();
+    await supervisor.sweepIfNeeded?.();
+    expect(exits.map((exit) => exit.kind)).toEqual(["stage", "sweep"]);
   } finally {
     controller.abort();
     await job.settled;

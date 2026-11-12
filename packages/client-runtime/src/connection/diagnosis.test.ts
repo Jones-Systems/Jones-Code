@@ -4,7 +4,7 @@ import {
 } from "@t3tools/contracts/relay";
 import { describe, expect, it } from "@effect/vitest";
 
-import { presentConnectionDiagnosis } from "./diagnosis.ts";
+import { connectionDiagnosisText, presentConnectionDiagnosis } from "./diagnosis.ts";
 import { mapManagedRelayError, mapRemoteEnvironmentError } from "./errors.ts";
 import {
   AVAILABLE_CONNECTION_STATE,
@@ -53,6 +53,16 @@ const results = (state: SupervisorConnectionState, via?: "relay" | "direct") =>
   diagnose(state, via)?.hops.map((hop) => `${hop.hop}:${hop.result}`);
 
 describe("presentConnectionDiagnosis", () => {
+  it("includes conservative session facts in the existing Copy diagnostics text", () => {
+    const diagnosis = diagnose(backoff(unavailable("origin_unreachable")));
+    expect(diagnosis).not.toBeNull();
+    const text = connectionDiagnosisText("Mac mini", diagnosis!);
+    expect(text).toContain("Relay authorization / bootstrap: not checked");
+    expect(text).toContain("Authenticated HTTP read: not checked");
+    expect(text).toContain("RPC readiness: not checked");
+    expect(text).toContain("HTTP 403 does not establish failure");
+  });
+
   it("tells a working tunnel apart from T3 Code not answering", () => {
     expect(diagnose(backoff(unavailable("origin_unreachable")))?.headline).toBe(
       "Tunnel works, but T3 Code on Mac mini did not answer",

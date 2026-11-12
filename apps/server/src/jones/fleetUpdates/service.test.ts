@@ -733,7 +733,12 @@ describe("following host", () => {
       yield* f.service.follow;
       expect(f.snapshot().stagedHandle).toBeUndefined();
       f.quiet.set({ lastInputAt: 0 });
-      yield* f.service.leader(leaderInput);
+      const acknowledged = yield* f.service.leader(leaderInput);
+      expect(acknowledged.follower).toMatchObject({
+        leaderSource: input.targetSource,
+        leaderPublishedAt: isoAt(0),
+      });
+      expect((yield* f.service.status()).follower?.leaderPublishedAt).toBe(isoAt(0));
       yield* f.service.leader(leaderInput);
       expect(f.follower()?.leader).toEqual({
         enrollmentId: enrollment.enrollmentId,
