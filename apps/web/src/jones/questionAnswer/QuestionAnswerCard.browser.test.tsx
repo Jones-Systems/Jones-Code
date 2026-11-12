@@ -7,6 +7,11 @@ import {
   type UserInputQuestion,
 } from "@t3tools/contracts";
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import {
+  CHAT_MARKDOWN_REMARK_PLUGINS,
+  CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
+} from "@t3tools/shared/markdownPipeline";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { ComposerSurface } from "../../components/chat/ComposerSurface";
@@ -23,7 +28,17 @@ import {
 
 vi.mock(import("../../components/ChatMarkdown"), async (importOriginal) => ({
   ...(await importOriginal()),
-  default: (({ text }: { text: string }) => <p>{text}</p>) as never,
+  default: (({ text, lineBreaks }: { text: string; lineBreaks?: boolean }) => (
+    <div data-testid="question-markdown">
+      <ReactMarkdown
+        remarkPlugins={
+          lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS
+        }
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  )) as never,
 }));
 
 const threadRef = {
@@ -212,6 +227,47 @@ function button(label: string) {
 function output(id: string) {
   return container.querySelector(`[data-testid="${id}"]`)!.textContent;
 }
+
+it("preserves question sections and Markdown without changing code whitespace", async () => {
+  await using _fixture = await setupTest();
+  const markdown = [
+    "Incoming request: finish platform qualification.",
+    "Recommendation: **adapt** — preserve portable coverage.",
+    "Before: the original requirement covers both platforms.",
+    "**Proposed change:** retain Linux integration coverage.",
+    "What stays the same: protections and merge gates.",
+    "May I apply this acceptance?",
+    "",
+    "- Linux integration",
+    "- Portable Darwin cases",
+    "",
+    "```text",
+    "first line",
+    "  second line",
+    "```",
+  ].join("\n");
+  await act(
+    async () => await root.rerender(<Harness questions={[{ ...question, question: markdown }]} />),
+  );
+  const body = container.querySelector<HTMLElement>('[data-testid="question-markdown"]')!;
+  const paragraph = body.querySelector("p")!;
+  expect(paragraph.querySelectorAll("br")).toHaveLength(5);
+  expect([...paragraph.querySelectorAll("strong")].map((node) => node.textContent)).toEqual([
+    "adapt",
+    "Proposed change:",
+  ]);
+  expect([...body.querySelectorAll("li")].map((node) => node.textContent)).toEqual([
+    "Linux integration",
+    "Portable Darwin cases",
+  ]);
+  expect(body.querySelector("pre code")?.textContent).toBe("first line\n  second line\n");
+  const first = document.createRange();
+  first.selectNodeContents(paragraph.firstChild!);
+  const last = document.createRange();
+  last.selectNodeContents(paragraph.lastChild!);
+  expect(last.getBoundingClientRect().top).toBeGreaterThan(first.getBoundingClientRect().bottom);
+  await expect.element(root.getByRole("button", { name: /Incremental/ })).toBeEnabled();
+});
 
 it("answers inside the card without sending or changing the independent thread draft", async () => {
   await using _fixture = await setupTest();

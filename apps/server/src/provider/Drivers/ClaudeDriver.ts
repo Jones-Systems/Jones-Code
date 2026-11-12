@@ -60,6 +60,7 @@ import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   resolveClaudeHomePath,
+  resolveClaudeUserHome,
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -136,6 +137,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       .current(DRIVER_KIND)
       .pipe(Effect.map(resolveClaudeModelCatalog));
     const processEnv = yield* mergeProviderInstanceEnvironment(environment);
+    const providerHome = yield* resolveClaudeUserHome(processEnv);
     const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,
@@ -143,7 +145,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const effectiveConfig = {
       ...config,
       enabled,
-      binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
+      binaryPath: expandHomePath(config.binaryPath, providerHome),
     } satisfies ClaudeSettings;
     const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
       resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
@@ -161,7 +163,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       effectiveConfig.homePath.trim() || processEnv.CLAUDE_CONFIG_DIR?.trim()
         ? configDir
         : undefined,
-    );
+    ).pipe(Effect.provideService(HostProcess.HomeDirectory, providerHome));
     const stamp = withInstanceIdentity({
       instanceId,
       driverKind: DRIVER_KIND,

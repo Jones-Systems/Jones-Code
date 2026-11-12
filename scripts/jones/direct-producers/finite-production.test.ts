@@ -16,6 +16,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { afterAll, expect, it, vi } from "vite-plus/test";
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../lib/brand-assets.ts";
+import { nativePlatform } from "../../../apps/server/src/jones/workspaceRetirement/Filesystem.ts";
 import { beginProduction } from "../../../apps/server/src/jones/workspaceRetirement/ProducerFinalizer.ts";
 import {
   finiteFixture,
@@ -103,6 +104,7 @@ it.each([
           expect(command.options.stdout).toBe("ignore");
           expect(command.options.stderr).toBe("inherit");
           expect(command.options.shell).toBe(false);
+          expect(command.options.detached).toBe(nativePlatform !== "win32");
           if (executable) {
             expect(command.options.env?.T3CODE_PACK_EXE).toBe("1");
             expect(command.options.env?.T3CODE_PACK_EXE_TARGET).toBe("darwin-arm64");
@@ -112,6 +114,8 @@ it.each([
               const [active] = await records();
               expect(active?.status).toBe("active");
               expect(active?.roots).toEqual([root]);
+              expect(active?.holders?.spawns).toHaveLength(1);
+              expect(active?.holders?.spawns[0]?.state).toBe("pending");
               await NodeFSP.mkdir(root, { recursive: true });
               await NodeFSP.writeFile(
                 NodePath.join(root, "bin.mjs"),

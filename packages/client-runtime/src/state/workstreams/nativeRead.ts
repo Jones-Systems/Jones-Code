@@ -51,6 +51,8 @@ const decodeEnvelope = Schema.decodeUnknownSync(WorkstreamsNativeReadEnvelope);
 const decodeRequest = Schema.decodeUnknownSync(WorkstreamsHomeReadResultRequest);
 const decodeResult = Schema.decodeUnknownSync(WorkstreamsHomeReadResult);
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+const timestampOrderKey = (value: string) =>
+  value.slice(0, 19) + value.slice(19, -1).replace(/^\./, "").padEnd(6, "0");
 const equal = (a: unknown, b: unknown): boolean => {
   if (a === b) return true;
   if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
@@ -292,11 +294,12 @@ export async function validateNativeReadResult(
       const page = result.value;
       if (selected === "workstreams-t3-placement/1.0.0" && page.items.length !== 0)
         fail("Native placements cannot be represented by nonempty frozen v1 proofs.");
+      const observedAt = timestampOrderKey(result.envelope.provenance.observed_at);
       if (
         page.items.some(
           (item) =>
-            Date.parse(item.attested_at) > Date.parse(result.envelope.provenance.observed_at) ||
-            Date.parse(item.expires_at) <= Date.parse(result.envelope.provenance.observed_at),
+            timestampOrderKey(item.attested_at) > observedAt ||
+            timestampOrderKey(item.expires_at) <= observedAt,
         )
       )
         fail("Placement proof is expired or observed in the future.");
@@ -577,12 +580,13 @@ export class NativeWorkstreamReader {
     const abort = () => controller.abort();
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) abort();
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      epoch === this.#epoch &&
+      scopeKey === this.#scopeKey &&
+      this.#active.get(activeKey)?.id === id;
     const fence = () => {
-      if (
-        controller.signal.aborted ||
-        epoch !== this.#epoch ||
-        this.#active.get(activeKey)?.id !== id
-      )
+      if (!isCurrent())
         throw new NativeReadError("cancelled", "Native read cancelled, replaced or invalidated.");
     };
     const pages: WorkstreamsHomeReadResult[] = [],
@@ -673,9 +677,11 @@ export class NativeWorkstreamReader {
       if (complete) this.#cache.writeProtected(scopeKey, key, result);
       return clone(result);
     } catch (cause) {
-      if (cause instanceof NativeReadError && cause.code !== "cancelled") this.invalidate();
-      // Closed schema decoding failures must also purge, never qualify as transport outages.
-      if (!(cause instanceof NativeReadError) && !transientFailure) this.invalidate();
+      if (isCurrent()) {
+        if (cause instanceof NativeReadError && cause.code !== "cancelled") this.invalidate();
+        // Closed schema decoding failures must also purge, never qualify as transport outages.
+        if (!(cause instanceof NativeReadError) && !transientFailure) this.invalidate();
+      }
       throw cause;
     } finally {
       signal?.removeEventListener("abort", abort);

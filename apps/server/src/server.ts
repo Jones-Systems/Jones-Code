@@ -134,6 +134,7 @@ import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as WorkMode from "./jones/workMode/WorkMode.ts";
+import * as HeldQueueExpiry from "./jones/orchestration/HeldQueueExpiry.ts";
 import * as Scheduler from "./scheduling/Scheduler.ts";
 import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts";
 import * as NativeAppIconResolver from "./assets/NativeAppIconResolver.ts";
@@ -678,6 +679,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     Layer.provide(ProjectionStoreV2.layer),
     Layer.provide(Scheduler.layer),
   ),
+  HeldQueueExpiry.layer.pipe(Layer.provide(Scheduler.layer)),
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,

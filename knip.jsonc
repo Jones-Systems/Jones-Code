@@ -85,6 +85,7 @@
         // The physical-host operator and relay launch these fixtures by filename.
         "integration/jones-e2e/physicalHost.ts",
         "integration/jones-e2e/physicalHost.worker.ts",
+        "integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
         "src/provider/testFixtures/*.mjs",
         "src/jones/workstreams/operations/fullAppFixture.ts",
         // Staged native creation substrate is consumed by the deferred L39 execution slice.
