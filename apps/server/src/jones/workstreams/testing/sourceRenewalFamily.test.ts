@@ -82,11 +82,12 @@ const descendants = () => started ??= new Promise((resolve, reject) => {
 });
 process.on('message', async ({id, command}) => {
   if (command === 'identity') {
-    if (mode === 'survivors' || mode === 'overflow') await descendants();
+    if (mode === 'survivors') await descendants();
     process.send({id, value:{pid:process.pid}}, () => {
       if (mode === 'supervisor-loss') process.kill(process.ppid, 'SIGKILL');
     });
   } else if (command === 'close' && mode !== 'abort' && mode !== 'supervisor-loss') {
+    if (mode === 'overflow') await descendants();
     process.send({id, value:{closed:true}}, () => { process.disconnect(); process.exit(0); });
   }
 });
