@@ -271,10 +271,12 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     const record = yield* storage(store.readFollower);
     const directive =
       record?.directive?.enrollmentId === enrollment.enrollmentId ? record.directive : undefined;
-    const leaderSource = leaderFor(record, enrollment)?.committedSource ?? null;
+    const leader = leaderFor(record, enrollment);
+    const leaderSource = leader?.committedSource ?? null;
     return {
       protocol: 1,
       leaderSource,
+      ...(leader === null ? {} : { leaderPublishedAt: leader.publishedAt }),
       state: directive !== undefined || leaderSource === null ? "waiting-for-leader" : "preparing",
       ...(directive === undefined ? {} : { planDirective: directive }),
       reason:

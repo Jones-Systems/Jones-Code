@@ -372,12 +372,12 @@ export function createTargetOperations(options: {
   const reconcile = () =>
     gate(async () => {
       try {
+        let unresolved: Set<string> | undefined;
+        const ledgerHolds = new Set<string>();
         if (preparation.unreleasedJobs !== undefined) {
-          const unresolved = new Set(await preparation.unreleasedJobs());
-          for (const id of lifecycleHolds) if (!unresolved.has(id)) updater.releaseHeldJob(id);
-          lifecycleHolds.clear();
-          for (const id of unresolved) lifecycleHolds.add(id);
+          unresolved = new Set(await preparation.unreleasedJobs());
           updater.setHeldJobs([...unresolved]);
+          for (const id of unresolved) lifecycleHolds.add(id);
         }
         for await (const r of ledger.listUnsettled()) {
           if (active.has(r.operationId)) continue;
@@ -398,7 +398,10 @@ export function createTargetOperations(options: {
               }));
               if (r.jobId !== undefined) updater.releaseHeldJob(r.jobId);
             } else {
-              if (r.jobId !== undefined) updater.setHeldJobs([r.jobId]);
+              if (r.jobId !== undefined) {
+                ledgerHolds.add(r.jobId);
+                updater.setHeldJobs([r.jobId]);
+              }
               await patch(r.operationId, {
                 phase: "held",
                 code: "adoption-unconfirmed",
@@ -417,7 +420,10 @@ export function createTargetOperations(options: {
             preparation.reconcile === undefined
               ? preparation.inspect(r.jobId)
               : await preparation.reconcile(r.jobId);
-          if (join === "running") continue;
+          if (join === "running") {
+            ledgerHolds.add(r.jobId);
+            continue;
+          }
           if (
             join !== "unknown" &&
             join.kind !== "unreaped" &&
@@ -427,19 +433,35 @@ export function createTargetOperations(options: {
             await change(r.operationId, (old) =>
               finishStop(old, old.stop === undefined ? "interrupted" : "stopped", "stopped"),
             );
-          } else
+          } else {
+            ledgerHolds.add(r.jobId);
             await held(
               r,
               join !== "unknown" && join.kind === "cleanup-unconfirmed"
                 ? "cleanup-unconfirmed"
                 : "unreaped",
             ); // directory/receipt absence is never worker-exit proof
+          }
+        }
+        // Apply release transitions only after the whole read succeeds. A failed reconcile
+        // preserves admission holds and cleanup demand for a later maintenance pass.
+        if (unresolved !== undefined) {
+          for (const id of lifecycleHolds)
+            if (!unresolved.has(id)) {
+              // Worker release does not prove that its staged result was adopted.
+              if (!ledgerHolds.has(id)) updater.releaseHeldJob(id);
+              preparation.requestSweep?.();
+            }
+          updater.setHeldJobs([...unresolved, ...ledgerHolds]);
+          lifecycleHolds.clear();
+          for (const id of unresolved) lifecycleHolds.add(id);
         }
         recoveryFailed = false;
         updater.releaseHeldJob("ledger-unreadable");
       } catch (cause) {
         recoveryFailed = true;
         updater.setHeldJobs(["ledger-unreadable"]);
+        preparation.requestSweep?.();
         throw cause;
       }
     });
@@ -686,12 +708,16 @@ export function createTargetOperations(options: {
         });
         lifecycleHolds.delete(jobId);
         updater.releaseHeldJob(jobId);
+        preparation.requestSweep?.();
         return { recoveredCleanup };
       }),
     reconcile,
     sweep: async () => {
+      await reconcile();
       try {
-        await preparation.sweep();
+        // Real supervisors consume demand; legacy test/adapter implementations retain their API.
+        if (preparation.sweepIfNeeded !== undefined) await preparation.sweepIfNeeded();
+        else await preparation.sweep();
       } finally {
         await reconcile();
       }

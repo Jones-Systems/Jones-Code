@@ -5,6 +5,8 @@ import {
 import type { RelayEnvironmentStatusResponse } from "@t3tools/contracts/relay";
 import * as DateTime from "effect/DateTime";
 
+import { connectionSessionFacts } from "../jones/connection/sessionDiagnostic.ts";
+
 import type {
   ConnectionAttemptError,
   ConnectionFailureCause,
@@ -351,6 +353,7 @@ export function presentConnectionDiagnosis(
   add("Host version", input.serverVersion);
   add("Error", failure?.detail);
   add("Trace ID", failure?.traceId);
+  facts.push(...connectionSessionFacts(input.state));
 
   return {
     headline: headline(host, located, failure),

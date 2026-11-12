@@ -169,6 +169,10 @@ function renderText(text: string, props: Partial<Parameters<typeof ChatMarkdown>
   return render(<ChatMarkdown cwd="/tmp/project" text={text} {...props} />);
 }
 
+function linkTexts(container: HTMLElement) {
+  return [...container.querySelectorAll("a")].map((link) => link.textContent);
+}
+
 function buttonsLabelled(container: HTMLElement, label: string) {
   return [...container.querySelectorAll<HTMLButtonElement>("button")].filter(
     (button) => button.getAttribute("aria-label") === label,
@@ -276,6 +280,125 @@ it("reuses the parse of a remounted message that has stable extra plugins", asyn
   await using screen = await render(message);
   await expect.element(screen.getByText("Cached text")).toBeVisible();
   expect(parsed).toHaveBeenCalledTimes(1);
+});
+
+describe("ChatMarkdown shell identity", () => {
+  it("visibly disables a destination block when a callback consumer lacks native message identity", async () => {
+    using _fixture = setup();
+    const callback = vi.fn();
+    await using screen = await renderText("```jones-shell environment=mini label=Mini\npwd\n```", {
+      threadRef: { environmentId: EnvironmentId.make("source"), threadId: ThreadId.make("thread") },
+      onRunShellCommand: callback,
+    });
+    const { container } = screen;
+    expect(container.textContent).toContain("no stable identity");
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Run on"]')!;
+    expect(button.disabled).toBe(true);
+    await act(async () => button.click());
+    expect(callback).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatMarkdown bare anchor placeholders", () => {
+  it.each(["<A>", "<a>", "<a >", "<a/>", "<A/>", "<a />"])(
+    "preserves unmatched %s without linking later blocks",
+    async (token) => {
+      using _fixture = setup();
+      await using screen = await renderText(
+        `- **"From ${token}"** appears in the header.\n\n- **Tests:** cover inheritance.\n\nThe deferred move continues on B.\n\nSee <a href="https://example.com">the link</a>.`,
+      );
+      const { container } = screen;
+      expect(container.querySelector("strong")?.textContent).toBe(`"From ${token}"`);
+      expect(linkTexts(container)).toEqual(["the link"]);
+      expect(container.querySelectorAll("li")).toHaveLength(2);
+      expect([...container.querySelectorAll("p")].map((p) => p.textContent)).toContain(
+        "The deferred move continues on B.",
+      );
+    },
+  );
+
+  it.each(["</a>  ", "<div>more</div>\n</a>"])(
+    "preserves a paired anchor closing in the raw block %s",
+    async (closing) => {
+      using _fixture = setup();
+      await using screen = await renderText(`See <a>label\n\n${closing}\n\nfinish`);
+      const { container } = screen;
+      expect(container.querySelector("p")?.textContent).toBe("See label");
+    },
+  );
+
+  it("preserves a paired anchor after comment-looking raw text", async () => {
+    using _fixture = setup();
+    await using screen = await renderText("See <a>label<script><!-- </script> --></a>");
+    const { container } = screen;
+    expect(container.querySelector("p")?.textContent).toBe("See label -->");
+  });
+
+  it.each(["<!-- </a> -->", '<div title="</a>">more</div>', '<script>"</a>"</script>'])(
+    "ignores apparent closing anchors inside %s",
+    async (html) => {
+      using _fixture = setup();
+      await using screen = await renderText(`Before <A>.\n\n${html}\n\nAfter.`);
+      const { container } = screen;
+      expect(container.querySelector("p")?.textContent).toBe("Before <A>.");
+      expect(container.querySelectorAll("a")).toHaveLength(0);
+    },
+  );
+
+  it("preserves paired HTML anchors, details, markdown links, and inline code", async () => {
+    using _fixture = setup();
+    await using screen = await renderText(
+      'Bare <a>label</a>, <a id="section"></a>, `<A>`, and [docs](https://example.com).\n\n<details><summary>More</summary>Details</details>',
+    );
+    const { container } = screen;
+    expect(linkTexts(container)).toEqual(["label", "", "docs"]);
+    expect(container.querySelector("code")?.textContent).toBe("<A>");
+    expect(container.querySelector("[data-markdown-details]")?.textContent).toContain("More");
+  });
+});
+
+describe("ChatMarkdown context references", () => {
+  it("renders text and image references through the chip renderer, with readable fallback", async () => {
+    using _fixture = setup();
+    const text =
+      "See [Terminal output](t3-context://v1/terminal/term-1) and ![Error image](t3-context://v1/image/img-1).";
+    await using screen = await render(
+      <ChatMarkdown
+        cwd={undefined}
+        text={text}
+        renderContextReference={({ kind, label }) => (
+          <button>
+            {kind}: {label}
+          </button>
+        )}
+      />,
+    );
+    const { container, rerender } = screen;
+    expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+      "terminal: Terminal output",
+      "image: Error image",
+    ]);
+    expect(container.querySelectorAll("img, a")).toHaveLength(0);
+    await rerender(<ChatMarkdown cwd={undefined} text={text} />);
+    expect(container.textContent).toBe("See Terminal output and Error image.");
+    expect(container.querySelectorAll("img, a, button")).toHaveLength(0);
+  });
+
+  it("reads formatted context labels through nested markup instead of the context id", async () => {
+    using _fixture = setup();
+    const seen: Array<string> = [];
+    await using _screen = await render(
+      <ChatMarkdown
+        cwd={undefined}
+        text="See [**Bold** `code`](t3-context://v1/terminal/term-1)."
+        renderContextReference={({ kind, label }) => {
+          seen.push(`${kind}: ${label}`);
+          return <button>{label}</button>;
+        }}
+      />,
+    );
+    expect(new Set(seen)).toEqual(new Set(["terminal: Bold code"]));
+  });
 });
 
 describe("ChatMarkdown favicon privacy", () => {

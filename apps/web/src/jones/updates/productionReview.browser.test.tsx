@@ -306,10 +306,56 @@ describe("production web review authority", () => {
     expect(h.legacy).not.toHaveBeenCalled();
     expect(h.native).not.toHaveBeenCalled();
   });
+  it("dates a Connections failure by its check, then clears stale failure after a successful recheck", async () => {
+    await using _fixture = await fixture();
+    const { a } = hosts();
+    const failed = {
+      ...h.observations.get(a)!.state!,
+      phase: "no-new" as const,
+      checkClassification: { kind: "failure" as const, checkedAt: "2026-11-10T15:00:00Z" },
+      lastCheck: { outcome: "failed" as const, at: "2026-11-10T15:05:00Z" },
+    };
+    h.observations.set(a, { state: failed, freshness: "fresh" });
+    await draw("connections", a);
+    expect(container.textContent).toContain(
+      "The update check failed. Check the connection or authentication. Checked Nov 10, 2026, 10:05 AM EST.",
+    );
+    h.observations.set(a, {
+      state: { ...failed, lastCheck: { outcome: "succeeded", at: "2026-11-10T15:10:00Z" } },
+      freshness: "fresh",
+    });
+    await draw("connections", a);
+    await click("Details");
+    expect(container.textContent).not.toContain("The update check failed.");
+    const { lastCheck: _lastCheck, ...oldHost } = failed;
+    h.observations.set(a, { state: oldHost, freshness: "fresh" });
+    await draw("connections", a);
+    expect(container.textContent).toContain(
+      "The update check failed. Check the connection or authentication. Checked Nov 10, 2026, 10:00 AM EST.",
+    );
+  });
+  it("does not open Connections confirmation for an already-running stage", async () => {
+    await using _fixture = await fixture();
+    const { a } = hosts();
+    const observed = h.observations.get(a)!;
+    h.observations.set(a, {
+      ...observed,
+      state: { ...observed.state!, stagedAlreadyRunning: true },
+    });
+    await draw("connections", a);
+    const install = [...container.querySelectorAll("button")].find(
+      (node) => node.textContent === "Install",
+    )!;
+    expect(install.disabled).toBe(true);
+    await click("Install");
+    expect(h.confirmations).toHaveLength(0);
+    expect(h.operation).not.toHaveBeenCalled();
+    expect(h.legacy).not.toHaveBeenCalled();
+  });
   it.each(
     (["connections", "exact"] as const).flatMap((control) =>
       [true, false].flatMap((modern) =>
-        (["retarget", "unmount", "permission"] as const).map((transition) => ({
+        (["retarget", "unmount", "permission", "already-running"] as const).map((transition) => ({
           control,
           modern,
           transition,
@@ -327,7 +373,14 @@ describe("production web review authority", () => {
       expect(h.confirmations).toHaveLength(1);
       if (transition === "retarget") await draw(control, b);
       else if (transition === "unmount") await root.rerender(null);
-      else {
+      else if (transition === "already-running") {
+        const observed = h.observations.get(a)!;
+        h.observations.set(a, {
+          ...observed,
+          state: { ...observed.state!, stagedAlreadyRunning: true },
+        });
+        await draw(control, a);
+      } else {
         h.permissions.set(a, false);
         await draw(control, a);
       }

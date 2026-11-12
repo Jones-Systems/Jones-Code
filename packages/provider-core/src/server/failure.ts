@@ -142,7 +142,7 @@ function curatedCauseMessages(cause: unknown): {
         case "ContextHandoffDeliveryUncertainError":
           return {
             known:
-              "T3 could not confirm whether conversation history reached the provider. Retry the turn to recover the session.",
+              "Conversation history delivery is uncertain. Automatic continuation is blocked to avoid duplicate history. Preserve this conversation and start a new thread if you need to continue; retrying cannot resolve the pending delivery.",
             category: categoryMessage(),
           };
         case "ProviderAdapterProtocolError": {

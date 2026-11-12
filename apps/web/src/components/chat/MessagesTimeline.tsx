@@ -920,6 +920,19 @@ const ConversationTimeline = memo(function ConversationTimeline({
     }
   };
 
+  // A follow release can commit after the scroll that caused it; record the position read
+  // then, so closing the chat keeps the reader where they stopped rather than at the end.
+  const rememberReadingPosition = useEffectEvent(() => {
+    rememberPosition(false);
+  });
+  const wasFollowingRef = useRef(liveFollowEnabled);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Records the reading position once when following turns off; it sets no state.
+  useLayoutEffect(() => {
+    const wasFollowing = wasFollowingRef.current;
+    wasFollowingRef.current = liveFollowEnabled;
+    if (wasFollowing && !liveFollowEnabled) rememberReadingPosition();
+  }, [liveFollowEnabled]);
+
   const handleScroll = () => {
     if (restoringThreadPosition || listRef.current?.getState?.().data !== rows) return;
     const isAtEnd = rememberPosition(liveFollowEnabled && !anchoredEndSpace);

@@ -187,6 +187,62 @@ describe("searchSettings", () => {
     expect(ids(true)).toContain("welcome-page");
   });
 
+  it("keeps the local toggle searchable without offering hidden host publishing controls", () => {
+    const availability = {
+      hasCloudPublicConfig: true,
+      hasEnvironment: true,
+      hasProviderSettingsEnvironment: true,
+      canManageLocalBackend: false,
+      isWslSettingsRowVisible: false,
+      hasThreadAutoSettlement: false,
+    };
+    const remoteOnly = filterAvailableSettingsSearchItems({
+      ...availability,
+      localEnvironmentDisabled: true,
+    }).map((item) => item.id);
+    expect(remoteOnly).toContain("local-environment");
+    expect(remoteOnly).not.toContain("t3-connect");
+    expect(remoteOnly).not.toContain("publish-agent-activity");
+    expect(remoteOnly).not.toContain("wsl-backend");
+    const browser = filterAvailableSettingsSearchItems(availability).map((item) => item.id);
+    expect(browser).toContain("publish-agent-activity");
+  });
+
+  it("offers webhook holding only while the managed tunnel is on, like its row", () => {
+    const availability = {
+      hasCloudPublicConfig: true,
+      hasEnvironment: true,
+      hasProviderSettingsEnvironment: true,
+      canManageLocalBackend: true,
+      isWslSettingsRowVisible: false,
+      hasThreadAutoSettlement: false,
+    };
+    const itemIds = (managedTunnelActive: boolean) =>
+      filterAvailableSettingsSearchItems({ ...availability, managedTunnelActive }).map(
+        (item) => item.id,
+      );
+    expect(itemIds(false)).not.toContain("hold-webhooks-while-offline");
+    expect(itemIds(true)).toContain("hold-webhooks-while-offline");
+  });
+
+  it("shows automatic settlement settings when the server supports them", () => {
+    const available = filterAvailableSettingsSearchItems({
+      hasCloudPublicConfig: false,
+      hasEnvironment: false,
+      hasProviderSettingsEnvironment: false,
+      canManageLocalBackend: false,
+      isWslSettingsRowVisible: false,
+      hasThreadAutoSettlement: true,
+    });
+
+    expect(searchSettings("auto-settle", available).map((item) => item.id)).toEqual([
+      "auto-settle-inactive-threads",
+      "auto-settle-merged-threads",
+      "days-before-auto-settle",
+      "keep-threads-with-pull-requests",
+    ]);
+  });
+
   it("finds keybinding commands by label, command id, and default key", () => {
     expect(searchSettings("toggle sidebar")[0]?.id).toBe("keybinding-sidebar.toggle");
     expect(searchSettings("sidebar.toggle")[0]?.id).toBe("keybinding-sidebar.toggle");

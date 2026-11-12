@@ -344,6 +344,76 @@ describe("shared Jones action execution", () => {
     expect(f.host.legacy).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "refuses only the already-running flag after valid review (legacy=%s)",
+    async (legacyHost) => {
+      const f = fixture(true, legacyHost);
+      const prepared = await prepareReviewedInstall({
+        environmentId: env,
+        targetSource: source,
+        label: "Host",
+        host: f.host,
+        now: () => now,
+      });
+      if (prepared.kind !== "ready") throw new Error("Expected valid review");
+      const reviewed = f.host.readLatest();
+      f.host.readLatest
+        .mockClear()
+        .mockReturnValueOnce(reviewed)
+        .mockReturnValue({
+          ...reviewed,
+          observation: {
+            ...reviewed.observation,
+            state: { ...reviewed.observation.state!, stagedAlreadyRunning: true },
+          },
+        });
+      const result = await executeJonesAction({
+        environmentId: env,
+        targetSource: source,
+        operationId,
+        ...prepared,
+        host: f.host,
+      });
+      expect(result.kind).toBe("refused");
+      expect(f.host.readLatest).toHaveBeenCalledTimes(2);
+      expect(f.host.start).not.toHaveBeenCalled();
+      expect(f.host.legacy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps an outstanding receipt primary when the already-running flag appears", async () => {
+    const f = fixture(true);
+    const prepared = await prepareReviewedInstall({
+      environmentId: env,
+      targetSource: source,
+      label: "Host",
+      host: f.host,
+      now: () => now,
+    });
+    if (prepared.kind !== "ready") throw new Error("Expected valid review");
+    const receipt = {
+      protocol: 1 as const,
+      operationId,
+      environmentId: env,
+      expectedInstalledSource: installed,
+      action: download,
+      phase: "held" as const,
+      updatedAt: new Date(now).toISOString(),
+    };
+    f.setState({ ...f.state(), stagedAlreadyRunning: true, operation: receipt });
+    expect(
+      await executeJonesAction({
+        environmentId: env,
+        targetSource: source,
+        operationId,
+        ...prepared,
+        host: f.host,
+      }),
+    ).toMatchObject({ kind: "unknown", code: "outstanding-operation", receipt });
+    expect(f.host.start).not.toHaveBeenCalled();
+    expect(f.host.legacy).not.toHaveBeenCalled();
+  });
+
   it("requires a reviewed install, then revalidates current identity before operations/start", async () => {
     const f = fixture(true);
     const prepared = await prepareReviewedInstall({

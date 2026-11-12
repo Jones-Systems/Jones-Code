@@ -2,6 +2,7 @@ import { readAutomaticQueueHolds } from "../jones/orchestration/QueueHoldProvena
 import { EventId } from "@t3tools/contracts";
 import { queuedToolBoundaryTarget } from "./QueuedToolBoundary.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import { retryWorkspacePreparationRead } from "../jones/orchestration/WorkspacePreparationRead.ts";
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
 import {
@@ -11786,13 +11787,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) =>
-    projectionStore
-      .getThreadRecords(commandThreadId(command), fields, filter)
-      .pipe(
-        Effect.mapError(
-          (cause) => new OrchestratorProjectionError({ threadId: commandThreadId(command), cause }),
-        ),
-      );
+    projectionStore.getThreadRecords(commandThreadId(command), fields, filter).pipe(
+      retryWorkspacePreparationRead(command.type),
+      Effect.mapError(
+        (cause) => new OrchestratorProjectionError({ threadId: commandThreadId(command), cause }),
+      ),
+    );
 
   const preparedRunState = (
     command: Extract<

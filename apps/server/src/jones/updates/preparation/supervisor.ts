@@ -8,7 +8,12 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { ownedScratchRemover } from "../../cloud/ownedScratch.ts";
-import { preparationLifecycle, preparationLifecycleJobIds } from "./lifecycle.ts";
+import {
+  preparationLifecycle,
+  preparationLifecycleJobIds,
+  readTerminalRelease,
+} from "./lifecycle.ts";
+import { preparationCleanupDemand } from "./cleanupDemand.ts";
 import {
   readQualifiedRuntimeReceipt,
   type QualifiedDigestOptions,
@@ -176,6 +181,9 @@ export interface PreparationSupervisor {
   readonly inspect: (jobId: string) => PreparationJoin | "running" | "unknown";
   readonly reconcile?: (jobId: string) => Promise<PreparationJoin | "running" | "unknown">;
   readonly unreleasedJobs?: () => Promise<ReadonlyArray<string>>;
+  /** Mark a cleanup transition; the next maintenance pass consumes coalesced demand. */
+  readonly requestSweep?: () => void;
+  readonly sweepIfNeeded?: () => Promise<void>;
 
   readonly run: <J extends PreparationJob>(
     job: J,
@@ -421,12 +429,13 @@ export function makePreparationSupervisor(options: {
     await NodeFSP.mkdir(jobs, { recursive: true, mode: 0o700 });
     const jobDir = NodePath.join(jobs, jobId);
     const lifecycle = preparationLifecycle(baseDir, jobId);
-    await NodeFSP.mkdir(jobDir, { mode: 0o700 });
-    await lifecycle.reserve(job.kind);
-    let retainJob = false;
-    try {
-      // This lock serializes lifecycle reconciliation; it alone cannot prove descendants exited.
-      return await withQualifiedRuntimeLock(baseDir, preparationJobLock(jobId), async () => {
+    // Reserve scratch and never-started evidence together under the lock. An orphaned sweep
+    // must not remove a new job between reservation and launch.
+    return withQualifiedRuntimeLock(baseDir, preparationJobLock(jobId), async () => {
+      await NodeFSP.mkdir(jobDir, { mode: 0o700 });
+      let retainJob = false;
+      try {
+        const launch = await lifecycle.reserve(job.kind);
         await NodeFSP.mkdir(NodePath.join(jobDir, "tmp"), { mode: 0o700 });
         const request: PreparationRequest = {
           protocol: PREPARATION_PROTOCOL,
@@ -447,7 +456,7 @@ export function makePreparationSupervisor(options: {
           PREPARATION_LIMITS.requestBytes,
         );
         signal?.throwIfAborted();
-        await lifecycle.launch({ kind: job.kind, state: "spawning" });
+        await launch.spawning();
         observed.spawning = true;
         let identitySaved: Promise<void> | undefined;
         const exit = await superviseWorker({
@@ -458,11 +467,7 @@ export function makePreparationSupervisor(options: {
           env: options.env ?? process.env,
           limits,
           onSpawned: (pid) => {
-            identitySaved = lifecycle.launch({
-              kind: job.kind,
-              state: "started",
-              worker: { pid, processGroup: pid },
-            });
+            identitySaved = launch.started({ pid, processGroup: pid });
             void identitySaved.catch(() => undefined);
           },
           ...(signal === undefined ? {} : { signal }),
@@ -486,7 +491,7 @@ export function makePreparationSupervisor(options: {
           throw new PreparationWorkerError("unreaped");
         }
         if (exit.stopped === "spawn-failed") {
-          await lifecycle.launch({ kind: job.kind, state: "not-started" });
+          await launch.notStarted();
           observed.release = "not-started";
         } else {
           observed.release = await lifecycle.release(
@@ -512,11 +517,11 @@ export function makePreparationSupervisor(options: {
         if (result === undefined) throw new PreparationWorkerError("result-invalid");
         if (!result.ok) throw preparationFailureError(result.error);
         return result.outcome as PreparationOutcomeFor<J["kind"]>;
-      });
-    } finally {
-      // Keep scratch whenever process or native effect release is unresolved.
-      if (!retainJob) await remove(jobDir).catch(() => undefined);
-    }
+      } finally {
+        // Still under the job lock; keep scratch when process/native release is unresolved.
+        if (!retainJob) await remove(jobDir).catch(() => undefined);
+      }
+    });
   };
 
   const start = <J extends PreparationJob>(
@@ -532,7 +537,21 @@ export function makePreparationSupervisor(options: {
     const observed: { exit?: PreparationWorkerExit; spawning?: boolean; release?: string } = {};
     joins.set(jobId, "running");
     const queued = enqueue(() => runOnce(job, jobId, observed, signal, runOptions.onPhase));
-    if (job.kind !== "sweep") void queued.catch(() => sweep().catch(() => undefined));
+    // Observe the underlying worker, not the caller's abortable outcome. A sweep never
+    // schedules itself, and successful stage settlement can also leave cache scratch.
+    if (job.kind !== "sweep")
+      void queued.then(
+        () => {
+          if (job.kind === "stage") {
+            cleanup.request();
+            void cleanup.flush().catch(() => undefined);
+          }
+        },
+        () => {
+          cleanup.request();
+          void cleanup.flush().catch(() => undefined);
+        },
+      );
     const settled = queued
       .then(
         () => ({ jobId, kind: "completed" as const }),
@@ -576,13 +595,18 @@ export function makePreparationSupervisor(options: {
           });
     return { outcome, settled };
   };
-  const sweep = async () => {
-    const result = await start(
+  let sweeping: Promise<PreparationOutcomeFor<"sweep">> | undefined;
+  const sweep = () => {
+    if (sweeping !== undefined) return sweeping;
+    sweeping = start(
       { kind: "sweep", cacheRoot: options.cacheRoot },
       { jobId: NodeCrypto.randomUUID() },
-    ).outcome;
-    return result;
+    ).outcome.finally(() => {
+      sweeping = undefined;
+    });
+    return sweeping;
   };
+  const cleanup = preparationCleanupDemand(sweep);
   const reconcile: NonNullable<PreparationSupervisor["reconcile"]> = async (jobId) => {
     if (joins.get(jobId) === "running") return "running";
     try {
@@ -603,13 +627,14 @@ export function makePreparationSupervisor(options: {
         },
       );
     } catch {
-      return joins.get(jobId) ?? "unknown";
+      return "unknown";
     }
   };
   const unreleasedJobs = async () => {
     const held: string[] = [];
     for (const id of await preparationLifecycleJobIds(options.baseDir)) {
       if (joins.get(id) === "running") continue;
+      if (await readTerminalRelease(options.baseDir, id)) continue;
       const join = await reconcile(id);
       if (
         join === "unknown" ||
@@ -626,6 +651,8 @@ export function makePreparationSupervisor(options: {
     inspect: (jobId) => joins.get(jobId) ?? "unknown",
     reconcile,
     unreleasedJobs,
+    requestSweep: cleanup.request,
+    sweepIfNeeded: cleanup.flush,
     run: (job, runOptions) => start(job, { ...runOptions, jobId: NodeCrypto.randomUUID() }).outcome,
     sweep,
   };

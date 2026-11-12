@@ -23,6 +23,9 @@ import {
 import { preparationLifecycle } from "../preparation/lifecycle.ts";
 import { preparationJobsDirectory } from "../preparation/protocol.ts";
 import { sweepPreparationLeftovers } from "../preparation/sweep.ts";
+import { sourceWorkerCommand } from "../preparation/Preparation.testkit.ts";
+import { withQualifiedRuntimeLock } from "../../cloud/qualifiedRuntime.ts";
+import { preparationJobLock } from "../preparation/protocol.ts";
 import { createOperationLedger } from "./ledger.ts";
 import { createTargetOperations } from "./operations.ts";
 import { createRecoveryPreflights } from "./recoveryPreflight.ts";
@@ -229,6 +232,7 @@ async function make(
     base,
     ledger,
     operations,
+    preparation,
     updater,
     install,
     receipt,
@@ -897,12 +901,8 @@ it.each(["transfer", "native-effects"] as const)(
       });
       try {
         const lifecycle = preparationLifecycle(f.base, jobId);
-        await lifecycle.reserve("stage");
-        await lifecycle.launch({
-          kind: "stage",
-          state: "started",
-          worker: { pid, processGroup: pid },
-        });
+        const launch = await lifecycle.reserve("stage");
+        await launch.started({ pid, processGroup: pid });
         await lifecycle.effects(pid, phase);
         const scratch = NodePath.join(preparationJobsDirectory(f.base), jobId);
         await NodeFSP.mkdir(scratch, { recursive: true });
@@ -989,6 +989,40 @@ it("holds interrupted stage publication even after the worker is gone", async ()
     await f.operations.reconcile();
     expect(await f.receipt()).toMatchObject({ phase: "held", code: "adoption-unconfirmed" });
     expect(f.updater.admissionHeld()).toBe(true);
+  }));
+
+it("keeps adoption admission held when a later scan proves worker release", async () =>
+  fixture(async (f) => {
+    const jobId = NodeCrypto.randomUUID();
+    let unresolved = [jobId];
+    const preparation: PreparationSupervisor = {
+      ...f.preparation,
+      unreleasedJobs: async () => unresolved,
+      requestSweep: vi.fn(),
+    };
+    const operations = createTargetOperations({
+      key: f.base,
+      ledger: f.ledger,
+      updater: f.updater,
+      preparation,
+      refreshPolicy: f.refreshPolicy,
+      install: f.install,
+      reconcileNative: f.reconcileNative,
+      onFailure: () => {},
+    });
+    await f.ledger.accept(input);
+    await f.ledger.transition(input.operationId, (r) => ({ ...r, phase: "running", jobId }));
+    await f.ledger.transition(input.operationId, (r) => ({ ...r, phase: "adopting" }));
+    await operations.reconcile();
+    unresolved = [];
+    await operations.reconcile();
+    expect(await f.receipt()).toMatchObject({ phase: "held", code: "adoption-unconfirmed" });
+    expect(f.updater.admissionHeld()).toBe(true);
+    expect((await operations.start({ ...input, operationId: NodeCrypto.randomUUID() })).code).toBe(
+      "busy",
+    );
+    expect(f.prepareCalls()).toBe(0);
+    expect(f.install).not.toHaveBeenCalled();
   }));
 
 it("lets adoption win a Stop race only after its durable marker and finishes with too-late", async () =>
@@ -1133,3 +1167,151 @@ it.each(["prepare", "handoff"] as const)(
       },
     ),
 );
+
+it("creates no idle or standing-hold sweep jobs, then coalesces release into one cleanup", async () =>
+  fixture(async (f) => {
+    const jobId = "66666666-6666-4666-8666-666666666666";
+    const lifecycle = preparationLifecycle(f.base, jobId);
+    const launch = await lifecycle.reserve("stage");
+    const pid = 54321;
+    await launch.started({ pid, processGroup: pid });
+    await lifecycle.effects(pid, "transfer");
+    const scratch = NodePath.join(preparationJobsDirectory(f.base), jobId);
+    await NodeFSP.mkdir(scratch, { recursive: true });
+    const kill = process.kill.bind(process);
+    let live = true;
+    const probe = vi.spyOn(process, "kill").mockImplementation((requested, signal) => {
+      if (signal === 0 && Math.abs(requested) === pid) {
+        if (live) return true;
+        throw Object.assign(new Error("Synthetic group absence."), { code: "ESRCH" });
+      }
+      return kill(requested, signal);
+    });
+    const preparation = makePreparationSupervisor({
+      baseDir: f.base,
+      cacheRoot: NodePath.join(f.base, "cache"),
+      command: sourceWorkerCommand,
+    });
+    // The worker must see a deterministic standing hold too, independently of the parent probe.
+    const hold = () =>
+      withQualifiedRuntimeLock(f.base, preparationJobLock(jobId), async () => {
+        const operations = createTargetOperations({
+          key: f.base,
+          ledger: f.ledger,
+          updater: f.updater,
+          preparation,
+          refreshPolicy: f.refreshPolicy,
+          install: f.install,
+          reconcileNative: f.reconcileNative,
+          onFailure: () => {},
+        });
+        await operations.sweep(); // Startup demand, despite the hold.
+        const history = NodePath.join(f.base, "runtime", "jones-preparation", "lifecycle");
+        const names = async () =>
+          (await NodeFSP.readdir(history))
+            .filter((name) => !name.endsWith(".effects.json"))
+            .toSorted();
+        const locks = async () =>
+          (await NodeFSP.readdir(NodePath.join(f.base, "runtime", "jones-preparation")))
+            .filter((name) => name.startsWith("job-owner-"))
+            .toSorted();
+        const first = await names();
+        const firstLocks = await locks();
+        expect(first).toHaveLength(2); // Held job and exactly one startup sweep.
+        for (let tick = 0; tick < 20; tick++) await operations.sweep();
+        expect(await names()).toEqual(first);
+        expect(await locks()).toEqual(firstLocks);
+        expect(f.updater.admissionHeld()).toBe(true);
+        return { operations, names, locks };
+      });
+    try {
+      const { operations, names, locks } = await hold();
+      live = false;
+      await Promise.all([operations.sweep(), operations.sweep(), operations.sweep()]);
+      expect(await names()).toHaveLength(3);
+      expect(await locks()).toHaveLength(3);
+      expect(f.updater.admissionHeld()).toBe(false);
+      await expect(NodeFSP.stat(scratch)).rejects.toMatchObject({ code: "ENOENT" });
+      const idle = await names();
+      for (let tick = 0; tick < 20; tick++) await operations.sweep();
+      expect(await names()).toEqual(idle);
+    } finally {
+      probe.mockRestore();
+    }
+  }));
+
+it("preserves holds and cleanup demand when reconciliation fails", async () =>
+  fixture(async (f) => {
+    let fail = false;
+    let held = ["77777777-7777-4777-8777-777777777777"];
+    const requestSweep = vi.fn();
+    const sweepIfNeeded = vi.fn(async () => {});
+    const preparation: PreparationSupervisor = {
+      ...f.preparation,
+      unreleasedJobs: async () => {
+        if (fail) throw new Error("Synthetic lifecycle read failure.");
+        return held;
+      },
+      requestSweep,
+      sweepIfNeeded,
+    };
+    const operations = createTargetOperations({
+      key: f.base,
+      ledger: f.ledger,
+      updater: f.updater,
+      preparation,
+      refreshPolicy: f.refreshPolicy,
+      install: f.install,
+      reconcileNative: f.reconcileNative,
+      onFailure: () => {},
+    });
+    await operations.reconcile();
+    fail = true;
+    await expect(operations.sweep()).rejects.toThrow("Synthetic lifecycle read failure.");
+    expect(f.updater.admissionHeld()).toBe(true);
+    expect(requestSweep).toHaveBeenCalledTimes(1);
+    expect(sweepIfNeeded).not.toHaveBeenCalled();
+    fail = false;
+    held = [];
+    await operations.sweep();
+    expect(f.updater.admissionHeld()).toBe(false);
+    expect(requestSweep).toHaveBeenCalledTimes(2);
+    expect(sweepIfNeeded).toHaveBeenCalledTimes(1);
+  }));
+
+it("tracks newly found lifecycle holds even when the subsequent ledger scan fails", async () =>
+  fixture(async (f) => {
+    const id = "88888888-8888-4888-8888-888888888888";
+    let unresolved = [id];
+    let fail = true;
+    const requestSweep = vi.fn();
+    const preparation: PreparationSupervisor = {
+      ...f.preparation,
+      unreleasedJobs: async () => unresolved,
+      requestSweep,
+      sweepIfNeeded: async () => {},
+    };
+    const operations = createTargetOperations({
+      key: f.base,
+      ledger: {
+        ...f.ledger,
+        listUnsettled: async function* () {
+          if (fail) throw new Error("Synthetic ledger read failure.");
+          yield* f.ledger.listUnsettled();
+        },
+      },
+      updater: f.updater,
+      preparation,
+      refreshPolicy: f.refreshPolicy,
+      install: f.install,
+      reconcileNative: f.reconcileNative,
+      onFailure: () => {},
+    });
+    await expect(operations.reconcile()).rejects.toThrow("Synthetic ledger read failure.");
+    expect(f.updater.admissionHeld()).toBe(true);
+    unresolved = [];
+    fail = false;
+    await operations.sweep();
+    expect(f.updater.admissionHeld()).toBe(false);
+    expect(requestSweep).toHaveBeenCalledTimes(2);
+  }));

@@ -8,7 +8,11 @@ import {
   withQualifiedRuntimeLock,
 } from "../../cloud/qualifiedRuntime.ts";
 import { ownedScratchRemover } from "../../cloud/ownedScratch.ts";
-import { preparationLifecycle, preparationLifecycleJobIds } from "./lifecycle.ts";
+import {
+  preparationLifecycle,
+  preparationLifecycleJobIds,
+  readTerminalRelease,
+} from "./lifecycle.ts";
 import {
   isPreparationJobId,
   preparationJobLock,
@@ -163,6 +167,7 @@ export async function sweepPreparationLeftovers(input: {
 
   for (const id of await preparationLifecycleJobIds(baseDir)) {
     if (id === input.keepJob) continue;
+    if (await readTerminalRelease(baseDir, id)) continue;
     try {
       const release = await withQualifiedRuntimeLock(baseDir, preparationJobLock(id), () =>
         preparationLifecycle(baseDir, id).release(),

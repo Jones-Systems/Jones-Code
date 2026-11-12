@@ -1,3 +1,5 @@
+import { ContextHandoffDeliveryUncertainError } from "./ContextHandoffDelivery.ts";
+import { promptWasNotApplied } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import * as CheckoutRecreation from "../jones/workspaceRecreation/Runtime.ts";
 import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
@@ -48,8 +50,8 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 import {
   CommandId,
   latestProviderTurnForAttempt,
-  type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
@@ -1870,7 +1872,7 @@ export const layer: Layer.Layer<
                     threadId: projection.thread.id,
                     providerThreadId: providerThread.id,
                     runId,
-                    cause: "Uncertain native history injection",
+                    cause: new ContextHandoffDeliveryUncertainError(),
                   }),
                 )
               : session.resumeThread({
@@ -2276,7 +2278,9 @@ export const layer: Layer.Layer<
       const startWithConfiguredEffort = (
         turnInput: Parameters<typeof session.startTurn>[0],
         compact = false,
+        unsent = Effect.void,
       ) => {
+        let nativeStartEntered = false;
         const startWithConfiguredEffortEffect = Effect.fn(
           "ProviderTurnStartService.startWithConfiguredEffort",
         )(
@@ -2336,7 +2340,7 @@ export const layer: Layer.Layer<
               }
             }
             // A settings read can outlive the attempt. Never dispatch its stale prompt.
-            if (!(yield* isCurrentAttemptInStatus("running"))) return;
+            if (!(yield* isCurrentAttemptInStatus("running"))) return yield* unsent;
             const stopRuntimeGeneration = loadedProviderThread.runtimeIdentity?.runtimeGeneration;
             dispatchInput = {
               ...dispatchInput,
@@ -2378,6 +2382,7 @@ export const layer: Layer.Layer<
                   : { runtimeGeneration: stopRuntimeGeneration }),
               });
             yield* assertContinuity();
+            nativeStartEntered = true;
             yield* start(dispatchInput).pipe(
               Effect.provideService(RequiredNativeSession, requiredNativeSession),
             );
@@ -2394,10 +2399,13 @@ export const layer: Layer.Layer<
                 }),
           ),
         );
-        return startWithConfiguredEffortEffect();
+        return startWithConfiguredEffortEffect().pipe(
+          Effect.onError(() => (nativeStartEntered ? Effect.void : unsent)),
+        );
       };
       const persistHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (
         handoff: OrchestrationV2ContextHandoff,
+        restoring = false,
       ) {
         const updatedAt = yield* DateTime.now;
         yield* eventSink.write({
@@ -2411,7 +2419,8 @@ export const layer: Layer.Layer<
               runId: run.id,
               providerInstanceId: run.providerInstanceId,
               occurredAt: updatedAt,
-              payload: { ...handoff, updatedAt },
+              // A restore returns the marker exactly as it was before injection.
+              payload: restoring ? handoff : { ...handoff, updatedAt },
             },
           ],
         });
@@ -2453,6 +2462,32 @@ export const layer: Layer.Layer<
                 }),
             ),
           );
+          const restoreHandoff = Effect.fn("ProviderTurnStartService.restoreHandoff")(function* (
+            handoff: OrchestrationV2ContextHandoff,
+          ) {
+            // Cleanup checks ownership, not new-start admission: Stop may have closed it.
+            const current = yield* projectionStore.getRuntimeRecoveryProjection(input.threadId);
+            const currentRun = current.runs.find((candidate) => candidate.id === run.id);
+            const currentThread = current.providerThreads.find(
+              (candidate) => candidate.id === providerThread.id,
+            );
+            if (
+              currentRun?.activeAttemptId !== attempt.id ||
+              currentRun.providerThreadId !== providerThread.id ||
+              currentThread?.providerSessionId !== runningProviderThread.providerSessionId ||
+              currentThread.nativeThreadRef?.nativeId !==
+                runningProviderThread.nativeThreadRef?.nativeId ||
+              currentThread.runtimeIdentity?.runtimeGeneration !==
+                runningProviderThread.runtimeIdentity?.runtimeGeneration
+            )
+              return yield* new ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: input.threadId,
+                providerThreadId: providerThread.id,
+                runId,
+              });
+            yield* persistHandoff(handoff, true);
+          }, guardClaim);
           const delivery = yield* deliverWithHandoffRecovery(
             {
               handoffs: [...effectiveHandoffs, ...retryHandoff],
@@ -2470,6 +2505,7 @@ export const layer: Layer.Layer<
                       }),
                   }),
               persist: persistHandoff,
+              restore: restoreHandoff,
             },
             {
               input: turnInput,
@@ -2479,7 +2515,21 @@ export const layer: Layer.Layer<
               reclaimableBudget: handoffContext.reclaimableBudget,
             },
           );
-          if (!(yield* isCurrentAttemptInStatus("running"))) return;
+          let promptWasUnsent = false;
+          const restoreUnsent = Effect.sync(() => {
+            promptWasUnsent = true;
+          }).pipe(
+            Effect.andThen(delivery.unsent),
+            Effect.catchCause(() =>
+              Effect.logWarning("Failed to restore unsent context handoffs", {
+                runId: run.id,
+              }),
+            ),
+          );
+          const stillCurrent = yield* isCurrentAttemptInStatus("running").pipe(
+            Effect.onError(() => restoreUnsent),
+          );
+          if (!stillCurrent) return yield* restoreUnsent;
           // Like history, the side chat context waits for a turn that sends a prompt.
           const sideChatContext =
             sideChatHandoff === undefined || compact || goalCommand
@@ -2498,46 +2548,41 @@ export const layer: Layer.Layer<
                   userText,
                 }),
             compact,
+            restoreUnsent,
           ).pipe(
-            // Clear pending handoff markers for refused prompts so the next turn retains the native session.
+            // The refused prompt never reached the provider. Restore this call's
+            // inline markers so preservation can resume the same native session.
             Effect.tapError((error) =>
-              refusedBeforePrompt(error)
-                ? delivery.unsent.pipe(
-                    Effect.catchCause(() =>
-                      Effect.logWarning("Failed to restore unsent context handoffs", {
-                        runId: run.id,
-                      }),
-                    ),
-                  )
+              refusedBeforePrompt(error) || promptWasNotApplied(error)
+                ? restoreUnsent
                 : Effect.void,
             ),
           );
-          // After provider acceptance, failed delivery bookkeeping must not stop live ingestion.
-          const nativeThreadId = runningProviderThread.nativeThreadRef?.nativeId;
-          yield* Effect.forEach(
-            [
-              delivery.delivered,
-              ...(sideChatContext === "" || sideChatHandoff === undefined || nativeThreadId == null
-                ? []
-                : [
-                    persistHandoff({
-                      ...sideChatHandoff,
-                      toProviderThreadId: runningProviderThread.id,
-                      delivery: { nativeThreadId, status: "inline" as const, itemIds: [] },
-                    }),
-                  ]),
-            ],
-            (record) =>
-              record.pipe(
-                Effect.catchCause(() =>
-                  Effect.logWarning("Failed to record accepted context handoff delivery", {
-                    runId: run.id,
-                    deliveryStatus: "pending",
-                  }),
-                ),
+          if (promptWasUnsent) return;
+          // The provider already accepted the turn. A failed metadata write must
+          // retain the pending fence without stopping live ingestion. A guarded
+          // native creation still observes its own delivery write failure.
+          const logAcceptedDeliveryFailure = <E, R>(record: Effect.Effect<void, E, R>) =>
+            record.pipe(
+              Effect.catchCause(() =>
+                Effect.logWarning("Failed to record accepted context handoff delivery", {
+                  runId: run.id,
+                  deliveryStatus: "pending",
+                }),
               ),
-            { discard: true },
-          );
+            );
+          yield* input.nativeCreationGuard === undefined
+            ? logAcceptedDeliveryFailure(delivery.delivered)
+            : delivery.delivered;
+          const nativeThreadId = runningProviderThread.nativeThreadRef?.nativeId;
+          if (sideChatContext !== "" && sideChatHandoff !== undefined && nativeThreadId != null)
+            yield* logAcceptedDeliveryFailure(
+              persistHandoff({
+                ...sideChatHandoff,
+                toProviderThreadId: runningProviderThread.id,
+                delivery: { nativeThreadId, status: "inline" as const, itemIds: [] },
+              }),
+            );
         },
         Effect.scoped,
         Effect.mapError((cause) =>
