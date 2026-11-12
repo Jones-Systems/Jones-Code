@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
@@ -126,10 +127,12 @@ function makeFixture(
           }),
         )
       : fault === "read" || fault === "read-persist" || fault === "read-stale"
-        ? Effect.fail(new ExecutionSessionRevalidationUnavailableError({
-            runId: projection.runs[0]!.id,
-            cause: new Error("private database read"),
-          }))
+        ? Effect.fail(
+            new ExecutionSessionRevalidationUnavailableError({
+              runId: projection.runs[0]!.id,
+              cause: new Error("private database read"),
+            }),
+          )
         : Effect.void,
   ).pipe(
     Effect.tap(
@@ -227,7 +230,7 @@ it.effect("a failed read after retirement stays unavailable rather than a select
   Effect.gen(function* () {
     const fixture = makeFixture("restart_and_resume", "read");
     const error = yield* Effect.flip(fixture.start);
-    assert.isTrue(error instanceof ExecutionSessionRevalidationUnavailableError);
+    assert.isTrue(Schema.is(ExecutionSessionRevalidationUnavailableError)(error));
     assert.notInclude(String(error), "selection changed");
     assert.notInclude(String(error), "private database read");
     assert.deepEqual(fixture.order, ["detach", "persist"]);
@@ -246,8 +249,8 @@ it.effect.each(["read-persist", "read-stale"] as const)(
       const error = yield* Effect.flip(fixture.start);
       assert.isTrue(
         fault === "read-persist"
-          ? error instanceof Sink.EventSinkWriteError
-          : error instanceof ExecutionSessionRevalidationError,
+          ? Schema.is(Sink.EventSinkWriteError)(error)
+          : Schema.is(ExecutionSessionRevalidationError)(error),
       );
       assert.deepEqual(fixture.order, ["detach", "persist"]);
       assert.equal(fixture.writes[0]!.expectedStatus, "starting");

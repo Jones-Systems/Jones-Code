@@ -478,55 +478,57 @@ effectIt.effect.each([
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-function makeLocalCommandHarness(input: ReaderAdmissionHarnessInput & {
-  readonly conversationLayer?: Layer.Layer<ConversationPolicy.ConversationPolicy>;
-  readonly conversationDriver?: string;
-  readonly continuityRequirement?: ContinuityRequirement;
-  readonly text: string;
-  readonly driver?: "codex" | "claudeAgent";
-  readonly goal?: OrchestrationV2ThreadProjection["providerThreads"][number]["goal"];
-  readonly worktreePath?: string;
-  readonly worktreesDir?: string;
-  readonly fileSystem?: FileSystem.FileSystem;
-  readonly recreation?: RecreationFixtureBinding;
-  readonly previousNativeSession?: boolean;
-  readonly previousMessages?: ReadonlyArray<string>;
-  readonly keepWarm?: boolean;
-  readonly liveKeepWarmSession?: boolean;
-  readonly plannedResume?: "same" | "changed";
-  readonly nativeResume?: "same" | "changed" | "missing";
-  readonly handoffRecovery?: {
-    readonly compact?: ProviderAdapter.ProviderAdapterV2SessionRuntime["compactForContextHandoff"];
-    readonly usedTokens?: number;
-  };
-  readonly effortProof?: {
-    readonly selection?: ModelSelection;
-    readonly models: ReadonlyArray<ServerProviderModel>;
-    readonly getSettings: ServerSettings.ServerSettingsService["Service"]["getSettings"];
-    readonly beforeDispatch?: Effect.Effect<void>;
-    readonly duringHandoff?: Effect.Effect<void>;
-  };
-  readonly logoutFailure?: string;
-  readonly openFailure?: unknown;
-  readonly retirementFailure?: unknown;
-  readonly ensureThreadFailure?: unknown;
-  readonly historyReadFailureAfterFallback?: unknown;
-  readonly unknownResumeBinding?: boolean;
-  readonly resumeFailure?: unknown;
-  readonly interruptOpen?: boolean;
-  readonly interruptRunBeforeOpenFailure?: boolean;
-  readonly writeFailure?: unknown;
-  readonly failReadsAfterRunning?: boolean;
-  readonly previousTurn?: {
-    readonly runStatus: "failed" | "completed";
-    readonly turnStatus: "running" | "completed" | "interrupted";
-    readonly differentThread?: boolean;
-    readonly liveSession?: boolean;
-    readonly interruptFailure?: boolean;
-    readonly interruptCause?: unknown;
-    readonly interruptCurrentRun?: boolean;
-  };
-}) {
+function makeLocalCommandHarness(
+  input: ReaderAdmissionHarnessInput & {
+    readonly conversationLayer?: Layer.Layer<ConversationPolicy.ConversationPolicy>;
+    readonly conversationDriver?: string;
+    readonly continuityRequirement?: ContinuityRequirement;
+    readonly text: string;
+    readonly driver?: "codex" | "claudeAgent";
+    readonly goal?: OrchestrationV2ThreadProjection["providerThreads"][number]["goal"];
+    readonly worktreePath?: string;
+    readonly worktreesDir?: string;
+    readonly fileSystem?: FileSystem.FileSystem;
+    readonly recreation?: RecreationFixtureBinding;
+    readonly previousNativeSession?: boolean;
+    readonly previousMessages?: ReadonlyArray<string>;
+    readonly keepWarm?: boolean;
+    readonly liveKeepWarmSession?: boolean;
+    readonly plannedResume?: "same" | "changed";
+    readonly nativeResume?: "same" | "changed" | "missing";
+    readonly handoffRecovery?: {
+      readonly compact?: ProviderAdapter.ProviderAdapterV2SessionRuntime["compactForContextHandoff"];
+      readonly usedTokens?: number;
+    };
+    readonly effortProof?: {
+      readonly selection?: ModelSelection;
+      readonly models: ReadonlyArray<ServerProviderModel>;
+      readonly getSettings: ServerSettings.ServerSettingsService["Service"]["getSettings"];
+      readonly beforeDispatch?: Effect.Effect<void>;
+      readonly duringHandoff?: Effect.Effect<void>;
+    };
+    readonly logoutFailure?: string;
+    readonly openFailure?: unknown;
+    readonly retirementFailure?: unknown;
+    readonly ensureThreadFailure?: unknown;
+    readonly historyReadFailureAfterFallback?: unknown;
+    readonly unknownResumeBinding?: boolean;
+    readonly resumeFailure?: unknown;
+    readonly interruptOpen?: boolean;
+    readonly interruptRunBeforeOpenFailure?: boolean;
+    readonly writeFailure?: unknown;
+    readonly failReadsAfterRunning?: boolean;
+    readonly previousTurn?: {
+      readonly runStatus: "failed" | "completed";
+      readonly turnStatus: "running" | "completed" | "interrupted";
+      readonly differentThread?: boolean;
+      readonly liveSession?: boolean;
+      readonly interruptFailure?: boolean;
+      readonly interruptCause?: unknown;
+      readonly interruptCurrentRun?: boolean;
+    };
+  },
+) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
   const runId = RunId.make("run-native-account-command");

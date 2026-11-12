@@ -1044,11 +1044,13 @@ export const layer: Layer.Layer<
         },
       );
       const revalidateReplacement = Effect.gen(function* () {
-        const current = yield* projectionStore.getRuntimeRecoveryProjection(run.threadId).pipe(
-          Effect.mapError(
-            (cause) => new ExecutionSessionRevalidationUnavailableError({ runId, cause }),
-          ),
-        );
+        const current = yield* projectionStore
+          .getRuntimeRecoveryProjection(run.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new ExecutionSessionRevalidationUnavailableError({ runId, cause }),
+            ),
+          );
         const latest = current.runs.find((candidate) => candidate.id === run.id);
         if (
           latest?.activeAttemptId !== attempt.id ||
