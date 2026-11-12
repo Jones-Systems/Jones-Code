@@ -1,4 +1,7 @@
-import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/target-status";
+import {
+  jonesCheckOutcome,
+  jonesTargetStatus,
+} from "@t3tools/client-runtime/jones/updates/target-status";
 import {
   prepareReviewedInstall,
   resolveDownloadAction,
@@ -312,7 +315,7 @@ export function JonesUpdateControls({
         }
         actionError={actionError}
         layout={layout}
-        check={status.check}
+        check={jonesCheckOutcome(observation.state)}
         operation={
           status.operation === undefined
             ? undefined

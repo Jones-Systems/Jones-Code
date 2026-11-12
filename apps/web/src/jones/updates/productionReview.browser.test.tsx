@@ -306,6 +306,34 @@ describe("production web review authority", () => {
     expect(h.legacy).not.toHaveBeenCalled();
     expect(h.native).not.toHaveBeenCalled();
   });
+  it("dates a Connections failure by its check, then clears stale failure after a successful recheck", async () => {
+    await using _fixture = await fixture();
+    const { a } = hosts();
+    const failed = {
+      ...h.observations.get(a)!.state!,
+      phase: "no-new" as const,
+      checkClassification: { kind: "failure" as const, checkedAt: "2026-11-10T15:00:00Z" },
+      lastCheck: { outcome: "failed" as const, at: "2026-11-10T15:05:00Z" },
+    };
+    h.observations.set(a, { state: failed, freshness: "fresh" });
+    await draw("connections", a);
+    expect(container.textContent).toContain(
+      "The update check failed. Check the connection or authentication. Checked Nov 10, 2026, 10:05 AM EST.",
+    );
+    h.observations.set(a, {
+      state: { ...failed, lastCheck: { outcome: "succeeded", at: "2026-11-10T15:10:00Z" } },
+      freshness: "fresh",
+    });
+    await draw("connections", a);
+    await click("Details");
+    expect(container.textContent).not.toContain("The update check failed.");
+    const { lastCheck: _lastCheck, ...oldHost } = failed;
+    h.observations.set(a, { state: oldHost, freshness: "fresh" });
+    await draw("connections", a);
+    expect(container.textContent).toContain(
+      "The update check failed. Check the connection or authentication. Checked Nov 10, 2026, 10:00 AM EST.",
+    );
+  });
   it("does not open Connections confirmation for an already-running stage", async () => {
     await using _fixture = await fixture();
     const { a } = hosts();

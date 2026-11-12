@@ -18,6 +18,39 @@ const checkText = {
   failure: "The update check failed. Check the connection or authentication.",
 } as const;
 
+const checkTime = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+export function jonesCheckOutcome(state: JonesUpdateState | null) {
+  const classification = state?.checkClassification;
+  const lastCheck = state?.lastCheck;
+  const failed = lastCheck?.outcome === "failed";
+  if (
+    !failed &&
+    (classification === undefined ||
+      (lastCheck?.outcome === "succeeded" && classification.kind === "failure"))
+  )
+    return undefined;
+  const kind = failed ? "failure" : classification!.kind;
+  const checkedAt = failed ? lastCheck.at : classification!.checkedAt;
+  const timestamp = Date.parse(checkedAt);
+  return {
+    kind,
+    text: Number.isFinite(timestamp)
+      ? `${checkText[kind]} Checked ${checkTime.format(timestamp)}.`
+      : checkText[kind],
+    checkedAt,
+    bounded: classification?.discovery?.bounded ?? false,
+  };
+}
+
 export interface JonesTargetStatusOptions {
   readonly canOperate?: boolean;
   readonly targetSource?: string;

@@ -194,6 +194,33 @@ afterEach(() => {
 });
 
 describe("mobile host update controls", () => {
+  it("shows a dated failed check without classification and clears generic failure after success", async () => {
+    const failed = {
+      ...state(),
+      phase: "no-new" as const,
+      lastCheck: {
+        outcome: "failed" as const,
+        at: "2026-07-10T15:05:00Z",
+        reason: "Private synthetic host reason",
+      },
+    };
+    await render(failed);
+    expect(container.textContent).toContain(
+      "The update check failed. Check the connection or authentication. Checked Jul 10, 2026, 11:05 AM EDT.",
+    );
+    expect(container.textContent).not.toContain(failed.lastCheck.reason);
+    const classified = {
+      ...failed,
+      checkClassification: { kind: "failure" as const, checkedAt: stamp },
+    };
+    await render(classified);
+    expect(container.textContent).toContain("The update check failed.");
+    await render({
+      ...classified,
+      lastCheck: { outcome: "succeeded", at: "2026-07-10T15:10:00Z" },
+    });
+    expect(container.textContent).not.toContain("The update check failed.");
+  });
   it("disables a tree-only already-running stage without Alert or dispatch and keeps protected messages", async () => {
     const staged = { ...state(true), stagedAlreadyRunning: true as const };
     const message = "The downloaded build is already running on this host. Nothing to install.";
