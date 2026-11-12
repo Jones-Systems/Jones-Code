@@ -205,6 +205,13 @@ overrides:
   "ws@^8": "catalog:"
   vite: "catalog:"
   vite-plus: "catalog:"
+  # Jones: the root `typescript` is the tsc-rs alias at 0.8.0, outside the range of
+  # Vite+'s optional `typescript` peer. pnpm then installs typescript 6 for that peer
+  # in every package without its own `typescript`, so those packages load a second
+  # vite-plus and vitest beside the root runner's and root-run tests cannot find
+  # their suite. Accepting any version keeps the root's compiler as the peer.
+  # Remove this together with the root `typescript` alias.
+  "@voidzero-dev/vite-plus-core>typescript": "*"
   yaml: "catalog:"
 
 packageExtensions:
