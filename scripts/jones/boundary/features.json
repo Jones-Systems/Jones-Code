@@ -4,6 +4,11 @@
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "features": [
     {
+      "id": "workspace-preparation-reads",
+      "tests": ["apps/server/src/jones/orchestration/WorkspacePreparationRead.test.ts"],
+      "scope": "Workspace preparation progress, release, failure and retry snapshot reads retry tagged SQLite reader-admission failures at most twice before deciding events. Other commands and permanent read errors retain single-attempt behavior. The Orchestrator hook preserves the original cause and never retries command dispatch, setup, commits or provider effects. The integration test releases a real deferred run after injected read congestion and verifies same-command replay produces exactly one provider start outbox entry. No reader-pool limits, schema, wire, provider or client behavior changes."
+    },
+    {
       "id": "superseded-terminal-history",
       "tests": [
         "apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts",

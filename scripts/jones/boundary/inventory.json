@@ -3140,7 +3140,10 @@
     "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts": "jones-owned",
     "apps/server/src/cloud/ConnectReachability.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/connection/diagnosis.test.ts": "jones-tests-in-upstream",
-    "docs/user/t3-connect-troubleshooting.md": "policy"
+    "docs/user/t3-connect-troubleshooting.md": "policy",
+    "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/WorkspacePreparationRead.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/workspace-preparation-reads.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -4201,6 +4204,10 @@
     {
       "from": "apps/server/src/binMain.ts",
       "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts"
     }
   ]
 }
