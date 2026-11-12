@@ -7,6 +7,9 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/WorkspacePreparationRead.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/workspace-preparation-reads.json": "jones-owned",
     "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.ts": "jones-owned",
     "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.testkit.ts": "jones-owned",
@@ -3027,6 +3030,10 @@
     "scripts/jones/boundary/fragments/experimental-typecheck.json"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts"
+    },
     {
       "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
       "to": "apps/server/src/jones/workspaceRetirement/ProjectProduction.ts"
