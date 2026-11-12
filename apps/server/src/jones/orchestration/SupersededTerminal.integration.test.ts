@@ -1,9 +1,10 @@
 import { it } from "@effect/vitest";
 import { historyScenario } from "./HistoricalTerminalHistory.testkit.ts";
 
-it.effect(
-  "retains the old account terminal when restart selects another account's provider thread",
-  () => historyScenario({ mode: "superseded-rebound-session", accountSwitch: true }),
+it.effect.each([false, true])(
+  "retains the old terminal when restart selects another account, reused account: %s",
+  (reusedAccount) =>
+    historyScenario({ mode: "superseded-rebound-session", accountSwitch: true, reusedAccount }),
 );
 
 it.effect.each([false, true])(
@@ -12,8 +13,16 @@ it.effect.each([false, true])(
     historyScenario({ mode: "failed-replacement", accountSwitch: true, reusedAccount }),
 );
 
-it.effect.each(["session", "instance", "conversation", "generation", "revision"] as const)(
-  "refuses account-switch history after replacement %s drift",
+it.effect.each([
+  "session",
+  "instance",
+  "conversation",
+  "generation",
+  "revision",
+  "old-session",
+  "old-instance",
+] as const)(
+  "refuses account-switch history after %s drift",
   (replacementChange) =>
     historyScenario({
       mode: "changed-replacement",

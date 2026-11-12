@@ -109,7 +109,14 @@ export const historyScenario = ({
   readonly readback?: "found" | "missing" | "unavailable" | "mismatched";
   readonly accountSwitch?: boolean;
   readonly reusedAccount?: boolean;
-  readonly replacementChange?: "session" | "instance" | "conversation" | "generation" | "revision";
+  readonly replacementChange?:
+    | "session"
+    | "instance"
+    | "conversation"
+    | "generation"
+    | "revision"
+    | "old-session"
+    | "old-instance";
   readonly logicalCompanion?: boolean;
 }) => {
   const ordinaryRace = mode.startsWith("ordinary-") || normalizationFailure;
@@ -726,10 +733,10 @@ export const historyScenario = ({
       yield* sink.write({
         events: [
           event("changed-replacement", "provider-thread.updated", {
-            ...rebound,
-            ...(replacementChange === "session"
+            ...(replacementChange.startsWith("old-") ? providerThread : rebound),
+            ...(replacementChange === "session" || replacementChange === "old-session"
               ? { providerSessionId: ProviderSessionId.make("session:changed") }
-              : replacementChange === "instance"
+              : replacementChange === "instance" || replacementChange === "old-instance"
                 ? { providerInstanceId: ProviderInstanceId.make("codex_changed") }
                 : replacementChange === "conversation"
                   ? {

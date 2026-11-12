@@ -804,8 +804,7 @@ export const layer: Layer.Layer<
         Effect.fnUntraced(
           function* (input) {
             if (
-              (input.event.type === "provider_turn.updated" ||
-                input.event.type === "turn.terminal") &&
+              input.event.type === "provider_turn.updated" &&
               !isHistoricalTerminalCandidate(input.event)
             )
               yield* SupersededTerminalTrace.recordTerminalRejection(
