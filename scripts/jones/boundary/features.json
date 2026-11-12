@@ -19,9 +19,11 @@
         "scripts/jones/direct-producers/completion.node-test.mjs",
         "native/process-placement/build.test.mjs",
         "scripts/jones/direct-producers/finite-production.test.ts",
-        "scripts/jones/direct-producers/finite-production.node-test.mjs"
+        "scripts/jones/direct-producers/finite-production.node-test.mjs",
+        "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts",
+        "scripts/jones/direct-producers/resolve.test.ts"
       ],
-      "scope": "Process-placement compiler errors wait for native close; optional completion observes known success/failure/drained cancellation after scratch cleanup, and metadata failure preserves the native result. Existing output names, compiler arguments, manifests and cleanup behavior are preserved. Completion reuses the 64 KiB/100 ms observation sink, with content proof deferred and allocation_disposition_not_observed explicit. Server build/build-exe now admit one exact in-checkout dist or dist-exe durable ProducerFinalizer duty before allocation and finalize after the whole existing operation and its owned child scope. Known native results remain independent of bookkeeping; leader-only completion retains writer_completion_not_observed, and unknown terminal/interruption keeps the active duty. Command diagnostics expose exact id/root/path/reason independently of optional capture. No content proof is requested. Standalone bundle, web, desktop, watch, MJS and external-root integration remain open. The scripts package test command adds the focused Node test discovery path."
+      "scope": "Process-placement compiler errors wait for native close; optional completion observes known success/failure/drained cancellation after scratch cleanup, and metadata failure preserves the native result. Existing output names, compiler arguments, manifests and cleanup behavior are preserved. Completion reuses the 64 KiB/100 ms observation sink, with content proof deferred and allocation_disposition_not_observed explicit. Server build/build-exe now admit one exact in-checkout dist or dist-exe durable ProducerFinalizer duty before allocation and finalize after the whole existing operation and its owned child scope. Known native results remain independent of bookkeeping; leader-only completion retains writer_completion_not_observed, and unknown terminal/interruption keeps the active duty. Command diagnostics expose exact id/root/path/reason independently of optional capture. No content proof is requested. Standalone bundle, web, desktop, watch, MJS and external-root integration remain open. The scripts package test command adds the focused Node test discovery path. Additive versioned holder/revision records now track self, in-process settlement, closed spawn admission and durable per-spawn intent/session accounting under an actual reservation and CAS. Guarded allocation-only resolution preserves unknown native terminals, proof and unrelated duties. Same-key admission, target Runtime evaluation and the explicit --worktree/--json resolver share that owner. Bounded capacity recovery validates exact durable successors, retains open legacy, unsupported and malformed records, and advances an advisory cursor outside the reader directory. Darwin spawned-session absence remains darwin_unpublished_allocation_unproved; Linux quiet census remains unknown without installed-build/visibility qualification. No AC-2 or host closure is claimed."
     },
     {
       "id": "provider-node-deduplication",
@@ -1977,8 +1979,11 @@
     },
     {
       "id": "ci-dependency-setup",
-      "tests": ["scripts/jones/ci/chromium-setup.node-test.mjs"],
-      "scope": "CI resolves Chromium from each workspace, checks a real headless launch before installing system dependencies, and verifies a single repair attempt. Browser caching follows the upstream versioned key; native compiler and libsecret package setup is consolidated without changing tests or server sharding."
+      "tests": [
+        "scripts/jones/ci/chromium-setup.node-test.mjs",
+        "scripts/jones/ci/apt-setup.node-test.mjs"
+      ],
+      "scope": "CI resolves Chromium from each workspace, checks a real headless launch before installing system dependencies, and verifies a single repair attempt. Browser caching follows the upstream versioned key; native compiler and libsecret package setup is consolidated without changing tests or server sharding. Three primary Ubuntu dependency steps use strict signed refresh and download before offline install. Only proven transport failures or clean deadlines permit candidate-only isolated lists and archives, with exact source/keyring and cold index-target validation plus acquired freshness checks. An owned process-group gate proves termination before fallback or removal; cancellation and unknown cleanup stop. Injected tests cover route, trust, process and workspace boundaries; the Linux process regression runs in the existing CI Node test group. Candidate runner qualification remains required."
     },
     {
       "id": "child-input-navigation",
@@ -3537,6 +3542,36 @@
         "apps/server/src/jones/settlementRestore/plan.test.ts"
       ],
       "scope": "Every Jones reader of orchestration_events is classified as capture, tolerate or unaffected against upstream's event-log pruning rule (v1 events, thread.created, running run.updated and each stream's newest event stay; the rest older than a day goes; the pruned-through boundary is published first; receipts stay), and a source scan fails when a new reader is unclassified. Readers that would have read a missing event as absence fail closed: deletion admission, ordinary-checkout admission, settlement origins (unknown, never other, past the marker window) and the self-configuration selection revision, which never falls below the pruned-through sequence. Settlement origin rows older than 30 days are pruned by an indexed, batched sweep (Jones migration 146) started once for the server lifetime, and an interrupted origin recording now propagates instead of being absorbed. A rejected settlement restore travels as a typed error whose message keeps the client-visible wording. Fixtures prune synthetic history with the upstream keep rule; the upstream pruner, its maintenance preflight and the maintenance hooks are not part of this feature."
+    },
+    {
+      "id": "orphaned-run-records",
+      "tests": [
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.test.ts",
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.integration.test.ts",
+        "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+        "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts"
+      ],
+      "scope": "Startup recovery closes provider turns, nodes and their open turn items still pending or running under runs that already ended, or under a provider-native subagent's ended runless root turn, as interrupted. A Jones service selects candidates with Jones-owned read queries over upstream projection tables (live-node partial index, item node/provider-turn/run indexes) and commits one receipt per thread through EventSink.commitCommand with the command:runtime-reconcile:orphaned-records identity, so existing reactors ignore the closures and planned update continuity exempts the exact receipt. Anything under a run that has not ended stays open, including queued and held runs; async questions with pending message requests, todo lists, proposed plans, active subagent rows and background-capable items stay with their owners; deleted threads are skipped. The accepted-shared ProviderRuntimeRecoveryService gains one optional serviceOption hook after its startup loop; the runtimeLayer hook provides the service. Best effort, idempotent, no schema, index, payload or wire change."
+    },
+    {
+      "id": "held-queue-expiry",
+      "tests": [
+        "apps/server/src/jones/orchestration/QueueHoldReasons.test.ts",
+        "apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts",
+        "apps/server/src/jones/orchestration/QueueHold.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "scope": "Held queued runs record when and why they were held (stop, restart, provider_failure, inherited) in the sparse Jones table jones_queue_holds (Jones migration 147), keyed by upstream run ID with no reference to upstream tables. The accepted-shared EventSink writes and deletes those rows inside the transaction that appends the hold or release events, classifying them by event and command type (run.created behind held work, provider-runtime.reconcile, thread.stop and run.interrupt) or by an explicit intent on the provider-failure system write; no Jones field enters an upstream payload, event, column or wire contract. Releasing, cancelling or deleting a held run's thread removes its row; a missing table or row reads as a hold recorded before reasons existed. A completed restart continuation releases the restart holds recorded before it completed and the queue drains in order; Stop replaces a restart hold, Stop holds and failed or interrupted continuations release nothing, planned-update continuity keeps its own threads, and a new message still never releases a hold. After startup recovery and then hourly, held automatic messages older than T3CODE_HELD_QUEUE_EXPIRY_HOURS (default 24, age from the recorded hold or else the request time) are cancelled through queued-run.cancel, which disposes delegated-completion cohorts as a person's cancel does; client-typed user messages and unclassifiable messages never expire. Small EventSink.ts, Orchestrator.ts and server.ts hooks keep their upstream owners. Synthetic in-memory fixtures; no live-database or installed-runtime claim."
     }
   ]
 }

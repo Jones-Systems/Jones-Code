@@ -173,6 +173,15 @@ import {
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { transientSteerTarget } from "../jones/orchestration/TransientSteer.ts";
+import {
+  isCompletedRestartContinuation,
+  restartHoldsEndedBy,
+} from "../jones/orchestration/QueueHold.ts";
+import {
+  makeQueueHoldStore,
+  providerFailureQueueHold,
+  type QueueHoldIntent,
+} from "../jones/orchestration/QueueHoldStore.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
   derivePendingBackgroundWork,
@@ -1243,6 +1252,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
   const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
   const ownerSelections = makeOwnerSelectionStore(sql, makeJonesTablePresence(sql));
+  const queueHolds = makeQueueHoldStore(sql, makeJonesTablePresence(sql));
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
@@ -1487,7 +1497,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.fnUntraced(function* (
       events: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>,
       effects: ReadonlyArray<PendingOrchestrationEffectV2> = [],
-      options: { readonly updateDelegatedCompletionOnly?: boolean } = {},
+      options: {
+        readonly updateDelegatedCompletionOnly?: boolean;
+        readonly queueHold?: QueueHoldIntent;
+      } = {},
     ) {
       const withIds = yield* Effect.forEach(events, (event) =>
         makeSystemEvent(event as Omit<OrchestrationV2DomainEvent, "id">),
@@ -1750,6 +1763,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
   });
 
+  const releaseRestartHolds = Effect.fn("Orchestrator.releaseRestartHolds")(function* (
+    threadId: ThreadId,
+    continuation: OrchestrationV2Run,
+  ) {
+    // A planned update's continuity owns its thread's queue release and Stop handling.
+    if (
+      Option.isSome(plannedContinuity) &&
+      (yield* plannedContinuity.value.queueThreadIds).includes(threadId)
+    )
+      return;
+    const { runs } = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
+    const holds = yield* queueHolds.get(
+      runs.filter((run) => run.status === "queued" && run.queueHeld === true).map((run) => run.id),
+    );
+    const released = restartHoldsEndedBy(continuation, runs, holds);
+    if (released.length === 0) return;
+    const now = yield* DateTime.now;
+    yield* writeSystemEvents(
+      released.map((run) => ({
+        type: "run.updated" as const,
+        threadId,
+        runId: run.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: { ...run, queueHeld: false },
+      })),
+    );
+  });
+
   const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(
     function* (
       threadId: ThreadId,
@@ -1764,8 +1806,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
         };
         readonly queuedRunId?: RunId;
+        /** A completed restart continuation ends the restart holds recorded before it finished. */
+        readonly completedRestartContinuation?: OrchestrationV2Run;
       },
     ) {
+      if (options?.completedRestartContinuation !== undefined) {
+        yield* releaseRestartHolds(threadId, options.completedRestartContinuation);
+      }
       if (options?.reviewed === undefined && !(yield* projectionStore.canStartQueuedRun(threadId)))
         return;
       const projection = yield* readCommandProjection(threadId);
@@ -1860,6 +1907,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               occurredAt: now,
               payload: { ...run, queueHeld: true },
             })),
+          [],
+          { queueHold: providerFailureQueueHold(projection.runs) },
         );
         return;
       }
@@ -11551,6 +11600,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const bufferedMessageIds = new Set(
       queuedMessages.filter(isBufferedProviderNotification).map((message) => message.id),
     );
+    // Jones: Stop replaces a restart hold so the continuation's completion leaves this work held.
+    const recordedHolds = yield* queueHolds
+      .get(queuedRuns.filter((run) => run.queueHeld === true).map((run) => run.id))
+      .pipe(
+        Effect.mapError((cause) => new OrchestratorProjectionError({ threadId: thread.id, cause })),
+      );
     for (const run of runs) {
       // A resumed queue can have a lower ordinal than a pending continuation source.
       // Stop must reach those sources even when interrupting the resumed run succeeds.
@@ -11573,7 +11628,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         continue;
       }
-      if (run.queueHeld === true) continue;
+      if (run.queueHeld === true && recordedHolds.get(run.id)?.reason !== "restart") continue;
       yield* emitEvent({
         type: "run.updated",
         threadId: thread.id,
@@ -15615,6 +15670,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 startNextQueuedRun(threadId, {
                   endedRunId: run.id,
                   ...(run.status === "failed" ? { failedRunId: run.id } : {}),
+                  ...(isCompletedRestartContinuation(run)
+                    ? { completedRestartContinuation: run }
+                    : {}),
                 }),
               ),
             ),

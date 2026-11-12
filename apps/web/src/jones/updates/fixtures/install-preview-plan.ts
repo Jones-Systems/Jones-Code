@@ -934,10 +934,97 @@ export function createScriptedInstallPlan(input: {
       },
     });
   };
+  /** Current source evidence alongside interrupted, staged, cached and held attempts. */
+  const showcaseSourceProof = () => {
+    showcaseStepProgress();
+    const plan = native.current!;
+    const at = (agoMs: number) => new Date(now() - agoMs).toISOString();
+    const phases = ["interrupted", "completed", "interrupted", "held"] as const;
+    const devicesWithProof = plan.devices.map((device, index) => {
+      const operationId = uuid();
+      const phase = phases[index]!;
+      const action = { kind: "download-exact" as const, targetSource: plan.target.sourceSha };
+      const staged =
+        phase === "completed"
+          ? {
+              stagedHandle: `fixture-proof-${index}`,
+              sourceSha: plan.target.sourceSha,
+              sourceTree: plan.target.sourceTree,
+              artifactId: 9001,
+            }
+          : undefined;
+      const receipt: JonesOperationReceipt = {
+        protocol: 1,
+        operationId,
+        environmentId: device.environmentId,
+        action,
+        expectedInstalledSource: "b".repeat(40),
+        phase,
+        acceptedAt: at(600_000),
+        updatedAt: at(300_000),
+        jobId: operationId,
+        ...(staged === undefined ? {} : { staged }),
+        ...(phase === "held"
+          ? { code: "cleanup-unconfirmed" }
+          : phase === "interrupted"
+            ? { code: "cleanup-recovered" }
+            : {}),
+      };
+      receipts.set(operationId, receipt);
+      const host = hosts.get(device.environmentId)!;
+      hosts.set(device.environmentId, {
+        ...host,
+        phase: staged === undefined ? "available" : "staged",
+        operation: receipt,
+        installedSource: {
+          repository: plan.target.repository,
+          sha: plan.target.sourceSha,
+          tree: plan.target.sourceTree,
+        },
+        ...(staged === undefined ? {} : { stagedHandle: staged.stagedHandle }),
+        progress: showcaseProgress({
+          kind: "download",
+          operationId,
+          stepIndex: 2,
+          phase: phase === "completed" ? "done" : "failed",
+          stepAgoMs: 360_000,
+          updatedAgoMs: 300_000,
+          reportedAgoMs: index === 2 ? 300_000 : 0,
+          at,
+          ...(phase === "completed"
+            ? {}
+            : { error: { code: receipt.code!, message: "Synthetic earlier attempt." } }),
+        }),
+      });
+      reachability.set(device.environmentId, {
+        freshness: index === 2 ? "stale" : "fresh",
+        heardAt: now() - (index === 2 ? 300_000 : 0),
+      });
+      return {
+        ...device,
+        operations: [
+          {
+            operationId,
+            step: "download" as const,
+            lease: {
+              claimant: "fixture-source-proof",
+              reservedAt: at(600_000),
+              leaseUntil: at(480_000),
+            },
+            request: { kind: "operation-start" as const, input: receipt },
+            receipt,
+          },
+        ],
+      };
+    });
+    native = { ...native, current: { ...plan, devices: devicesWithProof } };
+    notify();
+  };
   notify();
   return {
     request,
     showcaseStepProgress,
+    showcaseSourceProof,
     onInstallPlan: (listener: (state: JonesInstallPlanState) => void) => {
       listeners.add(listener);
       return () => {

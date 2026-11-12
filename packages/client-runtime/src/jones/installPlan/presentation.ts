@@ -6,6 +6,9 @@ import type { JonesUpdateObservation } from "../updates/jonesUpdates.ts";
 import { jonesTargetStatus } from "../updates/targetStatus.ts";
 import {
   deviceSettled,
+  deviceState,
+  matchesPlanTarget,
+  planCompletion,
   deviceStateWithRunningTarget,
   isPlanComplete,
   type InstallPlanDeviceState,
@@ -42,7 +45,12 @@ export interface InstallPlanDeviceObservation {
 }
 
 /** Ledger states whose own text must stay visible over host step progress. */
-const LEDGER_TEXT_WINS = new Set<InstallPlanDeviceState>(["held", "unknown", "stop-requested"]);
+const LEDGER_TEXT_WINS = new Set<InstallPlanDeviceState>([
+  "held",
+  "unknown",
+  "stop-requested",
+  "fenced",
+]);
 const ALREADY_RUNNING_TEXT = "Downloaded · already running this build";
 
 function rowProgress(
@@ -117,7 +125,6 @@ export function installPlanPresentation(
       latest?.step === "install" && (receipt?.phase === "failed" || receipt?.phase === "refused");
     const stage = lastDownload?.receipt?.staged;
     const hostState = observed?.observation.state;
-    const installed = hostState?.installedSource;
     const confirmedInstall = device.operations.some(
       ({ step, operationId, receipt }) =>
         step === "install" &&
@@ -125,16 +132,25 @@ export function installPlanPresentation(
         receipt.updateId === operationId &&
         receipt.outcome?.status === "committed",
     );
-    const runningTarget =
-      observed?.observation.freshness === "fresh" &&
-      hostState?.environmentId === device.environmentId &&
-      installed?.repository === plan.target.repository &&
-      installed.sha === plan.target.sourceSha &&
-      installed.tree === plan.target.sourceTree;
+    const matchesTarget = matchesPlanTarget(plan, device, hostState);
+    const runningTarget = observed?.observation.freshness === "fresh" && matchesTarget;
     const targetBuildRunning = !confirmedInstall && runningTarget;
-    // A fresh running target outranks an older settled ledger record, such as an interrupted
-    // download that a later install through another operation made moot.
+    const ledgerPhase = deviceState(plan, device, options.now);
     const phase = deviceStateWithRunningTarget(plan, device, runningTarget, options.now);
+    const supersedable =
+      deviceStateWithRunningTarget(plan, device, true, options.now) !== ledgerPhase;
+    const heardAt = observed?.observation.heardAt;
+    const cachedTarget =
+      observed?.observation.freshness !== "fresh" &&
+      matchesTarget &&
+      heardAt !== undefined &&
+      Number.isFinite(heardAt);
+    const sourceText = runningTarget
+      ? "Updated · running the selected source"
+      : cachedTarget
+        ? `Last confirmed running the selected source · ${relativeAge(heardAt!, options.now)}`
+        : undefined;
+    const sourceHeadline = supersedable && sourceText !== undefined;
     const matchingRetryStage =
       lastDownload?.receipt?.phase === "completed" &&
       stage !== undefined &&
@@ -143,33 +159,36 @@ export function installPlanPresentation(
       stage.sourceTree === plan.target.sourceTree &&
       hostState.provenance?.sourceSha === stage.sourceSha &&
       hostState.provenance.sourceTree === stage.sourceTree;
-    let text = copy[phase];
+    let text = copy[ledgerPhase];
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";
-    if (
-      runningTarget &&
-      phase === "updated-elsewhere" &&
-      latest?.receipt?.code !== "already-installed"
-    )
-      text = "Updated · running the selected source";
     if (phase === "directive") text = `Getting ${device.label} ready…`;
-    if (phase === "ended")
+    if (ledgerPhase === "ended")
       text =
         lastDownload?.receipt?.staged !== undefined &&
         observed?.observation.freshness === "fresh" &&
         observed.observation.state?.stagedHandle === lastDownload?.receipt?.staged?.stagedHandle
           ? "Stopped · kept staged files"
           : "Stopped · nothing installed";
-    if (["held", "blocked", "not-updated"].includes(phase) && latest?.receipt?.code !== undefined)
+    if (
+      ["held", "blocked", "not-updated"].includes(ledgerPhase) &&
+      latest?.receipt?.code !== undefined
+    )
       text += ` · ${latest.receipt.code}`;
     const alreadyRunning =
       phase === "staged" &&
       observed?.observation.freshness === "fresh" &&
       hostState?.stagedAlreadyRunning === true;
     if (alreadyRunning) text = ALREADY_RUNNING_TEXT;
+    const attemptText = sourceHeadline
+      ? `This plan's attempt: ${text}${latest?.receipt?.code !== undefined && !text.endsWith(latest.receipt.code) ? ` · ${latest.receipt.code}` : ""}`
+      : undefined;
     const progress = rowProgress(observed?.observation, latest?.operationId, planless);
     if (progress?.text !== undefined && !LEDGER_TEXT_WINS.has(phase)) text = progress.text;
+    if (sourceHeadline) text = sourceText!;
     return {
+      attemptText,
+      sourceText: sourceHeadline ? undefined : sourceText,
       environmentId: device.environmentId,
       label: device.label,
       phase,
@@ -180,7 +199,7 @@ export function installPlanPresentation(
       installLabel: retryInstall ? "Retry install" : `Install on ${device.label}`,
       settled: phase === "updated-elsewhere" || deviceSettled(plan, device),
       status,
-      activeWork: activeWork(phase, progress),
+      activeWork: sourceHeadline ? undefined : activeWork(phase, progress),
       ...(progress === undefined ? {} : { progress }),
       ...(latest === undefined ? {} : { operationId: latest.operationId }),
       actions: {
@@ -311,7 +330,13 @@ export function installPlanPresentation(
     readOnly,
     rows,
     complete,
-    headerDoneVisible: !readOnly && complete,
+    headerDoneVisible:
+      !readOnly &&
+      (complete ||
+        planCompletion(
+          plan,
+          new Map([...(options.devices ?? [])].map(([id, value]) => [id, value.observation])),
+        ).completable),
     laptop: {
       phase: laptopPhase,
       copyKey: `laptop.${laptopPhase}`,
@@ -352,4 +377,12 @@ export function recoveryPreflightPresentation(preflight: JonesRecoveryPreflight,
     reason: preflight.policies.cloneOrCopy.reason ?? preflight.clone.reason,
     stop: true,
   };
+}
+
+function relativeAge(at: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
 }

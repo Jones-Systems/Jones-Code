@@ -205,6 +205,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 144, name: "WorkstreamsMemberBindings" },
           { id: 145, name: "WorkstreamsForwardReceipts" },
           { id: 146, name: "SettlementOriginRetention" },
+          { id: 147, name: "QueueHolds" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);
