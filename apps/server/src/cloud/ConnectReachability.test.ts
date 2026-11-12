@@ -2,7 +2,8 @@
 import * as NodeFS from "node:fs";
 
 import { EnvironmentId, T3_CONNECT_TROUBLESHOOTING_SECTIONS } from "@t3tools/contracts";
-import { describe, expect, it, vi } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
