@@ -15,6 +15,8 @@
     "apps/server/src/jones/goals/continuity/admission.ts",
     "apps/server/src/jones/goals/continuity/capsule.test.ts",
     "apps/server/src/jones/goals/continuity/capsule.ts",
+    "apps/server/src/jones/goals/continuity/codexTransport.test.ts",
+    "apps/server/src/jones/goals/continuity/codexTransport.ts",
     "apps/server/src/jones/goals/continuity/model.test.ts",
     "apps/server/src/jones/goals/continuity/model.ts",
     "apps/server/src/jones/goals/continuity/selection.test.ts",
@@ -85,6 +87,14 @@
     {
       "from": "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
       "to": "apps/server/src/jones/goals/continuity/tool.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/goals/continuity/codexTransport.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/goals/continuity/capsule.ts"
     }
   ]
 }
