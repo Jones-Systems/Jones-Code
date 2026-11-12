@@ -4,6 +4,9 @@ import {
   CommandId,
   NodeId,
   ProviderDriverKind,
+  RunId,
+  RuntimeRequestId,
+  ThreadId,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -22,8 +25,54 @@ import * as Changes from "./DependencyChanges.ts";
 import * as Reactor from "./DependencyReactor.ts";
 import * as Watch from "./RequestWatch.ts";
 import * as Fixture from "./testkit.ts";
+import { notification } from "./Wake.ts";
 
 import { runtime } from "./runtimeTestkit.ts";
+
+const deliverQueuedWake = Effect.fnUntraced(function* (
+  f: Effect.Success<typeof Fixture.seed>,
+  key: string,
+  ordinal = 2,
+  queueHeld = false,
+) {
+  const input = f.requestInput(key);
+  yield* f.send(key, f.receiverRun, {
+    ...input,
+    localDependency: {
+      ...input.localDependency!,
+      waiterGeneration: yield* f.store.waiterGeneration(f.waiter.id),
+    },
+  });
+  yield* f.sql.withTransaction(
+    f.store.answer(f.receiver.id, input.requestId, "fulfilled", "Delivered result", null),
+  );
+  const dependency = (yield* f.store.get(`dependency:${key}`))!;
+  const wakeRun = f.run(`${key}-wake`, f.waiter.id, "queued", ordinal);
+  const wake = {
+    ...f.message(`${key}-message`, wakeRun),
+    notification: notification(dependency),
+    creationSource: "server" as const,
+  };
+  const run = { ...wakeRun, userMessageId: wake.id, queueHeld };
+  yield* f.sink.commitCommand({
+    commandId: CommandId.make(`accept:${key}-wake`),
+    threadId: f.waiter.id,
+    commandType: "message.dispatch",
+    acceptedAt: Fixture.time,
+    dependencyWake: {
+      dependencyId: dependency.dependencyId,
+      generation: dependency.generation,
+      waiterThreadId: f.waiter.id,
+      messageId: wake.id,
+    },
+    events: [
+      f.event({ type: "run.created", threadId: f.waiter.id, runId: run.id, payload: run }),
+      f.event({ type: "message.updated", threadId: f.waiter.id, runId: run.id, payload: wake }),
+    ],
+    effects: [],
+  });
+  return { dependency, run };
+});
 
 it.effect(
   "authoritative manual and automatic settlement reject a completed waiter with unresolved results",
@@ -54,21 +103,81 @@ it.effect(
     }).pipe(Effect.provide(runtime)),
 );
 
-it.effect(
-  "eventless Stop commits the release with its receipt and replay cannot release newer work",
-  () =>
+it.effect.each([false, true])(
+  "eventless Stop commits the release with its receipt and replay cannot release newer work (unreadable child: %s)",
+  (unreadableChild) =>
     Effect.gen(function* () {
       const f = yield* Fixture.seed;
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       yield* f.send("eventless-stop");
+      if (unreadableChild) {
+        const childId = ThreadId.make("unreadable-stop-child");
+        const childRunId = RunId.make("unreadable-stop-child-run");
+        const task: OrchestrationV2Subagent = {
+          id: NodeId.make("unreadable-stop-task"),
+          threadId: f.waiter.id,
+          runId: f.waiterRun.id,
+          parentNodeId: NodeId.make("unreadable-stop-parent-node"),
+          origin: "app_owned",
+          createdBy: "agent",
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: f.waiter.providerInstanceId,
+          providerThreadId: null,
+          childThreadId: childId,
+          nativeTaskRef: null,
+          prompt: "Unreadable delegated child",
+          title: null,
+          model: null,
+          status: "running",
+          result: null,
+          startedAt: Fixture.time,
+          completedAt: null,
+          updatedAt: Fixture.time,
+        };
+        yield* f.sink.write({
+          events: [
+            f.event({
+              type: "thread.created",
+              threadId: childId,
+              payload: { ...f.receiver, id: childId },
+            }),
+            f.event({
+              type: "run.created",
+              threadId: childId,
+              runId: childRunId,
+              payload: { ...f.receiverRun, id: childRunId, threadId: childId },
+            }),
+            f.event({ type: "subagent.updated", threadId: f.waiter.id, payload: task }),
+          ],
+        });
+        yield* f.sql`UPDATE orchestration_v2_projection_runs SET payload_json = '{"obsolete":true}' WHERE thread_id = ${childId}`;
+      }
       const command = {
         type: "thread.stop" as const,
         commandId: CommandId.make("stop-eventless"),
         threadId: f.waiter.id,
       };
       const accepted = yield* orchestrator.dispatch(command);
-      assert.deepEqual(accepted.storedEvents, []);
+      if (!unreadableChild) assert.deepEqual(accepted.storedEvents, []);
+      else
+        assert.isFalse(
+          accepted.storedEvents.some(
+            ({ event }) =>
+              event.threadId === ThreadId.make("unreadable-stop-child") &&
+              (event.type === "run.updated" ||
+                event.type === "run-attempt.updated" ||
+                event.type === "node.updated") &&
+              event.payload.status === "cancelled",
+          ),
+        );
       assert.equal((yield* f.store.get("dependency:eventless-stop"))?.state, "released");
+      if (unreadableChild) {
+        const outbox = yield* Outbox.EffectOutboxV2;
+        assert.include(
+          (yield* outbox.listByCommandId(command.commandId)).map((effect) => effect.request.type),
+          "delegated-tasks.stop",
+        );
+      }
       const epoch = yield* f.store.waiterGeneration(f.waiter.id);
       assert.equal(epoch, 1);
       const next = f.requestInput("new-wait");
@@ -85,6 +194,189 @@ it.effect(
         "running",
       );
     }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("Stop permits Settle after holding a delivered dependency's queued wake", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const { dependency, run: wakeRun } = yield* deliverQueuedWake(f, "delivered-stop");
+    assert.equal((yield* f.store.get(dependency.dependencyId))?.state, "delivered");
+    assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 1);
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("stop:delivered-dependency"),
+      threadId: f.waiter.id,
+    });
+    const stopped = yield* f.projection.getThreadRecords(f.waiter.id, ["runs"]);
+    const held = stopped.runs.find((run) => run.id === wakeRun.id)!;
+    assert.equal(held.status, "queued");
+    assert.isTrue(held.queueHeld);
+    assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 1);
+    const settle = {
+      type: "thread.settle" as const,
+      commandId: CommandId.make("settle:delivered-dependency"),
+      threadId: f.waiter.id,
+    };
+    const accepted = yield* orchestrator.dispatch(settle);
+    assert.isNotNull((yield* f.projection.getThread(f.waiter.id)).settledAt);
+    assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 0);
+    assert.equal(
+      (yield* f.projection.getThreadRecords(f.waiter.id, ["runs"])).runs.find(
+        (run) => run.id === wakeRun.id,
+      )?.status,
+      "cancelled",
+    );
+    const outbox = yield* Outbox.EffectOutboxV2;
+    const acceptedEffects = yield* outbox.listByCommandId(settle.commandId);
+    const acceptedReceipt =
+      yield* f.sql`SELECT * FROM orchestration_command_receipts WHERE command_id = ${settle.commandId}`;
+    assert.equal(acceptedReceipt.length, 1);
+    const epoch = yield* f.store.waiterGeneration(f.waiter.id);
+    yield* orchestrator.dispatch({
+      type: "thread.unsettle",
+      commandId: CommandId.make("reopen:delivered-dependency"),
+      threadId: f.waiter.id,
+      reason: "user",
+    });
+    const newer = yield* deliverQueuedWake(f, "new-delivered-wake", 3, true);
+    const pending = f.requestInput("new-unresolved-wait");
+    yield* f.send("new-unresolved-wait", f.receiverRun, {
+      ...pending,
+      localDependency: { ...pending.localDependency!, waiterGeneration: epoch },
+    });
+    const sequence = yield* f.store.sequence;
+    assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 2);
+    const replay = yield* orchestrator.dispatch(settle);
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.sequence, accepted.sequence);
+    assert.deepEqual(
+      replay.storedEvents.map(({ sequence, event }) => [sequence, event.id]),
+      accepted.storedEvents.map(({ sequence, event }) => [sequence, event.id]),
+    );
+    assert.deepEqual(
+      yield* f.sql`SELECT * FROM orchestration_command_receipts WHERE command_id = ${settle.commandId}`,
+      acceptedReceipt,
+    );
+    assert.deepEqual(
+      yield* f.sql`SELECT * FROM orchestration_events WHERE sequence > ${sequence} AND command_id = ${settle.commandId}`,
+      [],
+    );
+    assert.equal(yield* f.store.waiterGeneration(f.waiter.id), epoch);
+    assert.isNull((yield* f.projection.getThread(f.waiter.id)).settledAt);
+    assert.equal((yield* f.store.get("dependency:new-unresolved-wait"))?.state, "awaiting");
+    assert.equal((yield* f.store.get(newer.dependency.dependencyId))?.state, "delivered");
+    assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 2);
+    assert.equal(
+      (yield* f.projection.getThreadRecords(f.waiter.id, ["runs"])).runs.find(
+        (run) => run.id === newer.run.id,
+      )?.status,
+      "queued",
+    );
+    assert.deepEqual(yield* outbox.listByCommandId(settle.commandId), acceptedEffects);
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect.each([
+  "queued user",
+  "live run",
+  "blocking approval",
+  "unresolved result",
+  "guarded",
+  "automatic",
+] as const)("settlement with a delivered queued wake refuses %s without cancelling it", (blocker) =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const outbox = yield* Outbox.EffectOutboxV2;
+    const { dependency, run: wake } = yield* deliverQueuedWake(f, "blocked-settle");
+    if (blocker === "queued user" || blocker === "live run") {
+      const run = f.run(
+        "blocking-run",
+        f.waiter.id,
+        blocker === "queued user" ? "queued" : "running",
+        3,
+      );
+      yield* f.sink.write({
+        events: [
+          f.event({ type: "run.created", threadId: f.waiter.id, runId: run.id, payload: run }),
+          f.event({
+            type: "message.updated",
+            threadId: f.waiter.id,
+            runId: run.id,
+            payload: f.message(run.userMessageId, run),
+          }),
+        ],
+      });
+    } else if (blocker === "blocking approval") {
+      yield* f.sink.write({
+        events: [
+          f.event({
+            type: "runtime-request.updated",
+            threadId: f.waiter.id,
+            payload: {
+              id: RuntimeRequestId.make("blocking-approval"),
+              nodeId: NodeId.make("approval-node"),
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: "permission",
+              status: "pending",
+              responseCapability: { type: "not_resumable", reason: "Approval required" },
+              createdAt: Fixture.time,
+              resolvedAt: null,
+            },
+          }),
+        ],
+      });
+    } else if (blocker === "unresolved result") {
+      yield* f.send("blocking-result");
+    }
+    const commandId = CommandId.make(`settle-blocked:${blocker}`);
+    const sequence = yield* f.store.sequence;
+    const generation = yield* f.store.waiterGeneration(f.waiter.id);
+    const expectedUpdatedAt = DateTime.formatIso(
+      (yield* f.projection.getThread(f.waiter.id)).updatedAt,
+    );
+    const rejected = yield* orchestrator
+      .dispatch(
+        blocker === "automatic"
+          ? {
+              type: "thread.auto-settle",
+              commandId,
+              threadId: f.waiter.id,
+              snapshotAt: Fixture.time,
+            }
+          : {
+              type: "thread.settle",
+              commandId,
+              threadId: f.waiter.id,
+              ...(blocker === "guarded"
+                ? { guard: { policy: "preserve_pending_work" as const, expectedUpdatedAt } }
+                : {}),
+            },
+      )
+      .pipe(Effect.exit);
+    assert.isTrue(Exit.isFailure(rejected));
+    assert.isNull((yield* f.projection.getThread(f.waiter.id)).settledAt);
+    assert.equal(
+      (yield* f.projection.getThreadRecords(f.waiter.id, ["runs"])).runs.find(
+        (run) => run.id === wake.id,
+      )?.status,
+      "queued",
+    );
+    assert.equal((yield* f.store.get(dependency.dependencyId))?.state, "delivered");
+    assert.equal(
+      (yield* f.store.duties(f.waiter.id)).outgoing,
+      blocker === "unresolved result" ? 2 : 1,
+    );
+    assert.equal(yield* f.store.waiterGeneration(f.waiter.id), generation);
+    assert.equal(yield* f.store.sequence, sequence);
+    assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+    assert.deepEqual(
+      yield* f.sql`SELECT * FROM orchestration_command_receipts WHERE command_id = ${commandId} AND status = 'accepted'`,
+      [],
+    );
+  }).pipe(Effect.provide(runtime)),
 );
 
 it.effect("raw delegated completion and guarded settlement inspect descendant result duties", () =>

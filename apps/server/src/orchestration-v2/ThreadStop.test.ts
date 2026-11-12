@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  CheckpointScopeId,
   ContextTransferId,
   EventId,
   MessageId,
@@ -13,6 +14,8 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RuntimeRequestId,
+  RunAttemptId,
+  RunId,
   ScheduledTaskId,
   ThreadId,
   TurnItemId,
@@ -160,6 +163,306 @@ const threadState = (threadId: ThreadId) =>
         .map((link) => link.number),
     };
   });
+
+const waitingRunFixture = (turnStatus: "completed" | "running" = "completed", recordTurn = true) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:stale-waiting-stop");
+    yield* createWatchingThread(threadId, 30);
+    yield* send(threadId, "work", "start_immediately");
+    const before = yield* orchestrator.getThreadProjection(threadId);
+    const now = yield* DateTime.now;
+    const run = { ...before.runs[0]!, status: "waiting" as const, startedAt: now };
+    const turn = {
+      id: ProviderTurnId.make("turn:stale-waiting-stop"),
+      providerThreadId: run.providerThreadId!,
+      nodeId: run.rootNodeId!,
+      runAttemptId: run.activeAttemptId!,
+      nativeTurnRef: null,
+      ordinal: 1,
+      status: turnStatus,
+      startedAt: now,
+      completedAt: turnStatus === "completed" ? now : null,
+    };
+    const attempt = {
+      ...before.attempts.find((candidate) => candidate.id === run.activeAttemptId)!,
+      providerTurnId: turn.id,
+      status: "completed" as const,
+      startedAt: now,
+      completedAt: now,
+    };
+    const root = {
+      ...before.nodes.find((node) => node.id === run.rootNodeId)!,
+      status: "waiting" as const,
+      completedAt: null,
+      checkpointScopeId: CheckpointScopeId.make("scope:stale-waiting-stop"),
+    };
+    let sequence = 0;
+    const apply = (event: Omit<OrchestrationV2DomainEvent, "id" | "occurredAt" | "threadId">) =>
+      projections.apply({
+        ...event,
+        id: EventId.make(`event:stale-waiting-stop:${sequence++}`),
+        threadId,
+        occurredAt: now,
+      } as OrchestrationV2DomainEvent);
+    yield* apply({ type: "run.updated", payload: run });
+    yield* apply({ type: "run-attempt.updated", payload: attempt });
+    yield* apply({ type: "node.updated", payload: root });
+    if (recordTurn) yield* apply({ type: "provider-turn.updated", payload: turn });
+    const stop = {
+      type: "thread.stop" as const,
+      commandId: CommandId.make("stop:stale-waiting"),
+      threadId,
+    };
+    const settle = {
+      type: "thread.settle" as const,
+      commandId: CommandId.make("settle:stale-waiting"),
+      threadId,
+    };
+    const backgroundSettle = {
+      type: "thread.background-work.settle" as const,
+      commandId: CommandId.make("background-settle:stale-waiting"),
+      threadId,
+      providerThreadId: turn.providerThreadId,
+      providerTurnId: turn.id,
+    };
+    return {
+      orchestrator,
+      threadId,
+      run,
+      attempt,
+      root,
+      turn,
+      now,
+      apply,
+      stop,
+      settle,
+      backgroundSettle,
+    };
+  });
+
+it.effect.each([
+  "persisted terminal",
+  "absent session",
+  "adapter idle",
+  "adapter confirmed",
+] as const)("Stop makes stale waiting finalization settleable with %s evidence", (evidence) =>
+  Effect.gen(function* () {
+    const adapterEvidence = evidence.startsWith("adapter");
+    const f = yield* waitingRunFixture(
+      evidence === "persisted terminal" ? "completed" : "running",
+      !adapterEvidence,
+    );
+    const accepted = yield* f.orchestrator.dispatch(f.stop);
+    const written = [...accepted.storedEvents];
+    if (adapterEvidence) {
+      // Stop cannot infer an outcome from a missing turn. A later adapter result supplies it.
+      assert.equal(
+        (yield* f.orchestrator.getThreadProjection(f.threadId)).runs[0]?.status,
+        "waiting",
+      );
+      yield* f.apply({ type: "provider-turn.updated", payload: f.turn });
+      const confirmed = yield* f.orchestrator.dispatch({
+        ...f.backgroundSettle,
+        ...(evidence === "adapter idle" ? { runOnly: true } : {}),
+      });
+      written.push(...confirmed.storedEvents);
+    }
+    const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+    assert.deepEqual(yield* threadState(f.threadId), { runs: ["interrupted"], watched: [] });
+    assert.equal(
+      after.attempts.find((attempt) => attempt.id === f.attempt.id)?.status,
+      "completed",
+    );
+    assert.deepEqual(
+      after.attempts.find((attempt) => attempt.id === f.attempt.id)?.completedAt,
+      f.now,
+    );
+    assert.equal(
+      after.providerTurns.find((turn) => turn.id === f.turn.id)?.status,
+      evidence === "persisted terminal" ? "completed" : "interrupted",
+    );
+    assert.isFalse(written.some(({ event }) => event.type === "run-attempt.updated"));
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    assert.isFalse(
+      (yield* outbox.listByThreadId(f.threadId)).some(
+        (effect) =>
+          effect.request.type === "checkpoint.capture" ||
+          effect.request.type === "provider-turn.interrupt",
+      ),
+    );
+    yield* f.orchestrator.dispatch(f.settle);
+    assert.isNotNull((yield* f.orchestrator.getThreadProjection(f.threadId)).thread.settledAt);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "an idle adapter settles stale waiting finalization without confirming background work",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* waitingRunFixture("running");
+      const itemId = TurnItemId.make("item:waiting-background");
+      yield* f.apply({
+        type: "turn-item.updated",
+        payload: {
+          id: itemId,
+          threadId: f.threadId,
+          runId: f.run.id,
+          nodeId: f.root.id,
+          providerThreadId: f.turn.providerThreadId,
+          providerTurnId: f.turn.id,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "running",
+          title: "Background command",
+          startedAt: f.now,
+          completedAt: null,
+          updatedAt: f.now,
+          type: "command_execution",
+          input: "background work",
+        },
+      });
+      yield* f.orchestrator.dispatch({ ...f.backgroundSettle, runOnly: true });
+      const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.equal(after.runs[0]?.status, "interrupted");
+      assert.equal(after.turnItems.find((item) => item.id === itemId)?.status, "running");
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each(["pending", "running"] as const)(
+  "Stop preserves waiting finalization with a %s checkpoint capture",
+  (status) =>
+    Effect.gen(function* () {
+      const f = yield* waitingRunFixture();
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const sql = yield* SqlClient.SqlClient;
+      const id = `effect:checkpoint.capture:${f.run.id}`;
+      yield* outbox.enqueue([
+        {
+          id,
+          commandId: CommandId.make(`command:effect:checkpoint.capture:${f.run.id}`),
+          threadId: f.threadId,
+          request: {
+            type: "checkpoint.capture",
+            runId: f.run.id,
+            scopeId: f.root.checkpointScopeId,
+          },
+        },
+      ]);
+      if (status === "running")
+        yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'running' WHERE effect_id = ${id}`;
+      const before = yield* outbox.listByThreadId(f.threadId);
+      const stopped = yield* f.orchestrator.dispatch(f.stop);
+      const confirmed = yield* f.orchestrator.dispatch(f.backgroundSettle);
+      assert.deepEqual(yield* threadState(f.threadId), { runs: ["waiting"], watched: [] });
+      assert.isFalse(
+        [...stopped.storedEvents, ...confirmed.storedEvents].some(
+          ({ event }) => event.type === "run-attempt.updated" || event.type === "run.updated",
+        ),
+      );
+      assert.deepEqual(yield* outbox.listByThreadId(f.threadId), before);
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(f.orchestrator.dispatch(f.settle))));
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each(["newer attempt", "live attempt", "missing turn"] as const)(
+  "Stop preserves unknown waiting finalization with a %s",
+  (condition) =>
+    Effect.gen(function* () {
+      const f = yield* waitingRunFixture("completed", condition !== "missing turn");
+      if (condition === "newer attempt") {
+        const id = RunAttemptId.make("attempt:newer-waiting");
+        yield* f.apply({
+          type: "run-attempt.updated",
+          payload: { ...f.attempt, id, attemptOrdinal: f.attempt.attemptOrdinal + 1 },
+        });
+        yield* f.apply({ type: "run.updated", payload: { ...f.run, activeAttemptId: id } });
+      } else if (condition === "live attempt") {
+        yield* f.apply({
+          type: "run-attempt.updated",
+          payload: { ...f.attempt, status: "running", completedAt: null },
+        });
+      }
+      yield* f.orchestrator.dispatch(f.stop);
+      if (condition !== "missing turn") yield* f.orchestrator.dispatch(f.backgroundSettle);
+      assert.deepEqual(yield* threadState(f.threadId), { runs: ["waiting"], watched: [] });
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(f.orchestrator.dispatch(f.settle))));
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("Stop of stale waiting finalization cancels only its owned blocking requests", () =>
+  Effect.gen(function* () {
+    const f = yield* waitingRunFixture();
+    const otherRun = {
+      ...f.run,
+      id: RunId.make("run:other-waiting-request"),
+      ordinal: 2,
+      status: "completed" as const,
+    };
+    const otherRoot = {
+      ...f.root,
+      id: NodeId.make("node:other-waiting-request"),
+      runId: otherRun.id,
+      status: "completed" as const,
+      completedAt: f.now,
+    };
+    yield* f.apply({ type: "run.created", payload: { ...otherRun, rootNodeId: otherRoot.id } });
+    yield* f.apply({ type: "node.updated", payload: otherRoot });
+    const request = {
+      id: RuntimeRequestId.make("request:waiting-owned"),
+      nodeId: f.root.id,
+      providerTurnId: f.turn.id,
+      nativeRequestRef: null,
+      kind: "user_input" as const,
+      status: "pending" as const,
+      responseCapability: { type: "not_resumable" as const, reason: "Lost runtime" },
+      createdAt: f.now,
+      resolvedAt: null,
+    };
+    const messageRequest = {
+      ...request,
+      id: RuntimeRequestId.make("request:waiting-message"),
+      responseCapability: { type: "message" as const },
+    };
+    const otherRequest = {
+      ...request,
+      id: RuntimeRequestId.make("request:waiting-other"),
+      nodeId: otherRoot.id,
+    };
+    for (const payload of [request, messageRequest, otherRequest])
+      yield* f.apply({ type: "runtime-request.updated", payload });
+    yield* f.orchestrator.dispatch(f.stop);
+    const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+    assert.equal(after.runs.find((run) => run.id === f.run.id)?.status, "interrupted");
+    assert.deepEqual(
+      after.runtimeRequests.map((item) => [item.id, item.status]).sort(),
+      [
+        [request.id, "cancelled"],
+        [messageRequest.id, "pending"],
+        [otherRequest.id, "pending"],
+      ].sort(),
+    );
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(f.orchestrator.dispatch(f.settle))));
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "Stop of stale waiting finalization holds queued user work and Settle still refuses it",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* waitingRunFixture();
+      yield* send(f.threadId, "queued user work", "queue_after_active");
+      yield* f.orchestrator.dispatch(f.stop);
+      assert.deepEqual(yield* threadState(f.threadId), {
+        runs: ["interrupted", "queued:held"],
+        watched: [],
+      });
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(f.orchestrator.dispatch(f.settle))));
+      assert.isNull((yield* f.orchestrator.getThreadProjection(f.threadId)).thread.settledAt);
+    }).pipe(Effect.provide(layerTest)),
+);
 
 it.effect.each([
   ["idle", "thread.stop"],
@@ -506,28 +809,108 @@ it.effect.each([
     }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("Stop still stops the thread when a delegated child cannot be read", () =>
-  Effect.gen(function* () {
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const sql = yield* SqlClient.SqlClient;
-    const parentThreadId = ThreadId.make("thread:unreadable-child-parent");
-    yield* createWatchingThread(parentThreadId, 1);
-    yield* send(parentThreadId, "parent", "start_immediately");
-    const childThreadId = yield* delegate(parentThreadId, "unreadable child");
-    yield* sql`
-      UPDATE orchestration_v2_projection_runs
-      SET payload_json = '{"obsolete":true}'
-      WHERE thread_id = ${childThreadId}
-    `;
-    yield* orchestrator.dispatch({
-      type: "run.interrupt",
-      commandId: CommandId.make("stop:unreadable-child"),
-      threadId: parentThreadId,
-      runId: (yield* orchestrator.getThreadProjection(parentThreadId)).runs.at(-1)!.id,
-      holdQueue: true,
-    });
-    assert.deepEqual(yield* threadState(parentThreadId), { runs: ["interrupted"], watched: [] });
-  }).pipe(Effect.provide(layerTest)),
+it.effect.each(["run.interrupt", "thread.stop", "thread.stop after completion"] as const)(
+  "%s commits Stop and drops partial orphan repair when a later child cannot be read",
+  (type) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const parentThreadId = ThreadId.make("thread:unreadable-child-parent");
+      yield* createWatchingThread(parentThreadId, 1);
+      yield* send(parentThreadId, "parent", "start_immediately");
+      const idleChildThreadId = yield* delegate(parentThreadId, "idle original child");
+      const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+      const idleChild = yield* orchestrator.getThreadProjection(idleChildThreadId);
+      const original = parent.subagents[0]!;
+      const orphanId = NodeId.make("node:000-idle-orphan");
+      const now = yield* DateTime.now;
+      yield* projections.apply({
+        id: EventId.make("event:unreadable-child:idle-run"),
+        type: "run.updated",
+        threadId: idleChildThreadId,
+        occurredAt: now,
+        payload: { ...idleChild.runs[0]!, status: "completed", completedAt: now },
+      });
+      yield* projections.apply({
+        id: EventId.make("event:unreadable-child:orphan"),
+        type: "subagent.updated",
+        threadId: parentThreadId,
+        occurredAt: now,
+        payload: {
+          ...original,
+          id: orphanId,
+          status: "running",
+          startedAt: DateTime.subtract(now, { seconds: 1 }),
+          completedAt: null,
+        },
+      });
+      yield* projections.apply({
+        id: EventId.make("event:unreadable-child:orphan-node"),
+        type: "node.updated",
+        threadId: parentThreadId,
+        occurredAt: now,
+        payload: { ...parent.nodes.find((node) => node.id === original.id)!, id: orphanId },
+      });
+      const childThreadId = yield* delegate(parentThreadId, "unreadable child");
+      yield* send(parentThreadId, "queued follow-up", "queue_after_active");
+      const run = parent.runs[0]!;
+      if (type === "thread.stop after completion")
+        yield* projections.apply({
+          id: EventId.make("event:unreadable-child:parent-completed"),
+          type: "run.updated",
+          threadId: parentThreadId,
+          occurredAt: now,
+          payload: { ...run, status: "completed", completedAt: now },
+        });
+      yield* sql`
+        UPDATE orchestration_v2_projection_runs
+        SET payload_json = '{"obsolete":true}'
+        WHERE thread_id = ${childThreadId}
+      `;
+      const command = {
+        commandId: CommandId.make("stop:unreadable-child"),
+        threadId: parentThreadId,
+      };
+      const stop =
+        type === "run.interrupt"
+          ? { ...command, type, runId: run.id, holdQueue: true }
+          : { ...command, type: "thread.stop" as const };
+      const accepted = yield* orchestrator.dispatch(stop);
+      assert.notEqual(accepted.replayed, true);
+      const replay = yield* orchestrator.dispatch(stop);
+      assert.isTrue(replay.replayed);
+      assert.deepEqual(replay.storedEvents, accepted.storedEvents);
+      assert.deepEqual(yield* threadState(parentThreadId), {
+        runs: [
+          type === "thread.stop after completion" ? "completed" : "interrupted",
+          "queued:held",
+        ],
+        watched: [],
+      });
+      const after = yield* orchestrator.getThreadProjection(parentThreadId);
+      assert.equal(after.subagents.find((task) => task.id === orphanId)?.status, "running");
+      assert.equal(after.nodes.find((node) => node.id === orphanId)?.status, "running");
+      assert.isTrue(
+        after.turnItems.some(
+          (item) => item.type === "run_interrupt_request" && item.runId === run.id,
+        ),
+      );
+      assert.isFalse(
+        accepted.storedEvents.some(
+          ({ event }) =>
+            (event.type === "subagent.updated" || event.type === "node.updated") &&
+            event.payload.id === orphanId &&
+            event.payload.status === "cancelled",
+        ),
+      );
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      assert.include(
+        (yield* outbox.listByCommandId(command.commandId)).map((effect) => effect.request.type),
+        "delegated-tasks.stop",
+      );
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(watch(parentThreadId, 2))));
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect.each(["run.interrupt", "thread.stop"] as const)(

@@ -28,6 +28,10 @@ import {
 } from "../jones/threadMonitor/guardedSettle.ts";
 import { hasRetainedGoalStopTarget } from "../jones/goals/stopTarget.ts";
 import {
+  canSettleWaitingRun,
+  type WaitingRunStopEvidence,
+} from "../jones/orchestration/WaitingRunSettlement.ts";
+import {
   executionProjection,
   selectionAheadOfQueuedPicks,
 } from "../jones/threadConfiguration/executionSelection.ts";
@@ -4201,13 +4205,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     if (command.type === "thread.settle") {
-      const duties = yield* dependencies.duties(command.threadId).pipe(mapDispatchError(command));
-      if (duties.outgoing > 0)
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Waiting on ${duties.outgoing} results; Stop or release them before settling.`,
-        });
       if (command.guard !== undefined) {
         const blocker = yield* readMonitorSettlementBlocker(
           projectionStore,
@@ -4293,6 +4290,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           effects,
         );
       }
+      const cancellationStart = (yield* Ref.get(events)).length;
       for (const run of automaticQueuedRuns) {
         yield* dispatchQueuedRunCancel(
           {
@@ -4304,6 +4302,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           events,
         );
       }
+      // Only this command's staged queued cancellations can discharge a delivered
+      // wake during planning. EventSink still checks actual duties after projection.
+      const cancelledRunIds = new Set(
+        (yield* Ref.get(events))
+          .slice(cancellationStart)
+          .flatMap((event) =>
+            event.type === "run.updated" &&
+            event.threadId === command.threadId &&
+            event.payload.status === "cancelled"
+              ? [event.payload.id]
+              : [],
+          ),
+      );
+      const duties = yield* dependencies
+        .dutiesAfterQueuedWakeCancellations(command.threadId, cancelledRunIds)
+        .pipe(mapDispatchError(command));
+      if (duties.outgoing > 0)
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Waiting on ${duties.outgoing} results; Stop or release them before settling.`,
+        });
     }
 
     const needsProviderState =
@@ -12964,6 +12984,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
     readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
     readonly now: DateTime.Utc;
+    readonly waitingEvidence?: WaitingRunStopEvidence;
   }) {
     const attempt = input.projection.attempts.find(
       (candidate) => candidate.id === input.providerTurn.runAttemptId,
@@ -12974,11 +12995,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       attempt === undefined ||
       run === undefined ||
       rootNode === undefined ||
-      run.activeAttemptId !== attempt.id ||
-      run.status !== "running" ||
-      attempt.status === "pending"
+      run.activeAttemptId !== attempt.id
     )
       return;
+    const waiting = run.status === "waiting";
+    if (waiting) {
+      const checkpointEffects = yield* effectOutbox
+        .listByCommandId(CommandId.make(`command:effect:checkpoint.capture:${run.id}`))
+        .pipe(mapDispatchError(input.command));
+      if (
+        !canSettleWaitingRun({
+          run,
+          attempt,
+          providerTurn: input.providerTurn,
+          checkpointEffects,
+          evidence: input.waitingEvidence,
+        })
+      )
+        return;
+    } else if (run.status !== "running" || attempt.status === "pending") return;
     const emitEvent = emit(input.events, input.command);
     const base = {
       threadId: input.command.threadId,
@@ -13071,6 +13106,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     for (const request of input.projection.runtimeRequests) {
       if (
         request.status !== "pending" ||
+        (waiting && request.responseCapability.type === "message") ||
         !input.projection.nodes.some((node) => node.id === request.nodeId && node.runId === run.id)
       )
         continue;
@@ -13114,7 +13150,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
     });
     const scopeId = rootNode.checkpointScopeId;
-    if (scopeId !== null) {
+    if (!waiting && scopeId !== null) {
       yield* Ref.update(input.effects, (effects) => [
         ...effects,
         {
@@ -13501,12 +13537,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const stoppedRun = projection.runs.find((run) => run.id === stoppedRunId);
       if (
         stoppedRun === undefined ||
-        (["preparing", "starting", "running"].includes(stoppedRun.status) &&
+        (["preparing", "starting", "running", "waiting"].includes(stoppedRun.status) &&
           stoppedRun.activeAttemptId !== stopped.providerTurn?.runAttemptId)
       )
         return;
       const now = yield* DateTime.now;
-      if (stopped.providerTurn !== undefined && stoppedRun.status === "running") {
+      if (
+        stopped.providerTurn !== undefined &&
+        (stoppedRun.status === "running" || stoppedRun.status === "waiting")
+      ) {
         const output = yield* projectionStore
           .getThreadRecords(command.threadId, ["messages"], {
             messageRunIds: [stoppedRun.id],
@@ -13520,6 +13559,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           events,
           effects,
           now,
+          waitingEvidence: "adapter_confirmed",
         });
       }
       // Jones: the turn ended but its runtime is unconfirmed, so its background work stays.
@@ -14002,6 +14042,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       };
     }
 
+    const terminalTurn =
+      run.status === "waiting" && !hasBackgroundWork && !retainedGoalStop
+        ? latestProviderTurnForAttempt(projection.providerTurns, run.activeAttemptId)
+        : undefined;
+    if (
+      terminalTurn !== undefined &&
+      ["completed", "interrupted", "failed", "cancelled"].includes(terminalTurn.status)
+    ) {
+      yield* emitEvent({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId: rootNode.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: { ...interruptRequestItem, providerTurnId: terminalTurn.id },
+      });
+      yield* stopRemainingWork();
+      yield* settleInterruptedRun({
+        command,
+        projection,
+        providerTurn: terminalTurn,
+        events,
+        effects,
+        now,
+        waitingEvidence: "persisted_terminal",
+      });
+      return undefined;
+    }
     if (providerTurn === undefined) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -14033,7 +14102,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: interruptRequestItem,
       });
       yield* stopRemainingWork();
-      yield* settleInterruptedRun({ command, projection, providerTurn, events, effects, now });
+      yield* settleInterruptedRun({
+        command,
+        projection,
+        providerTurn,
+        events,
+        effects,
+        now,
+        waitingEvidence: "absent_session",
+      });
       yield* settleBackgroundWork({
         command,
         events,
@@ -14295,6 +14372,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  const cancelIdleOrphansBestEffort = Effect.fn("Orchestrator.cancelIdleOrphansBestEffort")(
+    function* (
+      command: Extract<
+        OrchestrationV2ServerCommand,
+        { readonly type: "run.interrupt" | "thread.stop" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      projection?: Pick<OrchestrationV2ThreadProjection, "subagents" | "turnItems">,
+    ) {
+      // Stop must still commit when a child can't be read. Drop every partial repair event.
+      const repairEvents = yield* Ref.make(yield* Ref.get(events));
+      const repaired = yield* Effect.exit(
+        Effect.gen(function* () {
+          const current =
+            projection ??
+            (yield* loadProjectionForCommand(command, ["subagents", "turnItems"], {
+              turnItemTypes: ["subagent"],
+              turnItemStatuses: ["pending", "running", "waiting"],
+            }));
+          yield* cancelIdleOrphans({ command, events: repairEvents, projection: current });
+        }),
+      );
+      if (Exit.isSuccess(repaired)) yield* Ref.set(events, yield* Ref.get(repairEvents));
+      else
+        yield* Effect.logWarning("Stop could not cancel orphaned delegated follow-ups", {
+          threadId: command.threadId,
+          cause: repaired.cause,
+        });
+    },
+  );
+
   const dispatchThreadStop = Effect.fn("Orchestrator.dispatchThreadStop")(function* (
     command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.stop" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -14365,7 +14473,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const enqueued = yield* Ref.get(interruptEffects);
         yield* Ref.update(events, (existing) => [...existing, ...written]);
         yield* Ref.update(effects, (existing) => [...existing, ...enqueued]);
-        yield* cancelIdleOrphans({ command, events, projection });
+        yield* cancelIdleOrphansBestEffort(command, events, projection);
         yield* stopDelegatedTasks;
         return interrupted.value;
       }
@@ -14386,7 +14494,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
     }
     yield* holdStoppedThread({ command, events, projection, cohortRunIds: [], now });
-    yield* cancelIdleOrphans({ command, events, projection });
+    yield* cancelIdleOrphansBestEffort(command, events, projection);
     yield* stopDelegatedTasks;
     return undefined;
   });
@@ -15454,6 +15562,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       }
       case "thread.auto-settle": {
+        const duties = yield* dependencies.duties(command.threadId).pipe(mapDispatchError(command));
+        if (duties.outgoing > 0)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Waiting on ${duties.outgoing} results; Stop or release them before settling.`,
+          });
         // Recheck live state; changes and explicit overrides take precedence over the sweep snapshot.
         const thread = yield* projectionStore
           .getThread(command.threadId)
@@ -15949,25 +16064,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "run.interrupt":
         cancelUnsettledEffects = yield* dispatchRunInterrupt(command, events, effects);
         if (command.holdQueue === true) {
-          // Stop must still commit when a child can't be read, so a failed repair's
-          // partial events are dropped.
-          const repairEvents = yield* Ref.make(yield* Ref.get(events));
-          const repaired = yield* Effect.exit(
-            loadProjectionForCommand(command, ["subagents", "turnItems"], {
-              turnItemTypes: ["subagent"],
-              turnItemStatuses: ["pending", "running", "waiting"],
-            }).pipe(
-              Effect.flatMap((projection) =>
-                cancelIdleOrphans({ command, events: repairEvents, projection }),
-              ),
-            ),
-          );
-          if (Exit.isSuccess(repaired)) yield* Ref.set(events, yield* Ref.get(repairEvents));
-          else
-            yield* Effect.logWarning("Stop could not cancel orphaned delegated follow-ups", {
-              threadId: command.threadId,
-              cause: repaired.cause,
-            });
+          yield* cancelIdleOrphansBestEffort(command, events);
           yield* Ref.update(effects, (existing) => [
             ...existing,
             delegatedTasksStopEffect(command),

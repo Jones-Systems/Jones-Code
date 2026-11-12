@@ -2,6 +2,70 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-superseded-terminal-history",
+      "tests": [
+        "apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts",
+        "apps/server/src/jones/orchestration/SupersededTerminalTrace.test.ts",
+        "apps/server/src/jones/orchestration/SupersededTerminal.integration.test.ts",
+        "apps/server/src/jones/orchestration/RestartPreparation.test.ts",
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+        "packages/provider-core/src/server/jones/providerControlOutcome.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts apps/server/src/jones/orchestration/SupersededTerminalTrace.test.ts apps/server/src/jones/orchestration/SupersededTerminal.integration.test.ts apps/server/src/jones/orchestration/RestartPreparation.test.ts apps/server/src/jones/persistence/EventLogPruning.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts packages/provider-core/src/server/jones/providerControlOutcome.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/orchestration/HistoricalTerminalHistory.ts apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts apps/server/src/jones/orchestration/HistoricalTerminalHistory.testkit.ts apps/server/src/jones/orchestration/SupersededTerminalTrace.ts apps/server/src/jones/orchestration/SupersededTerminalTrace.test.ts apps/server/src/jones/orchestration/SupersededTerminal.integration.test.ts apps/server/src/jones/orchestration/RestartPreparation.ts apps/server/src/jones/orchestration/RestartPreparation.test.ts apps/server/src/jones/persistence/EventLogPruning.test.ts apps/server/src/orchestration-v2/EventSink.ts apps/server/src/orchestration-v2/ProviderEventIngestor.ts apps/server/src/orchestration-v2/RunExecutionService.ts",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
+      "id": "jones-accepted-terminal-recovery",
+      "tests": [
+        "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts",
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+        "packages/provider-core/src/server/jones/providerControlOutcome.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts apps/server/src/jones/persistence/EventLogPruning.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts packages/provider-core/src/server/jones/providerControlOutcome.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/orchestration/AcceptedTerminalRecovery.ts apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts apps/server/src/jones/orchestration/AcceptedTerminalRecovery.testkit.ts apps/server/src/orchestration-v2/RunExecutionService.ts apps/server/src/orchestration-v2/ProviderEventIngestor.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
+      "id": "jones-reader-admission-failures",
+      "tests": [
+        "packages/shared/src/jones/sqliteReaders/admissionFailure.test.ts",
+        "packages/shared/src/jones/sqliteReaders/admission.test.ts",
+        "apps/server/src/jones/orchestration/appFailureReason.test.ts",
+        "apps/server/src/jones/orchestration/readerAdmissionMessage.test.ts",
+        "apps/server/src/jones/goals/continuity/GoalContinuityStore.test.ts",
+        "apps/server/src/jones/goals/continuity/GoalContinuity.test.ts",
+        "apps/server/src/jones/goals/continuity/admission.test.ts",
+        "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/UserFacingErrors.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/sqliteReaders/admissionFailure.test.ts packages/shared/src/jones/sqliteReaders/admission.test.ts apps/server/src/jones/orchestration/appFailureReason.test.ts apps/server/src/jones/orchestration/readerAdmissionMessage.test.ts apps/server/src/jones/goals/continuity/GoalContinuityStore.test.ts apps/server/src/jones/goals/continuity/GoalContinuity.test.ts apps/server/src/jones/goals/continuity/admission.test.ts apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/UserFacingErrors.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint packages/shared/src/jones/sqliteReaders/admission.ts packages/shared/src/jones/sqliteReaders/admissionFailure.ts apps/server/src/jones/goals/continuity/GoalContinuityStore.ts apps/server/src/jones/goals/continuity/admission.testkit.ts apps/server/src/jones/goals/continuity/readerAdmissionStart.testkit.ts apps/server/src/jones/threadConfiguration/prepareExecutionSession.ts apps/server/src/jones/orchestration/appFailureReason.ts apps/server/src/orchestration-v2/UserFacingErrors.ts apps/server/src/orchestration-v2/ProviderTurnStartService.ts apps/server/src/orchestration-v2/RunExecutionService.ts packages/shared/src/jones/sqliteReaders/admissionFailure.test.ts packages/shared/src/jones/sqliteReaders/admission.test.ts apps/server/src/jones/orchestration/appFailureReason.test.ts apps/server/src/jones/orchestration/readerAdmissionMessage.test.ts apps/server/src/jones/goals/continuity/GoalContinuityStore.test.ts apps/server/src/jones/goals/continuity/GoalContinuity.test.ts apps/server/src/jones/goals/continuity/admission.test.ts apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/UserFacingErrors.test.ts",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
       "id": "jones-workspace-lifecycle-dev-proof",
       "tests": [
         "apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
@@ -11,6 +75,7 @@
       ],
       "commands": [
         "node apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs --test-native-bindings",
+        "node apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs --test-source-exports",
         "vp test run apps/server/src/provider/Drivers/ClaudeHome.test.ts apps/server/src/provider/Drivers/ClaudeDriver.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/server/src/provider/Drivers/ClaudeHome.ts apps/server/src/provider/Drivers/ClaudeHome.test.ts apps/server/src/provider/Drivers/ClaudeDriver.ts apps/server/src/provider/Drivers/ClaudeDriver.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
         "node --check apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
@@ -5708,6 +5773,17 @@
       "commands": [
         "vp test run apps/server/src/jones/orchestration/QueueHoldReasons.test.ts apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts apps/server/src/jones/orchestration/QueueHold.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/server/src/jones/orchestration/QueueHold.ts apps/server/src/jones/orchestration/QueueHoldStore.ts apps/server/src/jones/orchestration/HeldQueueExpiry.ts apps/server/src/jones/orchestration/QueueHoldReasons.test.ts apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts apps/server/src/jones/persistence/Migrations/147_JonesQueueHolds.ts apps/server/src/orchestration-v2/EventSink.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/server.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstreams-native-home-fixture",
+      "tests": ["apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts"],
+      "commands": [
+        "vp test run apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/workstreams/testing/nativeHomeFixture.ts apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts --threads=1",
+        "vp fmt --check --threads=1 apps/server/src/jones/workstreams/testing/nativeHomeFixture.ts apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts .agents/skills/test-t3-app/references/sqlite-fixtures.md",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]

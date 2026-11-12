@@ -4,6 +4,7 @@ import {
   ThreadId,
   type ContextMenuItem,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -20,6 +21,8 @@ function deferred<T>() {
 const state = vi.hoisted(() => ({
   granted: new Set<string>(),
   projection: vi.fn(),
+  executeCommand: vi.fn<(command: string, input: unknown) => Promise<unknown>>(),
+  toast: vi.fn(),
   effects: [] as string[],
   completed: deferred<void>(),
   shown: deferred<void>(),
@@ -84,7 +87,11 @@ vi.mock("../jones/settlementRestore/settlementRestore", () => ({
 }));
 vi.mock("../state/environments", () => ({ usePrimaryEnvironmentId: () => "primary" }));
 vi.mock("../state/threads", () => ({
-  threadEnvironment: { updateMetadata: "metadata", stopSession: "stop-session" },
+  threadEnvironment: {
+    updateMetadata: "metadata",
+    interruptTurn: "thread-stop",
+    stopSession: "stop-session",
+  },
 }));
 vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: {} }));
 vi.mock("../state/orchestration", () => ({
@@ -97,10 +104,7 @@ vi.mock("@t3tools/client-runtime/state/runtime", async (importOriginal) => ({
   executeAtomQuery: (...args: unknown[]) => state.projection(...args),
 }));
 vi.mock("../state/use-atom-command", () => ({
-  useAtomCommand: (command: string) => async () => {
-    recordEffect(command);
-    return AsyncResult.success(undefined);
-  },
+  useAtomCommand: (command: string) => (input: unknown) => state.executeCommand(command, input),
 }));
 vi.mock("../localApi", () => ({
   readLocalApi: () => ({
@@ -136,7 +140,12 @@ vi.mock("../uiStateStore", () => ({
 }));
 vi.mock("../components/ui/toast", () => ({
   stackedThreadToast: (toast: unknown) => toast,
-  toastManager: { add: () => state.completed.resolve() },
+  toastManager: {
+    add: (toast: unknown) => {
+      state.toast(toast);
+      state.completed.resolve();
+    },
+  },
 }));
 vi.mock("../components/Sidebar.snooze", () => ({
   resolveSnoozePresets: () => [
@@ -208,6 +217,11 @@ beforeEach(() => {
   state.shown = deferred<void>();
   state.show.mockReset().mockResolvedValue(null);
   state.projection.mockReset().mockResolvedValue(AsyncResult.success({ providerSessions: [] }));
+  state.executeCommand.mockReset().mockImplementation(async (command) => {
+    recordEffect(command);
+    return AsyncResult.success(undefined);
+  });
+  state.toast.mockReset();
 });
 
 describe("thread menu permissions", () => {
@@ -232,7 +246,30 @@ describe("thread menu permissions", () => {
       state.show.mock.calls[0]![0].find((item) => item.id === "stop-thread")?.disabled,
     ).not.toBe(true);
     await state.completed.promise;
-    expect(state.effects).toEqual(["stop-session"]);
+    expect(state.effects).toEqual(["thread-stop"]);
+    expect(state.executeCommand).toHaveBeenCalledExactlyOnceWith("thread-stop", {
+      environmentId: target.environmentId,
+      input: { threadId: target.threadId },
+    });
+  });
+
+  it("reports a failed thread Stop in the target environment", async () => {
+    state.granted.add("secondary");
+    state.show.mockResolvedValue("stop-thread");
+    state.executeCommand.mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail(new Error("Stop failed"))),
+    );
+    createMenu().openMenu(position);
+    await state.completed.promise;
+    expect(state.executeCommand).toHaveBeenCalledExactlyOnceWith("thread-stop", {
+      environmentId: target.environmentId,
+      input: { threadId: target.threadId },
+    });
+    expect(state.toast).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      title: "Failed to stop thread",
+      description: "Stop failed",
+    });
   });
 
   it("disables mutations for a denied secondary environment", async () => {

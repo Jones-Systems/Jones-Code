@@ -113,11 +113,20 @@ const readers: ReadonlyArray<Reader> = [
     proof: "none: needs the full native-creation fixture, reasoned from code",
   },
   {
+    file: "orchestration/AcceptedTerminalRecovery.ts",
+    classification: "tolerate",
+    after:
+      "Readback belongs to a live consumer and retains the original command, events and effects in memory. Partial history fails exact-batch verification. Empty history retries only the original guarded publication; an already settled or superseded run refuses finalization. The unconditional interrupt-result batch carries no effects. No recovery state survives a server restart.",
+    proof:
+      "orchestration/AcceptedTerminalRecovery.test.ts (uncertain commit, exact readback, Stop/successor guards); concurrent pruning during recovery is reasoned from the retained batch and writer guards, not execution-proved",
+  },
+  {
     file: "orchestration/HistoricalTerminalHistory.ts",
     classification: "tolerate",
     after:
-      "Missing restart-command events leave the successor attempt undefined, so the terminal evidence is stale.",
-    proof: "none: needs the full provider fixture, reasoned from code",
+      "Missing restart command events refuse historical admission. Exact event-ID readback compares the retained selected event with Schema-encoded stored facts; missing, pruned or unavailable readback preserves the original failure, never proves absence or permits a new historical commit.",
+    proof:
+      "orchestration/HistoricalTerminalHistory.test.ts; orchestration/SupersededTerminal.integration.test.ts (authored, CI qualification required)",
   },
   {
     file: "orchestration/RestartPreparation.ts",

@@ -4,6 +4,49 @@
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "features": [
     {
+      "id": "superseded-terminal-history",
+      "tests": [
+        "apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts",
+        "apps/server/src/jones/orchestration/SupersededTerminalTrace.test.ts",
+        "apps/server/src/jones/orchestration/SupersededTerminal.integration.test.ts",
+        "apps/server/src/jones/orchestration/RestartPreparation.test.ts",
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+        "packages/provider-core/src/server/jones/providerControlOutcome.test.ts"
+      ],
+      "scope": "Preserve every captured-origin, runtime, native-turn, restart outbox/command and successor conjunct in HistoricalTerminalHistory while grouping stale/deferred refusals. A capped sink-owned process-local trace keys finite reasons by exact app thread, run, provider thread, provider turn and old attempt; it grants no authority. RestartPreparation reports the inner terminal stage and restart_terminal_unpersisted_<finite reason> (none_observed on missing trace), retaining the interrupt hold and 30-second deadline. Only ordinary snapshot normalization/publication errors offer the original HistoricalTerminalInput/event and historical write again. Refusal, ordinary or unavailable history preserves the original error; pure cancellation propagates. The history owner retains the exact selected event and reconciles an uncertain commit by event-ID and Schema-encoded facts; missing/pruned/unavailable/mismatched readback never proves absence or permits another commit. Initial historical failures and rejected-write fallback retain their existing owner. No cleanup bundle, provider operation, settlement, checkpoint, schema or timeout replay. Existing Jones history fixture/assertions are extracted once to a Jones testkit for reuse with the real RunExecutionService, sink, ingestor, restart intent and persisted-terminal waiter; no upstream test harness was changed. Tests use Deferred barriers and synthetic memory stores; three refused reads exhaust Lane2 admission retries before the new error fallback. Runtime-evidence-free and logical-only paths remain negative; no speculative locator reconstruction or logical-snapshot admission repair. Existing HistoricalTerminalHistory reader classification in EventLogPruning.test.ts was extended with exact owner authorization, preserving inventory assertions. Authored tests and type/format/boundary qualification require supported CI; local checks are static only."
+    },
+    {
+      "id": "accepted-terminal-recovery",
+      "tests": [
+        "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts",
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+        "packages/provider-core/src/server/jones/providerControlOutcome.test.ts"
+      ],
+      "scope": "Retain only the exact origin/route-revalidated logical turn.terminal before ingestion, with its ingestion effect and fallback completion time. Jones AcceptedTerminalRecovery owns transient classification, two read-admission retries, one original-finalization recovery owner, exponential 1s-30s delay and 10-minute warnings. Each actual pooled read inside ProviderEventIngestor is retried separately: subagent normalization/publication can write before its later model read, so ingestNormalized is never retried as a mid-run bundle. Successful terminal normalization is retained before publication so an empty fresh cleanup read cannot hide an uncertain original commit. Accepted terminal publication retains the original event batches and current-attempt atomic guards, tags each batch with a stable command identity, and reconciles an uncertain write through exact command/event readback before replay. Writer-owned turn-item ordinals and retained provider-thread identity are canonicalized explicitly for readback; no native identity/status/time/evidence is substituted. A successful finalization ownership read is retained with the original publication; its atomic writer guard still fences Stop/successors, and the false ownership branch retains interrupt-result pairing. Non-transient failures use terminal_finalization_failed while retaining accepted native settlement, snapshot and evidence, and write a separate local-error item so the native failure item is not overwritten. No provider operation, checkpoint policy, historical terminal/restart guard, schema, failure class, client or adapter change. The existing RunExecutionService.test.ts adverse assertion now expects waiting after a transient terminal-write failure; its harness adds only driver/readback seams, two function exports for type-only harness reuse, and Jones test registration. This accepted shared-test exception preserves the real consumer harness and its existing preterminal/unknown-control assertions. Jones tests import the existing EventSink, stores, ingestor, memory SQLite, thread-command and Git ports; testkit imports the upstream harness types only. New cases are authored, not locally executed; required Check must run them plus strict boundary, focused lint and shared/server typechecks."
+    },
+    {
+      "id": "reader-admission-failures",
+      "tests": [
+        "packages/shared/src/jones/sqliteReaders/admissionFailure.test.ts",
+        "packages/shared/src/jones/sqliteReaders/admission.test.ts",
+        "apps/server/src/jones/orchestration/appFailureReason.test.ts",
+        "apps/server/src/jones/orchestration/readerAdmissionMessage.test.ts",
+        "apps/server/src/jones/goals/continuity/GoalContinuityStore.test.ts",
+        "apps/server/src/jones/goals/continuity/GoalContinuity.test.ts",
+        "apps/server/src/jones/goals/continuity/admission.test.ts",
+        "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/UserFacingErrors.test.ts"
+      ],
+      "scope": "Finite tagged SQLite reader admission failures remain distinct from native SQLite errors, real continuity holds and run/selection mismatch. The bounded extractor inspects Effect Cause/reason/cause without text authority. UserFacingErrors adds one hook before its unchanged unknown-SQL fallback; RunExecutionService adds only three allowlisted failure-code constructor arguments and one import. ProviderTurnStartService hooks continuity read admission into the existing willRetry path, preserves real holds, maps only failed revalidation reads to unavailable and uses existing guarded settlement. GoalContinuityStore retains a non-enumerable runtime cause on the unchanged GoalContinuityError schema; requirementFor and reconstruction already pass it through. prepareExecutionSession records only completed detach events through the existing current-attempt guard when the following revalidation read fails, preserving completed retirement for retry; it never treats the pending retired-writer fence as completion and still guards replacement persistence. The existing ProviderTurnStartService.test.ts harness gains only injected continuity/read/retirement seams and a Jones test registration call; this accepted shared-test exception avoids copying its large harness. Jones readerAdmissionStart.testkit.ts imports ProjectionStoreReadError to inject realistic wrapped reads; readerAdmissionMessage.test.ts imports the existing dispatch renderer and persistence wrapper. New absent/required/exhaustion/hold/Stop/custody/read-vs-change/post-retirement/history cases are authored, not locally executed. Shared test harness and preparation tests preserve all existing assertions. No schema, pool, timeout, checkpoint, provider request, authentication or routing changes."
+    },
+    {
       "id": "workspace-lifecycle-dev-proof",
       "tests": [
         "apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
@@ -3658,6 +3701,11 @@
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
       "scope": "Held queued runs record when and why they were held (stop, restart, provider_failure, inherited) in the sparse Jones table jones_queue_holds (Jones migration 147), keyed by upstream run ID with no reference to upstream tables. The accepted-shared EventSink writes and deletes those rows inside the transaction that appends the hold or release events, classifying them by event and command type (run.created behind held work, provider-runtime.reconcile, thread.stop and run.interrupt) or by an explicit intent on the provider-failure system write; no Jones field enters an upstream payload, event, column or wire contract. Releasing, cancelling or deleting a held run's thread removes its row; a missing table or row reads as a hold recorded before reasons existed. A completed restart continuation releases the restart holds recorded before it completed and the queue drains in order; Stop replaces a restart hold, Stop holds and failed or interrupted continuations release nothing, planned-update continuity keeps its own threads, and a new message still never releases a hold. After startup recovery and then hourly, held automatic messages older than T3CODE_HELD_QUEUE_EXPIRY_HOURS (default 24, age from the recorded hold or else the request time) are cancelled through queued-run.cancel, which disposes delegated-completion cohorts as a person's cancel does; client-typed user messages and unclassifiable messages never expire. Small EventSink.ts, Orchestrator.ts and server.ts hooks keep their upstream owners. Synthetic in-memory fixtures; no live-database or installed-runtime claim."
+    },
+    {
+      "id": "workstreams-native-home-fixture",
+      "tests": ["apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts"],
+      "scope": "Explicit empty private Linux synthetic home prepared by real authority enrollment, registry key/init and SessionStore/source-setup services; startup selects native and reads an empty HTTP projection. Synthetic receipts attest no packaged runtime or installation."
     }
   ]
 }

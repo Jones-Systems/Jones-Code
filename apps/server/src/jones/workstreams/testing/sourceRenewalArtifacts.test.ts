@@ -1,14 +1,22 @@
 // @effect-diagnostics nodeBuiltinImport:off -- In-memory child events only; no processes or artifact I/O.
 import * as NodeEvents from "node:events";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import { afterEach, beforeEach, expect, vi } from "vite-plus/test";
+import { it } from "@effect/vitest";
 import {
   acquireConsumerLifecycle,
   lifecycleBudgets,
   makeArtifactCustody,
 } from "./sourceRenewalArtifacts.ts";
-const { makeWorkerClose } = (await import(
+const { makeWorkerClose, makeWorkerClock } = (await import(
   new URL("./sourceRenewalWorker.mjs", import.meta.url).href
 )) as {
+  makeWorkerClock: (
+    effect: typeof Effect,
+    liveClock: Clock.Clock,
+    currentMillis: () => number,
+  ) => Clock.Clock;
   makeWorkerClose: (finalizers: Array<() => Promise<unknown>>) => () => Promise<void>;
 };
 
@@ -107,6 +115,22 @@ afterEach(() => {
   expect(vi.getTimerCount()).toBe(0);
   vi.useRealTimers();
 });
+
+it.effect("keeps Effect timing usable while controlling the artifact wall clock", () =>
+  Effect.gen(function* () {
+    let millis = 1234;
+    const clock = makeWorkerClock(Effect, Clock.Clock.defaultValue(), () => millis);
+    const usingClock = <A, E>(effect: Effect.Effect<A, E>) =>
+      effect.pipe(Effect.provideService(Clock.Clock, clock));
+    expect(clock.currentTimeMillisUnsafe()).toBe(1234);
+    expect(yield* usingClock(Clock.currentTimeNanos)).toBe(1234000000n);
+    millis = 5678;
+    expect(yield* usingClock(Clock.currentTimeMillis)).toBe(5678);
+    expect(clock.currentTimeNanosUnsafe()).toBe(5678000000n);
+    const result = yield* usingClock(Effect.timed(Effect.succeed("ready")));
+    expect(result[1]).toBe("ready");
+  }),
+);
 
 it("captures custody and requested identity before bootstrap failure, preserving the first error through closed IPC", async () => {
   const f = fixture();

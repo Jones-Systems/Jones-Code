@@ -55,6 +55,18 @@ const sessionHasBackgroundWork = Effect.fn("jones.prepareExecutionSession.backgr
   },
 );
 
+export class ExecutionSessionRevalidationUnavailableError extends Schema.TaggedError<ExecutionSessionRevalidationUnavailableError>()(
+  "ExecutionSessionRevalidationUnavailableError",
+  { runId: RunId, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "Provider start could not read the current run state after retirement. No provider work was started.";
+  }
+}
+const isExecutionSessionRevalidationUnavailable = Schema.is(
+  ExecutionSessionRevalidationUnavailableError,
+);
+
 /** Runs only at normal start; retirement and its durable binding removal precede replacement. */
 export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession")(function* (
   run: OrchestrationV2Run,
@@ -63,7 +75,10 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     OrchestrationV2ThreadProjection,
     "thread" | "runs" | "providerThreads" | "providerSessions"
   >,
-  revalidateReplacement: Effect.Effect<void, ExecutionSessionRevalidationError> = Effect.void,
+  revalidateReplacement: Effect.Effect<
+    void,
+    ExecutionSessionRevalidationError | ExecutionSessionRevalidationUnavailableError
+  > = Effect.void,
 ) {
   const transitions = yield* Switch.ProviderSwitchServiceV2;
   const sessions = yield* Sessions.ProviderSessionManagerV2;
@@ -112,7 +127,26 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       instanceId: run.modelSelection.instanceId,
     }) ?? Effect.void
   );
-  yield* revalidateReplacement;
+  const revalidation = yield* Effect.result(revalidateReplacement);
+  if (revalidation._tag === "Failure") {
+    // Only a completed detach may be recorded here. The manager's retired-writer fence
+    // also covers pending retirement, so it cannot substitute for that completion.
+    if (isExecutionSessionRevalidationUnavailable(revalidation.failure) && events.length > 0) {
+      const result = yield* sink.writeIfRunCurrent({
+        threadId: run.threadId,
+        runId: run.id,
+        activeAttemptId: run.activeAttemptId,
+        expectedStatus: "starting",
+        events,
+      });
+      if (!result.committed)
+        return yield* new ExecutionSessionRevalidationError({
+          runId: run.id,
+          cause: "Run changed before completed retirement could be recorded.",
+        });
+    }
+    return yield* revalidation.failure;
+  }
   const retiredWriter =
     provider.providerSessionId !== null &&
     (yield* (
