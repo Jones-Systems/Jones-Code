@@ -216,7 +216,8 @@ export function registerReaderAdmissionStartTests<E extends Error>(
     }),
   );
 
-  it.effect.each([2, 3])(
+  // Reads 2 and 4 revalidate selection; read 3 is the intervening attempt-ownership guard.
+  it.effect.each([2, 4])(
     "run-state read failure at check %s is unavailable, with no provider open",
     (failedRead) =>
       Effect.gen(function* () {
@@ -238,6 +239,7 @@ export function registerReaderAdmissionStartTests<E extends Error>(
             ),
         });
         yield* harness.start;
+        expect(reads).toBe(failedRead);
         expect(harness.open).not.toHaveBeenCalled();
         expect(harness.detach).toHaveBeenCalledOnce();
         expect(harness.projection().turnItems).toContainEqual(

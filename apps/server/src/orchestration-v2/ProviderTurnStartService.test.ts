@@ -769,7 +769,7 @@ function makeLocalCommandHarness(
       },
     ],
     providerSessions:
-      "retirementFailure" in input
+      "retirementFailure" in input || input.retireBeforeRevalidation === true
         ? [
             {
               id: providerSessionId,
