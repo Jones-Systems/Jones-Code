@@ -250,9 +250,10 @@ fail packaging. The resulting single executable needs no external Node,
 node_modules, source checkout or bridge sidecar. Existing output is never
 overwritten. Build natively for Linux x86_64 and macOS arm64.
 
-Linux arm64 source remains available, but Node `--build-sea` artifacts cannot
-load on Linux kernels with 16 KiB or 64 KiB pages ([Node issue 67048](https://github.com/nodejs/node/issues/67048)).
-This package does not apply the application server's separate arm64 workaround;
-retained source is not native arm64 SEA qualification. Packaging and synthetic
-manager tests are distinct from live fleet qualification and exact-version data
-compatibility evidence.
+Linux arm64 source remains available. A Node SEA regression introduced in
+26.9.0 affects kernels with 16 KiB or 64 KiB pages, depending on the Node version
+([Node issue 67048](https://github.com/nodejs/node/issues/67048)). Node 26.8.2
+predates the reported regression; this package has not qualified Linux arm64.
+It does not apply the application server's separate arm64 workaround. Packaging
+and synthetic manager tests are distinct from live fleet qualification and
+exact-version data compatibility evidence.
