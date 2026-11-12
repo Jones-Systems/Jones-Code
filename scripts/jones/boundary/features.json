@@ -3562,6 +3562,11 @@
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
       "scope": "Held queued runs record when and why they were held (stop, restart, provider_failure, inherited) in the sparse Jones table jones_queue_holds (Jones migration 147), keyed by upstream run ID with no reference to upstream tables. The accepted-shared EventSink writes and deletes those rows inside the transaction that appends the hold or release events, classifying them by event and command type (run.created behind held work, provider-runtime.reconcile, thread.stop and run.interrupt) or by an explicit intent on the provider-failure system write; no Jones field enters an upstream payload, event, column or wire contract. Releasing, cancelling or deleting a held run's thread removes its row; a missing table or row reads as a hold recorded before reasons existed. A completed restart continuation releases the restart holds recorded before it completed and the queue drains in order; Stop replaces a restart hold, Stop holds and failed or interrupted continuations release nothing, planned-update continuity keeps its own threads, and a new message still never releases a hold. After startup recovery and then hourly, held automatic messages older than T3CODE_HELD_QUEUE_EXPIRY_HOURS (default 24, age from the recorded hold or else the request time) are cancelled through queued-run.cancel, which disposes delegated-completion cohorts as a person's cancel does; client-typed user messages and unclassifiable messages never expire. Small EventSink.ts, Orchestrator.ts and server.ts hooks keep their upstream owners. Synthetic in-memory fixtures; no live-database or installed-runtime claim."
+    },
+    {
+      "id": "workstreams-native-home-fixture",
+      "tests": ["apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts"],
+      "scope": "Explicit empty private Linux synthetic home prepared by real authority enrollment, registry key/init and SessionStore/source-setup services; startup selects native and reads an empty HTTP projection. Synthetic receipts attest no packaged runtime or installation."
     }
   ]
 }

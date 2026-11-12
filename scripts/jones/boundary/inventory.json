@@ -2904,7 +2904,11 @@
     "scripts/jones/boundary/fragments/stalled-run-projection.json": "jones-owned",
     "apps/server/src/jones/orchestration/DelegatedNoticeDisposition.integration.test.ts": "jones-owned",
     "packages/client-runtime/src/state/threadState.ts": "hook",
-    "apps/web/src/state/threads.ts": "hook"
+    "apps/web/src/state/threads.ts": "hook",
+    "apps/server/src/jones/workstreams/testing/nativeHomeFixture.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts": "jones-owned",
+    ".agents/skills/test-t3-app/references/sqlite-fixtures.md": "policy",
+    "scripts/jones/boundary/fragments/workstreams-native-home-fixture.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
