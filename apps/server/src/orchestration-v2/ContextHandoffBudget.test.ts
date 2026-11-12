@@ -34,6 +34,10 @@ import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeHandoff = Schema.decodeUnknownSync(OrchestrationV2ContextHandoff);
 
+class RestorationUnavailable extends Error {
+  readonly _tag = "RestorationUnavailable";
+}
+
 const now = DateTime.makeUnsafe("2026-09-17T00:00:00Z");
 const threadId = ThreadId.make("thread:handoff");
 const providerThread: OrchestrationV2ProviderThread = {
@@ -732,7 +736,7 @@ describe("proved-unsent handoff restoration", () => {
             }),
           restore: (value) =>
             Effect.suspend(() => {
-              if (restoreFails) return Effect.fail({ _tag: "RestorationUnavailable" as const });
+              if (restoreFails) return Effect.fail(new RestorationUnavailable("Restoration unavailable"));
               durable.set(value.id, value);
               return Effect.void;
             }),
