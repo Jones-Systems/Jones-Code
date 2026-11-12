@@ -28,11 +28,12 @@ export function MobileWorkstreamControls(props: {
   const run = async (action: () => Promise<PersonalResult<unknown>>) => {
     if (busy) return;
     setBusy(true);
-    try {
-      if (await props.perform(action)) setName("");
-    } finally {
-      setBusy(false);
-    }
+    await Promise.resolve()
+      .then(() => props.perform(action))
+      .then((saved) => {
+        if (saved) setName("");
+      })
+      .finally(() => setBusy(false));
   };
   const button = (label: string, action: () => void, disabled = false) => (
     <Pressable

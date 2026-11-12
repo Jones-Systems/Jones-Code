@@ -67,7 +67,10 @@ const state: PersonalWorkstreamsState = {
 };
 async function mount(writable: boolean) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  const assign = vi.fn(async () => ({ ok: true as const, value: undefined }));
+  const assign = vi.fn<PersonalWorkstreamsController["assign"]>(async () => ({
+    ok: true,
+    value: undefined,
+  }));
   const controller = {
     canAssign: () => writable,
     assign,
@@ -109,4 +112,25 @@ it("disables assignment for old-server capability fallback and read-only session
   expect(button.disabled).toBe(true);
   await act(async () => button.click());
   expect(assign).not.toHaveBeenCalled();
+});
+
+it("releases pending controls after a failed native action so the user can try again", async () => {
+  const assign = await mount(true);
+  assign.mockResolvedValueOnce({
+    ok: false,
+    failure: {
+      action: "assign",
+      reason: "offline",
+      environmentId: thread.environmentId,
+      dedupeKey: "assign:synthetic:offline",
+    },
+  });
+  await act(async () =>
+    element!.querySelector<HTMLButtonElement>('button[aria-label="Synthetic group"]')!.click(),
+  );
+  const retry = element!.querySelector<HTMLButtonElement>('button[aria-label="Synthetic group"]')!;
+  expect(retry.disabled).toBe(false);
+  await act(async () => retry.click());
+  expect(assign).toHaveBeenCalledTimes(2);
+  expect(retry.disabled).toBe(false);
 });

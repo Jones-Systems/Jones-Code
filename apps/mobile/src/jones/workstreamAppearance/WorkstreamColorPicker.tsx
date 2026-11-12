@@ -90,12 +90,12 @@ export function WorkstreamColorPicker(props: {
     if (busyRef.current || (!automatic && !color)) return;
     busyRef.current = true;
     setBusy(true);
-    try {
-      await props.save(automatic ? null : color);
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
+    await Promise.resolve()
+      .then(() => props.save(automatic ? null : color))
+      .finally(() => {
+        busyRef.current = false;
+        setBusy(false);
+      });
   };
   return (
     <View style={{ gap: 12, paddingVertical: 12 }}>

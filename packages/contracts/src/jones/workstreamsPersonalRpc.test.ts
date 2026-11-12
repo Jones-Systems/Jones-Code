@@ -10,18 +10,26 @@ import {
   WorkstreamsPersonalError,
 } from "./workstreamsPersonalRpc.ts";
 
+const decodeSubscribe = Schema.decodeSync(SubscribePersonalWorkstreamsRpc.payloadSchema);
+const decodeAssign = Schema.decodeSync(AssignPersonalWorkstreamRpc.payloadSchema);
+const isAssign = Schema.is(AssignPersonalWorkstreamRpc.payloadSchema);
+const isPut = Schema.is(PutPersonalWorkstreamRpc.payloadSchema);
+const decodeError = Schema.decodeUnknownSync(WorkstreamsPersonalError);
+const encodeError = Schema.encodeSync(WorkstreamsPersonalError);
+const decodeCapabilities = Schema.decodeUnknownSync(ExecutionEnvironmentCapabilities);
+const decodeThread = Schema.decodeSync(ThreadRegistryComposedThread);
+const isThread = Schema.is(ThreadRegistryComposedThread);
+
 describe("personal Workstream RPC compatibility", () => {
   it("registers all three public methods and requires assignment revisions", () => {
     expect(WsRpcGroup.requests.get("workstreamsPersonal.subscribe")).toBeDefined();
     expect(WsRpcGroup.requests.get("workstreamsPersonal.put")).toBeDefined();
     expect(WsRpcGroup.requests.get("workstreamsPersonal.assign")).toBeDefined();
-    expect(Schema.decodeSync(SubscribePersonalWorkstreamsRpc.payloadSchema)({})).toEqual({});
+    expect(decodeSubscribe({})).toEqual({});
     const input = { threadId: "thread-1", workstream: null, expectedRevision: 0 };
-    expect(Schema.decodeSync(AssignPersonalWorkstreamRpc.payloadSchema)(input)).toEqual(input);
-    expect(
-      Schema.is(AssignPersonalWorkstreamRpc.payloadSchema)({ ...input, expectedRevision: -1 }),
-    ).toBe(false);
-    expect(Schema.is(PutPersonalWorkstreamRpc.payloadSchema)({ workstream: null })).toBe(false);
+    expect(decodeAssign(input)).toEqual(input);
+    expect(isAssign({ ...input, expectedRevision: -1 })).toBe(false);
+    expect(isPut({ workstream: null })).toBe(false);
   });
 
   it("carries the current assignment on a precondition failure", () => {
@@ -35,12 +43,12 @@ describe("personal Workstream RPC compatibility", () => {
         updatedAt: "2026-11-12T12:00:00.000Z",
       },
     };
-    const decoded = Schema.decodeUnknownSync(WorkstreamsPersonalError)(error);
-    expect(Schema.encodeSync(WorkstreamsPersonalError)(decoded)).toEqual(error);
+    const decoded = decodeError(error);
+    expect(encodeError(decoded)).toEqual(error);
   });
 
   it("keeps the capability absent on old servers and gates it to version one", () => {
-    const decode = Schema.decodeUnknownSync(ExecutionEnvironmentCapabilities);
+    const decode = decodeCapabilities;
     expect(decode({}).workstreamsPersonal).toBeUndefined();
     expect(decode({ workstreamsPersonal: { version: 1 } }).workstreamsPersonal).toEqual({
       version: 1,
@@ -61,7 +69,7 @@ describe("Voice personal membership compatibility", () => {
   };
 
   it("decodes an older composed thread without a personal membership envelope", () => {
-    const decoded = Schema.decodeSync(ThreadRegistryComposedThread)(thread);
+    const decoded = decodeThread(thread);
     expect(decoded).toEqual(thread);
     expect(decoded).not.toHaveProperty("personal_memberships");
   });
@@ -80,15 +88,15 @@ describe("Voice personal membership compatibility", () => {
         },
       ],
     };
-    expect(Schema.decodeSync(ThreadRegistryComposedThread)(current)).toEqual(current);
+    expect(decodeThread(current)).toEqual(current);
     expect(
-      Schema.is(ThreadRegistryComposedThread)({
+      isThread({
         ...current,
         personal_memberships: [{ ...current.personal_memberships[0], revision: -1 }],
       }),
     ).toBe(false);
     expect(
-      Schema.decodeSync(ThreadRegistryComposedThread)({
+      decodeThread({
         ...thread,
         native_memberships: [{ workstream_ref: "native:legacy", placement: { historical: true } }],
       }).native_memberships,

@@ -2,6 +2,9 @@ import { describe, expect, it } from "vite-plus/test";
 import { ThreadRegistryComposedSnapshot } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+const decodeSnapshot = Schema.decodeUnknownSync(ThreadRegistryComposedSnapshot);
+const encodeSnapshot = Schema.encodeSync(ThreadRegistryComposedSnapshot);
+
 const legacyPlacement = {
   membership_id: "historical-membership",
   workstream_id: "legacy-id:kept",
@@ -38,9 +41,9 @@ const historical = {
 
 describe("voice membership wire compatibility", () => {
   it("round trips legacy native envelopes and persisted references without personal fields", () => {
-    const decoded = Schema.decodeUnknownSync(ThreadRegistryComposedSnapshot)(historical);
+    const decoded = decodeSnapshot(historical);
     expect(decoded.threads[0]?.personal_memberships).toBeUndefined();
-    expect(Schema.encodeSync(ThreadRegistryComposedSnapshot)(decoded)).toEqual(historical);
+    expect(encodeSnapshot(decoded)).toEqual(historical);
   });
   it("accepts new local membership without placement proofs while retaining the legacy array", () => {
     const membership = {
@@ -59,10 +62,6 @@ describe("voice membership wire compatibility", () => {
         personal_memberships: [membership],
       })),
     };
-    expect(
-      Schema.encodeSync(ThreadRegistryComposedSnapshot)(
-        Schema.decodeUnknownSync(ThreadRegistryComposedSnapshot)(current),
-      ),
-    ).toEqual(current);
+    expect(encodeSnapshot(decodeSnapshot(current))).toEqual(current);
   });
 });

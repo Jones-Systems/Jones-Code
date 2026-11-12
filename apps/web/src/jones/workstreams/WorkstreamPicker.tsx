@@ -31,10 +31,13 @@ export function WorkstreamPicker({
         : await controller.assign(thread, id);
       if (result.ok) onClose();
       else showPersonalFailure(result.failure);
-    } finally {
+    } catch (error) {
       pending.current = false;
       setBusy(false);
+      throw error;
     }
+    pending.current = false;
+    setBusy(false);
   };
   return (
     <Dialog

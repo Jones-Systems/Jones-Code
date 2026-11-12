@@ -39,11 +39,15 @@ export function WorkstreamCreateForm({
             setName("");
             onClose();
           } else showPersonalFailure(result.failure);
-        } finally {
+        } catch (error) {
           setPending(false);
           onPendingChange(false);
           pendingRef.current = false;
+          throw error;
         }
+        setPending(false);
+        onPendingChange(false);
+        pendingRef.current = false;
       }}
     >
       <Input
@@ -82,9 +86,11 @@ function Group({
     try {
       const result = await operation();
       if (!result.ok) showPersonalFailure(result.failure);
-    } finally {
+    } catch (error) {
       setPending(false);
+      throw error;
     }
+    setPending(false);
   };
   const index = state.workstreams.findIndex((entry) => entry.id === item.id);
   return (
@@ -227,9 +233,11 @@ function Group({
                       : await controller.setColor(item.id, draft ? draft.toUpperCase() : null);
                   if (result.ok) setEditing(null);
                   else showPersonalFailure(result.failure);
-                } finally {
+                } catch (error) {
                   setPending(false);
+                  throw error;
                 }
+                setPending(false);
               }}
             >
               <Input

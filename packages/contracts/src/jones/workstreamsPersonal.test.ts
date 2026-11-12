@@ -14,6 +14,13 @@ import {
   newPersonalWorkstream,
 } from "./workstreamsPersonal.ts";
 
+const decodeUnknownWorkstream = Schema.decodeUnknownSync(PersonalWorkstream);
+const isWorkstream = Schema.is(PersonalWorkstream);
+const decodeAssignment = Schema.decodeSync(PersonalWorkstreamAssignment);
+const isAssignment = Schema.is(PersonalWorkstreamAssignment);
+const decodeSnapshot = Schema.decodeSync(PersonalWorkstreamsSnapshot);
+const isAssignInput = Schema.is(AssignPersonalWorkstreamInput);
+
 const now = "2026-11-12T12:00:00.000Z";
 const later = "2026-11-12T12:00:01.000Z";
 const original = newPersonalWorkstream({
@@ -60,7 +67,7 @@ describe("personal Workstream convergence", () => {
   });
 
   it("canonicalizes fields independently of object property insertion order", () => {
-    const reversed = Schema.decodeUnknownSync(PersonalWorkstream)(
+    const reversed = decodeUnknownWorkstream(
       Object.fromEntries(Object.entries(original).reverse()),
     );
     expect(canonicalPersonalWorkstream(reversed)).toBe(canonicalPersonalWorkstream(original));
@@ -182,12 +189,12 @@ describe("personal Workstream wire validation", () => {
     { origin: "" },
     { origin: "client one" },
   ])("rejects malformed definition fields %j", (patch) => {
-    expect(Schema.is(PersonalWorkstream)({ ...original, ...patch })).toBe(false);
+    expect(isWorkstream({ ...original, ...patch })).toBe(false);
   });
 
   it("accepts bounded legacy ids, fractional order keys and safe revisions", () => {
     expect(
-      Schema.is(PersonalWorkstream)({
+      isWorkstream({
         ...original,
         id: "legacy:" + "x".repeat(121),
         orderKey: "a".repeat(63) + "b",
@@ -203,8 +210,8 @@ describe("personal Workstream wire validation", () => {
       revision: 0,
       updatedAt: null,
     };
-    expect(Schema.decodeSync(PersonalWorkstreamAssignment)(implicit)).toEqual(implicit);
-    expect(Schema.is(PersonalWorkstreamAssignment)({ ...implicit, revision: -1 })).toBe(false);
+    expect(decodeAssignment(implicit)).toEqual(implicit);
+    expect(isAssignment({ ...implicit, revision: -1 })).toBe(false);
     const cleared = { ...implicit, revision: 2, updatedAt: later };
     const snapshot = {
       environmentId: EnvironmentId.make("environment-1"),
@@ -213,16 +220,16 @@ describe("personal Workstream wire validation", () => {
       assignments: [cleared],
       importIssue: { importId: null, reason: "invalid_file" as const },
     };
-    expect(Schema.decodeSync(PersonalWorkstreamsSnapshot)(snapshot)).toEqual(snapshot);
+    expect(decodeSnapshot(snapshot)).toEqual(snapshot);
     expect(
-      Schema.is(AssignPersonalWorkstreamInput)({
+      isAssignInput({
         threadId: implicit.threadId,
         workstream: original,
         expectedRevision: 0,
       }),
     ).toBe(true);
     expect(
-      Schema.is(AssignPersonalWorkstreamInput)({
+      isAssignInput({
         threadId: implicit.threadId,
         workstream: null,
       }),
