@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Fixture from "./integration.testkit.ts";
 import { historicalMessage } from "@t3tools/provider-core/server/handoffBudget";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -136,6 +137,209 @@ const resolveTask = Effect.fnUntraced(function* (
         },
   );
 });
+
+const startAtAdmission = Effect.fnUntraced(function* (f: Effect.Success<typeof Fixture.seed>) {
+  const gate = yield* Fixture.StartingGate;
+  const fiber = yield* f.start
+    .start({ threadId: f.threadId, runId: f.run.id })
+    .pipe(Effect.result, Effect.forkChild);
+  yield* Deferred.await(gate.entered);
+  const p = yield* f.orchestrator.getThreadProjection(f.threadId);
+  assert.equal(p.runs.find((r) => r.id === f.run.id)!.status, "starting");
+  assert.isFalse(yield* (yield* Store.StartRefusals).qualifies(f.threadId, f.run.id));
+  return Deferred.succeed(gate.release, undefined).pipe(Effect.andThen(Fiber.join(fiber)));
+});
+
+it.effect.each(["acknowledge", "dispose"] as const)(
+  "%s during starting retains only the admitted survivor at certification",
+  (action) =>
+    Effect.gen(function* () {
+      const f = yield* Fixture.seedTasks(2);
+      const sql = yield* SqlClient.SqlClient;
+      const offers = yield* Fixture.Offers;
+      const certify = yield* startAtAdmission(f);
+      yield* resolveTask(f, action, "during-starting");
+      const before = yield* f.orchestrator.getThreadProjection(f.threadId);
+      const survivor = f.delivery.taskIds.slice(1);
+      assert.deepEqual(
+        before.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.delivery!.taskIds,
+        survivor,
+      );
+      const disposed = before.subagents.find((t) => t.id === f.taskId)!.completionDelivery;
+      yield* certify;
+      yield* f.orchestrator.recoverDelegatedTasks;
+      const held = yield* f.orchestrator.getThreadProjection(f.threadId);
+      const delivery = held.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.delivery!;
+      assert.notEqual(delivery.messageId, f.delivery.messageId);
+      assert.equal(delivery.generation, f.delivery.generation + 1);
+      assert.deepEqual(delivery.taskIds, survivor);
+      assert.deepEqual(yield* sql`SELECT state FROM jones_start_refusal_holds`, [
+        { state: "held" },
+      ]);
+      const offerCount = offers.requests.length;
+      yield* f.orchestrator.recoverDelegatedTasks;
+      yield* f.orchestrator.recoverDelegatedTasks;
+      const recovered = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.deepEqual(recovered.runs, held.runs);
+      assert.deepEqual(recovered.messages, held.messages);
+      assert.equal(offers.requests.length, offerCount);
+      assert.deepEqual(
+        recovered.subagents.find((t) => t.id === f.taskId)!.completionDelivery,
+        disposed,
+      );
+      assert.deepEqual(
+        recovered.messages.find((m) => m.id === f.delivery.messageId)!.delegatedCompletion!.taskIds,
+        f.delivery.taskIds,
+      );
+      assert.lengthOf(yield* sql`SELECT 1 FROM jones_start_refusal_holds`, 1);
+      yield* f.witness("starting-survivor");
+      yield* joinRelease(f.threadId);
+      assert.equal(offers.requests.length, offerCount + 1);
+      assert.deepEqual((yield* acceptCurrent(f, "starting-survivor")).taskIds, survivor);
+      yield* f.orchestrator.recoverDelegatedTasks;
+      const final = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.deepEqual(
+        final.subagents.map((t) => t.completionDelivery!.state),
+        [action === "acknowledge" ? "acknowledged" : "disposed", "delivered"],
+      );
+      assert.lengthOf(
+        final.runs.filter((r) => r.userMessageId === delivery.messageId),
+        1,
+      );
+      assert.equal(offers.requests.length, offerCount + 1);
+    }).pipe(Effect.provide(Fixture.startingRuntime)),
+);
+
+it.effect.each([false, true])(
+  "disposing all admitted members during starting reserves an ordinary pending late sibling (missing proof=%s)",
+  (missingProof) =>
+    Effect.gen(function* () {
+      const f = yield* Fixture.seedTasks(2);
+      const sql = yield* SqlClient.SqlClient;
+      const offers = yield* Fixture.Offers;
+      const certify = yield* startAtAdmission(f);
+      const p = yield* f.orchestrator.getThreadProjection(f.threadId);
+      const siblingId = NodeId.make("task:late-during-starting");
+      yield* f.sink.write({
+        events: [
+          yield* f.event({
+            type: "subagent.updated",
+            threadId: f.threadId,
+            runId: f.parent.id,
+            payload: {
+              ...p.subagents[0]!,
+              id: siblingId,
+              status: "running",
+              result: null,
+              completionDelivery: { state: "pending", observedByRunId: null },
+            },
+          }),
+        ],
+      });
+      yield* f.orchestrator.dispatch({
+        type: "delegated_task.remote.complete",
+        commandId: CommandId.make("complete:late-during-starting"),
+        parentThreadId: f.threadId,
+        taskId: siblingId,
+        status: "completed",
+        result: "Late sibling result",
+        stoppedThere: "ran-out",
+      });
+      for (const taskId of f.delivery.taskIds)
+        yield* resolveTask({ ...f, taskId }, "dispose", `all-starting:${taskId}`);
+      const before = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.deepEqual(
+        before.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.delivery!.taskIds,
+        [],
+      );
+      assert.equal(
+        before.subagents.find((t) => t.id === siblingId)!.completionDelivery!.state,
+        "pending",
+      );
+      const offerCount = offers.requests.length;
+      yield* (yield* ThreadDispatch.ThreadCommandExecutor).withLock(
+        f.threadId,
+        Effect.gen(function* () {
+          yield* certify;
+          if (missingProof) {
+            yield* sql`DELETE FROM orchestration_events WHERE event_id =
+            (SELECT settlement_event_id FROM jones_start_refusal_attempts WHERE run_id = ${f.run.id})`;
+            assert.equal(
+              yield* (yield* Store.StartRefusals).classify(f.threadId, f.run.id),
+              "unknown",
+            );
+          }
+        }),
+      );
+      yield* f.orchestrator.recoverDelegatedTasks;
+      const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+      const next = after.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.delivery!;
+      assert.deepEqual(next.taskIds, [siblingId]);
+      assert.notEqual(next.messageId, f.delivery.messageId);
+      assert.isAbove(offers.requests.length, offerCount);
+      assert.deepEqual(offers.requests.at(-1)!.delegatedCompletion, {
+        parentRunId: f.parent.id,
+        generation: next.generation,
+        messageId: next.messageId,
+      });
+      assert.lengthOf(yield* sql`SELECT 1 FROM jones_start_refusal_holds`, 0);
+      yield* f.orchestrator.recoverDelegatedTasks;
+      yield* f.orchestrator.recoverDelegatedTasks;
+      // Ordinary recovery may reoffer the same pending message; it must not reserve another delivery.
+      assert.deepEqual(
+        offers.requests.slice(offerCount).map((r) => r.delegatedCompletion?.messageId),
+        Array(offers.requests.length - offerCount).fill(next.messageId),
+      );
+      assert.deepEqual((yield* f.orchestrator.getThreadProjection(f.threadId)).runs, after.runs);
+      assert.deepEqual((yield* acceptCurrent(f, "ordinary-late-starting")).taskIds, [siblingId]);
+      const final = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.deepEqual(
+        [...f.delivery.taskIds, siblingId].map(
+          (id) => final.subagents.find((t) => t.id === id)!.completionDelivery!.state,
+        ),
+        ["disposed", "disposed", "delivered"],
+      );
+      assert.deepEqual(
+        final.messages.find((m) => m.id === f.delivery.messageId)!.delegatedCompletion!.taskIds,
+        f.delivery.taskIds,
+      );
+      assert.lengthOf(
+        final.runs.filter((r) => r.userMessageId === next.messageId),
+        1,
+      );
+    }).pipe(Effect.provide(Fixture.startingRuntime)),
+);
+
+it.effect("disposition then Stop during starting fences late refusal certification", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seedTasks(2);
+    const sql = yield* SqlClient.SqlClient;
+    const offers = yield* Fixture.Offers;
+    const certify = yield* startAtAdmission(f);
+    yield* resolveTask(f, "dispose", "before-starting-stop");
+    yield* f.orchestrator.dispatch({
+      type: "thread.stop",
+      threadId: f.threadId,
+      commandId: CommandId.make("stop:during-starting"),
+      stopDelegatedTasks: false,
+    });
+    const offerCount = offers.requests.length;
+    yield* certify;
+    yield* f.orchestrator.recoverDelegatedTasks;
+    yield* f.orchestrator.recoverDelegatedTasks;
+    assert.lengthOf(yield* sql`SELECT 1 FROM jones_start_refusal_holds`, 0);
+    assert.equal(offers.requests.length, offerCount);
+    const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+    assert.equal(
+      after.subagents.find((t) => t.id === f.taskId)!.completionDelivery!.state,
+      "disposed",
+    );
+    assert.equal(
+      after.runs.find((r) => r.id === f.parent.id)!.delegatedCompletion!.disposition,
+      "stopped",
+    );
+  }).pipe(Effect.provide(Fixture.startingRuntime)),
+);
 
 it.effect.each(["acknowledge", "dispose"] as const)(
   "%s before the first successor reservation retains the certified remainder",
@@ -1083,7 +1287,7 @@ it.effect("remainder reservation failure rolls back acknowledgement and its comm
   }).pipe(Effect.provide(Fixture.runtimeWithoutProbe)),
 );
 
-it.effect.each(["stop", "changed-membership"] as const)(
+it.effect.each(["stop", "missing-claimed-member"] as const)(
   "reconstructed remainder retains its correlation and %s cannot resurrect it",
   (action) =>
     Effect.gen(function* () {
@@ -1134,17 +1338,8 @@ it.effect.each(["stop", "changed-membership"] as const)(
         else {
           const p = yield* orchestrator.getThreadProjection(retained.threadId);
           const parent = p.runs.find((r) => r.id === retained.parentRunId)!;
-          const task = p.subagents.find((t) => t.id === retained.delivery.taskIds[0])!;
           yield* sink.write({
             events: [
-              yield* retained.event({
-                type: "subagent.updated",
-                threadId: retained.threadId,
-                payload: {
-                  ...task,
-                  completionDelivery: { state: "acknowledged", observedByRunId: parent.id },
-                },
-              }),
               yield* retained.event({
                 type: "run.updated",
                 threadId: retained.threadId,

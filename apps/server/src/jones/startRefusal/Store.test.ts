@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { ProviderTurnId, RunAttemptId } from "@t3tools/contracts";
+import { MessageId, NodeId, ProviderTurnId, RunAttemptId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -7,6 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as StartRefusal from "./Store.ts";
 import * as Fixture from "./integration.testkit.ts";
 import type { RefusalReason } from "./model.ts";
+import * as ThreadDispatch from "../../orchestration-v2/ThreadCommandExecutor.ts";
 
 const settle = Effect.fnUntraced(function* (
   f: Effect.Success<typeof Fixture.seed>,
@@ -68,6 +69,71 @@ const proof = Effect.gen(function* () {
   return yield* sql<{ state: string; reason: string | null; settlement_event_id: string | null }>`
     SELECT state, reason, settlement_event_id FROM jones_start_refusal_attempts`;
 });
+
+it.effect.each([
+  { boundary: "admitted message", modes: ["pending", "delivered", "missing", "duplicate"] },
+  { boundary: "open cohort", modes: ["foreign", "order", "nonclaimed"] },
+  { boundary: "claimed obligation", modes: ["omitted"] },
+])("refuses invalid $boundary membership", ({ modes }) =>
+  Effect.forEach(modes, (mode) =>
+    Effect.gen(function* () {
+      const f = yield* Fixture.seedTasks(2);
+      const sql = yield* SqlClient.SqlClient;
+      const store = yield* StartRefusal.StartRefusals;
+      yield* (yield* ThreadDispatch.ThreadCommandExecutor).withLock(
+        f.threadId,
+        Effect.gen(function* () {
+          yield* settle(f, "control_held");
+          const reservation = {
+            threadId: f.threadId,
+            parentRunId: f.parent.id,
+            refusedRunId: f.run.id,
+            source: f.delivery,
+            successor: {
+              ...f.delivery,
+              generation: f.delivery.generation + 1,
+              messageId: MessageId.make("message:membership-denial"),
+            },
+          };
+          assert.isTrue(yield* store.validateReservation(reservation));
+          let openIds = [...f.delivery.taskIds];
+          if (
+            mode === "pending" ||
+            mode === "delivered" ||
+            mode === "missing" ||
+            mode === "duplicate"
+          ) {
+            // Removing A from O is valid only with A's explicit post-admission disposition.
+            openIds = openIds.slice(1);
+            if (mode === "missing")
+              yield* sql`DELETE FROM orchestration_v2_projection_subagents WHERE subagent_id = ${f.taskId}`;
+            else if (mode === "duplicate") {
+              yield* sql`UPDATE orchestration_v2_projection_subagents SET completion_delivery_state = 'acknowledged' WHERE subagent_id = ${f.taskId}`;
+              yield* sql`UPDATE orchestration_v2_projection_messages
+          SET payload_json = json_set(payload_json, '$.delegatedCompletion.taskIds', json(${JSON.stringify([f.taskId, f.taskId, ...openIds])}))
+          WHERE message_id = ${f.delivery.messageId}`;
+            } else
+              yield* sql`UPDATE orchestration_v2_projection_subagents SET completion_delivery_state = ${mode} WHERE subagent_id = ${f.taskId}`;
+          }
+          if (mode === "foreign") openIds = [NodeId.make("task:foreign"), ...openIds.slice(1)];
+          if (mode === "order") openIds.reverse();
+          if (mode === "nonclaimed")
+            yield* sql`UPDATE orchestration_v2_projection_subagents SET completion_delivery_state = 'acknowledged' WHERE subagent_id = ${f.taskId}`;
+          if (mode === "omitted") openIds = openIds.slice(1);
+          yield* sql`UPDATE orchestration_v2_projection_runs
+        SET payload_json = json_set(payload_json, '$.delegatedCompletion.delivery.taskIds', json(${JSON.stringify(openIds)})) WHERE run_id = ${f.parent.id}`;
+          const invalid = {
+            ...reservation,
+            source: { ...reservation.source, taskIds: openIds },
+            successor: { ...reservation.successor, taskIds: openIds },
+          };
+          assert.isFalse(yield* store.validateReservation(invalid), mode);
+          assert.lengthOf(yield* sql`SELECT 1 FROM jones_start_refusal_holds`, 0);
+        }),
+      );
+    }).pipe(Effect.provide(Fixture.runtimeWithoutProbe)),
+  ),
+);
 
 it.effect.each([
   "restart_admission",
