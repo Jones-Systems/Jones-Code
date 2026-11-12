@@ -7,6 +7,7 @@
       "id": "accepted-terminal-recovery",
       "tests": [
         "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts",
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
         "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
         "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
         "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",

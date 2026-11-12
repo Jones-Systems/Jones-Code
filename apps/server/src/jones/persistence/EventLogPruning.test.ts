@@ -98,6 +98,14 @@ const readers: ReadonlyArray<Reader> = [
     proof: "none: needs the full native-creation fixture, reasoned from code",
   },
   {
+    file: "orchestration/AcceptedTerminalRecovery.ts",
+    classification: "tolerate",
+    after:
+      "Readback belongs to a live consumer and retains the original command, events and effects in memory. Partial history fails exact-batch verification. Empty history retries only the original guarded publication; an already settled or superseded run refuses finalization. The unconditional interrupt-result batch carries no effects. No recovery state survives a server restart.",
+    proof:
+      "orchestration/AcceptedTerminalRecovery.test.ts (uncertain commit, exact readback, Stop/successor guards); concurrent pruning during recovery is reasoned from the retained batch and writer guards, not execution-proved",
+  },
+  {
     file: "orchestration/HistoricalTerminalHistory.ts",
     classification: "tolerate",
     after:
