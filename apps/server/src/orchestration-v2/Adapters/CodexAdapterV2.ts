@@ -8294,9 +8294,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     threadId: turnInput.threadId,
                     providerThreadId: turnInput.providerThread.id,
                     runId: turnInput.runId,
-                    cause: request === undefined || !request.startDispatched
-                      ? new PromptNotApplied({ cause })
-                      : cause,
+                    cause:
+                      request === undefined || !request.startDispatched
+                        ? new PromptNotApplied({ cause })
+                        : cause,
                   }),
               ),
             );
@@ -9101,9 +9102,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     CodexAppServerRequestError: (error) => {
                       const outcome = historyInjectionRejection(error);
                       if (outcome === "unsupported") return Effect.succeed(false);
-                      return Effect.fail(outcome === "not_applied"
-                        ? new HistoryNotApplied({ cause: error })
-                        : error);
+                      return Effect.fail(
+                        outcome === "not_applied" ? new HistoryNotApplied({ cause: error }) : error,
+                      );
                     },
                   }),
                 );

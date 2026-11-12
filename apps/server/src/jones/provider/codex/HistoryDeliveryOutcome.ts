@@ -14,10 +14,9 @@ export class HistoryNotApplied extends Schema.TaggedError<HistoryNotApplied>()(
   }
 }
 
-export class PromptNotApplied extends Schema.TaggedError<PromptNotApplied>()(
-  "PromptNotApplied",
-  { cause: Schema.Defect() },
-) {
+export class PromptNotApplied extends Schema.TaggedError<PromptNotApplied>()("PromptNotApplied", {
+  cause: Schema.Defect(),
+}) {
   override get message(): string {
     return "The provider did not consume this attempt's prompt.";
   }
@@ -110,7 +109,9 @@ export const makeHistoryDeliveryOutcome = <T, E>(
           Exit.isFailure(exit)
             ? unsent.pipe(
                 Effect.catchCause(() =>
-                  Effect.logWarning("Failed to restore unsent context handoffs; delivery remains unresolved"),
+                  Effect.logWarning(
+                    "Failed to restore unsent context handoffs; delivery remains unresolved",
+                  ),
                 ),
               )
             : Effect.void,

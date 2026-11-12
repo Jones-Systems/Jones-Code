@@ -8,9 +8,7 @@
     "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts",
     "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.test.ts"
   ],
-  "hookPaths": [
-    "apps/server/src/orchestration-v2/ContextHandoffDelivery.ts"
-  ],
+  "hookPaths": ["apps/server/src/orchestration-v2/ContextHandoffDelivery.ts"],
   "tombstones": [],
   "allowedImports": [
     {

@@ -2078,7 +2078,7 @@ export const layer: Layer.Layer<
           ),
         );
         return startWithConfiguredEffortEffect().pipe(
-          Effect.onError(() => nativeStartEntered ? Effect.void : unsent),
+          Effect.onError(() => (nativeStartEntered ? Effect.void : unsent)),
         );
       };
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
@@ -2153,42 +2153,45 @@ export const layer: Layer.Layer<
           ) {
             const updatedAt = yield* DateTime.now;
             yield* eventSink.write({
-              events: [{
-                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-                type: "context-handoff.updated",
-                threadId: projection.thread.id,
-                runId: run.id,
-                providerInstanceId: run.providerInstanceId,
-                occurredAt: updatedAt,
-                payload: restoring ? handoff : { ...handoff, updatedAt },
-              }],
+              events: [
+                {
+                  id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                  type: "context-handoff.updated",
+                  threadId: projection.thread.id,
+                  runId: run.id,
+                  providerInstanceId: run.providerInstanceId,
+                  occurredAt: updatedAt,
+                  payload: restoring ? handoff : { ...handoff, updatedAt },
+                },
+              ],
             });
           });
-          const restoreHandoff = Effect.fn("ProviderTurnStartService.restoreHandoff")(
-            function* (handoff: OrchestrationV2ContextHandoff) {
-              // Cleanup checks ownership, not new-start admission: Stop may have closed it.
-              const current = yield* projectionStore.getRuntimeRecoveryProjection(input.threadId);
-              const currentRun = current.runs.find((candidate) => candidate.id === run.id);
-              const currentThread = current.providerThreads.find(
-                (candidate) => candidate.id === providerThread.id,
-              );
-              if (
-                currentRun?.activeAttemptId !== attempt.id ||
-                currentRun.providerThreadId !== providerThread.id ||
-                currentThread?.providerSessionId !== runningProviderThread.providerSessionId ||
-                currentThread.nativeThreadRef?.nativeId !== runningProviderThread.nativeThreadRef?.nativeId ||
-                currentThread.runtimeIdentity?.runtimeGeneration !== runningProviderThread.runtimeIdentity?.runtimeGeneration
-              )
-                return yield* new ProviderAdapterTurnStartError({
-                  driver: session.driver,
-                  threadId: input.threadId,
-                  providerThreadId: providerThread.id,
-                  runId,
-                });
-              yield* persistHandoff(handoff, true);
-            },
-            guardClaim,
-          );
+          const restoreHandoff = Effect.fn("ProviderTurnStartService.restoreHandoff")(function* (
+            handoff: OrchestrationV2ContextHandoff,
+          ) {
+            // Cleanup checks ownership, not new-start admission: Stop may have closed it.
+            const current = yield* projectionStore.getRuntimeRecoveryProjection(input.threadId);
+            const currentRun = current.runs.find((candidate) => candidate.id === run.id);
+            const currentThread = current.providerThreads.find(
+              (candidate) => candidate.id === providerThread.id,
+            );
+            if (
+              currentRun?.activeAttemptId !== attempt.id ||
+              currentRun.providerThreadId !== providerThread.id ||
+              currentThread?.providerSessionId !== runningProviderThread.providerSessionId ||
+              currentThread.nativeThreadRef?.nativeId !==
+                runningProviderThread.nativeThreadRef?.nativeId ||
+              currentThread.runtimeIdentity?.runtimeGeneration !==
+                runningProviderThread.runtimeIdentity?.runtimeGeneration
+            )
+              return yield* new ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: input.threadId,
+                providerThreadId: providerThread.id,
+                runId,
+              });
+            yield* persistHandoff(handoff, true);
+          }, guardClaim);
           const delivery = yield* deliverWithHandoffRecovery(
             {
               handoffs: [...effectiveHandoffs, ...retryHandoff],
@@ -2236,9 +2239,11 @@ export const layer: Layer.Layer<
             promptWasUnsent = true;
           }).pipe(
             Effect.andThen(delivery.unsent),
-            Effect.catchCause(() => Effect.logWarning("Failed to restore unsent context handoffs", {
-              runId: run.id,
-            })),
+            Effect.catchCause(() =>
+              Effect.logWarning("Failed to restore unsent context handoffs", {
+                runId: run.id,
+              }),
+            ),
           );
           const stillCurrent = yield* isCurrentAttemptInStatus("running").pipe(
             Effect.onError(() => restoreUnsent),

@@ -653,24 +653,46 @@ describe("proved-unsent handoff restoration", () => {
     Effect.gen(function* () {
       const prior: OrchestrationV2ContextHandoff = {
         ...handoff,
-        delivery: { nativeThreadId: "native:previous", status: "injected", itemIds: [messages[0]!.itemId] },
+        delivery: {
+          nativeThreadId: "native:previous",
+          status: "injected",
+          itemIds: [messages[0]!.itemId],
+        },
       };
       let durable = prior;
       let validations = 0;
       let injections = 0;
       const refusal = new ProviderAdapter.ProviderAdapterTurnStartError({
-        driver: providerThread.driver, threadId, providerThreadId: providerThread.id,
+        driver: providerThread.driver,
+        threadId,
+        providerThreadId: providerThread.id,
         runId: handoff.targetRunId,
       });
-      const result = yield* deliverWithHandoffRecovery({
-        handoffs: [prior], providerThread, budget: 16_000, alreadyDeliveredItemIds: new Set(),
-        persist: (value) => Effect.sync(() => { durable = value; }),
-        inject: () => Effect.sync(() => { injections++; return true; }),
-      }, {
-        input: {} as ProviderAdapter.ProviderAdapterV2TurnInput,
-        revalidate: Effect.suspend(() => ++validations === 3 ? Effect.fail(refusal) : Effect.void),
-        budgetAfter: () => 16_000, reclaimableBudget: 16_000,
-      }).pipe(Effect.result);
+      const result = yield* deliverWithHandoffRecovery(
+        {
+          handoffs: [prior],
+          providerThread,
+          budget: 16_000,
+          alreadyDeliveredItemIds: new Set(),
+          persist: (value) =>
+            Effect.sync(() => {
+              durable = value;
+            }),
+          inject: () =>
+            Effect.sync(() => {
+              injections++;
+              return true;
+            }),
+        },
+        {
+          input: {} as ProviderAdapter.ProviderAdapterV2TurnInput,
+          revalidate: Effect.suspend(() =>
+            ++validations === 3 ? Effect.fail(refusal) : Effect.void,
+          ),
+          budgetAfter: () => 16_000,
+          reclaimableBudget: 16_000,
+        },
+      ).pipe(Effect.result);
       assert.equal(result._tag, "Failure");
       assert.equal(injections, 0);
       assert.equal(validations, 3);
@@ -679,55 +701,85 @@ describe("proved-unsent handoff restoration", () => {
     }),
   );
 
-  it.effect.each([false, true])("restores partial pending writes and preserves the failure (restore fails=%s)", (restoreFails) =>
-    Effect.gen(function* () {
-      const originals = [handoff, { ...handoff, id: ContextHandoffId.make("handoff:second") },
-        { ...handoff, id: ContextHandoffId.make("handoff:untouched") }];
-      const durable = new Map(originals.map((value) => [value.id, value]));
-      const failure = new Error("Pending persistence failed after write");
-      const attempted: string[] = [];
-      let injections = 0;
-      const result = yield* deliverContextHandoffs({
-        handoffs: originals, providerThread, budget: 16_000, alreadyDeliveredItemIds: new Set(),
-        inject: () => Effect.sync(() => { injections++; return true; }),
-        persist: (value) => Effect.suspend(() => {
-          attempted.push(value.id);
-          durable.set(value.id, value);
-          return value.id === originals[1]!.id ? Effect.fail(failure) : Effect.void;
-        }),
-        restore: (value) => Effect.suspend(() => {
-          if (restoreFails) return Effect.fail({ _tag: "RestorationUnavailable" as const });
-          durable.set(value.id, value);
-          return Effect.void;
-        }),
-      }).pipe(Effect.result);
-      assert.equal(result._tag, "Failure");
-      if (result._tag === "Failure") assert.strictEqual(result.failure, failure);
-      assert.equal(injections, 0);
-      assert.deepEqual(attempted, originals.slice(0, 2).map((value) => value.id));
-      assert.deepEqual(durable.get(originals[2]!.id), originals[2]);
-      for (const original of originals.slice(0, 2)) {
-        if (restoreFails) assert.equal(durable.get(original.id)?.delivery?.status, "pending");
-        else assert.deepEqual(durable.get(original.id), original);
-      }
-    }),
+  it.effect.each([false, true])(
+    "restores partial pending writes and preserves the failure (restore fails=%s)",
+    (restoreFails) =>
+      Effect.gen(function* () {
+        const originals = [
+          handoff,
+          { ...handoff, id: ContextHandoffId.make("handoff:second") },
+          { ...handoff, id: ContextHandoffId.make("handoff:untouched") },
+        ];
+        const durable = new Map(originals.map((value) => [value.id, value]));
+        const failure = new Error("Pending persistence failed after write");
+        const attempted: string[] = [];
+        let injections = 0;
+        const result = yield* deliverContextHandoffs({
+          handoffs: originals,
+          providerThread,
+          budget: 16_000,
+          alreadyDeliveredItemIds: new Set(),
+          inject: () =>
+            Effect.sync(() => {
+              injections++;
+              return true;
+            }),
+          persist: (value) =>
+            Effect.suspend(() => {
+              attempted.push(value.id);
+              durable.set(value.id, value);
+              return value.id === originals[1]!.id ? Effect.fail(failure) : Effect.void;
+            }),
+          restore: (value) =>
+            Effect.suspend(() => {
+              if (restoreFails) return Effect.fail({ _tag: "RestorationUnavailable" as const });
+              durable.set(value.id, value);
+              return Effect.void;
+            }),
+        }).pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") assert.strictEqual(result.failure, failure);
+        assert.equal(injections, 0);
+        assert.deepEqual(
+          attempted,
+          originals.slice(0, 2).map((value) => value.id),
+        );
+        assert.deepEqual(durable.get(originals[2]!.id), originals[2]);
+        for (const original of originals.slice(0, 2)) {
+          if (restoreFails) assert.equal(durable.get(original.id)?.delivery?.status, "pending");
+          else assert.deepEqual(durable.get(original.id), original);
+        }
+      }),
   );
 
   it.effect("restores a proved rejected injection so the same native conversation can retry", () =>
     Effect.gen(function* () {
       let durable = handoff;
-      const rejection = new HistoryNotApplied({ cause: new Error("Attributed non-applying rejection") });
-      const persist = (value: OrchestrationV2ContextHandoff) => Effect.sync(() => { durable = value; });
+      const rejection = new HistoryNotApplied({
+        cause: new Error("Attributed non-applying rejection"),
+      });
+      const persist = (value: OrchestrationV2ContextHandoff) =>
+        Effect.sync(() => {
+          durable = value;
+        });
       const failed = yield* deliverContextHandoffs({
-        handoffs: [durable], providerThread, budget: 16_000, alreadyDeliveredItemIds: new Set(),
-        persist, inject: () => Effect.fail(rejection),
+        handoffs: [durable],
+        providerThread,
+        budget: 16_000,
+        alreadyDeliveredItemIds: new Set(),
+        persist,
+        inject: () => Effect.fail(rejection),
       }).pipe(Effect.result);
       assert.equal(failed._tag, "Failure");
       if (failed._tag === "Failure") assert.strictEqual(failed.failure, rejection);
       assert.deepEqual(durable, handoff);
       yield* deliverContextHandoffs({
-        handoffs: [durable], providerThread, budget: 16_000, alreadyDeliveredItemIds: new Set(),
-        persist, inject: () => Effect.succeed(true),
+        handoffs: [durable],
+        providerThread,
+        budget: 16_000,
+        alreadyDeliveredItemIds: new Set(),
+        persist,
+        inject: () => Effect.succeed(true),
       });
       assert.equal(durable.delivery?.nativeThreadId, providerThread.nativeThreadRef?.nativeId);
       assert.equal(durable.delivery?.status, "injected");
@@ -739,10 +791,17 @@ describe("proved-unsent handoff restoration", () => {
       let durable = handoff;
       const failure = new Error("Accepted injection could not be recorded");
       const result = yield* deliverContextHandoffs({
-        handoffs: [handoff], providerThread, budget: 16_000, alreadyDeliveredItemIds: new Set(),
+        handoffs: [handoff],
+        providerThread,
+        budget: 16_000,
+        alreadyDeliveredItemIds: new Set(),
         inject: () => Effect.succeed(true),
-        persist: (value) => value.delivery?.status === "injected" ? Effect.fail(failure)
-          : Effect.sync(() => { durable = value; }),
+        persist: (value) =>
+          value.delivery?.status === "injected"
+            ? Effect.fail(failure)
+            : Effect.sync(() => {
+                durable = value;
+              }),
       }).pipe(Effect.result);
       assert.equal(result._tag, "Failure");
       if (result._tag === "Failure") assert.strictEqual(result.failure, failure);
@@ -755,9 +814,15 @@ describe("proved-unsent handoff restoration", () => {
       let durable = handoff;
       const issued = yield* Deferred.make<void>();
       const delivery = yield* deliverContextHandoffs({
-        handoffs: [handoff], providerThread, budget: 16_000, alreadyDeliveredItemIds: new Set(),
+        handoffs: [handoff],
+        providerThread,
+        budget: 16_000,
+        alreadyDeliveredItemIds: new Set(),
         inject: () => Deferred.succeed(issued, undefined).pipe(Effect.andThen(Effect.never)),
-        persist: (value) => Effect.sync(() => { durable = value; }),
+        persist: (value) =>
+          Effect.sync(() => {
+            durable = value;
+          }),
       }).pipe(Effect.forkChild);
       yield* Deferred.await(issued);
       yield* Fiber.interrupt(delivery);
