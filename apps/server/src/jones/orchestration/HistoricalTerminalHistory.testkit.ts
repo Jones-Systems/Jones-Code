@@ -593,7 +593,7 @@ export const historyScenario = ({
       ...(accountSwitch
         ? {
             id: ProviderThreadId.make("provider-thread:replacement-account"),
-            providerInstanceId: ProviderInstanceId.make("codex:replacement-account"),
+            providerInstanceId: ProviderInstanceId.make("codex_replacement_account"),
             runtimeIdentity: null,
           }
         : {}),
