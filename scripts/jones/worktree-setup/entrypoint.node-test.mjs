@@ -31,6 +31,7 @@ NodeTest.test(
           NodePath.join(worktree, "scripts/jones/worktree-setup/setup.ts"),
         );
       }
+      NodeFS.copyFileSync(NodePath.join(repository, "scripts/jones/worktree-setup/local-mac-admission.ts"), NodePath.join(worktree, "scripts/jones/worktree-setup/local-mac-admission.ts"));
       const namespace = "apps/server/src/jones/workspaceRetirement";
       NodeFS.mkdirSync(NodePath.join(worktree, namespace), { recursive: true });
       for (const name of NodeFS.readdirSync(NodePath.join(repository, namespace))) {
