@@ -119,10 +119,16 @@ function decodeReplayStatus(raw: string): ReplayStatus {
   return value as ReplayStatus;
 }
 
+/**
+ * `processExitCompletes` asserts one agent process rather than the whole recording: a process
+ * that consumed its frames through a recorded mid-transcript `runtime_exit` is complete, and the
+ * next process resumes from that checkpoint. Whole-recording checks keep the strict default.
+ */
 export function makeAcpReplayCompletenessAssertion(
   fileSystem: FileSystem.FileSystem,
   statusPath: string,
   transcript: AcpReplayTranscript,
+  options: { readonly processExitCompletes?: boolean } = {},
 ): Effect.Effect<void, EffectAcpErrors.AcpError> {
   return fileSystem.readFileString(statusPath).pipe(
     Effect.mapError(
@@ -143,11 +149,14 @@ export function makeAcpReplayCompletenessAssertion(
       }),
     ),
     Effect.flatMap((status) => {
-      if (
-        status.failure === undefined &&
-        status.cursor === transcript.entries.length &&
-        status.total === transcript.entries.length
-      ) {
+      const total = transcript.entries.length;
+      const consumed =
+        status.cursor === total ||
+        (options.processExitCompletes === true &&
+          status.cursor > 0 &&
+          status.cursor < total &&
+          transcript.entries[status.cursor - 1]?.type === "runtime_exit");
+      if (status.failure === undefined && status.total === total && consumed) {
         return Effect.void;
       }
       return Effect.fail(

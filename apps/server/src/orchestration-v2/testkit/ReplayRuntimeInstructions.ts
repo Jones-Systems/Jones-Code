@@ -64,11 +64,40 @@ export function materializeReplayTranscriptRuntimeInstructions(
           lastPart.type === "text" &&
           "text" in lastPart &&
           typeof lastPart.text === "string" &&
-          // A recording that switched models mid-thread already carries the
-          // instructions for the model each prompt ran on.
-          (lastPart.text === instructions || lastPart.text.startsWith("<runtime_info>"))
+          lastPart.text === instructions
         ) {
           return entry;
+        }
+        // A recording that switched models mid-thread already carries the instructions for
+        // the model each prompt ran on, in the recording app's wording. Swap in this build's
+        // text for that same harness, model and effort.
+        if (
+          typeof lastPart === "object" &&
+          lastPart !== null &&
+          "type" in lastPart &&
+          lastPart.type === "text" &&
+          "text" in lastPart &&
+          typeof lastPart.text === "string" &&
+          lastPart.text.startsWith("<runtime_info>")
+        ) {
+          const recorded = recordedRuntimeInstructions(lastPart.text);
+          if (recorded === undefined) return entry;
+          return {
+            ...entry,
+            frame: {
+              ...frame,
+              params: {
+                ...frame.params,
+                prompt: [
+                  ...prompt.slice(0, -1),
+                  {
+                    ...lastPart,
+                    text: buildRuntimeInstructions({ appIdentity: APP_IDENTITY, ...recorded }),
+                  },
+                ],
+              },
+            },
+          };
         }
         return {
           ...entry,
@@ -80,6 +109,32 @@ export function materializeReplayTranscriptRuntimeInstructions(
       }
       return entry;
     }),
+  };
+}
+
+const RECORDED_RUNTIME_INFO =
+  /^<runtime_info>In case you're asked: you are running (?:in .+? )?through the (.+?) harness(?:, as (.+?))?(?: with (\S+) reasoning effort)?\. /;
+
+function recordedRuntimeInstructions(text: string):
+  | {
+      readonly harness: string;
+      readonly model?: string;
+      readonly modelName?: string;
+      readonly reasoningEffort?: string;
+    }
+  | undefined {
+  const match = RECORDED_RUNTIME_INFO.exec(text);
+  if (match === null) return undefined;
+  const [, harness, label, reasoningEffort] = match;
+  const named = label === undefined ? null : /^(.*) \(model slug: (.*)\)$/.exec(label);
+  return {
+    harness: harness!,
+    ...(named === null
+      ? label === undefined
+        ? {}
+        : { model: label }
+      : { modelName: named[1]!, model: named[2]! }),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
   };
 }
 

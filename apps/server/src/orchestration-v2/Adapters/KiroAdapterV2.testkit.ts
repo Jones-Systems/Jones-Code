@@ -11,6 +11,8 @@ import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
@@ -30,7 +32,13 @@ function layerKiroProviderAdapterRegistryReplay(
   transcript: AcpReplayTranscript,
   options: { readonly replayGate?: ProviderReplayGate } = {},
 ) {
-  const layerHost = TestProviderHost.layer().pipe(
+  // Production hosts carry the Jones app identity into runtime instructions, and the replay
+  // transcript expects those exact instructions.
+  const layerHost = Layer.effect(
+    ProviderHost.ProviderHost,
+    Effect.map(ProviderHost.ProviderHost, (host) => ({ ...host, appIdentity: APP_IDENTITY })),
+  ).pipe(
+    Layer.provide(TestProviderHost.layer()),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 
@@ -59,7 +67,10 @@ function layerKiroProviderAdapterRegistryReplay(
           fileSystem,
           ...(options.replayGate === undefined ? {} : { replayGate: options.replayGate }),
         }),
-        assertComplete: makeAcpReplayCompletenessAssertion(fileSystem, statusPath, transcript),
+        // A session closes when its own process ends, which may be a recorded mid-transcript exit.
+        assertComplete: makeAcpReplayCompletenessAssertion(fileSystem, statusPath, transcript, {
+          processExitCompletes: true,
+        }),
       });
       return [adapter];
     }),
