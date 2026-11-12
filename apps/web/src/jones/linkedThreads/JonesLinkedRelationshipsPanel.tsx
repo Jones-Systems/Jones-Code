@@ -72,6 +72,7 @@ import { useEnvironment, useEnvironmentProviders } from "../../components/../sta
 import { threadEnvironment } from "../../components/../state/threads";
 import { orchestrationEnvironment } from "../../components/../state/orchestration";
 import { useAtomCommand } from "../../components/../state/use-atom-command";
+import { useEnvironmentQuery } from "../../state/query";
 import { AgentElapsed } from "../../components/chat/AgentElapsed";
 import {
   ThreadRelationshipIcon,
@@ -362,10 +363,35 @@ export function JonesLinkedRelationshipsPanel(props: {
       : { ...row, edge: { ...row.edge, status: workflowGroup.workflow.status } };
   });
   const canMerge = mergeTargetThreadId !== null && latestMergeBackRun !== null;
+  const unlistedThreadIds = relationshipRows
+    .filter(
+      ({ threadId, edge }) =>
+        !relationshipShells.some((thread) => thread.id === threadId) &&
+        (edge.kind !== "subagent" || !subagentsByThreadId.get(threadId)?.title),
+    )
+    .map(({ threadId }) => threadId);
+  const threadTitles = useEnvironmentQuery(
+    unlistedThreadIds.length === 0
+      ? null
+      : orchestrationEnvironment.threadTitles({
+          environmentId: props.environmentId,
+          input: { threadIds: unlistedThreadIds },
+        }),
+  );
+  const resolvedThreadTitles = threadTitles.data ?? {};
+  // Omitted and archived threads remain reachable; only a settled lookup proves one is gone.
+  const visibleRelationships = relationshipRows.filter(
+    ({ threadId, edge }) =>
+      edge.kind === "subagent" ||
+      !unlistedThreadIds.includes(threadId) ||
+      !threadTitles.isSuccess ||
+      threadTitles.isPending ||
+      Object.hasOwn(resolvedThreadTitles, threadId),
+  );
   const canDetach = projection ? canDetachThreadProviderSession(projection) : false;
 
   const { related, active, previous, runningCount } = groupLineageRows(
-    relationshipRows,
+    visibleRelationships,
     projected,
     props.threadId,
   );
@@ -574,6 +600,10 @@ export function JonesLinkedRelationshipsPanel(props: {
                   const threadTitle = relationshipThreadTitle({
                     title:
                       workflowGroup?.workflow.workflowName ??
+                      // Fresher than an archived snapshot's copy.
+                      (Object.hasOwn(resolvedThreadTitles, threadId)
+                        ? resolvedThreadTitles[threadId]
+                        : undefined) ??
                       node?.thread?.title ??
                       agent?.title ??
                       threadId,

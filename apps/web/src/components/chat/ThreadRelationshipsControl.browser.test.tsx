@@ -174,7 +174,10 @@ it.each([
 
   const runAction = async () => {
     if (action === "merge") {
-      await screen.getByRole("button", { name: "Merge back to source conversation" }).click();
+      // Jones lists Merge in the Parents row, beneath where the persistent error toast appears.
+      const merge = screen.getByRole("button", { name: "Merge back to source conversation" });
+      await act(() => merge.element().focus());
+      await userEvent.keyboard("{Enter}");
     } else {
       await screen.getByRole("button", { name: "More thread actions" }).click();
       await page.getByRole("menuitem", { name: "Disconnect agent session" }).click();
@@ -364,7 +367,8 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
   expect(
     page.getByText(longTitle, { exact: true }).element().getBoundingClientRect().width,
   ).toBeGreaterThan(0);
-  await userEvent.hover(row);
+  // Jones disables an unreachable row and wraps it in the tooltip trigger, which takes the hover.
+  await userEvent.hover(row.element().closest('[data-slot="tooltip-trigger"]')!);
   await vi.waitFor(() =>
     expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(longTitle),
   );
@@ -401,7 +405,8 @@ it("shows a delegated-from thread's full title in its tooltip even when its envi
   );
 
   const row = screen.getByRole("button", { name: new RegExp(longTitle) });
-  await userEvent.hover(row);
+  // Jones disables the parent button and wraps it in the tooltip trigger, which takes the hover.
+  await userEvent.hover(row.element().closest('[data-slot="tooltip-trigger"]')!);
   await vi.waitFor(() =>
     expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(longTitle),
   );
@@ -442,6 +447,11 @@ it("hides a deleted fork and keeps unloaded and archived forks with their curren
       showSideChats
     />,
   );
+  // Jones folds these forks into Linked groups that start collapsed.
+  for (const toggle of screen.container.querySelectorAll<HTMLButtonElement>(
+    '[data-linked-group] > button[aria-expanded="false"]',
+  ))
+    await act(() => toggle.click());
   await expect.element(screen.getByText("Unloaded fork", { exact: true })).toBeVisible();
   await expect.element(screen.getByText("Archived fork", { exact: true })).toBeVisible();
   await expect.element(screen.getByText("deleted-fork", { exact: true })).not.toBeInTheDocument();

@@ -176,6 +176,7 @@ describe("image zoom interactions", () => {
   });
 
   it("hides dialog controls while wheel zoom stops at sixty percent and can zoom back in", async () => {
+    // Pinch and Ctrl+scroll arrive as ctrlKey wheels and zoom; plain wheels pan natively.
     await using _fixture = await setupTest();
     await render("dialog");
     const fittedWidth = Number.parseFloat(image().style.width);
@@ -185,6 +186,7 @@ describe("image zoom interactions", () => {
       new WheelEvent("wheel", {
         bubbles: true,
         cancelable: true,
+        ctrlKey: true,
         deltaY: 10000,
         clientX: 100,
         clientY: 50,
@@ -197,6 +199,7 @@ describe("image zoom interactions", () => {
       new WheelEvent("wheel", {
         bubbles: true,
         cancelable: true,
+        ctrlKey: true,
         deltaY: 10000,
       }),
     );
@@ -206,6 +209,7 @@ describe("image zoom interactions", () => {
       new WheelEvent("wheel", {
         bubbles: true,
         cancelable: true,
+        ctrlKey: true,
         deltaY: -100,
       }),
     );
@@ -231,6 +235,7 @@ describe("image zoom interactions", () => {
       new WheelEvent("wheel", {
         bubbles: true,
         cancelable: true,
+        ctrlKey: true,
         deltaY: -100,
         clientX: 100,
         clientY: 50,

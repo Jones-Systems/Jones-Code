@@ -65,11 +65,15 @@ export function RemoteSubagentRow(props: {
                 {title}
               </span>
             </span>
+            {/* A long machine label truncates instead of squeezing the title out of the row. */}
             <span
-              className={`shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"}`}
+              className={`flex max-w-1/2 shrink-0 gap-1 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"}`}
             >
-              {machine ? `on ${machine.shortLabel} · ` : ""}
-              {threadRelationshipStatusLabel(status)}
+              {machine ? <span className="truncate">on {machine.shortLabel}</span> : null}
+              <span className="shrink-0">
+                {machine ? " · " : ""}
+                {threadRelationshipStatusLabel(status)}
+              </span>
             </span>
           </ThreadDetailsControl>
         </TooltipTrigger>
