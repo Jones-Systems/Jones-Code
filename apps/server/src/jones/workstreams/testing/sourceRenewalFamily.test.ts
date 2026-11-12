@@ -70,7 +70,9 @@ os._exit(0)
 import * as cp from 'node:child_process';
 const mode = ${JSON.stringify(mode)};
 const deadline = setTimeout(() => process.exit(0), mode === 'supervisor-loss' ? 2000 : 18000);
-deadline.unref();
+// Keep the TERM-ignoring worker alive after IPC disconnect so parent-loss cleanup,
+// rather than Node event-loop exhaustion, owns its exit. The timer still bounds it.
+if (mode !== 'abort') deadline.unref();
 if (mode === 'abort') process.on('SIGTERM', () => {});
 let started;
 const descendants = () => started ??= new Promise((resolve, reject) => {
@@ -606,6 +608,13 @@ try {
           disposeObserver,
         });
         const proof = boundProof!;
+        expect(proof.consumerExit).toEqual({ code: null, signal: "SIGKILL" });
+        expect(proof.signalsSent).toEqual(
+          expect.arrayContaining([
+            { identity: proof.consumerIdentity, signal: 15 },
+            { identity: proof.consumerIdentity, signal: 9 },
+          ]),
+        );
         const fresh = makeArtifactCustody(binding);
         expect(() =>
           fresh.settle(proof.attempt, proof, {
