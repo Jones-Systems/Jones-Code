@@ -993,9 +993,16 @@ export const historyScenario = ({
       providerTurnId: ids.rootProviderTurnId,
       interruptedAttemptId: ids.attemptId,
     };
-    if (consumer || logicalAfterSnapshot) {
+    if ((consumer && !normalizationFailure) || logicalAfterSnapshot) {
       assert.isUndefined(sink.supersededTerminalTrace!.read(traceKey));
       assert.deepEqual(lossWarnings, []);
+    }
+    if (consumer && normalizationFailure) {
+      // The snapshot bypasses normalization after restart; the following logical
+      // terminal exhausts the injected reads before consumer recovery retries it.
+      assert.equal(pendingReadFailures, 0);
+      assert.equal(sink.supersededTerminalTrace!.read(traceKey), "ineligible");
+      assert.equal(lossWarnings.length, 1);
     }
     if (expectedReason !== undefined && !exhausted)
       assert.equal(sink.supersededTerminalTrace!.read(traceKey), expectedReason);
