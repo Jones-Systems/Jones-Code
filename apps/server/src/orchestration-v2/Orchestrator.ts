@@ -3425,14 +3425,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const clearDelivery =
       remainingTaskIds.length === 0 &&
       (deliveryRun === undefined || deliveryRun.status === "queued");
+    const rekey =
+      !clearDelivery &&
+      deliveryRun === undefined &&
+      remainingTaskIds.length > 0 &&
+      Option.isSome(startRefusals) &&
+      (yield* startRefusals.value
+        .canRekey({
+          threadId: command.parentThreadId,
+          parentRunId: parentRun.id,
+          generation: delivery.generation,
+          messageId: delivery.messageId,
+        })
+        .pipe(mapDispatchError(command)));
+    const remainder = rekey
+      ? {
+          generation: cohort.nextGeneration,
+          messageId: yield* idAllocator.allocate
+            .message({
+              threadId: command.parentThreadId,
+              ordinal:
+                (yield* projectionStore
+                  .getMessageCount(command.parentThreadId)
+                  .pipe(mapDispatchError(command))) + 1,
+            })
+            .pipe(mapDispatchError(command)),
+          taskIds: remainingTaskIds,
+        }
+      : { ...delivery, taskIds: remainingTaskIds };
     const updatedCohort: OrchestrationV2DelegatedCompletionCohort = {
       ...cohort,
-      delivery: clearDelivery
-        ? null
-        : {
-            ...delivery,
-            taskIds: remainingTaskIds,
-          },
+      nextGeneration: rekey ? remainder.generation + 1 : cohort.nextGeneration,
+      delivery: clearDelivery ? null : remainder,
     };
     yield* emitEvent({
       type: "run.updated",
@@ -14882,6 +14906,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               observedByRunId: null,
             },
           },
+          parentRun: undefined,
+          message: undefined,
+          offer: false,
+        };
+      }
+      if (
+        Option.isSome(startRefusals) &&
+        (yield* startRefusals.value
+          .owns({
+            threadId: input.parentRun.threadId,
+            parentRunId: input.parentRun.id,
+            generation: delivery.generation,
+            messageId: delivery.messageId,
+          })
+          .pipe(mapDelegatedCompletionError))
+      ) {
+        return {
+          task: delivery.taskIds.includes(input.task.id)
+            ? input.updatedTask
+            : {
+                ...input.updatedTask,
+                completionDelivery: { state: "pending" as const, observedByRunId: null },
+              },
           parentRun: undefined,
           message: undefined,
           offer: false,
