@@ -12,6 +12,7 @@
     "../apps/server/src/jones/workstreams/enrollment/sqliteRuntimePolicy.ts",
     "../apps/server/src/jones/workspaceRetirement/CompletionObservation.ts",
     "../apps/server/src/jones/workspaceRetirement/ProducerFinalizer.ts",
+    "../apps/server/src/jones/workspaceRetirement/ProducerSessionObservation.ts",
     "../apps/server/scripts/cli.ts",
     "../apps/server/scripts/cliErrors.ts",
     "../apps/server/src/jones/workspaceRetirement/ParticipantGuard.ts",

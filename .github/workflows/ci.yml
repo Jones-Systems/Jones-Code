@@ -8,6 +8,13 @@ on:
   # Manual runs compare server shard counts against a fixed weights source.
   workflow_dispatch:
     inputs:
+      apt_route:
+        description: Ubuntu dependency route (candidate qualifies the isolated fallback)
+        type: choice
+        options:
+          - auto
+          - candidate
+        default: auto
       server_shards:
         description: Number of server test shards
         type: choice
@@ -386,7 +393,9 @@ jobs:
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Install browser secret helper build libraries
-        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+        env:
+          JONES_CI_APT_ROUTE: ${{ inputs.apt_route }}
+        run: node scripts/jones/ci/apt-setup.mjs libsecret-1-dev pkg-config
 
       - name: Build desktop pipeline
         run: vp run build:desktop
@@ -450,9 +459,10 @@ jobs:
       # and soft-skip when it is missing. Install build-essential so that path
       # always runs in CI instead of silently no-oping.
       - name: Install native test build dependencies
+        env:
+          JONES_CI_APT_ROUTE: ${{ inputs.apt_route }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
+          node scripts/jones/ci/apt-setup.mjs --no-install-recommends build-essential libsecret-1-dev pkg-config
           command -v cc
 
       - name: Setup Vite+
@@ -551,9 +561,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "$JONES_CHECKOUT_SHA"
 
       - name: Install native test build dependencies
+        env:
+          JONES_CI_APT_ROUTE: ${{ inputs.apt_route }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
+          node scripts/jones/ci/apt-setup.mjs --no-install-recommends build-essential libsecret-1-dev pkg-config
           command -v cc
 
       - name: Setup Vite+

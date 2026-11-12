@@ -15,10 +15,11 @@ import {
 const HASH = /^[a-f0-9]{64}$/;
 const LIMIT = 1024 * 1024;
 const COMMAND = "__jones-reconcile-preparation";
-// Both revisions use the same fixed, read-only, whole-image attachment contract.
+// These revisions use the same fixed, read-only, whole-image attachment contract.
 const QUALIFIED_PRODUCER_SOURCES = new Set([
   "317c4df82c77d06922a6723e318e09b0de20ff99",
   "8dd90ff9e3d41e7ba9ac1c81bceb4f973734314b",
+  "245409b7feefd2509b12f2fb7e48e6ec5e8d0b50",
 ]);
 const digest = (value: string | Buffer) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex");

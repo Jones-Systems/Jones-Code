@@ -1,3 +1,4 @@
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as RetirementEvents from "../jones/workspaceRetirement/EventIntegration.ts";
 import {
   bindRecreatedCheckout,
@@ -9,6 +10,12 @@ import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResul
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
 import { acceptEvents as acceptDependencyEvents } from "../jones/threadResultDependencies/TransactionHooks.ts";
+import {
+  acceptQueueHoldEvents,
+  makeQueueHoldStore,
+  type QueueHoldIntent,
+  type QueueHoldOrigin,
+} from "../jones/orchestration/QueueHoldStore.ts";
 import type {
   OpenRequest,
   WakeCommit,
@@ -160,11 +167,16 @@ interface EventSinkStreamInput {
 }
 
 export interface EventSinkV2Shape {
+  readonly supersededTerminalTrace?: ReturnType<typeof SupersededTerminalTrace.make>;
   readonly idleWorktreeAdmission?: IdleWorktreeAdmission.Store;
   readonly writeHistoricalTerminal?: (
     input: HistoricalTerminalHistory.HistoricalTerminalInput,
   ) => Effect.Effect<
-    { readonly handled: boolean; readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent> },
+    {
+      readonly handled: boolean;
+      readonly persisted?: boolean;
+      readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
+    },
     EventSinkV2Error
   >;
   readonly readDeletionWorktreeRemovalStartForTarget?: (
@@ -312,6 +324,8 @@ export interface EventSinkV2Shape {
     >;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
+    /** Jones: records why these events hold the named queued runs. */
+    readonly queueHold?: QueueHoldIntent;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
@@ -571,6 +585,7 @@ const layerBase: Layer.Layer<
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
     const historicalTerminals = yield* HistoricalTerminalHistory.make;
+    const supersededTerminalTrace = SupersededTerminalTrace.make();
     const runtimeEvidenceGuard = RuntimeEvidenceGuard.makeRuntimeEvidenceGuard(sql);
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const projectStore = yield* ProjectStore.ProjectStoreV2;
@@ -618,6 +633,7 @@ const layerBase: Layer.Layer<
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
     const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);
     const ownerSelections = makeOwnerSelectionStore(sql, jonesTables);
+    const queueHolds = makeQueueHoldStore(sql, jonesTables);
     const codexFailoverStore = yield* CodexFailoverStore.make;
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublish = <A, E, R>(
@@ -744,7 +760,14 @@ const layerBase: Layer.Layer<
         )
           return null;
         const historical = yield* historicalTerminals.select(input.historicalTerminal);
-        if (historical === "stale" || historical === "deferred") return null;
+        if (HistoricalTerminalHistory.isHistoricalTerminalRejection(historical)) {
+          yield* SupersededTerminalTrace.recordTerminalRejection(
+            supersededTerminalTrace,
+            input.historicalTerminal.event,
+            historical.reason,
+          );
+          return null;
+        }
         if (historical !== "ordinary") return [historical];
       }
       const capture = input.runtimeEvidence;
@@ -933,6 +956,7 @@ const layerBase: Layer.Layer<
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(function* (
         storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+        queueHoldOrigin?: QueueHoldOrigin,
       ) {
         yield* RetirementEvents.events(
           sql,
@@ -975,10 +999,12 @@ const layerBase: Layer.Layer<
               updated_at = excluded.updated_at
           `;
         }
-        yield* acceptDependencyEvents(
-          dependencies,
-          storedEvents.filter(isPublicStoredOrchestrationEvent).map((stored) => stored.event),
-        );
+        const publicEvents = storedEvents
+          .filter(isPublicStoredOrchestrationEvent)
+          .map((stored) => stored.event);
+        yield* acceptDependencyEvents(dependencies, publicEvents);
+        // Jones: hold reasons live in a sparse Jones table, written in this transaction.
+        yield* acceptQueueHoldEvents(queueHolds, publicEvents, queueHoldOrigin);
         // Read lineage here, on the connection this transaction holds; see makeRunOutcomeRecorder.
         return yield* runOutcomes.prepare(storedEvents.filter(isPublicStoredOrchestrationEvent));
       });
@@ -1051,7 +1077,7 @@ const layerBase: Layer.Layer<
                   : normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          const outcomes = yield* applyStoredEvents(committed);
+          const outcomes = yield* applyStoredEvents(committed, { queueHold: input.queueHold });
           if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           if (Option.isSome(checkoutIntent))
@@ -1486,7 +1512,9 @@ const layerBase: Layer.Layer<
               new Error(`Command ${input.commandId} produced no orchestration events.`),
             );
           }
-          const outcomes = yield* applyStoredEvents(storedEvents);
+          const outcomes = yield* applyStoredEvents(storedEvents, {
+            commandType: input.commandType,
+          });
           if (input.resultRequest) yield* dependencies.open(input.resultRequest);
           if (input.dependencyWake) yield* dependencies.admitWake(input.dependencyWake);
           yield* acceptDependencyEvents(
@@ -2263,31 +2291,64 @@ const layerBase: Layer.Layer<
     const stopError = (cause: unknown) => new EventSinkWriteError({ eventCount: 0, cause });
     return EventSinkV2.of({
       idleWorktreeAdmission,
+      supersededTerminalTrace,
       writeHistoricalTerminal: (input) => {
         const attempt = commitThenPublish(
           Effect.gen(function* () {
+            const committed = yield* historicalTerminals.readCommitted(input);
+            if (committed === "unavailable")
+              return yield* new EventSinkWriteError({ eventCount: 1 });
+            // Return durable proof for the exact-object terminal drain without
+            // publishing the original writer's committed event a second time.
+            if (committed !== undefined)
+              return {
+                handled: true,
+                persisted: true,
+                deferred: false,
+                readback: true,
+                storedEvents: [committed].filter(isPublicStoredOrchestrationEvent),
+                outcomes: [],
+              };
             const selected = yield* historicalTerminals.select(input);
             if (selected === "ordinary")
               return { handled: false, deferred: false, storedEvents: [], outcomes: [] };
-            if (selected === "stale" || selected === "deferred")
+            if (HistoricalTerminalHistory.isHistoricalTerminalRejection(selected)) {
+              yield* SupersededTerminalTrace.recordTerminalRejection(
+                supersededTerminalTrace,
+                input.event,
+                selected.reason,
+              );
               return {
                 handled: true,
-                deferred: selected === "deferred",
+                deferred: selected.type === "deferred",
                 storedEvents: [],
                 outcomes: [],
               };
+            }
             const storedEvents = (yield* eventStore.append({ events: [selected] })).filter(
               isPublicStoredOrchestrationEvent,
             );
             const outcomes = yield* applyStoredEvents(storedEvents);
-            return { handled: true, deferred: false, storedEvents, outcomes };
+            const key = SupersededTerminalTrace.terminalKey(input.event);
+            if (key !== undefined) supersededTerminalTrace.clear(key);
+            return { handled: true, persisted: true, deferred: false, storedEvents, outcomes };
           }),
-          (result) => publishStoredEvents(result.storedEvents, result.outcomes),
+          (result) =>
+            "readback" in result
+              ? Effect.void
+              : publishStoredEvents(result.storedEvents, result.outcomes),
         );
         // Even a no-write commit traverses the publication lane. Retry the DB
         // admission once after an earlier commit has installed its locator.
         return attempt.pipe(
           Effect.flatMap((result) => (result.deferred ? attempt : Effect.succeed(result))),
+          Effect.tapError(() =>
+            SupersededTerminalTrace.recordTerminalRejection(
+              supersededTerminalTrace,
+              input.event,
+              "write_error",
+            ),
+          ),
           Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 1, cause })),
         );
       },

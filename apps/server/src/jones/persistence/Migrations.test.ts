@@ -475,6 +475,7 @@ it.effect(
           [144, "WorkstreamsMemberBindings"],
           [145, "WorkstreamsForwardReceipts"],
           [146, "SettlementOriginRetention"],
+          [147, "QueueHolds"],
         ],
       );
       assert.deepStrictEqual(
@@ -699,6 +700,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [144, "WorkstreamsMemberBindings"],
       [145, "WorkstreamsForwardReceipts"],
       [146, "SettlementOriginRetention"],
+      [147, "QueueHolds"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

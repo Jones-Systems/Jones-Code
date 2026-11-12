@@ -34,6 +34,7 @@ import {
   type CleanupInspection,
   type PanelAction,
 } from "./actions";
+import { finishPlan } from "./finishPlan";
 import { INSTALL_PLAN_GO, INSTALL_PLAN_INFO, INSTALL_PLAN_WAIT, lastUpdateLabel } from "./copy";
 
 interface EditDraft {
@@ -226,17 +227,7 @@ export function InstallStatusPanel({
             size="micro"
             aria-label="Done with update plan"
             disabled={pending.has("dismiss")}
-            onClick={() =>
-              void perform("dismiss", async () => {
-                const result = await requestInstallPlan({
-                  type: "dismiss",
-                  planId: plan.planId,
-                  expectedRevision: plan.revision,
-                });
-                if (result.refused !== undefined) throw new Error(result.refused.message);
-                store.update({ open: false, showLast: true, previewSelection: [] });
-              })
-            }
+            onClick={() => void perform("dismiss", () => finishPlan(plan.planId))}
           >
             Done
           </Button>
@@ -435,8 +426,17 @@ export function InstallStatusPanel({
                   : "Not included"
                 : (row?.text ??
                   (choice.reason === undefined ? "Not included" : `Can't join · ${choice.reason}`));
-              const lineText = !editing && silent ? attention.text : text;
-              const timer = !editing && !silent && row?.progress?.active ? row.progress : undefined;
+              const lineText =
+                !editing &&
+                silent &&
+                row?.attemptText === undefined &&
+                row?.sourceText === undefined
+                  ? attention.text
+                  : text;
+              const timer =
+                !editing && !silent && row?.attemptText === undefined && row?.progress?.active
+                  ? row.progress
+                  : undefined;
               const open = detail === environmentId && !editing;
               const held = row?.phase === "held" || row?.phase === "unknown";
               const receipt = plan.devices
@@ -533,10 +533,8 @@ export function InstallStatusPanel({
                       {attention.text}
                     </p>
                   ) : null}
-                  {!editing && row?.targetBuildRunning ? (
-                    <p className="px-3 pb-1 text-2xs text-muted-foreground">
-                      Target build is running
-                    </p>
+                  {!editing && row?.sourceText ? (
+                    <p className="px-3 pb-1 text-2xs text-muted-foreground">{row.sourceText}</p>
                   ) : null}
                   {editing && choice.reason !== undefined ? (
                     <p
@@ -553,9 +551,7 @@ export function InstallStatusPanel({
                     >
                       <p>{lineText}</p>
                       {row?.progress ? <ProgressSteps progress={row.progress} /> : null}
-                      {row?.targetBuildRunning ? (
-                        <p>This plan has no confirmed install receipt for this host.</p>
-                      ) : null}
+                      {row?.attemptText ? <p>{row.attemptText}</p> : null}
                       {device?.observation.freshness !== "fresh" ? (
                         <p>{device?.observation.message ?? "Fresh status unavailable."}</p>
                       ) : null}

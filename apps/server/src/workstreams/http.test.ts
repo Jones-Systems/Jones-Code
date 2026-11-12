@@ -239,12 +239,15 @@ it.effect(
   "refuses native reads without a selected reader instead of using the legacy Gateway",
   () =>
     withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
-      const request = (headers: Record<string, string>) =>
+      const request = (
+        headers: Record<string, string>,
+        contract = "workstreams-native-home-read-result/1.0.0",
+      ) =>
         new Request("http://fixture/api/workstreams/native/v1/read", {
           method: "POST",
           headers: { "content-type": "application/json", ...headers },
           body: JSON.stringify({
-            contract: "workstreams-native-home-read-result/1.0.0",
+            contract,
             request: { route: "counts", params: {} },
           }),
         });
@@ -257,6 +260,14 @@ it.effect(
         message: "workstreams_native_unavailable",
       });
       expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+      const unsupported = await handler(
+        request(
+          { authorization: "Bearer synthetic-token" },
+          "workstreams-native-home-read-result/2.0.0",
+        ),
+      );
+      expect(unsupported.status).toBe(400);
+      expect(await unsupported.text()).toBe("");
       expect(calls).toEqual({ reads: 0, writes: 0 });
       expect(submissions.count).toBe(0);
     }),
@@ -944,6 +955,42 @@ it.effect("invalid response negotiation never reaches command lookup or submissi
     }),
   );
 });
+
+it.effect(
+  "response negotiation stays local to each command request and leaves legacy reads alone",
+  () =>
+    withHttpFixture(
+      [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+      async ({ handler, calls, submissions }) => {
+        const stale = { ...command, expected_server_generation: 6 };
+        for (const modern of [true, false, true, false]) {
+          const response = await handler(submitRequest(stale, modern));
+          expect(response.status).toBe(409);
+          expect(await response.json()).toEqual({
+            _tag: "EnvironmentHttpConflictError",
+            message: modern ? "version_conflict" : "workstream_command_not_current",
+          });
+        }
+        const response = await handler(
+          new Request("http://fixture/api/workstreams?limit=50", {
+            headers: {
+              authorization: "Bearer synthetic-token",
+              "x-t3-workstreams-response-contract": "workstreams-http-response/9.0.0",
+            },
+          }),
+        );
+        expect(response.status).toBe(200);
+        expect(decodeListResult(await response.json()).source).toBe("live");
+        expect(calls.reads).toBe(1);
+        expect(submissions.count).toBe(0);
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        readCommandReceipt: () => Effect.succeed({ kind: "absent" as const }),
+      }),
+    ),
+);
 
 it.effect.each([false, true])(
   "changed authorization keeps its legacy refusal discriminator with modern=%s",

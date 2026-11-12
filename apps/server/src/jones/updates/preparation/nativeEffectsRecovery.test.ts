@@ -298,7 +298,11 @@ it("holds a private preparation directory with mode 0755", async () =>
     expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
   }));
 
-it.each(["317c4df82c77d06922a6723e318e09b0de20ff99", "8dd90ff9e3d41e7ba9ac1c81bceb4f973734314b"])(
+it.each([
+  "317c4df82c77d06922a6723e318e09b0de20ff99",
+  "8dd90ff9e3d41e7ba9ac1c81bceb4f973734314b",
+  "245409b7feefd2509b12f2fb7e48e6ec5e8d0b50",
+])(
   "releases producer %s only after durable proof, preserving native effects and identity",
   async (installedSource) =>
     fixture(async (f) => {

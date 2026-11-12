@@ -8,6 +8,16 @@ import { installEffectSeam } from "../../../apps/server/src/jones/workspaceRetir
 installEffectSeam();
 const modules = {
   "effect/Cause": `export const hasInterrupts = cause => cause?._tag === 'FixtureInterrupt'; export const squash = cause => cause;`,
+  "effect/DateTime": `
+export const makeUnsafe = value => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new RangeError("Invalid DateTime input");
+  return date;
+};
+export const nowUnsafe = () => makeUnsafe(Date.now());
+export const toEpochMillis = value => value.getTime();
+export const formatIso = value => value.toISOString();
+`,
   "effect/Exit": `export const isSuccess = exit => exit._tag === 'Success'; export const isFailure = exit => exit._tag === 'Failure';`,
 };
 NodeModule.registerHooks({
@@ -50,9 +60,20 @@ export const acquireUseRelease = (acquire, use, release) => effect(async context
     };
   },
 });
-const { finiteProductionCases, finiteScratchReceipts } =
-  await import("./finite-production.testkit.ts");
-for (const [name, run] of Object.entries(finiteProductionCases)) NodeTest.test(name, run);
+const {
+  finiteProductionCases,
+  resolutionCases,
+  resolveCases,
+  capacityCases,
+  finiteScratchReceipts,
+} = await import("./finite-production.testkit.ts");
+for (const [name, run] of Object.entries({
+  ...finiteProductionCases,
+  ...resolutionCases,
+  ...resolveCases,
+  ...capacityCases,
+}))
+  NodeTest.test(name, run);
 NodeTest.after(() => {
   NodeAssert.ok(finiteScratchReceipts.every((receipt) => receipt.cleaned));
   console.log("exact scratch cleanup", JSON.stringify(finiteScratchReceipts));

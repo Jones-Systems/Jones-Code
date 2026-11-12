@@ -4,14 +4,69 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "superseded-terminal-history",
+      "tests": [
+        "apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts",
+        "apps/server/src/jones/orchestration/SupersededTerminalTrace.test.ts",
+        "apps/server/src/jones/orchestration/SupersededTerminal.integration.test.ts",
+        "apps/server/src/jones/orchestration/RestartPreparation.test.ts",
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+        "packages/provider-core/src/server/jones/providerControlOutcome.test.ts"
+      ],
+      "scope": "Preserve every captured-origin, runtime, native-turn, restart outbox/command and successor conjunct in HistoricalTerminalHistory while grouping stale/deferred refusals. The ProviderEventIngestor hook records ineligible terminal loss only after an unrecovered ordinary ingestion failure or a refused guarded write; successful empty logical-terminal normalization records no loss. Jones integration cases assert clear trace keys and no loss warnings after current or historical snapshot/logical sequences, and finite reasons after failed normalization and real current/owner guard refusals. A capped sink-owned process-local trace keys finite reasons by exact app thread, run, provider thread, provider turn and old attempt; it grants no authority. RestartPreparation reports the inner terminal stage and restart_terminal_unpersisted_<finite reason> (none_observed on missing trace), retaining the interrupt hold and 30-second deadline. Only ordinary snapshot normalization/publication errors offer the original HistoricalTerminalInput/event and historical write again. Refusal, ordinary or unavailable history preserves the original error; pure cancellation propagates. The history owner retains the exact selected event and reconciles an uncertain commit by event-ID and Schema-encoded facts; missing/pruned/unavailable/mismatched readback never proves absence or permits another commit. Initial historical failures and rejected-write fallback retain their existing owner. No cleanup bundle, provider operation, settlement, checkpoint, schema or timeout replay. Existing Jones history fixture/assertions are extracted once to a Jones testkit for reuse with the real RunExecutionService, sink, ingestor, restart intent and persisted-terminal waiter; no upstream test harness was changed. Tests use Deferred barriers and synthetic memory stores; three refused reads exhaust Lane2 admission retries before the new error fallback. Runtime-evidence-free and logical-only paths remain negative; no speculative locator reconstruction or logical-snapshot admission repair. Existing HistoricalTerminalHistory reader classification in EventLogPruning.test.ts was extended with exact owner authorization, preserving inventory assertions. Authored tests and type/format/boundary qualification require supported CI; local checks are static only."
+    },
+    {
+      "id": "accepted-terminal-recovery",
+      "tests": [
+        "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts",
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+        "packages/provider-core/src/server/jones/providerControlOutcome.test.ts"
+      ],
+      "scope": "Retain only the exact origin/route-revalidated logical turn.terminal before ingestion, with its ingestion effect and fallback completion time. Jones AcceptedTerminalRecovery owns transient classification, two read-admission retries, one per-event original-finalization recovery owner before the same event stream unwinds, exponential 1s-30s delay and 10-minute warnings. Each actual pooled read inside ProviderEventIngestor is retried separately: subagent normalization/publication can write before its later model read, so ingestNormalized is never retried as a mid-run bundle. Successful terminal normalization is retained before publication so an empty fresh cleanup read cannot hide an uncertain original commit. Accepted terminal publication retains the original event batches and current-attempt atomic guards, tags each batch with a stable command identity, and reconciles an uncertain write through exact command/event readback before replay. Writer-owned turn-item ordinals and retained provider-thread identity are canonicalized explicitly for readback; no native identity/status/time/evidence is substituted. A successful finalization ownership read is retained with the original publication; its atomic writer guard still fences Stop/successors, and the false ownership branch retains interrupt-result pairing. Non-transient failures use terminal_finalization_failed while retaining accepted native settlement, snapshot and evidence, and write a separate local-error item so the native failure item is not overwritten. Recovery returns through the existing lifecycle and stop decisions, keeping the original subscription alive for active native children and background items. Jones regressions use the existing consumer harness with real memory-store child ingestion, Deferred-gated late completion/output, completed and failed-with-childTurnsContinue roots, and one-shot ingestion/ownership/write faults; they assert one root settlement and applicable checkpoint, original object identity and zero extra controls or stream starts. The harness still observes root finalization through its existing sink seam. No provider operation, checkpoint policy, historical terminal/restart guard, schema, failure class, client or adapter change. The existing RunExecutionService.test.ts adverse assertion now expects waiting after a transient terminal-write failure; its harness adds only driver/readback seams, two function exports for type-only harness reuse, and Jones test registration. This accepted shared-test exception preserves the real consumer harness and its existing preterminal/unknown-control assertions. Jones tests import the existing EventSink, stores, ingestor, memory SQLite, thread-command and Git ports; testkit imports the upstream harness types only. New cases are authored, not locally executed; required Check must run them plus strict boundary, focused lint and shared/server typechecks."
+    },
+    {
+      "id": "reader-admission-failures",
+      "tests": [
+        "packages/shared/src/jones/sqliteReaders/admissionFailure.test.ts",
+        "packages/shared/src/jones/sqliteReaders/admission.test.ts",
+        "apps/server/src/jones/orchestration/appFailureReason.test.ts",
+        "apps/server/src/jones/orchestration/readerAdmissionMessage.test.ts",
+        "apps/server/src/jones/goals/continuity/GoalContinuityStore.test.ts",
+        "apps/server/src/jones/goals/continuity/GoalContinuity.test.ts",
+        "apps/server/src/jones/goals/continuity/admission.test.ts",
+        "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/UserFacingErrors.test.ts"
+      ],
+      "scope": "Finite tagged SQLite reader admission failures remain distinct from native SQLite errors, real continuity holds and run/selection mismatch. The bounded extractor inspects Effect Cause/reason/cause without text authority. UserFacingErrors adds one hook before its unchanged unknown-SQL fallback; RunExecutionService adds only three allowlisted failure-code constructor arguments and one import. ProviderTurnStartService hooks continuity read admission into the existing willRetry path, preserves real holds, maps only failed revalidation reads to unavailable and uses existing guarded settlement. GoalContinuityStore retains a non-enumerable runtime cause on the unchanged GoalContinuityError schema; requirementFor and reconstruction already pass it through. prepareExecutionSession records only completed detach events through the existing current-attempt guard when the following revalidation read fails, preserving completed retirement for retry; it never treats the pending retired-writer fence as completion and still guards replacement persistence. The existing ProviderTurnStartService.test.ts harness gains only injected continuity/read/retirement seams and a Jones test registration call; this accepted shared-test exception avoids copying its large harness. Jones readerAdmissionStart.testkit.ts imports ProjectionStoreReadError to inject realistic wrapped reads; readerAdmissionMessage.test.ts imports the existing dispatch renderer and persistence wrapper. New absent/required/exhaustion/hold/Stop/custody/read-vs-change/post-retirement/history cases are authored, not locally executed. Shared test harness and preparation tests preserve all existing assertions. No schema, pool, timeout, checkpoint, provider request, authentication or routing changes."
+    },
+    {
+      "id": "workspace-lifecycle-dev-proof",
+      "tests": [
+        "apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
+        "apps/server/src/provider/Drivers/ClaudeHome.test.ts",
+        "apps/server/src/provider/Drivers/ClaudeDriver.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts"
+      ],
+      "scope": "SOURCE candidate only: explicit opt-in isolated development qualification using production runServer, validated lifecycle configuration, real migrated registries, native reader/compute workers, shipped Codex or Claude adapter, setup/terminal/MCP/settlement services. Each selected adapter requires its own qualified native launcher/account invocation. The driver asserts conversation cwd and exact source content/unchanged Git inventory, same-key handoff replay across restart with one setup/continuation, a real pre-write setup interruption held across restart, terminal-first attachment, empty disposal/nonempty obligation, durable settlement/script/checkpoint ordering, disabled proposal, actual unforced retirement and receipt-HEAD recreation. Default invocation emits typed unavailable and starts nothing. Node 26.12.1/pnpm 12.14.0, exported source trees/tool hashes, external host/account/CPU-memory bindings, private root and storage admission are required. Whole-run/diagnostic/scratch bounds and exact owned-process/listener closure gate cleanup; bounded evidence is saved outside scratch first. Live proof is unexecuted by source delivery and no other adapter, installed runtime, platform or account acceptance is inferred. Shared ClaudeHome, ClaudeDriver and ClaudeAdapterV2 edits repair the existing provider HOME seam in place: duplicating SDK selection, cache/continuation identity and native metadata lookup behind a Jones-only adapter would split the account boundary. Integration-test exceptions stay in their existing service harnesses. Effective provider HOME controls default paths, configured tilde expansion, fork worker selection, custom policy, transcript/task/history and account metadata without mutating server environment; explicit config precedence and wire schemas remain intact. Opt-in nativeBinding v1 supports only the existing Mini fleet default or jace HOME/config tuples and qualified launcher/release/native executable chain, with fresh normal-controller account/preparation references and consent. Default leaves CLAUDE_CONFIG_DIR absent and homePath empty. Synthetic binding fixtures cover tuple, freshness, account and chain rejection without native reads or execution. Native history/cache custody is external; cleanup excludes native HOME/profile/launcher. Server, setup and terminal-first HOME remain private; explicit provider terminals can inherit provider environment. Operator account attestation is distinct from observed public file identity and native authentication remains unavailable until separately qualified."
+    },
+    {
       "id": "direct-producer-completion",
       "tests": [
         "scripts/jones/direct-producers/completion.node-test.mjs",
         "native/process-placement/build.test.mjs",
         "scripts/jones/direct-producers/finite-production.test.ts",
-        "scripts/jones/direct-producers/finite-production.node-test.mjs"
+        "scripts/jones/direct-producers/finite-production.node-test.mjs",
+        "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts",
+        "scripts/jones/direct-producers/resolve.test.ts"
       ],
-      "scope": "Process-placement compiler errors wait for native close; optional completion observes known success/failure/drained cancellation after scratch cleanup, and metadata failure preserves the native result. Existing output names, compiler arguments, manifests and cleanup behavior are preserved. Completion reuses the 64 KiB/100 ms observation sink, with content proof deferred and allocation_disposition_not_observed explicit. Server build/build-exe now admit one exact in-checkout dist or dist-exe durable ProducerFinalizer duty before allocation and finalize after the whole existing operation and its owned child scope. Known native results remain independent of bookkeeping; leader-only completion retains writer_completion_not_observed, and unknown terminal/interruption keeps the active duty. Command diagnostics expose exact id/root/path/reason independently of optional capture. No content proof is requested. Standalone bundle, web, desktop, watch, MJS and external-root integration remain open. The scripts package test command adds the focused Node test discovery path."
+      "scope": "Process-placement compiler errors wait for native close; optional completion observes known success/failure/drained cancellation after scratch cleanup, and metadata failure preserves the native result. Existing output names, compiler arguments, manifests and cleanup behavior are preserved. Completion reuses the 64 KiB/100 ms observation sink, with content proof deferred and allocation_disposition_not_observed explicit. Server build/build-exe now admit one exact in-checkout dist or dist-exe durable ProducerFinalizer duty before allocation and finalize after the whole existing operation and its owned child scope. Known native results remain independent of bookkeeping; leader-only completion retains writer_completion_not_observed, and unknown terminal/interruption keeps the active duty. Command diagnostics expose exact id/root/path/reason independently of optional capture. No content proof is requested. Standalone bundle, web, desktop, watch, MJS and external-root integration remain open. The scripts package test command adds the focused Node test discovery path. Additive versioned holder/revision records now track self, in-process settlement, closed spawn admission and durable per-spawn intent/session accounting under an actual reservation and CAS. Guarded allocation-only resolution preserves unknown native terminals, proof and unrelated duties. Same-key admission, target Runtime evaluation and the explicit --worktree/--json resolver share that owner. Bounded capacity recovery validates exact durable successors, retains open legacy, unsupported and malformed records, and advances an advisory cursor outside the reader directory. Darwin spawned-session absence remains darwin_unpublished_allocation_unproved; Linux quiet census remains unknown without installed-build/visibility qualification. No AC-2 or host closure is claimed."
     },
     {
       "id": "provider-node-deduplication",
@@ -1604,7 +1659,7 @@
         "packages/contracts/src/jones/orchestrationCompatibility.test.ts",
         "apps/server/src/jones/orchestration/TransientSteer.test.ts"
       ],
-      "scope": "Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. Explicit manual promotion uses the unchanged active configuration even for messages queued before account or model changes; automatic tool-boundary delivery retains historical configuration matching. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup. Ordinary web/mobile explicit follow-ups with unchanged configuration queue across preparing, starting, waiting and missing-native-turn gaps, preserving the durable Stop barrier, separate-turn commands, legacy direct modes and selection rejection paths. A narrow Orchestrator hook applies the Jones pure decision after existing late-completion recovery; queued births inherit safe-boundary eligibility while preserving an explicit opt-out. Jones runtime integration verifies accepted receipts, idempotence and original-message promotion; no wire or persisted schema changes."
+      "scope": "Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. Explicit manual promotion uses the unchanged active configuration even for messages queued before account or model changes; automatic tool-boundary delivery retains historical configuration matching. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup. Ordinary web/mobile explicit follow-ups with unchanged effective steer configuration queue across preparing, starting, waiting and missing-native-turn gaps. Inherited owner steers use the active selection for gap eligibility; queued runs retain the saved selection for their eventual next turn, preserving the durable Stop barrier, separate-turn commands, legacy direct modes and selection rejection paths. A narrow Orchestrator hook applies the Jones pure decision after existing late-completion recovery; queued births inherit safe-boundary eligibility while preserving an explicit opt-out. Jones runtime integration verifies accepted receipts, idempotence and original-message promotion; no wire or persisted schema changes."
     },
     {
       "id": "client-launch",
@@ -1913,9 +1968,10 @@
         "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
         "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
         "apps/server/src/jones/workstreams/runtimeIntegration/sourceRenewal.test.ts",
-        "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.test.ts"
+        "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.test.ts",
+        "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts"
       ],
-      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with pinned canonical registry identity and injected synthetic authentication, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior. Selected-source renewal additionally joins two isolated real SQLite enrollment/auth repositories, native reservation and credential publication/readback, strict-v1 build qualification and signed loopback registration/membership preservation. Build ports, descriptor adoption and registry business state remain synthetic; compatible v2 observation is separate from renewal, expiry and revocation. Source-artifact qualification remains HELD: run3 had three startup attempts with unknown family closure and unavailable original consumer PID/stderr. Source-only lifecycle repair has focused injected-event/fake-timer proof; it adds bounded durable receipts, separate stdout/stderr, deadlines, shared failed shutdown and fork/transition/removal fences. Direct-child exit and stdio close do not attest descendants. Future preparation records the test-only artifact-local ESM worker overlay separately from production inputs. No actual source identity, renewal, artifact cleanup or #497 qualification credit is added by mock results."
+      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with pinned canonical registry identity and injected synthetic authentication, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior. Selected-source renewal additionally joins two isolated real SQLite enrollment/auth repositories, native reservation and credential publication/readback, strict-v1 build qualification and signed loopback registration/membership preservation. Build ports, descriptor adoption and registry business state remain synthetic; compatible v2 observation is separate from renewal, expiry and revocation. Source-artifact qualification remains HELD: run3 had three startup attempts with unknown family closure and unavailable original consumer PID/stderr. Source-only lifecycle repair has focused injected-event/fake-timer proof; it adds bounded durable receipts, separate stdout/stderr, deadlines, shared failed shutdown and fork/transition/removal fences. Direct-child exit and stdio close do not attest descendants. Future preparation records the test-only artifact-local ESM worker overlay separately from production inputs. No actual source identity, renewal, artifact cleanup or #497 qualification credit is added by mock results. The private Linux consumer subreaper adds a positive fork-family closure path with direct/adopted-child pidfd ownership and genuine ECHILD evidence. Fixture ownership distinguishes inherited natural EOF from parent disposal and retains bound identity manifests outside removable scratch. Focused subprocess and mocked retention checks are distinct from the fresh actual-artifact journey still required for qualification; prior unknown families and two failed parent-loss attempts remain unknown and cannot be released by later evidence."
     },
     {
       "id": "native-enrollment-runtime",
@@ -1967,8 +2023,11 @@
     },
     {
       "id": "ci-dependency-setup",
-      "tests": ["scripts/jones/ci/chromium-setup.node-test.mjs"],
-      "scope": "CI resolves Chromium from each workspace, checks a real headless launch before installing system dependencies, and verifies a single repair attempt. Browser caching follows the upstream versioned key; native compiler and libsecret package setup is consolidated without changing tests or server sharding."
+      "tests": [
+        "scripts/jones/ci/chromium-setup.node-test.mjs",
+        "scripts/jones/ci/apt-setup.node-test.mjs"
+      ],
+      "scope": "CI resolves Chromium from each workspace, checks a real headless launch before installing system dependencies, and verifies a single repair attempt. Browser caching follows the upstream versioned key; native compiler and libsecret package setup is consolidated without changing tests or server sharding. Three primary Ubuntu dependency steps use strict signed refresh and download before offline install. Only proven transport failures or clean deadlines permit candidate-only isolated lists and archives, with exact source/keyring and cold index-target validation plus acquired freshness checks. An owned process-group gate proves termination before fallback or removal; cancellation and unknown cleanup stop. Injected tests cover route, trust, process and workspace boundaries; the Linux process regression runs in the existing CI Node test group. Candidate runner qualification remains required."
     },
     {
       "id": "child-input-navigation",
@@ -2713,6 +2772,7 @@
         "apps/server/src/jones/updates/JonesUpdater.test.ts",
         "apps/server/src/jones/updates/followerPolicy.test.ts",
         "apps/server/src/jones/updates/http.test.ts",
+        "apps/server/src/jones/updates/operations/cleanupReview.test.ts",
         "apps/server/src/jones/updates/operations/ledger.test.ts",
         "apps/server/src/jones/updates/operations/operations.test.ts",
         "apps/server/src/jones/updates/operations/recoveryPreflight.test.ts",
@@ -3527,6 +3587,41 @@
         "apps/server/src/jones/settlementRestore/plan.test.ts"
       ],
       "scope": "Every Jones reader of orchestration_events is classified as capture, tolerate or unaffected against upstream's event-log pruning rule (v1 events, thread.created, running run.updated and each stream's newest event stay; the rest older than a day goes; the pruned-through boundary is published first; receipts stay), and a source scan fails when a new reader is unclassified. Readers that would have read a missing event as absence fail closed: deletion admission, ordinary-checkout admission, settlement origins (unknown, never other, past the marker window) and the self-configuration selection revision, which never falls below the pruned-through sequence. Settlement origin rows older than 30 days are pruned by an indexed, batched sweep (Jones migration 146) started once for the server lifetime, and an interrupted origin recording now propagates instead of being absorbed. A rejected settlement restore travels as a typed error whose message keeps the client-visible wording. Fixtures prune synthetic history with the upstream keep rule; the upstream pruner, its maintenance preflight and the maintenance hooks are not part of this feature."
+    },
+    {
+      "id": "orphaned-run-records",
+      "tests": [
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.test.ts",
+        "apps/server/src/jones/orchestration/OrphanedRunRecords.integration.test.ts",
+        "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+        "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts"
+      ],
+      "scope": "Startup recovery closes provider turns, nodes and their open turn items still pending or running under runs that already ended, or under a provider-native subagent's ended runless root turn, as interrupted. A Jones service selects candidates with Jones-owned read queries over upstream projection tables (live-node partial index, item node/provider-turn/run indexes) and commits one receipt per thread through EventSink.commitCommand with the command:runtime-reconcile:orphaned-records identity, so existing reactors ignore the closures and planned update continuity exempts the exact receipt. Anything under a run that has not ended stays open, including queued and held runs; async questions with pending message requests, todo lists, proposed plans, active subagent rows and background-capable items stay with their owners; deleted threads are skipped. The accepted-shared ProviderRuntimeRecoveryService gains one optional serviceOption hook after its startup loop; the runtimeLayer hook provides the service. Best effort, idempotent, no schema, index, payload or wire change."
+    },
+    {
+      "id": "held-queue-expiry",
+      "tests": [
+        "apps/server/src/jones/orchestration/QueueHoldReasons.test.ts",
+        "apps/server/src/jones/orchestration/HeldQueueExpiry.test.ts",
+        "apps/server/src/jones/orchestration/QueueHold.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "scope": "Held queued runs record when and why they were held (stop, restart, provider_failure, inherited) in the sparse Jones table jones_queue_holds (Jones migration 147), keyed by upstream run ID with no reference to upstream tables. The accepted-shared EventSink writes and deletes those rows inside the transaction that appends the hold or release events, classifying them by event and command type (run.created behind held work, provider-runtime.reconcile, thread.stop and run.interrupt) or by an explicit intent on the provider-failure system write; no Jones field enters an upstream payload, event, column or wire contract. Releasing, cancelling or deleting a held run's thread removes its row; a missing table or row reads as a hold recorded before reasons existed. A completed restart continuation releases the restart holds recorded before it completed and the queue drains in order; Stop replaces a restart hold, Stop holds and failed or interrupted continuations release nothing, planned-update continuity keeps its own threads, and a new message still never releases a hold. After startup recovery and then hourly, held automatic messages older than T3CODE_HELD_QUEUE_EXPIRY_HOURS (default 24, age from the recorded hold or else the request time) are cancelled through queued-run.cancel, which disposes delegated-completion cohorts as a person's cancel does; client-typed user messages and unclassifiable messages never expire. Small EventSink.ts, Orchestrator.ts and server.ts hooks keep their upstream owners. Synthetic in-memory fixtures; no live-database or installed-runtime claim."
+    },
+    {
+      "id": "workstreams-native-home-fixture",
+      "tests": ["apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts"],
+      "scope": "Explicit empty private Linux synthetic home prepared by real authority enrollment, registry key/init and SessionStore/source-setup services; startup selects native and reads an empty HTTP projection. Synthetic receipts attest no packaged runtime or installation."
     }
   ]
 }

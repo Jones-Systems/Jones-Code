@@ -79,6 +79,16 @@ behavior, telemetry collection, or provider configuration changed.
 
 ### Expected thread responses
 
+When a goal and background work coexist, the background-work banner and its
+Stop action precede the goal in the collapsed composer stack. Expand **Show
+other notices** to reach goal controls. Child questions and urgent notices
+retain their priority. Browser verification used an isolated synthetic result
+wait beside an active goal: Stop remained visible, and keyboard expansion made
+the goal's Clear control reachable. Settle persisted across reload. Server
+integration tests cover Stop, held queues, subsequent Settle and legitimate
+queued-message/approval blockers. Native mobile and packaged desktop remain
+unverified; the projection fixture does not prove live provider termination.
+
 An explicit expected-result request keeps its sender **Waiting** after the
 foreground turn ends. The pending-work banner identifies the expected response.
 An ordinary message or navigation link alone does not establish a wait. A
@@ -408,7 +418,10 @@ fixture was removed after capture; no live application state was used.
 questions, with optional impact descriptions on choices. Involved context belongs
 in the preceding chat message. Web and desktop share the question card; mobile
 uses the same sequential answer semantics. Existing routed Markdown keeps PR and
-thread links actionable.
+thread links actionable. Web/desktop question bodies also preserve single authored
+line breaks, alongside Markdown paragraphs, emphasis, lists and fenced code.
+Exercise a question with one labelled section per line; each section must start
+on a new rendered line and its answer choices must remain reachable.
 
 Start with nothing selected. Clicking a single-choice option or its digit shortcut
 commits that answer, advances to an unanswered question, and sends when every

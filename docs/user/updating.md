@@ -59,12 +59,19 @@ running an older server show their previous status text instead.
 A reachable machine whose current step has not moved for 3 minutes shows **No
 progress for 3m**. A machine is expected to go quiet while it restarts, so a
 restarting row shows no warning for 10 minutes, then **No word since restart**
-with the time since the restart began. A build that is already running is never
-offered for installation.
+with the time since the restart began. A fresh exact match shows **Updated · running the selected source**, even if this
+plan’s earlier attempt did not finish. Its attempt details remain available.
+When that proof is no longer fresh, **Last confirmed running the selected source**
+is historical and dated from the last observation; it enables no host action.
+Held or outstanding work keeps its own status with source evidence below it.
 
 The header's completion **Done** appears only when Laptop and every chosen device
-have settled and no operation is outstanding. A downloaded stage or unresolved
-result keeps it open. Done dismisses the plan. Reopening **Last update** is
+have settled and no operation is outstanding, or fresh exact proof shows that
+remaining downloaded stages are already running the selected source. Done ends
+those stages in the plan and dismisses it without installing anything. If proof
+changes or a request is not confirmed, the panel stays open; use Done again only
+after reading the current status. Confirmed partial progress is kept. Other
+downloaded stages and unresolved results keep the plan open. Reopening **Last update** is
 read-only. The next plan starts with Laptop only.
 
 ### Recovery space
