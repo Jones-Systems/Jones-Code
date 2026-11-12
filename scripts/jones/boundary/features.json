@@ -193,7 +193,7 @@
         "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs",
         "scripts/jones/updates/packaged-desktop-pair.node-test.mjs"
       ],
-      "scope": "Unchanged packaged macOS app-pair identity binding, external one-shot helper preparation faults, captured-PID startup/dialog and protected-mutation refusal orchestration. Executable source controls do not prove Apple interpreter, native dialog, packaged matrix, process descendants outside the captured group or installed continuity; those remain separately admitted acceptance."
+      "scope": "Unchanged packaged macOS app-pair identity binding, external one-shot helper preparation faults, captured-PID startup/dialog and protected-mutation refusal orchestration. Optional normal-Install controller custody holds the original helper after real process capture at first storage entry, binds parent/controller/kernel identities and input hashes, requires an exclusive acknowledgment plus writer exit and real quiescence before a quiet baseline, and retains an independent missed-fault pair/swap/trial guard. Portable controls exercise all four fault points, timeout/controller loss, stale parent, drift, symlink and replay refusals; native scheduling, escaped-launch custody and package correspondence remain unqualified. Executable source controls do not prove Apple interpreter, native dialog, packaged matrix, process descendants outside the captured group or installed continuity; those remain separately admitted acceptance."
     },
     {
       "id": "dev-proxy-cookie-auth",
@@ -413,11 +413,6 @@
       "scope": "Exact committed restart history preserves the old captured terminal while fencing replacement state. Codex steering has a bounded acknowledgement wait with producer-owned late reconciliation and conversation-scoped admission holds across accounts and generations. Unidentified creation also retains its original logical thread and producer. Independent conversations on the same producer remain eligible. Exact retained retirement observers reconcile restart and Stop holds without replaying control or inferring completion from missing runtime state. Server integration tests use synthetic state and native protocol fixtures. Current turn-start service fixtures prove dependency wiring; upstream explicitly removed the historical subprocess retention suite, and these checks do not claim equivalent garbage-collection evidence."
     },
     {
-      "id": "workstreams-sidebar-assignment",
-      "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
-      "scope": "Renderer integration mounts production Sidebar and WorkstreamNativeSidebar with synthetic environment/controller boundaries. Real row context menus exercise assignment-ref lookup and selected-action dispatch for ordinary and pinned threads; refreshed grouping, pin retention, control-thread isolation, and denied/unknown controller outcomes are checked. Native shell menus, transport, enrollment, persistence, and pointer dragging are outside this slice."
-    },
-    {
       "id": "agent-message-header",
       "tests": [
         "apps/server/src/jones/mcp/agentMessageHeader.test.ts",
@@ -446,34 +441,26 @@
     {
       "id": "workstreams-interaction-recovery",
       "tests": [
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
-        "apps/web/src/state/workstreams.test.ts",
         "packages/client-runtime/src/state/session.test.ts",
         "apps/web/src/state/session.test.ts",
-        "packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts",
         "apps/server/src/http.test.ts",
-        "apps/server/src/workstreams/http.test.ts",
-        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
         "apps/web/src/components/Sidebar.drag.test.ts",
         "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
         "apps/web/src/reactCompilerCoverage.test.ts",
-        "apps/web/src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx",
         "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx"
       ],
-      "scope": "Bounded shared session recovery, strict environment access diagnostics, independent native reorder, pinned-to-Workstream drag integration, and pre-dispatch no-effect classification. Shared session atom edits preserve its existing ownership and retry only typed transient failures; shared web session tests exercise the singleton registry. Existing Sidebar and HTTP integration harnesses retain Jones cases because they own the consumed hooks. Registration diagnostics add only a sanitized response header, leaving the frozen response body unchanged. Source qualification and permission fences remain strict; transport and replay ambiguity never resubmit commands. React Compiler coverage checks the repaired hooks and sidebar. The Jones-owned project-settings browser harness restores the permission cases from the upstream-deleted shared harness because it exercises editable fields and project mutations through the actual shared session access helpers, covering fresh grants, checking, failure and recovery. The web sidebar shows actionable enrolled-build diagnostics and a closable detail panel with current members and collapsed management history, retaining existing write and source gates."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "sqlite-checkpoint-lifecycle",
       "tests": [
         "packages/shared/src/nodeSqliteClient.test.ts",
         "apps/server/src/persistence/Sqlite.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts",
         "packages/shared/src/jones/checkpointContention.test.ts",
         "packages/shared/src/jones/sqliteWriterAdmission.test.ts"
       ],
-      "scope": "Bounded startup lock contention in the private upstream SQLite checkpoint worker and fail-fast test barriers on worker errors, exits and interruption. Timed-out reader workers recover on later demand after termination and a capped cooldown; the file-backed server opts into read failure rather than synchronous fallback while its reader is unavailable. Other consumers retain fallback compatibility. A small generic shared repair avoids duplicating the client's private lifecycle machinery; real-worker recovery, retirement and serving-loop progress regressions remain in its existing mock harness. Preserves WAL setup order, transaction affinity, checkpoint thresholds and shutdown ownership. No schema, wire, migration or runtime activation changes; historical CI timeout causality remains unproved. Synthetic file-WAL regressions restore queued, elected and resumed writer-admission cancellation coverage, reservation and BEGIN ownership, masked cleanup, and real worker/protocol recovery. Incident cause and production prevention remain unresolved."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "usage",
@@ -504,25 +491,13 @@
     {
       "id": "workstream-thread-controls",
       "tests": [
-        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
-        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
-        "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
-        "apps/web/src/state/workstreams.test.ts",
         "apps/web/src/components/threadActionMenu.logic.test.ts",
         "apps/web/src/components/Sidebar.pointer.browser.test.tsx",
-        "packages/client-runtime/src/state/workstreams/placements.test.ts",
         "apps/web/src/components/Sidebar.logic.test.ts",
-        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
-        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx",
-        "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
-        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
         "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx",
         "apps/web/src/components/sidebar/SidebarThreadRow.browser.test.tsx"
       ],
-      "scope": "Web and desktop sidebar thread rows share the ordinary pointer threshold and cancellation behavior for Workstream movement and native active ordering. Context menus put primary assignment and removal below Snooze/Wake, retaining secondary membership context. Groups come from stored assignments read at one registry version; proof requests cover only stored identities in batches within the per-request identity and byte caps, each with its own canonical hash, and only upgrade assurance. Stale snapshots stay visible read-only, conflicts block membership changes, and only access loss hides them. Display trust also accepts each connected environment's live config descriptor, so remote threads can show as verified; disagreeing descriptors mark that environment's threads as conflicts, and membership changes keep primary placement trust. A thread from another environment is registered, verified and assigned through that environment's own server after its owner registry, registration source and write access are checked; commands reconcile only on the accepting environment. Shared menu builder and pointer edits expose only optional assignment items and the existing drag-distance constant."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "client-update-notices",
@@ -665,44 +640,23 @@
     {
       "id": "workstreams",
       "tests": [
-        "apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts",
-        "packages/contracts/src/workstreams.conformance.test.ts",
-        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
-        "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
-        "apps/mobile/src/features/workstreams/projection.test.ts",
         "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
-        "apps/mobile/src/features/workstreams/gateway.test.ts",
         "packages/shared/src/jones/desktopNativeOwner.test.ts",
-        "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
-        "apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts",
         "packages/shared/src/jones/nativeWriterFence.test.ts",
-        "apps/server/src/environment/NativeStoreAuthority.test.ts",
         "apps/desktop/src/backend/DesktopBackendManager.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
         "apps/desktop/scripts/main-process-bundle.test.mjs",
-        "packages/contracts/src/jones/workstreamsNativeOwner.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
         "apps/server/src/entrypoint.test.ts",
-        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts"
       ],
-      "scope": "Workstreams registry integration. Negotiated exact registry_counts v1 uses the pinned provider counts manifest and revalidated session binding; unsupported capabilities remain unavailable. This source adapter does not establish deployed-provider or production native-packet parity."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "native-store-authority",
       "tests": [
-        "apps/server/src/environment/NativeStoreAuthority.test.ts",
         "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts",
-        "apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts",
-        "apps/server/src/jones/workstreams/serverConfigNativeStoreAuthority.test.ts",
         "packages/contracts/src/jones/serverConfigNativeStoreAuthority.test.ts"
       ]
     },
@@ -777,13 +731,8 @@
     },
     {
       "id": "workstream-appearance",
-      "tests": [
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
-        "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx",
-        "packages/client-runtime/src/state/workstreams/appearance.test.ts",
-        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
-      ],
-      "scope": "Jones appearance contracts exported through the contracts barrel and registered by makeJonesHttpGroups; shared client binding validation and native web color editing are covered by the focused tests."
+      "tests": ["packages/contracts/src/jones/environmentHttpGroups.test.ts"],
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "work-mode",
@@ -865,10 +814,9 @@
         "apps/web/src/jones/workQueue/UnifiedQueuePage.browser.test.tsx",
         "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.browser.test.tsx",
         "apps/web/src/jones/workQueue/classifySentPrompts.test.ts",
-        "packages/contracts/src/jones/promptViewSettings.test.ts",
-        "apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"
+        "packages/contracts/src/jones/promptViewSettings.test.ts"
       ],
-      "scope": "Validated v1/v2/v3/v4 metadata reads preserve configured source and native receipt identity. Prompts joins existing source-scoped broker delivery links to exact queue request, payload digest and authenticated native environment/target evidence. V3/V4 recorded pre-start handoffs and V2 exact handoffs appear under Sent while unmatched sibling deliveries remain Queued. Voice linkage requires the explicit submitted queue digest, never the broker envelope hash; missing legacy digests remain unlinked. V1, denied receipt reads, mismatches and missing proof remain unconfirmed; stale/partial samples carry explicit coverage and observation time. Provider completion is separate from Sent. Existing editing, routes and device-local opening preference remain covered. V4 adds only the closed nullable assignment projection, all ten states and bounded result timestamps; its byte-identical producer fixture lives at packages/contracts/src/jones/fixtures/work_queue_metadata_v4.json.fixture and is imported by the contract, client-runtime and panel tests, with descriptor-reader coverage in the server test. The client test references the existing contracts raw-fixtures declaration. Sidebar publishes already-loaded same-environment names through packages/client-runtime/src/jones/workQueueMetadata.ts; the panel subscribes there without another authority lookup. Unsafe or absent names fall back to IDs; absent assignment or observation never claims unassigned. No assignment write or retry control is added."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "direct-desktop-media",
@@ -1070,7 +1018,7 @@
         "scripts/jones/performance/current-qualification.node-test.mjs",
         "scripts/jones/performance/migration-restore.node-test.mjs"
       ],
-      "scope": "Qualification discovery includes receiving100–104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
+      "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
     },
     {
       "id": "preview-runtime-identity",
@@ -1225,11 +1173,6 @@
         "scripts/jones/updates/install-preview-qualification.node-test.mjs"
       ],
       "scope": "Local desktop update actions, including sidebar and Update Everything downloads through the Jones staged path, and manual sidebar check completion feedback. The existing sidebar completion hook and its integration harness retain a small shared-file exception to reuse upstream pending state and toast behavior without duplicating the component. Background checks remain quiet."
-    },
-    {
-      "id": "utility-navigation",
-      "tests": [],
-      "scope": "Sidebar navigation interaction uses isolated Browser panel verification. Web typecheck and targeted lint cover the extracted component; queue and composer behavior retain their existing feature tests."
     },
     {
       "id": "agent-app-identity",
@@ -1510,13 +1453,10 @@
         "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
         "apps/server/src/mcp/McpSessionRegistry.test.ts",
         "packages/shared/src/projectSettings.test.ts",
-        "packages/contracts/src/workstreams.conformance.test.ts",
-        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
-        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
       ],
-      "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access. Negotiated exact registry_counts v1 uses the pinned provider counts manifest and revalidated session binding; unsupported capabilities remain unavailable. This source adapter does not establish deployed-provider or production native-packet parity."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "pr-read-efficiency",
@@ -1871,7 +1811,7 @@
         "apps/server/src/jones/updates/migrationPlan.test.ts",
         "apps/server/src/persistence/reconcileV2PreviewMigration.test.ts"
       ],
-      "scope": "Jones migrations 116–119 register admission, delegation intents, admission integration and peer-link storage in the independent Jones loader. Imported unreleased upstream-ledger migrations 64/65 are removed from this task branch; their files are tombstoned without changing the boundary baseline. PeerLinks retains its existing service and uses the Jones-owned table identifier. Its existing database harness and upstream migration fixtures stay in place to prove integration while Jones isolation, retained-history and migration-plan tests cover the complete manifest. No released Jones migration identity or upstream schema is reassigned. Migration 121 adds only sparse Jones-owned remote-question observation and notice-intent rows, without upstream foreign keys or ledger changes; retained-history and complete-manifest checks include the added identity."
+      "scope": "Jones migrations 116\u2013119 register admission, delegation intents, admission integration and peer-link storage in the independent Jones loader. Imported unreleased upstream-ledger migrations 64/65 are removed from this task branch; their files are tombstoned without changing the boundary baseline. PeerLinks retains its existing service and uses the Jones-owned table identifier. Its existing database harness and upstream migration fixtures stay in place to prove integration while Jones isolation, retained-history and migration-plan tests cover the complete manifest. No released Jones migration identity or upstream schema is reassigned. Migration 121 adds only sparse Jones-owned remote-question observation and notice-intent rows, without upstream foreign keys or ledger changes; retained-history and complete-manifest checks include the added identity."
     },
     {
       "id": "remote-request-evaluation",
@@ -1898,7 +1838,7 @@
         "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
         "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts"
       ],
-      "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command or database schema changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only. Provider-session attachment validates distinct MCP credential identities; detached and foreign callers remain refused. Additive 1–5-question input, per-prompt 1500-code-point bounds and multiline legacy input preserve legacy normalization. Batch integration proves incomplete rejection, ordered long reply, durable pending provider-start intent and replay deduplication without an effect worker. Tool and provider guidance require an explicit first (Recommended) option and rationale for genuine multi-option decisions, exempting action-status/result choices, acknowledgements and single-option prompts. Opt-in defaultDone normalizes to a standard Done option only for instruction-form action requests; explicit choices take precedence and absent/false preserve legacy retry identity. No event/schema migration or custom quick-response renderer."
+      "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command or database schema changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only. Provider-session attachment validates distinct MCP credential identities; detached and foreign callers remain refused. Additive 1\u20135-question input, per-prompt 1500-code-point bounds and multiline legacy input preserve legacy normalization. Batch integration proves incomplete rejection, ordered long reply, durable pending provider-start intent and replay deduplication without an effect worker. Tool and provider guidance require an explicit first (Recommended) option and rationale for genuine multi-option decisions, exempting action-status/result choices, acknowledgements and single-option prompts. Opt-in defaultDone normalizes to a standard Done option only for instruction-form action requests; explicit choices take precedence and absent/false preserve legacy retry identity. No event/schema migration or custom quick-response renderer."
     },
     {
       "id": "thread-reference-only",
@@ -1983,7 +1923,7 @@
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/hooks/useHandleNewThread.test.ts"
       ],
-      "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings → Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
+      "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings \u2192 Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
     },
     {
       "id": "pr-lookup-git-state",
@@ -1999,26 +1939,9 @@
       "scope": "PR discovery Git-state memoization is Jones-owned, bounded per cwd and key, coalesced and cancellation safe. Automatic discovery, its mandatory fresh confirmation and automatic settlement sweeps run their nested GitVcsDriverCore work in upstream's GitVcsDriver.BackgroundGitWork lane: a process-wide two-permit pool separate from the eight foreground permits, so marked work never consumes foreground capacity. The retired Jones four-permit gate is tombstoned; it nested inside the upstream lane after the sync. The lane does not bound wait time, including exact-key cache joins. Existing null or over-30-second command bypasses, VcsProcess, direct identity probes and other callers retain their behavior. GitManager retains optional config-reader plumbing and fresh identity checks because extracting its head-resolution machinery would duplicate upstream behavior. Discovery width, provider batching and write guards are unchanged. Integration tests stay with their existing Git and orchestration harnesses. Installed runtime is unchanged. Both automatic settlement lookup paths share this background classification. Existing spans distinguish background-lane wait, shared permits, subprocess execution and worktree spawn/exit. The GitVcsDriverCore listRefs span also records its snapshot source (hit, joined, miss), repository-path and snapshot phase times, and the Git command count, execution time and maximum admission waits that call ran, through Jones-owned hooks."
     },
     {
-      "id": "workstreams-multi-environment",
-      "tests": [
-        "apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
-        "apps/server/src/workstreams/http.test.ts",
-        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/sourceRenewal.test.ts",
-        "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.test.ts",
-        "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts"
-      ],
-      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with pinned canonical registry identity and injected synthetic authentication, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior. Selected-source renewal additionally joins two isolated real SQLite enrollment/auth repositories, native reservation and credential publication/readback, strict-v1 build qualification and signed loopback registration/membership preservation. Build ports, descriptor adoption and registry business state remain synthetic; compatible v2 observation is separate from renewal, expiry and revocation. Source-artifact qualification remains HELD: run3 had three startup attempts with unknown family closure and unavailable original consumer PID/stderr. Source-only lifecycle repair has focused injected-event/fake-timer proof; it adds bounded durable receipts, separate stdout/stderr, deadlines, shared failed shutdown and fork/transition/removal fences. Direct-child exit and stdio close do not attest descendants. Future preparation records the test-only artifact-local ESM worker overlay separately from production inputs. No actual source identity, renewal, artifact cleanup or #497 qualification credit is added by mock results. The private Linux consumer subreaper adds a positive fork-family closure path with direct/adopted-child pidfd ownership and genuine ECHILD evidence. Fixture ownership distinguishes inherited natural EOF from parent disposal and retains bound identity manifests outside removable scratch. Focused subprocess and mocked retention checks are distinct from the fresh actual-artifact journey still required for qualification; prior unknown families and two failed parent-loss attempts remain unknown and cannot be released by later evidence."
-    },
-    {
       "id": "native-enrollment-runtime",
-      "tests": [
-        "apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
-        "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
-      ],
-      "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit exact-runtime test configuration requires production admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
+      "tests": ["scripts/jones/native-enrollment/sea-fixture.node-test.mjs"],
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "markdown-table-interactions",
@@ -2094,7 +2017,7 @@
         "scripts/jones/worktree-setup/entrypoint.node-test.mjs",
         "scripts/jones/worktree-setup/setup.node-test.mjs"
       ],
-      "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests."
+      "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests. Darwin producers additionally require fresh one-shot same-process CPU/native memory admission, bounded utility closure, cancellation and freshness checks, and child-only pnpm/Rolldown controls. Synthetic refusal tests preserve non-Darwin and link-only behavior; actual native descendant qualification remains separate."
     },
     {
       "id": "native-self-configuration-harness",
@@ -2209,7 +2132,7 @@
         "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx",
         "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
       ],
-      "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Linked. The shared relationship panel combines local and remote rows before its existing group/window rendering; Jones-owned wrappers fold ancestry and delegated tasks into one default-closed Linked section that resets on thread selection. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation, unavailable parents, collapse and task controls. Task and continuation location labels use the desktop client’s primary or desktop-managed local connection identity; local destinations omit the location while remote and unknown destinations retain it, independent of the subject thread’s environment. Browser clients retain explicit locations. No server, schema, authentication or lifecycle changes in this UI fold."
+      "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Linked. The shared relationship panel combines local and remote rows before its existing group/window rendering; Jones-owned wrappers fold ancestry and delegated tasks into one default-closed Linked section that resets on thread selection. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation, unavailable parents, collapse and task controls. Task and continuation location labels use the desktop client\u2019s primary or desktop-managed local connection identity; local destinations omit the location while remote and unknown destinations retain it, independent of the subject thread\u2019s environment. Browser clients retain explicit locations. No server, schema, authentication or lifecycle changes in this UI fold."
     },
     {
       "id": "incremental-typecheck",
@@ -2227,90 +2150,31 @@
       "scope": "Batch selected canonical timeline payloads into one query while retaining history wire projection, page ordering, synthetic rows and missing/decode errors. One private helper stays beside its shared SQL types and transaction callers; Jones tests cover query counts and existing tail/fork behavior."
     },
     {
-      "id": "workstreams-durable-native-profile",
-      "tests": [
-        "packages/contracts/src/jones/workstreamsNativeProvider.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/service.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/http.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/service.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/operations.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts"
-      ],
-      "scope": "Provider v2 reports immutable enrolled provenance separately from the observed build while sharing the original request identity, attempt store, receipt/event rules and authority fences. Existing v1 behavior stays strict. Synthetic native tests cover compatible-build recovery and compaction without redispatch, profile-specific HTTP/authentication and historical enrollment readback; plan/apply and installation custody keep current-build qualification. Registration v3 and operational adoption are separate slices."
-    },
-    {
       "id": "ci-registry-search-timers",
       "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
       "scope": "Accepted shared test-only CI repair: control the existing registry-search debounce clock so the first Enter submits before debounce and the second Enter refreshes. Preserve every assertion and all eight test cases; production behavior is unchanged. The existing upstream browser harness requires this direct one-line edit rather than a duplicated Jones harness."
     },
     {
-      "id": "workstreams-registry-binding",
-      "tests": [
-        "packages/shared/src/jones/workstreamsRegistryBinding.test.ts",
-        "apps/server/src/jones/workstreams/registryBinding.test.ts",
-        "apps/server/src/jones/workstreams/activation.test.ts",
-        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
-        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts",
-        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
-      ],
-      "scope": "Independently pinned registry identity separates canonical HTTPS metadata from literal-loopback transport. Strict activation tokens, request HMAC and bounded exact response proofs cover all signed families without altering legacy manifests or native provider identity. A joined real HTTP client/hook ledger test proves the authenticated pre-dispatch refusal mapping and unknown-effect receipt-only recovery. Synthetic authority, build and authentication remain explicit test seams; no installed or PostgreSQL qualification is claimed."
-    },
-    {
-      "id": "workstreams-durable-registration-profile",
-      "tests": [
-        "packages/contracts/src/jones/workstreamsRegistrationContext.test.ts",
-        "apps/server/src/jones/workstreams/activation.test.ts",
-        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
-        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
-        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts"
-      ],
-      "scope": "Opt-in registration v3 carries immutable enrolled provenance and explicit native profile policy. Jones qualifies the local source independently of routine build drift only when provider v2 is accepted, then translates the result into the existing client v2 response with the observed local build. Strict selectors and authority fences remain intact. Transport retains canonical registry binding and authenticated response proof. Synthetic tests cover selector, contract, transport, qualification and client compatibility; installed adoption remains separate."
-    },
-    {
       "id": "workstream-operations",
       "tests": [
-        "packages/contracts/src/jones/workstreamOperations.test.ts",
-        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
-        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
-        "apps/server/src/jones/workstreams/operations/planner.test.ts",
-        "apps/server/src/jones/workstreams/operations/childIds.test.ts",
-        "apps/server/src/jones/workstreams/operations/service.test.ts",
-        "apps/server/src/jones/workstreams/operations/http.integration.test.ts",
         "apps/server/src/environment/ServerEnvironment.test.ts",
-        "apps/server/src/workstreams/http.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
-      "scope": "Jones-owned Workstream operation contract, deterministic child IDs, qualified planning, serialized operation service, exact-byte receipt recovery and sealing. Production HTTP adapters share the application-owned operation service and advertise capability only when wired; cached setup status exposes signed registry UUIDs and bounded diagnostics. Synthetic and production-layer loopback tests cover restart adoption, unknown effects, contention, qualification, memory-only reads and compatibility. No Jones durable journal, migration or installed-runtime change."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "workstream-app-operations",
-      "tests": [
-        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
-        "apps/mobile/src/features/workstreams/operations.test.ts",
-        "apps/web/src/jones/workstreams/SetupStatusContent.test.tsx",
-        "apps/web/src/jones/workstreams/WorkstreamPicker.test.tsx",
-        "apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts",
-        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamOperations.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
-        "packages/client-runtime/src/jones/workstreams/operations.test.ts"
-      ],
-      "scope": "Web/desktop and mobile use the shared retained operation client, signed setup registry UUID, capability-gated assignment/create, pending and conflict readback, searchable inline creation and setup diagnostics. Records all 29 J-C paths in inventory. Shared hooks: settings.jones-code.tsx registers WorkstreamsSetupStatus; client-runtime package.json exports ./jones/workstreams/operations. Existing Jones-owned state/sidebar/mobile modules consume these interfaces. Legacy and secondary-membership paths remain covered by their existing feature groups. The test-only fullAppFixture and parameterized loopbackFixture accept the actual isolated server source/authority/generation, generate fixture-only signed registry binding UUIDs and expose controlled pending/lost-reply/competing-assignment faults. Full-app native Browser evidence requires the root-run launcher; synthetic component tests alone are not that evidence."
+      "tests": ["apps/mobile/src/features/workstreams/Controls.operations.test.tsx"],
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "workstream-tools",
       "tests": [
         "apps/server/src/jones/mcp/workstreams/handlers.test.ts",
-        "apps/server/src/jones/workstreams/operations/cli.test.ts",
         "apps/server/src/jones/mcp/workstreams/registration.test.ts",
-        "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeReads.test.ts",
-        "apps/server/src/jones/workstreams/operations/cliSession.test.ts"
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
       ],
-      "scope": "Local-environment MCP and executable CLI workstream list, create, assign, unassign and status use the application-owned operation service or its authenticated typed HTTP boundary. Production MCP registration consumes that service as a required dependency, sharing its retained results with HTTP. Requests obtain the signed registry UUID from setup status, not the legacy gateway origin. Tests cover production MCP registration, parsed CLI commands against real loopback HTTP handlers, operation replay, conflicts, owning-environment checks, and all CONFIG/open retry advice. Synthetic CP and authentication seams do not qualify installed sessions or live Control Plane state."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "pr-cache-scope-locks",
@@ -3212,7 +3076,7 @@
         "apps/web/src/components/files/PdfPreview.browser.test.tsx",
         "apps/web/src/components/files/PdfViewer.browser.test.tsx",
         "apps/web/src/components/files/pdfLayout.test.ts",
-        "apps/web/src/assets/assetUrls.test.ts",
+        "packages/client-runtime/src/state/assets.test.ts",
         "apps/web/src/jones/filePreview/workspacePdfSession.browser.test.tsx",
         "apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx"
       ],
@@ -3286,385 +3150,65 @@
       "scope": "C9 broker-only conversation allocation with per-turn Git object snapshots, exact empty-directory identity and lifecycle, durable compare-and-swap handoff, shared delegation, terminal/setup admission and additive project allocation settings. Synthetic Codex and Claude transport fixtures exercise shipped adapter seams; configured passing evidence is required before counting adapter coverage. Shared provider/session/checkpoint/MCP/UI hooks retain their existing owners; no OS barrier, runtime adoption or provider automatic instructions claim."
     },
     {
-      "id": "workstreams-native-member-admission",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/memberHomeReadRouting.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/memberSourceReadAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "scope": "Original local caller/run/credential ceilings, validated source-owned member association, request-local coherent home read permission and exact-own-thread private placement proof. MemberApplication retains application resources and forward locks, with separate fresh-request, lookup-only source and retained-recovery graphs. Authenticated two-environment synthetic composition qualifies create, replay, lost reply, preflight refusal and original-session revocation. Selected member startup and actual application endpoint mounts remain integration gates. No home registry/grants or general forwarding exceptions are created on members."
-    },
-    {
       "id": "workstreams-member-binding-foundation",
       "tests": [
-        "packages/contracts/src/jones/workstreamsHomeBind.test.ts",
-        "packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts",
-        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberEnrollment.test.ts",
-        "apps/server/src/jones/workstreams/native/store/memberEnrollmentStore.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/homeBind.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/homePeerPinQualification.test.ts",
-        "apps/server/src/jones/workstreams/native/store/homeBindReceiptStore.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeBinds.test.ts"
+        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts"
       ],
-      "scope": "Separately versioned home-bind/2 wire, encrypted prepared/bound member enrollment, fixed home-bind/readback transport and local issuance acceptance; migration 129 owns the ledgers. Genuine root setup authentication, home composition, current caller admission and member routing remain separate integration gates. Home producer retains encrypted exact request/result, validates genuine invocation and atomically binds source/receipt/home pin. Genuine root qualification and fixed tool mounts remain required."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "workstreams-native-source-setup",
       "tests": [
-        "apps/server/src/jones/persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/sourceEnrollment.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/store/sourceEnrollmentStore.test.ts"
+        "apps/server/src/jones/persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.test.ts"
       ],
-      "scope": "Explicit source-owned encrypted native enrollment and append-only source binding under exact CAS; no released enrollment writes or automatic setup."
-    },
-    {
-      "id": "workstreams-legacy-reconciliation",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/store/legacyReconciliationStore.test.ts",
-        "apps/server/src/jones/workstreams/native/transition/reconcileLegacyOpen.test.ts",
-        "packages/contracts/src/jones/workstreamsLegacyReconciliation.test.ts"
-      ],
-      "scope": "Versioned legacy-only reconciliation under the import fence, authenticated lookup-only or retained terminal evidence, immutable baseline plus encrypted append-only deltas, coverage-bound activation and truthful reverse results. Fresh v1 admission remains strict; actual authenticated mounting and source-port composition require parent qualification."
-    },
-    {
-      "id": "workstreams-legacy-receipts",
-      "tests": [
-        "packages/contracts/src/jones/workstreamsLegacyReceipts.test.ts",
-        "apps/server/src/jones/workstreams/native/transition/legacyReceipts.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/state.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts",
-        "apps/server/src/jones/workstreams/native/store/archiveStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/receiptStore.test.ts"
-      ],
-      "scope": "Additive legacy receipt evidence and principal-bound lookup over retained encrypted archive version 1; preserve strict command admission, closed native v1 lookup, exact payloads, imported ID reservation and activation fences."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "workstreams-native-authority",
       "tests": [
-        "apps/server/src/jones/workstreams/native/compat/http.test.ts",
-        "packages/contracts/src/jones/workstreamsHttp.test.ts",
-        "apps/mobile/src/features/workstreams/summary.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/application.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/bindings.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/store.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/dashboard.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/evidence.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/generation.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/routes.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/summaryRead.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/synthetic.test.ts",
-        "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.browser.test.tsx",
-        "apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/gatewayParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/operationsParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/mcpParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/cpDenied.test.ts",
-        "apps/server/src/jones/workstreams/native/transition/apply.test.ts",
-        "apps/server/src/jones/workstreams/native/transition/cli.test.ts",
-        "apps/server/src/jones/workstreams/native/transition/snapshotReader.test.ts",
         "apps/server/src/jones/persistence/Migrations/125_JonesWorkstreamsNative.test.ts",
-        "apps/server/src/jones/workstreams/native/crypto/envelope.test.ts",
-        "apps/server/src/jones/workstreams/native/crypto/identityIndex.test.ts",
-        "apps/server/src/jones/workstreams/native/crypto/keyProvider.test.ts",
-        "apps/server/src/jones/workstreams/native/store/archiveStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/bindingStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/effectStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/historyStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/receiptStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/registryStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/sql.test.ts",
-        "packages/contracts/src/jones/workstreamsNative.test.ts",
-        "packages/contracts/src/jones/workstreamsNativeRead.test.ts",
-        "packages/contracts/src/jones/workstreamsNativePlacement.test.ts",
-        "packages/contracts/src/jones/workstreamsSnapshot.test.ts",
-        "packages/contracts/src/jones/workstreamsRollups.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/collections.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/cursor.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/decider.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/negativeCases.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/semanticCases.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/githubPrObserver.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/localAttestation.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/localSettlement.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/referenceResolver.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/synthetic.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts",
-        "packages/client-runtime/src/state/workstreams/native.test.ts",
-        "apps/web/src/jones/workstreams/SetupStatusContent.browser.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamOperations.browser.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
-        "apps/mobile/src/features/workstreams/projection.test.ts",
         "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
-        "apps/server/src/jones/workstreams/native/runtime/admission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/cli.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
         "apps/server/src/jones/persistence/Migrations/127_JonesWorkstreamsRollupAttempts.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/manifestSource.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/rollupWorker.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/supervision.test.ts",
-        "packages/contracts/src/jones/workstreamsPeerAuthority.test.ts",
-        "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
-        "packages/contracts/src/jones/workstreamsHomeReadResult.test.ts",
         "apps/server/src/jones/persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.test.ts",
-        "apps/server/src/jones/workstreams/native/store/peerSessionPinStore.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerSessionPins.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativePeerMiddleware.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts",
         "packages/shared/src/atomicWrite.test.ts",
-        "apps/server/src/serverRuntimeState.test.ts",
-        "apps/server/src/jones/workstreams/native/compat/legacyAuthorityFence.test.ts"
+        "apps/server/src/serverRuntimeState.test.ts"
       ],
-      "scope": "Native registry-home contracts, encrypted persistence and all31 native tables, pure v1 CAS/receipt/history domain and source-admitted provider ports. Source identity remains source-owned; authority stays home-owned. Native command/forwarding registration, end-to-end qualification and fleet adoption remain subsequent integration. Includes encrypted durable operation intent/recovery, fixed home destination and restart replay; runtime admission and home transport remain composition dependencies. Client integration adds native mode/home awareness, generation-isolated grouping, memory-only protected projections and honest unavailable provenance. Native envelope transport, forwarding, summary mounts and physical captures remain incomplete."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "workstreams-native-recorded-recovery",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts",
-        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/admission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/gatewayParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/operationsParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/mcpParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/cpDenied.test.ts",
-        "apps/server/src/mcp/McpSessionRegistry.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts"
-      ],
-      "scope": "Encrypted recorded caller admission, lookup-first exact-byte restart recovery and scoped sweeps; live grants and source bindings are revalidated before effects."
+      "tests": ["apps/server/src/mcp/McpSessionRegistry.test.ts"],
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "workstreams-native-read-projection",
       "tests": [
-        "apps/server/src/jones/workstreams/native/read/coherentSnapshot.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/coherentReadConsumer.test.ts",
-        "apps/server/src/jones/workstreams/native/read/projection.test.ts",
-        "apps/server/src/jones/workstreams/native/read/routes.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberRead.test.ts",
-        "apps/server/src/jones/workstreams/native/read/export.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
         "apps/server/src/voiceReview/nativePlacements.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/homeReadProtocol.test.ts",
-        "apps/server/src/jones/workstreams/native/registry/localTransport.test.ts",
-        "apps/server/src/workstreams/http.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
-        "packages/contracts/src/jones/workstreamsNativeExport.test.ts",
-        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
-        "apps/server/src/jones/workstreams/native/read/exportCli.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/homeExportProtocol.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberExport.test.ts"
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
-      "scope": "Complete single-home encrypted projection and authenticated public home/member read envelopes. Native home and selected-member export preserve original live-home JSONL and validate complete bytes against current original-caller/home permission; selected-runtime CLI validates completion before stdout with existing-key read-only sessions. Existing v1 adapters, counts, voice placement and decision snapshot consumers remain shared. Client loaders, capability advertisement and platform acceptance remain separate."
-    },
-    {
-      "id": "workstreams-native-write-foundation",
-      "tests": [
-        "packages/contracts/src/jones/workstreamsForwardQualification.test.ts",
-        "packages/contracts/src/jones/workstreamsRetainedSourceEffect.test.ts",
-        "packages/contracts/src/jones/workstreamsForwarding.test.ts",
-        "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts"
-      ],
-      "scope": "Separately versioned negotiated native forwarding/readmission codecs, original member write caller capture/readmission, genuine source-owned M association and encrypted exact member intent. Historical home/read codecs remain unchanged. No mounted forwarding, current home grant, absence-based redispatch, external dispatch, linked-write home transaction proof or composed runtime qualification is claimed."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "workstreams-native-home-forwarding",
       "tests": [
-        "apps/server/src/jones/workstreams/native/forwarding/peerWriteAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/suppliedEvidence.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/forwardedHomeOperation.test.ts",
-        "apps/server/src/jones/workstreams/native/store/forwardReceiptStore.test.ts",
         "apps/server/src/jones/persistence/Migrations/130_JonesWorkstreamsForwardReceipts.test.ts"
       ],
-      "scope": "Private receiving-session admission, atomic deterministic home command/operation/appearance execution, exact encrypted parent replay and migration130; genuine receiving/source authority, raw PEER recovery and endpoint mounting remain separate gates."
-    },
-    {
-      "id": "workstreams-native-source-forwarding",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/forwarding/homeClient.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts"
-      ],
-      "scope": "Source-owned durable forwarding of commands, operations and appearance with exact retained bytes/original caller/pinned destination and conservative lookup-only uncertainty. Genuine targets/evidence, shared locks, preloaded keys, accepted-crash treatment, receiving/source authority and mounting remain separate gates."
-    },
-    {
-      "id": "workstreams-native-peer-setup",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/runtime/setupOwner.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerSetupRequestFile.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerSetupCli.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeSetups.test.ts",
-        "packages/contracts/src/jones/workstreamsPeerSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "scope": "Authenticated owner-qualified peer setup with exact retained bytes, genuine home/member bind producers, guarded separate HTTP owner endpoint, CLI and fixed MCP setup tools. Synthetic packaged owner fixtures remain distinct from physical runtime adoption."
-    },
-    {
-      "id": "workstreams-native-forwarding-mcp",
-      "tests": ["apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts"],
-      "scope": "Conditional fixed home forward/readback and closed V2|V3 source readmission MCP adapters. Domain producers retain genuine authentication/currentness and ledger authority; absent producers register no tools. These transport fixtures do not qualify mounted member startup or physical peers."
-    },
-    {
-      "id": "workstreams-native-retained-source-effects",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/forwarding/readmissionV2.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/dispatchAdmission.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "scope": "Closed fixed provider carrier authenticated by exact incoming home invocation and original encrypted raw source intent. Genuine member readmission and source enrollment bind target, command bytes and bind-pair pins; native provider rechecks the original caller after dispatch claiming, lookup remains observation-only. Provider external ports are disclosed synthetic fixtures. Home retained PEER reservations/recovery and selected application startup remain integration gates. A registered-tool application case uses isolated encrypted home/member databases, genuine peer authentication and original HTTP caller revocation; packaged owner metadata and external provider ports remain synthetic."
-    },
-    {
-      "id": "workstreams-native-peer-effect-origin",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/runtime/peerEffectEnvelope.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerEffectOrigin.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/retainedPeerSession.test.ts",
-        "apps/server/src/jones/workstreams/native/store/effectStore.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts"
-      ],
-      "scope": "Separately tagged encrypted PEER intent, authoritative command/parent association and invocation-scoped real owner/original native-session checks. Historical HOME wrapper and recovery remain intact; no fabricated MCP invocation, replacement-session selection or stored-grant authority. Initial PEER dispatch, provider lookup/completion, selected runtime mounting and physical acceptance remain separate gates."
-    },
-    {
-      "id": "workstreams-native-peer-effect-source",
-      "tests": ["apps/server/src/jones/workstreams/native/forwarding/peerEffectSource.test.ts"],
-      "scope": "Private authoritative origin/original receiving-session proof with fresh exact V3 source readmission, opaque captured home-to-source generation and fixed retained-source attest/settle_lookup. Real peer transport and bounded SQL links exercise synthetic remote replies; no dispatch, generic relay, fallback or absence-to-retry authority. Raw completion/acceptance and mounted application remain separate gates."
-    },
-    {
-      "id": "workstreams-native-peer-effect-completion",
-      "tests": ["apps/server/src/jones/workstreams/native/forwarding/peerEffectRecovery.test.ts"],
-      "scope": "Owner-fenced encrypted retention of successful authenticated PEER results, separate fresh source readmission, and one command/parent completion transaction. Original receiver/current SQL authority and captured directional generation remain mandatory; unknown never dispatches. Actual SQL, encryption, owner/session and peer transport with synthetic remote/provider replies; initial acceptance, dispatch ticket and mounted worker remain separate gates."
-    },
-    {
-      "id": "workstreams-native-peer-effect-initial",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/forwarding/peerEffectAcceptance.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts"
-      ],
-      "scope": "New raw PEER acceptance retains parent, pending receipt and reservation atomically; private callback-scoped post-commit ticket selects one initial dispatch through the existing runner semaphore. Replay and worker recovery remain lookup-only, with original authenticator registration and fresh source/receiver checks. Optional application resources must be genuine; unsupported raw PR/supplied/linked writes remain fenced. Synthetic remote providers and isolated SQLite fixtures qualify source composition only; selected member startup and product/physical acceptance remain separate."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "workstreams-native-selected-member-startup",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberStartup.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
-        "apps/server/src/environment/ServerEnvironment.test.ts"
-      ],
-      "scope": "Explicit member selection consumes the genuine invocation-scoped member preparation and selected original SQL/keys. Qualified members mount application-owned locks/resources, request-authenticated native reads and fixed source readmission/effect producers. Unsupported public legacy adapters still refuse; no home registry/grant copy or global caller is introduced. Native protocol metadata is published only after selected authorized reads are constructed; member link readiness is revalidated locally per descriptor without conferring home permission."
-    },
-    {
-      "id": "workstreams-native-member-recovery",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/runtime/memberRecovery.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "scope": "One application-scoped selected-member worker starts at startup, coalesces active sweeps and waits thirty seconds after completion. It selects due retained intents under shared original-ID locks, uses current original-caller admission and original-home lookup only, and cancels with the application. Revocation and unknown absence retain the accepted intent and never authorize redispatch; no member home grants are created."
-    },
-    {
-      "id": "workstreams-native-member-access",
-      "tests": [
-        "packages/contracts/src/jones/workstreamsHomeAccess.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberAccess.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "scope": "Fixed authenticated home access observes current home grant and receiving peer ceiling within prepared owner/key scope. Fresh member caller/write admission narrows the returned view; no enrollment receipt grants home permission. This is an additive access prerequisite, not public member Gateway enablement or runtime adoption."
-    },
-    {
-      "id": "workstreams-native-member-gateway-reads",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/read/memberGateway.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "scope": "Selected-member public Gateway reads use the original request caller, fresh home access before and after each read, coherent closed result validation and purge fencing. Public session and appearance permissions are read-only. Frozen placement v1 never strips native v2 proofs; command recovery and writes remain unavailable. Runtime adoption, capability advertisement and client acceptance remain separate."
-    },
-    {
-      "id": "workstreams-native-member-public-operations",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/operations/memberPublicOperations.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "scope": "Selected-member public-v1 operation submit/read/open/setup use current request authentication, fresh home observations, exact original request digests, the frozen bound native registry UUID and conservative pending projection. Request bytes and historical codecs remain unchanged. Public command receipt recovery, Gateway write advertising, native placement consumers and installed/runtime acceptance remain separate."
-    },
-    {
-      "id": "workstreams-native-member-registration",
-      "tests": [
-        "packages/contracts/src/jones/workstreamsHomeRegistration.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberRegistration.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "scope": "Selected-member public registration uses a separately negotiated current-home grant observation and genuine source enrollment/provider-v2 context. Original caller, owner, source authority, opaque generation and current grant are rechecked; the member holds no home authority rows. Historical enrollment/build and unknown support cannot mint permission or select a fallback. Isolated application composition only; installed and physical acceptance remain separate."
-    },
-    {
-      "id": "workstreams-native-member-gateway-writes",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/read/memberGateway.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/memberCommandReceipts.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "scope": "Selected-member public Gateway commands and appearance mutations use exact durable source intent, original caller and immutable home; fresh effective permissions and post-call fences preserve ambiguity. Public receipt/resubmit is original-intent lookup only, including when local/home absence is unknown. No new dispatch, fallback or absence authority from recovery. Isolated application qualification only; physical/client/installed acceptance separate."
-    },
-    {
-      "id": "workstreams-native-member-placements",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/read/memberPlacements.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
-        "apps/server/src/workstreams/http.test.ts"
-      ],
-      "scope": "Explicit existing placement-v2 HTTP negotiation over genuine selected-member request admission, bounded coherent pages and independent local authority trust. Preserve complete native proof, original home/principal/grant context, v1 behavior and no-write reader semantics. Isolated synthetic authenticated H/M HTTP proof does not establish physical/runtime/client acceptance."
+      "tests": ["apps/server/src/environment/ServerEnvironment.test.ts"],
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "workstreams-native-client-http",
       "tests": [
-        "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
-        "packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts",
-        "apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx",
-        "apps/mobile/src/features/workstreams/nativeLifetime.test.tsx",
-        "packages/client-runtime/src/jones/workstreams/nativePlacements.test.ts",
-        "apps/web/src/jones/workstreams/WorkstreamExportButton.browser.test.tsx",
-        "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.test.tsx",
         "apps/mobile/src/lib/attachmentDownload.test.ts",
         "apps/mobile/src/features/workstreams/Controls.operations.test.tsx"
       ],
-      "scope": "Shared authenticated closed native read/export and application-owned read lifetimes. Web detail/reference and mobile appearance use the original prepared connection/session/generation and independently authenticated public-list binding; replacement/disposal cancels pending work and withholds late results. Negotiated placement-v2 consumers retain native evidence and home observations, validate complete snapshots and inventory, and independently capture the original live source descriptors; replaced source connections invalidate memory-only proof witnesses used by grouping and action planning. Explicit placement-v1 loading remains separate, with no v2 failure fallback. Snapshot-scoped exports are callable from both application controllers. Existing cookie/Bearer/DPoP renewal remains the sole owner. Web download and mobile save/share actions consume only complete controller bytes and cancel on authenticated scope replacement. Capability advertisement and physical platform acceptance remain separate."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
     },
     {
       "id": "stalled-run-projection",
@@ -3721,9 +3265,21 @@
       "scope": "Held queued runs record when and why they were held (stop, restart, provider_failure, inherited) in the sparse Jones table jones_queue_holds (Jones migration 147), keyed by upstream run ID with no reference to upstream tables. The accepted-shared EventSink writes and deletes those rows inside the transaction that appends the hold or release events, classifying them by event and command type (run.created behind held work, provider-runtime.reconcile, thread.stop and run.interrupt) or by an explicit intent on the provider-failure system write; no Jones field enters an upstream payload, event, column or wire contract. Releasing, cancelling or deleting a held run's thread removes its row; a missing table or row reads as a hold recorded before reasons existed. A completed restart continuation releases the restart holds recorded before it completed and the queue drains in order; Stop replaces a restart hold, Stop holds and failed or interrupted continuations release nothing, planned-update continuity keeps its own threads, and a new message still never releases a hold. After startup recovery and then hourly, held automatic messages older than T3CODE_HELD_QUEUE_EXPIRY_HOURS (default 24, age from the recorded hold or else the request time) are cancelled through queued-run.cancel, which disposes delegated-completion cohorts as a person's cancel does; client-typed user messages and unclassifiable messages never expire. Small EventSink.ts, Orchestrator.ts and server.ts hooks keep their upstream owners. Synthetic in-memory fixtures; no live-database or installed-runtime claim."
     },
     {
-      "id": "workstreams-native-home-fixture",
-      "tests": ["apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts"],
-      "scope": "Explicit empty private Linux synthetic home prepared by real authority enrollment, registry key/init and SessionStore/source-setup services; startup selects native and reads an empty HTTP projection. Synthetic receipts attest no packaged runtime or installation."
+      "id": "workstreams-personal",
+      "tests": [
+        "apps/desktop/src/jones/workstreams/personalStartup.test.ts",
+        "apps/mobile/src/features/workstreams/personalPresentation.test.ts",
+        "apps/server/src/jones/workstreams/personal/service.test.ts",
+        "apps/server/src/jones/workstreamsLegacyHttp.test.ts",
+        "apps/web/src/jones/workstreams/personalNative.browser.test.tsx",
+        "apps/web/src/jones/workstreams/personalNotifications.test.ts",
+        "apps/web/src/jones/workstreams/personalSettings.browser.test.tsx",
+        "packages/client-runtime/src/jones/workstreams/personal/controller.test.ts",
+        "packages/contracts/src/jones/workstreamsPersonal.test.ts",
+        "packages/contracts/src/jones/workstreamsPersonalRpc.test.ts",
+        "apps/mobile/src/features/workstreams/personalStorage.test.ts"
+      ],
+      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered."
     },
     {
       "id": "preparation-history-reconciliation",

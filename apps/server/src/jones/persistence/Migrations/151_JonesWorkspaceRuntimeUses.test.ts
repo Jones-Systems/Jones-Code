@@ -10,7 +10,8 @@ import { jonesMigrationEntries } from "../JonesMigrations.ts";
 import upgrade from "./151_JonesWorkspaceRuntimeUses.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
-const prior = jonesMigrationEntries.filter(([id]) => id < 151);
+const through151 = jonesMigrationEntries.filter(([id]) => id <= 151);
+const prior = through151.filter(([id]) => id < 151);
 const prepare = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
@@ -33,9 +34,8 @@ it.effect(
       const before = yield* objects;
       const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       const released = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
-      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+      assert.deepStrictEqual(yield* runJonesMigrations(through151), [
         [151, "WorkspaceRuntimeUses"],
-        [152, "PeerLinksAdoption"],
       ]);
       assert.deepStrictEqual(
         (yield* objects).filter(({ name }) => !name.startsWith("jones_workspace_runtime_")),
@@ -96,7 +96,7 @@ it.effect(
           "jones_workspace_runtime_creation_facts_original_source",
         ].sort(),
       );
-      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+      assert.deepStrictEqual(yield* runJonesMigrations(through151), []);
       assert.deepStrictEqual(yield* objects, after);
     }).pipe(Effect.provide(memory)),
 );
@@ -137,7 +137,7 @@ it.effect(
       yield* prepare;
       yield* sql`CREATE TABLE jones_workspace_runtime_use_events (unexpected TEXT)`;
       const before = yield* objects;
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(runJonesMigrations(jonesMigrationEntries))));
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(runJonesMigrations(through151))));
       assert.deepStrictEqual(yield* objects, before);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id=151`,
@@ -154,7 +154,7 @@ it.effect(
       yield* prepare;
       yield* sql`ALTER TABLE jones_deletion_worktree_admissions ADD COLUMN synthetic_unexpected TEXT`;
       const before = yield* objects;
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(runJonesMigrations(jonesMigrationEntries))));
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(runJonesMigrations(through151))));
       assert.deepStrictEqual(yield* objects, before);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id=151`,

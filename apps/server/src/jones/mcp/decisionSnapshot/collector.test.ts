@@ -763,54 +763,33 @@ if __name__ == '__main__':
     });
   });
   effectIt.effect(
-    "starts an actual native account child before a held registry count packet is released",
+    "starts an actual native account child before a held thread count packet is released",
     () =>
       lifecycleEffect(
         (binding) =>
           Effect.gen(function* () {
             const scratch = NodePath.dirname(binding.releaseDirectory);
-            let releaseRegistry!: () => void;
-            const registry = new Promise<void>((resolve) => {
-              releaseRegistry = resolve;
+            let releaseThreads!: () => void;
+            const threads = new Promise<void>((resolve) => {
+              releaseThreads = resolve;
             });
-            const counts = {
-              context: { owner_id: "fixture-owner", server_generation: 1, registry_version: 7 },
-              principal_id: "fixture-principal",
-              observed_at: DateTime.formatIso(DateTime.nowUnsafe()),
-              authority_effect: "none",
-              total: 2,
-              active: 1,
-              unknown_lifecycle: 0,
-            };
+            const observedAt = DateTime.formatIso(DateTime.nowUnsafe());
             const dependencies = Layer.mergeAll(
               Layer.succeed(DecisionSnapshotNativeCounts, {
                 readOperatingCounts: () =>
-                  Effect.succeed({
-                    total: 4,
-                    operating: 2,
-                    foregroundWaitingApproval: 0,
-                    foregroundWaitingInput: 0,
-                    foregroundWaitingPlan: 0,
-                    backgroundOperating: 0,
-                    backgroundUnknown: 0,
-                    snapshotSequence: 1,
-                    backgroundSampledAt: counts.observed_at,
-                    observedAt: counts.observed_at,
-                  }),
-                readRegistryCounts: () =>
                   Effect.promise(async () => {
-                    await registry;
+                    await threads;
                     return {
-                      counts,
-                      complete: true,
-                      binding: {
-                        registryId: "https://registry.example.invalid",
-                        ownerId: "fixture-owner",
-                        principalId: "fixture-principal",
-                        authorizationRevision: 1,
-                        serverGeneration: 1,
-                        registryVersion: 7,
-                      },
+                      total: 4,
+                      operating: 2,
+                      foregroundWaitingApproval: 0,
+                      foregroundWaitingInput: 0,
+                      foregroundWaitingPlan: 0,
+                      backgroundOperating: 0,
+                      backgroundUnknown: 0,
+                      snapshotSequence: 1,
+                      backgroundSampledAt: observedAt,
+                      observedAt,
                     };
                   }),
               }),
@@ -848,14 +827,18 @@ if __name__ == '__main__':
             const running = yield* Effect.forkChild(program);
             try {
               const beforeRelease = yield* Effect.promise(() => receiptOwner.observe());
-              releaseRegistry();
+              releaseThreads();
               expect(beforeRelease).toBe(true);
               const result = yield* Fiber.join(running);
               expect(result).toMatchObject({
                 coverage: "partial",
                 sources: {
                   threads: { values: { total: 4, operating: 2 } },
-                  workstreams: { values: { total: 2, active: 1 } },
+                  workstreams: {
+                    status: "unavailable",
+                    reason: "registry_counts_unavailable",
+                    values: {},
+                  },
                   host: { status: "observed" },
                 },
               });
@@ -876,7 +859,7 @@ if __name__ == '__main__':
               expect(() => process.kill(-probe.pid, 0)).toThrow();
               expect(() => process.kill(-probe.parent_pid, 0)).toThrow();
             } finally {
-              releaseRegistry();
+              releaseThreads();
               receiptOwner.close();
               yield* Fiber.interrupt(running);
               filesystemDelay.path = null;
@@ -997,71 +980,5 @@ if __name__ == '__main__':
         runBoundCollector(binding, "display", "", monotonicSeconds() + 6, cancellation.signal),
       ).rejects.toMatchObject({ reason: "timeout" });
     });
-  });
-});
-
-import { validateNativeRegistryRead } from "./collector.ts";
-import type { WorkstreamsNativeReadEnvelope } from "@t3tools/contracts/jones/workstreamsNativeRead";
-const readEnvelope: WorkstreamsNativeReadEnvelope = {
-  contract: "workstreams-read/1.0.0",
-  registry: {
-    registry_instance_id: "11111111-1111-4111-8111-111111111111",
-    owner_id: "owner:test",
-    canonical_origin: "https://native.workstreams.invalid",
-    server_generation: 1,
-    registry_version: 7,
-  },
-  provenance: {
-    authority: "native-home",
-    home_environment_id: "home:test",
-    served_by_environment_id: "home:test",
-    source: "live",
-    stale: false,
-    observed_at: "2026-01-01T00:00:00Z",
-  },
-  coverage: { registry: "complete", sources: [] },
-};
-describe("native registry collector provenance", () => {
-  it("preserves one exact native home version and refuses mixed timestamps, versions and unsupported contracts", () => {
-    const counts = {
-      context: { owner_id: "owner:test", server_generation: 1, registry_version: 7 },
-      observed_at: readEnvelope.provenance.observed_at,
-    };
-    const input = {
-      envelope: readEnvelope,
-      counts,
-      canonicalOrigin: readEnvelope.registry.canonical_origin,
-    };
-    expect(validateNativeRegistryRead(input)).toEqual(readEnvelope);
-    expect(() =>
-      validateNativeRegistryRead({
-        ...input,
-        counts: { ...counts, observed_at: "2026-01-01T00:00:01Z" },
-      }),
-    ).toThrow();
-    expect(() =>
-      validateNativeRegistryRead({
-        ...input,
-        counts: { ...counts, context: { ...counts.context, registry_version: 8 } },
-      }),
-    ).toThrow();
-    expect(() =>
-      validateNativeRegistryRead({
-        ...input,
-        envelope: {
-          ...readEnvelope,
-          contract: "unsupported",
-        } as unknown as WorkstreamsNativeReadEnvelope,
-      }),
-    ).toThrow();
-    expect(() =>
-      validateNativeRegistryRead({
-        ...input,
-        envelope: {
-          ...readEnvelope,
-          provenance: { ...readEnvelope.provenance, source: "cache", stale: true },
-        },
-      }),
-    ).toThrow();
   });
 });

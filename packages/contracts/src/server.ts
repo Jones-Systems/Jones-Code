@@ -1,4 +1,3 @@
-import { TrustedT3PlacementEnvironment } from "./workstreamPlacements.ts";
 import { QualifiedQuota } from "./providerQueue.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -661,7 +660,6 @@ export const ServerConfig = Schema.Struct({
    * assembled. Absent means unknown. It is not refreshed when authority
    * changes, so it is a display hint, never proof that authorizes a change.
    */
-  nativeStoreAuthority: Schema.optionalKey(TrustedT3PlacementEnvironment),
   /**
    * The latest stall long enough to notice, sent only for a few minutes after
    * it. A client that reconnects reads it to say why the host stopped

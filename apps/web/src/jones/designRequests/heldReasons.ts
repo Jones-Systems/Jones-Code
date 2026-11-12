@@ -1,21 +1,18 @@
 import type { DesignRequestHeldReason } from "@t3tools/contracts/jones/designRequests";
 
-/** One sentence per held reason: what is wrong and how to fix it. The code is shown verbatim beside it. */
+/** One sentence per held reason: what is wrong and how to fix it. */
 export const DESIGN_REQUEST_HELD_FIXES: Record<DesignRequestHeldReason, string> = {
   "no-binding": "Pair this gallery project to an existing workstream.",
   "origin-not-allowed":
     "This gallery origin is not a loopback, tailnet or *.ts.net address, so it cannot be paired.",
   "not-authenticated": "Sign in to Jones in this browser, then refresh.",
-  "runtime-unsupported":
-    "This Jones server has no workstreams or placements API; queueing from the gallery is disabled.",
-  "registry-stale": "The workstream registry is not current. Refresh when it is reachable.",
+  "runtime-unsupported": "Update this environment to use Workstreams.",
+  "registry-stale": "Couldn't confirm the Workstream. Check the connection and try again.",
   "workstream-not-found": "The paired workstream no longer exists. Pair the project again.",
-  "no-primary": "The workstream has no primary thread on this client. Attach one in Workstreams.",
-  "multiple-primary": "The workstream has more than one primary thread. Keep exactly one.",
-  "primary-not-attested":
-    "The primary thread's placement is not attested by a trusted environment.",
-  "placement-expired":
-    "The primary thread's placement has expired. Refresh Workstreams to renew it.",
+  "no-primary": "Move a thread into this Workstream before sending.",
+  "multiple-primary": "Choose a Workstream with one thread before sending.",
+  "primary-not-attested": "Couldn't confirm the thread. Check the connection and try again.",
+  "placement-expired": "Couldn't confirm the thread. Check the connection and try again.",
   "thread-not-local": "The primary thread is not on this Jones server's primary environment.",
   "thread-archived": "The primary thread is archived. Unarchive it or choose another primary.",
   "thread-config-unknown":

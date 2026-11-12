@@ -12,10 +12,6 @@
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/jones/http/registration.ts"
-    },
-    {
-      "from": "apps/server/src/server.ts",
-      "to": "apps/server/src/jones/workstreams/DesktopNativeOwner.ts"
     }
   ]
 }

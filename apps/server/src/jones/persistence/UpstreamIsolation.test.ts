@@ -415,6 +415,7 @@ it.effect(
         [150, "AuthSessionClientMetadata"],
         [151, "WorkspaceRuntimeUses"],
         [152, "PeerLinksAdoption"],
+        [153, "PersonalWorkstreams"],
         [154, "StartRefusals"],
       ]);
       assert.deepStrictEqual(

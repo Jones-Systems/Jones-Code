@@ -1,7 +1,6 @@
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
-import * as WorkstreamGateway from "../workstreams/WorkstreamGateway.ts";
+import * as PersonalWorkstreams from "../jones/workstreams/personal/service.ts";
 import * as RemoteAdmissionIntake from "../jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts";
 import * as ProviderSessions from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -65,8 +64,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(ProviderSessions.ProviderSessionManagerV2)({}),
   Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
-  Layer.mock(WorkstreamGateway.WorkstreamGateway)({ purgeAuthorization: () => {} }),
-  Layer.mock(WorkstreamOperations.WorkstreamOperations)({}),
+  Layer.mock(PersonalWorkstreams.PersonalWorkstreams)({}),
   Layer.mock(DeviceService)({}),
   Layer.mock(DocumentText)({}),
   Layer.mock(GitVcsDriver)({}),

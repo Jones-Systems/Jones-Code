@@ -14,7 +14,7 @@ import { readApplicationBirthRecord } from "../importedHistory/ApplicationBirth.
 import * as ThreadMetadataReads from "../orchestration/threadMetadataReads.ts";
 import { readSelectionEventRevision } from "../threadConfiguration/selectionRevision.ts";
 import { makeDependencyStore } from "../threadResultDependencies/DependencyStore.ts";
-import * as Evidence from "../workstreams/nativeProvider/evidence.ts";
+import * as Evidence from "./historicalSettlementEvidence.testkit.ts";
 import { captureNativeProviderSettlementProof } from "../workstreams/nativeProvider/settlementProof.ts";
 import { readEventLogPrunedThrough } from "./EventLogPruneBoundary.ts";
 import { makeJonesTablePresence } from "./JonesTablePresence.ts";
@@ -102,8 +102,7 @@ const readers: ReadonlyArray<Reader> = [
     classification: "capture",
     after:
       "The settlement proof row copies the receipt and events at commit; without a proof the reader returns the receipt with no events and the consumer reports unknown (evidence_conflict).",
-    proof:
-      "persistence/EventLogPruning.test.ts, workstreams/nativeProvider/service.test.ts (missing_event)",
+    proof: "persistence/EventLogPruning.test.ts (captured proof and missing pruned events)",
   },
   {
     file: "nativeCreation/NativeCreationExecutionSqlite.ts",

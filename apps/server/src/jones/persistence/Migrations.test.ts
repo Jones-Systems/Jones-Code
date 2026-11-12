@@ -481,6 +481,7 @@ it.effect(
           [150, "AuthSessionClientMetadata"],
           [151, "WorkspaceRuntimeUses"],
           [152, "PeerLinksAdoption"],
+          [153, "PersonalWorkstreams"],
           [154, "StartRefusals"],
         ],
       );
@@ -716,6 +717,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [150, "AuthSessionClientMetadata"],
       [151, "WorkspaceRuntimeUses"],
       [152, "PeerLinksAdoption"],
+      [153, "PersonalWorkstreams"],
       [154, "StartRefusals"],
     ]);
     const proofs = yield* sql<{
