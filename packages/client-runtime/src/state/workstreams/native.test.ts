@@ -5,6 +5,8 @@ import { memoryWorkstreamOperationStorage } from "../../jones/workstreams/operat
 import {
   nativeWorkstreamReadLabel,
   nativeWorkstreamsCapability,
+  isNativeWorkstreams,
+  nativeWorkstreamsLabel,
   nativeWorkstreamsBlock,
   nativeWorkstreamGroupKey,
   nativeWorkstreamsMessage,
@@ -85,9 +87,29 @@ describe("native Workstream client authority", () => {
     ).toContain("Stale · Read-only");
   });
 
-  it("keeps old capability decoding on the legacy path", () => {
-    expect(nativeWorkstreamsCapability({})).toBeNull();
-    expect(nativeWorkstreamsBlock(null)).toBeNull();
+  it("returns to legacy grouping after the native capability disappears or selects legacy", () => {
+    const advertised = nativeWorkstreamsCapability({ workstreamsNative: capability });
+    expect(isNativeWorkstreams(advertised)).toBe(true);
+    expect(nativeWorkstreamGroupKey(advertised!)).not.toBeNull();
+    for (const descriptor of [
+      undefined,
+      null,
+      {},
+      { workstreamsNative: { ...capability, mode: "legacy" as const } },
+    ]) {
+      const selected = nativeWorkstreamsCapability(descriptor);
+      expect(isNativeWorkstreams(selected)).toBe(false);
+      expect(selected === null ? null : nativeWorkstreamGroupKey(selected)).toBeNull();
+      expect(nativeWorkstreamsBlock(selected)).toBeNull();
+      expect(nativeWorkstreamsLabel(selected)).toBeNull();
+      expect(() =>
+        assertNativeWorkstreamBinding(selected, {
+          ...data.binding,
+          registryId: "https://legacy-registry.test",
+          serverGeneration: 2,
+        }),
+      ).not.toThrow();
+    }
   });
   it("groups home and member by registry, owner and generation", () => {
     const member = { ...capability, mode: "native-member" as const, home_link: "ok" as const };

@@ -12,7 +12,25 @@ import * as HttpPlatform from "effect/http/HttpPlatform";
 import * as Etag from "effect/http/Etag";
 import { FetchHttpClient, HttpClient, HttpServerRequest } from "effect/http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { LegacyHttpApi, principal } from "../conformance/testkit.ts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- The test owns exact-path cleanup after its scoped SQLite services close.
+import * as NodeFS from "node:fs";
+import * as SqlClient from "effect/sql/SqlClient";
+import { vi } from "vite-plus/test";
+import * as ControlPlane from "../../../../workstreams/ControlPlaneWorkstreamTransport.ts";
+import * as Receipts from "../store/receiptStore.ts";
+import {
+  LegacyHttpApi,
+  principal,
+  fresh,
+  seed,
+  harness,
+  http,
+  app,
+  json,
+  Store,
+  scope,
+  legacyWorkstreamCommandNoEffect,
+} from "../conformance/testkit.ts";
 
 class CurrentApi extends HttpApi.make("environment").add(
   Wire.EnvironmentHttpApi.groups.workstreams,
@@ -129,4 +147,97 @@ it.effect.each(["pending", "unresolved"] as const)(
       expect(stale.failure).toMatchObject({ message: "workstream_command_not_current" });
       expect(seen).toEqual(Array(3).fill("workstreams-http-response/1.0.0"));
     }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "headerless legacy reads and stale-generation submits stay inside the selected native home",
+  () => {
+    const f = fresh();
+    return Effect.gen(function* () {
+      const cp = vi
+        .spyOn(ControlPlane, "makeControlPlaneWorkstreamTransport")
+        .mockImplementation(() => {
+          throw new Error("Native HOME constructed the legacy Control Plane transport");
+        });
+      const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        throw new Error("Native HOME attempted an external request");
+      });
+      try {
+        const prepared = yield* seed(f);
+        yield* Effect.gen(function* () {
+          const h = yield* harness,
+            web = yield* http,
+            store = yield* Store.RegistryStore,
+            sql = yield* SqlClient.SqlClient;
+          const id = yield* h.create("Native HOME visible to an old client");
+          const command = {
+            ...(yield* h.command({
+              operation: "create_workstream",
+              name: "Old generation must not write",
+              lifecycle: "active",
+              progress: { state: "unknown" },
+              sort_order: 0,
+            })),
+            expected_server_generation: 2,
+          };
+          const before = yield* store.context(scope);
+          const changes = yield* sql`SELECT total_changes() AS count`;
+          // These are the original read endpoints and DTOs, without either native opt-in header.
+          const list = yield* web.request("?limit=50");
+          expect(list.status).toBe(200);
+          expect(list.headers.get("cache-control")).toBe("private, no-store");
+          const page = yield* Effect.flatMap(
+            json(list),
+            Schema.decodeUnknownEffect(Wire.T3WorkstreamListResult),
+          );
+          expect(page.items.map((item) => item.workstreamId)).toEqual([id]);
+          expect(page).toMatchObject({ source: "live", stale: false, nextCursor: null });
+          const detail = yield* web.request("/" + id);
+          expect(detail.status).toBe(200);
+          expect(
+            yield* Effect.flatMap(json(detail), Schema.decodeUnknownEffect(Wire.WorkstreamDetail)),
+          ).toMatchObject({
+            workstream: { workstream_id: id, name: "Native HOME visible to an old client" },
+          });
+          for (const [path, schema] of [
+            ["/references?limit=50", Wire.WorkstreamReferencePage],
+            ["/" + id + "/memberships?limit=50", Wire.WorkstreamMembershipPage],
+            ["/" + id + "/declarations?limit=50", Wire.WorkstreamDeclarationPage],
+            ["/" + id + "/edges?limit=50", Wire.WorkstreamEdgePage],
+            ["/" + id + "/history?limit=50", Wire.WorkstreamHistoryPage],
+          ] as const) {
+            const response = yield* web.request(path);
+            expect(response.status).toBe(200);
+            expect(yield* json(response)).toSatisfy(Schema.is(schema));
+          }
+          const refused = yield* web.oldClient
+            .submit({ headers: web.headers, payload: { command } })
+            .pipe(Effect.result);
+          expect(refused._tag).toBe("Failure");
+          if (refused._tag !== "Failure")
+            throw new Error("Old-generation command mutated the native registry");
+          expect(legacyWorkstreamCommandNoEffect(refused.failure)).toBe("stale");
+          const modern = yield* web.modernRequest("/commands", { command });
+          expect(modern.status).toBe(409);
+          expect(yield* json(modern)).toMatchObject({ message: "version_conflict" });
+          const legacy = yield* web.request("/commands", { command });
+          expect(legacy.status).toBe(409);
+          expect(yield* json(legacy)).toMatchObject({ message: "workstream_command_not_current" });
+          expect(yield* (yield* Receipts.ReceiptStore).read(scope, command.command_id)).toBeNull();
+          expect(yield* store.context(scope)).toEqual(before);
+          expect(yield* sql`SELECT total_changes() AS count`).toEqual(changes);
+          expect(prepared.provider.calls).toHaveLength(0);
+          expect(cp).not.toHaveBeenCalled();
+          expect(fetch).not.toHaveBeenCalled();
+        }).pipe(app, Effect.provide(prepared.services));
+      } finally {
+        cp.mockRestore();
+        fetch.mockRestore();
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(f.layer),
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(f.home, { recursive: true, force: true }))),
+    );
+  },
 );
