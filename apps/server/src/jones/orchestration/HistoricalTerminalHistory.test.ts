@@ -6,10 +6,9 @@ import * as Schema from "effect/Schema";
 import { retainHistoricalTerminalOnError } from "./HistoricalTerminalHistory.ts";
 import { historyScenario, modes } from "./HistoricalTerminalHistory.testkit.ts";
 
-class HistoryFixtureError extends Schema.TaggedError<HistoryFixtureError>()(
-  "HistoryFixtureError",
-  { message: Schema.String },
-) {}
+class HistoryFixtureError extends Schema.TaggedError<HistoryFixtureError>()("HistoryFixtureError", {
+  message: Schema.String,
+}) {}
 
 it.effect.each([
   ...modes.map((mode) => ({ mode, lockFailures: 0 })),
