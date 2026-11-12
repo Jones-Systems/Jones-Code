@@ -257,10 +257,7 @@ const make = Effect.gen(function* () {
       managedTunnelConfigured,
       connector,
       endpoint,
-      local:
-        endpoint?.kind === "status" && endpoint.status !== 200
-          ? yield* probeLocal
-          : null,
+      local: endpoint?.kind === "status" && endpoint.status !== 200 ? yield* probeLocal : null,
       edgeReachable: null,
       exitNode: null,
     };

@@ -675,8 +675,7 @@ it("synthetic qualified cleanup inspects, guards consent, retains proof and admi
     controller.abort(new Error("Synthetic restage cleanup"));
     try {
       const join = await settled;
-      if (join !== undefined)
-        expect(["completed", "stopped", "not-started"]).toContain(join.kind);
+      if (join !== undefined) expect(["completed", "stopped", "not-started"]).toContain(join.kind);
       if (supervisor) {
         expect((await supervisor.sweep()).failed).toBe(0);
         expect(await supervisor.unreleasedJobs?.()).toEqual([]);

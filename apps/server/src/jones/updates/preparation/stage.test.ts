@@ -44,7 +44,8 @@ afterEach(async () => {
     try {
       // A caller's stage outcome does not join its automatic cleanup worker. Join the real
       // pending sweep before disposal, including when a preceding test assertion failed.
-      for (const supervisor of supervisors.get(home) ?? []) await joinPreparationCleanup(supervisor);
+      for (const supervisor of supervisors.get(home) ?? [])
+        await joinPreparationCleanup(supervisor);
       await home.remove();
     } catch (cause) {
       // Do not delete a synthetic home whose process/native release or cleanup is uncertain.

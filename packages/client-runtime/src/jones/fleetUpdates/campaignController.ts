@@ -400,12 +400,10 @@ async function publishCommittedSource(driver: FleetCampaignDriver, state: FleetD
       .map(async (enrollment): Promise<FleetPublicationReceipt> => {
         let follower: FleetFollowerStatus | undefined;
         let outcome: FleetPublicationReceipt["outcome"] = "unknown";
-        if (driver.cancelled())
-          return { enrollment, outcome, observedAt: observationTime() };
+        if (driver.cancelled()) return { enrollment, outcome, observedAt: observationTime() };
         try {
           let status = await driver.host(enrollment.environmentId, { action: "status" });
-          if (driver.cancelled())
-            return { enrollment, outcome, observedAt: observationTime() };
+          if (driver.cancelled()) return { enrollment, outcome, observedAt: observationTime() };
           if (boundStatus(status, enrollment)) {
             follower = status.follower?.protocol === 1 ? status.follower : undefined;
             if (follower?.planDirective !== undefined) outcome = "directive-held";

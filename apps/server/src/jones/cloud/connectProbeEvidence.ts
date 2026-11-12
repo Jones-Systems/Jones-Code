@@ -65,7 +65,7 @@ export const probeConnectLoopback = Effect.fn("ConnectReachability.loopbackDescr
             },
           ),
           Effect.flatMap((bytes) =>
-            Schema.decodeUnknownEffect(Schema.fromJsonString(ExecutionEnvironmentDescriptor))(
+            Schema.decodeEffect(Schema.fromJsonString(ExecutionEnvironmentDescriptor))(
               new TextDecoder().decode(bytes),
             ),
           ),
