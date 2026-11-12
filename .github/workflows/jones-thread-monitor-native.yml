@@ -138,9 +138,17 @@ jobs:
         run: |
           node --input-type=module <<'JS'
           import assert from "node:assert/strict";
+          import { execFileSync } from "node:child_process";
           import { producerIdentity, observeProducerSelf } from "./apps/server/src/jones/workspaceRetirement/ProducerSessionObservation.ts";
           assert.equal(process.platform, "darwin");
           assert.equal(process.arch, "arm64");
+          const preparationStarted = performance.now();
+          execFileSync("/usr/bin/python3", ["-B", "-c", "import ctypes; ctypes.CDLL('/usr/lib/libproc.dylib')"], {
+            timeout: 15_000,
+            env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+            stdio: "inherit",
+          });
+          console.log(`System Python preparation: ${Math.round(performance.now() - preparationStarted)}ms`);
           const identity = await producerIdentity();
           assert.equal(identity.pid, process.pid);
           assert.match(identity.start, /^[0-9]+:[0-9]+$/);

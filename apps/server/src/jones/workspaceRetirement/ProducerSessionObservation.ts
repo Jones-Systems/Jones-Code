@@ -32,12 +32,9 @@ import ctypes, sys
 class Info(ctypes.Structure):
     _fields_ = [(n,ctypes.c_uint32) for n in ('flags','status','xstatus','pid','ppid','uid','gid','ruid','rgid','svuid','svgid','rfu')]+[('comm',ctypes.c_char*16),('name',ctypes.c_char*32)]+[(n,ctypes.c_uint32) for n in ('nfiles','pgid','pjobc','tdev','tpgid','nice')]+[('sec',ctypes.c_uint64),('usec',ctypes.c_uint64)]
 lib = ctypes.CDLL('/usr/lib/libproc.dylib',use_errno=True)
-lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
-lib.proc_pidinfo.restype = ctypes.c_int
 info = Info()
 size = lib.proc_pidinfo(int(sys.argv[1]),3,0,ctypes.byref(info),ctypes.sizeof(info))
-if size != ctypes.sizeof(info) or info.pid != int(sys.argv[1]) or info.status == 5 or not info.sec:
-    raise RuntimeError("process_identity_unavailable: size=%s expected=%s errno=%s pid_matches=%s status=%s has_start=%s" % (size,ctypes.sizeof(info),ctypes.get_errno(),info.pid == int(sys.argv[1]),info.status,bool(info.sec)))
+if size != ctypes.sizeof(info) or info.pid != int(sys.argv[1]) or info.status == 5 or not info.sec: sys.exit(1)
 print(str(info.sec)+':'+str(info.usec))
 `;
 
