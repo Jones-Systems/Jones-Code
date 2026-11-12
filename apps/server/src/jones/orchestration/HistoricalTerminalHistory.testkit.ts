@@ -782,11 +782,12 @@ export const historyScenario = ({
           eventOriginMode: "captured",
           events: Stream.empty,
           subscribeEvents: Effect.succeed({
-            events: (
-              ordinaryRace
-                ? Stream.empty
-                : Stream.fromEffect(Deferred.await(releaseOrdinary)).pipe(Stream.drain)
-            ).pipe(Stream.concat(Stream.fromIterable([terminalEvent, logicalTerminalForIngestion]))),
+            events: (ordinaryRace
+              ? Stream.empty
+              : Stream.fromEffect(Deferred.await(releaseOrdinary)).pipe(Stream.drain)
+            ).pipe(
+              Stream.concat(Stream.fromIterable([terminalEvent, logicalTerminalForIngestion])),
+            ),
             close: Deferred.succeed(consumerClosed, undefined).pipe(Effect.asVoid),
           }),
           startTurn: () =>

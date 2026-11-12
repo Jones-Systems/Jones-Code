@@ -1,9 +1,8 @@
 import { it } from "@effect/vitest";
 import { historyScenario } from "./HistoricalTerminalHistory.testkit.ts";
 
-it.effect(
-  "current snapshot and matching logical terminal leave no history-loss diagnostic",
-  () => historyScenario({ mode: "current", logicalAfterSnapshot: true }),
+it.effect("current snapshot and matching logical terminal leave no history-loss diagnostic", () =>
+  historyScenario({ mode: "current", logicalAfterSnapshot: true }),
 );
 
 it.effect(

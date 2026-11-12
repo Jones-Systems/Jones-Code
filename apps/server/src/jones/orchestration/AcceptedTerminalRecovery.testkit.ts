@@ -397,7 +397,10 @@ export function registerAcceptedTerminalRecoveryTests(
           persisted.providerTurns.find((turn) => turn.id === childTurnId)?.status,
           "completed",
         );
-        assert.equal(result.events.filter((event) => event.type === "run-attempt.updated").length, 1);
+        assert.equal(
+          result.events.filter((event) => event.type === "run-attempt.updated").length,
+          1,
+        );
         assert.equal(result.events.filter((event) => event.type === "run.updated").length, 1);
         assert.deepEqual(result.observed, [
           `run:${scenario.status === "completed" ? "waiting" : "failed"}`,
