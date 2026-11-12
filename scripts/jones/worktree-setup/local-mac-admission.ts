@@ -1,8 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off - preinstall code uses Node built-ins only.
-import { spawn } from "node:child_process";
-import { cpus } from "node:os";
-import NodeTimers from "node:timers";
-import { setTimeout as delay } from "node:timers/promises";
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off - preinstall admission must run before Effect dependencies exist; its bounded timers use Node built-ins.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
+import * as NodeTimers from "node:timers";
+import * as NodeTimersPromises from "node:timers/promises";
 
 export const admissionContract = "jones.local-mac-setup-admission/v1";
 export class UnknownSamplerClosure extends Error {}
@@ -66,7 +66,11 @@ export function memoryEvidence(before: string, after: string, elapsedMs: number,
 }
 
 // Timeout is a refusal; only close proves that a captured utility and its pipes drained.
-export function utilityReader(spawnUtility: typeof spawn = spawn) {
+type Timers = Pick<typeof NodeTimers, "setTimeout" | "clearTimeout">;
+export function utilityReader(
+  spawnUtility: typeof NodeChildProcess.spawn = NodeChildProcess.spawn,
+  timers: Timers = NodeTimers,
+) {
   let outputBytes = 0;
   return (command: string, args: string[], signal: AbortSignal): Promise<string> =>
     new Promise((resolve, reject) => {
@@ -87,16 +91,16 @@ export function utilityReader(spawnUtility: typeof spawn = spawn) {
         } catch (error) {
           failure = error instanceof Error ? error : new Error(String(error));
         }
-        closureTimer = NodeTimers.setTimeout(() => {
+        closureTimer = timers.setTimeout(() => {
           cleanup();
           reject(new UnknownSamplerClosure("Sampler utility output closure unknown"));
         }, 250);
       };
       const abort = () => stop(new Error("Sampler aborted"));
-      const timer = NodeTimers.setTimeout(() => stop(new Error("Sampler utility timeout")), 2_000);
+      const timer = timers.setTimeout(() => stop(new Error("Sampler utility timeout")), 2_000);
       const cleanup = () => {
-        NodeTimers.clearTimeout(timer);
-        NodeTimers.clearTimeout(closureTimer);
+        timers.clearTimeout(timer);
+        timers.clearTimeout(closureTimer);
         signal.removeEventListener("abort", abort);
       };
       signal.addEventListener("abort", abort, { once: true });
@@ -127,14 +131,16 @@ type SamplerDependencies = {
   now: () => number;
   wait: (signal: AbortSignal) => Promise<unknown>;
   utility: (command: string, args: string[], signal: AbortSignal) => Promise<string>;
+  timers?: Timers;
 };
 export function createLocalMacAdmission(dependencies?: SamplerDependencies) {
   const d = dependencies ?? {
-    cpu: cpus,
+    cpu: NodeOS.cpus,
     now,
-    wait: (signal: AbortSignal) => delay(1_000, undefined, { signal }),
+    wait: (signal: AbortSignal) => NodeTimersPromises.setTimeout(1_000, undefined, { signal }),
     utility: undefined,
   };
+  const timers = dependencies?.timers ?? NodeTimers;
   const receipts = new WeakMap<object, { attempt: object; finished: number }>();
   return {
     async collect(attempt: object, signal: AbortSignal) {
@@ -142,9 +148,9 @@ export function createLocalMacAdmission(dependencies?: SamplerDependencies) {
       const controller = new AbortController();
       const abort = () => controller.abort();
       signal.addEventListener("abort", abort, { once: true });
-      const deadline = NodeTimers.setTimeout(abort, 5_000);
+      const deadline = timers.setTimeout(abort, 5_000);
       const started = d.now();
-      const utility = d.utility ?? utilityReader();
+      const utility = d.utility ?? utilityReader(NodeChildProcess.spawn, timers);
       try {
         const firstCpu = d.cpu();
         const firstVm = await utility("/usr/bin/vm_stat", [], controller.signal);
@@ -177,7 +183,7 @@ export function createLocalMacAdmission(dependencies?: SamplerDependencies) {
         receipts.set(receipt, { attempt, finished });
         return receipt;
       } finally {
-        NodeTimers.clearTimeout(deadline);
+        timers.clearTimeout(deadline);
         signal.removeEventListener("abort", abort);
       }
     },

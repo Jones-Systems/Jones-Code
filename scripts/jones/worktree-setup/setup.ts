@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - runs before `vp i`, so only Node built-ins exist.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
   availableLineage,
@@ -106,7 +107,7 @@ export async function setupWorktree(
     throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
   }
   const signal = dependencies.signal ?? new AbortController().signal;
-  const mac = (dependencies.platform ?? process.platform) === "darwin";
+  const mac = (dependencies.platform ?? NodeOS.platform()) === "darwin";
   const admission = dependencies.admission ?? createLocalMacAdmission();
   async function admit(producer: string) {
     signal.throwIfAborted();

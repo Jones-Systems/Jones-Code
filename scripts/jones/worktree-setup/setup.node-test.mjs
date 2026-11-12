@@ -525,6 +525,7 @@ function syntheticSampler({ busy = 10, pressure = "1", swap = 0, utility, wait, 
   let vmCalls = 0;
   const commands = [];
   const admission = createLocalMacAdmission({
+    timers: { setTimeout, clearTimeout },
     now: () => time,
     cpu: () =>
       cpuCalls++ % 2 === 0
@@ -770,7 +771,7 @@ NodeTest.test(
           return true;
         };
         const controller = new AbortController();
-        const read = utilityReader(() => child);
+        const read = utilityReader(() => child, { setTimeout, clearTimeout });
         let finished = false;
         const pending = read("/usr/bin/vm_stat", [], controller.signal);
         const rejected = NodeAssert.rejects(
