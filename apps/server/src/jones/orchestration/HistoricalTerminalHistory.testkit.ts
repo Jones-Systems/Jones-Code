@@ -749,7 +749,7 @@ export const historyScenario = ({
                     ? {
                         runtimeIdentity: {
                           ...rebound.runtimeIdentity!,
-                          evidenceRevision: rebound.runtimeIdentity!.evidenceRevision + 1,
+                          evidenceRevision: (rebound.runtimeIdentity?.evidenceRevision ?? 0) + 1,
                         },
                       }
                     : {

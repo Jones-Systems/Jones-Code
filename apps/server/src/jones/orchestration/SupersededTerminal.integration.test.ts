@@ -21,15 +21,13 @@ it.effect.each([
   "revision",
   "old-session",
   "old-instance",
-] as const)(
-  "refuses account-switch history after %s drift",
-  (replacementChange) =>
-    historyScenario({
-      mode: "changed-replacement",
-      accountSwitch: true,
-      reusedAccount: true,
-      replacementChange,
-    }),
+] as const)("refuses account-switch history after %s drift", (replacementChange) =>
+  historyScenario({
+    mode: "changed-replacement",
+    accountSwitch: true,
+    reusedAccount: true,
+    replacementChange,
+  }),
 );
 
 it.effect.each(["changed-replacement", "wrong-generation", "advanced-successor"] as const)(
