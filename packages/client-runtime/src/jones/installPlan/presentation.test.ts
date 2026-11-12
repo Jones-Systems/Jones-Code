@@ -384,10 +384,18 @@ it.each([
     checkClassification: { kind: "available", checkedAt: now },
     ...(phase === "completed" ? { stagedHandle: "stage" } : {}),
   };
-  const row = (value: JonesUpdateState, freshness: "fresh" | "stale" = "fresh") =>
+  const row = (value: JonesUpdateState, freshness: "fresh" | "stale" = "fresh", heardAt?: number) =>
     installPlanPresentation(state, {
       now: Date.parse(now),
-      devices: new Map([[host, { observation: { state: value, freshness }, canOperate: true }]]),
+      devices: new Map([
+        [
+          host,
+          {
+            observation: { state: value, freshness, ...(heardAt === undefined ? {} : { heardAt }) },
+            canOperate: true,
+          },
+        ],
+      ]),
     }).rows[0]!;
   expect(row(running)).toMatchObject({
     phase: "updated-elsewhere",
@@ -396,6 +404,111 @@ it.each([
     targetBuildRunning: true,
     actions: { download: false, install: false, end: false },
   });
+  const verifiedLaptop = {
+    ...state.current!.laptop,
+    gate: {
+      openedAt: now,
+      transactionId: "tx",
+      activeGeneration: "gen",
+      basis: "plan-install" as const,
+      activeSource: source,
+      activeTree: tree,
+    },
+  };
+  const finishable = installPlanPresentation(
+    { ...state, current: { ...state.current!, laptop: verifiedLaptop } },
+    {
+      now: Date.parse(now),
+      devices: new Map([
+        [host, { observation: { state: running, freshness: "fresh" }, canOperate: false }],
+      ]),
+    },
+  );
+  expect(finishable.headerDoneVisible).toBe(true);
+  expect(finishable.complete).toBe(phase === "interrupted");
+  const progress = {
+    schema: 1 as const,
+    kind: "download" as const,
+    operationId: planId,
+    phase: "failed" as const,
+    stepIndex: 1,
+    stepCount: 1,
+    stepKey: "download",
+    stepLabel: "Download build",
+    startedAt: now,
+    stepStartedAt: now,
+    updatedAt: now,
+    reportedAt: now,
+    steps: [{ key: "download", label: "Download build", startedAt: now, endedAt: now }],
+  };
+  expect(row({ ...running, progress }).text).toBe("Updated · running the selected source");
+  expect(row(running).attemptText).toContain("This plan's attempt:");
+  const cached = row({ ...running, progress }, "stale", Date.parse(now) - 5 * 60_000);
+  expect(cached).toMatchObject({
+    text: "Last confirmed running the selected source · 5m ago",
+    phase: phase === "completed" ? "staged" : "not-updated",
+    settled: phase !== "completed",
+    targetBuildRunning: false,
+    actions: { download: false, install: false, end: false },
+  });
+  expect(cached.attemptText).toContain("This plan's attempt:");
+  expect(row({ ...running, environmentId: env }, "stale", 0).text).not.toContain("Last confirmed");
+  expect(
+    row(
+      { ...running, installedSource: { ...running.installedSource!, tree: "c".repeat(40) } },
+      "stale",
+      0,
+    ).text,
+  ).not.toContain("Last confirmed");
+  for (const [receiptPhase, code, expectedPhase, text] of [
+    ["held", "cleanup-unconfirmed", "held", "Stop not confirmed"],
+    ["running", "launcher-unconfirmed", "unknown", "Not confirmed"],
+    ["stop-requested", "stopping", "stop-requested", "Stop requested…"],
+    ["fenced", "fenced", "fenced", "Waiting for a new download reservation"],
+    ["accepted", "accepted", "downloading", undefined],
+  ] as const) {
+    const protectedReceipt = { ...receipt, phase: receiptPhase, code };
+    const device = state.current!.devices[0]!;
+    const protectedState = {
+      ...state,
+      current: {
+        ...state.current!,
+        laptop: verifiedLaptop,
+        devices: [
+          { ...device, operations: [{ ...device.operations[0]!, receipt: protectedReceipt }] },
+        ],
+      },
+    };
+    const present = (freshness: "fresh" | "stale") =>
+      installPlanPresentation(protectedState, {
+        now: Date.parse(now),
+        devices: new Map([
+          [
+            host,
+            {
+              canOperate: false,
+              observation: {
+                state: { ...running, progress },
+                freshness,
+                heardAt: Date.parse(now) - 60_000,
+              },
+            },
+          ],
+        ]),
+      });
+    expect(present("fresh").rows[0]).toMatchObject({
+      phase: expectedPhase,
+      settled: false,
+      actions: { end: false },
+      sourceText: "Updated · running the selected source",
+    });
+    if (text !== undefined) expect(present("fresh").rows[0]?.text).toContain(text);
+    expect(present("fresh").headerDoneVisible).toBe(false);
+    expect(present("stale").rows[0]?.sourceText).toBe(
+      "Last confirmed running the selected source · 1m ago",
+    );
+    expect(present("stale").rows[0]?.attemptText).toBeUndefined();
+  }
   // Without fresh proof the ledger operation still drives the row.
   expect(row(running, "stale").phase).toBe(phase === "completed" ? "staged" : "not-updated");
   expect(

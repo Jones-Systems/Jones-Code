@@ -416,7 +416,10 @@ fixture was removed after capture; no live application state was used.
 questions, with optional impact descriptions on choices. Involved context belongs
 in the preceding chat message. Web and desktop share the question card; mobile
 uses the same sequential answer semantics. Existing routed Markdown keeps PR and
-thread links actionable.
+thread links actionable. Web/desktop question bodies also preserve single authored
+line breaks, alongside Markdown paragraphs, emphasis, lists and fenced code.
+Exercise a question with one labelled section per line; each section must start
+on a new rendered line and its answer choices must remain reachable.
 
 Start with nothing selected. Clicking a single-choice option or its digit shortcut
 commits that answer, advances to an unanswered question, and sends when every

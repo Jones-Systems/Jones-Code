@@ -16,6 +16,7 @@ const SCENARIOS = [
   "initial-race",
   // A verified Laptop with hosts mid-install, failed, stalled and unreachable.
   "progress",
+  "source-proof",
 ] as const;
 const OUTCOMES = ["accept", "reject", "refuse"] as const;
 export type FixtureOutcome = (typeof OUTCOMES)[number];
@@ -214,6 +215,10 @@ export function installPreviewBridge(
   const plan = planFixture;
   if (selectedScenario === "progress") {
     plan.showcaseStepProgress();
+    installStatusStore.open();
+  }
+  if (selectedScenario === "source-proof") {
+    plan.showcaseSourceProof();
     installStatusStore.open();
   }
   const bridge = {

@@ -1,4 +1,6 @@
-// @effect-diagnostics globalConsole:off -- Standalone build diagnostics expose durable duties independently of optional capture.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off -- Standalone build diagnostics expose durable duties independently of optional capture.
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -6,6 +8,8 @@ import * as Schema from "effect/Schema";
 import {
   beginProduction,
   finishProduction,
+  productionSpawnIntent,
+  productionSpawnResult,
 } from "../../../apps/server/src/jones/workspaceRetirement/ProducerFinalizer.ts";
 import { completeProducer } from "./completion.ts";
 
@@ -18,6 +22,14 @@ class FiniteProductionAdmissionError extends Schema.TaggedError<FiniteProduction
   }
 }
 
+export interface FiniteProductionEvidence {
+  leaderExited: () => void;
+  spawn: <A extends { readonly pid: number }, E, R>(
+    start: () => Effect.Effect<A, E, R>,
+    detached: boolean,
+  ) => Effect.Effect<A, E | FiniteProductionAdmissionError, R>;
+}
+
 export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")(function* <
   A,
   E,
@@ -28,10 +40,7 @@ export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")
     worktree: string;
     root: string;
   },
-  use: (evidence: {
-    commandStarted: () => void;
-    leaderExited: () => void;
-  }) => Effect.Effect<A, E, R>,
+  use: (evidence: FiniteProductionEvidence) => Effect.Effect<A, E, R>,
   dependencies: {
     begin?: typeof beginProduction;
     finish?: typeof finishProduction;
@@ -53,50 +62,83 @@ export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")
   // The inner scope releases the existing child handles before our finalizer.
   return yield* Effect.acquireUseRelease(
     Effect.tryPromise({
-      try: () =>
-        (dependencies.begin ?? beginProduction)(input.worktree, input.producer, [input.root]),
+      try: async () => {
+        // Only lstat ENOENT at the requested repository's .git permits an
+        // unowned distribution build. Present/broken/unreadable Git blocks.
+        try {
+          await NodeFSP.lstat(NodePath.join(input.worktree, ".git"));
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+          report(`[${input.producer}] git_absent; unowned build root=${input.root}`);
+          return null;
+        }
+        return (dependencies.begin ?? beginProduction)(input.worktree, input.producer, [
+          input.root,
+        ]);
+      },
       catch: (cause) => new FiniteProductionAdmissionError({ ...input, cause }),
     }),
-    () =>
+    (session) =>
       Effect.scoped(
         Effect.suspend(() =>
           use({
-            commandStarted: () => {
-              commandStarted = true;
-            },
             leaderExited: () => {
               leaderExited = true;
             },
+            spawn: (start, detached) =>
+              Effect.uninterruptibleMask((restore) =>
+                Effect.gen(function* () {
+                  const intent =
+                    session === null
+                      ? null
+                      : yield* Effect.tryPromise({
+                          try: () => productionSpawnIntent(session),
+                          catch: (cause) => new FiniteProductionAdmissionError({ ...input, cause }),
+                        });
+                  commandStarted = true;
+                  const child = yield* restore(Effect.suspend(start));
+                  if (session !== null)
+                    yield* Effect.promise(async () => {
+                      try {
+                        await productionSpawnResult(session, intent, {
+                          kind: "session",
+                          pid: child.pid,
+                          detached,
+                        });
+                      } catch {
+                        report(
+                          `[${input.producer}] spawn_binding_uncertain; id=${session.record.id}; path=${session.path}`,
+                        );
+                      }
+                    });
+                  return child;
+                }),
+              ),
           }),
         ),
       ),
     (session, exit) =>
       Effect.promise(async () => {
+        if (session === null) return;
         const reference = `id=${session.record.id}; root=${input.root}; path=${session.path}`;
         const status = Exit.isSuccess(exit)
           ? "succeeded"
           : !Cause.hasInterrupts(exit.cause) && (!commandStarted || leaderExited)
             ? "failed"
             : undefined;
-        if (status === undefined) {
-          // Interruption, spawn/error and scope release do not prove a native
-          // terminal or drained cancellation. Keep the already persisted active duty.
-          report(`[${input.producer}] native_terminal_not_observed; active duty ${reference}`);
-          return;
-        }
         try {
-          // These entrypoints still use Effect's leader-only receipt. Even an
-          // absent root cannot be called disposed while a writer may outlive it.
-          await (dependencies.finish ?? finishProduction)(session, status, [
-            "writer_completion_not_observed",
-          ]);
+          const record = await (dependencies.finish ?? finishProduction)(session, status, [], {
+            inProcessSettled: Exit.isSuccess(exit),
+          });
           report(
-            `[${input.producer}] writer_completion_not_observed; unresolved duty ${reference}`,
+            `[${input.producer}] native=${record.status}; allocation=${record.outcome}; reasons=${record.reasons.join(",") || "none"}; ${reference}`,
           );
         } catch {
-          // finishProduction may mutate memory or publish before rejecting.
-          // Retain the same exact durable duty; do not retry or claim its stored status.
           report(`[${input.producer}] finalization_not_confirmed; durable duty ${reference}`);
+        }
+        if (status === undefined) {
+          report(`[${input.producer}] native_terminal_not_observed; durable duty ${reference}`);
+          return;
         }
         try {
           (dependencies.capture ?? completeProducer)({
