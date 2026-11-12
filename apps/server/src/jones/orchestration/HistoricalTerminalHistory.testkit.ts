@@ -96,6 +96,10 @@ export const historyScenario = ({
   logicalAfterSnapshot = false,
   uncertainPublication = false,
   readback = "found",
+  accountSwitch = false,
+  reusedAccount = false,
+  replacementChange = "generation",
+  logicalCompanion = false,
 }: {
   readonly mode: (typeof modes)[number];
   readonly lockFailures?: number;
@@ -106,6 +110,17 @@ export const historyScenario = ({
   readonly logicalAfterSnapshot?: boolean;
   readonly uncertainPublication?: boolean;
   readonly readback?: "found" | "missing" | "unavailable" | "mismatched";
+  readonly accountSwitch?: boolean;
+  readonly reusedAccount?: boolean;
+  readonly replacementChange?:
+    | "session"
+    | "instance"
+    | "conversation"
+    | "generation"
+    | "revision"
+    | "old-session"
+    | "old-instance";
+  readonly logicalCompanion?: boolean;
 }) => {
   const ordinaryRace = mode.startsWith("ordinary-") || normalizationFailure;
   const admissionFailure = new ProjectionStore.ProjectionStoreReadError({
@@ -610,6 +625,19 @@ export const historyScenario = ({
     );
     const rebound = {
       ...providerThread,
+      ...(accountSwitch
+        ? {
+            id: ProviderThreadId.make("provider-thread:replacement-account"),
+            providerInstanceId: ProviderInstanceId.make("codex_replacement_account"),
+            runtimeIdentity: reusedAccount
+              ? {
+                  ...providerThread.runtimeIdentity!,
+                  runtimeGeneration: "target-account-generation",
+                  evidenceRevision: 7,
+                }
+              : undefined,
+          }
+        : {}),
       providerSessionId: ProviderSessionId.make("session:replacement"),
       status: "not_loaded" as const,
       updatedAt: terminalAt,
@@ -617,11 +645,21 @@ export const historyScenario = ({
     const replacementRootNodeId = NodeId.make("node:replacement");
     const successorAttempt = {
       ...successor,
+      ...(accountSwitch
+        ? { providerThreadId: rebound.id, providerInstanceId: rebound.providerInstanceId }
+        : {}),
       rootNodeId: replacementRootNodeId,
       attemptOrdinal: mode === "unrelated-successor" ? 3 : 2,
     };
     const nextRun = {
       ...run,
+      ...(accountSwitch
+        ? {
+            providerThreadId: rebound.id,
+            providerInstanceId: rebound.providerInstanceId,
+            modelSelection: { ...modelSelection, instanceId: rebound.providerInstanceId },
+          }
+        : {}),
       status: "starting" as const,
       activeAttemptId: replacementAttemptId,
       rootNodeId: replacementRootNodeId,
@@ -646,6 +684,7 @@ export const historyScenario = ({
           event("successor-node", "node.updated", {
             ...rootNode,
             id: replacementRootNodeId,
+            ...(accountSwitch ? { providerThreadId: rebound.id } : {}),
             rootNodeId: replacementRootNodeId,
             status: "pending",
             providerTurnId: null,
@@ -716,11 +755,31 @@ export const historyScenario = ({
       yield* sink.write({
         events: [
           event("changed-replacement", "provider-thread.updated", {
-            ...rebound,
-            runtimeIdentity: {
-              ...providerThread.runtimeIdentity!,
-              runtimeGeneration: "replacement-generation",
-            },
+            ...(replacementChange.startsWith("old-") ? providerThread : rebound),
+            ...(replacementChange === "session" || replacementChange === "old-session"
+              ? { providerSessionId: ProviderSessionId.make("session:changed") }
+              : replacementChange === "instance" || replacementChange === "old-instance"
+                ? { providerInstanceId: ProviderInstanceId.make("codex_changed") }
+                : replacementChange === "conversation"
+                  ? {
+                      nativeThreadRef: {
+                        ...rebound.nativeThreadRef!,
+                        nativeId: "changed-native-thread",
+                      },
+                    }
+                  : replacementChange === "revision"
+                    ? {
+                        runtimeIdentity: {
+                          ...rebound.runtimeIdentity!,
+                          evidenceRevision: (rebound.runtimeIdentity?.evidenceRevision ?? 0) + 1,
+                        },
+                      }
+                    : {
+                        runtimeIdentity: {
+                          ...providerThread.runtimeIdentity!,
+                          runtimeGeneration: "replacement-generation",
+                        },
+                      }),
           }),
         ],
       });
@@ -901,6 +960,15 @@ export const historyScenario = ({
               })
             : ingest
     ).pipe(Effect.exit);
+    if (logicalCompanion)
+      yield* ingestor.ingestNormalized({
+        providerSessionId,
+        providerInstanceId,
+        threadId: ids.threadId,
+        runId: ids.runId,
+        nodeId: ids.rootNodeId,
+        event: logicalTerminalForIngestion,
+      });
     const exhausted = lockFailures === 3;
     if (uncertainPublication && readback !== "found") {
       assert.isTrue(Exit.isFailure(result));

@@ -1445,7 +1445,7 @@ async function qualify(v) {
     const outputs = {
       executable: v.tools.python,
       arguments: [
-        ...pythonPrefix("codex_v3.build_outputs.cli"),
+        ...pythonPrefix("codex_v3.build_outputs"),
         "--build-root",
         NodePath.join(root, "output-allocations"),
       ],
@@ -1476,7 +1476,7 @@ async function qualify(v) {
     const allocated = await registryCall(outputs, [
       "allocate",
       "--producer",
-      "workspace-lifecycle-dev-proof",
+      "swl-lifecycle-dev-proof",
       "--owner",
       v.projectId,
       "--purpose",

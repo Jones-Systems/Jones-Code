@@ -365,15 +365,49 @@ export const make = Effect.gen(function* () {
       )?.event;
       if (
         replacement?.type !== "provider-thread.updated" ||
-        successor.providerThreadId !== oldThread.id ||
-        oldThread.providerSessionId !== request.sessionTransition.replacementProviderSessionId ||
-        oldThread.providerInstanceId !== successor.providerInstanceId ||
-        replacement.payload.providerSessionId !== oldThread.providerSessionId ||
-        replacement.payload.providerInstanceId !== oldThread.providerInstanceId ||
-        replacement.payload.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration ||
-        replacement.payload.nativeThreadRef?.nativeId !== binding.nativeThreadId
+        replacement.threadId !== input.threadId ||
+        replacement.payload.appThreadId !== input.threadId ||
+        replacement.payload.driver !== binding.driver ||
+        replacement.payload.providerSessionId !==
+          request.sessionTransition.replacementProviderSessionId ||
+        replacement.payload.providerInstanceId !== successor.providerInstanceId ||
+        replacement.payload.nativeThreadRef?.nativeId !== binding.nativeThreadId ||
+        replacement.payload.nativeThreadRef.driver !== binding.driver
       )
         return stale("replacement");
+      if (successor.providerThreadId === oldThread.id) {
+        if (
+          oldThread.providerSessionId !== replacement.payload.providerSessionId ||
+          oldThread.providerInstanceId !== successor.providerInstanceId ||
+          replacement.payload.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration
+        )
+          return stale("replacement");
+      } else {
+        if (
+          oldThread.providerSessionId !== binding.providerSessionId ||
+          oldThread.providerInstanceId !== binding.providerInstanceId
+        )
+          return stale("replacement");
+        const rows = yield* sql<{
+          payload_json: string;
+        }>`SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${successor.providerThreadId} AND thread_id = ${input.threadId}`;
+        if (rows[0] === undefined) return stale("replacement");
+        const current = yield* decodeThread(rows[0].payload_json);
+        if (
+          current.id !== replacement.payload.id ||
+          current.appThreadId !== replacement.payload.appThreadId ||
+          current.driver !== replacement.payload.driver ||
+          current.providerSessionId !== replacement.payload.providerSessionId ||
+          current.providerInstanceId !== replacement.payload.providerInstanceId ||
+          current.nativeThreadRef?.driver !== replacement.payload.nativeThreadRef.driver ||
+          current.nativeThreadRef?.nativeId !== replacement.payload.nativeThreadRef.nativeId ||
+          current.runtimeIdentity?.runtimeGeneration !==
+            replacement.payload.runtimeIdentity?.runtimeGeneration ||
+          current.runtimeIdentity?.evidenceRevision !==
+            replacement.payload.runtimeIdentity?.evidenceRevision
+        )
+          return stale("replacement");
+      }
     } else {
       if (
         oldThread.providerSessionId !== binding.providerSessionId ||
