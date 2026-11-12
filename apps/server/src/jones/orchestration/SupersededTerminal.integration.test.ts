@@ -2,6 +2,16 @@ import { it } from "@effect/vitest";
 import { historyScenario } from "./HistoricalTerminalHistory.testkit.ts";
 
 it.effect(
+  "retains the old account terminal when restart selects another account's provider thread",
+  () => historyScenario({ mode: "superseded-rebound-session", accountSwitch: true }),
+);
+
+it.effect.each(["changed-replacement", "wrong-generation", "advanced-successor"] as const)(
+  "refuses account-switch terminal history when its captured proof changes: %s",
+  (mode) => historyScenario({ mode, accountSwitch: true }),
+);
+
+it.effect(
   "retains the exact interrupted snapshot after a committed restart and exhausted pending-input admission",
   () => historyScenario({ mode: "superseded-same-session", normalizationFailure: true }),
 );

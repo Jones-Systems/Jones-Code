@@ -94,6 +94,7 @@ export const historyScenario = ({
   logicalOnly = false,
   uncertainPublication = false,
   readback = "found",
+  accountSwitch = false,
 }: {
   readonly mode: (typeof modes)[number];
   readonly lockFailures?: number;
@@ -103,6 +104,7 @@ export const historyScenario = ({
   readonly logicalOnly?: boolean;
   readonly uncertainPublication?: boolean;
   readonly readback?: "found" | "missing" | "unavailable" | "mismatched";
+  readonly accountSwitch?: boolean;
 }) => {
   const ordinaryRace = mode.startsWith("ordinary-") || normalizationFailure;
   const admissionFailure = new ProjectionStore.ProjectionStoreReadError({
@@ -588,6 +590,13 @@ export const historyScenario = ({
     );
     const rebound = {
       ...providerThread,
+      ...(accountSwitch
+        ? {
+            id: ProviderThreadId.make("provider-thread:replacement-account"),
+            providerInstanceId: ProviderInstanceId.make("codex:replacement-account"),
+            runtimeIdentity: null,
+          }
+        : {}),
       providerSessionId: ProviderSessionId.make("session:replacement"),
       status: "not_loaded" as const,
       updatedAt: terminalAt,
@@ -595,11 +604,21 @@ export const historyScenario = ({
     const replacementRootNodeId = NodeId.make("node:replacement");
     const successorAttempt = {
       ...successor,
+      ...(accountSwitch
+        ? { providerThreadId: rebound.id, providerInstanceId: rebound.providerInstanceId }
+        : {}),
       rootNodeId: replacementRootNodeId,
       attemptOrdinal: mode === "unrelated-successor" ? 3 : 2,
     };
     const nextRun = {
       ...run,
+      ...(accountSwitch
+        ? {
+            providerThreadId: rebound.id,
+            providerInstanceId: rebound.providerInstanceId,
+            modelSelection: { ...modelSelection, instanceId: rebound.providerInstanceId },
+          }
+        : {}),
       status: "starting" as const,
       activeAttemptId: replacementAttemptId,
       rootNodeId: replacementRootNodeId,
@@ -624,6 +643,7 @@ export const historyScenario = ({
           event("successor-node", "node.updated", {
             ...rootNode,
             id: replacementRootNodeId,
+            ...(accountSwitch ? { providerThreadId: rebound.id } : {}),
             rootNodeId: replacementRootNodeId,
             status: "pending",
             providerTurnId: null,
