@@ -1401,6 +1401,7 @@
     "apps/web/src/components/ChatMarkdown.tsx": "hook",
     "apps/web/src/components/ChatView.logic.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/ChatView.logic.ts": "accepted-shared",
+    "apps/web/src/components/ChatView.modelPick.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/ChatView.tsx": "accepted-shared",
     "apps/web/src/components/CommandPalette.tsx": "hook",
     "apps/web/src/components/CommandPaletteLookups.ts": "accepted-shared",

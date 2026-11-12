@@ -468,6 +468,7 @@
         "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx",
         "apps/web/src/components/chat/ProviderModelPicker.browser.test.tsx",
         "apps/web/src/components/chat/ProviderModelPicker.composition.browser.test.tsx",
+        "apps/web/src/components/ChatView.modelPick.browser.test.tsx",
         "apps/web/src/components/chat/ComposerPermissionsSection.browser.test.tsx",
         "apps/web/src/components/chat/composerControlsOwnership.test.ts",
         "apps/web/src/components/chat/modelPickerSearch.test.ts",
@@ -479,7 +480,7 @@
         "vp lint apps/web/src/jones/composer/ComposerQuickControls.tsx apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx apps/web/src/components/chat/ComposerControlsBar.tsx apps/web/src/components/chat/restingComposerControlsMeasurement.ts",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict",
-        "cd apps/web && vp test run --project browser src/components/chat/ProviderModelPicker.browser.test.tsx src/components/chat/ProviderModelPicker.composition.browser.test.tsx src/components/chat/ComposerPermissionsSection.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project browser src/components/chat/ProviderModelPicker.browser.test.tsx src/components/chat/ProviderModelPicker.composition.browser.test.tsx src/components/ChatView.modelPick.browser.test.tsx src/components/chat/ComposerPermissionsSection.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run --project unit src/components/chat/composerControlsOwnership.test.ts src/components/chat/modelPickerSearch.test.ts src/components/chat/modelPickerKeys.test.ts src/jones/composer/attachmentCapacity.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
