@@ -92,6 +92,38 @@ Use an isolated, task-owned directory with a defined lifetime and cleanup owner.
 The [standing testing permission](./contributor-guidance.md#local-app-testing-permission)
 covers `--browser` for isolated synthetic verification.
 
+### Preview lifetime and cleanup
+
+The workflow launching a task-owned preview owns its cleanup on completion,
+failure, and cancellation. Register the cleanup path before launch. Keep a
+launch receipt with the task and cleanup owner, host, worktree/revision, isolated
+state directory, PID and process-start identity, ports, and graceful stop method.
+Record the process group or service and any separately owned terminal groups;
+stopping a server does not prove its terminals or watch supervisors have exited.
+Keep this working receipt outside the checkout, without credentials.
+
+Reuse an appropriate owned preview when its source and configuration still match
+the task. Stop a superseded instance after its replacement is verified, unless
+both have a recorded continuing purpose. Detached launch makes this ownership
+more important: the dev runner's child cleanup does not observe agent-task
+completion.
+
+At interruption, handoff, and completion, reconcile every launched or retained
+preview. Record either verified shutdown or a continuing retention duty:
+
+- For shutdown, freshly verify the captured process identities and ownership,
+  stop the owned runtime gracefully, and read back that its listeners, watch
+  supervisors, and owned terminals are gone. Report uncertain or failed cleanup.
+- For retention, name the concrete inspection or resume purpose, cleanup owner,
+  and end condition or next review point. A handoff must explicitly transfer
+  that duty; "available for resume" alone is not a complete disposition.
+
+Preserving dirty source, synthetic state, or qualification evidence does not
+require keeping its servers running. Classify those files separately before
+removal. A merged PR, completed thread, old process, or absent client connection
+does not itself authorize stopping another task's retained preview. A retention
+end condition calls for reconciliation, not an automatic sweep.
+
 ### State and ports
 
 The state-home precedence is an explicit `--home-dir`, then a linked worktree's

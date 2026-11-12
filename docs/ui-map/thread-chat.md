@@ -79,6 +79,16 @@ behavior, telemetry collection, or provider configuration changed.
 
 ### Expected thread responses
 
+When a goal and background work coexist, the background-work banner and its
+Stop action precede the goal in the collapsed composer stack. Expand **Show
+other notices** to reach goal controls. Child questions and urgent notices
+retain their priority. Browser verification used an isolated synthetic result
+wait beside an active goal: Stop remained visible, and keyboard expansion made
+the goal's Clear control reachable. Settle persisted across reload. Server
+integration tests cover Stop, held queues, subsequent Settle and legitimate
+queued-message/approval blockers. Native mobile and packaged desktop remain
+unverified; the projection fixture does not prove live provider termination.
+
 An explicit expected-result request keeps its sender **Waiting** after the
 foreground turn ends. The pending-work banner identifies the expected response.
 An ordinary message or navigation link alone does not establish a wait. A
