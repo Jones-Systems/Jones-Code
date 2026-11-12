@@ -568,6 +568,8 @@
     "apps/server/src/jones/goals/continuity/admission.ts": "jones-owned",
     "apps/server/src/jones/goals/continuity/capsule.test.ts": "jones-owned",
     "apps/server/src/jones/goals/continuity/capsule.ts": "jones-owned",
+    "apps/server/src/jones/goals/continuity/codexTransport.test.ts": "jones-owned",
+    "apps/server/src/jones/goals/continuity/codexTransport.ts": "jones-owned",
     "apps/server/src/jones/goals/continuity/model.test.ts": "jones-owned",
     "apps/server/src/jones/goals/continuity/model.ts": "jones-owned",
     "apps/server/src/jones/goals/continuity/selection.test.ts": "jones-owned",

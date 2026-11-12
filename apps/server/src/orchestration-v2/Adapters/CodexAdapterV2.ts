@@ -1,3 +1,4 @@
+import { codexContinuityContext } from "../../jones/goals/continuity/codexTransport.ts";
 import * as Exit from "effect/Exit";
 import { pipe } from "effect/Function";
 import {
@@ -8578,17 +8579,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const continuity = yield* bindContinuity(request.input, currentProducer);
           const projection =
             continuity === undefined ? undefined : yield* continuity.turnStartContext;
+          const continuityContext =
+            projection?.outcome === "context" ? codexContinuityContext(projection.text) : undefined;
+          if (continuityContext === null)
+            return yield* new GoalContinuityError({ reason: "projection_too_large" });
           const params = {
             ...request.params,
             ...(projection?.outcome === "context"
               ? {
                   additionalContext: {
                     ...request.params.additionalContext,
-                    jones_goal_continuity: { kind: "untrusted" as const, value: projection.text },
+                    ...continuityContext,
                   },
                 }
               : {}),
           };
+          if (continuityContext !== undefined)
+            yield* Ref.update(additionalContextByThread, (current) => {
+              const next = new Map(current);
+              next.set(request.params.threadId, params.additionalContext!);
+              return next;
+            });
           if (continuity !== undefined && !(yield* continuity.checkContinuation))
             return yield* new GoalContinuityError({ reason: "recovery_required" });
           if (!currentCapacityBinding(request))
