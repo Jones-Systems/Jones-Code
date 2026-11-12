@@ -306,10 +306,28 @@ describe("production web review authority", () => {
     expect(h.legacy).not.toHaveBeenCalled();
     expect(h.native).not.toHaveBeenCalled();
   });
+  it("does not open Connections confirmation for an already-running stage", async () => {
+    await using _fixture = await fixture();
+    const { a } = hosts();
+    const observed = h.observations.get(a)!;
+    h.observations.set(a, {
+      ...observed,
+      state: { ...observed.state!, stagedAlreadyRunning: true },
+    });
+    await draw("connections", a);
+    const install = [...container.querySelectorAll("button")].find(
+      (node) => node.textContent === "Install",
+    )!;
+    expect(install.disabled).toBe(true);
+    await click("Install");
+    expect(h.confirmations).toHaveLength(0);
+    expect(h.operation).not.toHaveBeenCalled();
+    expect(h.legacy).not.toHaveBeenCalled();
+  });
   it.each(
     (["connections", "exact"] as const).flatMap((control) =>
       [true, false].flatMap((modern) =>
-        (["retarget", "unmount", "permission"] as const).map((transition) => ({
+        (["retarget", "unmount", "permission", "already-running"] as const).map((transition) => ({
           control,
           modern,
           transition,
@@ -327,7 +345,14 @@ describe("production web review authority", () => {
       expect(h.confirmations).toHaveLength(1);
       if (transition === "retarget") await draw(control, b);
       else if (transition === "unmount") await root.rerender(null);
-      else {
+      else if (transition === "already-running") {
+        const observed = h.observations.get(a)!;
+        h.observations.set(a, {
+          ...observed,
+          state: { ...observed.state!, stagedAlreadyRunning: true },
+        });
+        await draw(control, a);
+      } else {
         h.permissions.set(a, false);
         await draw(control, a);
       }

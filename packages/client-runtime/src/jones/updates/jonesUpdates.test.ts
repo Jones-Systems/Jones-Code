@@ -63,6 +63,52 @@ const staged: JonesUpdateState = {
   stagedHandle: "fixed-stage",
 };
 
+it("refuses already-running downloads from host proof or conservative full commits, never trees", () => {
+  const env = EnvironmentId.make("already-running-host");
+  const installed = {
+    repository: "Jones-Systems/Jones-Code" as const,
+    sha: "a".repeat(40),
+    tree: "c".repeat(40),
+  };
+  const state: JonesUpdateState = {
+    ...staged,
+    environmentId: env,
+    currentVersion: "old",
+    installedSource: installed,
+    provenance: {
+      repository: installed.repository,
+      sourceSha: "b".repeat(40),
+      sourceTree: installed.tree,
+      artifactId: 1,
+      version: "new",
+    },
+  };
+  const clicked = { environmentId: env, stagedHandle: state.stagedHandle!, currentVersion: "old" };
+  const refusal = (
+    next: JonesUpdateState,
+    freshness: JonesUpdateObservation["freshness"] = "fresh",
+  ) => jonesInstallRefusal(clicked, { state: next, freshness });
+  const message = "The downloaded build is already running on this host. Nothing to install.";
+  expect(refusal({ ...state, stagedAlreadyRunning: true })).toBe(message);
+  expect(
+    refusal({ ...state, provenance: { ...state.provenance!, sourceSha: installed.sha } }),
+  ).toBe(message);
+  expect(refusal(state)).toBeUndefined();
+  expect(refusal({ ...state, stagedAlreadyRunning: true, stagedHandle: "changed" })).toContain(
+    "changed while confirmation",
+  );
+  expect(refusal({ ...state, stagedAlreadyRunning: true }, "stale")).toContain(
+    "current update status",
+  );
+  expect(
+    refusal({
+      ...state,
+      installedSource: { ...installed, sha: "abc" },
+      provenance: { ...state.provenance!, sourceSha: "abc" },
+    }),
+  ).toBeUndefined();
+});
+
 it("projects settlement only from reported evidence and preserves old-server status", () => {
   expect(jonesUpdatePresentation(staged)).toMatchObject({
     canReconcile: false,

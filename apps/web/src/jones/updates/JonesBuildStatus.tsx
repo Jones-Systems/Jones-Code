@@ -1,5 +1,7 @@
 import {
   jonesCandidatePresentation,
+  jonesStagedAlreadyRunning,
+  JONES_STAGED_ALREADY_RUNNING_MESSAGE,
   jonesAlternativePresentation,
   jonesFollowerHold,
   jonesFollowerSummary,
@@ -221,6 +223,7 @@ export function JonesBuildStatus({
     );
   }
 
+  const alreadyRunning = jonesStagedAlreadyRunning(state);
   const presentation = jonesUpdatePresentation(state);
   const candidate = jonesCandidatePresentation(state);
   const alternative = jonesAlternativePresentation(state);
@@ -392,6 +395,9 @@ export function JonesBuildStatus({
     // An operation's own phase (stopped, restarting); its idle headline repeats the host message.
     operation !== undefined &&
       operation.headline !== presentation.message && { text: operation.headline, tone: "muted" },
+    freshness === "fresh" &&
+      state.environmentId === environmentId &&
+      alreadyRunning && { text: JONES_STAGED_ALREADY_RUNNING_MESSAGE, tone: "muted" },
     followerHold !== undefined &&
       candidate !== undefined && {
         text:
@@ -492,12 +498,18 @@ export function JonesBuildStatus({
               size={styles.button}
               disabled={
                 busy ||
+                alreadyRunning ||
                 !state.capability.install ||
                 state.currentVersion === undefined ||
                 followerHold !== undefined
               }
               onClick={() => {
-                if (state.stagedHandle === undefined || state.currentVersion === undefined) return;
+                if (
+                  alreadyRunning ||
+                  state.stagedHandle === undefined ||
+                  state.currentVersion === undefined
+                )
+                  return;
                 onRequest({
                   action: "install",
                   input: {

@@ -194,6 +194,32 @@ afterEach(() => {
 });
 
 describe("mobile host update controls", () => {
+  it("disables a tree-only already-running stage without Alert or dispatch and keeps protected messages", async () => {
+    const staged = { ...state(true), stagedAlreadyRunning: true as const };
+    const message = "The downloaded build is already running on this host. Nothing to install.";
+    await render(staged);
+    expect(button("Install downloaded build").disabled).toBe(true);
+    await click("Install downloaded build");
+    expect(harness.alert).not.toHaveBeenCalled();
+    expect(harness.operation).not.toHaveBeenCalled();
+    expect(harness.action).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(message);
+    await render({
+      ...staged,
+      operation: {
+        ...running(),
+        phase: "held",
+        code: "launcher-unconfirmed",
+        message: "Read this exact protected outcome.",
+      },
+    });
+    expect(container.textContent).toContain("Stop not confirmed · launcher-unconfirmed");
+    expect(container.textContent).toContain("Read this exact protected outcome.");
+    expect(container.textContent).toContain(message);
+    await render(staged, "stale");
+    expect(container.textContent).not.toContain(message);
+  });
+
   const alternativeState = () => {
     const retained = state(true);
     return {

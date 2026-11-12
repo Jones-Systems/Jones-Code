@@ -2,6 +2,8 @@ import { jonesBuildLabels, type JonesBuildRef } from "@t3tools/shared/jones/buil
 import { JonesBuildVersion } from "./JonesBuildVersion";
 import {
   jonesCandidatePresentation,
+  jonesStagedAlreadyRunning,
+  JONES_STAGED_ALREADY_RUNNING_MESSAGE,
   jonesAlternativePresentation,
   resolveJonesAlternativeAction,
   jonesFollowerHold,
@@ -218,6 +220,13 @@ export function JonesUpdateControls({
             Not confirmed · {saved.uncertainty === "legacy" ? "Request" : "Operation"}{" "}
             {saved.request?.operationId ?? saved.receipt?.operationId ?? saved.operationId}. Nothing
             will be resent.
+          </Text>
+        ) : null}
+        {observation.freshness === "fresh" &&
+        state?.environmentId === environmentId &&
+        jonesStagedAlreadyRunning(state) ? (
+          <Text className="text-sm text-foreground-muted">
+            {JONES_STAGED_ALREADY_RUNNING_MESSAGE}
           </Text>
         ) : null}
         {followerSummary !== undefined ? (

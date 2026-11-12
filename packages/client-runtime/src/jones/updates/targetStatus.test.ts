@@ -123,3 +123,39 @@ it.each(["available", "downloading", "staged"] as const)(
     expect(unknown.actions.install).toBeUndefined();
   },
 );
+
+it("removes both install paths only for already-running staged builds", () => {
+  const staged: JonesUpdateState = {
+    ...state,
+    operation: undefined,
+    phase: "staged",
+    currentVersion: "old",
+    stagedHandle: "stage",
+    installedSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "b".repeat(40),
+      tree: "c".repeat(40),
+    },
+    provenance: {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: source,
+      sourceTree: "c".repeat(40),
+      artifactId: 1,
+      version: "new",
+    },
+  };
+  for (const targetSource of [undefined, source]) {
+    const options = { canOperate: true, targetSource };
+    expect(jonesTargetStatus({ state: staged, freshness: "fresh" }, options).actions.install).toBe(
+      true,
+    );
+    const status = jonesTargetStatus(
+      { state: { ...staged, stagedAlreadyRunning: true }, freshness: "fresh" },
+      options,
+    );
+    expect(status.actions.install).toBeUndefined();
+    expect(status.actions.reasons).toContain(
+      "The downloaded build is already running on this host. Nothing to install.",
+    );
+  }
+});
