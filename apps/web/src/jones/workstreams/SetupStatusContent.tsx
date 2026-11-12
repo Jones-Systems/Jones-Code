@@ -1,9 +1,12 @@
+import { ChevronRightIcon } from "lucide-react";
 import {
   isNativeWorkstreams,
   nativeWorkstreamsLabel,
   type NativeWorkstreamsCapability,
 } from "@t3tools/client-runtime/state/workstreams";
 import type { WorkstreamSetupStatus } from "@t3tools/contracts/jones/workstreamOperations";
+import { Badge } from "../../components/ui/badge";
+import { useRelativeTimeState } from "../../hooks/useRelativeTimeState";
 
 export const sourceReasonLabels = {
   descriptor_absent: "Source descriptor unavailable. Check native source enrollment.",
@@ -16,6 +19,82 @@ export const sourceReasonLabels = {
   authority_unavailable: "Source authority is unavailable. Restore the source connection.",
 } as const;
 
+export type SetupStatusTone = "success" | "warning" | "error";
+
+export function SetupStatusLine({
+  tone,
+  badge,
+  children,
+}: {
+  tone: SetupStatusTone;
+  badge: string;
+  children: string;
+}) {
+  return (
+    <p role="status" className="flex items-center gap-1.5">
+      <Badge size="sm" variant={tone}>
+        {badge}
+      </Badge>
+      <span className="min-w-0 flex-1">{children}</span>
+    </p>
+  );
+}
+
+function sourceIssue(status: WorkstreamSetupStatus, native: boolean): string | null {
+  const reason = status.t3_source.reason;
+  if (status.t3_source.state === "ready" || reason === null) return null;
+  if (!native) return sourceReasonLabels[reason];
+  if (reason === "authority_fenced") return sourceReasonLabels.authority_fenced;
+  if (reason === "generation_mismatch")
+    return "Source generation changed. Refresh its native authority binding.";
+  return "Source authority is unavailable. Restore the source connection and refresh native setup.";
+}
+
+function summarize(
+  status: WorkstreamSetupStatus,
+  native: boolean,
+  issue: string | null,
+): { tone: SetupStatusTone; badge: string; sentence: string } {
+  if (status.registry.state === "not_configured")
+    return {
+      tone: "warning",
+      badge: "Not configured",
+      sentence: native
+        ? "Configure native Workstreams on this server."
+        : "Configure Workstreams activation on this server.",
+    };
+  if (status.registry.state === "unavailable")
+    return {
+      tone: "error",
+      badge: "Offline",
+      sentence: "Registry unreachable. Restore its connection, then refresh.",
+    };
+  if (issue) return { tone: "warning", badge: "Needs attention", sentence: issue };
+  if (status.activation.missing_keys.length > 0)
+    return {
+      tone: "warning",
+      badge: "Needs attention",
+      sentence: "Some activation settings are missing.",
+    };
+  return {
+    tone: "success",
+    badge: "Ready",
+    sentence: status.registry.can_write
+      ? "Registry connected with write access."
+      : "Registry connected, read-only.",
+  };
+}
+
+const guideLabel = (code: string, native: boolean) =>
+  code === "configure_activation"
+    ? native
+      ? "Native setup guide"
+      : "Activation guide"
+    : code === "enroll_native_source"
+      ? "Native enrollment guide"
+      : "Verification guide";
+
+/** Read-only setup diagnosis: badge and top issue first; codes, guides and timestamps in Details. */
 export function SetupStatusContent({
   status,
   capability,
@@ -25,68 +104,94 @@ export function SetupStatusContent({
 }) {
   const native = isNativeWorkstreams(capability);
   const label = nativeWorkstreamsLabel(capability);
+  const issue = sourceIssue(status, native);
+  const summary = summarize(status, native, issue);
+  const checked = useRelativeTimeState(status.observed_at);
+  const checkedLabel =
+    checked.status === "relative"
+      ? `Checked ${checked.suffix ? `${checked.value} ${checked.suffix}` : checked.value}`
+      : null;
+  const guides = status.next_steps.filter(
+    (step) => !native || step.code !== "enroll_native_source",
+  );
   return (
-    <div className="space-y-2 text-sm">
-      {label ? <p role="status">{label}</p> : null}
+    <div className="space-y-1">
+      <SetupStatusLine tone={summary.tone} badge={summary.badge}>
+        {summary.sentence}
+      </SetupStatusLine>
       <p>
-        {status.registry.state === "not_configured"
-          ? native
-            ? "Not configured: configure native Workstreams on this server."
-            : "Not configured: configure Workstreams activation on this server."
-          : status.registry.state === "unavailable"
-            ? "Offline. restore the registry connection, then refresh."
-            : `Registry ready · ${status.registry.can_write ? "Write access" : "Read-only"}`}
+        Placements {status.placements.readiness} · {status.operations.open} open{" "}
+        {status.operations.open === 1 ? "change" : "changes"}
+        {checkedLabel ? (
+          <>
+            {" · "}
+            <time dateTime={status.observed_at}>{checkedLabel}</time>
+          </>
+        ) : null}
       </p>
-      {status.activation.missing_keys.length > 0 ? (
-        <p>Missing configuration: {status.activation.missing_keys.join(", ")}</p>
-      ) : null}
-      <p>
-        {status.t3_source.state === "ready"
-          ? "Native source ready"
-          : `${status.t3_source.reason}: ${
-              native
-                ? status.t3_source.reason === "authority_fenced"
-                  ? "Source authority is fenced. Resolve the fence before retrying."
-                  : status.t3_source.reason === "generation_mismatch"
-                    ? "Source generation changed. Refresh its native authority binding."
-                    : "Source authority is unavailable. Restore the source connection and refresh native setup."
-                : sourceReasonLabels[status.t3_source.reason]
-            }`}
-      </p>
-      <p>
-        Placements: {status.placements.readiness} · Open changes: {status.operations.open}
-      </p>
-      <ul className="space-y-1">
-        {status.next_steps
-          .filter((step) => !native || step.code !== "enroll_native_source")
-          .map((step) => (
-            <li key={step.code}>
-              <a
-                className="underline"
-                href={`https://github.com/Jones-Systems/Jones-Code/blob/main/${step.doc}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {step.code === "configure_activation"
-                  ? native
-                    ? "Native setup guide"
-                    : "Activation guide"
-                  : step.code === "enroll_native_source"
-                    ? "Native enrollment guide"
-                    : "Verification guide"}
-              </a>
-            </li>
-          ))}
-      </ul>
-      {native ? (
-        <p>
-          Native setup uses this environment’s authority. No control-plane source enrollment is
-          required.
-        </p>
-      ) : null}
-      <p className="text-xs text-muted-foreground">
-        Read-only diagnosis. Last checked {status.observed_at}.
-      </p>
+      <details className="group">
+        <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded-sm outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          Details
+          <ChevronRightIcon aria-hidden className="size-3 group-open:rotate-90" />
+        </summary>
+        <dl className="mt-1.5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+          {label ? (
+            <>
+              <dt>Mode</dt>
+              <dd>{label}</dd>
+            </>
+          ) : null}
+          <dt>Registry</dt>
+          <dd>
+            {status.registry.state.replace("_", " ")}
+            {status.registry.state === "ready"
+              ? ` · ${status.registry.can_write ? "write access" : "read-only"}`
+              : null}
+          </dd>
+          <dt>Source</dt>
+          <dd>
+            {issue ? (
+              <>
+                {issue} <code>{status.t3_source.reason}</code>
+              </>
+            ) : (
+              "Native source ready"
+            )}
+          </dd>
+          {status.activation.missing_keys.length > 0 ? (
+            <>
+              <dt>Missing</dt>
+              <dd>{status.activation.missing_keys.join(", ")}</dd>
+            </>
+          ) : null}
+          {native ? (
+            <>
+              <dt>Authority</dt>
+              <dd>This environment’s own; no source enrollment needed.</dd>
+            </>
+          ) : null}
+          {guides.length > 0 ? (
+            <>
+              <dt>Guides</dt>
+              <dd className="flex flex-wrap gap-x-3">
+                {guides.map((step) => (
+                  <a
+                    key={step.code}
+                    className="underline underline-offset-2 hover:text-foreground"
+                    href={`https://github.com/Jones-Systems/Jones-Code/blob/main/${step.doc}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {guideLabel(step.code, native)}
+                  </a>
+                ))}
+              </dd>
+            </>
+          ) : null}
+          <dt>Checked</dt>
+          <dd>{status.observed_at} · read-only diagnosis</dd>
+        </dl>
+      </details>
     </div>
   );
 }

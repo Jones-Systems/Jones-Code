@@ -1,11 +1,7 @@
 import { ThreadActivitySettings } from "../threadStatusFilter/ThreadActivitySettings";
 import { PresentationOrderSettings } from "../presentationOrder/PresentationOrderSettings";
 import { persistClientSettingsPatch, useClientSettings } from "../../hooks/useSettings";
-import {
-  SettingsPageContainer,
-  SettingsRow,
-  SettingsSection,
-} from "../../components/settings/settingsLayout";
+import { SettingsRow, SettingsSection } from "../../components/settings/settingsLayout";
 import { searchableSetting } from "../../components/settings/settingsSearch";
 import {
   Select,
@@ -20,11 +16,11 @@ const stageLabels = { pending: "Pending", queued: "Queued", sent: "Sent" } as co
 export function PromptsSettings() {
   const stage = useClientSettings((settings) => settings.promptsDefaultStage);
   return (
-    <SettingsPageContainer>
-      <SettingsSection title="Jones Code">
+    <>
+      <SettingsSection title="Prompts">
         <SettingsRow
           {...searchableSetting("prompts-default-stage")}
-          description="Choose the view shown when you open Prompts. Saved on this device."
+          description="View shown when you open Prompts."
           control={
             <Select
               value={stage}
@@ -34,16 +30,19 @@ export function PromptsSettings() {
                 }
               }}
             >
-              <SelectTrigger
-                aria-label="Default prompt view"
-                className="min-w-0 max-w-none shrink-0"
-              >
+              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Default prompt view">
                 <SelectValue>{stageLabels[stage]}</SelectValue>
               </SelectTrigger>
-              <SelectPopup>
-                <SelectItem value="pending">Pending</SelectItem>
-                <SelectItem value="queued">Queued</SelectItem>
-                <SelectItem value="sent">Sent</SelectItem>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="pending">
+                  Pending
+                </SelectItem>
+                <SelectItem hideIndicator value="queued">
+                  Queued
+                </SelectItem>
+                <SelectItem hideIndicator value="sent">
+                  Sent
+                </SelectItem>
               </SelectPopup>
             </Select>
           }
@@ -51,6 +50,6 @@ export function PromptsSettings() {
       </SettingsSection>
       <ThreadActivitySettings />
       <PresentationOrderSettings />
-    </SettingsPageContainer>
+    </>
   );
 }

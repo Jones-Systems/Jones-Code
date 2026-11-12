@@ -66,7 +66,7 @@ export function LinkedEnvironmentsSettings({
       ) : links.data.links.length === 0 ? (
         <SettingsRow
           title="No linked environments"
-          description="Link another machine running T3 Code, such as a VPS, so agents here can launch and drive threads there."
+          description="Let agents here start and drive threads on another machine, such as a VPS."
         />
       ) : (
         links.data.links.map((link) => (
@@ -260,8 +260,8 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
                 ))}
               </RadioGroup>
               <p className="text-xs text-muted-foreground">
-                An agent here never gets more there than its own mode here either. Threads it starts
-                there cannot change that environment's own threads, projects or settings.
+                Agents never exceed their mode here and can't change that environment's own threads,
+                projects or settings.
               </p>
             </div>
           </form>

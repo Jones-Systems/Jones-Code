@@ -31,6 +31,30 @@ vi.mock("../../components/ui/tooltip", () => ({
     cloneElement(render, {}, children),
   TooltipPopup: () => null,
 }));
+// Render the automatic-updates popover open so its controls are reachable.
+vi.mock("../../components/ui/popover", () => ({
+  Popover: ({ children }: { children: ReactNode }) => <>{children}</>,
+  PopoverTrigger: ({ render, children }: { render: ReactElement; children: ReactNode }) =>
+    cloneElement(render, {}, children),
+  PopoverPopup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+vi.mock("../../components/ui/switch", () => ({
+  Switch: ({
+    checked,
+    onCheckedChange,
+    ...props
+  }: ComponentProps<"button"> & { checked: boolean; onCheckedChange: (next: boolean) => void }) => (
+    <button
+      {...props}
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onCheckedChange(!checked)}
+    />
+  ),
+}));
+vi.mock("../../components/ui/checkbox", () => ({
+  Checkbox: () => <input type="checkbox" />,
+}));
 import { FleetEnrollmentControls } from "./FleetEnrollmentControls";
 const environmentId = EnvironmentId.make("selected-service");
 const status: FleetHostStatus = {
@@ -72,8 +96,12 @@ async function mount() {
     );
   });
 }
-const button = (label: string) =>
-  tree!.root.findAllByType("button").find((node) => node.children.join("") === label)!;
+const button = (label: "Turn on" | "Turn off") =>
+  tree!.root
+    .findAllByType("button")
+    .find(
+      (node) => node.props["aria-label"] === `${label} automatic updates for Selected service`,
+    )!;
 
 describe("fleet enrollment settings", () => {
   it("does not enroll from pairing or discovery and requires actual operation protocol support", async () => {
@@ -83,6 +111,16 @@ describe("fleet enrollment settings", () => {
     expect(h.host.mock.calls.every(([, request]) => request.action === "status")).toBe(true);
     expect(h.bridge).not.toHaveBeenCalled();
     expect(JSON.stringify(tree!.toJSON())).toContain("host setup required");
+    // The row shows one compact trigger; the switch and explanations live behind it.
+    expect(
+      tree!.root
+        .findAllByType("button")
+        .some(
+          (node) =>
+            node.props["aria-label"] ===
+            "Automatic updates for Selected service: Off, host setup required",
+        ),
+    ).toBe(true);
   });
   it("reports an unreachable host as unavailable rather than as needing setup", async () => {
     h.host.mockRejectedValue(new Error("offline"));

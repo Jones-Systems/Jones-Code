@@ -1,4 +1,7 @@
-import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/target-status";
+import {
+  jonesCheckOutcome,
+  jonesTargetStatus,
+} from "@t3tools/client-runtime/jones/updates/target-status";
 import {
   prepareReviewedInstall,
   resolveDownloadAction,
@@ -33,7 +36,7 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { ProductionExactSourceUpdateAction } from "./ProductionExactSourceUpdateAction";
 import { jonesUpdates } from "./jonesUpdates";
@@ -115,11 +118,14 @@ export function JonesUpdateControls({
   environmentId,
   layout = "inline",
   compareWithLaptop = false,
+  extraAction,
 }: {
   readonly environmentId: EnvironmentId;
   readonly layout?: JonesBuildStatusLayout;
   /** Compares this host with the verified laptop build and offers an explicit matching download. */
   readonly compareWithLaptop?: boolean;
+  /** A compact control placed before Check and Download, such as automatic updates. */
+  readonly extraAction?: ReactNode;
 }) {
   const observed = useAtomValue(jonesUpdates.observation(environmentId));
   const journal = useJonesExecutionJournal();
@@ -309,95 +315,101 @@ export function JonesUpdateControls({
         }
         actionError={actionError}
         layout={layout}
+        check={jonesCheckOutcome(observation.state)}
+        operation={
+          status.operation === undefined
+            ? undefined
+            : { ...status.operation, headline: status.headline }
+        }
         extraAction={
-          showMatch ? (
-            <ProductionExactSourceUpdateAction
-              environmentId={environmentId}
-              label="this host"
-              targetSource={laptop?.source.sha ?? ""}
-              readTargetSource={() => {
-                const latest = appAtomRegistry.get(laptopInstalledSourceAtom);
-                return latest !== undefined && latest.environmentId === laptop?.environmentId
-                  ? latest.source.sha
-                  : undefined;
-              }}
-              subject="this laptop"
-              allowInstall={false}
-              buttonLabel="Match laptop"
-              compact
-            />
+          showMatch || extraAction !== undefined ? (
+            <>
+              {extraAction}
+              {showMatch ? (
+                <ProductionExactSourceUpdateAction
+                  environmentId={environmentId}
+                  label="this host"
+                  targetSource={laptop?.source.sha ?? ""}
+                  readTargetSource={() => {
+                    const latest = appAtomRegistry.get(laptopInstalledSourceAtom);
+                    return latest !== undefined && latest.environmentId === laptop?.environmentId
+                      ? latest.source.sha
+                      : undefined;
+                  }}
+                  subject="this laptop"
+                  allowInstall={false}
+                  buttonLabel="Match laptop"
+                  compact
+                />
+              ) : null}
+            </>
           ) : undefined
         }
         onRequest={(request) => void run(request)}
       />
-      {status.check ? <p className="text-xs text-muted-foreground">{status.check.text}</p> : null}
-      {status.operation ? (
-        <p className="select-text text-xs text-muted-foreground" role="status">
-          {status.headline} · Operation {status.operation.operationId}
-          {status.operation.planCorrelated ? " · Part of the Laptop's update plan" : ""}
-        </p>
-      ) : null}
-      {status.actions.stop ? (
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={
-            stopping ||
-            stopDuty !== undefined ||
-            settled?.kind === "stop" ||
-            !journal.ready ||
-            journal.fault !== undefined
-          }
-          onClick={() => {
-            const receipt = observation.state?.operation;
-            if (receipt === undefined || stopping || stopDuty !== undefined) return;
-            setStopping(true);
-            void stopWebJonesDownload({
-              environmentId,
-              receipt,
-              uuid: randomUUID,
-              canOperate: () =>
-                authority.isCurrent() &&
-                (() => {
-                  const latest = appAtomRegistry.get(
-                    environmentSession.sessionStateAtom(environmentId),
-                  );
-                  return (
-                    latest._tag === "Success" &&
-                    latest.value.authenticated &&
-                    sessionGrantsScope(latest.value, AuthOrchestrationOperateScope)
-                  );
-                })(),
-              send: async (input) => {
-                const result = await stop({
-                  environmentId,
-                  input: { action: "operationStop", input },
-                });
-                if (result._tag !== "Success") throw new Error("Stop is not confirmed.");
-                return result.value;
-              },
-            })
-              .then(setActionError)
-              .catch(() => setActionError("Stop is not confirmed. Read its exact operation."))
-              .finally(() => setStopping(false));
-          }}
-        >
-          Stop download
-        </Button>
-      ) : null}
-      {journal.duties.some((d) => d.environmentId === environmentId && d.kind !== "legacy") ? (
-        <Button
-          size="xs"
-          variant="outline"
-          onClick={() => {
-            void readUnresolvedJonesExecution(environmentId).catch(() =>
-              setActionError("The exact outcome is unavailable. Nothing will be resent."),
-            );
-          }}
-        >
-          Read operation status
-        </Button>
-      ) : null}
+      <div className="flex flex-wrap justify-end gap-1.5 empty:hidden">
+        {status.actions.stop ? (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={
+              stopping ||
+              stopDuty !== undefined ||
+              settled?.kind === "stop" ||
+              !journal.ready ||
+              journal.fault !== undefined
+            }
+            onClick={() => {
+              const receipt = observation.state?.operation;
+              if (receipt === undefined || stopping || stopDuty !== undefined) return;
+              setStopping(true);
+              void stopWebJonesDownload({
+                environmentId,
+                receipt,
+                uuid: randomUUID,
+                canOperate: () =>
+                  authority.isCurrent() &&
+                  (() => {
+                    const latest = appAtomRegistry.get(
+                      environmentSession.sessionStateAtom(environmentId),
+                    );
+                    return (
+                      latest._tag === "Success" &&
+                      latest.value.authenticated &&
+                      sessionGrantsScope(latest.value, AuthOrchestrationOperateScope)
+                    );
+                  })(),
+                send: async (input) => {
+                  const result = await stop({
+                    environmentId,
+                    input: { action: "operationStop", input },
+                  });
+                  if (result._tag !== "Success") throw new Error("Stop is not confirmed.");
+                  return result.value;
+                },
+              })
+                .then(setActionError)
+                .catch(() => setActionError("Stop is not confirmed. Read its exact operation."))
+                .finally(() => setStopping(false));
+            }}
+          >
+            Stop download
+          </Button>
+        ) : null}
+        {journal.duties.some((d) => d.environmentId === environmentId && d.kind !== "legacy") ? (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => {
+              void readUnresolvedJonesExecution(environmentId).catch(() =>
+                setActionError("The exact outcome is unavailable. Nothing will be resent."),
+              );
+            }}
+          >
+            Read operation status
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }

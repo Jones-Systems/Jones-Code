@@ -251,6 +251,7 @@ NodeTest.test(
       NodeAssert.equal(result.code, 0, result.stderr);
       const fault = await prepared.readReceipt();
       const before = await prepared.readRelaunchReceipt();
+      await NodeAssert.rejects(prepared.readLaunchObservation());
       NodeAssert.equal(before.pid, fault.pid);
       NodeAssert.equal(
         before.state[f.active.databasePath].sha256,
@@ -342,6 +343,266 @@ async function installSelection(f) {
     },
   };
 }
+
+function launchServicesControl(mode = "returned") {
+  return relaunchControl(false)
+    .replace(
+      "def kernel_process_identity(*args): return True",
+      "def kernel_process_identity(*args): return False",
+    )
+    .replace(
+      "def pair_state",
+      "def valid_process_proofs(proofs): return proofs == [123]\ndef pair_state",
+    )
+    .replace(
+      "    preparation_step = 'storage'",
+      "    captured_processes = [123]\n    preparation_step = 'storage'",
+    )
+    .replace(
+      "def launch(active, descriptor=None):",
+      `def launch_services(request):
+    ${mode === "services-failed" ? "raise ValueError('private service failure')" : "pass"}
+    ${mode === "write-failed" ? "durable(pathlib.Path(__import__('os').environ['JONES_PACKAGED_DESKTOP_FAULT_PLAN']).with_name('launch-services.json'), {})" : "pass"}
+    ${mode === "refused" ? "return {'protocol': 1, 'status': 'failed', 'domain': 'NSCocoaErrorDomain', 'code': 256}" : "pass"}
+    ${mode === "unavailable" ? "return {'protocol': 1, 'status': 'unavailable'}" : "pass"}
+    return {'protocol': 1, 'status': 'launched', 'pid': 321,
+            'bundlePath': intent['expected']['appPath'], 'executablePath': intent['expected']['executablePath']}
+
+def launch(active, descriptor=None):
+    reply = launch_services({'appPath': active['appPath'], 'environment': {}})
+    if reply.get('status') != 'launched': raise RuntimeError('unproved control launch')
+    ${mode === "duplicate" ? "reply = launch_services({'appPath': active['appPath'], 'environment': {}})" : "pass"}
+    ${mode === "failed" ? "raise RuntimeError('private failure text must not escape')" : "pass"}`,
+    )
+    .replace(
+      "    (pathlib.Path(active['profile']) / 'started').write_text('started')",
+      "    (pathlib.Path(active['profile']) / 'started').write_text('started')\n    return {'pid': reply['pid'], 'startSec': 456, 'startUsec': 789, 'executable': active['executablePath']}",
+    )
+    .replace(
+      "        relaunch_previous()",
+      mode === "skipped" ? "        pass" : "        relaunch_previous()",
+    );
+}
+
+async function deferredLaunchFixture(body, mode = "returned") {
+  await fixture(async (f) => {
+    const appPath = NodePath.join(f.root, "Previous.app");
+    const executablePath = NodePath.join(appPath, "Contents/MacOS/previous");
+    await NodeFSP.mkdir(NodePath.dirname(executablePath), { recursive: true, mode: 0o700 });
+    await NodeFSP.writeFile(executablePath, "not an executable app", { mode: 0o600 });
+    f.active = { ...f.active, appPath, executablePath };
+    const selected = await installSelection(f);
+    const prepared = await preparePackagedDesktopHelperFault({
+      fixtureRoot: f.root,
+      helper: f.helper,
+      manifest: f.manifest,
+      selection: selected.selection,
+      point: "before-pair",
+      observeRelaunch: true,
+    });
+    await selected.prepare();
+    const result = await execute(f, prepared, [
+      f.helper,
+      "--manifest",
+      f.manifest,
+      "--activate",
+      f.intent,
+    ]);
+    await body({ ...f, prepared, result });
+  }, launchServicesControl(mode));
+}
+
+NodeTest.test(
+  "deferred instrumentation retains the LaunchServices reply after launch validation throws",
+  async () => {
+    await deferredLaunchFixture(async ({ prepared, result, active }) => {
+      NodeAssert.equal(result.code, 1);
+      NodeAssert.match(result.stderr, /private failure text must not escape/);
+      const replyPath = NodePath.join(NodePath.dirname(prepared.planPath), "launch-services.json");
+      const reply = JSON.parse(await NodeFSP.readFile(replyPath));
+      NodeAssert.equal(reply.reply.pid, 321);
+      NodeAssert.equal(reply.reply.executablePath, active.executablePath);
+      const observed = await prepared.readLaunchObservation();
+      NodeAssert.equal(observed.launchReturn.failure, "launch-validation-unproved");
+      NodeAssert.equal(observed.launchReturn.identity, null);
+      NodeAssert.equal(JSON.stringify(observed).includes("private failure text"), false);
+      NodeAssert.equal(observed.externalDescendantSettlementRequired, true);
+      NodeAssert.equal(observed.activationAllowed, false);
+    }, "failed");
+  },
+);
+
+NodeTest.test(
+  "deferred launch observations bind source, order, exact reply paths and birth without granting custody",
+  async () => {
+    await deferredLaunchFixture(async ({ prepared, result, active, tx }) => {
+      NodeAssert.equal(result.code, 0, result.stderr);
+      const preload = NodePath.dirname(prepared.planPath);
+      const servicesPath = NodePath.join(preload, "launch-services.json");
+      const returnPath = NodePath.join(preload, "launch-return.json");
+      const originalServices = await NodeFSP.readFile(servicesPath);
+      const originalReturn = await NodeFSP.readFile(returnPath);
+      const services = JSON.parse(originalServices);
+      const returned = JSON.parse(originalReturn);
+      for (const path of [servicesPath, returnPath]) {
+        const original = await NodeFSP.readFile(path);
+        await NodeFSP.unlink(path);
+        await NodeAssert.rejects(prepared.readLaunchObservation(), { code: "ENOENT" });
+        await NodeFSP.writeFile(path, original, { mode: 0o600 });
+      }
+      for (const mutate of [
+        (s) => {
+          s.protocol = true;
+        },
+        (s) => {
+          s.transactionId = "0".repeat(64);
+        },
+        (s) => {
+          s.helperSha256 = "0".repeat(64);
+        },
+        (s) => {
+          s.sequence = 2;
+        },
+        (s) => {
+          s.beforeRelaunchSha256 = "0".repeat(64);
+        },
+        (s) => {
+          s.reply.pid = "321";
+        },
+        (s) => {
+          s.reply.executablePath += ".foreign";
+        },
+        (s) => {
+          s.reply.bundlePath += ".foreign";
+        },
+        (s) => {
+          s.reply.status = "available";
+        },
+        (s) => {
+          s.unboundedData = "unexpected";
+        },
+        (_s, r) => {
+          r.identity.pid += 1;
+        },
+        (_s, r) => {
+          r.identity.startUsec = 1000000;
+        },
+        (_s, r) => {
+          r.identity.executable += ".foreign";
+        },
+        (_s, r) => {
+          r.failure = "raw exception";
+        },
+      ]) {
+        const changedServices = structuredClone(services);
+        const changedReturn = structuredClone(returned);
+        mutate(changedServices, changedReturn);
+        const bytes = JSON.stringify(changedServices);
+        changedReturn.launchServicesSha256 = NodeCrypto.createHash("sha256")
+          .update(bytes)
+          .digest("hex");
+        await NodeFSP.writeFile(servicesPath, bytes);
+        await NodeFSP.writeFile(returnPath, JSON.stringify(changedReturn));
+        await NodeAssert.rejects(prepared.readLaunchObservation());
+      }
+      await NodeFSP.writeFile(servicesPath, originalServices);
+      await NodeFSP.writeFile(returnPath, originalReturn);
+      const dispatchedPath = NodePath.join(tx, "prepare-dispatched.json");
+      const dispatched = await NodeFSP.readFile(dispatchedPath);
+      await NodeFSP.writeFile(
+        dispatchedPath,
+        JSON.stringify({ ...JSON.parse(dispatched), preparationClaimProtocol: 2 }),
+      );
+      await NodeAssert.rejects(prepared.readLaunchObservation());
+      await NodeFSP.writeFile(dispatchedPath, dispatched);
+      const observed = await prepared.readLaunchObservation();
+      NodeAssert.equal(observed.launchServices.reply.pid, observed.launchReturn.identity.pid);
+      NodeAssert.equal(observed.launchReturn.identity.executable, active.executablePath);
+      NodeAssert.equal(observed.launchReturn.failure, null);
+      NodeAssert.equal(observed.activationAllowed, false);
+      NodeAssert.equal(observed.externalDescendantSettlementRequired, true);
+      NodeAssert.ok(Object.isFrozen(observed.launchServices.reply));
+      NodeAssert.equal(
+        await NodeFSP.readFile(NodePath.join(active.profile, "started"), "utf8"),
+        "started",
+      );
+      await NodeFSP.appendFile(servicesPath, " ");
+      await NodeAssert.rejects(prepared.readLaunchObservation());
+    });
+  },
+);
+
+NodeTest.test(
+  "duplicate or failed post-effect observation preserves helper behavior and rejects custody evidence",
+  async () => {
+    for (const mode of ["duplicate", "write-failed"]) {
+      await deferredLaunchFixture(async ({ prepared, result, active }) => {
+        NodeAssert.equal(result.code, 0, result.stderr);
+        NodeAssert.equal(
+          await NodeFSP.readFile(NodePath.join(active.profile, "started"), "utf8"),
+          "started",
+        );
+        const marker = JSON.parse(
+          await NodeFSP.readFile(
+            NodePath.join(NodePath.dirname(prepared.planPath), "launch-observation-failure.json"),
+          ),
+        );
+        NodeAssert.equal(
+          marker.failure,
+          mode === "duplicate" ? "duplicate-observation" : "observation-failed",
+        );
+        await NodeAssert.rejects(prepared.readLaunchObservation());
+      }, mode);
+    }
+  },
+);
+
+NodeTest.test(
+  "failed LaunchServices return has a finite category and preserves the original exception",
+  async () => {
+    await deferredLaunchFixture(async ({ prepared, result }) => {
+      NodeAssert.equal(result.code, 1);
+      NodeAssert.match(result.stderr, /private service failure/);
+      const observed = await prepared.readLaunchObservation();
+      NodeAssert.equal(observed.launchServices.reply, null);
+      NodeAssert.equal(observed.launchServices.failure, "launch-services-return-unproved");
+      NodeAssert.equal(observed.launchReturn.failure, "launch-services-unproved");
+      NodeAssert.equal(JSON.stringify(observed).includes("private service failure"), false);
+    }, "services-failed");
+    for (const mode of ["refused", "unavailable"]) {
+      await deferredLaunchFixture(async ({ prepared, result }) => {
+        NodeAssert.equal(result.code, 1);
+        NodeAssert.match(result.stderr, /unproved control launch/);
+        const observed = await prepared.readLaunchObservation();
+        NodeAssert.equal(
+          observed.launchServices.reply.status,
+          mode === "refused" ? "failed" : "unavailable",
+        );
+        NodeAssert.equal(observed.launchReturn.failure, "launch-validation-unproved");
+        NodeAssert.equal(observed.launchReturn.identity, null);
+      }, mode);
+    }
+  },
+);
+
+NodeTest.test("no-relaunch proof requires every launch observation absent", async () => {
+  await deferredLaunchFixture(async ({ prepared, result }) => {
+    NodeAssert.equal(result.code, 0, result.stderr);
+    await prepared.assertNoRelaunch();
+    for (const name of [
+      "launch-services.json",
+      "launch-return.json",
+      "launch-observation-failure.json",
+    ]) {
+      const path = NodePath.join(NodePath.dirname(prepared.planPath), name);
+      await NodeFSP.writeFile(path, "{}", { mode: 0o600 });
+      await NodeAssert.rejects(prepared.assertNoRelaunch());
+      await NodeFSP.unlink(path);
+    }
+    await prepared.assertNoRelaunch();
+    await NodeAssert.rejects(prepared.readLaunchObservation(), { code: "ENOENT" });
+  }, "skipped");
+});
 
 NodeTest.test(
   "deferred before-pair snapshots quiet state after live writes and rejects changes before reopen",

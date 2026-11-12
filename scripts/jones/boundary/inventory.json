@@ -7,6 +7,9 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/WorkspacePreparationRead.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/workspace-preparation-reads.json": "jones-owned",
     "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.ts": "jones-owned",
     "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/AcceptedTerminalRecovery.testkit.ts": "jones-owned",
@@ -196,6 +199,10 @@
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/ContextHandoffDelivery.ts": "hook",
+    "apps/server/src/orchestration-v2/ContextHandoffBudget.test.ts": "jones-tests-in-upstream",
     "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned",
     "scripts/mobile-showcase.ts": "hook",
     "scripts/jones/mobile/showcase-metro.ts": "jones-owned",
@@ -2932,7 +2939,10 @@
     "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.py": "jones-owned",
     "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/active-workspace-handoff.json": "jones-owned"
+    "scripts/jones/boundary/fragments/active-workspace-handoff.json": "jones-owned",
+    "apps/server/src/cloud/ConnectReachability.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/connection/diagnosis.test.ts": "jones-tests-in-upstream",
+    "docs/user/t3-connect-troubleshooting.md": "policy"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -3029,6 +3039,10 @@
     "scripts/jones/boundary/fragments/experimental-typecheck.json"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts"
+    },
     {
       "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
       "to": "apps/server/src/jones/workspaceRetirement/ProjectProduction.ts"
