@@ -2094,7 +2094,7 @@
         "scripts/jones/worktree-setup/entrypoint.node-test.mjs",
         "scripts/jones/worktree-setup/setup.node-test.mjs"
       ],
-      "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests."
+      "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests. Darwin producers additionally require fresh one-shot same-process CPU/native memory admission, bounded utility closure, cancellation and freshness checks, and child-only pnpm/Rolldown controls. Synthetic refusal tests preserve non-Darwin and link-only behavior; actual native descendant qualification remains separate."
     },
     {
       "id": "native-self-configuration-harness",
