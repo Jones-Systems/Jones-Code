@@ -417,11 +417,10 @@
       "id": "jones-project-favicon-search-demand",
       "tests": [
         "apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx",
-        "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx",
-        "apps/web/src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx"
+        "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx"
       ],
       "commands": [
-        "cd apps/web && vp test run --project browser src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx src/components/settings/ProjectSettingsPanel.browser.test.tsx src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web '&&' vp test run --project browser src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx src/components/settings/ProjectSettingsPanel.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "vp lint apps/web/src/components/settings/ProjectSettingsPanel.tsx apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx",
         "vp fmt --check apps/web/src/components/settings/ProjectSettingsPanel.tsx apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx scripts/jones/boundary/fragments/project-favicon-search-demand.json scripts/jones/boundary/inventory.json scripts/jones/boundary/features.json scripts/jones/boundary/checks.json",
@@ -548,7 +547,7 @@
         "apps/web/src/components/ChatView.modelPick.browser.test.tsx",
         "apps/web/src/components/chat/ComposerPermissionsSection.browser.test.tsx",
         "apps/web/src/components/chat/composerControlsOwnership.test.ts",
-        "apps/web/src/components/chat/modelPickerSearch.test.ts",
+        "packages/client-runtime/src/modelSearch.test.ts",
         "apps/web/src/components/chat/modelPickerKeys.test.ts",
         "apps/web/src/jones/composer/attachmentCapacity.test.ts"
       ],
@@ -558,7 +557,8 @@
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict",
         "cd apps/web && vp test run --project browser src/components/chat/ProviderModelPicker.browser.test.tsx src/components/chat/ProviderModelPicker.composition.browser.test.tsx src/components/ChatView.modelPick.browser.test.tsx src/components/chat/ComposerPermissionsSection.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
-        "cd apps/web && vp test run --project unit src/components/chat/composerControlsOwnership.test.ts src/components/chat/modelPickerSearch.test.ts src/components/chat/modelPickerKeys.test.ts src/jones/composer/attachmentCapacity.test.ts --maxWorkers=1 --no-file-parallelism"
+        "cd apps/web && vp test run --project unit src/components/chat/composerControlsOwnership.test.ts src/components/chat/modelPickerKeys.test.ts src/jones/composer/attachmentCapacity.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/modelSearch.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -648,16 +648,6 @@
       ]
     },
     {
-      "id": "jones-workstreams-sidebar-assignment",
-      "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
-      "commands": [
-        "vp test run --root apps/web --config vite.config.ts src/jones/workstreams/Sidebar.assignment.browser.test.tsx --project browser --maxWorkers=1",
-        "vp lint apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx",
-        "vp run --filter @t3tools/web typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
       "id": "jones-agent-message-header",
       "tests": [
         "apps/server/src/jones/mcp/agentMessageHeader.test.ts",
@@ -722,26 +712,21 @@
       "tests": [
         "packages/client-runtime/src/state/session.test.ts",
         "apps/web/src/state/session.test.ts",
-        "packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts",
         "apps/server/src/http.test.ts",
-        "apps/server/src/workstreams/http.test.ts",
-        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
-        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
         "apps/web/src/components/Sidebar.drag.test.ts",
         "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
         "apps/web/src/reactCompilerCoverage.test.ts",
-        "apps/web/src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx",
         "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx"
       ],
       "commands": [
-        "vp test run packages/client-runtime/src/state/session.test.ts apps/web/src/state/session.test.ts packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts apps/server/src/http.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/web/src/components/Sidebar.drag.test.ts apps/web/src/components/Sidebar.statusFilter.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts apps/web/src/reactCompilerCoverage.test.ts --maxWorkers=1",
+        "vp test run packages/client-runtime/src/state/session.test.ts apps/web/src/state/session.test.ts apps/server/src/http.test.ts apps/web/src/components/Sidebar.drag.test.ts apps/web/src/components/Sidebar.statusFilter.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts apps/web/src/reactCompilerCoverage.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict",
-        "vp test run apps/web/src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx --maxWorkers=1"
+        "vp test run apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx --maxWorkers=1"
       ]
     },
     {
@@ -749,14 +734,12 @@
       "tests": [
         "packages/shared/src/nodeSqliteClient.test.ts",
         "apps/server/src/persistence/Sqlite.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts",
         "packages/shared/src/jones/checkpointContention.test.ts",
         "packages/shared/src/jones/sqliteWriterAdmission.test.ts"
       ],
       "commands": [
         "vp test run packages/shared/src/nodeSqliteClient.test.ts --maxWorkers=1",
         "vp test run apps/server/src/persistence/Sqlite.test.ts --maxWorkers=1",
-        "vp test run apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts --maxWorkers=1",
         "vp lint packages/shared/src/nodeSqliteClient.ts packages/shared/src/nodeSqliteClient.test.ts packages/shared/src/jones/sqliteWriterAdmission.fixture.ts packages/shared/src/jones/sqliteWriterAdmission.test.ts",
         "vp run --filter @t3tools/shared typecheck",
         "node scripts/jones/check-boundary.ts --strict",
@@ -810,30 +793,18 @@
     {
       "id": "jones-workstream-thread-controls",
       "tests": [
-        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
-        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
-        "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
-        "apps/web/src/state/workstreams.test.ts",
         "apps/web/src/components/threadActionMenu.logic.test.ts",
         "apps/web/src/components/Sidebar.pointer.browser.test.tsx",
-        "packages/client-runtime/src/state/workstreams/placements.test.ts",
         "apps/web/src/components/Sidebar.logic.test.ts",
-        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
-        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx",
-        "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
-        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
         "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx",
         "apps/web/src/components/sidebar/SidebarThreadRow.browser.test.tsx"
       ],
       "commands": [
-        "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/state/workstreams.test.ts apps/web/src/components/threadActionMenu.logic.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx --maxWorkers=1",
+        "vp test run apps/web/src/components/threadActionMenu.logic.test.ts apps/web/src/components/Sidebar.logic.test.ts --maxWorkers=1",
         "vp test run --root apps/web --config vite.config.ts --project browser src/components/Sidebar.pointer.browser.test.tsx --maxWorkers=1",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarDraftBlock.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarThreadRow.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
@@ -1012,87 +983,31 @@
     {
       "id": "jones-workstreams-native-stack",
       "tests": [
-        "apps/mobile/src/features/workstreams/gateway.test.ts",
-        "apps/mobile/src/features/workstreams/actions.test.ts",
-        "apps/mobile/src/features/workstreams/commands.test.ts",
         "apps/mobile/src/features/workstreams/listProjection.test.ts",
-        "apps/mobile/src/features/workstreams/loaders.test.ts",
-        "apps/mobile/src/features/workstreams/projection.test.ts",
-        "apps/mobile/src/features/workstreams/useWorkstreams.authorization.test.tsx",
-        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
-        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
-        "apps/server/src/workstreams/WorkstreamPlacements.test.ts",
-        "apps/server/src/workstreams/SyntheticWorkstreamTransport.test.ts",
-        "apps/server/src/workstreams/http.test.ts",
-        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
-        "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
-        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
-        "apps/web/src/components/workstreams/workstreamPresentation.test.ts",
-        "apps/web/src/state/workstreams.test.ts",
-        "packages/client-runtime/src/state/workstreams/colors.test.ts",
-        "packages/client-runtime/src/state/workstreams/environmentTrust.test.ts",
-        "packages/client-runtime/src/state/workstreams/lifecycle.test.ts",
-        "packages/client-runtime/src/state/workstreams/live.test.ts",
-        "packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts",
-        "packages/client-runtime/src/state/workstreams/assignmentIndex.test.ts",
-        "packages/client-runtime/src/state/workstreams/placements.test.ts",
-        "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
         "packages/contracts/src/queueProtocol.test.ts",
         "packages/contracts/src/threadCorpusProtocol.test.ts",
-        "packages/contracts/src/workstreams.conformance.test.ts",
-        "packages/contracts/src/workstreams.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/request.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/service.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/credentialFile.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/operations.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/reservedBearer.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/secretStore.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/http.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/service.test.ts",
-        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
-        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
-        "packages/contracts/src/jones/workstreamsNativeProvider.test.ts",
-        "packages/contracts/src/jones/workstreamsRegistrationContext.test.ts",
         "apps/server/src/auth/SessionStore.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
         "apps/server/src/serverRuntimeStartup.test.ts",
-        "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.browser.test.tsx",
-        "apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts",
-        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
-        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
         "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts"
       ],
       "commands": [
-        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/listProjection.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/mobile/src/features/workstreams/useWorkstreams.authorization.test.tsx apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/SyntheticWorkstreamTransport.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/environmentTrust.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/assignmentIndex.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts apps/server/src/jones/workstreams/enrollment/request.test.ts apps/server/src/jones/workstreams/enrollment/service.test.ts apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts apps/server/src/jones/workstreams/enrollment/cli.test.ts apps/server/src/jones/workstreams/enrollment/credentialFile.test.ts apps/server/src/jones/workstreams/enrollment/operations.test.ts apps/server/src/jones/workstreams/enrollment/reservedBearer.test.ts apps/server/src/jones/workstreams/enrollment/secretStore.test.ts apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts apps/server/src/jones/workstreams/nativeProvider/http.test.ts apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts apps/server/src/jones/workstreams/nativeProvider/service.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts packages/contracts/src/jones/workstreamsNativeProvider.test.ts packages/contracts/src/jones/workstreamsRegistrationContext.test.ts apps/server/src/auth/SessionStore.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts apps/server/src/jones/workstreams/activation.test.ts apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
-        "vp test run apps/mobile/src/features/workstreams/gateway.test.ts",
+        "vp test run apps/mobile/src/features/workstreams/listProjection.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts apps/server/src/auth/SessionStore.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/serverRuntimeStartup.test.ts",
         "vp test run apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx src/jones/workstreams/WorkstreamAddPrDialog.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "vp test run --root apps/web --config vite.config.ts --project browser --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
       "id": "jones-native-store-authority",
       "tests": [
-        "apps/server/src/environment/NativeStoreAuthority.test.ts",
         "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts",
-        "apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts",
-        "apps/server/src/jones/workstreams/serverConfigNativeStoreAuthority.test.ts",
         "packages/contracts/src/jones/serverConfigNativeStoreAuthority.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/environment/NativeStoreAuthority.test.ts apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts apps/server/src/jones/workstreams/serverConfigNativeStoreAuthority.test.ts packages/contracts/src/jones/serverConfigNativeStoreAuthority.test.ts"
+        "vp test run apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts packages/contracts/src/jones/serverConfigNativeStoreAuthority.test.ts"
       ]
     },
     {
@@ -1200,15 +1115,8 @@
     },
     {
       "id": "jones-workstream-appearance",
-      "tests": [
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
-        "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx",
-        "packages/client-runtime/src/state/workstreams/appearance.test.ts",
-        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx packages/client-runtime/src/state/workstreams/appearance.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts"
-      ]
+      "tests": ["packages/contracts/src/jones/environmentHttpGroups.test.ts"],
+      "commands": ["vp test run packages/contracts/src/jones/environmentHttpGroups.test.ts"]
     },
     {
       "id": "jones-work-mode",
@@ -1330,15 +1238,14 @@
         "apps/web/src/jones/workQueue/UnifiedQueuePage.browser.test.tsx",
         "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.browser.test.tsx",
         "apps/web/src/jones/workQueue/classifySentPrompts.test.ts",
-        "packages/contracts/src/jones/promptViewSettings.test.ts",
-        "apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"
+        "packages/contracts/src/jones/promptViewSettings.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/voiceReview/bridge.test.ts packages/contracts/src/settings.test.ts apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web test src/components/settings/settingsSearch.test.ts src/jones/workQueue/classifySentPrompts.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run packages/contracts/src/jones/promptViewSettings.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project browser src/components/workQueue/WorkQueuePage.browser.test.tsx src/jones/workQueue/PromptsSettings.browser.test.tsx src/jones/workQueue/SentPrompts.browser.test.tsx src/jones/workQueue/UnifiedQueuePage.browser.test.tsx src/jones/workQueue/WorkQueueMetadataPanel.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/web --config vite.config.ts src/jones/workstreams/Sidebar.assignment.browser.test.tsx --project browser --maxWorkers=1",
+        "vp test run --root apps/web --config vite.config.ts --project browser --maxWorkers=1",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
@@ -1498,14 +1405,10 @@
         "apps/server/src/mcp/McpInvocationContext.test.ts",
         "apps/server/src/mcp/McpSessionRegistry.test.ts",
         "apps/server/src/mcp/McpHttpServer.test.ts",
-        "packages/contracts/src/workstreams.conformance.test.ts",
-        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
-        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/jones/mcp/decisionSnapshot/access.test.ts apps/server/src/jones/mcp/decisionSnapshot/release.test.ts apps/server/src/mcp/McpInvocationContext.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts apps/server/src/mcp/McpHttpServer.test.ts",
-        "vp test run packages/contracts/src/workstreams.conformance.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts",
         "vp test run apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
       ]
     },
@@ -1571,24 +1474,6 @@
       "tests": ["scripts/jones/performance/migration-restore.node-test.mjs"],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/performance/migration-restore.node-test.mjs"
-      ]
-    },
-    {
-      "id": "jones-workstream-pr-actions",
-      "tests": [
-        "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.browser.test.tsx",
-        "apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts",
-        "apps/web/src/state/workstreams.test.ts",
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
-        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts apps/web/src/state/workstreams.test.ts apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
-        "vp run --filter @t3tools/web typecheck",
-        "vp run --filter @t3tools/client-runtime typecheck",
-        "vp run --filter @t3tools/contracts typecheck",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/workstreams/WorkstreamAddPrDialog.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -2062,7 +1947,6 @@
         "apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts",
         "apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts",
         "apps/server/src/jones/runtime/RuntimeStop.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/service.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
         "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
         "apps/server/src/jones/persistence/JonesTablePresence.test.ts",
@@ -2072,7 +1956,7 @@
         "apps/server/src/jones/persistence/Migrations/137_JonesNativeCreationLeaseRenewal.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/persistence/DatabaseMaintenance.test.ts apps/server/src/cli/doctor.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/Migrations/100_JonesNativeCreationExecution.test.ts apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts apps/server/src/jones/runtime/RuntimeStop.test.ts apps/server/src/jones/workstreams/enrollment/service.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/persistence/JonesTablePresence.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts apps/server/src/jones/nativeCreation/NativeEffectCompletion.test.ts apps/server/scripts/jones/currentFixtures.test.ts",
+        "vp test run apps/server/src/persistence/DatabaseMaintenance.test.ts apps/server/src/cli/doctor.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/Migrations/100_JonesNativeCreationExecution.test.ts apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts apps/server/src/jones/runtime/RuntimeStop.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/persistence/JonesTablePresence.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts apps/server/src/jones/nativeCreation/NativeEffectCompletion.test.ts apps/server/scripts/jones/currentFixtures.test.ts",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
       ]
@@ -2467,23 +2351,15 @@
       "id": "jones-desktop-native-owner",
       "tests": [
         "packages/shared/src/jones/desktopNativeOwner.test.ts",
-        "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
-        "apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts",
         "packages/shared/src/jones/nativeWriterFence.test.ts",
-        "apps/server/src/environment/NativeStoreAuthority.test.ts",
         "apps/desktop/src/backend/DesktopBackendManager.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
         "apps/desktop/scripts/main-process-bundle.test.mjs",
-        "packages/contracts/src/jones/workstreamsNativeOwner.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
         "apps/server/src/entrypoint.test.ts"
       ],
       "commands": [
-        "vp test run packages/shared/src/jones/desktopNativeOwner.test.ts apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/server/src/environment/NativeStoreAuthority.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/desktop/scripts/main-process-bundle.test.mjs packages/contracts/src/jones/workstreamsNativeOwner.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts apps/server/src/jones/workstreams/enrollment/cli.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts apps/server/src/entrypoint.test.ts",
+        "vp test run packages/shared/src/jones/desktopNativeOwner.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/desktop/scripts/main-process-bundle.test.mjs packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/entrypoint.test.ts",
         "vp run --filter @t3tools/desktop --filter t3 --filter @t3tools/shared --filter @t3tools/contracts typecheck"
       ]
     },
@@ -2623,7 +2499,6 @@
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/mobile typecheck",
         "node scripts/jones/check-boundary.ts --strict",
-        "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx --project browser --maxWorkers=1",
         "vp test run apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts apps/mobile/src/lib/threadActivity.test.ts --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run --project browser src/jones/questionAnswer/QuickResponseSubmission.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
@@ -3244,18 +3119,9 @@
     },
     {
       "id": "jones-workstream-assignment-panel",
-      "tests": [
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
-        "apps/web/src/state/workstreams.test.ts",
-        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
-        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx",
-        "apps/web/src/components/sidebar/SidebarThreadRow.browser.test.tsx"
-      ],
+      "tests": ["apps/web/src/components/sidebar/SidebarThreadRow.browser.test.tsx"],
       "commands": [
-        "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/state/workstreams.test.ts apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx --maxWorkers=1",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict",
         "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarThreadRow.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
@@ -3263,37 +3129,11 @@
     },
     {
       "id": "jones-native-enrollment-runtime",
-      "tests": [
-        "apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
-        "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
-      ],
+      "tests": ["scripts/jones/native-enrollment/sea-fixture.node-test.mjs"],
       "commands": [
-        "node --input-type=module -e \"import { createRequire } from 'node:module'; import { dirname, resolve } from 'node:path'; const r = createRequire(import.meta.resolve('vite-plus/package.json')); const p = r.resolve('vitest/package.json'); process.argv = [process.execPath, resolve(dirname(p), r(p).bin.vitest), 'run', '--config', 'scripts/jones/native-enrollment/candidate.vite.config.ts']; await import(process.argv[1]);\"",
-        "JONES_SQLITE_SEA_FIXTURE=\"$TMPDIR/sqlite-sea\" node --test scripts/jones/native-enrollment/sea-fixture.node-test.mjs",
+        "node --input-type=module -e 'import { createRequire } from '\"'\"'node:module'\"'\"'; import { dirname, resolve } from '\"'\"'node:path'\"'\"'; const r = createRequire(import.meta.resolve('\"'\"'vite-plus/package.json'\"'\"')); const p = r.resolve('\"'\"'vitest/package.json'\"'\"'); process.argv = [process.execPath, resolve(dirname(p), r(p).bin.vitest), '\"'\"'run'\"'\"', '\"'\"'--config'\"'\"', '\"'\"'scripts/jones/native-enrollment/candidate.vite.config.ts'\"'\"']; await import(process.argv[1]);'",
+        "'JONES_SQLITE_SEA_FIXTURE=$TMPDIR/sqlite-sea' node --test scripts/jones/native-enrollment/sea-fixture.node-test.mjs",
         "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-multi-environment",
-      "tests": [
-        "apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
-        "apps/server/src/workstreams/http.test.ts",
-        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/sourceRenewal.test.ts",
-        "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.test.ts",
-        "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts --maxWorkers=1",
-        "vp run --filter t3 typecheck",
-        "vp lint apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
-        "node scripts/jones/check-boundary.ts --strict",
-        "vp test run apps/server/src/jones/workstreams/runtimeIntegration/sourceRenewal.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.test.ts --maxWorkers=1 --no-file-parallelism",
-        "python3 -I -B -c 'import ast,sys; ast.parse(open(sys.argv[1],\"rb\").read(), sys.argv[1])' apps/server/src/jones/workstreams/testing/sourceRenewalFamily.py",
-        "env -u JONES_SOURCE_RENEWAL_ARTIFACTS -u JONES_SOURCE_RENEWAL_ARTIFACT_PARENT vp test run apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -3332,7 +3172,8 @@
         "apps/web/src/jones/shellDestination/terminalContents.test.ts",
         "apps/web/src/jones/shellDestination/TerminalContentsFrame.browser.test.tsx",
         "apps/web/src/jones/shellDestination/controller.test.ts",
-        "apps/web/src/jones/shellDestination/TerminalContentsFrame.browser.test.tsx src/jones/shellDestination/ShellDestinationCodeBlock.browser.test.tsx",
+        "apps/web/src/jones/shellDestination/TerminalContentsFrame.browser.test.tsx",
+        "apps/web/src/jones/shellDestination/ShellDestinationCodeBlock.browser.test.tsx",
         "packages/contracts/src/jones/shellDestinationFence.test.ts",
         "packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts",
         "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
@@ -3599,40 +3440,13 @@
       ]
     },
     {
-      "id": "jones-workstreams-registry-binding",
-      "tests": [
-        "packages/shared/src/jones/workstreamsRegistryBinding.test.ts",
-        "apps/server/src/jones/workstreams/registryBinding.test.ts",
-        "apps/server/src/jones/workstreams/activation.test.ts",
-        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
-        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts",
-        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
-      ],
-      "commands": [
-        "vp test run packages/shared/src/jones/workstreamsRegistryBinding.test.ts apps/server/src/jones/workstreams/registryBinding.test.ts apps/server/src/jones/workstreams/activation.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx --maxWorkers=1",
-        "vp run --filter t3 typecheck",
-        "vp run --filter @t3tools/web typecheck",
-        "vp run --filter @t3tools/shared typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
       "id": "jones-workstream-operations",
       "tests": [
-        "packages/contracts/src/jones/workstreamOperations.test.ts",
-        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
-        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
-        "apps/server/src/jones/workstreams/operations/planner.test.ts",
-        "apps/server/src/jones/workstreams/operations/childIds.test.ts",
-        "apps/server/src/jones/workstreams/operations/service.test.ts",
-        "apps/server/src/jones/workstreams/operations/http.integration.test.ts",
         "apps/server/src/environment/ServerEnvironment.test.ts",
-        "apps/server/src/workstreams/http.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
       "commands": [
-        "vp test run packages/contracts/src/jones/workstreamOperations.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/jones/workstreams/operations/planner.test.ts apps/server/src/jones/workstreams/operations/childIds.test.ts apps/server/src/jones/workstreams/operations/service.test.ts apps/server/src/jones/workstreams/operations/http.integration.test.ts apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/workstreams/http.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/environment/ServerEnvironment.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
@@ -3640,22 +3454,10 @@
     },
     {
       "id": "jones-workstream-app-operations",
-      "tests": [
-        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
-        "apps/mobile/src/features/workstreams/operations.test.ts",
-        "apps/web/src/jones/workstreams/SetupStatusContent.browser.test.tsx",
-        "apps/web/src/jones/workstreams/WorkstreamPicker.browser.test.tsx",
-        "apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts",
-        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamOperations.browser.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
-        "packages/client-runtime/src/jones/workstreams/operations.test.ts"
-      ],
+      "tests": ["apps/mobile/src/features/workstreams/Controls.operations.test.tsx"],
       "commands": [
-        "vp test run apps/mobile/src/features/workstreams/operations.test.ts apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx packages/client-runtime/src/jones/workstreams/operations.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/mobile --config vite.config.ts --project react src/features/workstreams/Controls.operations.test.tsx --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/workstreams/SetupStatusContent.browser.test.tsx src/jones/workstreams/WorkstreamPicker.browser.test.tsx src/jones/workstreams/useWorkstreamOperations.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/mobile typecheck",
@@ -3666,16 +3468,13 @@
       "id": "jones-workstream-tools",
       "tests": [
         "apps/server/src/jones/mcp/workstreams/handlers.test.ts",
-        "apps/server/src/jones/workstreams/operations/cli.test.ts",
         "apps/server/src/jones/mcp/workstreams/registration.test.ts",
-        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeReads.test.ts",
-        "apps/server/src/jones/workstreams/operations/cliSession.test.ts"
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
       ],
       "commands": [
+        "vp test run apps/server/src/jones/mcp/workstreams/handlers.test.ts apps/server/src/jones/mcp/workstreams/registration.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict",
-        "vp test run apps/server/src/jones/mcp/workstreams/nativeReads.test.ts apps/server/src/jones/mcp/workstreams/handlers.test.ts apps/server/src/jones/mcp/workstreams/registration.test.ts apps/server/src/jones/workstreams/operations/cli.test.ts apps/server/src/jones/workstreams/operations/cliSession.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism"
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     },
     {
@@ -5088,12 +4887,13 @@
         "apps/web/src/components/files/PdfPreview.browser.test.tsx",
         "apps/web/src/components/files/PdfViewer.browser.test.tsx",
         "apps/web/src/components/files/pdfLayout.test.ts",
-        "apps/web/src/assets/assetUrls.test.ts",
+        "packages/client-runtime/src/state/assets.test.ts",
         "apps/web/src/jones/filePreview/workspacePdfSession.browser.test.tsx",
         "apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx"
       ],
       "commands": [
-        "cd apps/web && vp test run src/jones/filePreview/workspacePdfSession.test.ts src/components/files/pdfLayout.test.ts src/assets/assetUrls.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run src/jones/filePreview/workspacePdfSession.test.ts src/components/files/pdfLayout.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/state/assets.test.ts --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run src/components/files/AttachmentFilePreview.browser.test.tsx src/components/files/PdfPreview.browser.test.tsx src/components/files/PdfViewer.browser.test.tsx src/jones/filePreview/workspacePdfSession.browser.test.tsx src/jones/files/AttachmentFilePreview.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict"
@@ -5229,90 +5029,26 @@
       ]
     },
     {
-      "id": "jones-workstreams-native-member-admission",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/runtime/memberStartup.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/memberHomeReadRouting.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/memberSourceReadAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/runtime/memberStartup.test.ts apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts apps/server/src/jones/workstreams/native/forwarding/memberHomeReadRouting.test.ts apps/server/src/jones/workstreams/native/forwarding/memberSourceReadAdmission.test.ts apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
       "id": "jones-workstreams-member-binding-foundation",
       "tests": [
-        "packages/contracts/src/jones/workstreamsHomeBind.test.ts",
-        "packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts",
-        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberEnrollment.test.ts",
-        "apps/server/src/jones/workstreams/native/store/memberEnrollmentStore.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/homeBind.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/homePeerPinQualification.test.ts",
-        "apps/server/src/jones/workstreams/native/store/homeBindReceiptStore.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeBinds.test.ts"
+        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts"
       ],
       "commands": [
-        "vp test run packages/contracts/src/jones/workstreamsHomeBind.test.ts packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/workstreams/native/runtime/memberEnrollment.test.ts apps/server/src/jones/workstreams/native/store/memberEnrollmentStore.test.ts apps/server/src/jones/workstreams/native/runtime/memberSetup.test.ts apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/workstreams/native/runtime/homeBind.test.ts apps/server/src/jones/workstreams/native/runtime/homePeerPinQualification.test.ts apps/server/src/jones/workstreams/native/store/homeBindReceiptStore.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter t3 typecheck",
-        "vp lint --threads=1 --max-warnings=0 packages/contracts/src/jones/workstreamsHomeBind.ts packages/contracts/src/jones/workstreamsHomeBind.test.ts packages/contracts/src/jones/workstreamsMemberEnrollment.ts packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
-        "vp fmt --check --threads=1 packages/contracts/src/jones/workstreamsHomeBind.ts packages/contracts/src/jones/workstreamsHomeBind.test.ts packages/contracts/src/jones/workstreamsMemberEnrollment.ts packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
+        "vp lint --threads=1 --max-warnings=0 apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
+        "vp fmt --check --threads=1 apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },
     {
       "id": "jones-workstreams-native-source-setup",
       "tests": [
-        "apps/server/src/jones/persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/sourceEnrollment.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/store/sourceEnrollmentStore.test.ts"
+        "apps/server/src/jones/persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.test.ts apps/server/src/jones/workstreams/native/runtime/sourceEnrollment.test.ts apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts apps/server/src/jones/workstreams/native/store/sourceEnrollmentStore.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-legacy-reconciliation",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/store/legacyReconciliationStore.test.ts",
-        "apps/server/src/jones/workstreams/native/transition/reconcileLegacyOpen.test.ts",
-        "packages/contracts/src/jones/workstreamsLegacyReconciliation.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/store/legacyReconciliationStore.test.ts apps/server/src/jones/workstreams/native/transition/reconcileLegacyOpen.test.ts packages/contracts/src/jones/workstreamsLegacyReconciliation.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/contracts typecheck",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-legacy-receipts",
-      "tests": [
-        "packages/contracts/src/jones/workstreamsLegacyReceipts.test.ts",
-        "apps/server/src/jones/workstreams/native/transition/legacyReceipts.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/state.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts",
-        "apps/server/src/jones/workstreams/native/store/archiveStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/receiptStore.test.ts"
-      ],
-      "commands": [
-        "vp test run packages/contracts/src/jones/workstreamsLegacyReceipts.test.ts apps/server/src/jones/workstreams/native/transition/legacyReceipts.test.ts apps/server/src/jones/workstreams/native/domain/state.test.ts apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts apps/server/src/jones/workstreams/native/store/archiveStore.test.ts apps/server/src/jones/workstreams/native/store/receiptStore.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/contracts typecheck",
+        "vp test run apps/server/src/jones/persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
@@ -5320,147 +5056,39 @@
     {
       "id": "jones-workstreams-native-authority",
       "tests": [
-        "apps/server/src/jones/workstreams/native/compat/http.test.ts",
-        "packages/contracts/src/jones/workstreamsHttp.test.ts",
-        "apps/mobile/src/features/workstreams/summary.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/application.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/bindings.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/dashboard.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/evidence.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/generation.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/routes.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/summaryRead.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/synthetic.test.ts",
-        "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.browser.test.tsx",
-        "apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/gatewayParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/operationsParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/mcpParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/cpDenied.test.ts",
-        "apps/server/src/jones/workstreams/native/transition/apply.test.ts",
-        "apps/server/src/jones/workstreams/native/transition/cli.test.ts",
-        "apps/server/src/jones/workstreams/native/transition/snapshotReader.test.ts",
         "apps/server/src/jones/persistence/Migrations/125_JonesWorkstreamsNative.test.ts",
-        "apps/server/src/jones/workstreams/native/crypto/envelope.test.ts",
-        "apps/server/src/jones/workstreams/native/crypto/identityIndex.test.ts",
-        "apps/server/src/jones/workstreams/native/crypto/keyProvider.test.ts",
-        "apps/server/src/jones/workstreams/native/store/archiveStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/bindingStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/effectStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/historyStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/receiptStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/registryStore.test.ts",
-        "apps/server/src/jones/workstreams/native/store/sql.test.ts",
-        "packages/contracts/src/jones/workstreamsNative.test.ts",
-        "packages/contracts/src/jones/workstreamsNativeRead.test.ts",
-        "packages/contracts/src/jones/workstreamsNativePlacement.test.ts",
-        "packages/contracts/src/jones/workstreamsSnapshot.test.ts",
-        "packages/contracts/src/jones/workstreamsRollups.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/collections.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/cursor.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/decider.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/negativeCases.test.ts",
-        "apps/server/src/jones/workstreams/native/domain/semanticCases.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/githubPrObserver.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/localAttestation.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/localSettlement.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/referenceResolver.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/synthetic.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts",
-        "packages/client-runtime/src/state/workstreams/native.test.ts",
-        "packages/client-runtime/src/state/workstreams/nativeRead.test.ts",
-        "packages/client-runtime/src/state/workstreams/nativeExport.test.ts",
-        "apps/web/src/jones/workstreams/SetupStatusContent.browser.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamOperations.browser.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
-        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
-        "apps/mobile/src/features/workstreams/projection.test.ts",
         "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
-        "apps/server/src/jones/workstreams/native/runtime/admission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/cli.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/store.test.ts",
         "apps/server/src/jones/persistence/Migrations/127_JonesWorkstreamsRollupAttempts.test.ts",
-        "apps/server/src/jones/workstreams/native/rollups/manifestSource.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/rollupWorker.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/supervision.test.ts",
-        "packages/contracts/src/jones/workstreamsPeerAuthority.test.ts",
-        "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
-        "packages/contracts/src/jones/workstreamsHomeReadResult.test.ts",
         "apps/server/src/jones/persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.test.ts",
-        "apps/server/src/jones/workstreams/native/store/peerSessionPinStore.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerSessionPins.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativePeerMiddleware.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts",
-        "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts",
-        "packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts",
-        "apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx",
-        "apps/mobile/src/features/workstreams/nativeLifetime.test.tsx",
-        "packages/client-runtime/src/jones/workstreams/nativePlacements.test.ts",
-        "apps/web/src/jones/workstreams/WorkstreamExportButton.browser.test.tsx",
-        "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.test.tsx",
         "apps/mobile/src/lib/attachmentDownload.test.ts",
         "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
         "packages/shared/src/atomicWrite.test.ts",
-        "apps/server/src/serverRuntimeState.test.ts",
-        "apps/server/src/jones/workstreams/native/compat/legacyAuthorityFence.test.ts"
+        "apps/server/src/serverRuntimeState.test.ts"
       ],
       "commands": [
-        "vp test run packages/client-runtime/src/state/workstreams/nativeRead.test.ts packages/client-runtime/src/state/workstreams/nativeExport.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/workstreams/native/compat/http.test.ts packages/contracts/src/jones/workstreamsHttp.test.ts apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts apps/server/src/workstreams/http.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/workstreams/native/transition --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/workstreams/operations apps/server/src/jones/workstreams/native/operations --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/workstreams/native/crypto/ apps/server/src/jones/workstreams/native/store/ apps/server/src/jones/persistence/Migrations/125_JonesWorkstreamsNative.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/JonesTablePresence.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
-        "vp test run packages/contracts/src/jones/workstreamsNative.test.ts packages/contracts/src/jones/workstreamsNativeRead.test.ts packages/contracts/src/jones/workstreamsNativePlacement.test.ts packages/contracts/src/jones/workstreamsSnapshot.test.ts packages/contracts/src/jones/workstreamsRollups.test.ts packages/contracts/src/workstreams.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/jones/workstreamOperations.test.ts packages/contracts/src/jones/workstreamsNativeProvider.test.ts packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
-        "vp lint packages/contracts/src/jones/workstreamsNative.ts packages/contracts/src/jones/workstreamsNativeRead.ts packages/contracts/src/jones/workstreamsNativePlacement.ts packages/contracts/src/jones/workstreamsSnapshot.ts packages/contracts/src/jones/workstreamsRollups.ts packages/contracts/src/jones/workstreamsNative.test.ts packages/contracts/src/jones/workstreamsNativeRead.test.ts packages/contracts/src/jones/workstreamsNativePlacement.test.ts packages/contracts/src/jones/workstreamsSnapshot.test.ts packages/contracts/src/jones/workstreamsRollups.test.ts packages/contracts/src/environment.ts",
+        "vp lint packages/contracts/src/jones/workstreamsSnapshot.ts packages/contracts/src/environment.ts",
         "node scripts/jones/check-boundary.ts --strict",
         "vp test run apps/server/src/jones/workstreams/native/domain apps/server/src/jones/workstreams/native/providers apps/server/src/jones/workstreams/nativeProvider --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/client-runtime/src/state/workstreams apps/mobile/src/features/workstreams apps/web/src/jones/workstreams apps/web/src/components/workstreams apps/web/src/state/workstreams.test.ts --maxWorkers=1 --no-file-parallelism",
         "tsc-rs --noEmit -p packages/client-runtime/tsconfig.json",
         "tsc-rs --noEmit -p apps/web/tsconfig.json",
         "tsc-rs --noEmit -p apps/mobile/tsconfig.json",
-        "vp test run apps/server/src/jones/persistence/Migrations/127_JonesWorkstreamsRollupAttempts.test.ts apps/server/src/jones/workstreams/native/rollups/store.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/workstreams/native/rollups/manifestSource.test.ts apps/server/src/jones/workstreams/native/rollups/application.test.ts apps/server/src/jones/workstreams/native/rollups/bindings.test.ts apps/server/src/jones/workstreams/native/rollups/store.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/workstreams/native/runtime/rollupWorker.test.ts apps/server/src/jones/workstreams/native/runtime/supervision.test.ts apps/server/src/jones/workstreams/native/runtime/entry.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/contracts/src/jones/workstreamsPeerAuthority.test.ts packages/contracts/src/jones/workstreamsForwardReadmission.test.ts packages/contracts/src/jones/workstreamsHomeReadResult.test.ts apps/server/src/jones/persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/workstreams/native/store/peerSessionPinStore.test.ts apps/server/src/jones/workstreams/native/runtime/peerSessionPins.test.ts apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.test.ts apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts apps/server/src/jones/mcp/workstreams/nativePeerMiddleware.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts packages/client-runtime/src/state/workstreams/nativeRead.test.ts packages/client-runtime/src/state/workstreams/nativeExport.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks",
-        "vp test run packages/client-runtime/src/jones/workstreams/nativePlacements.test.ts packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx apps/mobile/src/features/workstreams/nativeLifetime.test.tsx --maxWorkers=1 --no-file-parallelism --pool=forks",
-        "vp test run apps/web/src/jones/workstreams/WorkstreamExportButton.browser.test.tsx apps/mobile/src/jones/workstreams/MobileWorkstreamExport.test.tsx apps/mobile/src/lib/attachmentDownload.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks",
-        "vp test run packages/shared/src/atomicWrite.test.ts apps/server/src/serverRuntimeState.test.ts apps/server/src/jones/workstreams/native/runtime/peerSetupCli.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
+        "vp test run apps/server/src/jones/persistence/Migrations/127_JonesWorkstreamsRollupAttempts.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/mobile/src/lib/attachmentDownload.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks",
+        "vp test run packages/shared/src/atomicWrite.test.ts apps/server/src/serverRuntimeState.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
       ]
     },
     {
       "id": "jones-workstreams-native-recorded-recovery",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts",
-        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/admission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/gatewayParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/operationsParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/mcpParity.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/cpDenied.test.ts",
-        "apps/server/src/mcp/McpSessionRegistry.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts"
-      ],
+      "tests": ["apps/server/src/mcp/McpSessionRegistry.test.ts"],
       "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts apps/server/src/jones/workstreams/native/store/operationStore.test.ts apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts apps/server/src/jones/workstreams/native/runtime/recovery.test.ts apps/server/src/jones/workstreams/native/runtime/admission.test.ts apps/server/src/jones/workstreams/native/runtime/startup.test.ts apps/server/src/jones/workstreams/native/runtime/entry.test.ts apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts apps/server/src/jones/workstreams/native/conformance/gatewayParity.test.ts apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts apps/server/src/jones/workstreams/native/conformance/operationsParity.test.ts apps/server/src/jones/workstreams/native/conformance/mcpParity.test.ts apps/server/src/jones/workstreams/native/conformance/cpDenied.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/mcp/McpSessionRegistry.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
@@ -5468,268 +5096,34 @@
     {
       "id": "jones-workstreams-native-read-projection",
       "tests": [
-        "apps/server/src/jones/workstreams/native/read/coherentSnapshot.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/coherentReadConsumer.test.ts",
-        "apps/server/src/jones/workstreams/native/read/projection.test.ts",
-        "apps/server/src/jones/workstreams/native/read/routes.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberRead.test.ts",
-        "apps/server/src/jones/workstreams/native/read/export.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
         "apps/server/src/voiceReview/nativePlacements.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/homeReadProtocol.test.ts",
-        "apps/server/src/jones/workstreams/native/registry/localTransport.test.ts",
-        "apps/server/src/workstreams/http.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
-        "packages/contracts/src/jones/workstreamsNativeExport.test.ts",
-        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
-        "apps/server/src/jones/workstreams/native/read/exportCli.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/homeExportProtocol.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberExport.test.ts"
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/read/coherentSnapshot.test.ts apps/server/src/jones/workstreams/native/conformance/coherentReadConsumer.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/workstreams/native/read/projection.test.ts apps/server/src/jones/workstreams/native/read/routes.test.ts apps/server/src/jones/workstreams/native/read/memberRead.test.ts apps/server/src/jones/workstreams/native/read/export.test.ts apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/voiceReview/nativePlacements.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/voiceReview/nativePlacements.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict",
-        "vp test run apps/server/src/jones/workstreams/native/read/routes.test.ts apps/server/src/jones/workstreams/native/read/memberRead.test.ts apps/server/src/jones/workstreams/native/forwarding/homeReadProtocol.test.ts apps/server/src/jones/workstreams/native/registry/localTransport.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/workstreams/native/read/routes.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/contracts/src/jones/workstreamsNativeExport.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/workstreams/native/read/export.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts packages/client-runtime/src/state/workstreams/nativeExport.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks",
-        "vp test run apps/server/src/jones/workstreams/native/read/exportCli.test.ts apps/server/src/jones/workstreams/native/runtime/peerSetupCli.test.ts apps/server/src/jones/workstreams/operations/cli.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts apps/server/src/jones/workstreams/native/read/export.test.ts packages/client-runtime/src/state/workstreams/nativeExport.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks",
-        "vp test run packages/contracts/src/jones/workstreamsNativeExport.test.ts apps/server/src/jones/workstreams/native/forwarding/homeExportProtocol.test.ts apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts apps/server/src/jones/workstreams/native/read/memberExport.test.ts apps/server/src/jones/workstreams/native/read/export.test.ts apps/server/src/jones/mcp/workstreams/nativeReads.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts packages/client-runtime/src/state/workstreams/nativeExport.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-write-foundation",
-      "tests": [
-        "packages/contracts/src/jones/workstreamsForwardQualification.test.ts",
-        "packages/contracts/src/jones/workstreamsRetainedSourceEffect.test.ts",
-        "packages/contracts/src/jones/workstreamsForwarding.test.ts",
-        "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts"
-      ],
-      "commands": [
-        "vp test run packages/contracts/src/jones/workstreamsForwardQualification.test.ts packages/contracts/src/jones/workstreamsRetainedSourceEffect.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/contracts/src/jones/workstreamsForwarding.test.ts packages/contracts/src/jones/workstreamsForwardReadmission.test.ts apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts apps/server/src/jones/workstreams/native/store/operationStore.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/contracts typecheck",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "vp test run packages/contracts/src/jones/environmentHttpGroups.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
       ]
     },
     {
       "id": "jones-workstreams-native-home-forwarding",
       "tests": [
-        "apps/server/src/jones/workstreams/native/forwarding/peerWriteAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/suppliedEvidence.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/forwardedHomeOperation.test.ts",
-        "apps/server/src/jones/workstreams/native/store/forwardReceiptStore.test.ts",
         "apps/server/src/jones/persistence/Migrations/130_JonesWorkstreamsForwardReceipts.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/forwarding/peerWriteAdmission.test.ts apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts apps/server/src/jones/workstreams/native/forwarding/suppliedEvidence.test.ts apps/server/src/jones/workstreams/native/operations/forwardedHomeOperation.test.ts apps/server/src/jones/workstreams/native/store/forwardReceiptStore.test.ts apps/server/src/jones/persistence/Migrations/130_JonesWorkstreamsForwardReceipts.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-source-forwarding",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/forwarding/homeClient.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/forwarding/homeClient.test.ts apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-peer-setup",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/runtime/setupOwner.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerSetupRequestFile.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerSetupCli.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeSetups.test.ts",
-        "packages/contracts/src/jones/workstreamsPeerSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/runtime/setupOwner.test.ts apps/server/src/jones/workstreams/native/runtime/peerSetup.test.ts apps/server/src/jones/workstreams/native/runtime/peerSetupRequestFile.test.ts apps/server/src/jones/workstreams/native/runtime/peerSetupCli.test.ts apps/server/src/jones/mcp/workstreams/nativeSetups.test.ts packages/contracts/src/jones/workstreamsPeerSetup.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-forwarding-mcp",
-      "tests": ["apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts"],
-      "commands": [
-        "vp test run --project t3 apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-retained-source-effects",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/forwarding/readmissionV2.test.ts",
-        "apps/server/src/jones/workstreams/nativeProvider/dispatchAdmission.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "commands": [
-        "vp test run --project t3 apps/server/src/jones/workstreams/native/forwarding/readmissionV2.test.ts apps/server/src/jones/workstreams/nativeProvider/dispatchAdmission.test.ts apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run --project t3 apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-peer-effect-origin",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/runtime/peerEffectEnvelope.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerEffectOrigin.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/retainedPeerSession.test.ts",
-        "apps/server/src/jones/workstreams/native/store/effectStore.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts"
-      ],
-      "commands": [
-        "vp test run --project t3 apps/server/src/jones/workstreams/native/runtime/peerEffectEnvelope.test.ts apps/server/src/jones/workstreams/native/runtime/peerEffectOrigin.test.ts apps/server/src/jones/workstreams/native/runtime/retainedPeerSession.test.ts apps/server/src/jones/workstreams/native/store/effectStore.test.ts apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-peer-effect-source",
-      "tests": ["apps/server/src/jones/workstreams/native/forwarding/peerEffectSource.test.ts"],
-      "commands": [
-        "vp test run --project t3 apps/server/src/jones/workstreams/native/forwarding/peerEffectSource.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-peer-effect-completion",
-      "tests": ["apps/server/src/jones/workstreams/native/forwarding/peerEffectRecovery.test.ts"],
-      "commands": [
-        "vp test run --project t3 apps/server/src/jones/workstreams/native/forwarding/peerEffectRecovery.test.ts apps/server/src/jones/workstreams/native/forwarding/peerEffectSource.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-peer-effect-initial",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/forwarding/peerEffectAcceptance.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts"
-      ],
-      "commands": [
-        "vp test run --project t3 apps/server/src/jones/workstreams/native/forwarding/peerEffectAcceptance.test.ts apps/server/src/jones/workstreams/native/runtime/recovery.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/persistence/Migrations/130_JonesWorkstreamsForwardReceipts.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },
     {
       "id": "jones-workstreams-native-selected-member-startup",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberStartup.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
-        "apps/server/src/environment/ServerEnvironment.test.ts"
-      ],
+      "tests": ["apps/server/src/environment/ServerEnvironment.test.ts"],
       "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/runtime/startup.test.ts apps/server/src/jones/workstreams/native/runtime/memberStartup.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts apps/server/src/jones/workstreams/native/runtime/entry.test.ts apps/server/src/environment/ServerEnvironment.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-member-recovery",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/runtime/memberRecovery.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/runtime/memberRecovery.test.ts apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-member-access",
-      "tests": [
-        "packages/contracts/src/jones/workstreamsHomeAccess.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberAccess.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "commands": [
-        "vp test run packages/contracts/src/jones/workstreamsHomeAccess.test.ts apps/server/src/jones/workstreams/native/read/memberAccess.test.ts apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-member-gateway-reads",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/read/memberGateway.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/read/memberGateway.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-member-public-operations",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/operations/memberPublicOperations.test.ts",
-        "apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/operations/memberPublicOperations.test.ts apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-member-registration",
-      "tests": [
-        "packages/contracts/src/jones/workstreamsHomeRegistration.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberRegistration.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
-        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "commands": [
-        "vp test run packages/contracts/src/jones/workstreamsHomeRegistration.test.ts apps/server/src/jones/workstreams/native/read/memberRegistration.test.ts apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-member-gateway-writes",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/read/memberGateway.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/memberCommandReceipts.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/read/memberGateway.test.ts apps/server/src/jones/workstreams/native/forwarding/memberCommandReceipts.test.ts apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
-      ]
-    },
-    {
-      "id": "jones-workstreams-native-member-placements",
-      "tests": [
-        "apps/server/src/jones/workstreams/native/read/memberPlacements.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
-        "apps/server/src/workstreams/http.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/read/memberPlacements.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts apps/server/src/jones/workstreams/native/runtime/entry.test.ts apps/server/src/workstreams/http.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks",
+        "vp test run apps/server/src/environment/ServerEnvironment.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
@@ -5811,14 +5205,24 @@
       ]
     },
     {
-      "id": "jones-workstreams-native-home-fixture",
-      "tests": ["apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts"],
+      "id": "jones-workstreams-personal",
+      "tests": [
+        "apps/desktop/src/jones/workstreams/personalStartup.test.ts",
+        "apps/mobile/src/features/workstreams/personalPresentation.test.ts",
+        "apps/server/src/jones/workstreams/personal/service.test.ts",
+        "apps/server/src/jones/workstreamsLegacyHttp.test.ts",
+        "apps/web/src/jones/workstreams/personalNative.browser.test.tsx",
+        "apps/web/src/jones/workstreams/personalNotifications.test.ts",
+        "apps/web/src/jones/workstreams/personalSettings.browser.test.tsx",
+        "packages/client-runtime/src/jones/workstreams/personal/controller.test.ts",
+        "packages/contracts/src/jones/workstreamsPersonal.test.ts",
+        "packages/contracts/src/jones/workstreamsPersonalRpc.test.ts",
+        "apps/mobile/src/features/workstreams/personalStorage.test.ts"
+      ],
       "commands": [
-        "vp test run apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp lint apps/server/src/jones/workstreams/testing/nativeHomeFixture.ts apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts --threads=1",
-        "vp fmt --check --threads=1 apps/server/src/jones/workstreams/testing/nativeHomeFixture.ts apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts .agents/skills/test-t3-app/references/sqlite-fixtures.md",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "vp test run apps/desktop/src/jones/workstreams/personalStartup.test.ts apps/mobile/src/features/workstreams/personalPresentation.test.ts apps/server/src/jones/workstreams/personal/service.test.ts apps/server/src/jones/workstreamsLegacyHttp.test.ts apps/web/src/jones/workstreams/personalNotifications.test.ts packages/client-runtime/src/jones/workstreams/personal/controller.test.ts packages/contracts/src/jones/workstreamsPersonal.test.ts packages/contracts/src/jones/workstreamsPersonalRpc.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --project browser apps/web/src/jones/workstreams/personalNative.browser.test.tsx apps/web/src/jones/workstreams/personalSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "cd apps/mobile && vp test run --project unit src/features/workstreams/personalStorage.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

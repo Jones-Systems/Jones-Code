@@ -36,9 +36,24 @@ it.effect(
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
         [151, "WorkspaceRuntimeUses"],
         [152, "PeerLinksAdoption"],
+        [153, "PersonalWorkstreams"],
+      ]);
+      // The full current runner also installs migration 153; account for its four exact objects while
+      // keeping the byte-for-byte preimage assertion for every pre-existing object.
+      const personalObjects = new Set([
+        "jones_personal_assignments_by_workstream",
+        "jones_personal_workstream_assignments",
+        "jones_personal_workstream_meta",
+        "jones_personal_workstreams",
       ]);
       assert.deepStrictEqual(
-        (yield* objects).filter(({ name }) => !name.startsWith("jones_workspace_runtime_")),
+        (yield* objects).filter(({ name }) => personalObjects.has(name)).map(({ name }) => name),
+        [...personalObjects],
+      );
+      assert.deepStrictEqual(
+        (yield* objects).filter(
+          ({ name }) => !name.startsWith("jones_workspace_runtime_") && !personalObjects.has(name),
+        ),
         before,
       );
       assert.deepStrictEqual(

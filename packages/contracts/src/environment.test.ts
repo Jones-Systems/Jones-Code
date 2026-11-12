@@ -16,13 +16,13 @@ const descriptor = {
 const compiledDecodeSync1 = Schema.decodeSync(ExecutionEnvironmentCapabilities);
 
 describe("ExecutionEnvironmentDescriptor", () => {
-  it("keeps workstream operations absent on old descriptors and decodes the advertised contract", () => {
+  it("keeps personal Workstreams absent on old descriptors and decodes the advertised contract", () => {
     expect(decodeDescriptor(descriptor)).toEqual(descriptor);
-    expect(decodeDescriptor(descriptor).capabilities.workstreamOperations).toBeUndefined();
-    const workstreamOperations = { contract: "workstream-operations/1.0.0" };
+    expect(decodeDescriptor(descriptor).capabilities.workstreamsPersonal).toBeUndefined();
+    const workstreamsPersonal = { version: 1 };
     const advertised = {
       ...descriptor,
-      capabilities: { ...descriptor.capabilities, workstreamOperations },
+      capabilities: { ...descriptor.capabilities, workstreamsPersonal },
     };
     expect(decodeDescriptor(advertised)).toEqual(advertised);
     expect(() =>
@@ -30,25 +30,25 @@ describe("ExecutionEnvironmentDescriptor", () => {
         ...descriptor,
         capabilities: {
           ...descriptor.capabilities,
-          workstreamOperations: { contract: "workstream-operations/2.0.0" },
+          workstreamsPersonal: { version: 2 },
         },
       }),
     ).toThrow();
   });
 
   it("retains default excess-property stripping for old and new capability decoders", () => {
-    const { workstreamOperations: _operations, ...legacyFields } =
+    const { workstreamsPersonal: _operations, ...legacyFields } =
       ExecutionEnvironmentCapabilities.fields;
     const decodeLegacy = Schema.decodeUnknownSync(Schema.Struct(legacyFields));
     const advertised = {
       ...descriptor.capabilities,
-      workstreamOperations: { contract: "workstream-operations/1.0.0", futureOption: true },
+      workstreamsPersonal: { version: 1, futureOption: true },
       futureCapability: true,
     };
     expect(decodeLegacy(advertised)).toEqual(descriptor.capabilities);
     expect(decodeDescriptor({ ...descriptor, capabilities: advertised }).capabilities).toEqual({
       ...descriptor.capabilities,
-      workstreamOperations: { contract: "workstream-operations/1.0.0" },
+      workstreamsPersonal: { version: 1 },
     });
     expect(compiledDecodeSync1({})).toEqual({
       repositoryIdentity: false,

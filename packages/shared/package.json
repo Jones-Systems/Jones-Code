@@ -543,10 +543,6 @@
       "types": "./src/jones/sqliteReaderContracts.ts",
       "import": "./src/jones/sqliteReaderContracts.ts"
     },
-    "./jones/workstreamsRegistryBinding": {
-      "types": "./src/jones/workstreamsRegistryBinding.ts",
-      "import": "./src/jones/workstreamsRegistryBinding.ts"
-    },
     "./jones/queuedSteerBatch": {
       "types": "./src/jones/queuedSteerBatch.ts",
       "import": "./src/jones/queuedSteerBatch.ts"
@@ -634,10 +630,6 @@
     "./composerContextLegacySend": {
       "types": "./src/composerContextLegacySend.ts",
       "import": "./src/composerContextLegacySend.ts"
-    },
-    "./jones/workstreamShellActivation": {
-      "types": "./src/jones/workstreamShellActivation.ts",
-      "import": "./src/jones/workstreamShellActivation.ts"
     },
     "./socketFrameParts": {
       "types": "./src/socketFrameParts.ts",

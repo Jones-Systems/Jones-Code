@@ -17,7 +17,6 @@ import * as NativeCreationProviderExecutor from "../jones/nativeCreation/NativeC
 import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import * as ProviderConversationReselection from "../jones/runtime/ProviderConversationReselection.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
-import * as NativeWorkstreams from "../jones/workstreams/runtimeIntegration/native.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -499,12 +498,7 @@ export const layer = Layer.mergeAll(
   layerLegacyV1ThreadImporterProvided,
 );
 
-const nativeWorkstreamsRuntimeProvided = NativeWorkstreams.nativeWorkstreamsRuntimeLayer.pipe(
-  Layer.provide(AuthSessions.layer),
-);
-
 export const layerProduction = Layer.mergeAll(
-  nativeWorkstreamsRuntimeProvided,
   WorktreeBranchSync.layer.pipe(
     Layer.provide(Layer.merge(layerThreadManagementProvided, ProjectionStore.layer)),
   ),

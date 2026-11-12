@@ -1,4 +1,3 @@
-import { EnvironmentHttpConflictError } from "@t3tools/contracts";
 import { DESIGN_REQUEST_HELD_REASONS } from "@t3tools/contracts/jones/designRequests";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -10,7 +9,6 @@ import {
   removeDesignRequestBinding,
 } from "./bindingStore";
 import { DESIGN_REQUEST_HELD_FIXES } from "./heldReasons";
-import { registryStatusFromError } from "./registry";
 
 const memoryStorage = () => {
   const values = new Map<string, string>();
@@ -76,30 +74,7 @@ describe("design request bindings", () => {
   });
 });
 
-describe("design request registry status", () => {
-  it("separates missing APIs and sign-in failures from transient errors", () => {
-    expect(registryStatusFromError({ _tag: "EnvironmentHttpUnauthorizedError" })).toBe(
-      "unauthenticated",
-    );
-    expect(registryStatusFromError({ _tag: "ResponseError", response: { status: 403 } })).toBe(
-      "unauthenticated",
-    );
-    expect(registryStatusFromError({ _tag: "ResponseError", response: { status: 404 } })).toBe(
-      "unsupported",
-    );
-    expect(
-      registryStatusFromError(
-        new EnvironmentHttpConflictError({ message: "workstreams_not_configured" }),
-      ),
-    ).toBe("unsupported");
-    expect(
-      registryStatusFromError(
-        new EnvironmentHttpConflictError({ message: "workstream_cursor_stale" }),
-      ),
-    ).toBe("error");
-    expect(registryStatusFromError(new Error("network"))).toBe("error");
-  });
-
+describe("design request held guidance", () => {
   it("has a fix sentence for every held reason", () => {
     for (const reason of DESIGN_REQUEST_HELD_REASONS)
       expect(DESIGN_REQUEST_HELD_FIXES[reason].length).toBeGreaterThan(10);
