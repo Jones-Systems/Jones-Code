@@ -12,13 +12,15 @@ export const layerWithRequirement = (
     outcome: "absent",
     gate: { outcome: "clear", fenceRevision: "0" },
   },
+  requirementFor: GoalContinuity.GoalContinuity["Service"]["requirementFor"] = () =>
+    Effect.succeed(requirement),
 ) =>
   Layer.mergeAll(
     Layer.succeed(Environment.ServerEnvironmentIdentity, {
       getEnvironmentId: Effect.succeed(EnvironmentId.make("environment:mcp-test")),
     }),
     Layer.mock(GoalContinuity.GoalContinuity)({
-      requirementFor: () => Effect.succeed(requirement),
+      requirementFor,
       context: (capability) => ({
         capability,
         recordRecoveryTransition: () =>

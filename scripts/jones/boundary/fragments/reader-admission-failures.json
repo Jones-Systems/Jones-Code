@@ -1,0 +1,29 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "reader-admission-failures",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/goals/continuity/readerAdmissionStart.testkit.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/orchestration-v2/UserFacingErrors.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/UserFacingErrors.ts",
+      "to": "packages/shared/src/jones/sqliteReaders/admissionFailure.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/orchestration/appFailureReason.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
+      "to": "apps/server/src/jones/orchestration/appFailureReason.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/goals/continuity/readerAdmissionStart.testkit.ts"
+    }
+  ]
+}

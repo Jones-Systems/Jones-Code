@@ -3,6 +3,10 @@ import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts"
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
+import {
+  registerReaderAdmissionStartTests,
+  type ReaderAdmissionHarnessInput,
+} from "../jones/goals/continuity/readerAdmissionStart.testkit.ts";
 import * as ContinuityAdmissionTestkit from "../jones/goals/continuity/admission.testkit.ts";
 import type { ContinuityRequirement } from "@t3tools/provider-core/server/jones/GoalContinuityContext";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -474,7 +478,7 @@ effectIt.effect.each([
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-function makeLocalCommandHarness(input: {
+function makeLocalCommandHarness(input: ReaderAdmissionHarnessInput & {
   readonly conversationLayer?: Layer.Layer<ConversationPolicy.ConversationPolicy>;
   readonly conversationDriver?: string;
   readonly continuityRequirement?: ContinuityRequirement;
@@ -1097,6 +1101,23 @@ function makeLocalCommandHarness(input: {
     ({ thread }: Parameters<RuntimePolicy.RuntimePolicyV2Shape["resolve"]>[0]) =>
       Effect.succeed({ cwd: thread.worktreePath ?? "/tmp/native-account-command" } as never),
   );
+  let writerRetired = false;
+  const detach = vi.fn<ProviderSessionManager.ProviderSessionManagerV2["Service"]["detach"]>(
+    ({ providerSessionId, requireWriterRetirement }) => {
+      expect(requireWriterRetirement).toBe(true);
+      if (input.retireBeforeRevalidation === true) {
+        writerRetired = true;
+        return Effect.void;
+      }
+      return Effect.fail(
+        new ProviderSessionManager.ProviderSessionReleaseError({
+          providerSessionId,
+          reason: "manual_shutdown",
+          cause: input.retirementFailure,
+        }),
+      );
+    },
+  );
   const recreateCheckout = vi.fn<RecreateCheckout>();
   const getThreadRecords = vi.fn<ProjectionStore.ProjectionStoreV2Shape["getThreadRecords"]>(() =>
     Effect.succeed(projection),
@@ -1114,7 +1135,12 @@ function makeLocalCommandHarness(input: {
   const recreationLayer = observedRecreationLayer(input.recreation, recreateCheckout);
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(input.conversationLayer ?? Layer.empty),
-    Layer.provide(ContinuityAdmissionTestkit.layerWithRequirement(input.continuityRequirement)),
+    Layer.provide(
+      ContinuityAdmissionTestkit.layerWithRequirement(
+        input.continuityRequirement,
+        input.continuityRead,
+      ),
+    ),
     Layer.provide(ControlAdmission.layer),
     Layer.provide(
       Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
@@ -1126,7 +1152,12 @@ function makeLocalCommandHarness(input: {
             instanceChanged: false,
             modelChanged: false,
             targetProviderThreadId: null,
-            releaseProviderSessionIds: "retirementFailure" in input ? [providerSessionId] : [],
+            releaseProviderSessionIds:
+              "retirementFailure" in input ||
+              (input.retireBeforeRevalidation === true &&
+                projection.providerSessions.some((session) => session.id === providerSessionId))
+                ? [providerSessionId]
+                : [],
             transition: { type: "reuse" },
           }),
       }),
@@ -1162,14 +1193,20 @@ function makeLocalCommandHarness(input: {
           getThreadRecords,
           getTurnStartContext,
           getRuntimeRecoveryProjection: () =>
-            Effect.as(failReadIfRunning, {
-              ...projection,
-              hasConversation: projection.messages.some(
-                (m) =>
-                  m.role === "user" &&
-                  (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
+            (input.runtimeRecoveryRead?.() ?? Effect.void).pipe(
+              Effect.andThen(
+                Effect.suspend(() =>
+                  Effect.as(failReadIfRunning, {
+                    ...projection,
+                    hasConversation: projection.messages.some(
+                      (m) =>
+                        m.role === "user" &&
+                        (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
+                    ),
+                  }),
+                ),
               ),
-            }),
+            ),
           getTurnStartHistory: () =>
             input.effortProof === undefined
               ? Effect.fail(
@@ -1183,18 +1220,9 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           reconcileThreadBindingPublication: () => Effect.sync(reconcilePublication),
           awaitThreadRetirement: () => Effect.void,
-          hasRetiredWriter: () => Effect.succeed(false),
+          hasRetiredWriter: () => Effect.succeed(writerRetired),
           open,
-          detach: ({ providerSessionId, requireWriterRetirement }) => {
-            expect(requireWriterRetirement).toBe(true);
-            return Effect.fail(
-              new ProviderSessionManager.ProviderSessionReleaseError({
-                providerSessionId,
-                reason: "manual_shutdown",
-                cause: input.retirementFailure,
-              }),
-            );
-          },
+          detach,
           get: () =>
             Effect.succeed(
               input.liveKeepWarmSession
@@ -1234,6 +1262,7 @@ function makeLocalCommandHarness(input: {
     resolveRuntimePolicy,
     recreateCheckout,
     reconcilePublication,
+    detach,
     open,
     fallbackEnsure: resumeFallbackSession.ensureThread,
     ensureThread,
@@ -1267,6 +1296,8 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+registerReaderAdmissionStartTests(makeLocalCommandHarness);
 
 effectIt.effect.each(["delivery_pending", "delivery_unknown", "recovery_required"] as const)(
   "keeps a historical continuity fence before provider loading (%s)",
