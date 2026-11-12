@@ -6,9 +6,30 @@ it.effect(
   () => historyScenario({ mode: "superseded-rebound-session", accountSwitch: true }),
 );
 
+it.effect.each([false, true])(
+  "retains an account-switch terminal for a failed successor, reused account: %s",
+  (reusedAccount) =>
+    historyScenario({ mode: "failed-replacement", accountSwitch: true, reusedAccount }),
+);
+
+it.effect.each(["session", "instance", "conversation", "generation", "revision"] as const)(
+  "refuses account-switch history after replacement %s drift",
+  (replacementChange) =>
+    historyScenario({
+      mode: "changed-replacement",
+      accountSwitch: true,
+      reusedAccount: true,
+      replacementChange,
+    }),
+);
+
 it.effect.each(["changed-replacement", "wrong-generation", "advanced-successor"] as const)(
   "refuses account-switch terminal history when its captured proof changes: %s",
   (mode) => historyScenario({ mode, accountSwitch: true }),
+);
+
+it.effect("preserves the raw rejection reason after its logical terminal companion", () =>
+  historyScenario({ mode: "changed-replacement", logicalCompanion: true }),
 );
 
 it.effect(

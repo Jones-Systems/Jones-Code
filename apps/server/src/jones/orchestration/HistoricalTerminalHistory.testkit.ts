@@ -95,6 +95,9 @@ export const historyScenario = ({
   uncertainPublication = false,
   readback = "found",
   accountSwitch = false,
+  reusedAccount = false,
+  replacementChange = "generation",
+  logicalCompanion = false,
 }: {
   readonly mode: (typeof modes)[number];
   readonly lockFailures?: number;
@@ -105,6 +108,9 @@ export const historyScenario = ({
   readonly uncertainPublication?: boolean;
   readonly readback?: "found" | "missing" | "unavailable" | "mismatched";
   readonly accountSwitch?: boolean;
+  readonly reusedAccount?: boolean;
+  readonly replacementChange?: "session" | "instance" | "conversation" | "generation" | "revision";
+  readonly logicalCompanion?: boolean;
 }) => {
   const ordinaryRace = mode.startsWith("ordinary-") || normalizationFailure;
   const admissionFailure = new ProjectionStore.ProjectionStoreReadError({
@@ -594,7 +600,13 @@ export const historyScenario = ({
         ? {
             id: ProviderThreadId.make("provider-thread:replacement-account"),
             providerInstanceId: ProviderInstanceId.make("codex_replacement_account"),
-            runtimeIdentity: null,
+            runtimeIdentity: reusedAccount
+              ? {
+                  ...providerThread.runtimeIdentity!,
+                  runtimeGeneration: "target-account-generation",
+                  evidenceRevision: 7,
+                }
+              : undefined,
           }
         : {}),
       providerSessionId: ProviderSessionId.make("session:replacement"),
@@ -715,10 +727,30 @@ export const historyScenario = ({
         events: [
           event("changed-replacement", "provider-thread.updated", {
             ...rebound,
-            runtimeIdentity: {
-              ...providerThread.runtimeIdentity!,
-              runtimeGeneration: "replacement-generation",
-            },
+            ...(replacementChange === "session"
+              ? { providerSessionId: ProviderSessionId.make("session:changed") }
+              : replacementChange === "instance"
+                ? { providerInstanceId: ProviderInstanceId.make("codex_changed") }
+                : replacementChange === "conversation"
+                  ? {
+                      nativeThreadRef: {
+                        ...rebound.nativeThreadRef!,
+                        nativeId: "changed-native-thread",
+                      },
+                    }
+                  : replacementChange === "revision"
+                    ? {
+                        runtimeIdentity: {
+                          ...rebound.runtimeIdentity!,
+                          evidenceRevision: rebound.runtimeIdentity!.evidenceRevision + 1,
+                        },
+                      }
+                    : {
+                        runtimeIdentity: {
+                          ...providerThread.runtimeIdentity!,
+                          runtimeGeneration: "replacement-generation",
+                        },
+                      }),
           }),
         ],
       });
@@ -894,6 +926,15 @@ export const historyScenario = ({
               })
             : ingest
     ).pipe(Effect.exit);
+    if (logicalCompanion)
+      yield* ingestor.ingestNormalized({
+        providerSessionId,
+        providerInstanceId,
+        threadId: ids.threadId,
+        runId: ids.runId,
+        nodeId: ids.rootNodeId,
+        event: logicalTerminalForIngestion,
+      });
     const exhausted = lockFailures === 3;
     if (uncertainPublication && readback !== "found") {
       assert.isTrue(Exit.isFailure(result));
