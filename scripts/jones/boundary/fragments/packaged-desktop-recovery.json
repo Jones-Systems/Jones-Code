@@ -1,7 +1,12 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "packaged-desktop-recovery-harness",
-  "jonesOwnedPaths": [],
+  "jonesOwnedPaths": [
+    "scripts/jones/updates/packaged-desktop-helper-fault.mjs",
+    "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs",
+    "scripts/jones/updates/packaged-desktop-helper-preload.py",
+    "scripts/jones/updates/packaged-desktop-pair.node-test.mjs"
+  ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": []
