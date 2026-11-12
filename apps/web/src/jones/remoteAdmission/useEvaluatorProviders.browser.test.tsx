@@ -11,6 +11,7 @@ import "../../index.css";
 
 const request = vi.hoisted(() => vi.fn());
 vi.mock("./runtime", () => ({ remoteAdmissionRequest: request }));
+vi.mock("../../components/settings/settingsLayout", () => import("./settingsLayoutTestStub"));
 vi.mock("../../state/environments", () => ({
   useEnvironment: () => ({ label: "Synthetic receiver", connection: { phase: "connected" } }),
   useEnvironmentIds: () => [],

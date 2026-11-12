@@ -74,7 +74,7 @@ export function LinkedEnvironmentsSettings({
       ) : links.data.links.length === 0 ? (
         <SettingsRow
           title="No linked environments"
-          description="Link another machine running T3 Code, such as a VPS, so agents here can launch and drive threads there."
+          description="Let agents here start and drive threads on another machine, such as a VPS."
         />
       ) : (
         links.data.links.map((link) => (
