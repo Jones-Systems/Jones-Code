@@ -1,7 +1,7 @@
 import { SettingsRow, SettingsSection } from "../../components/settings/settingsLayout";
 import { useEnvironments } from "../../state/environments";
 import { usePersonalWorkstreams } from "../../state/workstreamsPersonal";
-export const personalStatusLabels = {
+const personalStatusLabels = {
   ready: "Ready",
   offline: "Offline",
   update_required: "Update required",

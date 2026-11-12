@@ -7,7 +7,7 @@ import type {
 } from "./route.ts";
 
 // Synthetic registry state for design-request tests; no live registry or thread data.
-export const NOW = Date.parse("2026-10-09T12:00:00.000Z");
+const NOW = Date.parse("2026-10-09T12:00:00.000Z");
 export const binding: DesignRequestBinding = {
   bindingId: "0".repeat(32),
   galleryOrigin: "http://100.113.248.16:4339",

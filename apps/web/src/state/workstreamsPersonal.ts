@@ -2,7 +2,6 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   createPersonalWorkstreamsController,
   createPersonalWorkstreamsRpcTransport,
-  createPersonalWorkstreamsCommands,
   type PersonalConnection,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { PersonalWorkstreamsSnapshot } from "@t3tools/contracts/jones/workstreamsPersonal";
@@ -12,7 +11,6 @@ import * as Effect from "effect/Effect";
 import { layer as browserCryptoLayer } from "../cloud/dpop";
 import type { WsRpcProtocolClient } from "@t3tools/client-runtime/rpc";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { connectionAtomRuntime } from "../connection/runtime";
 
 const clients = new Map<string, { generation: string | number; client: WsRpcProtocolClient }>();
 const randomUUID = () =>
@@ -64,10 +62,6 @@ export const personalWorkstreamsController = createPersonalWorkstreamsController
       ),
   },
 });
-export const personalWorkstreamsCommands = createPersonalWorkstreamsCommands(
-  connectionAtomRuntime,
-  personalWorkstreamsController,
-);
 export function bindPersonalWorkstreams(
   connections: readonly PersonalConnection[],
   resolveClient: (connection: PersonalConnection) => WsRpcProtocolClient | undefined,

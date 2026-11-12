@@ -187,39 +187,37 @@ describe("DesktopShellEnvironment", () => {
     }),
   );
 
-  it.effect(
-    "recovers Workstreams activation from the login shell for an empty GUI environment",
-    () =>
-      Effect.gen(function* () {
-        const env: NodeJS.ProcessEnv = {};
-        const activation = {
-          T3_WORKSTREAM_CONTROL_PLANE_URL: "https://workstreams.example.test",
-          T3_WORKSTREAM_OWNER_ID: "test-owner",
-          T3_WORKSTREAM_PRINCIPAL_ID: "test-principal",
-          T3_WORKSTREAM_KEY_ID: "test-key",
-          T3_WORKSTREAM_SIGNING_SECRET: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-          T3_WORKSTREAM_AUTHORIZATION_REVISION: "7",
-          T3_WORKSTREAM_REGISTRY_BINDING: "synthetic-canonical-binding-token",
-        };
+  it.effect("does not probe legacy Workstreams activation from the login shell", () =>
+    Effect.gen(function* () {
+      const env: NodeJS.ProcessEnv = {};
+      const activation = {
+        T3_WORKSTREAM_CONTROL_PLANE_URL: "https://workstreams.example.test",
+        T3_WORKSTREAM_OWNER_ID: "test-owner",
+        T3_WORKSTREAM_PRINCIPAL_ID: "test-principal",
+        T3_WORKSTREAM_KEY_ID: "test-key",
+        T3_WORKSTREAM_SIGNING_SECRET: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        T3_WORKSTREAM_AUTHORIZATION_REVISION: "7",
+        T3_WORKSTREAM_REGISTRY_BINDING: "synthetic-canonical-binding-token",
+      };
 
-        yield* runShellEnvironment({
-          env,
-          platform: "darwin",
-          handler: (command) => {
-            assert.equal(command._tag, "StandardCommand");
-            if (command._tag !== "StandardCommand") return "";
-            assert.equal(command.command, "/bin/zsh");
-            for (const name of Object.keys(activation)) {
-              assert.include(command.args.join(" "), `printenv ${name} || true`);
-            }
-            return envOutput({ PATH: "/usr/bin", ...activation });
-          },
-        });
+      yield* runShellEnvironment({
+        env,
+        platform: "darwin",
+        handler: (command) => {
+          assert.equal(command._tag, "StandardCommand");
+          if (command._tag !== "StandardCommand") return "";
+          assert.equal(command.command, "/bin/zsh");
+          for (const name of Object.keys(activation)) {
+            assert.notInclude(command.args.join(" "), `printenv ${name} || true`);
+          }
+          return envOutput({ PATH: "/usr/bin" });
+        },
+      });
 
-        for (const [name, value] of Object.entries(activation)) {
-          assert.equal(env[name], value);
-        }
-      }),
+      for (const name of Object.keys(activation)) {
+        assert.isUndefined(env[name]);
+      }
+    }),
   );
 
   it.effect("preserves inherited Workstreams activation over login-shell values", () =>

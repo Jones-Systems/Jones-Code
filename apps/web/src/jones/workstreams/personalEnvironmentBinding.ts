@@ -59,7 +59,7 @@ const capturedSessionsAtom = environmentAtomList(
   capturedSessionAtom,
 );
 
-export function usePersonalWorkstreamsEnvironmentBinding() {
+function usePersonalWorkstreamsEnvironmentBinding() {
   const { environments } = useEnvironments();
   const writableEnvironments = useEnvironmentsWithScope(environments, "orchestration:operate");
   const capturedSessions = useAtomValue(
