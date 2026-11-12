@@ -344,6 +344,134 @@ async function installSelection(f) {
 }
 
 NodeTest.test(
+  "deferred before-pair snapshots quiet state after live writes and rejects changes before reopen",
+  async () => {
+    for (const corrupt of [false, true]) {
+      const source = relaunchControl(corrupt)
+        .replace(
+          "def pair_state",
+          "def valid_process_proofs(proofs): return proofs == [123]\ndef pair_state",
+        )
+        .replace(
+          "    for proof in proofs: alive(proof)",
+          "    for proof in proofs: alive(proof)\n    pathlib.Path(intent['expected']['databasePath']).write_text('last-live-write')",
+        )
+        .replace(
+          "def kernel_process_identity(*args): return True",
+          "def kernel_process_identity(*args): return False",
+        )
+        .replace(
+          "    preparation_step = 'storage'",
+          "    captured_processes = [123]\n    preparation_step = 'storage'",
+        );
+      await fixture(async (f) => {
+        const selected = await installSelection(f);
+        const prepared = await preparePackagedDesktopHelperFault({
+          fixtureRoot: f.root,
+          helper: f.helper,
+          manifest: f.manifest,
+          selection: selected.selection,
+          point: "before-pair",
+          observeRelaunch: true,
+        });
+        await selected.prepare();
+        const result = await execute(f, prepared, [
+          f.helper,
+          "--manifest",
+          f.manifest,
+          "--activate",
+          f.intent,
+        ]);
+        NodeAssert.equal(result.code, corrupt ? 125 : 0, result.stderr);
+        if (corrupt) {
+          await NodeAssert.rejects(prepared.readRelaunchReceipt());
+          await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(f.active.profile, "started")), {
+            code: "ENOENT",
+          });
+        } else {
+          const receipt = await prepared.readRelaunchReceipt();
+          NodeAssert.equal(
+            receipt.state[f.active.databasePath].sha256,
+            NodeCrypto.createHash("sha256").update("last-live-write").digest("hex"),
+          );
+          const snapshotPath = NodePath.join(
+            NodePath.dirname(prepared.planPath),
+            "before-pair-state.json",
+          );
+          const snapshot = JSON.parse(await NodeFSP.readFile(snapshotPath));
+          snapshot.pid += 1;
+          await NodeFSP.writeFile(snapshotPath, JSON.stringify(snapshot), { mode: 0o600 });
+          await NodeAssert.rejects(prepared.readRelaunchReceipt());
+        }
+      }, source);
+    }
+  },
+);
+
+NodeTest.test(
+  "deferred relaunch observation refuses points without a quiet before-pair boundary",
+  async () => {
+    await fixture(async (f) => {
+      const selected = await installSelection(f);
+      for (const point of ["storage", "reserve", "exit-wait"])
+        await NodeAssert.rejects(
+          preparePackagedDesktopHelperFault({
+            fixtureRoot: f.root,
+            helper: f.helper,
+            manifest: f.manifest,
+            selection: selected.selection,
+            point,
+            observeRelaunch: true,
+          }),
+        );
+    });
+  },
+);
+
+NodeTest.test(
+  "deferred before-pair refuses a snapshot while a recorded process is still alive",
+  async () => {
+    const source = relaunchControl(false)
+      .replace(
+        "def pair_state",
+        "def valid_process_proofs(proofs): return proofs == [123]\ndef pair_state",
+      )
+      .replace(
+        "    preparation_step = 'storage'",
+        "    captured_processes = [123]\n    preparation_step = 'storage'",
+      );
+    await fixture(async (f) => {
+      const selected = await installSelection(f);
+      const prepared = await preparePackagedDesktopHelperFault({
+        fixtureRoot: f.root,
+        helper: f.helper,
+        manifest: f.manifest,
+        selection: selected.selection,
+        point: "before-pair",
+        observeRelaunch: true,
+      });
+      await selected.prepare();
+      const result = await execute(f, prepared, [
+        f.helper,
+        "--manifest",
+        f.manifest,
+        "--activate",
+        f.intent,
+      ]);
+      NodeAssert.equal(result.code, 125, result.stderr);
+      for (const name of ["fault-receipt.json", "before-pair-state.json", "before-relaunch.json"])
+        await NodeAssert.rejects(
+          NodeFSP.lstat(NodePath.join(NodePath.dirname(prepared.planPath), name)),
+          { code: "ENOENT" },
+        );
+      await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(f.active.profile, "started")), {
+        code: "ENOENT",
+      });
+    }, source);
+  },
+);
+
+NodeTest.test(
   "Install preload binds the later prepared intent without intercepting claim commands",
   async () => {
     await fixture(async (f) => {

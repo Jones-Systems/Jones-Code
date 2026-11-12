@@ -7,6 +7,7 @@ import * as NodeTest from "node:test";
 import * as NodeVM from "node:vm";
 import {
   bindPackagedDesktopPair,
+  observePackagedDesktopInstallRefusal,
   validatePackagedDesktopGuiSession,
   bindPackagedDesktopPreparedIntent,
   validatePackagedDesktopPreEffect,
@@ -239,7 +240,18 @@ NodeTest.test(
       ["exit-wait", "preparing", "stop-processes"],
       ["before-pair", "quiescent", "pair"],
     ]) {
-      const fault = { point, phase, step, transactionId: activation.transactionId };
+      const fault = {
+        point,
+        phase,
+        step,
+        transactionId: activation.transactionId,
+        function: {
+          storage: "storage_preflight",
+          reserve: "reserve_recovery_capacity",
+          "exit-wait": "kernel_process_identity",
+          "before-pair": "pair_state",
+        }[point],
+      };
       for (const expectedRelaunch of ["started", "skipped"]) {
         const journal = {
           intent: activation,
@@ -277,129 +289,507 @@ NodeTest.test(
   },
 );
 
+async function preparedFixture(body) {
+  await fixture(async ({ root, active, candidate }) => {
+    const home = NodePath.join(root, "home");
+    const profile = NodePath.join(root, "profile");
+    await NodeFSP.mkdir(home, { mode: 0o700 });
+    await NodeFSP.mkdir(profile, { mode: 0o700 });
+    const runtime = NodePath.join(home, "runtime");
+    const updates = NodePath.join(runtime, "jones-updates");
+    const transactionId = "e".repeat(64);
+    const transaction = NodePath.join(updates, "transactions", transactionId);
+    await NodeFSP.mkdir(transaction, { recursive: true, mode: 0o700 });
+    const databasePath = NodePath.join(home, "state.sqlite");
+    await NodeFSP.writeFile(databasePath, "binding-control-only", { mode: 0o600 });
+    const manifest = NodePath.join(runtime, "jones-active-install.json");
+    const intent = NodePath.join(transaction, "intent.json");
+    const current = {
+      protocol: 1,
+      owner: "desktop",
+      generation: "previous",
+      transactionId: "bootstrap",
+      home,
+      profile,
+      databasePath,
+      environmentId: "disposable-control",
+      ...Object.fromEntries(
+        ["appPath", "executablePath", "sourceSha", "sourceTree", "version", "appDigest"].map(
+          (key) => [key, active[key]],
+        ),
+      ),
+    };
+    const staged = Object.fromEntries(
+      ["appPath", "executablePath", "sourceSha", "sourceTree", "version", "appDigest"].map(
+        (key) => [key, candidate[key]],
+      ),
+    );
+    staged.handle = "d".repeat(64);
+    const continuationReceipt = NodePath.join(transaction, "continuation.json");
+    await NodeFSP.mkdir(NodePath.join(updates, "staging"), { mode: 0o700 });
+    const selectionPath = NodePath.join(updates, "staging/selection.json");
+    const selectionBytes = Buffer.from(JSON.stringify({ active: current, app: staged }));
+    const helperBytes = Buffer.from("not-executed helper provenance control");
+    const helper = NodePath.join(
+      updates,
+      "activate-v1-" + NodeCrypto.createHash("sha256").update(helperBytes).digest("hex") + ".py",
+    );
+    const claim = {
+      protocol: 1,
+      preparationClaimProtocol: 3,
+      transactionId,
+      home,
+      profile,
+      databasePath,
+      environmentId: current.environmentId,
+      stagedHandle: staged.handle,
+      selectionPath,
+      selectionSha256: NodeCrypto.createHash("sha256").update(selectionBytes).digest("hex"),
+    };
+    const activation = {
+      protocol: 1,
+      transactionId,
+      expected: current,
+      staged,
+      continuationReceipt,
+    };
+    const write = (name, value) =>
+      NodeFSP.writeFile(name, Buffer.isBuffer(value) ? value : JSON.stringify(value), {
+        mode: 0o600,
+      });
+    await write(manifest, current);
+    await write(intent, activation);
+    await write(helper, helperBytes);
+    await write(selectionPath, selectionBytes);
+    await write(continuationReceipt, { ...claim, prepared: true });
+    await write(NodePath.join(transaction, "prepare-intent.json"), claim);
+    await write(NodePath.join(transaction, "prepare-dispatched.json"), claim);
+    const pair = await bindPackagedDesktopPair({ fixtureRoot: root, active, candidate });
+    await body({
+      root,
+      pair,
+      helper,
+      manifest,
+      intent,
+      activation,
+      current,
+      staged,
+      transaction,
+      claim,
+      selectionPath,
+      selectionBytes,
+      helperBytes,
+      write,
+      active,
+    });
+  });
+}
+
 NodeTest.test(
   "prepared-intent binding consumes exact existing claims and refuses a different staged app",
   async () => {
-    await fixture(async ({ root, active, candidate }) => {
-      const home = NodePath.join(root, "home");
-      const profile = NodePath.join(root, "profile");
-      await NodeFSP.mkdir(home, { mode: 0o700 });
-      await NodeFSP.mkdir(profile, { mode: 0o700 });
-      const runtime = NodePath.join(home, "runtime");
-      const updates = NodePath.join(runtime, "jones-updates");
-      const transactionId = "e".repeat(64);
-      const transaction = NodePath.join(updates, "transactions", transactionId);
-      await NodeFSP.mkdir(transaction, { recursive: true, mode: 0o700 });
-      const databasePath = NodePath.join(home, "state.sqlite");
-      await NodeFSP.writeFile(databasePath, "binding-control-only", { mode: 0o600 });
-      const manifest = NodePath.join(runtime, "jones-active-install.json");
-      const intent = NodePath.join(transaction, "intent.json");
-      const current = {
-        protocol: 1,
-        owner: "desktop",
-        generation: "previous",
-        transactionId: "bootstrap",
-        home,
-        profile,
-        databasePath,
-        environmentId: "disposable-control",
-        ...Object.fromEntries(
-          ["appPath", "executablePath", "sourceSha", "sourceTree", "version", "appDigest"].map(
-            (key) => [key, active[key]],
-          ),
-        ),
-      };
-      const staged = Object.fromEntries(
-        ["appPath", "executablePath", "sourceSha", "sourceTree", "version", "appDigest"].map(
-          (key) => [key, candidate[key]],
-        ),
-      );
-      staged.handle = "fixture-control-handle";
-      const continuationReceipt = NodePath.join(transaction, "continuation.json");
-      const selectionPath = NodePath.join(updates, "selection.json");
-      const selectionBytes = Buffer.from(JSON.stringify({ active: current, app: staged }));
-      const helperBytes = Buffer.from("not-executed helper provenance control");
-      const helper = NodePath.join(
-        updates,
-        "activate-v1-" + NodeCrypto.createHash("sha256").update(helperBytes).digest("hex") + ".py",
-      );
-      const claim = {
-        protocol: 1,
-        preparationClaimProtocol: 3,
-        transactionId,
-        home,
-        profile,
-        databasePath,
-        environmentId: current.environmentId,
-        stagedHandle: staged.handle,
-        selectionPath,
-        selectionSha256: NodeCrypto.createHash("sha256").update(selectionBytes).digest("hex"),
-      };
-      const activation = {
-        protocol: 1,
-        transactionId,
-        expected: current,
-        staged,
-        continuationReceipt,
-      };
-      const write = (name, value) =>
-        NodeFSP.writeFile(name, Buffer.isBuffer(value) ? value : JSON.stringify(value), {
-          mode: 0o600,
-        });
-      await write(manifest, current);
-      await write(intent, activation);
-      await write(helper, helperBytes);
-      await write(selectionPath, selectionBytes);
-      await write(continuationReceipt, { ...claim, prepared: true });
-      await write(NodePath.join(transaction, "prepare-intent.json"), claim);
-      await write(NodePath.join(transaction, "prepare-dispatched.json"), claim);
-      const pair = await bindPackagedDesktopPair({ fixtureRoot: root, active, candidate });
-      const binding = await bindPackagedDesktopPreparedIntent({ pair, helper, manifest, intent });
-      await binding.assertInputsUnchanged();
-      // These inert input controls never satisfy native helper provenance or execute it.
-      await write(intent, { ...activation, staged: { ...staged, appPath: active.appPath } });
-      await NodeAssert.rejects(
-        bindPackagedDesktopPreparedIntent({ pair, helper, manifest, intent }),
-      );
-      await write(intent, activation);
-      await write(NodePath.join(transaction, "prepare-dispatched.json"), {
-        ...claim,
-        transactionId: "d".repeat(64),
-      });
-      await NodeAssert.rejects(
-        bindPackagedDesktopPreparedIntent({ pair, helper, manifest, intent }),
-      );
-      await write(NodePath.join(transaction, "prepare-dispatched.json"), claim);
-      await write(NodePath.join(transaction, "journal.json"), {
-        intent: activation,
-        phase: "intent",
-      });
-      await NodeAssert.rejects(
-        bindPackagedDesktopPreparedIntent({ pair, helper, manifest, intent }),
-      );
-      const interrupted = await bindPackagedDesktopPreparedIntent({
+    await preparedFixture(
+      async ({
         pair,
         helper,
         manifest,
         intent,
-        interruptedPhase: "intent",
-      });
-      NodeAssert.equal(interrupted.initialJournal.phase, "intent");
-      NodeAssert.match(interrupted.initialJournalSha256, /^[a-f0-9]{64}$/);
-      await write(NodePath.join(transaction, "journal.json"), {
-        intent: activation,
-        phase: "blocked",
-      });
-      await NodeAssert.rejects(
-        bindPackagedDesktopPreparedIntent({
+        activation,
+        staged,
+        active,
+        transaction,
+        claim,
+        write,
+      }) => {
+        const binding = await bindPackagedDesktopPreparedIntent({ pair, helper, manifest, intent });
+        await binding.assertInputsUnchanged();
+        // These inert input controls never satisfy native helper provenance or execute it.
+        await write(intent, { ...activation, staged: { ...staged, appPath: active.appPath } });
+        await NodeAssert.rejects(
+          bindPackagedDesktopPreparedIntent({ pair, helper, manifest, intent }),
+        );
+        await write(intent, activation);
+        await write(NodePath.join(transaction, "prepare-dispatched.json"), {
+          ...claim,
+          transactionId: "d".repeat(64),
+        });
+        await NodeAssert.rejects(
+          bindPackagedDesktopPreparedIntent({ pair, helper, manifest, intent }),
+        );
+        await write(NodePath.join(transaction, "prepare-dispatched.json"), claim);
+        await write(NodePath.join(transaction, "journal.json"), {
+          intent: activation,
+          phase: "intent",
+        });
+        await NodeAssert.rejects(
+          bindPackagedDesktopPreparedIntent({ pair, helper, manifest, intent }),
+        );
+        const interrupted = await bindPackagedDesktopPreparedIntent({
           pair,
           helper,
           manifest,
           intent,
           interruptedPhase: "intent",
-        }),
-      );
+        });
+        NodeAssert.equal(interrupted.initialJournal.phase, "intent");
+        NodeAssert.match(interrupted.initialJournalSha256, /^[a-f0-9]{64}$/);
+        await write(NodePath.join(transaction, "journal.json"), {
+          intent: activation,
+          phase: "blocked",
+        });
+        await NodeAssert.rejects(
+          bindPackagedDesktopPreparedIntent({
+            pair,
+            helper,
+            manifest,
+            intent,
+            interruptedPhase: "intent",
+          }),
+        );
+      },
+    );
+  },
+);
+
+const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+
+// Inert protocol controls test custody decisions and receipt relationships only.
+// They do not claim a native Install, kernel watch, process exit or packaged pass.
+async function refusedFixture(body) {
+  await preparedFixture(async (f) => {
+    const { root, current, activation, staged, transaction, claim, write } = f;
+    const appIdentity = {
+      pid: 123,
+      uid: process.getuid(),
+      startSec: 456,
+      startUsec: 789,
+      executable: f.pair.active.executablePath,
+    };
+    activation.processes = [{ pid: appIdentity.pid, role: "main" }];
+    activation.listener = "synthetic-listener";
+    await write(f.intent, activation);
+    await write(NodePath.join(transaction, "activation-request.json"), activation);
+    const { uid, ...proof } = appIdentity;
+    NodeAssert.equal(uid, process.getuid());
+    const prepare = {
+      protocol: 1,
+      transactionId: activation.transactionId,
+      stagedHandle: staged.handle,
+      processes: [proof],
+      claimSha256: digest(
+        await NodeFSP.readFile(NodePath.join(transaction, "prepare-intent.json")),
+      ),
+    };
+    await write(NodePath.join(transaction, "prepare-request.json"), prepare);
+    const attempts = NodePath.join(current.home, "runtime/jones-updates/attempt-selections");
+    await NodeFSP.mkdir(attempts, { mode: 0o700 });
+    const attemptPath = NodePath.join(
+      attempts,
+      digest(f.selectionPath + "\n" + claim.selectionSha256) + ".json",
+    );
+    await write(attemptPath, {
+      protocol: 1,
+      transactionId: activation.transactionId,
+      stagedHandle: staged.handle,
+      selectionPath: f.selectionPath,
+      selectionSha256: claim.selectionSha256,
+      expected: current,
     });
+    const preload = NodePath.join(root, "python-preload");
+    await NodeFSP.mkdir(preload, { mode: 0o700 });
+    const rootInfo = await NodeFSP.lstat(root, { bigint: true });
+    const plan = {
+      protocol: 2,
+      fixtureRoot: root,
+      rootDevice: String(rootInfo.dev),
+      rootInode: String(rootInfo.ino),
+      helper: f.helper,
+      manifest: f.manifest,
+      helperSha256: digest(f.helperBytes),
+      manifestSha256: digest(await NodeFSP.readFile(f.manifest)),
+      selection: f.selectionPath,
+      selectionSha256: claim.selectionSha256,
+      point: "storage",
+      observeRelaunch: false,
+    };
+    const planPath = NodePath.join(preload, "fault-plan.json");
+    await write(planPath, plan);
+    const receiptPath = NodePath.join(preload, "fault-receipt.json");
+    const receipt = {
+      protocol: 1,
+      kind: "packaged-desktop-helper-fault",
+      pid: 124,
+      transactionId: activation.transactionId,
+      point: "storage",
+      phase: "intent",
+      step: "storage",
+      function: "storage_preflight",
+      helperSha256: plan.helperSha256,
+      manifestSha256: plan.manifestSha256,
+      intentSha256: digest(await NodeFSP.readFile(f.intent)),
+      planSha256: digest(await NodeFSP.readFile(planPath)),
+      journalSha256: digest("initial-journal-control"),
+    };
+    await write(receiptPath, receipt);
+    const journal = {
+      intent: activation,
+      phase: "rolled-back",
+      preEffect: {
+        phase: "intent",
+        step: "storage",
+        reason: "preparation-failed",
+        diagnostics: { errno: 5 },
+        relaunch: "skipped",
+      },
+    };
+    await write(NodePath.join(transaction, "journal.json"), journal);
+    await body({
+      ...f,
+      receipt,
+      receiptPath,
+      journal,
+      prepare,
+      attemptPath,
+      appIdentity,
+      fault: {
+        argv: null,
+        receiptPath,
+        readReceipt: async () => JSON.parse(await NodeFSP.readFile(receiptPath)),
+      },
+    });
+  });
+}
+
+NodeTest.test(
+  "completed refusal binding preserves strict default and rejects stale or forged prepared relations",
+  async () => {
+    await refusedFixture(async (f) => {
+      const args = { pair: f.pair, helper: f.helper, manifest: f.manifest, intent: f.intent };
+      await NodeAssert.rejects(bindPackagedDesktopPreparedIntent(args));
+      const refused = { ...args, outcome: "pre-effect-refused", fault: f.receipt };
+      const binding = await bindPackagedDesktopPreparedIntent(refused);
+      NodeAssert.equal(binding.initialJournal, null);
+      NodeAssert.equal(binding.finalJournal.phase, "rolled-back");
+      await binding.assertInputsUnchanged();
+      const mutations = [
+        [f.selectionPath, { active: f.current, app: { ...f.staged, handle: "f".repeat(64) } }],
+        [NodePath.join(f.transaction, "prepare-dispatched.json"), { ...f.claim, prepared: true }],
+        [
+          NodePath.join(f.transaction, "prepare-request.json"),
+          { ...f.prepare, claimSha256: "0".repeat(64) },
+        ],
+        [
+          NodePath.join(f.transaction, "activation-request.json"),
+          { ...f.activation, processes: [] },
+        ],
+        [f.attemptPath, { protocol: 1, transactionId: "0".repeat(64) }],
+        [f.receiptPath, { ...f.receipt, intentSha256: "0".repeat(64) }],
+        [NodePath.join(f.transaction, "journal.json"), { ...f.journal, phase: "blocked" }],
+        [NodePath.join(f.transaction, "journal.json"), { ...f.journal, legacySettlement: {} }],
+        [
+          NodePath.join(f.transaction, "journal.json"),
+          { ...f.journal, preEffect: { ...f.journal.preEffect, relaunch: "started" } },
+        ],
+      ];
+      for (const [path, value] of mutations) {
+        const original = await NodeFSP.readFile(path);
+        await f.write(path, value);
+        await NodeAssert.rejects(bindPackagedDesktopPreparedIntent(refused));
+        await f.write(path, original);
+      }
+      await f.write(NodePath.join(f.transaction, "commit-grant.json"), {});
+      await NodeAssert.rejects(bindPackagedDesktopPreparedIntent(refused));
+    });
+  },
+);
+
+function installDriver(f, fail = null) {
+  const events = [];
+  let stopCount = 0;
+  const helperIdentity = {
+    pid: f.receipt.pid,
+    ppid: f.appIdentity.pid,
+    uid: process.getuid(),
+    startSec: 457,
+    startUsec: 0,
+    executable: "/synthetic/python",
+  };
+  const app = {
+    pid: f.appIdentity.pid,
+    output: () => ({}),
+    requestStop: () => {
+      events.push("app-stop");
+      stopCount += 1;
+      return true;
+    },
+    waitForClose: async () => {
+      events.push("app-close");
+      return { code: 0, signal: "SIGTERM" };
+    },
+  };
+  const native = {
+    captureApp: async () => {
+      events.push("app-watch");
+      return { identity: f.appIdentity, kernelExitWatchRegistered: fail !== "app-watch" };
+    },
+    connectApp: async () => ({
+      close: async () => {
+        events.push("bridge-close");
+      },
+      evaluate: async (expression) => {
+        if (expression.startsWith("window.desktopBridge.installUpdate(")) {
+          events.push("install");
+          NodeAssert.equal(
+            expression,
+            "window.desktopBridge.installUpdate(" + JSON.stringify(f.staged.handle) + ")",
+          );
+          if (fail === "install-reply") throw new Error("unknown Install reply");
+          return { accepted: true };
+        }
+        return events.includes("install")
+          ? { status: "downloaded", jones: { phase: "blocked" } }
+          : { jones: { phase: "staged", stagedHandle: f.staged.handle } };
+      },
+    }),
+    assertAppAlive: async () => f.appIdentity,
+    waitForFault: async () => {
+      events.push("fault");
+      if (fail === "fault") throw new Error("helper identity unavailable");
+    },
+    captureHelper: async () => {
+      events.push("helper-watch");
+      return {
+        identity: { ...helperIdentity, ppid: fail === "parent" ? 999 : f.appIdentity.pid },
+        kernelExitWatchRegistered: true,
+      };
+    },
+    waitForHelperClosure: async () => {
+      events.push("helper-exit");
+      if (fail === "closure") throw new Error("helper closure unknown");
+      return {
+        app: f.appIdentity,
+        helper: helperIdentity,
+        kernelExitObserved: true,
+        helperAbsent: fail !== "absence",
+        appContinuouslyAlive: fail !== "app-exited",
+      };
+    },
+    settleApp: async () => {
+      events.push("settled");
+      return {
+        app: f.appIdentity,
+        helper: helperIdentity,
+        appKernelExitObserved: true,
+        appGroupAbsent: true,
+        portClosed: true,
+        labelAbsent: true,
+        mountsAbsent: true,
+        processesAbsent: true,
+      };
+    },
+  };
+  return {
+    events,
+    stopCount: () => stopCount,
+    args: {
+      pair: f.pair,
+      helper: f.helper,
+      manifest: f.manifest,
+      selection: f.selectionPath,
+      stagedHandle: f.staged.handle,
+      fault: f.fault,
+      app,
+      native,
+    },
+  };
+}
+
+NodeTest.test(
+  "normal Install custody waits for helper kernel closure while the captured app stays alive, then stops and settles",
+  async () => {
+    await refusedFixture(async (f) => {
+      const driver = installDriver(f);
+      const result = await observePackagedDesktopInstallRefusal(driver.args);
+      NodeAssert.equal(result.journal.preEffect.relaunch, "skipped");
+      NodeAssert.equal(result.packagedDesktopMatrixPassed, false);
+      NodeAssert.deepEqual(driver.events, [
+        "app-watch",
+        "install",
+        "fault",
+        "helper-watch",
+        "helper-exit",
+        "app-stop",
+        "app-close",
+        "settled",
+        "bridge-close",
+      ]);
+      NodeAssert.equal(driver.stopCount(), 1);
+    });
+  },
+);
+
+NodeTest.test(
+  "unknown Install effects and missing, stale or unsupported helper custody never terminate the app",
+  async () => {
+    for (const fail of ["install-reply", "fault", "parent", "closure", "absence", "app-exited"]) {
+      await refusedFixture(async (f) => {
+        const driver = installDriver(f, fail);
+        await NodeAssert.rejects(observePackagedDesktopInstallRefusal(driver.args), (error) => {
+          NodeAssert.equal(error.installCustody.installAttempted, true);
+          NodeAssert.equal(error.installCustody.retained, true);
+          return true;
+        });
+        NodeAssert.equal(driver.stopCount(), 0, fail);
+        NodeAssert.ok(!driver.events.includes("settled"));
+      });
+    }
+    await refusedFixture(async (f) => {
+      const driver = installDriver(f, "app-watch");
+      await NodeAssert.rejects(observePackagedDesktopInstallRefusal(driver.args));
+      NodeAssert.ok(!driver.events.includes("install"));
+      NodeAssert.equal(driver.stopCount(), 1);
+      const missing = installDriver(f);
+      delete missing.args.native.captureHelper;
+      await NodeAssert.rejects(
+        observePackagedDesktopInstallRefusal(missing.args),
+        /Missing native custody hook/,
+      );
+      NodeAssert.ok(!missing.events.includes("install"));
+    });
+  },
+);
+
+NodeTest.test(
+  "deadline and cancellation retain post-Install custody without a stop, including a failing bridge close",
+  async () => {
+    for (const mode of ["timeout", "cancel"]) {
+      await refusedFixture(async (f) => {
+        const driver = installDriver(f);
+        const controller = new AbortController();
+        driver.args.signal = controller.signal;
+        driver.args.observationTimeoutMs = 20;
+        if (mode === "timeout")
+          driver.args.native.waitForHelperClosure = () => new Promise(() => {});
+        else
+          driver.args.native.waitForFault = async () => {
+            controller.abort();
+          };
+        const connect = driver.args.native.connectApp;
+        driver.args.native.connectApp = async (...args) => ({
+          ...(await connect(...args)),
+          close: async () => {
+            throw new Error("bridge close failed");
+          },
+        });
+        await NodeAssert.rejects(observePackagedDesktopInstallRefusal(driver.args), (error) => {
+          NodeAssert.match(error.message, /timed out|abort|cancel/i);
+          NodeAssert.equal(error.installCustody.retained, true);
+          NodeAssert.equal(error.bridgeCloseError.message, "bridge close failed");
+          return true;
+        });
+        NodeAssert.equal(driver.stopCount(), 0);
+      });
+    }
   },
 );
 

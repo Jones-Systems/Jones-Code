@@ -1,4 +1,5 @@
 import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -452,7 +453,12 @@ export async function bindPackagedDesktopPreparedIntent({
   manifest,
   intent,
   interruptedPhase = null,
+  outcome = "interrupted",
+  fault = null,
+  expectedRelaunch = "skipped",
 }) {
+  NodeAssert.ok(["interrupted", "pre-effect-refused"].includes(outcome));
+  NodeAssert.ok(outcome === "interrupted" ? fault === null : interruptedPhase === null);
   NodeAssert.ok(
     interruptedPhase === null ||
       ["intent-only", "intent", "preparing", "quiescent"].includes(interruptedPhase),
@@ -500,6 +506,7 @@ export async function bindPackagedDesktopPreparedIntent({
     65536,
   );
   const continuation = JSON.parse(continuationBytes);
+  NodeAssert.equal(activation.continuationReceipt, NodePath.join(transaction, "continuation.json"));
   NodeAssert.equal(continuation.protocol, 1);
   NodeAssert.ok([2, 3].includes(continuation.preparationClaimProtocol));
   NodeAssert.equal(continuation.prepared, true);
@@ -525,8 +532,151 @@ export async function bindPackagedDesktopPreparedIntent({
   const selection = JSON.parse(selectionBytes);
   NodeAssert.deepEqual(selection.active, active);
   NodeAssert.deepEqual(selection.app, activation.staged);
+  let preparation = null;
+  const refusalInputs = new Map();
+  async function refusalBytes(filename, maximum = 65536) {
+    const bytes = await privateFixtureBytes(pair.fixtureRoot, filename, maximum);
+    refusalInputs.set(filename, sha(bytes));
+    return bytes;
+  }
   let initialJournalBytes = null;
-  if (interruptedPhase === null || interruptedPhase === "intent-only") {
+  if (outcome === "pre-effect-refused") {
+    const preload = NodePath.join(pair.fixtureRoot, "python-preload");
+    NodeAssert.deepEqual(
+      JSON.parse(await refusalBytes(NodePath.join(preload, "fault-receipt.json"), 16384)),
+      fault,
+    );
+    NodeAssert.equal(fault.protocol, 1);
+    NodeAssert.equal(fault.kind, "packaged-desktop-helper-fault");
+    NodeAssert.ok(Number.isSafeInteger(fault.pid) && fault.pid > 0);
+    for (const [key, bytes] of [
+      ["helperSha256", helperBytes],
+      ["manifestSha256", manifestBytes],
+      ["intentSha256", intentBytes],
+    ])
+      NodeAssert.equal(fault[key], sha(bytes));
+    NodeAssert.match(fault.journalSha256, shaPattern);
+    const planBytes = await refusalBytes(NodePath.join(preload, "fault-plan.json"), 16384);
+    NodeAssert.equal(fault.planSha256, sha(planBytes));
+    const plan = JSON.parse(planBytes);
+    NodeAssert.equal(plan.fixtureRoot, pair.fixtureRoot);
+    const rootInfo = await NodeFSP.lstat(pair.fixtureRoot, { bigint: true });
+    NodeAssert.equal(plan.rootDevice, String(rootInfo.dev));
+    NodeAssert.equal(plan.rootInode, String(rootInfo.ino));
+    NodeAssert.equal(plan.helper, helper);
+    NodeAssert.equal(plan.manifest, manifest);
+    NodeAssert.equal(plan.point, fault.point);
+    NodeAssert.equal(plan.helperSha256, sha(helperBytes));
+    NodeAssert.equal(plan.manifestSha256, sha(manifestBytes));
+    if (plan.protocol === 2) {
+      NodeAssert.equal(continuation.preparationClaimProtocol, 3);
+      NodeAssert.equal(plan.selection, continuation.selectionPath);
+      NodeAssert.equal(plan.selectionSha256, sha(selectionBytes));
+      NodeAssert.equal(
+        NodePath.dirname(continuation.selectionPath),
+        NodePath.join(active.home, "runtime/jones-updates/staging"),
+      );
+      NodeAssert.deepEqual(claim, {
+        protocol: 1,
+        preparationClaimProtocol: 3,
+        transactionId: activation.transactionId,
+        stagedHandle: activation.staged.handle,
+        selectionPath: continuation.selectionPath,
+        selectionSha256: sha(selectionBytes),
+        ...Object.fromEntries(
+          ["home", "profile", "databasePath", "environmentId"].map((key) => [key, active[key]]),
+        ),
+      });
+      preparation = JSON.parse(
+        await refusalBytes(NodePath.join(transaction, "prepare-request.json")),
+      );
+      NodeAssert.deepEqual(
+        Object.keys(preparation).sort(),
+        ["protocol", "transactionId", "stagedHandle", "claimSha256", "processes"].sort(),
+      );
+      NodeAssert.equal(preparation.protocol, 1);
+      NodeAssert.equal(preparation.transactionId, activation.transactionId);
+      NodeAssert.equal(preparation.stagedHandle, activation.staged.handle);
+      NodeAssert.equal(
+        preparation.claimSha256,
+        sha(
+          await privateFixtureBytes(
+            pair.fixtureRoot,
+            NodePath.join(transaction, "prepare-intent.json"),
+            65536,
+          ),
+        ),
+      );
+      NodeAssert.ok(
+        Array.isArray(activation.processes) &&
+          activation.processes.length > 0 &&
+          activation.processes.length <= 256,
+      );
+      NodeAssert.equal(activation.processes.filter((proof) => proof.role === "main").length, 1);
+      NodeAssert.equal(
+        new Set(activation.processes.map((proof) => proof.pid)).size,
+        activation.processes.length,
+      );
+      NodeAssert.equal(preparation.processes.length, activation.processes.length);
+      for (const role of activation.processes) {
+        NodeAssert.deepEqual(Object.keys(role).sort(), ["pid", "role"]);
+        NodeAssert.ok(["main", "backend"].includes(role.role));
+        const proof = preparation.processes.find((entry) => entry.pid === role.pid);
+        NodeAssert.ok(proof);
+        NodeAssert.deepEqual(
+          Object.keys(proof).sort(),
+          ["pid", "startSec", "startUsec", "executable"].sort(),
+        );
+        capturedIdentity({ ...proof, uid: process.getuid() }, { pid: role.pid });
+      }
+      NodeAssert.deepEqual(
+        JSON.parse(await refusalBytes(NodePath.join(transaction, "activation-request.json"))),
+        activation,
+      );
+      const key = sha(continuation.selectionPath + "\n" + continuation.selectionSha256);
+      NodeAssert.deepEqual(
+        JSON.parse(
+          await refusalBytes(
+            NodePath.join(active.home, "runtime/jones-updates/attempt-selections", key + ".json"),
+            65536,
+          ),
+        ),
+        {
+          protocol: 1,
+          transactionId: activation.transactionId,
+          stagedHandle: activation.staged.handle,
+          selectionPath: continuation.selectionPath,
+          selectionSha256: continuation.selectionSha256,
+          expected: active,
+        },
+      );
+    } else {
+      NodeAssert.equal(plan.protocol, 1);
+      NodeAssert.equal(plan.intent, intent);
+      NodeAssert.equal(plan.intentSha256, sha(intentBytes));
+      NodeAssert.equal(plan.transactionId, activation.transactionId);
+    }
+    initialJournalBytes = await privateFixtureBytes(
+      pair.fixtureRoot,
+      NodePath.join(transaction, "journal.json"),
+    );
+    const journal = validatePackagedDesktopPreEffect(JSON.parse(initialJournalBytes), {
+      activation,
+      fault,
+      expectedRelaunch,
+    });
+    const allowed = new Set([
+      "intent",
+      "phase",
+      "message",
+      "storage",
+      "recoveryReserves",
+      "incomingBundle",
+      "previousBundle",
+      "preEffect",
+    ]);
+    NodeAssert.ok(Object.keys(journal).every((key) => allowed.has(key)));
+  } else if (interruptedPhase === null || interruptedPhase === "intent-only") {
     await requireAbsent(NodePath.join(transaction, "journal.json"));
   } else {
     initialJournalBytes = await privateFixtureBytes(
@@ -547,17 +697,30 @@ export async function bindPackagedDesktopPreparedIntent({
     ]);
     NodeAssert.ok(Object.keys(journal).every((key) => allowed.has(key)));
   }
-  for (const name of ["previous-pair/pair.json", "trial-descriptor.json", "resume-dispatched.json"])
+  for (const name of [
+    "previous-pair/pair.json",
+    "trial-descriptor.json",
+    "commit-grant.json",
+    "resume-dispatched.json",
+  ])
     await requireAbsent(NodePath.join(transaction, name));
   return Object.freeze({
     active,
     activation,
+    preparation,
     transaction,
-    initialJournal: initialJournalBytes === null ? null : JSON.parse(initialJournalBytes),
-    initialJournalSha256: initialJournalBytes === null ? null : sha(initialJournalBytes),
+    initialJournal:
+      outcome === "interrupted" && initialJournalBytes !== null
+        ? JSON.parse(initialJournalBytes)
+        : null,
+    initialJournalSha256:
+      outcome === "interrupted" && initialJournalBytes !== null ? sha(initialJournalBytes) : null,
+    finalJournal: outcome === "pre-effect-refused" ? JSON.parse(initialJournalBytes) : null,
+    finalJournalSha256: outcome === "pre-effect-refused" ? sha(initialJournalBytes) : null,
     manifestSha256: sha(manifestBytes),
     intentSha256: sha(intentBytes),
     helperSha256: sha(helperBytes),
+    outcome,
     async assertInputsUnchanged() {
       NodeAssert.equal(
         sha(await privateFixtureBytes(pair.fixtureRoot, manifest, 65536)),
@@ -579,6 +742,25 @@ export async function bindPackagedDesktopPreparedIntent({
         sha(await privateFixtureBytes(pair.fixtureRoot, continuation.selectionPath, 131072)),
         sha(selectionBytes),
       );
+      for (const name of ["prepare-intent.json", "prepare-dispatched.json"])
+        NodeAssert.deepEqual(
+          JSON.parse(
+            await privateFixtureBytes(pair.fixtureRoot, NodePath.join(transaction, name), 65536),
+          ),
+          claim,
+        );
+      if (outcome === "pre-effect-refused")
+        NodeAssert.equal(
+          sha(
+            await privateFixtureBytes(pair.fixtureRoot, NodePath.join(transaction, "journal.json")),
+          ),
+          sha(initialJournalBytes),
+        );
+      for (const [filename, expectedHash] of refusalInputs)
+        NodeAssert.equal(
+          sha(await privateFixtureBytes(pair.fixtureRoot, filename, 65536)),
+          expectedHash,
+        );
       await pair.assertUnchanged();
     },
   });
@@ -596,6 +778,15 @@ export function validatePackagedDesktopPreEffect(journal, { activation, fault, e
     "before-pair": ["quiescent", "pair"],
   }[fault.point];
   NodeAssert.ok(boundary);
+  NodeAssert.equal(
+    fault.function,
+    {
+      storage: "storage_preflight",
+      reserve: "reserve_recovery_capacity",
+      "exit-wait": "kernel_process_identity",
+      "before-pair": "pair_state",
+    }[fault.point],
+  );
   NodeAssert.deepEqual([fault.phase, fault.step], boundary);
   NodeAssert.deepEqual([journal.preEffect?.phase, journal.preEffect?.step], boundary);
   NodeAssert.equal(journal.preEffect.reason, "preparation-failed");
@@ -608,6 +799,375 @@ export function validatePackagedDesktopPreEffect(journal, { activation, fault, e
   );
   NodeAssert.equal(journal.phaseBeforeBlock, undefined);
   return journal;
+}
+
+function capturedIdentity(receipt, { pid, executable }) {
+  NodeAssert.ok(Number.isSafeInteger(pid) && pid > 0);
+  NodeAssert.equal(receipt.pid, pid);
+  if (executable !== undefined) NodeAssert.equal(receipt.executable, executable);
+  NodeAssert.ok(NodePath.isAbsolute(receipt.executable));
+  NodeAssert.equal(receipt.uid, process.getuid());
+  NodeAssert.ok(Number.isSafeInteger(receipt.startSec) && receipt.startSec > 0);
+  NodeAssert.ok(
+    Number.isSafeInteger(receipt.startUsec) &&
+      receipt.startUsec >= 0 &&
+      receipt.startUsec < 1000000,
+  );
+  return Object.freeze({ ...receipt });
+}
+
+async function custodyObservation(body, signal, timeout = 120000) {
+  signal?.throwIfAborted();
+  let timer;
+  let abort;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(body),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Install observation timed out; native custody retained.")),
+          timeout,
+        );
+        abort = () => reject(new Error("Install observation cancelled; native custody retained."));
+        signal?.addEventListener("abort", abort, { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+// Portable orchestration seam, not a native qualification. Native hooks must bind
+// kernel birth/exit watches, the exact renderer bridge, and external group/port custody.
+// The app handle must not have an independent timeout/abort termination path.
+export async function observePackagedDesktopInstallRefusal({
+  pair,
+  helper,
+  manifest,
+  selection,
+  stagedHandle,
+  fault,
+  app,
+  native,
+  signal,
+  observationTimeoutMs = 120000,
+}) {
+  for (const name of [
+    "captureApp",
+    "connectApp",
+    "waitForFault",
+    "captureHelper",
+    "waitForHelperClosure",
+    "assertAppAlive",
+    "settleApp",
+  ])
+    NodeAssert.equal(typeof native[name], "function", "Missing native custody hook: " + name);
+  NodeAssert.equal(typeof app.requestStop, "function");
+  NodeAssert.equal(typeof app.waitForClose, "function");
+  NodeAssert.ok(Number.isSafeInteger(app.pid) && app.pid > 0);
+  NodeAssert.match(stagedHandle, shaPattern);
+  NodeAssert.equal(fault.argv, null);
+  NodeAssert.ok(
+    Number.isSafeInteger(observationTimeoutMs) &&
+      observationTimeoutMs > 0 &&
+      observationTimeoutMs <= 120000,
+  );
+  let attempted = false;
+  let stopRequested = false;
+  let closure = null;
+  let bridge;
+  let appIdentity;
+  let primaryError;
+  try {
+    const selectedBytes = await privateFixtureBytes(pair.fixtureRoot, selection, 131072);
+    const selected = JSON.parse(selectedBytes);
+    NodeAssert.equal(selected.app.handle, stagedHandle);
+    const observe = (body) =>
+      custodyObservation(
+        () => {
+          const output = app.output?.();
+          if (output?.failure) throw output.failure;
+          if (!stopRequested)
+            NodeAssert.notEqual(
+              output?.closed,
+              true,
+              "The captured app exited during Install observation.",
+            );
+          return body();
+        },
+        signal,
+        observationTimeoutMs,
+      );
+    const captured = await observe(() =>
+      native.captureApp({ pid: app.pid, executable: pair.active.executablePath, signal }),
+    );
+    appIdentity = capturedIdentity(captured.identity, {
+      pid: app.pid,
+      executable: pair.active.executablePath,
+    });
+    NodeAssert.equal(captured.kernelExitWatchRegistered, true);
+    bridge = await observe(() =>
+      native.connectApp({ app: appIdentity, output: app.output, signal }),
+    );
+    NodeAssert.equal(typeof bridge.evaluate, "function");
+    NodeAssert.equal(typeof bridge.close, "function");
+    const evaluate = (expression) => observe(() => bridge.evaluate(expression));
+    const before = await evaluate(
+      "(async()=>{await window.desktopBridge.setJonesBackgroundPreparation(false);return await window.desktopBridge.getUpdateState();})()",
+    );
+    NodeAssert.equal(before.jones?.phase, "staged");
+    NodeAssert.equal(before.jones.stagedHandle, stagedHandle);
+    const assertAlive = async () =>
+      NodeAssert.deepEqual(
+        await observe(() => native.assertAppAlive({ app: appIdentity, signal })),
+        appIdentity,
+      );
+    await assertAlive();
+    signal?.throwIfAborted();
+    attempted = true; // An unknown bridge reply may already have dispatched a helper.
+    const installResponse = await evaluate(
+      "window.desktopBridge.installUpdate(" + JSON.stringify(stagedHandle) + ")",
+    );
+    await observe(() =>
+      native.waitForFault({ app: appIdentity, receiptPath: fault.receiptPath, signal }),
+    );
+    const receipt = await fault.readReceipt();
+    NodeAssert.equal(receipt.point, "storage");
+    const capturedHelper = await observe(() =>
+      native.captureHelper({ app: appIdentity, receipt, helper, signal }),
+    );
+    const helperIdentity = capturedIdentity(capturedHelper.identity, { pid: receipt.pid });
+    NodeAssert.equal(helperIdentity.ppid, app.pid);
+    NodeAssert.equal(capturedHelper.kernelExitWatchRegistered, true);
+    const observed = await observe(() =>
+      native.waitForHelperClosure({ app: appIdentity, helper: helperIdentity, signal }),
+    );
+    NodeAssert.deepEqual(observed.app, appIdentity);
+    NodeAssert.deepEqual(observed.helper, helperIdentity);
+    NodeAssert.equal(observed.kernelExitObserved, true);
+    NodeAssert.equal(observed.helperAbsent, true);
+    NodeAssert.equal(observed.appContinuouslyAlive, true);
+    closure = observed;
+    await assertAlive();
+    const intent = NodePath.join(
+      selected.active.home,
+      "runtime/jones-updates/transactions",
+      receipt.transactionId,
+      "intent.json",
+    );
+    const binding = await bindPackagedDesktopPreparedIntent({
+      pair,
+      helper,
+      manifest,
+      intent,
+      outcome: "pre-effect-refused",
+      fault: receipt,
+    });
+    const main = binding.activation.processes.find((proof) => proof.role === "main");
+    NodeAssert.equal(main.pid, app.pid);
+    NodeAssert.deepEqual(
+      binding.preparation.processes.find((proof) => proof.pid === main.pid),
+      Object.fromEntries(
+        ["pid", "startSec", "startUsec", "executable"].map((key) => [key, appIdentity[key]]),
+      ),
+    );
+    NodeAssert.deepEqual(binding.activation.staged, selected.app);
+    NodeAssert.equal(
+      sha(await privateFixtureBytes(pair.fixtureRoot, selection, 131072)),
+      sha(selectedBytes),
+    );
+    const after = await evaluate("window.desktopBridge.getUpdateState()");
+    NodeAssert.equal(after.status, "downloaded");
+    NodeAssert.equal(after.jones?.phase, "blocked");
+    await binding.assertInputsUnchanged();
+    await assertAlive();
+    NodeAssert.equal(app.requestStop(), true);
+    stopRequested = true;
+    const execution = await custodyObservation(() => app.waitForClose(), undefined, 10000);
+    const settlement = await observe(() =>
+      native.settleApp({ app: appIdentity, helper: helperIdentity, closure, execution, signal }),
+    );
+    NodeAssert.deepEqual(settlement.app, appIdentity);
+    NodeAssert.deepEqual(settlement.helper, helperIdentity);
+    for (const key of [
+      "appKernelExitObserved",
+      "appGroupAbsent",
+      "portClosed",
+      "labelAbsent",
+      "mountsAbsent",
+      "processesAbsent",
+    ])
+      NodeAssert.equal(settlement[key], true, "Unclosed native custody: " + key);
+    await binding.assertInputsUnchanged();
+    return Object.freeze({
+      before,
+      after,
+      installResponse,
+      receipt,
+      helperClosure: closure,
+      journal: binding.finalJournal,
+      transactionId: receipt.transactionId,
+      execution,
+      settlement,
+      stateComparison: "live-home-not-compared",
+      packagedDesktopMatrixPassed: false,
+    });
+  } catch (error) {
+    primaryError = error;
+    // Before Install there can be no detached activation. Afterwards, even a
+    // failed assertion retains the app: stopping it can trigger helper relaunch.
+    if (!attempted) {
+      try {
+        stopRequested = app.requestStop();
+        if (stopRequested) await custodyObservation(() => app.waitForClose(), undefined, 10000);
+      } catch (cleanupError) {
+        Object.defineProperty(error, "custodyCleanupError", { value: cleanupError });
+      }
+    }
+    Object.defineProperty(error, "installCustody", {
+      value: {
+        appPid: app.pid,
+        appIdentity,
+        installAttempted: attempted,
+        appStopRequested: stopRequested,
+        helperClosureProved: closure !== null,
+        retained: attempted && !stopRequested,
+      },
+    });
+    throw error;
+  } finally {
+    if (bridge) {
+      try {
+        await custodyObservation(() => bridge.close(), undefined, 5000);
+      } catch (error) {
+        if (primaryError) Object.defineProperty(primaryError, "bridgeCloseError", { value: error });
+        else throw error;
+      }
+    }
+  }
+}
+
+// Normal Install owns the genuine protocol-3 preparation and detached helper.
+// No helper is spawned here and no timeout is allowed to kill the recorded main.
+export async function exercisePackagedDesktopInstallRefusal({
+  pair,
+  helper,
+  manifest,
+  selection,
+  stagedHandle,
+  temporary,
+  native,
+  signal,
+}) {
+  assertDarwin();
+  for (const name of [
+    "captureApp",
+    "connectApp",
+    "waitForFault",
+    "captureHelper",
+    "waitForHelperClosure",
+    "assertAppAlive",
+    "settleApp",
+  ])
+    NodeAssert.equal(typeof native?.[name], "function", "Missing native custody hook: " + name);
+  signal?.throwIfAborted();
+  NodeAssert.match(stagedHandle, shaPattern);
+  await pair.assertUnchanged();
+  await confined(pair.fixtureRoot, temporary, true);
+  const active = JSON.parse(await privateFixtureBytes(pair.fixtureRoot, manifest, 65536));
+  const selected = JSON.parse(await privateFixtureBytes(pair.fixtureRoot, selection, 131072));
+  NodeAssert.deepEqual(selected.active, active);
+  NodeAssert.equal(selected.app.handle, stagedHandle);
+  for (const key of [
+    "appPath",
+    "executablePath",
+    "sourceSha",
+    "sourceTree",
+    "version",
+    "appDigest",
+  ]) {
+    NodeAssert.equal(active[key], pair.active[key]);
+    NodeAssert.equal(selected.app[key], pair.candidate[key]);
+  }
+  await requireAbsent(NodePath.join(active.home, "runtime/jones-updates/transactions"));
+  const guiSession = await assertPackagedDesktopGuiSession({
+    fixtureRoot: pair.fixtureRoot,
+    lock: "any",
+    signal,
+  });
+  const fault = await preparePackagedDesktopHelperFault({
+    fixtureRoot: pair.fixtureRoot,
+    helper,
+    manifest,
+    selection,
+    point: "storage",
+  });
+  const child = NodeChildProcess.spawn(
+    pair.active.executablePath,
+    ["--use-mock-keychain", "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1"],
+    {
+      cwd: pair.fixtureRoot,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        PATH: "/usr/bin:/bin",
+        LANG: "en_US.UTF-8",
+        HOME: active.home,
+        CFFIXED_USER_HOME: active.home,
+        TMPDIR: temporary,
+        T3CODE_HOME: active.home,
+        T3CODE_DESKTOP_USER_DATA_DIR: active.profile,
+        ...fault.environment,
+      },
+    },
+  );
+  let stdout = "";
+  let stderr = "";
+  let failure;
+  let closed = false;
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  const execution = new Promise((resolve) => {
+    child.once("error", (error) => {
+      failure = error;
+    });
+    child.once("close", (code, exitSignal) => {
+      closed = true;
+      resolve({ code, signal: exitSignal, stdout, stderr });
+    });
+  });
+  child.stdout.on("data", (chunk) => {
+    stdoutBytes += chunk.length;
+    if (stdoutBytes > 1024 * 1024)
+      failure ??= new Error("Install app stdout exceeded its bound; custody retained.");
+    stdout = (stdout + chunk).slice(-1024 * 1024);
+  });
+  child.stderr.on("data", (chunk) => {
+    stderrBytes += chunk.length;
+    if (stderrBytes > 1024 * 1024)
+      failure ??= new Error("Install app stderr exceeded its bound; custody retained.");
+    stderr = (stderr + chunk).slice(-1024 * 1024);
+  });
+  const app = {
+    pid: child.pid,
+    output: () => ({ stdout, stderr, closed, failure }),
+    requestStop: () =>
+      !closed && child.exitCode === null && child.signalCode === null && child.kill("SIGTERM"),
+    waitForClose: () => execution,
+  };
+  const result = await observePackagedDesktopInstallRefusal({
+    pair,
+    helper,
+    manifest,
+    selection,
+    stagedHandle,
+    fault,
+    app,
+    native,
+    signal,
+  });
+  return Object.freeze({ ...result, guiSession });
 }
 
 // LaunchServices may reopen the previous app outside the helper's process group.
