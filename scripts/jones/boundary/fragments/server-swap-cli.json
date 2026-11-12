@@ -16,7 +16,10 @@
     "apps/server-swap-cli/prepare.cjs",
     "apps/server-swap-cli/prepare.test.cjs",
     "apps/server-swap-cli/transport.cjs",
-    "apps/server-swap-cli/transport.test.cjs"
+    "apps/server-swap-cli/transport.test.cjs",
+    "apps/server-swap-cli/host-process.mjs",
+    "apps/server-swap-cli/host-process.test.cjs",
+    "apps/server-swap-cli/build.test.cjs"
   ],
   "hookPaths": [],
   "tombstones": [],

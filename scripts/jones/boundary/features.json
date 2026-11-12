@@ -3745,9 +3745,11 @@
         "apps/server-swap-cli/transport.test.cjs",
         "apps/server-swap-cli/prepare.test.cjs",
         "apps/server-swap-cli/fleet.test.cjs",
-        "apps/server-swap-cli/cli.test.cjs"
+        "apps/server-swap-cli/cli.test.cjs",
+        "apps/server-swap-cli/host-process.test.cjs",
+        "apps/server-swap-cli/build.test.cjs"
       ],
-      "scope": "Standalone maintainer CLI for digest-bound server-swap preparation and finalization, journaled intent and recovery, native configuration/runtime identity validation, and ordered SSH fleet control. Existing 79 synthetic tests cover rollback fences, reverse states, resume/reconciliation, current runtime readback, and CLI/transport seams. This feature does not change application runtime/updater/shared modules, expose MCP or scheduled-task entry points, or establish live host, client, provider-session, or exact-version data compatibility qualification. Operator guidance is docs/operations/server-swap-cli.md."
+      "scope": "Standalone maintainer CLI for digest-bound server-swap preparation and finalization, journaled intent and recovery, native configuration/runtime identity validation, and ordered SSH fleet control. The original 79 synthetic tests and focused canonical HostProcess/compiled-bridge parity tests cover rollback fences, reverse states, resume/reconciliation, current runtime readback, and CLI/transport seams. This feature does not change application runtime/updater/shared modules, expose MCP or scheduled-task entry points, or establish live host, client, provider-session, or exact-version data compatibility qualification. Operator guidance is docs/operations/server-swap-cli.md."
     }
   ]
 }

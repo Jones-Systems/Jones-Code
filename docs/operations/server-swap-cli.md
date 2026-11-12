@@ -14,7 +14,11 @@ qualification are available. Unknown compatibility fails before service stop.
 
 ## Run it
 
-From this source checkout, with Node 24.13.1 or newer:
+Source execution requires Node 24.13.1 or newer and the workspace dependencies
+installed with the repository-pinned package manager. The CLI reads actual host
+platform and architecture through the canonical shared HostProcess references
+and Effect; callers cannot substitute plan, environment or build-host values.
+From this source checkout:
 
 ```sh
 node apps/server-swap-cli/cli.cjs --help
@@ -238,8 +242,17 @@ Build on the target OS/architecture using Node 26 or newer:
 node apps/server-swap-cli/build.cjs /absolute/new-artifacts/server-swap
 ```
 
-The build uses Node SEA and ad hoc signs the macOS artifact. It bundles the
-package without third-party dependencies; the resulting worker needs no Node
-installation. Existing output is never overwritten. Build separately for Linux
-and macOS architectures. Packaging and synthetic manager tests are distinct from
-live fleet qualification and exact-version data compatibility evidence.
+The build uses Node SEA and ad hoc signs the macOS arm64 artifact. Build-only
+esbuild 0.28.2 compiles the HostProcess bridge and its complete shared/Effect
+dependency graph into one factory inside the existing CommonJS loader. Only
+Node builtins may remain external; sidecar outputs and unresolved dependencies
+fail packaging. The resulting single executable needs no external Node,
+node_modules, source checkout or bridge sidecar. Existing output is never
+overwritten. Build natively for Linux x86_64 and macOS arm64.
+
+Linux arm64 source remains available, but Node `--build-sea` artifacts cannot
+load on Linux kernels with 16 KiB or 64 KiB pages ([Node issue 67048](https://github.com/nodejs/node/issues/67048)).
+This package does not apply the application server's separate arm64 workaround;
+retained source is not native arm64 SEA qualification. Packaging and synthetic
+manager tests are distinct from live fleet qualification and exact-version data
+compatibility evidence.

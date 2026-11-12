@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const os = require("node:os");
+const { readHostProcess } = require("./host-process.mjs");
 
 function insist(condition, message) {
   if (!condition) throw new Error(message);
@@ -363,11 +364,12 @@ function loadPlan(file) {
   return { ...validatePlan(JSON.parse(bytes)), digest: sha256(bytes), planPath: file };
 }
 function verifyHost(p) {
+  const runtime = readHostProcess();
   insist(
     os.hostname() === p.host &&
       process.getuid?.() === p.uid &&
-      process.platform === p.platform &&
-      process.arch === p.arch,
+      runtime.platform === p.platform &&
+      runtime.arch === p.arch,
     "Plan does not match this exact host, uid, platform and architecture",
   );
   insist(

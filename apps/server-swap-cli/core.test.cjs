@@ -65,7 +65,7 @@ function fixture(t, options = {}) {
     host: os.hostname(),
     uid: process.getuid(),
     platform: "linux",
-    arch: process.arch,
+    arch: "arm64",
     home,
     stateDir: path.join(root, "operations"),
     environmentId: "fixture-environment",

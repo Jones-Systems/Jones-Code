@@ -3164,7 +3164,10 @@
     "apps/server-swap-cli/transport.cjs": "jones-owned",
     "apps/server-swap-cli/transport.test.cjs": "jones-owned",
     "docs/operations/server-swap-cli.md": "policy",
-    "scripts/jones/boundary/fragments/server-swap-cli.json": "jones-owned"
+    "scripts/jones/boundary/fragments/server-swap-cli.json": "jones-owned",
+    "apps/server-swap-cli/host-process.mjs": "jones-owned",
+    "apps/server-swap-cli/host-process.test.cjs": "jones-owned",
+    "apps/server-swap-cli/build.test.cjs": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
