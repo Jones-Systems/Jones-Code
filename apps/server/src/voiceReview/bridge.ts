@@ -11,8 +11,7 @@ import {
   ThreadRegistryLabelPayload,
   ThreadRegistryMutationReceipt,
   type ThreadRegistryThread,
-  type T3PlacementIdentity,
-  type T3PlacementResult,
+  type ThreadRegistryComposedThread,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   type EnvironmentSessionPrincipalShape,
@@ -50,7 +49,6 @@ import {
   makeVoiceReviewCompositionFactory,
   type VoiceReviewCompositionFactory,
 } from "./composition.ts";
-import { validateVoiceReviewNativePlacementResult } from "./native.ts";
 
 export const VOICE_REVIEW_MAX_REQUEST_BYTES = 610_000;
 const MAX_RESPONSE_BYTES = 24_000_000;
@@ -146,14 +144,22 @@ const boundedJson = async (response: Response): Promise<unknown> => {
   }
 };
 
+export interface VoiceReviewThreadIdentity {
+  readonly source_instance_id: string;
+  readonly native_thread_id: string;
+}
+export type VoiceReviewPersonalMembership = NonNullable<
+  ThreadRegistryComposedThread["personal_memberships"]
+>[number];
+
 export interface VoiceReviewNativeReadPort {
   readonly identities: (
     threads: readonly ThreadRegistryThread[],
-  ) => ReadonlyMap<string, T3PlacementIdentity>;
+  ) => ReadonlyMap<string, VoiceReviewThreadIdentity>;
   readonly read: (
     principal: EnvironmentSessionPrincipalShape,
-    identities: readonly T3PlacementIdentity[],
-  ) => Promise<T3PlacementResult>;
+    identities: readonly VoiceReviewThreadIdentity[],
+  ) => Promise<readonly VoiceReviewPersonalMembership[]>;
 }
 const decodeThreadRegistryMutationReceipt = Schema.decodeUnknownSync(ThreadRegistryMutationReceipt);
 const decodeVoiceReviewRecentList = Schema.decodeUnknownSync(VoiceReviewRecentList);
@@ -450,16 +456,16 @@ export const makeVoiceReviewBridge = (
       const result = decodeThreadRegistrySnapshot(
         await request(trusted, `/v1/registry/snapshot?${query}`),
       );
-      const memberships = new Map<
-        string,
-        (typeof ThreadRegistryComposedSnapshot.Type)["threads"][number]["native_memberships"]
-      >();
+      const memberships = new Map<string, readonly VoiceReviewPersonalMembership[]>();
       const unavailable = new Set(result.unavailable);
       try {
-        if (native === undefined) throw new Error("native_read_unavailable");
+        if (native === undefined && result.threads.length > 0)
+          throw new Error("personal_read_unavailable");
+        if (native === undefined)
+          return decodeThreadRegistryComposedSnapshot({ ...result, threads: [] });
         const identities = native.identities(result.threads);
         if (result.threads.some((thread) => !identities.has(thread.thread_key)))
-          unavailable.add("native_memberships");
+          unavailable.add("personal_memberships");
         const unique = new Map(
           result.threads.flatMap((thread) => {
             const identity = identities.get(thread.thread_key);
@@ -467,40 +473,32 @@ export const makeVoiceReviewBridge = (
           }),
         );
         if (unique.size > 0) {
-          const placements = validateVoiceReviewNativePlacementResult(
-            await native.read(principal, Array.from(unique.values())),
-            now(),
-          );
-          if (placements.readiness !== "ready") throw new Error("native_trust_unavailable");
+          const personalMemberships = await native.read(principal, Array.from(unique.values()));
           for (const thread of result.threads) {
             const identity = identities.get(thread.thread_key);
             if (identity === undefined) continue;
             memberships.set(
               thread.thread_key,
-              placements.page.items
-                .filter(
-                  (item) =>
-                    item.source_instance_id === identity.source_instance_id &&
-                    item.native_thread_id === identity.native_thread_id,
-                )
-                .map((placement) => ({
-                  workstream_ref: `native:${placement.workstream_id}`,
-                  placement,
-                })),
+              personalMemberships.filter(
+                (item) =>
+                  item.environment_id === identity.source_instance_id &&
+                  item.thread_id === identity.native_thread_id,
+              ),
             );
           }
         }
       } catch {
         memberships.clear();
-        unavailable.add("native_memberships");
+        unavailable.add("personal_memberships");
       }
       return decodeThreadRegistryComposedSnapshot({
         ...result,
-        partial: result.partial || unavailable.size > result.unavailable.length,
+        partial: result.partial || unavailable.has("personal_memberships"),
         unavailable: Array.from(unavailable),
         threads: result.threads.map((thread) => ({
           ...thread,
-          native_memberships: memberships.get(thread.thread_key) ?? [],
+          native_memberships: [],
+          personal_memberships: memberships.get(thread.thread_key) ?? [],
         })),
       });
     },

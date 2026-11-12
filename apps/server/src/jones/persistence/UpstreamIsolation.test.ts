@@ -415,6 +415,7 @@ it.effect(
         [150, "AuthSessionClientMetadata"],
         [151, "WorkspaceRuntimeUses"],
         [152, "PeerLinksAdoption"],
+        [153, "PersonalWorkstreams"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

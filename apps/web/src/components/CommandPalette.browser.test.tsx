@@ -57,6 +57,11 @@ describe("CommandPalette open intents", () => {
     await expect
       .element(page.getByPlaceholder("Search commands, projects, and threads..."))
       .toHaveFocus();
+    // Input focus can precede the virtualized list's initial highlight. ArrowDown
+    // must start on the current-project action before moving to the project picker.
+    await expect
+      .element(page.getByRole("option", { name: /^New thread in Acme/ }))
+      .toHaveAttribute("data-highlighted");
     await userEvent.keyboard("{ArrowDown}");
     await expect
       .element(page.getByRole("option", { name: /^New thread in\.\.\./ }))

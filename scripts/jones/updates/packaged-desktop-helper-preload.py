@@ -7,6 +7,7 @@ import pathlib
 import re
 import stat
 import sys
+import time
 
 
 def _install():
@@ -51,10 +52,14 @@ def _install():
         plan = json.loads(read_file(plan_path, 16384))
         common = {"protocol", "fixtureRoot", "rootDevice", "rootInode", "helper", "helperSha256",
                   "manifest", "manifestSha256", "point", "observeRelaunch"}
-        assert set(plan) == common | ({"selection", "selectionSha256"} if deferred else {"intent", "intentSha256", "transactionId"})
+        assert set(plan) - {"controller"} == common | ({"selection", "selectionSha256"} if deferred else {"intent", "intentSha256", "transactionId"})
         assert type(plan["protocol"]) is int and plan["protocol"] == (2 if deferred else 1)
+        controller = plan.get("controller")
+        if controller is not None:
+            assert deferred and plan["observeRelaunch"] is True and set(controller) == {"identity", "main", "timeoutMs"}
+            assert type(controller["timeoutMs"]) is int and 100 <= controller["timeoutMs"] <= 60000
         if deferred:
-            assert plan["observeRelaunch"] is False or plan["point"] == "before-pair"
+            assert plan["observeRelaunch"] is False or plan["point"] == "before-pair" or controller is not None
             assert sys.argv[2] == plan["manifest"]
             raw = read_file(sys.argv[4], 65536)
             actual = json.loads(raw)
@@ -171,6 +176,87 @@ def _install():
             paths += [profile]
             return {str(path): visit(path) for path in paths}
 
+        claim_hashes = {name: hashlib.sha256(read_file(transaction / name, 65536)).hexdigest()
+                        for name in ("prepare-intent.json", "prepare-dispatched.json", continuation_path.name)} if controller else {}
+        custody_done = False
+
+        def refuse():
+            os.write(2, b"RH-F2 custody/containment refused; evidence retained.\n")
+            os._exit(125)
+
+        def unchanged():
+            info = root.lstat()
+            assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and info.st_mode & 0o077 == 0
+            assert root.resolve(strict=True) == root and (str(info.st_dev), str(info.st_ino)) == (plan["rootDevice"], plan["rootInode"])
+            assert hashlib.sha256(read_file(plan_path, 16384)).hexdigest() == plan_sha
+            for path, digest, limit in ((helper, plan["helperSha256"], 2 * 1024 * 1024),
+                    (plan["manifest"], plan["manifestSha256"], 65536),
+                    (plan["intent"], plan["intentSha256"], 65536),
+                    (plan["selection"], plan["selectionSha256"], 131072)):
+                assert hashlib.sha256(read_file(path, limit)).hexdigest() == digest
+            for name, digest in claim_hashes.items():
+                assert hashlib.sha256(read_file(transaction / name, 65536)).hexdigest() == digest
+            for name in ("prepare-intent.json", "prepare-dispatched.json"):
+                assert json.loads(read_file(transaction / name, 65536)) == claim
+            assert json.loads(read_file(continuation_path, 65536)) == continuation
+
+        def hold_storage(frame):
+            nonlocal custody_done, quiet_state
+            assert not custody_done
+            activation = frame.f_back
+            assert activation.f_code.co_filename == str(helper) and activation.f_code.co_name == "activate"
+            local, api = activation.f_locals, frame.f_globals
+            assert local["transaction_id"] == plan["transactionId"] and local["preparation_step"] == "storage"
+            assert local["journal"]["phase"] == "intent"
+            proofs = local["captured_processes"]
+            assert api["valid_kernel_processes"](proofs)
+            assert api["valid_kernel_process"](controller["identity"])
+            assert api["valid_kernel_process"](controller["main"])
+            assert controller["main"] in proofs and controller["identity"]["pid"] not in [p["pid"] for p in proofs]
+            roles = intent["processes"]
+            assert api["valid_process_roles"](roles)
+            assert next(p["pid"] for p in roles if p["role"] == "main") == os.getppid() == controller["main"]["pid"]
+            identity, parent = api["kernel_process_sample"](os.getpid())
+            assert parent == controller["main"]["pid"] and api["valid_kernel_process"](identity)
+            assert api["alive"](controller["main"]) and api["alive"](controller["identity"])
+            unchanged()
+            for name in ("custody.json", "release.json", "quiet-state.json"):
+                assert not os.path.lexists(plan_path.with_name(name))
+            record = dict(protocol=1, kind="packaged-desktop-helper-custody", planSha256=plan_sha,
+                helper=identity, parent=controller["main"], processes=proofs,
+                transactionId=plan["transactionId"], intentSha256=plan["intentSha256"])
+            raw = json.dumps(record, sort_keys=True).encode()
+            write_record("custody.json", raw)
+            deadline = time.monotonic() + controller["timeoutMs"] / 1000
+            release = plan_path.with_name("release.json")
+            while (not os.path.lexists(release) or release.lstat().st_nlink == 2):
+                assert time.monotonic() < deadline and api["alive"](controller["identity"])
+                unchanged()
+                time.sleep(0.1)
+            assert time.monotonic() < deadline and api["alive"](controller["identity"])
+            assert json.loads(read_file(release, 16384)) == dict(protocol=1,
+                planSha256=plan_sha, custodySha256=hashlib.sha256(raw).hexdigest())
+            unchanged()
+            assert all(not api["alive"](proof) for proof in proofs)
+            api["prove_quiescence"](manifest)
+            quiet_state = snapshot_state()
+            write_record("quiet-state.json", json.dumps(dict(record, state=quiet_state,
+                custodySha256=hashlib.sha256(raw).hexdigest()), sort_keys=True).encode())
+            custody_done = True
+
+        def write_record(name, raw):
+            assert len(raw) <= 1024 * 1024
+            fd = os.open(plan_path.with_name(name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            fd = os.open(plan_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
         fault_record = None
         quiet_state = None
         launch_frame = None
@@ -214,6 +300,27 @@ def _install():
 
         def observe_relaunch(frame, event, arg):
             nonlocal launch_frame, services_frame, services_sha, services_returned, before_relaunch_sha
+            if controller is not None and event == "call" and frame.f_code.co_filename == str(helper):
+                name = frame.f_code.co_name
+                try:
+                    if name in ("storage_preflight", "reserve_recovery_capacity", "prepare_bundle", "stop_exact"):
+                        assert custody_done
+                        unchanged()
+                    if name in ("swap_bundle", "start_backend", "trial_start"):
+                        refuse()
+                    if name == "reserve_recovery_capacity" and point == "storage":
+                        refuse()
+                    if name == "prepare_bundle" and point in ("storage", "reserve"):
+                        refuse()
+                    if name == "pair_state":
+                        refuse()
+                    if name == "launch":
+                        assert custody_done and fault_record is not None and frame.f_locals.get("descriptor") is None
+                        unchanged()
+                        assert frame.f_locals.get("active") == manifest
+                        assert frame.f_back.f_code.co_filename == str(helper) and frame.f_back.f_code.co_name == "relaunch_previous"
+                except BaseException:
+                    refuse()
             if deferred and fault_record is not None and plan["observeRelaunch"]:
                 try:
                     if (event == "call" and frame.f_code.co_filename == str(helper)
@@ -270,7 +377,7 @@ def _install():
                 assert json.loads(fault_raw) == fault_record
                 state = snapshot_state()
                 if deferred:
-                    assert point == "before-pair" and quiet_state is not None
+                    assert (point == "before-pair" or controller is not None) and quiet_state is not None
                     assert state == quiet_state
                 receipt = dict(fault_record, kind="packaged-desktop-before-relaunch",
                                faultReceiptSha256=hashlib.sha256(fault_raw).hexdigest(),
@@ -298,6 +405,11 @@ def _install():
             nonlocal fault_record, quiet_state
             if event != "call" or frame.f_code.co_filename != str(helper):
                 return None
+            if controller is not None and frame.f_code.co_name == "storage_preflight":
+                try:
+                    hold_storage(frame)
+                except BaseException:
+                    refuse()
             if frame.f_code.co_name != target:
                 return None
             ancestors = []
@@ -318,6 +430,8 @@ def _install():
             if (local.get("transaction_id") != plan["transactionId"] or local.get("preparation_step") != step
                     or local.get("journal", {}).get("phase") != phase):
                 return None
+            if controller is not None:
+                unchanged()
             journal_raw = read_file(transaction / "journal.json", 1024 * 1024)
             journal = json.loads(journal_raw)
             assert journal["phase"] == phase and journal["intent"] == intent
@@ -334,12 +448,15 @@ def _install():
                 try:
                     # The initial app was live. Only this helper's stopped-process boundary
                     # supplies a quiet baseline; never compare with a live-home snapshot.
-                    assert point == "before-pair"
+                    assert point == "before-pair" or controller is not None
                     proofs = local.get("captured_processes")
                     valid = frame.f_globals["valid_process_proofs"]
                     alive = frame.f_globals["alive"]
                     assert valid(proofs) and all(not alive(proof) for proof in proofs)
-                    quiet_state = snapshot_state()
+                    if controller is not None:
+                        assert custody_done and snapshot_state() == quiet_state
+                    else:
+                        quiet_state = snapshot_state()
                     snapshot = dict(protocol=1, kind="packaged-desktop-before-pair-state", processesStopped=True,
                                     state=quiet_state, **{key: receipt[key] for key in
                                     ("pid", "planSha256", "transactionId", "intentSha256", "journalSha256")})
@@ -368,7 +485,7 @@ def _install():
             sys.settrace(None)
             raise OSError(errno.EIO, "RH-F2 owned fixture preparation fault: " + point)
 
-        if plan["observeRelaunch"]:
+        if plan["observeRelaunch"] or controller is not None:
             sys.setprofile(observe_relaunch)
         sys.settrace(trace)
     except BaseException:

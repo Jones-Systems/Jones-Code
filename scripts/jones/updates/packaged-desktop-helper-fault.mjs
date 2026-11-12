@@ -164,14 +164,39 @@ export async function preparePackagedDesktopHelperFault({
   selection,
   point,
   observeRelaunch = false,
+  controller,
 }) {
   NodeAssert.ok(packagedDesktopFaultPoints.includes(point));
   const deferred = selection !== undefined;
   NodeAssert.ok(deferred ? intent === undefined : typeof intent === "string");
   NodeAssert.ok(
-    !deferred || observeRelaunch === false || point === "before-pair",
+    !deferred || observeRelaunch === false || point === "before-pair" || controller !== undefined,
     "Deferred relaunch observation requires the quiet before-pair boundary.",
   );
+  if (controller !== undefined) {
+    NodeAssert.ok(deferred, "Controller custody requires normal Install selection.");
+    NodeAssert.equal(
+      observeRelaunch,
+      true,
+      "Controller custody requires pre-relaunch state observation.",
+    );
+    exactKeys(controller, ["identity", "main", "timeoutMs"]);
+    for (const identity of [controller.identity, controller.main]) {
+      exactKeys(identity, ["pid", "startSec", "startUsec", "executable"]);
+      for (const key of ["pid", "startSec", "startUsec"])
+        NodeAssert.ok(
+          Number.isSafeInteger(identity[key]) && identity[key] >= (key === "pid" ? 1 : 0),
+        );
+      NodeAssert.ok(identity.startUsec < 1000000 && NodePath.isAbsolute(identity.executable));
+    }
+    NodeAssert.equal(controller.identity.pid, process.pid);
+    NodeAssert.notEqual(controller.main.pid, process.pid);
+    NodeAssert.ok(
+      Number.isSafeInteger(controller.timeoutMs) &&
+        controller.timeoutMs >= 100 &&
+        controller.timeoutMs <= 60000,
+    );
+  }
   await privatePath(fixtureRoot, fixtureRoot, true);
   const rootInfo = await NodeFSP.lstat(fixtureRoot, { bigint: true });
   const helperBytes = await readPrivate(fixtureRoot, helper, 2 * 1024 * 1024);
@@ -233,6 +258,7 @@ export async function preparePackagedDesktopHelperFault({
         }),
     point,
     observeRelaunch,
+    ...(controller === undefined ? {} : { controller }),
   };
   const preload = NodePath.join(fixtureRoot, "python-preload");
   await NodeFSP.mkdir(preload, { mode: 0o700 });
@@ -268,6 +294,86 @@ export async function preparePackagedDesktopHelperFault({
     receiptPath: NodePath.join(preload, "fault-receipt.json"),
     planSha256: sha(planBytes),
     helperSha256,
+    // This receipt is an observation. The caller must acquire native birth/exit
+    // custody of the helper and captured writers before requesting their stop.
+    async readCustody() {
+      NodeAssert.ok(controller);
+      NodeAssert.equal(sha(await readPrivate(fixtureRoot, planPath, 16384)), sha(planBytes));
+      const info = await NodeFSP.lstat(fixtureRoot, { bigint: true });
+      NodeAssert.equal(String(info.dev), plan.rootDevice);
+      NodeAssert.equal(String(info.ino), plan.rootInode);
+      for (const [filename, digest, limit] of [
+        [helper, helperSha256, 2 * 1024 * 1024],
+        [manifest, plan.manifestSha256, 65536],
+        [selection, plan.selectionSha256, 131072],
+      ])
+        NodeAssert.equal(sha(await readPrivate(fixtureRoot, filename, limit)), digest);
+      const bytes = await readPrivate(fixtureRoot, NodePath.join(preload, "custody.json"), 65536);
+      const record = JSON.parse(bytes);
+      exactKeys(record, [
+        "protocol",
+        "kind",
+        "planSha256",
+        "helper",
+        "parent",
+        "processes",
+        "transactionId",
+        "intentSha256",
+      ]);
+      NodeAssert.equal(record.protocol, 1);
+      NodeAssert.equal(record.kind, "packaged-desktop-helper-custody");
+      NodeAssert.equal(record.planSha256, sha(planBytes));
+      NodeAssert.deepEqual(record.parent, controller.main);
+      NodeAssert.ok(record.helper.pid !== record.parent.pid && record.helper.pid !== process.pid);
+      NodeAssert.ok(
+        record.processes.some(
+          (proof) =>
+            proof.pid === record.parent.pid &&
+            proof.startSec === record.parent.startSec &&
+            proof.startUsec === record.parent.startUsec &&
+            proof.executable === record.parent.executable,
+        ),
+      );
+      NodeAssert.match(record.transactionId, /^[a-f0-9]{64}$/);
+      NodeAssert.equal(
+        sha(
+          await readPrivate(
+            fixtureRoot,
+            NodePath.join(
+              active.home,
+              "runtime/jones-updates/transactions",
+              record.transactionId,
+              "intent.json",
+            ),
+            65536,
+          ),
+        ),
+        record.intentSha256,
+      );
+      return immutable({ ...record, custodySha256: sha(bytes) });
+    },
+    // Release is only an acknowledgment. The same helper independently proves
+    // captured writers exited and runs the real quiescence oracle before proceeding.
+    async releaseCustody(custody) {
+      NodeAssert.deepEqual(custody, await this.readCustody());
+      const release = NodePath.join(preload, "release.json");
+      if (NodeFS.existsSync(release)) {
+        const error = new Error("Controller acknowledgment already exists.");
+        error.code = "EEXIST";
+        throw error;
+      }
+      const pending = NodePath.join(preload, "release-pending.json");
+      await writeExclusive(
+        pending,
+        JSON.stringify({
+          protocol: 1,
+          planSha256: sha(planBytes),
+          custodySha256: custody.custodySha256,
+        }),
+      );
+      await NodeFSP.link(pending, release);
+      await NodeFSP.unlink(pending);
+    },
     async readReceipt() {
       const receipt = JSON.parse(
         await readPrivate(fixtureRoot, NodePath.join(preload, "fault-receipt.json"), 16384),
@@ -343,7 +449,9 @@ export async function preparePackagedDesktopHelperFault({
       return Object.freeze(receipt);
     },
     async readBeforePairState() {
-      NodeAssert.ok(deferred && observeRelaunch && point === "before-pair");
+      NodeAssert.ok(
+        deferred && observeRelaunch && (point === "before-pair" || controller !== undefined),
+      );
       const fault = await this.readReceipt();
       const bytes = await readPrivate(
         fixtureRoot,
@@ -362,7 +470,9 @@ export async function preparePackagedDesktopHelperFault({
     // These are helper observations, not live handles or authority to clean a
     // launchd-born tree. Native custody must be acquired before launch effects.
     async readLaunchObservation() {
-      NodeAssert.ok(deferred && observeRelaunch && point === "before-pair");
+      NodeAssert.ok(
+        deferred && observeRelaunch && (point === "before-pair" || controller !== undefined),
+      );
       await NodeAssert.rejects(
         NodeFSP.lstat(NodePath.join(preload, "launch-observation-failure.json")),
         { code: "ENOENT" },

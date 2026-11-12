@@ -2,14 +2,22 @@ import type {
   DesignRequestBinding,
   DesignRequestHeldReason,
 } from "@t3tools/contracts/jones/designRequests";
-import type {
-  ProviderInteractionMode,
-  RuntimeMode,
-  T3ThreadPlacement,
-  T3WorkstreamListResult,
-} from "@t3tools/contracts";
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
 
-import type { LiveT3Placements } from "../../state/workstreams/placements.ts";
+export interface PersonalDesignAssignment {
+  readonly workstreamId: string | null;
+  readonly environmentId: string;
+  readonly threadId: string;
+  readonly revision: number;
+}
+export interface PersonalDesignDefinitions {
+  readonly items: readonly { readonly workstreamId: string; readonly name: string }[];
+  readonly confirmed: boolean;
+}
+export interface PersonalDesignAssignments {
+  readonly items: readonly PersonalDesignAssignment[];
+}
+
 import { sha256Hex } from "./packetV1.ts";
 
 /** Registry readiness as the web client observed it; `ready` still requires live, complete data. */
@@ -32,8 +40,8 @@ export interface DesignRequestThreadCandidate {
 export interface DesignRequestRouteInput {
   readonly binding: DesignRequestBinding | null;
   readonly registry: DesignRequestRegistryStatus;
-  readonly data: T3WorkstreamListResult | null;
-  readonly placements: LiveT3Placements | null;
+  readonly data: PersonalDesignDefinitions | null;
+  readonly placements: PersonalDesignAssignments | null;
   /** Only the primary environment's threads can be queued and read back from this client. */
   readonly primaryEnvironmentId: string | null;
   readonly threads: readonly DesignRequestThreadCandidate[];
@@ -66,18 +74,15 @@ export type DesignRequestResolvedRoute = DesignRequestRoutable | DesignRequestHe
 /** `sha256(bindingId|workstreamId|membership_id|source_instance_id|native_thread_id)`, 32 hex. */
 export function designRequestRouteToken(
   bindingId: string,
-  placement: Pick<
-    T3ThreadPlacement,
-    "workstream_id" | "membership_id" | "source_instance_id" | "native_thread_id"
-  >,
+  placement: PersonalDesignAssignment,
 ): string {
   return sha256Hex(
     [
       bindingId,
-      placement.workstream_id,
-      placement.membership_id,
-      placement.source_instance_id,
-      placement.native_thread_id,
+      placement.workstreamId,
+      `personal:${placement.revision}`,
+      placement.environmentId,
+      placement.threadId,
     ].join("|"),
   ).slice(0, 32);
 }
@@ -90,7 +95,7 @@ const held = (
 
 /**
  * Deterministic routing with no meaning-based guessing: the binding names a workstream, which
- * must have exactly one current, attested primary placement on a trusted environment, whose
+ * must have exactly one confirmed personal assignment whose
  * thread must be a non-archived thread on the primary environment. Anything else is held.
  */
 export function resolveDesignRequestRoute(
@@ -100,58 +105,20 @@ export function resolveDesignRequestRoute(
   if (binding === null) return held("no-binding");
   if (input.registry === "unsupported") return held("runtime-unsupported");
   if (input.registry === "unauthenticated") return held("not-authenticated");
-  if (
-    input.registry !== "ready" ||
-    data === null ||
-    data.source !== "live" ||
-    data.stale ||
-    data.nextCursor !== null
-  )
-    return held("registry-stale");
+  if (input.registry !== "ready" || data === null || !data.confirmed) return held("registry-stale");
   const metadata = data.items.find((item) => item.workstreamId === binding.workstreamId);
   if (metadata === undefined) return held("workstream-not-found");
   const workstream = { id: metadata.workstreamId, name: metadata.name };
-  if (
-    placements === null ||
-    placements.context.owner_id !== data.binding.ownerId ||
-    placements.context.principal_id !== data.binding.principalId ||
-    placements.context.authorization_revision !== data.binding.authorizationRevision ||
-    placements.context.server_generation !== data.binding.serverGeneration ||
-    placements.context.registry_version !== data.binding.registryVersion
-  )
-    return held("registry-stale", workstream);
-  const primaries = placements.items.filter(
-    (item) => item.workstream_id === binding.workstreamId && item.kind === "primary",
-  );
+  if (placements === null) return held("registry-stale", workstream);
+  const primaries = placements.items.filter((item) => item.workstreamId === binding.workstreamId);
   if (primaries.length === 0) return held("no-primary", workstream);
   if (primaries.length > 1) return held("multiple-primary", workstream);
   const placement = primaries[0]!;
-  const attestedAt = Date.parse(placement.attested_at);
-  const expiresAt = Date.parse(placement.expires_at);
-  if (!Number.isFinite(input.now) || !Number.isFinite(attestedAt) || attestedAt > input.now)
-    return held("primary-not-attested", workstream);
-  if (!Number.isFinite(expiresAt) || expiresAt <= input.now || expiresAt <= attestedAt)
-    return held("placement-expired", workstream);
-  const trust = placements.trustedEnvironments.find(
-    (entry) => entry.environmentId === placement.source_instance_id,
-  );
-  if (
-    placements.readiness !== "ready" ||
-    trust === undefined ||
-    trust.authorityNamespace !== placement.authority_namespace ||
-    trust.storeGeneration !== placement.store_generation ||
-    !/^[a-f0-9]{64}$/.test(placement.evidence_sha256)
-  )
-    return held("primary-not-attested", workstream);
-  if (
-    input.primaryEnvironmentId === null ||
-    placement.source_instance_id !== input.primaryEnvironmentId
-  )
+  if (input.primaryEnvironmentId === null || placement.environmentId !== input.primaryEnvironmentId)
     return held("thread-not-local", workstream);
   const thread = input.threads.find(
     (candidate) =>
-      candidate.environmentId === placement.source_instance_id &&
-      candidate.id === placement.native_thread_id,
+      candidate.environmentId === placement.environmentId && candidate.id === placement.threadId,
   );
   if (thread === undefined) return held("thread-not-local", workstream);
   if (thread.archivedAt !== null) return held("thread-archived", workstream);
@@ -169,6 +136,6 @@ export function resolveDesignRequestRoute(
       runtimeMode: thread.runtimeMode,
       interactionMode: thread.interactionMode,
     },
-    membershipId: placement.membership_id,
+    membershipId: `personal:${placement.revision}`,
   };
 }

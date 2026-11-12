@@ -3,8 +3,6 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import type { NativeProviderCommandReceipt, NativeProviderEventMetadata } from "./service.ts";
-
 const Metadata = Schema.Struct({
   eventId: Schema.String,
   commandId: Schema.NullOr(Schema.String),
@@ -24,6 +22,9 @@ const Receipt = Schema.Struct({
   resultSequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   status: Schema.Literals(["accepted", "rejected"]),
 });
+type NativeProviderCommandReceipt = typeof Receipt.Type;
+type NativeProviderEventMetadata = typeof Metadata.Type;
+
 const SettlementProof = Schema.Struct({
   receipt: Receipt,
   events: Schema.Array(Metadata),

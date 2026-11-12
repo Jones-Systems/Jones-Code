@@ -1,12 +1,20 @@
 // @effect-diagnostics nodeBuiltinImport:off - runs before `vp i`, so only Node built-ins exist.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
   availableLineage,
   completionObservation,
   recordCompletion,
 } from "../../../apps/server/src/jones/workspaceRetirement/CompletionObservation.ts";
+
+import {
+  createLocalMacAdmission,
+  producerEnvironment,
+  UnknownSamplerClosure,
+  type LocalMacAdmission,
+} from "./local-mac-admission.ts";
 
 const GIB = 1024n ** 3n;
 type Options = { install: boolean; warm: boolean; reserve: bigint; peak: bigint };
@@ -20,6 +28,9 @@ type Dependencies = {
   run: Runner;
   report: (message: string) => void;
   afterInstall?: () => void;
+  platform?: NodeJS.Platform;
+  signal?: AbortSignal;
+  admission?: LocalMacAdmission;
 };
 
 export function parseOptions(args: string[]): Options {
@@ -95,7 +106,14 @@ export async function setupWorktree(
   if (!projectRoot) {
     throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
   }
-  function admit(producer: string) {
+  const signal = dependencies.signal ?? new AbortController().signal;
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Preinstall admission reads the physical OS before application dependencies exist.
+  const mac = (dependencies.platform ?? NodeOS.platform()) === "darwin";
+  const admission = dependencies.admission ?? createLocalMacAdmission();
+  async function admit(producer: string) {
+    signal.throwIfAborted();
+    const attempt = {};
+    const receipt = mac ? await admission.collect(attempt, signal) : undefined;
     let available: bigint;
     try {
       available = dependencies.available(worktree);
@@ -110,18 +128,25 @@ export async function setupWorktree(
         `${producer} refused: ${worktree} available=${available} reserve=${options.reserve} peak=${options.peak} bytes. No cleanup performed.`,
       );
     }
+    signal.throwIfAborted();
+    return () => {
+      signal.throwIfAborted();
+      if (receipt) admission.consume(receipt, attempt, signal);
+    };
   }
   if (options.install) {
     dependencies.report(
       "Storage admission covers the worktree filesystem; separately configured shared package stores are not measured.",
     );
-    admit("Install");
+    const launchInstall = await admit("Install");
+    launchInstall();
     // Resolve vp through shell PATH, including Windows command shims.
     // Pass pnpm's confirmation flag through vp; closed stdin makes other prompts fail instead of hang.
     // Require the locked dependency graph: a stale lockfile must fail, never be rewritten.
     const status = await dependencies.run("vp i --frozen-lockfile -- --yes", [], {
       cwd: worktree,
       shell: true,
+      ...(mac ? { env: producerEnvironment("install") } : {}),
       stdio: ["ignore", "pipe", "pipe"],
     });
     if (status !== 0) return status ?? 1;
@@ -129,12 +154,14 @@ export async function setupWorktree(
   }
   linkEnvironment(projectRoot, worktree, dependencies.report);
   if (options.warm) {
-    admit("Cache warm");
+    const launchWarm = await admit("Cache warm");
+    launchWarm();
     return (
       (await dependencies.run(
         process.execPath,
         [NodePath.join(worktree, "apps", "web", "scripts", "warm-dep-cache.ts")],
         {
+          ...(mac ? { env: producerEnvironment("warm") } : {}),
           cwd: worktree,
           stdio: ["ignore", "pipe", "pipe"],
         },
@@ -170,6 +197,8 @@ function reportStoreFilesystem(worktree: string, report: Dependencies["report"])
 }
 
 type LifecycleDependencies = {
+  platform?: NodeJS.Platform;
+  admission?: LocalMacAdmission;
   available: Dependencies["available"];
   spawn: typeof NodeChildProcess.spawn;
   report: Dependencies["report"];
@@ -199,6 +228,14 @@ export async function runSetupWorktree(
   const doneMarker = NodePath.join(markerDir, "setup-done");
   const failedMarker = NodePath.join(markerDir, "setup-failed");
   const unfinalizedMarker = NodePath.join(markerDir, "setup-unfinalized");
+  if (
+    NodeFS.existsSync(unfinalizedMarker) &&
+    NodeFS.readFileSync(unfinalizedMarker, "utf8") === "sampler_closure_unknown\n"
+  ) {
+    throw new UnknownSamplerClosure(
+      "Prior sampler closure is unresolved; setup cannot be replayed.",
+    );
+  }
   NodeFS.rmSync(doneMarker, { force: true });
   NodeFS.rmSync(failedMarker, { force: true });
   NodeFS.mkdirSync(markerDir, { recursive: true });
@@ -210,6 +247,8 @@ export async function runSetupWorktree(
     dependencies.report("Setup finalization marker unavailable.");
   }
   let failureDetail = "";
+  let unknownClosure = false;
+  const abortController = new AbortController();
   const recordException = (error: Error) => {
     failureDetail = error.stack ?? String(error);
   };
@@ -229,6 +268,7 @@ export async function runSetupWorktree(
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
   const cancel = (signal: NodeJS.Signals) => {
     cancelSignal = signal;
+    abortController.abort();
     failureDetail = `Cancelled by ${signal}.`;
     if (activeProducer) activeProducer.kill(signal);
   };
@@ -241,10 +281,14 @@ export async function runSetupWorktree(
       return status;
     }
     status = await setupWorktree(args, projectRoot, worktree, {
+      ...(dependencies.platform === undefined ? {} : { platform: dependencies.platform }),
+      ...(dependencies.admission === undefined ? {} : { admission: dependencies.admission }),
+      signal: abortController.signal,
       available: dependencies.available,
       report: dependencies.report,
       afterInstall: () => reportStoreFilesystem(worktree, dependencies.report),
       run: async (command, commandArgs, options) => {
+        abortController.signal.throwIfAborted();
         const child = dependencies.spawn(command, commandArgs, options);
         activeProducer = child;
         let output = "";
@@ -280,6 +324,8 @@ export async function runSetupWorktree(
     if (cancelSignal) status = 1;
     return status;
   } catch (error) {
+    unknownClosure = error instanceof UnknownSamplerClosure;
+    if (unknownClosure) NodeFS.writeFileSync(unfinalizedMarker, "sampler_closure_unknown\n");
     failureDetail = error instanceof Error ? (error.stack ?? error.message) : String(error);
     throw error;
   } finally {
@@ -287,30 +333,32 @@ export async function runSetupWorktree(
     // Known terminal state and child drain resolve the operation marker even if
     // the optional metadata sink is unavailable. Unknown exit keeps the marker.
     try {
-      NodeFS.rmSync(unfinalizedMarker, { force: true });
+      if (!unknownClosure) NodeFS.rmSync(unfinalizedMarker, { force: true });
     } catch {
       dependencies.report(
         "Setup finalization marker could not be cleared; known outcome recorded by the completion marker.",
       );
     }
     const outcome = cancelSignal ? "cancelled" : status === 0 ? "succeeded" : "failed";
-    const result = (dependencies.record ?? recordCompletion)(
-      completionObservation({
-        producer: "jones-setup",
-        owner: "jones-setup",
-        worktree,
-        status: outcome,
-        roots: [
-          status === 0 ? doneMarker : failedMarker,
-          ...(args.includes("--install") ? [NodePath.join(worktree, "node_modules")] : []),
-          ...(args.includes("--warm")
-            ? [NodePath.join(worktree, "apps/web/node_modules/.vite")]
-            : []),
-        ],
-        lineage: availableLineage(process.env),
-        omittedEnrichment: ["package_local_output_roots_not_enumerated"],
-      }),
-    );
+    const result = unknownClosure
+      ? { status: "unavailable", reason: "sampler_closure_unknown" }
+      : (dependencies.record ?? recordCompletion)(
+          completionObservation({
+            producer: "jones-setup",
+            owner: "jones-setup",
+            worktree,
+            status: outcome,
+            roots: [
+              status === 0 ? doneMarker : failedMarker,
+              ...(args.includes("--install") ? [NodePath.join(worktree, "node_modules")] : []),
+              ...(args.includes("--warm")
+                ? [NodePath.join(worktree, "apps/web/node_modules/.vite")]
+                : []),
+            ],
+            lineage: availableLineage(process.env),
+            omittedEnrichment: ["package_local_output_roots_not_enumerated"],
+          }),
+        );
     if (result.status !== "recorded")
       dependencies.report(
         `Setup completion metadata unavailable: ${result.reason}; outcome=${outcome}.`,
