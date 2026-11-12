@@ -42,6 +42,7 @@ interface HoldRow {
   readonly generation: number;
   readonly message_id: string;
   readonly refused_run_id: string;
+  readonly source_generation: number;
   readonly state: "held" | "armed" | "consumed" | "void";
   readonly created_sequence: number;
   readonly release_event_id: string | null;
@@ -162,6 +163,7 @@ const make = Effect.gen(function* () {
   const currentDelivery = Effect.fn("StartRefusal.currentDelivery")(function* (
     key: HoldKey,
     refusedRunId?: RunId,
+    replacing?: HoldRow,
   ) {
     const current = yield* sql<{ readonly task_ids: string }>`
       SELECT json_extract(run.payload_json, '$.delegatedCompletion.delivery.taskIds') AS task_ids
@@ -179,14 +181,71 @@ const make = Effect.gen(function* () {
     }>`SELECT value AS id FROM json_each(${current[0].task_ids})`).map((row) => row.id);
     if (ids.length === 0 || new Set(ids).size !== ids.length) return undefined;
     if (refusedRunId !== undefined) {
-      const source = yield* sql<{ readonly id: string }>`
-        SELECT task.value AS id FROM orchestration_v2_projection_runs AS run
+      const source = yield* sql<{
+        readonly id: string;
+        readonly generation: number;
+        readonly state: string | null;
+      }>`
+        SELECT task.value AS id,
+          json_extract(message.payload_json, '$.delegatedCompletion.generation') AS generation,
+          child.completion_delivery_state AS state
+        FROM orchestration_v2_projection_runs AS run
         JOIN orchestration_v2_projection_messages AS message
           ON message.message_id = json_extract(run.payload_json, '$.userMessageId')
         JOIN json_each(json_extract(message.payload_json, '$.delegatedCompletion.taskIds')) AS task
+        LEFT JOIN orchestration_v2_projection_subagents AS child
+          ON child.subagent_id = task.value AND child.thread_id = ${key.threadId}
+            AND child.run_id = ${key.parentRunId} AND child.origin = 'app_owned'
         WHERE run.run_id = ${refusedRunId} AND run.thread_id = ${key.threadId}
-          AND message.run_id = ${refusedRunId} AND message.thread_id = ${key.threadId}`;
-      if (source.length !== ids.length || source.some((row, i) => row.id !== ids[i]))
+          AND message.run_id = ${refusedRunId} AND message.thread_id = ${key.threadId}
+          AND json_extract(message.payload_json, '$.delegatedCompletion.parentRunId') = ${key.parentRunId}`;
+      // A remainder gets a new key linked to the preceding reservation. Its proof
+      // still describes the immutable refused message; only explicit dispositions
+      // may subtract obligations. Membership under the old key must stay exact.
+      const anchor =
+        replacing === undefined
+          ? key
+          : {
+              threadId: ThreadId.make(replacing.thread_id),
+              parentRunId: RunId.make(replacing.parent_run_id),
+              generation: replacing.generation,
+              messageId: MessageId.make(replacing.message_id),
+            };
+      const chain = yield* sql<{
+        readonly size: number;
+        readonly source_generation: number | null;
+      }>`
+        WITH RECURSIVE lineage AS (
+          SELECT generation, source_generation FROM jones_start_refusal_holds
+          WHERE thread_id = ${anchor.threadId} AND parent_run_id = ${anchor.parentRunId}
+            AND generation = ${anchor.generation} AND message_id = ${anchor.messageId}
+            AND refused_run_id = ${refusedRunId} AND generation > source_generation
+          UNION ALL
+          SELECT previous.generation, previous.source_generation FROM jones_start_refusal_holds AS previous
+          JOIN lineage ON previous.generation = lineage.source_generation
+          WHERE previous.thread_id = ${key.threadId} AND previous.parent_run_id = ${key.parentRunId}
+            AND previous.refused_run_id = ${refusedRunId} AND previous.generation > previous.source_generation
+        ) SELECT count(*) AS size, min(source_generation) AS source_generation FROM lineage`;
+      const removed = Math.max(0, chain[0]!.size - (replacing === undefined ? 1 : 0));
+      const inherited = removed > 0;
+      // Each link records one explicit task disposition. Counting the immutable
+      // links prevents further subtraction under an already reserved key.
+      if (
+        inherited &&
+        (chain[0]!.source_generation !== source[0]?.generation ||
+          source.length - ids.length !== removed)
+      )
+        return undefined;
+      if (
+        inherited &&
+        source.some(
+          (row) =>
+            row.state !== "claimed" && row.state !== "acknowledged" && row.state !== "disposed",
+        )
+      )
+        return undefined;
+      const expected = inherited ? source.filter((row) => row.state === "claimed") : source;
+      if (expected.length !== ids.length || expected.some((row, i) => row.id !== ids[i]))
         return undefined;
     }
     for (const id of ids) {
@@ -267,6 +326,80 @@ const make = Effect.gen(function* () {
     generation: row.generation,
     messageId: MessageId.make(row.message_id),
   });
+  const owns = Effect.fn("StartRefusal.owns")(function* (key: HoldKey) {
+    if (!(yield* holdsPresent)) return false;
+    const rows = yield* sql`SELECT 1 FROM jones_start_refusal_holds
+      WHERE thread_id = ${key.threadId} AND parent_run_id = ${key.parentRunId}
+        AND generation = ${key.generation} AND message_id = ${key.messageId}`;
+    return rows.length === 1;
+  });
+
+  const canRekey = Effect.fn("StartRefusal.canRekey")(function* (key: HoldKey) {
+    if (!(yield* holdsPresent)) return false;
+    const rows = yield* sql<HoldRow>`SELECT * FROM jones_start_refusal_holds
+      WHERE thread_id = ${key.threadId} AND parent_run_id = ${key.parentRunId}
+        AND generation = ${key.generation} AND message_id = ${key.messageId} AND state <> 'void'`;
+    return (
+      rows[0] !== undefined &&
+      (yield* currentDelivery(key, RunId.make(rows[0].refused_run_id))) !== undefined
+    );
+  });
+
+  const reserveRemainders = Effect.fn("StartRefusal.reserveRemainders")(function* (
+    storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
+  ) {
+    if (!(yield* holdsPresent)) return;
+    for (const stored of storedEvents) {
+      const event = stored.event;
+      if (event.type !== "run.updated") continue;
+      const cohort = event.payload.delegatedCompletion;
+      const delivery = cohort?.delivery;
+      if (
+        cohort?.disposition !== "open" ||
+        delivery == null ||
+        cohort.nextGeneration !== delivery.generation + 1
+      )
+        continue;
+      const previous = yield* sql<HoldRow>`SELECT * FROM jones_start_refusal_holds
+        WHERE thread_id = ${event.threadId} AND parent_run_id = ${event.payload.id}
+          AND generation = ${delivery.generation - 1} AND message_id <> ${delivery.messageId}
+          AND state <> 'void'`;
+      const row = previous[0];
+      if (previous.length !== 1 || row === undefined) continue;
+      const key = {
+        threadId: event.threadId,
+        parentRunId: event.payload.id,
+        generation: delivery.generation,
+        messageId: delivery.messageId,
+      };
+      const source = yield* sql<{ readonly id: string }>`SELECT task.value AS id
+        FROM orchestration_v2_projection_runs AS run
+        JOIN orchestration_v2_projection_messages AS message
+          ON message.message_id = json_extract(run.payload_json, '$.userMessageId')
+        JOIN json_each(json_extract(message.payload_json, '$.delegatedCompletion.taskIds')) AS task
+        WHERE run.run_id = ${row.refused_run_id} AND run.thread_id = ${event.threadId}`;
+      const disposition = storedEvents.some(
+        ({ event: changed }) =>
+          changed.type === "subagent.updated" &&
+          changed.threadId === key.threadId &&
+          changed.payload.runId === key.parentRunId &&
+          source.some((task) => task.id === changed.payload.id) &&
+          !delivery.taskIds.includes(changed.payload.id) &&
+          (changed.payload.completionDelivery?.state === "acknowledged" ||
+            changed.payload.completionDelivery?.state === "disposed"),
+      );
+      if (
+        !disposition ||
+        (yield* currentDelivery(key, RunId.make(row.refused_run_id), row)) === undefined
+      )
+        continue;
+      yield* sql`INSERT INTO jones_start_refusal_holds
+        (thread_id, parent_run_id, generation, message_id, source_generation, refused_run_id, state, created_sequence)
+        VALUES (${key.threadId}, ${key.parentRunId}, ${key.generation}, ${key.messageId},
+          ${row.generation}, ${row.refused_run_id}, 'held', ${storedEvents.at(-1)!.sequence})`;
+    }
+  });
+
   const voidInvalid = Effect.fn("StartRefusal.voidInvalid")(function* (threadId: ThreadId) {
     if (!(yield* holdsPresent)) return;
     const rows = yield* sql<HoldRow>`SELECT * FROM jones_start_refusal_holds
@@ -361,6 +494,7 @@ const make = Effect.gen(function* () {
           : [],
       ),
     );
+    yield* reserveRemainders(storedEvents);
     for (const threadId of invalidators) yield* voidInvalid(threadId);
   });
 
@@ -404,6 +538,8 @@ const make = Effect.gen(function* () {
     validateReservation,
     reserve,
     blocked,
+    owns,
+    canRekey,
     admit,
     events,
     armedBy,

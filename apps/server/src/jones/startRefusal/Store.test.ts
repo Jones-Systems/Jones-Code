@@ -13,6 +13,7 @@ const settle = Effect.fnUntraced(function* (
   reason?: RefusalReason,
   activeAttemptId = f.run.activeAttemptId!,
   breakTransaction = false,
+  consumer?: StartRefusal.CertificationObserver["Service"],
 ) {
   const projection = yield* f.orchestrator.getThreadProjection(f.threadId);
   const attempt = projection.attempts.find((a) => a.id === f.run.activeAttemptId)!;
@@ -36,15 +37,31 @@ const settle = Effect.fnUntraced(function* (
     yield* sql`CREATE TEMP TRIGGER fail_certification BEFORE UPDATE ON jones_start_refusal_attempts
       WHEN NEW.state = 'refused' BEGIN SELECT RAISE(ABORT, 'synthetic certification failure'); END`;
   }
-  return yield* f.sink.writeIfRunCurrent({
+  const write = f.sink.writeIfRunCurrent({
     threadId: f.threadId,
     runId: f.run.id,
     activeAttemptId,
     expectedStatus: "starting",
-    ...(reason === undefined ? {} : { startRefusalReason: reason }),
+    ...(reason === undefined || consumer !== undefined ? {} : { startRefusalReason: reason }),
     events,
     effects: [],
   });
+  if (consumer === undefined) return yield* write;
+  const sql = yield* SqlClient.SqlClient;
+  const store = yield* StartRefusal.StartRefusals;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const result = yield* write;
+      if (result.committed && reason !== undefined)
+        yield* store.certify(
+          { threadId: f.threadId, runId: f.run.id, attemptId: activeAttemptId },
+          reason,
+          result.storedEvents,
+          consumer,
+        );
+      return result;
+    }),
+  );
 });
 const proof = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -238,5 +255,54 @@ it.effect(
       const projection = yield* f.orchestrator.getThreadProjection(f.threadId);
       assert.equal(projection.runs.find((run) => run.id === f.run.id)!.status, "starting");
       assert.lengthOf(yield* sql`SELECT * FROM jones_test_certification_observer`, 0);
+    }).pipe(Effect.provide(Fixture.runtimeWithoutProbe.pipe(Layer.provide(observationLayer)))),
+);
+
+it.effect.each([false, true])(
+  "per-call certification consumer is transactional and idempotent (failure=%s)",
+  (fail) =>
+    Effect.gen(function* () {
+      const f = yield* Fixture.seed;
+      const sql = yield* SqlClient.SqlClient;
+      const store = yield* StartRefusal.StartRefusals;
+      yield* sql`CREATE TABLE jones_test_certification_consumer (attempt_id TEXT PRIMARY KEY, scope TEXT NOT NULL)`;
+      if (fail)
+        yield* sql`CREATE TEMP TRIGGER fail_consumer BEFORE INSERT ON jones_test_certification_consumer
+      BEGIN SELECT RAISE(ABORT, 'synthetic consumer failure'); END`;
+      const consumer = StartRefusal.CertificationObserver.of({
+        certified: (input) =>
+          Effect.gen(function* () {
+            assert.equal(
+              (yield* sql`SELECT state FROM jones_start_refusal_attempts`)[0]!.state,
+              "refused",
+            );
+            assert.lengthOf(yield* sql`SELECT * FROM jones_test_certification_observer`, 1);
+            assert.equal(input.reason, "control_held");
+            assert.equal(input.settlement.event.type, "run.updated");
+            yield* sql`INSERT INTO jones_test_certification_consumer VALUES (${input.attemptId}, ${input.scope})`;
+          }),
+      });
+      const result = yield* settle(f, "control_held", f.run.activeAttemptId!, false, consumer).pipe(
+        Effect.result,
+      );
+      assert.equal(result._tag, fail ? "Failure" : "Success");
+      assert.equal((yield* proof)[0]!.state, fail ? "eligible" : "refused");
+      assert.lengthOf(yield* sql`SELECT * FROM jones_test_certification_observer`, fail ? 0 : 1);
+      assert.lengthOf(yield* sql`SELECT * FROM jones_test_certification_consumer`, fail ? 0 : 1);
+      const projection = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.equal(
+        projection.runs.find((r) => r.id === f.run.id)!.status,
+        fail ? "starting" : "failed",
+      );
+      if (result._tag === "Success") {
+        yield* store.certify(
+          { threadId: f.threadId, runId: f.run.id, attemptId: f.run.activeAttemptId! },
+          "control_held",
+          result.success.storedEvents,
+          consumer,
+        );
+        assert.lengthOf(yield* sql`SELECT * FROM jones_test_certification_consumer`, 1);
+        assert.lengthOf(yield* sql`SELECT * FROM jones_test_certification_observer`, 1);
+      }
     }).pipe(Effect.provide(Fixture.runtimeWithoutProbe.pipe(Layer.provide(observationLayer)))),
 );

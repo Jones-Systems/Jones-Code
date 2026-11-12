@@ -150,7 +150,7 @@ export const missingHoldsRuntime = makeRuntime(probeLayer, "holds");
 export const runtimeOn = (sql: SqlClient.SqlClient, withProbe: boolean) =>
   makeRuntime(withProbe ? probeLayer : Layer.empty, false, Layer.succeed(SqlClient.SqlClient, sql));
 
-export const seed = Effect.gen(function* () {
+export const seedTasks = Effect.fnUntraced(function* (taskCount = 1) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const sink = yield* Sink.EventSinkV2;
   const start = yield* Start.ProviderTurnStartServiceV2;
@@ -250,6 +250,29 @@ export const seed = Effect.gen(function* () {
     result: "Retain this result",
     stoppedThere: "ran-out",
   });
+  for (let index = 1; index < taskCount; index++) {
+    const siblingId = NodeId.make(`task:refusal-sibling:${index}`);
+    yield* sink.write({
+      events: [
+        yield* event({
+          type: "subagent.updated",
+          threadId,
+          runId: parent.id,
+          nodeId: siblingId,
+          payload: { ...task, id: siblingId },
+        }),
+      ],
+    });
+    yield* orchestrator.dispatch({
+      type: "delegated_task.remote.complete",
+      commandId: CommandId.make(`complete:sibling:${index}`),
+      parentThreadId: threadId,
+      taskId: siblingId,
+      status: "completed",
+      result: `Sibling result ${index}`,
+      stoppedThere: "ran-out",
+    });
+  }
   const claimed = yield* orchestrator.getThreadProjection(threadId);
   const delivery = claimed.runs.find((run) => run.id === parent.id)!.delegatedCompletion!.delivery!;
   const dispatchDelivery = (key = "initial") =>
@@ -369,3 +392,5 @@ export const seed = Effect.gen(function* () {
     witness,
   };
 });
+
+export const seed = seedTasks();
