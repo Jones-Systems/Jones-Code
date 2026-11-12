@@ -4424,6 +4424,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         detachSessionIds.delete(sessionId);
     }
     if (detachSessionIds.size > 0) {
+      if (command.type === "thread.metadata.update") {
+        const { runs, providerThreads } = yield* loadProjectionForCommand(command, [
+          "runs",
+          "providerThreads",
+        ]);
+        for (const run of runs) {
+          if (run.status !== "running") continue;
+          const providerThread = providerThreads.find(
+            (candidate) => candidate.id === run.providerThreadId,
+          );
+          if (
+            providerThread?.providerSessionId == null ||
+            !detachSessionIds.has(providerThread.providerSessionId)
+          )
+            continue;
+          // Record a controlled interruption before detach; the outbox serializes
+          // these effects per thread, so interrupt is processed before release.
+          yield* dispatchRunInterrupt(
+            {
+              type: "run.interrupt",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              runId: run.id,
+              reason: "Workspace changed.",
+              holdQueue: false,
+            },
+            events,
+            effects,
+          );
+        }
+      }
       const liveSessions = (providerContext?.providerSessions ?? []).filter(
         (session) =>
           detachSessionIds.has(session.id) &&

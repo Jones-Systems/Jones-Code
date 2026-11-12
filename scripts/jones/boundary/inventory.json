@@ -2930,7 +2930,9 @@
     "scripts/jones/boundary/fragments/workstreams-native-home-fixture.json": "jones-owned",
     "scripts/jones/boundary/fragments/superseded-terminal-history.json": "jones-owned",
     "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.py": "jones-owned",
-    "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/testing/sourceRenewalFamily.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/active-workspace-handoff.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -3622,6 +3622,11 @@
       "id": "workstreams-native-home-fixture",
       "tests": ["apps/server/src/jones/workstreams/testing/nativeHomeFixture.test.ts"],
       "scope": "Explicit empty private Linux synthetic home prepared by real authority enrollment, registry key/init and SessionStore/source-setup services; startup selects native and reads an empty HTTP projection. Synthetic receipts attest no packaged runtime or installation."
+    },
+    {
+      "id": "active-workspace-handoff",
+      "tests": ["apps/server/src/jones/orchestration/ActiveWorkspaceHandoff.test.ts"],
+      "scope": "A workspace metadata change records the existing run.interrupt before detaching a session owned by a running run. Per-thread outbox ordering processes interruption before release, without holding the queued continuation. The direct shared-file edit calls existing private orchestrator dispatch/projection machinery; extracting it would duplicate that machinery. A Jones-owned fake-provider integration exercises the actual WorktreeMcpService handoff, session manager, event ingestion and continuation; an unexpected stream failure still fails the run and holds its queue. Deterministic fixtures establish this transition only, not historical cause or live native qualification."
     }
   ]
 }
