@@ -24,7 +24,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { voiceReviewConfigFromEnv } from "./config.ts";
 import * as Schema from "effect/Schema";
-import * as DateTime from "effect/DateTime";
 
 vi.mock("node:fs/promises", { spy: true });
 
@@ -306,7 +305,7 @@ describe("voice routing and registry bridge", () => {
         expect(item.draft.text).toBeNull();
       }
     }));
-  it("keeps a native read outage explicit and accepts additive response fields", async () =>
+  it("keeps a personal read outage explicit and accepts additive response fields", async () =>
     withFixture(async (tokenFile) => {
       const snapshot = {
         schema: "voice.registry-read/v1",
@@ -330,89 +329,63 @@ describe("voice routing and registry bridge", () => {
       const bridge = makeVoiceReviewBridge(config(tokenFile), async () => Response.json(snapshot));
       const result = await bridge.registrySnapshot(principal);
       expect(result.partial).toBe(true);
-      expect(result.unavailable).toContain("native_memberships");
+      expect(result.unavailable).toContain("personal_memberships");
       expect(result.threads[0]?.native_memberships).toEqual([]);
     }));
-  it("composes only qualified native placements with a separate namespace", async () =>
+  it.each([false, true])("composes local personal membership with foreign thread=%s", async (includeForeign) =>
     withFixture(async (tokenFile) => {
       const key = '["host","environment","thread"]';
-      const fixedNow = DateTime.makeUnsafe("2026-10-02T12:00:00Z");
-      const placement = {
-        membership_id: "membership",
+      const foreignKey = '["foreign-host","environment","thread"]';
+      const membership = {
+        workstream_ref: "native:voice" as const,
         workstream_id: "voice",
-        native_reference_id: "reference",
-        kind: "primary" as const,
-        source_instance_id: "environment",
-        native_thread_id: "thread",
-        attestation_version: 1,
-        attested_at: DateTime.formatIso(DateTime.add(fixedNow, { minutes: -1 })),
-        expires_at: DateTime.formatIso(DateTime.add(fixedNow, { minutes: 1 })),
-        evidence_sha256: "a".repeat(64),
-        source_binding_version: 1,
-        authority_namespace: "authority",
-        store_generation: 1,
+        name: "Synthetic Workstream",
+        environment_id: "environment",
+        thread_id: "thread",
+        revision: 7,
       };
-      const read = vi.fn(async () => ({
-        page: {
-          inventory_sha256: "b".repeat(64),
-          context: {
-            owner_id: "owner",
-            principal_id: "principal",
-            authorization_revision: 1,
-            server_generation: 1,
-            registry_version: 1,
-          },
-          items: [placement],
+      const read = vi.fn(async () => [membership]);
+      const fetcher = vi.fn<typeof fetch>(async (url) => {
+        expect(String(url)).toContain("/v1/registry/snapshot?");
+        return Response.json({
+          schema: "voice.registry-read/v1",
+          snapshot_revision: 1,
           next_cursor: null,
-        },
-        trustedEnvironments: [
-          { environmentId: "environment", authorityNamespace: "authority", storeGeneration: 1 },
-        ],
-        readiness: "ready" as const,
-      }));
-      const bridge = makeVoiceReviewBridge(
-        config(tokenFile),
-        async () =>
-          Response.json({
-            schema: "voice.registry-read/v1",
-            snapshot_revision: 1,
-            next_cursor: null,
-            partial: false,
-            unavailable: [],
-            threads: [
-              {
-                thread_key: key,
-                registration: null,
-                summary: null,
-                activity: null,
-                freshness: {},
-                associations: [
-                  {
-                    subject: `thread:${key}`,
-                    workstream_ref: "inferred:voice",
-                    state: "active",
-                    revision: 1,
-                    origin: "owner",
-                    job_id: null,
-                  },
-                ],
-              },
-            ],
-          }),
-        {
-          identities: () =>
-            new Map([[key, { source_instance_id: "environment", native_thread_id: "thread" }]]),
-          read,
-        },
-        () => DateTime.toEpochMillis(fixedNow),
-      );
+          partial: false,
+          unavailable: [],
+          threads: (includeForeign ? [key, foreignKey] : [key]).map((thread_key) => ({
+            thread_key,
+            registration: null,
+            summary: null,
+            activity: null,
+            freshness: {},
+            associations: [{
+              subject: `thread:${thread_key}`,
+              workstream_ref: "inferred:voice",
+              state: "active",
+              revision: 1,
+              origin: "owner",
+              job_id: null,
+            }],
+          })),
+        });
+      });
+      const bridge = makeVoiceReviewBridge(config(tokenFile), fetcher, {
+        identities: () => new Map([[key, { source_instance_id: "environment", native_thread_id: "thread" }]]),
+        read,
+      });
       const result = await bridge.registrySnapshot(principal);
-      expect(read).toHaveBeenCalledWith(principal, [
-        { source_instance_id: "environment", native_thread_id: "thread" },
-      ]);
-      expect(result.threads[0]?.native_memberships[0]?.workstream_ref).toBe("native:voice");
+      expect(read).toHaveBeenCalledWith(principal, [{ source_instance_id: "environment", native_thread_id: "thread" }]);
+      expect(result.threads[0]?.native_memberships).toEqual([]);
+      expect(result.threads[0]?.personal_memberships).toEqual([membership]);
       expect(result.threads[0]?.associations[0]?.workstream_ref).toBe("inferred:voice");
-      expect(result.unavailable).toEqual([]);
+      if (includeForeign) {
+        expect(result.threads[1]?.native_memberships).toEqual([]);
+        expect(result.threads[1]?.personal_memberships).toEqual([]);
+      }
+      expect(result.partial).toBe(includeForeign);
+      expect(result.unavailable).toEqual(includeForeign ? ["personal_memberships"] : []);
+      expect(fetcher).toHaveBeenCalledTimes(1);
     }));
   it("forwards one CAS/idempotent metadata correction without draft or delivery requests", async () =>
     withFixture(async (tokenFile) => {

@@ -6,6 +6,11 @@ import {
   AcceptThreadHandoffRpc,
 } from "./jones/linkedThreadsRpc.ts";
 import {
+  SubscribePersonalWorkstreamsRpc,
+  PutPersonalWorkstreamRpc,
+  AssignPersonalWorkstreamRpc,
+} from "./jones/workstreamsPersonalRpc.ts";
+import {
   ThreadReferenceExcerptInput,
   ThreadReferenceExcerptResult,
 } from "./jones/threadReferenceExcerptRpc.ts";
@@ -2247,6 +2252,9 @@ export const WsRpcGroup = RpcGroup.make(
   LinkThreadsRpc,
   UnlinkThreadsRpc,
   AcceptThreadHandoffRpc,
+  SubscribePersonalWorkstreamsRpc,
+  PutPersonalWorkstreamRpc,
+  AssignPersonalWorkstreamRpc,
   WsReselectProviderConversationRpc,
   WsObserveCurrentThreadRuntimeStopRpc,
   WsReadCurrentRuntimeStopTargetRpc,

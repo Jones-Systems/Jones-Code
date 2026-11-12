@@ -1,11 +1,14 @@
 import { useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
-import type { WorkstreamAppearance, WorkstreamAppearanceWrite } from "@t3tools/contracts";
-import {
-  WORKSTREAM_COLOR_PRESETS,
-  workstreamPaletteIndex,
-  normalizeWorkstreamColor,
-} from "@t3tools/client-runtime/state/workstreams";
+const WORKSTREAM_COLOR_PRESETS = [
+  ["Blue", "#0284C7"],
+  ["Purple", "#7C3AED"],
+  ["Green", "#059669"],
+  ["Amber", "#D97706"],
+  ["Rose", "#E11D48"],
+] as const;
+const normalizeWorkstreamColor = (value: string) =>
+  /^#[0-9a-fA-F]{6}$/.test(value) ? value.toUpperCase() : null;
 
 function RgbChannel(props: {
   label: string;
@@ -65,23 +68,16 @@ function RgbChannel(props: {
 
 export function WorkstreamColorPicker(props: {
   readonly name: string;
-  readonly saved: WorkstreamAppearance;
-  readonly generation: number;
-  readonly createCommandId: () => Promise<string>;
-  readonly save: (input: WorkstreamAppearanceWrite) => Promise<WorkstreamAppearance>;
+  readonly color: string | null;
+  readonly save: (color: string | null) => Promise<boolean>;
   readonly onClose: () => void;
 }) {
-  const [saved] = useState(() => props.saved);
-  const [draft, setDraft] = useState(saved.border_color ?? "#0284C7");
-  const [automatic, setAutomatic] = useState(saved.border_color === null);
+  const [draft, setDraft] = useState(props.color ?? "#0284C7");
+  const [automatic, setAutomatic] = useState(props.color === null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [retry, setRetry] = useState<WorkstreamAppearanceWrite | null>(null);
   const busyRef = useRef(false);
   const color = normalizeWorkstreamColor(draft);
-  const fallback = ["#0284c7", "#7c3aed", "#059669", "#d97706", "#e11d48"][
-    workstreamPaletteIndex(saved.workstream_id)
-  ]!;
+  const fallback = "#0284C7";
   const channels = [1, 3, 5].map((start) =>
     parseInt((color ?? "#0284C7").slice(start, start + 2), 16),
   );
@@ -89,31 +85,17 @@ export function WorkstreamColorPicker(props: {
     setDraft(value);
     setAutomatic(false);
   };
-  const disabled = busy || retry !== null;
+  const disabled = busy;
   const commit = async () => {
     if (busyRef.current || (!automatic && !color)) return;
     busyRef.current = true;
     setBusy(true);
-    setError(null);
-    await (async () => {
-      const request = retry ?? {
-        command_id: await props.createCommandId(),
-        workstream_id: saved.workstream_id,
-        expected_server_generation: props.generation,
-        expected_version: saved.version,
-        border_color: automatic ? null : color,
-      };
-      setRetry(request);
-      await props.save(request);
-      props.onClose();
-    })()
-      .catch(() => {
-        setError("Could not confirm the color. Retry this save or refresh to check the result.");
-      })
-      .finally(() => {
-        busyRef.current = false;
-        setBusy(false);
-      });
+    try {
+      await props.save(automatic ? null : color);
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   };
   return (
     <View style={{ gap: 12, paddingVertical: 12 }}>
@@ -185,13 +167,12 @@ export function WorkstreamColorPicker(props: {
       >
         <Text>Reset to automatic</Text>
       </Pressable>
-      {error ? <Text accessibilityRole="alert">{error}</Text> : null}
       <Pressable
         accessibilityRole="button"
         disabled={busy || (!automatic && !color)}
         onPress={() => void commit()}
       >
-        <Text>{busy ? "Saving…" : retry ? "Retry save" : "Save color"}</Text>
+        <Text>{busy ? "Saving…" : "Save color"}</Text>
       </Pressable>
       <Pressable accessibilityRole="button" disabled={busy} onPress={props.onClose}>
         <Text>Cancel</Text>

@@ -36,7 +36,6 @@ import {
   type JonesColdBackendResult,
 } from "../jones/updates/jonesColdBackendCustody.ts";
 
-import { makeDesktopNativeOwnerChannel } from "../jones/workstreams/DesktopNativeOwner.ts";
 import type { JonesNativeWriterAdmission } from "@t3tools/shared/jones/nativeWriterFence";
 
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -455,17 +454,6 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
   coldCustody?: ColdRunCustody,
 ): Effect.fn.Return<BackendProcessExit, BackendProcessError, BackendProcessRunRequirements> {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const desktopOwner =
-    options.jonesDesktopOwner === undefined
-      ? undefined
-      : yield* makeDesktopNativeOwnerChannel(options.jonesDesktopOwner);
-  if (
-    desktopOwner !== undefined &&
-    (options.bootstrapDelivery !== "fd3" || options.jonesColdBackendPermit !== undefined)
-  )
-    return yield* Effect.die(
-      new Error("Desktop owner channel requires an ordinary primary child."),
-    );
   const bootstrapJson = yield* encodeBootstrapJson(options.bootstrap).pipe(
     Effect.mapError(
       (cause) =>
@@ -509,10 +497,6 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     if (options.bootstrap.desktopBrowserControlFd !== undefined) {
       additionalFds[`fd${options.bootstrap.desktopBrowserControlFd}`] = { type: "output" };
     }
-  }
-  if (desktopOwner !== undefined) {
-    additionalFds.fd8 = { type: "input", stream: desktopOwner.input };
-    additionalFds.fd9 = { type: "output" };
   }
   const command = ChildProcess.make(options.executablePath, options.args, {
     cwd: options.cwd,
@@ -625,8 +609,6 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
       );
     }
   }
-  if (desktopOwner !== undefined)
-    yield* desktopOwner.bind(Number(handle.pid), handle.getOutputFd(9));
   const outputFibers: Array<Fiber.Fiber<void, never>> = [];
 
   yield* options.onStarted?.(handle.pid) ?? Effect.void;
@@ -776,7 +758,6 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     }),
     Effect.exit,
   );
-  if (desktopOwner !== undefined) yield* desktopOwner.close;
   yield* options.onExitObserved?.() ?? Effect.void;
   yield* Effect.forEach(outputFibers, Fiber.await, {
     concurrency: "unbounded",

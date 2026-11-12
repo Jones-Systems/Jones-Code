@@ -1,1246 +1,138 @@
-import { EnvironmentNativeWorkstreamsLifetime } from "@t3tools/client-runtime/jones/workstreams/native-lifetime";
-import { nativeReadRequest, NativeReadError } from "@t3tools/client-runtime/state/workstreams";
-import { workstreamsHttpResponseHeaders } from "@t3tools/contracts/jones/workstreamsHttp";
+import { useAtomValue } from "@effect/atom-react";
 import {
-  WorkstreamOperationsClient,
-  memoryWorkstreamOperationStorage,
-  supportsWorkstreamOperations,
-  operationSucceeded,
-  operationRegistryIdentity,
-  operationMessage,
-  WorkstreamOperationError,
-} from "@t3tools/client-runtime/jones/workstreams/operations";
-import {
-  WORKSTREAM_OPERATIONS_CONTRACT,
-  type WorkstreamOperationRequest,
-} from "@t3tools/contracts/jones/workstreamOperations";
-import type { MobileOperationActions } from "./actions";
-import { RegistryContext, useAtomValue } from "@effect/atom-react";
-import type { PreparedConnection } from "@t3tools/client-runtime/connection";
-import {
-  nativeWorkstreamsCapability,
-  nativeWorkstreamsBlock,
-  nativeWorkstreamsMessage,
-  isNativeWorkstreams,
-  assertNativeWorkstreamBinding,
-  nativeWorkstreamGroupKey,
-  validateAppearanceBinding,
-  appendWorkstreamDtoPage,
-  nativeWorkstreamThreadKey,
-  planWorkstreamOwnerOrder,
-  loadLiveT3Placements,
-  workstreamBindingKey,
-  type LiveT3Placements,
-  type WorkstreamAssignmentIndexFetchers,
-  type WorkstreamThreadLike,
-  type WorkstreamDtoPage,
-} from "@t3tools/client-runtime/state/workstreams";
-import {
-  EnvironmentId,
-  T3PlacementIdentity,
-  type WorkstreamAppearancePage,
-  type WorkstreamAppearanceWrite,
-  type WorkstreamCommand,
-  type WorkstreamReceipt,
-} from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
-import { AsyncResult, Atom } from "effect/reactivity";
-import { AppState, Pressable, Text } from "react-native";
-import {
-  useCallback,
-  useContext,
-  useEffect,
-  useEffectEvent,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { connectionAtomRuntime } from "../../connection/runtime";
-import { environmentCatalog } from "../../connection/catalog";
-import { runtime } from "../../lib/runtime";
-import { MobileSecureStorage } from "../../persistence/mobile-secure-storage";
-import { environmentSession } from "../../state/session";
+  groupPersonalThreads,
+  personalThreadKey,
+  type PersonalWorkstreamsState,
+  type PersonalThreadRef,
+  type PersonalResult,
+} from "@t3tools/client-runtime/jones/workstreams/personal";
+import { Atom } from "effect/reactivity";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Pressable, Text, View } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEnvironments } from "../../state/environments";
-import {
-  workstreamPageUrl,
-  workstreamRequest,
-  type WorkstreamClient,
-  type WorkstreamUrls,
-  type WorkstreamUrlSelector,
-} from "./gateway";
-import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/authorization";
-import {
-  classifyMobileWorkstreamFailure,
-  loadMobileWorkstreamRegistry,
-  settleMobileWorkstreamSnapshots,
-  type MobileWorkstreamLoadOutcome,
-} from "./loaders";
-import { reconcileMobileWorkstreamCommand, waitForWorkstreamReceipt } from "./commands";
-import { canEditWorkstreams } from "./actions";
+import { Toast } from "../../components/ui/Toast";
 import { MobileWorkstreamControls } from "./Controls";
+import { mountPersonalMobile, type getPersonalMobileBinding } from "./personalBinding";
+import { personalWorkstreamFailureText } from "./personalPresentation";
 
-import {
-  sameMobileWorkstreamAuthority,
-  mobilePlacementInventory,
-  projectMobileWorkstreams,
-  type MobileWorkstreamSnapshot,
-  type MobileWorkstreamGroup,
-} from "./projection";
-import type { MobileWorkstreams } from "./types";
-const COLLAPSE_KEY = "t3code.workstream-collapse.v1";
-const decodeEnvironmentIds = Schema.decodeUnknownSync(
-  Schema.fromJsonString(Schema.Array(EnvironmentId)),
-);
-const refreshSubscribers = new Set<() => void>();
-// Home and the thread sidebar share retained requests and one polling loop per connection.
-const mobileOperationClients = new Map<string, WorkstreamOperationsClient>();
-const refreshMountedWorkstreams = () => {
-  for (const refresh of refreshSubscribers) refresh();
+const emptyState: PersonalWorkstreamsState = {
+  workstreams: [],
+  environments: [],
+  assignmentsByThreadKey: new Map(),
+  pendingThreadKeys: new Set(),
+  canCreate: false,
 };
-
-export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
-  const registry = useContext(RegistryContext);
+const empty = Atom.make(emptyState);
+const COLLAPSE = "jones.workstreams.personal.collapsed.v1";
+export function useMobileWorkstreams(threads: readonly PersonalThreadRef[]) {
   const { environments } = useEnvironments();
   const idsKey = JSON.stringify(environments.map((entry) => entry.environmentId).sort());
-  const connectionsAtom = useMemo(
-    () =>
-      Atom.make((get) =>
-        decodeEnvironmentIds(idsKey).flatMap((id) => {
-          const prepared = get(environmentSession.preparedConnectionValueAtom(id));
-          const state = get(environmentCatalog.stateAtom(id));
-          const session = get(environmentSession.sessionStateAtom(id));
-          return AsyncResult.isSuccess(session) &&
-            session.value.authenticated &&
-            Option.isSome(prepared) &&
-            AsyncResult.isSuccess(state) &&
-            state.value.phase === "connected"
-            ? [{ prepared: prepared.value, generation: state.value.generation }]
-            : [];
-        }),
-      ),
-    [idsKey],
-  );
-  // Session loss, unlike a dropped transport, removes an environment's loaded Workstreams.
-  const signedOutAtom = useMemo(
-    () =>
-      Atom.make((get) =>
-        decodeEnvironmentIds(idsKey)
-          .filter((id) => {
-            const session = get(environmentSession.sessionStateAtom(id));
-            return AsyncResult.isSuccess(session) && !session.value.authenticated;
-          })
-          .join("\n"),
-      ),
-    [idsKey],
-  );
-  // Only the current session's bootstrap config is live; it adds display trust, never write trust.
-  const liveEnvironmentsAtom = useMemo(
-    () =>
-      Atom.make((get) =>
-        decodeEnvironmentIds(idsKey).map((environmentId) => {
-          const config = get(environmentSession.initialConfigValueAtom(environmentId));
-          return { environmentId, config, live: config !== null };
-        }),
-      ),
-    [idsKey],
-  );
-  const connections = useAtomValue(connectionsAtom);
-  const liveEnvironments = useAtomValue(liveEnvironmentsAtom);
-  const signedOutKey = useAtomValue(signedOutAtom);
-  const context = useAtomValue(connectionAtomRuntime);
-  const retained = useMemo(() => {
-    const enrolled = new Set<string>(decodeEnvironmentIds(idsKey));
-    const signedOut = new Set(signedOutKey.split("\n"));
-    return (id: EnvironmentId) => enrolled.has(id) && !signedOut.has(id);
-  }, [idsKey, signedOutKey]);
-  const retainedRef = useRef(retained);
-  // The last good load per environment. Refreshes and reconnects replace it only on success.
-  const [loaded, setLoaded] = useState<ReadonlyMap<EnvironmentId, MobileWorkstreamSnapshot>>(
-    () => new Map(),
-  );
-  const loadedRef = useRef(loaded);
-  const [revision, setRevision] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const [collapsedKeys, setCollapsedKeys] = useState<ReadonlySet<string>>(new Set());
-  const [enabled, setEnabled] = useState(false);
+  const [binding, setBinding] = useState<Awaited<
+    ReturnType<typeof getPersonalMobileBinding>
+  > | null>(null);
   const [selection, setSelection] = useState<{
-    thread?: WorkstreamThreadLike;
+    thread?: PersonalThreadRef;
     groupKey?: string;
   } | null>(null);
-  const pendingCommands = useRef(new Map<PreparedConnection, WorkstreamCommand>());
-  const pendingConnections = useRef(connections);
-  const controllers = useRef(new Set<AbortController>());
-  const nativeReaders = useRef(
-    new Map<
-      EnvironmentId,
-      {
-        reader: EnvironmentNativeWorkstreamsLifetime;
-        prepared: PreparedConnection;
-        generation: number;
-        bindingKey: string;
-      }
-    >(),
-  );
-
-  const current = useRef(connections);
-  const inventory = JSON.stringify(mobilePlacementInventory(threads));
-  const snapshots = useMemo(
-    () =>
-      [...loaded]
-        .filter(([environmentId]) => retained(environmentId))
-        .map(([, original]) => {
-          const capability = nativeWorkstreamsCapability(
-            liveEnvironments.find(
-              (entry) => entry.environmentId === original.prepared.environmentId,
-            )?.config?.environment.capabilities,
-          );
-          const snapshot = capability ? { ...original, nativeCapability: capability } : original;
-          if (
-            snapshot.nativeCapability?.mode === "transition-fenced" ||
-            snapshot.nativeCapability?.mode === "disabled"
-          )
-            return null;
-          return snapshot.stale || nativeWorkstreamsBlock(snapshot.nativeCapability) !== null
-            ? { ...snapshot, stale: true }
-            : connections.some(
-                  (entry) =>
-                    entry.prepared === snapshot.prepared &&
-                    entry.generation === snapshot.generation,
-                )
-              ? snapshot
-              : { ...snapshot, stale: true };
-        })
-        .filter((snapshot): snapshot is MobileWorkstreamSnapshot => snapshot !== null),
-    [loaded, connections, retained, liveEnvironments],
-  );
-  const snapshotsRef = useRef(snapshots);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed connection and snapshot identities to pending mobile workstream callbacks.
-  useLayoutEffect(() => {
-    retainedRef.current = retained;
-    loadedRef.current = loaded;
-    current.current = connections;
-    snapshotsRef.current = snapshots;
-  }, [retained, loaded, connections, snapshots]);
-  const request = useCallback(
-    <A, E>(
-      prepared: PreparedConnection,
-      method: "GET" | "POST",
-      url: WorkstreamUrlSelector,
-      run: (client: WorkstreamClient, headers: EnvironmentHttpAuthHeaders) => Effect.Effect<A, E>,
-      signal: AbortSignal,
-    ) => {
-      if (!AsyncResult.isSuccess(context))
-        return Promise.reject(new Error("Connection is unavailable."));
-      return runtime.runPromise(
-        workstreamRequest(prepared, method, url, run).pipe(Effect.provide(context.value)),
-        { signal },
-      );
-    },
-    [context],
-  );
-  const refresh = useCallback(() => setRevision((n) => n + 1), []);
-  const [operationWatchRevision, setOperationWatchRevision] = useState(0);
-  const [operationStatus, setOperationStatus] = useState<string | null>(null);
-  const supportsOperations = (id: string) =>
-    supportsWorkstreamOperations(
-      liveEnvironments.find((entry) => entry.environmentId === id)?.config?.environment
-        .capabilities,
-    );
-  const operationClient = (snapshot: MobileWorkstreamSnapshot) => {
-    const key = JSON.stringify([
-      snapshot.prepared.environmentId,
-      snapshot.data.binding.registryId,
-      snapshot.data.binding.ownerId,
-      snapshot.data.binding.principalId,
-      ...(snapshot.nativeCapability && snapshot.nativeCapability.mode !== "legacy"
-        ? [
-            nativeWorkstreamGroupKey(snapshot.nativeCapability),
-            snapshot.nativeCapability.registry?.home_environment_id,
-            snapshot.data.binding.authorizationRevision,
-          ]
-        : []),
-    ]);
-    const connectionKey = `${key}:${snapshot.generation}`;
-    let client = mobileOperationClients.get(connectionKey);
-    if (!client) {
-      const storageKey = `t3code.workstream-operations.v1.${encodeURIComponent(key).replaceAll("%", "_")}`;
-      client = new WorkstreamOperationsClient(
-        {
-          submit: (payload, signal) =>
-            request(
-              snapshot.prepared,
-              "POST",
-              (urls) => urls.operationSubmit(),
-              (client, headers) => client.operationSubmit({ headers, payload }),
-              signal ?? new AbortController().signal,
-            ),
-          read: (payload, signal) =>
-            request(
-              snapshot.prepared,
-              "POST",
-              (urls) => urls.operationRead(),
-              (client, headers) =>
-                "operation_id" in payload
-                  ? client.operationRead({ headers, payload })
-                  : "thread" in payload
-                    ? client.operationRead({ headers, payload })
-                    : client.operationRead({ headers, payload }),
-              signal ?? new AbortController().signal,
-            ),
-          setup: (signal) =>
-            request(
-              snapshot.prepared,
-              "GET",
-              (urls) => urls.setupStatus(),
-              (client, headers) => client.setupStatus({ headers }),
-              signal ?? new AbortController().signal,
-            ),
-        },
-        snapshot.nativeCapability && snapshot.nativeCapability.mode !== "legacy"
-          ? memoryWorkstreamOperationStorage()
-          : {
-              load: () =>
-                runtime.runPromise(
-                  MobileSecureStorage.pipe(Effect.flatMap((store) => store.getItem(storageKey))),
-                ),
-              save: (value) =>
-                runtime.runPromise(
-                  MobileSecureStorage.pipe(
-                    Effect.flatMap((store) => store.setItem(storageKey, value)),
-                  ),
-                ),
-            },
-        () =>
-          runtime.runPromise(Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4()))),
-      );
-      mobileOperationClients.set(connectionKey, client);
-    }
-    return client;
-  };
-  const operationRun = async (
-    snapshot: MobileWorkstreamSnapshot,
-    key: string,
-    make: (id: string) => WorkstreamOperationRequest,
-  ) => {
-    assertCurrent(snapshot);
-    if (snapshot.stale || !canEditWorkstreams(snapshot.data))
-      throw new Error("Workstreams are read-only.");
-    const abort = new AbortController();
-    controllers.current.add(abort);
-    setOperationStatus("Saving Workstream change…");
-    return await (async () => {
-      const result = await operationClient(snapshot).run(key, make, {
-        signal: abort.signal,
-        retry: true,
-      });
-      if (!abort.signal.aborted) setOperationStatus(operationMessage(result));
-      if (!operationSucceeded(result)) throw new WorkstreamOperationError(result);
-      refreshMountedWorkstreams();
-      return result;
-    })().finally(() => {
-      controllers.current.delete(abort);
-      if (!abort.signal.aborted) setOperationWatchRevision((value) => value + 1);
-    });
-  };
-  const operationRegistry = async (snapshot: MobileWorkstreamSnapshot) => {
-    const abort = new AbortController();
-    controllers.current.add(abort);
-    return await (async () => {
-      const status = await operationClient(snapshot).transport.setup(abort.signal);
-      assertCurrent(snapshot);
-      const block = nativeWorkstreamsBlock(snapshot.nativeCapability);
-      if (block) throw new Error(block);
-      assertNativeWorkstreamBinding(snapshot.nativeCapability, snapshot.data.binding);
-      const registry = operationRegistryIdentity(status, snapshot.data.binding.ownerId);
-      if (
-        isNativeWorkstreams(snapshot.nativeCapability) &&
-        registry.registry_id !== snapshot.nativeCapability?.registry?.registry_instance_id
-      )
-        throw new Error("Workstream change rejected: registry_mismatch. Refresh native setup.");
-      return registry;
-    })().finally(() => {
-      controllers.current.delete(abort);
-    });
-  };
-  const assignOperation: NonNullable<MobileOperationActions["assignOperation"]> = async (
-    snapshot,
-    thread,
-    destination,
-  ) => {
-    if (thread.environmentId !== snapshot.prepared.environmentId)
-      throw new Error("Connect to the thread's own environment to assign it.");
-    const client = operationClient(snapshot);
-    const previous = client.snapshot().find((entry) => entry.key === `thread:${thread.id}`);
-    const observed = previous?.result?.state === "conflict" ? previous.result.observed : null;
-    const primary = snapshot.index?.entries.get(
-      nativeWorkstreamThreadKey(thread.environmentId, thread.id),
-    )?.primary;
-    const registry = await operationRegistry(snapshot);
-    await operationRun(snapshot, `thread:${thread.id}`, (operation_id) => ({
-      contract: WORKSTREAM_OPERATIONS_CONTRACT,
-      origin: { kind: "app" },
-      kind: "set_primary",
-      operation_id,
-      thread: { environment_id: thread.environmentId, thread_id: thread.id },
-      target:
-        destination === null
-          ? { kind: "unassigned", ...registry }
-          : { kind: "workstream", ...registry, workstream_id: destination },
-      expected:
-        observed?.kind === "primary"
-          ? { kind: "primary", workstream_id: observed.workstream_id }
-          : observed?.kind === "unassigned"
-            ? { kind: "unassigned" }
-            : primary
-              ? { kind: "primary", workstream_id: primary.workstreamId }
-              : snapshot.index?.complete
-                ? { kind: "unassigned" }
-                : { kind: "any" },
-    }));
-  };
-  const createOperation: NonNullable<MobileOperationActions["createOperation"]> = async (
-    snapshot,
-    name,
-  ) => {
-    const registry = await operationRegistry(snapshot);
-    const result = await operationRun(snapshot, `create:${name.trim()}`, (operation_id) => ({
-      contract: WORKSTREAM_OPERATIONS_CONTRACT,
-      origin: { kind: "app" },
-      kind: "create_workstream",
-      operation_id,
-      registry,
-      workstream: {
-        name: name.trim(),
-        lifecycle: "planned",
-        progress: { state: "unknown" },
-        sort_order: 0,
-      },
-    }));
-    if (result.state !== "committed" || !result.result.workstream_id)
-      throw new Error("Creation has no confirmed Workstream.");
-    return result.result.workstream_id;
-  };
-
-  const registryFetchers = useCallback(
-    (prepared: PreparedConnection): WorkstreamAssignmentIndexFetchers => {
-      const page = (cursor: string | undefined, limit: number) => ({
-        limit,
-        ...(cursor ? { cursor } : {}),
-      });
-      return {
-        listWorkstreams: ({ cursor, signal }) =>
-          request(
-            prepared,
-            "GET",
-            (urls) => workstreamPageUrl(urls.list(), page(cursor, 50)),
-            (client, headers) => client.list({ headers, payload: page(cursor, 50) }),
-            signal,
-          ),
-        references: ({ cursor, signal }) =>
-          request(
-            prepared,
-            "GET",
-            (urls) => workstreamPageUrl(urls.references(), page(cursor, 100)),
-            (client, headers) => client.references({ headers, payload: page(cursor, 100) }),
-            signal,
-          ),
-        memberships: ({ workstreamId, cursor, signal }) =>
-          request(
-            prepared,
-            "GET",
-            (urls) =>
-              workstreamPageUrl(urls.memberships({ params: { workstreamId } }), page(cursor, 100)),
-            (client, headers) =>
-              client.memberships({
-                headers,
-                params: { workstreamId },
-                payload: page(cursor, 100),
-              }),
-            signal,
-          ),
-      };
-    },
-    [request],
-  );
-  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile asynchronously retained workstream snapshots when their source connections change.
-  useEffect(() => {
-    setLoaded((previous) => {
-      const next = settleMobileWorkstreamSnapshots(previous, new Map(), retained);
-      return next.size === previous.size ? previous : next;
-    });
-  }, [retained]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Register the mounted workstream refresh subscriber and remove it on unmount.
-  useEffect(() => {
-    refreshSubscribers.add(refresh);
-    return () => {
-      refreshSubscribers.delete(refresh);
-    };
-  }, [refresh]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Restore workstream collapse preferences from secure storage without updating an unmounted screen.
+  const [collapsedKeys, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const [notice, setNotice] = useState<{ key: string; text: string } | null>(null);
+  const seen = useRef(new Set<string>());
+  // oxlint-disable-next-line t3code/react-effect-budget -- Attach the shared controller to mounted native screens and release its connection subscriptions on unmount.
   useEffect(() => {
     let active = true;
-    void runtime
-      .runPromise(MobileSecureStorage.pipe(Effect.flatMap((store) => store.getItem(COLLAPSE_KEY))))
-      .then((value) => {
-        if (active && value)
-          setCollapsedKeys(
-            new Set(
-              Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(value),
-            ),
-          );
+    let release: (() => void) | undefined;
+    void mountPersonalMobile(JSON.parse(idsKey))
+      .then((mounted) => {
+        if (!active) {
+          mounted.release();
+          return;
+        }
+        release = mounted.release;
+        setBinding(mounted);
       })
-      .catch(() => {});
-    void runtime
-      .runPromise(
-        MobileSecureStorage.pipe(
-          Effect.flatMap((store) => store.getItem(`${COLLAPSE_KEY}.enabled`)),
-        ),
-      )
-      .then((value) => {
-        if (active) setEnabled(value === "true");
+      .catch(() => {
+        if (active) setNotice({ key: "storage", text: "Couldn't load Workstreams. Try again." });
+      });
+    return () => {
+      active = false;
+      release?.();
+    };
+  }, [idsKey]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Read persisted native collapse preferences once, cancelling delivery to an unmounted screen.
+  useEffect(() => {
+    let active = true;
+    void AsyncStorage.getItem(COLLAPSE)
+      .then((raw) => {
+        const keys: unknown = raw ? JSON.parse(raw) : [];
+        if (active && Array.isArray(keys) && keys.every((key) => typeof key === "string"))
+          setCollapsed(new Set(keys));
       })
       .catch(() => {});
     return () => {
       active = false;
     };
   }, []);
-  const toggleEnabled = () =>
-    setEnabled((value) => {
-      const next = !value;
-      void runtime
-        .runPromise(
-          MobileSecureStorage.pipe(
-            Effect.flatMap((store) => store.setItem(`${COLLAPSE_KEY}.enabled`, String(next))),
-          ),
-        )
-        .catch(() => setError("Could not save grouping preference."));
-      return next;
-    });
-  const toggleGroup = useCallback(
-    (key: string) =>
-      setCollapsedKeys((previous) => {
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own and cancel the native notification dismissal timer for the displayed notice.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => {
+      seen.current.delete(notice.key);
+      setNotice(null);
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+  const state = useAtomValue(binding?.controller.state ?? empty);
+  const grouped = useMemo(() => groupPersonalThreads(state, threads), [state, threads]);
+  const groups = grouped.groups.map(({ workstream, threads: members }) => ({
+    key: workstream.id,
+    name: workstream.name,
+    color: workstream.color ?? "#0284C7",
+    ...(workstream.color ? { borderColor: workstream.color } : {}),
+    threadKeys: new Set(members.map(personalThreadKey)),
+  }));
+  const confirmedUnassignedKeys = new Set(
+    threads
+      .filter((thread) =>
+        state.environments.some(
+          (entry) =>
+            entry.environmentId === thread.environmentId &&
+            entry.confirmed &&
+            entry.status !== "update_required",
+        ),
+      )
+      .map(personalThreadKey),
+  );
+  async function perform<A>(action: () => Promise<PersonalResult<A>>) {
+    const result = await action();
+    if (!result.ok && !seen.current.has(result.failure.dedupeKey)) {
+      seen.current.add(result.failure.dedupeKey);
+      const label =
+        environments.find((entry) => entry.environmentId === result.failure.environmentId)?.label ??
+        "Environment";
+      setNotice({
+        key: result.failure.dedupeKey,
+        text: personalWorkstreamFailureText(result.failure, label),
+      });
+    }
+    return result.ok;
+  }
+  return {
+    enabled: state.environments.some((entry) => entry.status !== "update_required"),
+    groups,
+    collapsedKeys,
+    confirmedUnassignedKeys,
+    secondaryLabelsByKey: new Map<string, readonly string[]>(),
+    bindingRevision: JSON.stringify([...state.assignmentsByThreadKey]),
+    toggleGroup: (key: string) =>
+      setCollapsed((previous) => {
         const next = new Set(previous);
         if (next.has(key)) next.delete(key);
         else next.add(key);
-        void runtime
-          .runPromise(
-            MobileSecureStorage.pipe(
-              Effect.flatMap((store) => store.setItem(COLLAPSE_KEY, JSON.stringify([...next]))),
-            ),
-          )
-          .catch(() => setError("Could not save collapsed Workstreams."));
+        void AsyncStorage.setItem(COLLAPSE, JSON.stringify([...next])).catch(() => {});
         return next;
       }),
-    [],
-  );
-  // oxlint-disable-next-line t3code/react-effect-budget -- Load registry snapshots for the current connections and abort requests when their owner retires.
-  useEffect(() => {
-    const controller = new AbortController();
-    const ownedReaders = new Map<EnvironmentId, EnvironmentNativeWorkstreamsLifetime>();
-    controllers.current.add(controller);
-    setSelection(null);
-    setError(null);
-    if (pendingConnections.current !== connections) {
-      pendingCommands.current.clear();
-      pendingConnections.current = connections;
-    }
-    if (!AsyncResult.isSuccess(context)) return () => controller.abort();
-    const identities = Schema.decodeUnknownSync(
-      Schema.fromJsonString(Schema.Array(T3PlacementIdentity)),
-    )(inventory);
-    void Promise.all(
-      connections.map(
-        async (
-          connection,
-        ): Promise<
-          readonly [EnvironmentId, MobileWorkstreamLoadOutcome<MobileWorkstreamSnapshot>]
-        > => {
-          const environmentId = connection.prepared.environmentId;
-          return await (async () => {
-            const initialConfig = liveEnvironments.find(
-              (entry) => entry.environmentId === environmentId,
-            )?.config;
-            const initialSession = registry.get(environmentSession.sessionStateAtom(environmentId));
-            const capability = nativeWorkstreamsCapability(initialConfig?.environment.capabilities);
-            const block = nativeWorkstreamsBlock(capability);
-            if (block) throw new Error(block);
-            const previous = loadedRef.current.get(environmentId);
-            const { data, index } = await loadMobileWorkstreamRegistry(
-              registryFetchers(connection.prepared),
-              { signal: controller.signal, listOnlyFallback: !previous?.index },
-            );
-            assertNativeWorkstreamBinding(capability, data.binding);
-            let nativeReader: EnvironmentNativeWorkstreamsLifetime | null = null;
-            if (
-              isNativeWorkstreams(capability) &&
-              capability?.reads.includes("workstreams-read/1.0.0")
-            ) {
-              if (
-                initialConfig?.environment.environmentId !== environmentId ||
-                !AsyncResult.isSuccess(initialSession) ||
-                !initialSession.value.authenticated
-              ) {
-                throw new NativeReadError("scope_changed", "Refresh native Workstreams access.");
-              }
-              nativeReader = new EnvironmentNativeWorkstreamsLifetime({
-                prepared: connection.prepared,
-                scope: { capability, binding: data.binding },
-                signal: controller.signal,
-                sha256: async (bytes) => {
-                  const digest = await runtime.runPromise(
-                    Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.digest("SHA-256", bytes))),
-                  );
-                  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-                },
-                run: (effect, signal) =>
-                  runtime.runPromise(effect.pipe(Effect.provide(context.value)), { signal }),
-                placementConnection: (sourceEnvironmentId) => {
-                  const id = EnvironmentId.make(sourceEnvironmentId);
-                  const prepared = registry.get(environmentSession.preparedConnectionValueAtom(id));
-                  const state = registry.get(environmentCatalog.stateAtom(id));
-                  const session = registry.get(environmentSession.sessionStateAtom(id));
-                  const config = registry.get(environmentSession.initialConfigValueAtom(id));
-                  if (
-                    Option.isNone(prepared) ||
-                    !config ||
-                    !AsyncResult.isSuccess(state) ||
-                    state.value.phase !== "connected" ||
-                    !AsyncResult.isSuccess(session) ||
-                    !session.value.authenticated
-                  )
-                    return null;
-                  return {
-                    prepared: prepared.value,
-                    generation: state.value.generation,
-                    session: session.value,
-                    config,
-                  };
-                },
-                isCurrent: () => {
-                  const prepared = registry.get(
-                    environmentSession.preparedConnectionValueAtom(environmentId),
-                  );
-                  const state = registry.get(environmentCatalog.stateAtom(environmentId));
-                  const session = registry.get(environmentSession.sessionStateAtom(environmentId));
-                  return (
-                    retainedRef.current(environmentId) &&
-                    Option.isSome(prepared) &&
-                    prepared.value === connection.prepared &&
-                    AsyncResult.isSuccess(state) &&
-                    state.value.phase === "connected" &&
-                    state.value.generation === connection.generation &&
-                    AsyncResult.isSuccess(session) &&
-                    session.value === initialSession.value &&
-                    session.value.authenticated &&
-                    registry.get(environmentSession.initialConfigValueAtom(environmentId)) ===
-                      initialConfig
-                  );
-                },
-              });
-              ownedReaders.set(environmentId, nativeReader);
-            }
-            let appearance: WorkstreamAppearancePage | null = null;
-            await (async () => {
-              const items: WorkstreamAppearancePage["items"][number][] = [];
-              const ids = data.items.map((item) => item.workstreamId);
-              for (let start = 0; start < Math.max(1, ids.length); start += 100) {
-                const batch = ids.slice(start, start + 100);
-                const result = nativeReader
-                  ? await nativeReader
-                      .read(
-                        nativeReadRequest({
-                          route: "appearance",
-                          params: { workstream_ids: batch },
-                        }),
-                        controller.signal,
-                      )
-                      .then((read) => {
-                        if (read.route !== "appearance")
-                          throw new NativeReadError(
-                            "invalid_response",
-                            "Native appearance route changed.",
-                          );
-                        return read.value;
-                      })
-                  : await request(
-                      connection.prepared,
-                      "POST",
-                      (urls) => urls.appearanceRead(),
-                      (client, headers) =>
-                        client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
-                      controller.signal,
-                    );
-                if (!result.supported) {
-                  appearance = null;
-                  break;
-                }
-                validateAppearanceBinding(result.page, data.binding, batch);
-                items.push(...result.page.items);
-                appearance = { ...result.page, items };
-              }
-            })().catch((cause: unknown) => {
-              // Lost authorization fails the whole load so the settled round purges it.
-              if (classifyMobileWorkstreamFailure(cause) === "authorization") throw cause;
-              appearance = null;
-            });
-            let placements: LiveT3Placements | null = null;
-            await (async () => {
-              if (
-                isNativeWorkstreams(capability) &&
-                capability?.reads.includes("workstreams-read/1.0.0") &&
-                capability.placement_proofs.includes("workstreams-t3-placement/2.0.0")
-              ) {
-                if (!nativeReader)
-                  throw new NativeReadError(
-                    "incomplete",
-                    "Native placement access is unavailable.",
-                  );
-                placements = await nativeReader.placements(data, identities, controller.signal);
-                return;
-              }
-              if (
-                isNativeWorkstreams(capability) &&
-                !capability?.placement_proofs.includes("workstreams-t3-placement/1.0.0")
-              )
-                throw new NativeReadError(
-                  "incomplete",
-                  "No native placement contract was negotiated.",
-                );
-              placements = await loadLiveT3Placements(
-                data,
-                identities,
-                () =>
-                  request(
-                    connection.prepared,
-                    "POST",
-                    (urls) => urls.threadPlacements(),
-                    (client, headers) =>
-                      client.threadPlacements({ headers, payload: { identities } }),
-                    controller.signal,
-                  ),
-                Date.now,
-                (bytes) =>
-                  runtime.runPromise(
-                    Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.digest("SHA-256", bytes))),
-                  ),
-              );
-            })().catch((cause: unknown) => {
-              if (classifyMobileWorkstreamFailure(cause) === "authorization") throw cause;
-              /* Without current proof, stored assignments still group; changes stay blocked. */
-            });
-            return [
-              environmentId,
-              {
-                kind: "loaded",
-                snapshot: {
-                  ...connection,
-                  nativeCapability: capability,
-                  appearance,
-                  data,
-                  placements,
-                  index,
-                  stale: data.stale || data.source === "cache",
-                  identityKeys: new Set(
-                    identities.map((identity) =>
-                      nativeWorkstreamThreadKey(
-                        identity.source_instance_id,
-                        identity.native_thread_id,
-                      ),
-                    ),
-                  ),
-                },
-              },
-            ] as const;
-          })().catch((cause: unknown) => {
-            return [environmentId, { kind: "failed", cause }] as const;
-          });
-        },
-      ),
-    ).then((outcomes) => {
-      // One coherent swap per refresh round; an aborted or superseded round changes nothing.
-      if (!controller.signal.aborted && current.current === connections) {
-        for (const [id, outcome] of outcomes) {
-          const reader = ownedReaders.get(id);
-          if (outcome.kind === "loaded" && reader) {
-            nativeReaders.current.set(id, {
-              reader,
-              prepared: outcome.snapshot.prepared,
-              generation: outcome.snapshot.generation,
-              bindingKey: workstreamBindingKey(outcome.snapshot.data.binding),
-            });
-          } else {
-            reader?.dispose();
-          }
-        }
-        setLoaded((previous) =>
-          settleMobileWorkstreamSnapshots(previous, new Map(outcomes), retainedRef.current),
-        );
-        const failure = outcomes.find(([, outcome]) => outcome.kind === "failed")?.[1];
-        if (failure?.kind === "failed")
-          setError(
-            nativeWorkstreamsMessage(failure.cause) ??
-              (failure.cause instanceof Error
-                ? failure.cause.message
-                : "Workstreams unavailable. Restore the home connection and refresh."),
-          );
-      }
-    });
-    return () => {
-      for (const [id, reader] of ownedReaders) {
-        reader.dispose();
-        if (nativeReaders.current.get(id)?.reader === reader) nativeReaders.current.delete(id);
-      }
-      for (const pending of controllers.current) pending.abort();
-      controllers.current.clear();
-    };
-  }, [
-    registry,
-    connections,
-    context,
-    inventory,
-    revision,
-    request,
-    registryFetchers,
-    liveEnvironments,
-  ]);
-  const bindingRevision = snapshots
-    .map((snapshot) =>
-      JSON.stringify([
-        snapshot.prepared.environmentId,
-        snapshot.generation,
-        workstreamBindingKey(snapshot.data.binding),
-      ]),
-    )
-    .join("|");
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own appearance refresh subscriptions and abort their reads when the mounted snapshot set changes.
-  useEffect(() => {
-    const abort = new AbortController();
-    let loading = false;
-    const updateColors = async () => {
-      if (loading || AppState.currentState !== "active") return;
-      loading = true;
-      let reading: MobileWorkstreamSnapshot | undefined;
-      await (async () => {
-        for (const snapshot of snapshotsRef.current) {
-          if (!snapshot.appearance || snapshot.stale) continue;
-          reading = snapshot;
-          const ids = snapshot.data.items.map((item) => item.workstreamId);
-          let appearance = snapshot.appearance;
-          const items: WorkstreamAppearancePage["items"][number][] = [];
-          for (let start = 0; start < Math.max(1, ids.length); start += 100) {
-            const batch = ids.slice(start, start + 100);
-            const native =
-              isNativeWorkstreams(snapshot.nativeCapability) &&
-              snapshot.nativeCapability?.reads.includes("workstreams-read/1.0.0");
-            const entry = nativeReaders.current.get(snapshot.prepared.environmentId);
-            if (
-              native &&
-              (!entry ||
-                entry.prepared !== snapshot.prepared ||
-                entry.generation !== snapshot.generation ||
-                entry.bindingKey !== workstreamBindingKey(snapshot.data.binding))
-            )
-              throw new NativeReadError("scope_changed", "Refresh native appearance access.");
-            const result =
-              native && entry
-                ? await entry.reader
-                    .read(
-                      nativeReadRequest({ route: "appearance", params: { workstream_ids: batch } }),
-                      abort.signal,
-                    )
-                    .then((read) => {
-                      if (read.route !== "appearance")
-                        throw new NativeReadError(
-                          "invalid_response",
-                          "Native appearance route changed.",
-                        );
-                      return read.value;
-                    })
-                : await request(
-                    snapshot.prepared,
-                    "POST",
-                    (urls) => urls.appearanceRead(),
-                    (client, headers) =>
-                      client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
-                    abort.signal,
-                  );
-            if (!result.supported) throw new Error("Appearance unavailable.");
-            validateAppearanceBinding(result.page, snapshot.data.binding, batch);
-            items.push(...result.page.items);
-            appearance = { ...result.page, items };
-          }
-          if (!abort.signal.aborted)
-            setLoaded(
-              (previous) =>
-                new Map(
-                  [...previous].map(([id, item]) => [
-                    id,
-                    sameMobileWorkstreamAuthority(item, snapshot) ? { ...item, appearance } : item,
-                  ]),
-                ),
-            );
-        }
-      })()
-        .catch((cause: unknown) => {
-          // Lost authorization drops that environment; anything else keeps the last display.
-          if (
-            reading !== undefined &&
-            !abort.signal.aborted &&
-            classifyMobileWorkstreamFailure(cause) === "authorization"
-          ) {
-            const environmentId = reading.prepared.environmentId;
-            setLoaded((previous) =>
-              settleMobileWorkstreamSnapshots(
-                previous,
-                new Map([[environmentId, { kind: "failed", cause }]]),
-                retainedRef.current,
-              ),
-            );
-          }
-        })
-        .finally(() => {
-          loading = false;
-        });
-    };
-    const timer = setInterval(() => void updateColors(), 30_000);
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") void updateColors();
-    });
-    return () => {
-      abort.abort();
-      clearInterval(timer);
-      subscription.remove();
-    };
-  }, [connections, request]);
-
-  const operationClientsForWatch = useEffectEvent(() =>
-    snapshotsRef.current
-      .filter((snapshot) => supportsOperations(snapshot.prepared.environmentId) && !snapshot.stale)
-      .map(operationClient),
-  );
-  const operationBindingKey = snapshots
-    .map((snapshot) =>
-      JSON.stringify([
-        snapshot.prepared.environmentId,
-        snapshot.generation,
-        snapshot.data.binding.registryId,
-        snapshot.data.binding.ownerId,
-        snapshot.data.binding.principalId,
-        supportsOperations(snapshot.prepared.environmentId),
-        snapshot.nativeCapability,
-      ]),
-    )
-    .join("|");
-  // oxlint-disable-next-line t3code/react-effect-budget -- Watch retained operation results and release their subscriptions and abort signal on unmount.
-  useEffect(() => {
-    const abort = new AbortController();
-    setOperationStatus(null);
-    const seen = new Set<string>();
-    const subscriptions: (() => void)[] = [];
-    for (const client of operationClientsForWatch()) {
-      subscriptions.push(
-        client.subscribe(() => {
-          if (abort.signal.aborted) return;
-          for (const entry of client.snapshot()) {
-            if (entry.result) setOperationStatus(operationMessage(entry.result));
-            if (entry.result && operationSucceeded(entry.result) && !seen.has(entry.operationId)) {
-              seen.add(entry.operationId);
-              refreshMountedWorkstreams();
-            }
-          }
-        }),
-      );
-      void client.watch(abort.signal).catch(() => {
-        if (!abort.signal.aborted)
-          setOperationStatus(
-            "Workstream recovery unavailable. Retry to check the retained operation.",
-          );
-      });
-    }
-    return () => {
-      abort.abort();
-      for (const unsubscribe of subscriptions) unsubscribe();
-    };
-    // A connection/binding change replaces the polling lifetime, never the retained request.
-  }, [operationBindingKey, request, operationWatchRevision]);
-  const assertCurrent = (snapshot: MobileWorkstreamSnapshot) => {
-    if (
-      !current.current.some(
-        (entry) => entry.prepared === snapshot.prepared && entry.generation === snapshot.generation,
-      ) ||
-      !snapshotsRef.current.some((entry) => sameMobileWorkstreamAuthority(entry, snapshot))
-    )
-      throw new Error("Workstream access changed. Refresh before retrying.");
-  };
-  const read = async <A, E>(
-    snapshot: MobileWorkstreamSnapshot,
-    url: WorkstreamUrlSelector,
-    run: (client: WorkstreamClient, headers: EnvironmentHttpAuthHeaders) => Effect.Effect<A, E>,
-  ) => {
-    assertCurrent(snapshot);
-    const controller = new AbortController();
-    controllers.current.add(controller);
-    return await (async () => {
-      const result = await request(snapshot.prepared, "GET", url, run, controller.signal);
-      assertCurrent(snapshot);
-      return result;
-    })()
-      .catch((cause: unknown) => {
-        if (!controller.signal.aborted) {
-          // Lost authorization drops this environment's Workstreams now, not after a reload.
-          if (classifyMobileWorkstreamFailure(cause) === "authorization")
-            setLoaded((previous) =>
-              settleMobileWorkstreamSnapshots(
-                previous,
-                new Map([[snapshot.prepared.environmentId, { kind: "failed", cause }]]),
-                retainedRef.current,
-              ),
-            );
-          refresh();
-        }
-        throw cause;
-      })
-      .finally(() => {
-        controllers.current.delete(controller);
-      });
-  };
-  const pages = async <Item,>(
-    snapshot: MobileWorkstreamSnapshot,
-    url: (urls: WorkstreamUrls, cursor?: string) => string,
-    run: (
-      client: WorkstreamClient,
-      headers: EnvironmentHttpAuthHeaders,
-      cursor?: string,
-    ) => Effect.Effect<WorkstreamDtoPage<Item>, unknown>,
-  ) => {
-    let result = await read(
-      snapshot,
-      (urls) => url(urls),
-      (client, headers) => run(client, headers),
-    );
-    const seen = new Set<string>();
-    while (result.next_cursor !== null) {
-      const cursor = result.next_cursor;
-      if (seen.has(cursor)) throw new Error("Repeated Workstream cursor.");
-      seen.add(cursor);
-      result = appendWorkstreamDtoPage(
-        result,
-        await read(
-          snapshot,
-          (urls) => url(urls, cursor),
-          (client, headers) => run(client, headers, cursor),
-        ),
-      );
-    }
-    if (
-      result.context.owner_id !== snapshot.data.binding.ownerId ||
-      result.context.server_generation !== snapshot.data.binding.serverGeneration ||
-      result.context.registry_version !== snapshot.data.binding.registryVersion
-    )
-      throw new Error("Workstream revision changed.");
-    return result;
-  };
-  const submitActions = async (
-    snapshot: MobileWorkstreamSnapshot,
-    actions: readonly WorkstreamCommand["action"][],
-  ) => {
-    assertCurrent(snapshot);
-    if (
-      snapshot.stale ||
-      !canEditWorkstreams(snapshot.data) ||
-      snapshot.placements?.readiness !== "ready"
-    )
-      throw new Error("Workstreams are read-only.");
-    const pending = pendingCommands.current.get(snapshot.prepared);
-    if (pending) {
-      const receipt = await reconcileMobileWorkstreamCommand({
-        command: pending,
-        ownerId: snapshot.data.binding.ownerId,
-        principalId: snapshot.data.binding.principalId,
-        resume: true,
-        pollAttempts: 0,
-        submit: () => Promise.reject(new Error("A pending command cannot be resubmitted.")),
-        poll: (commandId) =>
-          read(
-            snapshot,
-            (urls) => urls.command({ params: { commandId } }),
-            (client, headers) =>
-              client.command({
-                headers: { ...headers, ...workstreamsHttpResponseHeaders },
-                params: { commandId },
-              }),
-          ),
-        assertCurrent: () => assertCurrent(snapshot),
-        wait: async () => {},
-      });
-      if (receipt.state === "pending" || receipt.state === "unresolved")
-        throw new Error(`Command ${pending.command_id} remains ${receipt.state}.`);
-      pendingCommands.current.delete(snapshot.prepared);
-      refreshMountedWorkstreams();
-      return receipt;
-    }
-    let registryVersion = snapshot.data.binding.registryVersion;
-    let lastReceipt: WorkstreamReceipt | undefined;
-    const controller = new AbortController();
-    controllers.current.add(controller);
-    return await (async () => {
-      for (const action of actions) {
-        const command_id = await runtime.runPromise(
-          Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
-        );
-        assertCurrent(snapshot);
-        const command: WorkstreamCommand = {
-          command_id,
-          expected_server_generation: snapshot.data.binding.serverGeneration,
-          expected_registry_version: registryVersion,
-          action,
-        };
-        pendingCommands.current.set(snapshot.prepared, command);
-        const receipt = await reconcileMobileWorkstreamCommand({
-          command,
-          ownerId: snapshot.data.binding.ownerId,
-          principalId: snapshot.data.binding.principalId,
-          submit: () =>
-            request(
-              snapshot.prepared,
-              "POST",
-              (urls) => urls.submit(),
-              (client, headers) =>
-                client.submit({
-                  headers: { ...headers, ...workstreamsHttpResponseHeaders },
-                  payload: { command },
-                }),
-              controller.signal,
-            ),
-          poll: (commandId) =>
-            request(
-              snapshot.prepared,
-              "GET",
-              (urls) => urls.command({ params: { commandId } }),
-              (client, headers) =>
-                client.command({
-                  headers: { ...headers, ...workstreamsHttpResponseHeaders },
-                  params: { commandId },
-                }),
-              controller.signal,
-            ),
-          assertCurrent: () => {
-            controller.signal.throwIfAborted();
-            assertCurrent(snapshot);
-          },
-          wait: (milliseconds) => waitForWorkstreamReceipt(milliseconds, controller.signal),
-        });
-        assertCurrent(snapshot);
-        if (receipt.state !== "pending" && receipt.state !== "unresolved")
-          pendingCommands.current.delete(snapshot.prepared);
-        if (receipt.state !== "committed")
-          throw new Error(
-            `Workstream command ${command_id}: ${receipt.state}. Reconcile this command before retrying.`,
-          );
-        registryVersion = receipt.registry_version;
-        lastReceipt = receipt;
-      }
-      if (!lastReceipt) throw new Error("No Workstream change was requested.");
-      refreshMountedWorkstreams();
-      return lastReceipt;
-    })().finally(() => {
-      controllers.current.delete(controller);
-    });
-  };
-  const submit = (snapshot: MobileWorkstreamSnapshot, action: WorkstreamCommand["action"]) =>
-    submitActions(snapshot, [action]);
-  const reorderGroup = (group: MobileWorkstreamGroup, direction: -1 | 1) => {
-    const items = group.snapshot.data.items;
-    const ordered = [...items].sort(
-      (a, b) => a.sortOrder - b.sortOrder || a.workstreamId.localeCompare(b.workstreamId),
-    );
-    const target =
-      ordered.findIndex((item) => item.workstreamId === group.workstream.workstreamId) + direction;
-    const actions = planWorkstreamOwnerOrder(items, group.workstream.workstreamId, target)
-      .filter(({ item, sortOrder }) => item.sortOrder !== sortOrder)
-      .map(({ item, sortOrder }): WorkstreamCommand["action"] => ({
-        operation: "update_workstream",
-        workstream_id: item.workstreamId,
-        expected_version: item.version,
-        name: item.name,
-        lifecycle: item.lifecycle,
-        progress: item.progress,
-        sort_order: sortOrder,
-      }));
-    return submitActions(group.snapshot, actions);
-  };
-  const projection = useMemo(
-    () => projectMobileWorkstreams(snapshots, threads, Date.now(), liveEnvironments),
-    [snapshots, threads, liveEnvironments],
-  );
-  const saveAppearance = async (
-    snapshot: MobileWorkstreamSnapshot,
-    input: WorkstreamAppearanceWrite,
-  ) => {
-    assertCurrent(snapshot);
-    if (!snapshot.appearance?.permissions.includes("workstreams:write"))
-      throw new Error("Color editing unavailable.");
-    const controller = new AbortController();
-    controllers.current.add(controller);
-    return await (async () => {
-      const result = await request(
-        snapshot.prepared,
-        "POST",
-        (urls) => urls.appearanceSave(),
-        (client, headers) => client.appearanceSave({ headers, payload: input }),
-        controller.signal,
-      );
-      assertCurrent(snapshot);
-      refreshMountedWorkstreams();
-      return result;
-    })().finally(() => {
-      controllers.current.delete(controller);
-    });
-  };
-  const api: MobileWorkstreams & MobileOperationActions = {
-    exportNative: async (snapshot, options = {}) => {
-      assertCurrent(snapshot);
-      const entry = nativeReaders.current.get(snapshot.prepared.environmentId);
-      if (
-        !entry ||
-        entry.prepared !== snapshot.prepared ||
-        entry.generation !== snapshot.generation ||
-        entry.bindingKey !== workstreamBindingKey(snapshot.data.binding)
-      ) {
-        throw new NativeReadError(
-          "scope_changed",
-          "Refresh native Workstreams access before exporting.",
-        );
-      }
-      return entry.reader.export(options.signal, options.pageSize);
-    },
-    supportsOperations,
-    operationStatus,
-    assignOperation,
-    createOperation,
-    saveAppearance,
-    ...projection,
-    snapshots,
-    enabled,
-    toggleEnabled,
-    collapsedKeys,
-    toggleGroup,
-    bindingRevision,
-    readiness: snapshots.some((s) => s.placements?.readiness === "ready") ? "ready" : "unavailable",
-    error,
-    refresh,
-    submit,
-    reorderGroup,
-    read,
-    pages,
-  };
-  return {
-    ...api,
-    openThread: (thread: WorkstreamThreadLike) => setSelection({ thread }),
+    openThread: (thread: PersonalThreadRef) => setSelection({ thread }),
     openGroup: (groupKey: string) => setSelection({ groupKey }),
     controls: (
       <Pressable
@@ -1252,12 +144,38 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       </Pressable>
     ),
     sheet: (
-      <MobileWorkstreamControls
-        api={api}
-        selection={selection}
-        onSelect={setSelection}
-        onClose={() => setSelection(null)}
-      />
+      <>
+        {binding && (
+          <MobileWorkstreamControls
+            key={
+              selection?.groupKey ??
+              (selection?.thread ? personalThreadKey(selection.thread) : "all")
+            }
+            controller={binding.controller}
+            state={state}
+            selection={selection}
+            onSelect={setSelection}
+            onClose={() => setSelection(null)}
+            perform={perform}
+            environmentNames={
+              new Map(environments.map((entry) => [entry.environmentId, entry.label]))
+            }
+          />
+        )}
+        {notice && (
+          <View style={{ position: "absolute", bottom: 24, left: 16, right: 16 }}>
+            <Toast
+              message={notice.text}
+              tone="danger"
+              dismissMode="swipe"
+              onDismiss={() => {
+                seen.current.delete(notice.key);
+                setNotice(null);
+              }}
+            />
+          </View>
+        )}
+      </>
     ),
   };
 }

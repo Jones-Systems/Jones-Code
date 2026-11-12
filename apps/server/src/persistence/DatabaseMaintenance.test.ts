@@ -5,7 +5,6 @@ import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
-import * as Schema from "effect/Schema";
 import {
   CommandId,
   EventId,
@@ -22,19 +21,59 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 import { runJonesMigrations } from "../jones/persistence/JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../jones/persistence/JonesMigrations.ts";
-import { NativeProviderEnrollmentBinding } from "../jones/workstreams/nativeProvider/enrollment.ts";
-import {
-  binding,
-  request,
-  requestText,
-  requestBytesSha256,
-  now,
-} from "../jones/workstreams/nativeProvider/testFixtures.ts";
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
 import * as Sqlite from "./Sqlite.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+
+// Synthetic released-history rows are opaque to ordinary maintenance. No legacy runtime is loaded.
+const request = {
+  owner_id: "owner-synthetic",
+  principal_id: "principal-synthetic",
+  command_id: "command-synthetic-0001",
+  native_reference_id: "reference-synthetic",
+  native_action: "settle",
+  request_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+  reservation_sha256: "3333333333333333333333333333333333333333333333333333333333333333",
+  identity: {
+    provider: "t3",
+    source_instance_id: "source-synthetic",
+    resource_kind: "thread",
+    id_kind: "internal",
+    native_id: "thread-synthetic",
+    account_provenance: {
+      kind: "not_account_scoped",
+    },
+  },
+  expected_authority_namespace: "authority-synthetic",
+  expected_store_generation: 7,
+} as const;
+const binding = {
+  owner_id: "owner-synthetic",
+  principal_id: "principal-synthetic",
+  source_instance_id: "source-synthetic",
+  authority_namespace: "authority-synthetic",
+  store_generation: 7,
+  enrollment_id: "enrollment-synthetic",
+  protocol: "workstreams-t3-provider/1.0.0",
+  build: {
+    repository: "Jones-Systems/Jones-Code",
+    sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    tree: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  },
+  session_id: "session-synthetic",
+  registry_origin: "https://registry.invalid",
+  scopes: [
+    "workstreams:native:context",
+    "workstreams:native:settlement",
+    "workstreams:native:reconciliation",
+  ],
+} as const;
+const requestText =
+  '{"owner_id":"owner-synthetic","principal_id":"principal-synthetic","command_id":"command-synthetic-0001","native_reference_id":"reference-synthetic","native_action":"settle","request_sha256":"2222222222222222222222222222222222222222222222222222222222222222","reservation_sha256":"3333333333333333333333333333333333333333333333333333333333333333","identity":{"provider":"t3","source_instance_id":"source-synthetic","resource_kind":"thread","id_kind":"internal","native_id":"thread-synthetic","account_provenance":{"kind":"not_account_scoped"}},"expected_authority_namespace":"authority-synthetic","expected_store_generation":7}';
+const requestBytesSha256 = "c829d669cdb5482b6bc4d6594d83eb326fb24d794050353f463744659c32e297";
+const now = "2026-01-01T00:00:00.000Z";
 
 it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))(
   "DatabaseMaintenance",
@@ -186,9 +225,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
             yield* sql`INSERT INTO orchestration_command_receipts
             (command_id, aggregate_kind, aggregate_id, command_type, accepted_at, result_sequence, status, error)
             VALUES (${commandId}, 'thread', ${threadId}, 'thread.settle', ${now}, ${batch.at(-1)!.sequence}, 'accepted', NULL)`;
-            const enrollment = yield* Schema.encodeEffect(
-              Schema.fromJsonString(NativeProviderEnrollmentBinding),
-            )(binding);
+            const enrollment = JSON.stringify(binding);
             yield* sql`INSERT INTO workstreams_native_attempts VALUES
             (${request.owner_id}, ${request.principal_id}, ${request.command_id}, ${requestText}, ${requestBytesSha256}, ${"e".repeat(64)}, ${enrollment}, ${commandId}, ${now}, ${now})`;
             yield* events.append({

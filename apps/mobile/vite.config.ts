@@ -4,13 +4,11 @@ import { defineConfig } from "vite-plus";
 import "vite-plus/test/config";
 
 const reactTests = [
-  "src/jones/workstreams/MobileWorkstreamExport.test.tsx",
   "src/jones/updates/JonesUpdateControls.test.tsx",
   "src/jones/descendantApproval/DescendantApprovalCard.test.tsx",
   "src/jones/descendantApproval/PendingApprovalStack.test.tsx",
   "src/state/use-selected-thread-git-state.test.tsx",
   "src/features/workstreams/Controls.operations.test.tsx",
-  "src/features/workstreams/useWorkstreams.authorization.test.tsx",
   "src/features/pull-requests/usePullRequestEnvironmentFallback.test.tsx",
   "src/lib/filePreview.test.ts",
   "src/features/threads/thread-inspector-navigation.test.tsx",
@@ -22,7 +20,6 @@ const reactTests = [
   "src/features/threads/UsageLimitRecoveryCard.test.tsx",
   "src/native/NativeHeaderToolbar.test.tsx",
   "src/native/useRestingTopOffset.test.tsx",
-  "src/features/workstreams/nativeLifetime.test.tsx",
   "src/native/useRetryingImageSource.test.tsx",
   "src/state/queries.debounce.test.tsx",
   "src/state/use-selected-thread-git-actions.test.tsx",

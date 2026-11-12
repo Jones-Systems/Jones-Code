@@ -23,7 +23,6 @@ import {
   MCP_APP_MAX_HTML_BYTES,
 } from "@t3tools/shared/mcpApp";
 import { ORCHESTRATION_PROTOCOL_HEADER } from "@t3tools/contracts";
-import { WORKSTREAMS_T3_AVAILABILITY_HEADER } from "@t3tools/contracts/jones/workstreamsRegistrationAvailability";
 
 import * as ServerConfig from "./config.ts";
 
@@ -117,7 +116,6 @@ describe("browser API CORS", () => {
             "access-control-request-method": "GET",
             "access-control-request-headers": [
               ORCHESTRATION_PROTOCOL_HEADER,
-              "x-t3-workstreams-response-contract",
               "authorization",
               "dpop",
             ].join(", "),
@@ -133,7 +131,6 @@ describe("browser API CORS", () => {
           .map((header) => header.trim().toLowerCase()),
       );
       expect(allowedHeaders.has(ORCHESTRATION_PROTOCOL_HEADER)).toBe(true);
-      expect(allowedHeaders.has("x-t3-workstreams-response-contract")).toBe(true);
       expect(allowedHeaders.has("authorization")).toBe(true);
       expect(allowedHeaders.has("dpop")).toBe(true);
       const readResponse = await handler(
@@ -141,8 +138,8 @@ describe("browser API CORS", () => {
           headers: { origin: "https://app.t3.codes" },
         }),
       );
-      expect(readResponse.headers.get("access-control-expose-headers")).toContain(
-        WORKSTREAMS_T3_AVAILABILITY_HEADER,
+      expect(readResponse.headers.get("access-control-expose-headers") ?? "").not.toContain(
+        "workstreams",
       );
     } finally {
       await dispose();

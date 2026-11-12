@@ -37,6 +37,7 @@ import { LegacyThreadMigrationToast } from "../components/LegacyThreadMigrationT
 import { ThreadNotificationCoordinator } from "../components/ThreadNotificationCoordinator";
 import { SettlementNotificationCoordinator } from "../jones/settlementNotifications/SettlementNotificationCoordinator";
 import { RemoteAdmissionNotifications } from "../jones/remoteAdmission/RemoteAdmissionNotifications";
+import { PersonalWorkstreamsCoordinator } from "../jones/workstreams/personalEnvironmentBinding";
 import { ReopenClosedViewShortcut } from "../components/ReopenClosedViewShortcut";
 import { ProjectCloneToastCoordinator } from "../components/ProjectCloneToastCoordinator";
 import { PullRequestGuideRunCoordinator } from "../components/pullRequest/guide/PullRequestGuideRunCoordinator";
@@ -247,6 +248,7 @@ function RootRouteView() {
           <SettlementNotificationCoordinator />
           <PendingSendsCoordinator />
           <RemoteAdmissionNotifications />
+          <PersonalWorkstreamsCoordinator />
           <ReopenClosedViewShortcut />
           <ConfirmDialogHost />
           <CustomSnoozeDialogHost />

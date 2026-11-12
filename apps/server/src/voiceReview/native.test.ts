@@ -2,17 +2,14 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   AuthSessionId,
   type EnvironmentSessionPrincipalShape,
-  type T3PlacementResult,
   type ThreadRegistryThread,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import {
-  makeVoiceReviewNativeReadPort,
-  validateVoiceReviewNativePlacementResult,
-} from "./native.ts";
+import { makeVoiceReviewNativeReadPort } from "./native.ts";
+import type { VoiceReviewPersonalMembership } from "./bridge.ts";
 
 const principal: EnvironmentSessionPrincipalShape = {
-  sessionId: AuthSessionId.make("native-reader"),
+  sessionId: AuthSessionId.make("personal-reader"),
   subject: "reader",
   method: "bearer-access-token",
   scopes: new Set(["orchestration:read"]),
@@ -20,6 +17,14 @@ const principal: EnvironmentSessionPrincipalShape = {
 const key = '["native-host","native-environment","native-thread"]';
 const identity = { source_instance_id: "native-environment", native_thread_id: "native-thread" };
 const projection = [{ thread_key: key, identity }];
+const membership: VoiceReviewPersonalMembership = {
+  workstream_ref: "native:legacy-workstream",
+  workstream_id: "legacy-workstream",
+  name: "Synthetic personal group",
+  environment_id: "native-environment",
+  thread_id: "native-thread",
+  revision: 4,
+};
 const thread = (thread_key: string): ThreadRegistryThread => ({
   thread_key,
   registration: null,
@@ -28,27 +33,11 @@ const thread = (thread_key: string): ThreadRegistryThread => ({
   freshness: {},
   associations: [],
 });
-const result: T3PlacementResult = {
-  page: {
-    inventory_sha256: "a".repeat(64),
-    context: {
-      owner_id: "owner",
-      principal_id: "principal",
-      authorization_revision: 1,
-      server_generation: 1,
-      registry_version: 1,
-    },
-    items: [],
-    next_cursor: null,
-  },
-  trustedEnvironments: [],
-  readiness: "ready",
-};
 
-describe("voice native placement composition", () => {
-  it("uses only exact native projection keys and ignores registry identity claims", () => {
+describe("voice personal membership read adapter", () => {
+  it("uses exact local keys and ignores foreign registry identity claims", () => {
     const port = makeVoiceReviewNativeReadPort({
-      gateway: { readThreadPlacements: () => Effect.succeed(result) },
+      readThread: () => Effect.succeed(membership),
       readIdentities: () => projection,
     });
     const forged = {
@@ -58,37 +47,31 @@ describe("voice native placement composition", () => {
     expect(Array.from(port.identities([thread(key), forged]))).toEqual([[key, identity]]);
     expect(port.identities([thread("native-thread")]).size).toBe(0);
   });
-  it("enforces incoming read scope before the qualified gateway", async () => {
-    const read = vi.fn(() => Effect.succeed(result));
+  it("requires ordinary read scope before touching local state", async () => {
+    const read = vi.fn(() => Effect.succeed(membership));
     const projectionRead = vi.fn(() => projection);
-    const port = makeVoiceReviewNativeReadPort({
-      gateway: { readThreadPlacements: read },
-      readIdentities: projectionRead,
-    });
+    const port = makeVoiceReviewNativeReadPort({ readThread: read, readIdentities: projectionRead });
     await expect(port.read({ ...principal, scopes: new Set() }, [identity])).rejects.toThrow();
     expect(read).not.toHaveBeenCalled();
     expect(projectionRead).not.toHaveBeenCalled();
-    expect(await port.read(principal, [identity])).toEqual(result);
-    expect(read).toHaveBeenCalledWith({ identities: [identity] });
+    expect(await port.read(principal, [identity])).toEqual([membership]);
+    expect(read).toHaveBeenCalledExactlyOnceWith(identity);
   });
-  it("rechecks the native projection and holds unknown or revoked identities without transport", async () => {
-    const read = vi.fn(() => Effect.succeed(result));
+  it("refuses removed, foreign and duplicate identities before reading memberships", async () => {
+    const read = vi.fn(() => Effect.succeed(membership));
     let current = projection;
-    const port = makeVoiceReviewNativeReadPort({
-      gateway: { readThreadPlacements: read },
-      readIdentities: () => current,
-    });
+    const port = makeVoiceReviewNativeReadPort({ readThread: read, readIdentities: () => current });
     const identities = Array.from(port.identities([thread(key)]).values());
     current = [];
     await expect(port.read(principal, identities)).rejects.toThrow();
-    await expect(
-      port.read(principal, [{ ...identity, source_instance_id: "other-environment" }]),
-    ).rejects.toThrow();
+    current = projection;
+    await expect(port.read(principal, [{ ...identity, source_instance_id: "other" }])).rejects.toThrow();
+    await expect(port.read(principal, [identity, identity])).rejects.toThrow();
     expect(read).not.toHaveBeenCalled();
   });
-  it("rejects ambiguous native bindings rather than selecting by host, title or id similarity", () => {
+  it("rejects ambiguous deployment bindings", () => {
     const port = makeVoiceReviewNativeReadPort({
-      gateway: { readThreadPlacements: () => Effect.succeed(result) },
+      readThread: () => Effect.succeed(membership),
       readIdentities: () => [
         ...projection,
         { thread_key: '["another-host","native-environment","native-thread"]', identity },
@@ -96,57 +79,11 @@ describe("voice native placement composition", () => {
     });
     expect(() => port.identities([thread(key)])).toThrow();
   });
-});
-
-describe("voice native placement trust", () => {
-  it("requires current native authority and store generation for every displayed membership", () => {
-    const now = Date.parse("2026-10-02T12:00:00Z");
-    const placement = {
-      membership_id: "membership",
-      workstream_id: "workstream",
-      native_reference_id: "reference",
-      kind: "primary" as const,
-      ...identity,
-      attestation_version: 1,
-      attested_at: "2026-10-02T11:00:00Z",
-      expires_at: "2026-10-02T13:00:00Z",
-      evidence_sha256: "a".repeat(64),
-      source_binding_version: 1,
-      authority_namespace: "native-authority",
-      store_generation: 3,
-    };
-    const current = {
-      ...result,
-      page: { ...result.page, items: [placement] },
-      trustedEnvironments: [
-        {
-          environmentId: identity.source_instance_id,
-          authorityNamespace: "native-authority",
-          storeGeneration: 3,
-        },
-      ],
-    };
-    expect(validateVoiceReviewNativePlacementResult(current, now)).toEqual(current);
-    for (const changed of [
-      { ...current, readiness: "trust-provider-required" as const },
-      { ...current, trustedEnvironments: [] },
-      {
-        ...current,
-        trustedEnvironments: [{ ...current.trustedEnvironments[0]!, authorityNamespace: "other" }],
-      },
-      {
-        ...current,
-        trustedEnvironments: [{ ...current.trustedEnvironments[0]!, storeGeneration: 4 }],
-      },
-      {
-        ...current,
-        page: { ...current.page, items: [{ ...placement, expires_at: "2026-10-02T12:00:00Z" }] },
-      },
-      {
-        ...current,
-        page: { ...current.page, items: [{ ...placement, attested_at: "2026-10-02T12:30:00Z" }] },
-      },
-    ])
-      expect(() => validateVoiceReviewNativePlacementResult(changed, now)).toThrow();
+  it("omits a resolved unassigned thread without inventing a placement", async () => {
+    const port = makeVoiceReviewNativeReadPort({
+      readThread: () => Effect.succeed(null),
+      readIdentities: () => projection,
+    });
+    expect(await port.read(principal, [identity])).toEqual([]);
   });
 });

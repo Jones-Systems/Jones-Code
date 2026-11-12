@@ -523,10 +523,6 @@
       "types": "./src/jones/sqliteReaderContracts.ts",
       "import": "./src/jones/sqliteReaderContracts.ts"
     },
-    "./jones/workstreamsRegistryBinding": {
-      "types": "./src/jones/workstreamsRegistryBinding.ts",
-      "import": "./src/jones/workstreamsRegistryBinding.ts"
-    },
     "./jones/queuedSteerBatch": {
       "types": "./src/jones/queuedSteerBatch.ts",
       "import": "./src/jones/queuedSteerBatch.ts"

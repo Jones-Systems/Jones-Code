@@ -117,7 +117,7 @@ import * as WsServerRuntimeStartup from "../serverRuntimeStartup.ts";
 import * as WsWorkspaceEntries from "../workspace/WorkspaceEntries.ts";
 import * as WsWorkspaceFileSystem from "../workspace/WorkspaceFileSystem.ts";
 import * as WsServerEnvironment from "../environment/ServerEnvironment.ts";
-import * as WsNativeStoreAuthority from "../environment/NativeStoreAuthority.ts";
+import * as PersonalWorkstreams from "../jones/workstreams/personal/service.ts";
 import * as WsBackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as WsEnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as WsSourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
@@ -650,14 +650,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsRelayClient.RelayClient)({}),
     Layer.mock(WsPreviewAutomationBroker.PreviewAutomationBroker)({}),
     Layer.mock(WsServerEnvironment.ServerEnvironment)({}),
-    Layer.mock(WsNativeStoreAuthority.NativeStoreAuthority)({
-      trustProvider: {
-        readTrustSnapshot: () => ({
-          trustedEnvironments: [],
-          readiness: "trust-provider-required",
-        }),
-      },
-    }),
+    Layer.mock(PersonalWorkstreams.PersonalWorkstreams)({}),
     Layer.mock(WsAntigravityInstallation.AntigravityInstallation)({
       managedDirectory: "/synthetic-unused-antigravity",
     }),
@@ -1529,14 +1522,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsRelayClient.RelayClient)({}),
           Layer.mock(WsPreviewAutomationBroker.PreviewAutomationBroker)({}),
           Layer.mock(WsServerEnvironment.ServerEnvironment)({}),
-          Layer.mock(WsNativeStoreAuthority.NativeStoreAuthority)({
-            trustProvider: {
-              readTrustSnapshot: () => ({
-                trustedEnvironments: [],
-                readiness: "trust-provider-required",
-              }),
-            },
-          }),
+          Layer.mock(PersonalWorkstreams.PersonalWorkstreams)({}),
           Layer.mock(WsAntigravityInstallation.AntigravityInstallation)({
             managedDirectory: "/synthetic-unused-antigravity",
           }),

@@ -162,12 +162,6 @@ export default defineConfig({
   fmt: {
     ignorePatterns: [
       // Versioned contract manifests pin these schema bytes; whitespace changes break identity.
-      "apps/server/src/jones/workstreams/native/transition/fixtures/v1/**",
-      "packages/contracts/contracts/workstreams-registration-context/v1/schemas/registration-context.schema.json",
-      "packages/contracts/contracts/workstreams-registration-context/v2/**",
-      "packages/contracts/contracts/workstreams-registration-context/v3/**",
-      "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json",
-      "packages/contracts/contracts/workstreams-t3-provider/v2/**",
       "apps/server/src/jones/workspaceRetirement/conformance/v1/cases.json",
       ".repos/**",
       "infra/task-cache/vendor/**",

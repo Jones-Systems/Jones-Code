@@ -48,17 +48,13 @@ if (
       // Off-process update preparation owns its own signals and exit, so it bypasses the CLI.
       const { runPreparationWorkerCommand } = await import("./jones/updates/preparation/worker.ts");
       await runPreparationWorkerCommand(process.argv.slice(3));
-    } else if (command !== "__jones-native-authority-transition") {
+    } else {
       // Before anything reads stdin: the desktop app's Windows launcher starts
       // the CLI without one. Never for the fast paths, whose stdin is a pipe.
       const { attachConsoleStdin } = await import("./cli/consoleStdin.ts");
       attachConsoleStdin();
       const { runCli } = await import("./binCli.ts");
       runCli();
-    } else {
-      const { runNativeAuthorityTransition } =
-        await import("./jones/workstreams/nativeAuthorityTransition.ts");
-      await runNativeAuthorityTransition();
     }
   }
 }

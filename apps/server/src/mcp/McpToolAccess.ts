@@ -1,3 +1,4 @@
+import * as PersonalForward from "../jones/mcp/workstreams/personalForward.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as RemoteAdmissionMcp from "../jones/remoteAdmissionIntegration/mcp.ts";
 import {
@@ -524,7 +525,19 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
         if (target === undefined) return yield* here(params);
         yield* (remote as RemoteCheck<typeof params>)(params);
         if (Option.isNone(forwarding)) return yield* linksUnavailable;
-        return yield* forwarding.value.call(scope, tool, target, { ...params, environmentId });
+        const enriched =
+          name === "t3_thread_workstream_set"
+            ? yield* PersonalForward.enrichAssignment(params).pipe(
+                Effect.mapError(
+                  () =>
+                    new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: "Personal Workstreams storage is unavailable.",
+                    }),
+                ),
+              )
+            : params;
+        return yield* forwarding.value.call(scope, tool, target, { ...enriched, environmentId });
       });
   }
   return handlers as Toolkit.HandlersFrom<Tools>;

@@ -29,7 +29,6 @@ import { RuntimeMode } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";
 import { ServerSettings } from "./settings.ts";
-import { TrustedT3PlacementEnvironment } from "./workstreamPlacements.ts";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.malformed-config"),
@@ -625,7 +624,6 @@ export const ServerConfig = Schema.Struct({
    * assembled. Absent means unknown. It is not refreshed when authority
    * changes, so it is a display hint, never proof that authorizes a change.
    */
-  nativeStoreAuthority: Schema.optionalKey(TrustedT3PlacementEnvironment),
   /**
    * The latest stall long enough to notice, sent only for a few minutes after
    * it. A client that reconnects reads it to say why the host stopped

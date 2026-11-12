@@ -230,6 +230,9 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeServerConfig]: "server",
   [WS_METHODS.subscribeServerLifecycle]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",
+  "workstreamsPersonal.subscribe": "workstreamsPersonal",
+  "workstreamsPersonal.put": "workstreamsPersonal",
+  "workstreamsPersonal.assign": "workstreamsPersonal",
   [WS_METHODS.subscribeBackgroundPolicy]: "server",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 

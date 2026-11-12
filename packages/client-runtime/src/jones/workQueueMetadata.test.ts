@@ -1,4 +1,4 @@
-/// <reference path="../../../contracts/src/workstreams-fixtures/raw-fixtures.d.ts" />
+/// <reference path="../../../contracts/src/jones/fixtureModules.d.ts" />
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";

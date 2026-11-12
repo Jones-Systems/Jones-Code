@@ -501,9 +501,6 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
 
     const jonesDesktopOwner = currentJonesDesktopOwner();
     const bootstrap = {
-      ...(jonesDesktopOwner === undefined
-        ? {}
-        : { desktopNativeOwnerInputFd: 8, desktopNativeOwnerOutputFd: 9 }),
       mode: "desktop" as const,
       noBrowser: true,
       port: backendExposure.port,

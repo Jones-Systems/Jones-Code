@@ -348,6 +348,7 @@ it.effect(
         [145, "WorkstreamsForwardReceipts"],
         [146, "SettlementOriginRetention"],
         [147, "QueueHolds"],
+        [148, "PersonalWorkstreams"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

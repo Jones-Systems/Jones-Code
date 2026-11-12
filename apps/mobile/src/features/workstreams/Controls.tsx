@@ -1,529 +1,197 @@
-import { MobileWorkstreamExport } from "../../jones/workstreams/MobileWorkstreamExport";
-import {
-  nativeWorkstreamsLabel,
-  nativeWorkstreamReadLabel,
-  isNativeWorkstreams,
-} from "@t3tools/client-runtime/state/workstreams";
-import { workstreamPageUrl } from "./gateway";
+import { useState } from "react";
+import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import type {
+  PersonalThreadRef,
+  PersonalWorkstreamsController,
+  PersonalWorkstreamsState,
+  PersonalResult,
+} from "@t3tools/client-runtime/jones/workstreams/personal";
 import { WorkstreamColorPicker } from "../../jones/workstreamAppearance/WorkstreamColorPicker";
-import * as Crypto from "effect/Crypto";
-import * as Effect from "effect/Effect";
-import { runtime } from "../../lib/runtime";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import type { WorkstreamThreadLike } from "@t3tools/client-runtime/state/workstreams";
-import {
-  attestedNativeThreadKey,
-  nativeWorkstreamThreadKey,
-  resolveWorkstreamCompletionAuthority,
-} from "@t3tools/client-runtime/state/workstreams";
-import type { T3WorkstreamMetadata, WorkstreamLifecycle } from "@t3tools/contracts";
-import type { MobileWorkstreams } from "./types";
-import type { MobileWorkstreamSnapshot } from "./projection";
-import {
-  canEditWorkstreams,
-  mobileMembershipBlock,
-  mobilePrimaryMembershipBlock,
-  type MobileOperationActions,
-  planNativeMembership,
-} from "./actions";
+import { personalEnvironmentStatusText } from "./personalPresentation";
 
-function WorkstreamAction({
-  label,
-  run,
-  disabled = false,
-  busy,
-  onPendingChange,
-  onMessage,
-}: {
-  readonly label: string;
-  readonly run: () => Promise<unknown>;
-  readonly disabled?: boolean;
-  readonly busy: boolean;
-  readonly onPendingChange: (pending: boolean) => void;
-  readonly onMessage: (message: string | null) => void;
+type Selection = { thread?: PersonalThreadRef; groupKey?: string };
+export function MobileWorkstreamControls(props: {
+  controller: PersonalWorkstreamsController;
+  state: PersonalWorkstreamsState;
+  selection: Selection | null;
+  onSelect: (selection: Selection) => void;
+  onClose: () => void;
+  perform: <A>(action: () => Promise<PersonalResult<A>>) => Promise<boolean>;
+  environmentNames: ReadonlyMap<string, string>;
 }) {
-  return (
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [colorOpen, setColorOpen] = useState(false);
+  const group = props.state.workstreams.find((entry) => entry.id === props.selection?.groupKey);
+  const thread = props.selection?.thread;
+  const writable = thread ? props.controller.canAssign(thread) : props.state.canCreate;
+  const run = async (action: () => Promise<PersonalResult<unknown>>) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (await props.perform(action)) setName("");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const button = (label: string, action: () => void, disabled = false) => (
     <Pressable
+      key={label}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled: disabled || busy }}
       disabled={disabled || busy}
-      onPress={() => {
-        onPendingChange(true);
-        onMessage(null);
-        void run()
-          .catch((cause: unknown) =>
-            onMessage(
-              cause instanceof Error
-                ? cause.message
-                : "Could not complete this change. Refresh Workstreams before retrying.",
-            ),
-          )
-          .finally(() => onPendingChange(false));
-      }}
+      onPress={action}
       style={{ paddingVertical: 12, opacity: disabled || busy ? 0.45 : 1 }}
     >
-      <Text style={{ color: "#2563eb" }}>{label}</Text>
+      <Text>{label}</Text>
     </Pressable>
   );
-}
-
-export function MobileWorkstreamControls({
-  api,
-  selection,
-  onSelect,
-  onClose,
-}: {
-  api: MobileWorkstreams & MobileOperationActions;
-  selection: { thread?: WorkstreamThreadLike; groupKey?: string } | null;
-  onSelect: (selection: { thread?: WorkstreamThreadLike; groupKey?: string }) => void;
-  onClose: () => void;
-}) {
-  const binding = useRef(api.bindingRevision);
-  const bindingRevision = api.bindingRevision;
-  // oxlint-disable-next-line t3code/react-effect-budget -- Publish the committed binding revision before asynchronous control actions can accept their results.
-  useLayoutEffect(() => {
-    binding.current = bindingRevision;
-  }, [bindingRevision]);
-  const [colorOpen, setColorOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [lastDestination, setLastDestination] = useState<string | null | undefined>(undefined);
-  const [history, setHistory] = useState<readonly { key: string; text: string }[]>([]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Clear control state when the selected workstream or its authority binding changes.
-  useEffect(() => {
-    setMessage(null);
-    setLastDestination(undefined);
-    setBusy(false);
-    setHistory([]);
-    setName("");
-    setColorOpen(false);
-  }, [api.bindingRevision, selection]);
-  const group = api.groups.find((item) => item.key === selection?.groupKey);
-  const snapshot = selection?.thread
-    ? api.snapshots.find((item) => item.prepared.environmentId === selection.thread?.environmentId)
-    : (group?.snapshot ?? api.snapshots[0]);
-  const editable =
-    !!snapshot &&
-    !snapshot.stale &&
-    canEditWorkstreams(snapshot.data) &&
-    snapshot.placements?.readiness === "ready";
-  const threadKey = selection?.thread
-    ? nativeWorkstreamThreadKey(selection.thread.environmentId, selection.thread.id)
-    : null;
-  const membershipBlock =
-    snapshot && threadKey !== null
-      ? (mobileMembershipBlock({
-          snapshot,
-          threadKey,
-          conflictingThreadKeys: api.conflictingThreadKeys,
-        }) ??
-        (snapshot.identityKeys.has(threadKey)
-          ? null
-          : "This thread is outside the verified placement inventory."))
-      : "Unavailable";
-  const capable = !!snapshot && api.supportsOperations?.(snapshot.prepared.environmentId) === true;
-  const primaryBlock = !capable
-    ? membershipBlock
-    : snapshot && threadKey !== null
-      ? mobilePrimaryMembershipBlock({
-          snapshot,
-          threadKey,
-          conflictingThreadKeys: api.conflictingThreadKeys,
-          capable,
-        })
-      : "Unavailable";
-  const actionProps = { busy, onPendingChange: setBusy, onMessage: setMessage };
-  const update = (
-    bound: MobileWorkstreamSnapshot,
-    item: T3WorkstreamMetadata,
-    patch: Partial<Pick<T3WorkstreamMetadata, "name" | "lifecycle" | "sortOrder">>,
-  ) =>
-    api.submit(bound, {
-      operation: "update_workstream",
-      workstream_id: item.workstreamId,
-      expected_version: item.version,
-      name: patch.name ?? item.name,
-      lifecycle: patch.lifecycle ?? item.lifecycle,
-      progress: item.progress,
-      sort_order: patch.sortOrder ?? item.sortOrder,
-    });
-  const membership = async (destination: string | null, secondary = false) => {
-    if (!snapshot || !selection?.thread) throw new Error("Unavailable");
-    if (capable && !secondary && api.assignOperation) {
-      setLastDestination(destination);
-      if (primaryBlock) throw new Error(primaryBlock);
-      return api.assignOperation(snapshot, selection.thread, destination);
-    }
-    if (!snapshot.placements) throw new Error("Unavailable");
-    if (membershipBlock !== null) throw new Error(membershipBlock);
-    const references = await api.pages(
-      snapshot,
-      (urls, cursor) =>
-        workstreamPageUrl(urls.references(), { limit: 50, ...(cursor ? { cursor } : {}) }),
-      (client, headers, cursor) =>
-        client.references({ headers, payload: { limit: 50, ...(cursor ? { cursor } : {}) } }),
+  const move = (direction: -1 | 1) => {
+    if (!group) return;
+    const ordered = props.state.workstreams.filter((entry) => entry.id !== group.id);
+    const oldIndex = props.state.workstreams.findIndex((entry) => entry.id === group.id);
+    const index = Math.max(0, Math.min(ordered.length, oldIndex + direction));
+    void run(() =>
+      props.controller.reorder(group.id, {
+        beforeId: ordered[index - 1]?.id ?? null,
+        afterId: ordered[index]?.id ?? null,
+      }),
     );
-    const target = destination
-      ? snapshot.data.items.find((item) => item.workstreamId === destination)
-      : undefined;
-    const episodes = target
-      ? await api.pages(
-          snapshot,
-          (urls, cursor) =>
-            workstreamPageUrl(urls.memberships({ params: { workstreamId: target.workstreamId } }), {
-              limit: 50,
-              ...(cursor ? { cursor } : {}),
-            }),
-          (client, headers, cursor) =>
-            client.memberships({
-              headers,
-              params: { workstreamId: target.workstreamId },
-              payload: { limit: 50, ...(cursor ? { cursor } : {}) },
-            }),
-        )
-      : undefined;
-    const planned = planNativeMembership({
-      data: snapshot.data,
-      placements: snapshot.placements,
-      references: references.items,
-      destinationMemberships: episodes?.items,
-      thread: selection.thread,
-      destination,
-      now: Date.now(),
-      index: snapshot.index,
-    });
-    if (secondary) {
-      if (!target) throw new Error("Unavailable");
-      const trust = new Map(
-        snapshot.placements.trustedEnvironments.map((entry) => [entry.environmentId, entry]),
-      );
-      const key = nativeWorkstreamThreadKey(selection.thread!.environmentId, selection.thread!.id);
-      const reference = references.items.find(
-        (item) =>
-          item.owner_id === snapshot.data.binding.ownerId &&
-          attestedNativeThreadKey(item, Date.now(), trust) === key,
-      );
-      if (!reference) throw new Error("Unavailable");
-      return api.submit(snapshot, {
-        operation: "link_secondary",
-        workstream_id: target.workstreamId,
-        expected_version: target.version,
-        native_reference_id: reference.native_reference_id,
-      });
-    }
-    if (planned) return api.submit(snapshot, planned);
-  };
-  const showHistory = async (bound: MobileWorkstreamSnapshot, item: T3WorkstreamMetadata) => {
-    const startedBinding = api.bindingRevision;
-    const [detail, historyPage, members] = await Promise.all([
-      api.read(
-        bound,
-        (urls) => urls.detail({ params: { workstreamId: item.workstreamId } }),
-        (client, headers) =>
-          client.detail({ headers, params: { workstreamId: item.workstreamId } }),
-      ),
-      api.pages(
-        bound,
-        (urls, cursor) =>
-          workstreamPageUrl(urls.history({ params: { workstreamId: item.workstreamId } }), {
-            limit: 50,
-            ...(cursor ? { cursor } : {}),
-          }),
-        (client, headers, cursor) =>
-          client.history({
-            headers,
-            params: { workstreamId: item.workstreamId },
-            payload: { limit: 50, ...(cursor ? { cursor } : {}) },
-          }),
-      ),
-      api.pages(
-        bound,
-        (urls, cursor) =>
-          workstreamPageUrl(urls.memberships({ params: { workstreamId: item.workstreamId } }), {
-            limit: 50,
-            ...(cursor ? { cursor } : {}),
-          }),
-        (client, headers, cursor) =>
-          client.memberships({
-            headers,
-            params: { workstreamId: item.workstreamId },
-            payload: { limit: 50, ...(cursor ? { cursor } : {}) },
-          }),
-      ),
-    ]);
-    if (
-      detail.context.owner_id !== bound.data.binding.ownerId ||
-      detail.context.server_generation !== bound.data.binding.serverGeneration ||
-      detail.context.registry_version !== bound.data.binding.registryVersion
-    )
-      throw new Error("Workstream detail revision changed.");
-    if (historyPage.next_cursor !== null) throw new Error("Workstream history is incomplete.");
-    const completion = resolveWorkstreamCompletionAuthority(detail.workstream, {
-      ...historyPage,
-      coverage: "complete",
-      next_cursor: null,
-    });
-    if (binding.current !== startedBinding) return;
-    setHistory([
-      { key: "completion", text: `Completion: ${completion.state}` },
-      ...members.items.map((episode) => ({
-        key: `membership:${episode.membership_id}`,
-        text: `${episode.kind}: ${episode.closed === null ? "current" : "ended"} · ${episode.native_reference_id}`,
-      })),
-      ...historyPage.items.map((event) => ({
-        key: `event:${event.event_id}`,
-        text: `${event.occurred_at}: ${event.operation}`,
-      })),
-    ]);
   };
   return (
-    <View>
-      <Modal
-        visible={selection !== null}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={onClose}
+    <Modal
+      visible={props.selection !== null}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={props.onClose}
+    >
+      <ScrollView
+        contentContainerStyle={{ padding: 24, gap: 12 }}
+        keyboardShouldPersistTaps="handled"
       >
-        <ScrollView
-          contentContainerStyle={{ padding: 24, gap: 8, backgroundColor: "#ffffff", flexGrow: 1 }}
-        >
-          <Pressable accessibilityRole="button" onPress={onClose}>
-            <Text style={{ color: "#2563eb" }}>Close</Text>
-          </Pressable>
-          <Text style={{ fontSize: 22, fontWeight: "600" }}>
-            {group?.name ?? (selection?.thread ? "Thread Workstreams" : "Workstreams")}
-          </Text>
-          {message ? <Text accessibilityRole="alert">{message}</Text> : null}
-          {api.operationStatus ? (
-            <Text accessibilityLiveRegion="polite">{api.operationStatus}</Text>
-          ) : null}
-          {capable && message && lastDestination !== undefined ? (
-            <WorkstreamAction
-              {...actionProps}
-              label="Retry assignment"
-              disabled={primaryBlock !== null}
-              run={() => membership(lastDestination)}
-            />
-          ) : null}
-          {nativeWorkstreamsLabel(snapshot?.nativeCapability) ? (
-            <Text accessibilityRole="summary">
-              {nativeWorkstreamsLabel(snapshot?.nativeCapability)}
-              {isNativeWorkstreams(snapshot?.nativeCapability)
-                ? ` · ${nativeWorkstreamReadLabel(snapshot?.nativeRead)}`
-                : ""}
-            </Text>
-          ) : null}
-          {api.error ? <Text>{api.error}</Text> : null}
-          {!snapshot ? (
-            <Text>Workstreams are unavailable. Connect to a Workstream environment.</Text>
-          ) : null}
-          {api.stale ? (
-            <Text>Showing cached Workstreams · Stale · Read-only. Refresh to update.</Text>
-          ) : null}
-          {snapshot && !editable ? <Text>Workstreams are read-only.</Text> : null}
-          {threadKey !== null && api.conflictingThreadKeys.has(threadKey) ? (
-            <Text accessibilityRole="alert">
-              This thread has conflicting Workstream assignments. Changes are blocked until it is
-              re-verified.
-            </Text>
-          ) : null}
-          {!capable && snapshot?.placements?.readiness !== "ready" ? (
-            <Text>
-              {isNativeWorkstreams(snapshot?.nativeCapability)
-                ? "Thread assignment requires current source authority. Refresh native setup."
-                : "Thread assignment requires current verified enrollment."}
-            </Text>
-          ) : null}
-          <MobileWorkstreamExport api={api} snapshot={snapshot} />
-          <Pressable accessibilityRole="button" onPress={api.toggleEnabled}>
-            <Text>{api.enabled ? "Use native order" : "Group by Workstream"}</Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" onPress={api.refresh}>
-            <Text>Refresh</Text>
-          </Pressable>
-          {snapshot && !selection?.thread ? (
-            <>
-              <TextInput
-                accessibilityLabel="Workstream name"
-                placeholder={group?.name ?? "New Workstream name"}
-                value={name}
-                onChangeText={setName}
-                style={{ borderWidth: 1, borderColor: "#9ca3af", padding: 12, color: "#111827" }}
+        <Text accessibilityRole="header" style={{ fontSize: 24, fontWeight: "600" }}>
+          {group?.name ?? "Workstreams"}
+        </Text>
+        <TextInput
+          accessibilityLabel={group ? "Workstream name" : "New Workstream name"}
+          value={name}
+          onChangeText={setName}
+          placeholder={group?.name ?? "Workstream name"}
+          maxLength={160}
+          editable={!busy && writable}
+          style={{ padding: 12, borderWidth: 1, borderColor: "#9CA3AF" }}
+        />
+        {group ? (
+          <>
+            {button(
+              "Rename Workstream",
+              () => void run(() => props.controller.rename(group.id, name.trim())),
+              !writable || !name.trim(),
+            )}
+            {button("Change color", () => setColorOpen((value) => !value), !writable)}
+            {colorOpen && (
+              <WorkstreamColorPicker
+                key={group.id}
+                name={group.name}
+                color={group.color}
+                save={async (color) => {
+                  const ok = await props.perform(() => props.controller.setColor(group.id, color));
+                  if (ok) setColorOpen(false);
+                  return ok;
+                }}
+                onClose={() => setColorOpen(false)}
               />
-              <WorkstreamAction
-                {...actionProps}
-                label={group ? "Rename Workstream" : "Create Workstream"}
-                run={() =>
-                  group
-                    ? update(snapshot, group.workstream, { name: name.trim() })
-                    : capable && api.createOperation
-                      ? api.createOperation(snapshot, name.trim())
-                      : api.submit(snapshot, {
-                          operation: "create_workstream",
-                          name: name.trim(),
-                          lifecycle: "active",
-                          progress: { state: "unknown" },
-                          sort_order: snapshot.data.items.length,
-                        })
-                }
-                disabled={
-                  !(capable && !group
-                    ? !!snapshot && !snapshot.stale && canEditWorkstreams(snapshot.data)
-                    : editable) || !name.trim()
-                }
-              />
-            </>
-          ) : null}
-          {snapshot &&
-          group &&
-          snapshot.appearance?.permissions.includes("workstreams:write") &&
-          canEditWorkstreams(snapshot.data) ? (
-            <>
-              <Pressable accessibilityRole="button" onPress={() => setColorOpen(true)}>
-                <Text>Color…</Text>
-              </Pressable>
-              {colorOpen ? (
-                <WorkstreamColorPicker
-                  key={`${api.bindingRevision}:${group.key}`}
-                  name={group.name}
-                  saved={snapshot.appearance.items.find(
-                    (item) => item.workstream_id === group.workstream.workstreamId,
-                  )!}
-                  generation={snapshot.data.binding.serverGeneration}
-                  createCommandId={() =>
-                    runtime.runPromise(
-                      Crypto.Crypto.pipe(
-                        Effect.flatMap((crypto) => crypto.randomUUIDv4()),
-                        Effect.map((id) => `t3-color-${id}`),
-                      ),
-                    )
-                  }
-                  save={(input) => api.saveAppearance(snapshot, input)}
-                  onClose={() => setColorOpen(false)}
-                />
-              ) : null}
-            </>
-          ) : null}
-          {snapshot && group ? (
-            <>
-              <Text>
-                {group.workstream.lifecycle} · {group.workstream.progress.state} ·{" "}
-                {group.workstream.delivery}
-              </Text>
-              <WorkstreamAction
-                {...actionProps}
-                label={"Membership history and completion evidence"}
-                run={() => showHistory(snapshot, group.workstream)}
-              />
-              {(["planned", "active", "paused", "completed", "deferred", "abandoned"] as const).map(
-                (lifecycle: WorkstreamLifecycle) => (
-                  <View key={lifecycle}>
-                    <WorkstreamAction
-                      {...actionProps}
-                      label={`Mark ${lifecycle}`}
-                      run={() => update(snapshot, group.workstream, { lifecycle })}
-                      disabled={!editable || group.workstream.lifecycle === lifecycle}
-                    />
-                  </View>
+            )}
+            <Text accessibilityRole="header">Status</Text>
+            {(["planned", "active", "paused", "completed", "deferred", "abandoned"] as const).map(
+              (lifecycle) =>
+                button(
+                  `${group.lifecycle === lifecycle ? "✓ " : ""}${lifecycle[0]!.toUpperCase()}${lifecycle.slice(1)}`,
+                  () => void run(() => props.controller.setLifecycle(group.id, lifecycle)),
+                  !writable,
                 ),
+            )}
+            {button(
+              "Move Workstream up",
+              () => move(-1),
+              !writable || props.state.workstreams[0]?.id === group.id,
+            )}
+            {button(
+              "Move Workstream down",
+              () => move(1),
+              !writable || props.state.workstreams.at(-1)?.id === group.id,
+            )}
+            {button(
+              "Delete Workstream",
+              () =>
+                Alert.alert("Delete Workstream?", "Threads stay in your thread list.", [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Delete",
+                    style: "destructive",
+                    onPress: () =>
+                      void run(async () => {
+                        const result = await props.controller.remove(group.id);
+                        if (result.ok) props.onSelect({});
+                        return result;
+                      }),
+                  },
+                ]),
+              !writable,
+            )}
+            {button("All Workstreams", () => {
+              setColorOpen(false);
+              setName("");
+              props.onSelect({});
+            })}
+          </>
+        ) : (
+          <>
+            {button(
+              thread ? "Create and move thread" : "Create Workstream",
+              () =>
+                void run(() =>
+                  thread
+                    ? props.controller.createAndAssign(thread, name.trim())
+                    : props.controller.create({ name: name.trim() }),
+                ),
+              !writable || !name.trim(),
+            )}
+            {thread &&
+              button(
+                "Remove from Workstream",
+                () => void run(() => props.controller.assign(thread, null)),
+                !writable,
               )}
-              <Text>
-                Completed records an owner declaration. Membership changes do not settle or stop
-                native threads.
-              </Text>
-              <WorkstreamAction
-                {...actionProps}
-                label={"Move group up"}
-                run={() => api.reorderGroup(group, -1)}
-                disabled={!editable}
-              />
-              <WorkstreamAction
-                {...actionProps}
-                label={"Move group down"}
-                run={() => api.reorderGroup(group, 1)}
-                disabled={!editable}
-              />
-            </>
-          ) : null}
-          {snapshot && selection?.thread ? (
-            <>
-              <WorkstreamAction
-                {...actionProps}
-                label={"Move to Unassigned"}
-                run={() => membership(null)}
-                disabled={primaryBlock !== null}
-              />
-              {snapshot.data.items.map((item) => (
-                <View key={item.workstreamId}>
-                  <Text style={{ fontWeight: "600" }}>{item.name}</Text>
-                  <WorkstreamAction
-                    {...actionProps}
-                    label={`Assign to ${item.name}`}
-                    run={() => membership(item.workstreamId)}
-                    disabled={primaryBlock !== null}
-                  />
-                  <WorkstreamAction
-                    {...actionProps}
-                    label={`Link secondary: ${item.name}`}
-                    run={() => membership(item.workstreamId, true)}
-                    disabled={membershipBlock !== null}
-                  />
-                  {snapshot.placements?.items
-                    .filter(
-                      (entry) =>
-                        entry.kind === "secondary" &&
-                        entry.workstream_id === item.workstreamId &&
-                        entry.source_instance_id === selection.thread?.environmentId &&
-                        entry.native_thread_id === selection.thread?.id,
-                    )
-                    .map((entry) => (
-                      <View key={entry.membership_id}>
-                        <WorkstreamAction
-                          {...actionProps}
-                          label={`Unlink secondary: ${item.name}`}
-                          run={() =>
-                            api.submit(snapshot, {
-                              operation: "remove_membership",
-                              workstream_id: item.workstreamId,
-                              expected_version: item.version,
-                              membership_id: entry.membership_id,
-                            })
-                          }
-                          disabled={
-                            !editable ||
-                            (threadKey !== null && api.conflictingThreadKeys.has(threadKey))
-                          }
-                        />
-                      </View>
-                    ))}
-                  <WorkstreamAction
-                    {...actionProps}
-                    label={`History: ${item.name}`}
-                    run={() => showHistory(snapshot, item)}
-                  />
+            {props.state.workstreams.map((entry) =>
+              button(
+                entry.name,
+                () => {
+                  if (thread) void run(() => props.controller.assign(thread, entry.id));
+                  else {
+                    setName("");
+                    props.onSelect({ groupKey: entry.id });
+                  }
+                },
+                !!thread && !writable,
+              ),
+            )}
+            <View accessibilityLabel="Workstreams connection status" style={{ gap: 12 }}>
+              {props.state.environments.map((entry) => (
+                <View
+                  key={entry.environmentId}
+                  style={{ flexDirection: "row", justifyContent: "space-between" }}
+                >
+                  <Text>{props.environmentNames.get(entry.environmentId) ?? "Environment"}</Text>
+                  <Text>{personalEnvironmentStatusText[entry.status]}</Text>
                 </View>
               ))}
-            </>
-          ) : null}
-          {!selection?.thread && !group
-            ? api.groups.map((item) => (
-                <Pressable
-                  accessibilityRole="button"
-                  key={item.key}
-                  onPress={() => onSelect({ groupKey: item.key })}
-                  style={{ padding: 12 }}
-                >
-                  <Text>{item.name}</Text>
-                </Pressable>
-              ))
-            : null}
-          {history.map((line) => (
-            <Text key={line.key}>{line.text}</Text>
-          ))}
-        </ScrollView>
-      </Modal>
-    </View>
+            </View>
+          </>
+        )}
+        {button("Done", props.onClose)}
+      </ScrollView>
+    </Modal>
   );
 }

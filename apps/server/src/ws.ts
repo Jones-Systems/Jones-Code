@@ -1,3 +1,4 @@
+import * as PersonalWorkstreams from "./jones/workstreams/personal/service.ts";
 import * as WorktreeMcpService from "./mcp/WorktreeMcpService.ts";
 import { TerminalCwdStatError } from "@t3tools/contracts";
 import { readRemoteTaskOwnerIds } from "./jones/remoteDelegation/ShellRetention.ts";
@@ -13,10 +14,6 @@ import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
 import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
 import { withClientSettlementOrigin } from "./jones/settlementOrigins/clientIngress.ts";
 import * as ProviderConversationReselection from "./jones/runtime/ProviderConversationReselection.ts";
-import {
-  makeNativeStoreAuthorityConfigReader,
-  type NativeStoreAuthorityConfigReader,
-} from "./jones/workstreams/serverConfigNativeStoreAuthority.ts";
 import {
   NativeBootstrapDispatchError,
   NativeCreationRejectionCode,
@@ -301,7 +298,6 @@ import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 
-import type * as NativeStoreAuthority from "./environment/NativeStoreAuthority.ts";
 import type * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import type * as CodexInstallation from "./provider/CodexInstallation.ts";
@@ -1337,7 +1333,6 @@ export const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
-  readNativeStoreAuthorityConfig: NativeStoreAuthorityConfigReader,
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -1973,7 +1968,6 @@ export const layerWsRpc = (
             onSome: (root) => ({ scratchWorkspaceRoot: root }),
           }),
           newProjectsRoot: managedFolders.namedProjectsRoot,
-          ...(yield* readNativeStoreAuthorityConfig(environment.environmentId)),
           ...(lastEventLoopStall === undefined ? {} : { lastEventLoopStall }),
         };
       });
@@ -2075,7 +2069,11 @@ export const layerWsRpc = (
         return result;
       });
 
+      const personalWorkstreams = yield* PersonalWorkstreams.PersonalWorkstreams;
       const handlers = ServerWsRpcGroup.of({
+        "workstreamsPersonal.subscribe": () => personalWorkstreams.changes,
+        "workstreamsPersonal.put": ({ workstream }) => personalWorkstreams.put(workstream),
+        "workstreamsPersonal.assign": (input) => personalWorkstreams.assign(input),
         [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: (input) =>
           linkedThreads.pipe(Effect.flatMap((owner) => owner.list({ type: "user" }, input))),
         [ORCHESTRATION_V2_WS_METHODS.linkThreads]: (input) =>
@@ -3639,7 +3637,6 @@ export const WS_RPC_SERVER_OPTIONS = {
 type WsLayerServices =
   | PeerLinks.PeerLinks
   | HttpRouter.HttpRouter
-  | NativeStoreAuthority.NativeStoreAuthority
   | PreviewAutomationBroker.PreviewAutomationBroker
   | PullRequestReviewGuideService.PullRequestReviewGuideService
   | PullRequestService.PullRequestService
@@ -3649,6 +3646,7 @@ type WsLayerServices =
   | ShellMaterialization.ShellMaterialization
   | HttpRouter.Request.From<
       "Requires",
+      | PersonalWorkstreams.PersonalWorkstreams
       | AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator
       | AcpRegistrySupport.AcpRegistryCatalog
       | AgentSessionImporter.AgentSessionImporter
@@ -3742,7 +3740,6 @@ const layerWs = Layer.unwrap(
     const peerLinks = yield* PeerLinks.PeerLinks;
     const sql = yield* SqlClient.SqlClient;
     const shellMaterialization = yield* ShellMaterialization.ShellMaterialization;
-    const readNativeStoreAuthorityConfig = yield* makeNativeStoreAuthorityConfigReader;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3812,7 +3809,6 @@ const layerWs = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
               serverBrowser,
-              readNativeStoreAuthorityConfig,
             ).pipe(
               Layer.provide(QueueCompatibility.layer),
               Layer.provide(SettlementOrigins.layer),

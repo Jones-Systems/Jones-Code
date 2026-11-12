@@ -18,6 +18,7 @@ import { useThreadShells } from "../../state/entities";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+import { usePersonalWorkstreams } from "../../state/workstreamsPersonal";
 import { loadDesignRequestRegistry, type DesignRequestRegistrySnapshot } from "./registry";
 
 const LOADING: DesignRequestRegistrySnapshot = { status: "loading", data: null, placements: null };
@@ -47,6 +48,7 @@ export interface DesignRequestRouter {
  */
 export function useDesignRequestRouter(binding: DesignRequestBinding | null): DesignRequestRouter {
   const shells = useThreadShells();
+  const personal = usePersonalWorkstreams();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const startTurn = useOrchestrationCommand(threadEnvironment.startTurn, { reportFailure: false });
   const [revision, setRevision] = useState(0);
@@ -55,7 +57,14 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
     shells.map((thread) => [thread.environmentId, thread.id]).toSorted(),
   );
   const boundWorkstreamId = binding?.workstreamId ?? null;
-  const registryKey = JSON.stringify([revision, threadIdentityKey, boundWorkstreamId]);
+  const registryKey = JSON.stringify([
+    revision,
+    threadIdentityKey,
+    boundWorkstreamId,
+    personal.state.workstreams,
+    [...personal.state.assignmentsByThreadKey],
+    personal.state.environments,
+  ]);
   const [observation, setObservation] = useState({ key: registryKey, snapshot: LOADING });
   const registry = observation.key === registryKey ? observation.snapshot : LOADING;
   const latest = useRef({ shells, primaryEnvironmentId, binding, startTurn, registryKey });
@@ -87,20 +96,6 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
     );
     return () => controller.abort();
   }, [registryKey]);
-
-  // Re-evaluate when the earliest placement expires so an expired primary is held, not shown.
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the next placement-expiry timer so expired primary routes are withheld immediately.
-  useEffect(() => {
-    const expiries = (registry.placements?.items ?? [])
-      .map((item) => Date.parse(item.expires_at))
-      .filter((value) => value > now);
-    if (expiries.length === 0) return;
-    const timer = window.setTimeout(
-      () => setNow(Date.now()),
-      Math.min(2_147_483_647, Math.min(...expiries) - Date.now()),
-    );
-    return () => window.clearTimeout(timer);
-  }, [registry.placements, now]);
 
   const route = resolveDesignRequestRoute({
     binding,

@@ -273,10 +273,6 @@ it.effect(
             reads++;
             return Effect.fail(new NativeCountReadError({ source: "threads" }));
           },
-          readRegistryCounts: () => {
-            reads++;
-            return Effect.fail(new NativeCountReadError({ source: "workstreams" }));
-          },
         }),
         Layer.succeed(DecisionSnapshotCollector, {
           collect: () => {
@@ -311,7 +307,7 @@ it.effect(
           host: { status: "unavailable", reason: "runtime_unavailable" },
         },
       });
-      expect(reads).toBe(2);
+      expect(reads).toBe(1);
       expect(launches).toBe(1);
     }),
 );

@@ -1,8 +1,6 @@
-import { WorkstreamsHttpResponseContractHeaders } from "./workstreamsHttp.ts";
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
-import { EnvironmentWorkstreamOperationConflictError } from "./environmentHttpGroups.ts";
 import { EnvironmentId, TrimmedNonEmptyString } from "../baseSchemas.ts";
 import { JonesBuildStartedAt } from "./fleetUpdates/source.ts";
 import {
@@ -11,8 +9,11 @@ import {
   JonesRecoveryPreflight,
 } from "./jonesOperations.ts";
 
-import { EnvironmentAuthenticatedAuth, EnvironmentHttpApi } from "../environmentHttp.ts";
-import v2Conformance from "../../contracts/workstreams-registration-context/v2/fixtures/conformance.json" with { type: "json" };
+import {
+  EnvironmentAuthenticatedAuth,
+  EnvironmentHttpApi,
+  EnvironmentHttpConflictError,
+} from "../environmentHttp.ts";
 import {
   JonesNativePrepareInput,
   JonesQuitPreparation,
@@ -45,7 +46,6 @@ describe("Jones environment HTTP registration", () => {
       "orchestration",
       "pullRequests",
       "workstreams",
-      "workstreamsNative",
       "projects",
       "connect",
       "conversationLibrary",
@@ -69,7 +69,6 @@ describe("Jones environment HTTP registration", () => {
       ...Object.values(groups.conversationLibrary.endpoints),
       ...Object.values(groups.workstreams.endpoints),
       ...Object.values(groups.jonesUpdates.endpoints),
-      ...Object.values(groups.workstreamsNative.endpoints),
     ];
     expect(routes.map(({ identifier, method, path }) => [identifier, method, path])).toEqual([
       ["recent", "GET", "/api/voice-review/recent"],
@@ -129,41 +128,15 @@ describe("Jones environment HTTP registration", () => {
       ["operationRead", "POST", "/api/jones-updates/operations/read"],
       ["recoverCleanup", "POST", "/api/jones-updates/operations/recover-cleanup"],
       ["recoveryPreflight", "POST", "/api/jones-updates/recovery-preflight"],
-      ["peerSetupOwnerOperations", "POST", "/api/workstreams/native/peer-setup/v1/operations"],
-      ["ownerOperations", "POST", "/api/workstreams/native/owner/v1/operations"],
-      ["context", "GET", "/api/workstreams/native/v1/context"],
-      ["attestations", "POST", "/api/workstreams/native/v1/attestations"],
-      ["settlements", "POST", "/api/workstreams/native/v1/settlements"],
-      ["settlementLookup", "POST", "/api/workstreams/native/v1/settlements/lookup"],
-      ["contextV2", "GET", "/api/workstreams/native/v2/context"],
-      ["attestationsV2", "POST", "/api/workstreams/native/v2/attestations"],
-      ["settlementsV2", "POST", "/api/workstreams/native/v2/settlements"],
-      ["settlementLookupV2", "POST", "/api/workstreams/native/v2/settlements/lookup"],
     ]);
     const bearerHeaders = Schema.Struct({
       authorization: Schema.optionalKey(Schema.String),
       dpop: Schema.optionalKey(Schema.String),
     });
-    const placementHeaders = Schema.Struct({
-      ...bearerHeaders.fields,
-      "x-t3-workstreams-placement-contract": Schema.optionalKey(
-        Schema.Literal("workstreams-t3-placement/2.0.0"),
-      ),
-    });
-    const responseHeaders = Schema.Struct({
-      ...bearerHeaders.fields,
-      ...WorkstreamsHttpResponseContractHeaders.fields,
-    });
+
     for (const endpoint of routes) {
       expect(endpoint.middlewares.has(EnvironmentAuthenticatedAuth)).toBe(true);
-      expect(endpoint.headers?.ast).toEqual(
-        endpoint === groups.workstreams.endpoints.threadPlacements
-          ? placementHeaders.ast
-          : endpoint === groups.workstreams.endpoints.command ||
-              endpoint === groups.workstreams.endpoints.submit
-            ? responseHeaders.ast
-            : bearerHeaders.ast,
-      );
+      expect(endpoint.headers?.ast).toEqual(bearerHeaders.ast);
     }
   });
 });
@@ -262,44 +235,23 @@ it("requires the complete immutable binding for an optional staged replacement",
   expect(decodeUpdateCapability(capability)).toEqual(capability);
 });
 
-it("accepts both explicitly versioned registration responses on the local HTTP boundary", () => {
-  const responseSchema = [
-    ...EnvironmentHttpApi.groups.workstreams.endpoints.registrationContext.success,
-  ][0];
-  if (responseSchema === undefined) throw new Error("Missing registration response schema");
-  const accepts = Schema.is(responseSchema);
-  const v2 = v2Conformance.cases.find(
-    (fixture) => fixture.name === "legacy singleton shape with v2 protocol",
-  )?.value;
-  if (v2 === undefined) throw new Error("Missing singleton fixture");
-  expect(accepts(v2)).toBe(true);
-  expect(accepts({ ...v2, protocol: "workstreams-registration-context/1.0.0" })).toBe(true);
-  expect(accepts({ ...v2, protocol: "workstreams-registration-context/3.0.0" })).toBe(false);
-});
-
-it("keeps operation conflicts on HTTP 409 with the closed operation error shape", () => {
-  const endpoint = EnvironmentHttpApi.groups.workstreams.endpoints.operationSubmit;
-  const conflict = EnvironmentWorkstreamOperationConflictError;
+it("retains only authenticated unavailable legacy Workstreams endpoints", () => {
+  expect(Object.hasOwn(EnvironmentHttpApi.groups, "workstreamsNative")).toBe(false);
+  for (const endpoint of Object.values(EnvironmentHttpApi.groups.workstreams.endpoints)) {
+    expect(endpoint.middlewares.has(EnvironmentAuthenticatedAuth)).toBe(true);
+    expect(
+      [...endpoint.error].some(
+        (s) =>
+          SchemaAST.resolveAt<number>("httpApiStatus")(s.ast) === 409 &&
+          Schema.is(s)(new EnvironmentHttpConflictError({ message: "workstreams_not_configured" })),
+      ),
+    ).toBe(true);
+    for (const success of endpoint.success) expect(Schema.is(success)({})).toBe(false);
+  }
+  const decode = Schema.decodeUnknownSync(EnvironmentHttpConflictError);
   expect(
-    [...endpoint.error].some(
-      (schema) => SchemaAST.resolveAt<number>("httpApiStatus")(schema.ast) === 409,
-    ),
-  ).toBe(true);
-  expect(SchemaAST.resolveAt<number>("httpApiStatus")(conflict.ast)).toBe(409);
-  const decode = Schema.decodeUnknownSync(conflict);
-  for (const value of [
-    { code: "operation_id_conflict" },
-    { code: "thread_operation_in_progress", open_operation_id: "operation-00000001" },
-  ]) {
-    expect(decode(value)).toEqual(value);
-  }
-  for (const value of [
-    { code: "conflict" },
-    { code: "operation_id_conflict", message: "unexpected envelope" },
-    { code: "thread_operation_in_progress", open_operation_id: "" },
-  ]) {
-    expect(() => decode(value)).toThrow();
-  }
+    decode({ _tag: "EnvironmentHttpConflictError", message: "workstreams_not_configured" }).message,
+  ).toBe("workstreams_not_configured");
 });
 
 // Frozen wire decoder from 25b131a0af87b4ef868b6336fcf759a4c5a2acd8.

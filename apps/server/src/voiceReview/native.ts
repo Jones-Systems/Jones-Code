@@ -1,75 +1,47 @@
 import {
   AuthOrchestrationReadScope,
   EnvironmentAuthenticatedPrincipal,
-  T3PlacementIdentity,
-  T3PlacementResult,
-  t3PlacementIdentityKey,
   VoiceReviewUnavailableError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import { requireEnvironmentScope } from "../auth/http.ts";
-import type { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
-import type { VoiceReviewNativeReadPort } from "./bridge.ts";
+import type {
+  VoiceReviewNativeReadPort,
+  VoiceReviewPersonalMembership,
+  VoiceReviewThreadIdentity,
+} from "./bridge.ts";
 
 export interface VoiceReviewNativeIdentity {
   readonly thread_key: string;
-  readonly identity: typeof T3PlacementIdentity.Type;
+  readonly identity: VoiceReviewThreadIdentity;
 }
 export interface VoiceReviewNativeComposition {
-  readonly gateway: Pick<WorkstreamGateway["Service"], "readThreadPlacements">;
-  // The native projection owns this binding; Voice registration or summary fields cannot supply it.
+  readonly readThread: (
+    identity: VoiceReviewThreadIdentity,
+  ) => Effect.Effect<VoiceReviewPersonalMembership | null, VoiceReviewUnavailableError>;
+  // Only the local projection and explicit deployment binding supply these identities.
   readonly readIdentities: () => readonly VoiceReviewNativeIdentity[];
-  readonly now?: () => number;
 }
 
-export const validateVoiceReviewNativePlacementResult = (
-  input: typeof T3PlacementResult.Type,
-  now: number,
-): typeof T3PlacementResult.Type => {
-  const result = Schema.decodeSync(T3PlacementResult)(input);
-  const environments = new Map(
-    result.trustedEnvironments.map(
-      (environment) => [environment.environmentId, environment] as const,
-    ),
-  );
-  if (
-    result.readiness !== "ready" ||
-    !Number.isFinite(now) ||
-    environments.size !== result.trustedEnvironments.length
-  )
-    throw new VoiceReviewUnavailableError({});
-  for (const placement of result.page.items) {
-    const trust = environments.get(placement.source_instance_id);
-    if (
-      trust === undefined ||
-      trust.authorityNamespace !== placement.authority_namespace ||
-      trust.storeGeneration !== placement.store_generation ||
-      Date.parse(placement.attested_at) > now ||
-      Date.parse(placement.expires_at) <= now ||
-      Date.parse(placement.expires_at) <= Date.parse(placement.attested_at)
-    )
-      throw new VoiceReviewUnavailableError({});
-  }
-  return result;
-};
-
-const decodeIdentity = Schema.decodeUnknownSync(T3PlacementIdentity);
+const identityKey = (identity: VoiceReviewThreadIdentity) =>
+  JSON.stringify([identity.source_instance_id, identity.native_thread_id]);
 const readProjection = (read: VoiceReviewNativeComposition["readIdentities"]) => {
-  const result = new Map<string, typeof T3PlacementIdentity.Type>();
+  const result = new Map<string, VoiceReviewThreadIdentity>();
   const reverse = new Set<string>();
   for (const record of read()) {
     const key: unknown = JSON.parse(record.thread_key);
+    const identity = record.identity;
     if (
       !Array.isArray(key) ||
       key.length !== 3 ||
       !key.every((part) => typeof part === "string" && part.length > 0) ||
       JSON.stringify(key) !== record.thread_key ||
-      result.has(record.thread_key)
+      result.has(record.thread_key) ||
+      !identity.source_instance_id ||
+      !identity.native_thread_id
     )
       throw new VoiceReviewUnavailableError({});
-    const identity = decodeIdentity(record.identity);
-    const nativeKey = t3PlacementIdentityKey(identity);
+    const nativeKey = identityKey(identity);
     if (reverse.has(nativeKey)) throw new VoiceReviewUnavailableError({});
     reverse.add(nativeKey);
     result.set(record.thread_key, identity);
@@ -94,15 +66,15 @@ export const makeVoiceReviewNativeReadPort = (
       Effect.gen(function* () {
         yield* requireEnvironmentScope(AuthOrchestrationReadScope);
         const projection = readProjection(composition.readIdentities);
-        const trusted = new Set(Array.from(projection.values(), t3PlacementIdentityKey));
+        const trusted = new Set(Array.from(projection.values(), identityKey));
         const seen = new Set<string>();
         for (const identity of identities) {
-          const key = t3PlacementIdentityKey(decodeIdentity(identity));
+          const key = identityKey(identity);
           if (!trusted.has(key) || seen.has(key)) return yield* new VoiceReviewUnavailableError({});
           seen.add(key);
         }
-        const result = yield* composition.gateway.readThreadPlacements({ identities });
-        return validateVoiceReviewNativePlacementResult(result, (composition.now ?? Date.now)());
+        const memberships = yield* Effect.forEach(identities, (identity) => composition.readThread(identity));
+        return memberships.filter((item) => item !== null);
       }).pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
     ),
 });
