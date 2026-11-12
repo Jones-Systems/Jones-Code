@@ -50,7 +50,9 @@ async function fixture(body, managed = null) {
   const ownership = managed?.ownership ?? new NativeFixtureOwnership();
   const root =
     managed?.root ??
-    (await ownership.temporary(NodePath.join(NodeOS.tmpdir(), "jones-desktop-pair-")));
+    (await ownership.temporary(
+      NodePath.join(await NodeFSP.realpath(NodeOS.tmpdir()), "jones-desktop-pair-"),
+    ));
   await NodeFSP.chmod(root, 0o700);
   try {
     async function app(name, source) {

@@ -96,9 +96,6 @@ describe("bin dispatch", () => {
           },
         };
       });
-      vi.doMock("./jones/workstreams/nativeAuthorityTransition.ts", () => {
-        throw new Error("Non-native command loaded the native transition module");
-      });
       try {
         process.argv =
           command === undefined
@@ -117,7 +114,6 @@ describe("bin dispatch", () => {
           "./mcp/AcpMcpStdioBridge.ts",
           "./cli/consoleStdin.ts",
           "./binCli.ts",
-          "./jones/workstreams/nativeAuthorityTransition.ts",
         ])
           vi.doUnmock(module);
         vi.resetModules();

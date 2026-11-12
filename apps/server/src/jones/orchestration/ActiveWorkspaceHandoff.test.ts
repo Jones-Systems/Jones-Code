@@ -691,6 +691,6 @@ it.live.each([
       assert.isFalse(
         complete.turnItems.some((item) => item.type === "error" && item.status === "failed"),
       );
-    }).pipe(Effect.provide(layer), Effect.provide(NodeServices.layer));
+    }).pipe(Effect.provide(Layer.merge(layer, NodeServices.layer)));
   }).pipe(Effect.scoped),
 );

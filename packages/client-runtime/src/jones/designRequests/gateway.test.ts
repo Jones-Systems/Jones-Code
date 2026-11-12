@@ -289,7 +289,7 @@ describe("design request gateway (synthetic transport)", () => {
     const server = syntheticServer();
     await createDesignRequestGateway(server.ports()).submit(submission(noImages));
     const otherThread = resolveDesignRequestRoute(
-      routeInput({ placements: placements([placement({ native_thread_id: "thread-2" })]) }),
+      routeInput({ placements: placements([placement({ threadId: "thread-2" })]) }),
     );
     const moved = createDesignRequestGateway(server.ports(() => otherThread));
     const outcome = await moved.submit(

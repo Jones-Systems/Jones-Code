@@ -20,6 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
+import { CONTINUITY_LIMITS } from "./model.ts";
 import { makeCodexRecovery } from "./CodexRecovery.ts";
 
 const owner = {
@@ -322,6 +323,32 @@ const fixture = Effect.fnUntraced(function* (waitForAck = false) {
     acknowledged,
   };
 });
+
+it.effect.each([4000, 4001, CONTINUITY_LIMITS.capsuleBytes, CONTINUITY_LIMITS.capsuleBytes + 1])(
+  "keeps the logical recovery guard at the shared capsule budget: %s bytes",
+  (bytes) =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      f.state.projection = {
+        outcome: "context",
+        goalId: "goal",
+        revision: "1",
+        generation: "1",
+        snapshotDigest: digest,
+        text: "x".repeat(bytes),
+      };
+      const result = yield* f.recovery.turnStartContext.pipe(Effect.result);
+      if (bytes <= CONTINUITY_LIMITS.capsuleBytes) {
+        assert.equal(result._tag, "Success");
+        if (result._tag === "Success") assert.deepEqual(result.success, f.state.projection);
+        assert.deepEqual(f.injected, []);
+      } else {
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") assert.equal(result.failure.reason, "projection_too_large");
+        yield* Deferred.await(f.stopped);
+      }
+    }).pipe(Effect.scoped),
+);
 
 it.effect(
   "fresh turn context never reuses the earlier checkpoint and rejects oversized UTF-8",

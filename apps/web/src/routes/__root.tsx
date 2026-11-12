@@ -1,3 +1,4 @@
+import { PersonalWorkstreamsCoordinator } from "../jones/workstreams/personalEnvironmentBinding";
 import { RemoteAdmissionNotifications } from "../jones/remoteAdmission/RemoteAdmissionNotifications";
 import { SettlementNotificationCoordinator } from "../jones/settlementNotifications/SettlementNotificationCoordinator";
 import { ProviderUpdateNotice } from "../jones/updates/ProviderUpdateNotice";
@@ -196,6 +197,7 @@ function RootRouteBranch() {
       <ProviderUpdateNotice />
       <SettlementNotificationCoordinator />
       <RemoteAdmissionNotifications />
+      <PersonalWorkstreamsCoordinator />
       <ReopenClosedViewShortcut />
       <ConfirmDialogHost />
       <CustomSnoozeDialogHost />

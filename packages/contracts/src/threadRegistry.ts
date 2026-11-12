@@ -1,6 +1,5 @@
 import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt } from "./baseSchemas.ts";
-import { T3ThreadPlacement } from "./workstreamPlacements.ts";
 
 const Id = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(4096));
 export const InferredWorkstreamRef = Id.check(Schema.isPattern(/^inferred:.+$/));
@@ -57,10 +56,23 @@ export const ThreadRegistryComposedThread = Schema.Struct({
   native_memberships: Schema.Array(
     Schema.Struct({
       workstream_ref: NativeWorkstreamRef,
-      placement: T3ThreadPlacement,
+      placement: Schema.Unknown,
     }),
   ),
+  personal_memberships: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        workstream_ref: NativeWorkstreamRef,
+        workstream_id: Id,
+        name: Schema.String,
+        environment_id: Id,
+        thread_id: Id,
+        revision: NonNegativeInt,
+      }),
+    ),
+  ),
 });
+export type ThreadRegistryComposedThread = typeof ThreadRegistryComposedThread.Type;
 export const ThreadRegistryComposedSnapshot = Schema.Struct({
   ...ThreadRegistrySnapshot.fields,
   threads: Schema.Array(ThreadRegistryComposedThread).check(Schema.isMaxLength(200)),

@@ -82,8 +82,6 @@ export * from "./worktreeSetup.ts";
 export * from "./providerQueue.ts";
 
 export * from "./queueDispatch.ts";
-export * from "./workstreams.ts";
-export * from "./workstreamPlacements.ts";
 export * from "./threadRegistry.ts";
 export * from "./queueProtocol.ts";
 export * from "./threadCorpusProtocol.ts";
@@ -95,7 +93,6 @@ export {
   OrchestrationThreadDetailSnapshot,
 } from "./legacyOrchestrationCompatibility.ts";
 export * from "./hostStatus.ts";
-export * from "./jones/workstreamAppearance.ts";
 
 export * from "./jones/organizationMetadata.ts";
 
@@ -103,8 +100,6 @@ export * from "./jones/workQueueMetadata.ts";
 
 export * from "./jones/deviceMedia.ts";
 
-export * from "./jones/workstreamsNativeProvider.ts";
-export * from "./jones/workstreamsRegistrationContext.ts";
 export * from "./jones/jonesUpdates.ts";
 export * from "./jones/runtimeStop.ts";
 export * from "./jones/providerConversationReselection.ts";
@@ -114,8 +109,6 @@ export * from "./secretRequest.ts";
 export * from "./secretReference.ts";
 export * from "./settingsSecretValue.ts";
 export * from "./clientRpcPermissions.ts";
-
-export * from "./jones/workstreamsNativeOwner.ts";
 
 export * from "./jones/queuedSteerBatch.ts";
 

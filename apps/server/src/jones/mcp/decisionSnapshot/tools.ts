@@ -48,7 +48,7 @@ export const DecisionSnapshot = Schema.Struct({
 export type DecisionSnapshot = typeof DecisionSnapshot.Type;
 const DecisionSnapshotTool = Tool.make("decision_snapshot", {
   description:
-    "Collect one bounded decision snapshot using the explicitly bound collector release and native thread/registry counts. Partial thread counts are lower bounds when native background coverage is incomplete. Missing runtime or source capabilities remain unavailable; display facts do not grant admission authority.",
+    "Collect one bounded decision snapshot using the explicitly bound collector release and native thread counts. Personal Workstream counts remain unavailable when the bound collector only supports registry scope. Partial thread counts are lower bounds when native background coverage is incomplete. Missing runtime or source capabilities remain unavailable; display facts do not grant admission authority.",
   parameters: Schema.Struct({
     purpose: Schema.optional(SnapshotPurpose),
     projectId: Schema.optional(ProjectId),

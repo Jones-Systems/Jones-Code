@@ -1,3 +1,4 @@
+import * as PersonalWorkstreams from "./jones/workstreams/personal/service.ts";
 import * as WorktreeMcpService from "./mcp/WorktreeMcpService.ts";
 import { TerminalCwdStatError } from "@t3tools/contracts";
 import { readRemoteTaskOwnerIds } from "./jones/remoteDelegation/ShellRetention.ts";
@@ -13,10 +14,6 @@ import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
 import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
 import { withClientSettlementOrigin } from "./jones/settlementOrigins/clientIngress.ts";
 import * as ProviderConversationReselection from "./jones/runtime/ProviderConversationReselection.ts";
-import {
-  makeNativeStoreAuthorityConfigReader,
-  type NativeStoreAuthorityConfigReader,
-} from "./jones/workstreams/serverConfigNativeStoreAuthority.ts";
 import {
   NativeBootstrapDispatchError,
   NativeCreationRejectionCode,
@@ -1484,7 +1481,6 @@ export const layerWsRpc = (
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
   reportProfiles: ServerBrowser.ProfileReporter,
   settingsClient: { readonly secretReferences: boolean },
-  readNativeStoreAuthorityConfig: NativeStoreAuthorityConfigReader = () => Effect.succeed({}),
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -2124,7 +2120,6 @@ export const layerWsRpc = (
             onSome: (root) => ({ scratchWorkspaceRoot: root }),
           }),
           newProjectsRoot: managedFolders.namedProjectsRoot,
-          ...(yield* readNativeStoreAuthorityConfig(environment.environmentId)),
           ...(lastEventLoopStall === undefined ? {} : { lastEventLoopStall }),
         };
       });
@@ -2186,7 +2181,11 @@ export const layerWsRpc = (
         return yield* mutateProjectWithClone(projectService, projectCloneTracker, mutation);
       });
 
+      const personalWorkstreams = yield* PersonalWorkstreams.PersonalWorkstreams;
       const handlers = ServerWsRpcGroup.of({
+        "workstreamsPersonal.subscribe": () => personalWorkstreams.changes,
+        "workstreamsPersonal.put": ({ workstream }) => personalWorkstreams.put(workstream),
+        "workstreamsPersonal.assign": (input) => personalWorkstreams.assign(input),
         [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: (input) =>
           linkedThreads.pipe(Effect.flatMap((owner) => owner.list({ type: "user" }, input))),
         [ORCHESTRATION_V2_WS_METHODS.linkThreads]: (input) =>
@@ -3831,7 +3830,6 @@ const layerWs = Layer.unwrap(
     const sql = yield* SqlClient.SqlClient;
     const shellMaterialization = yield* ShellMaterialization.ShellMaterialization;
     const queueCompatibility = yield* QueueCompatibility.QueueCompatibility;
-    const readNativeStoreAuthorityConfig = yield* makeNativeStoreAuthorityConfigReader;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3910,7 +3908,6 @@ const layerWs = Layer.unwrap(
               serverBrowser,
               reportProfiles,
               readSettingsClient(url.value),
-              readNativeStoreAuthorityConfig,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Handler-context reporters see only request defects, not server-wide defects.

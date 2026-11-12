@@ -1,13 +1,5 @@
 import { makeRemoteAdmissionHttpGroup } from "./remoteAdmissionHttp.ts";
 import {
-  WorkstreamsPeerSetupOwnerRequest,
-  WorkstreamsPeerSetupResult,
-} from "./workstreamsPeerSetup.ts";
-import {
-  WorkstreamsNativeOwnerRequest,
-  WorkstreamsNativeOwnerResponse,
-} from "./workstreamsNativeOwner.ts";
-import {
   ImportedHistoryStart,
   ImportedHistoryReview,
   ImportedHistoryOutcome,
@@ -78,33 +70,6 @@ import {
   LibraryReplySchema,
   LibraryRequestSchema,
 } from "../conversationLibrary.ts";
-import {
-  WorkstreamAppearanceRead,
-  WorkstreamAppearanceWrite,
-  WorkstreamAppearanceResult,
-  WorkstreamAppearance,
-} from "./workstreamAppearance.ts";
-
-import {
-  EnvironmentWorkstreamOperationConflictError as WorkstreamOperationConflictError,
-  WorkstreamOperationSubmitRequest,
-  WorkstreamOperationSubmitResponse,
-  WorkstreamOperationReadRequest,
-  WorkstreamOperationReadResponse,
-  WorkstreamSetupStatus,
-} from "./workstreamOperations.ts";
-
-import { WorkstreamsRegistrationContextAcceptedResponse } from "./workstreamsRegistrationContext.ts";
-import {
-  WorkstreamsNativeContextResponse,
-  WorkstreamsNativeContextResponseV2,
-  WorkstreamsNativeAttestationResponseV2,
-  WorkstreamsNativeSettlementResponseV2,
-  WorkstreamsNativeAttestationRequest,
-  WorkstreamsNativeAttestationResponse,
-  WorkstreamsNativeSettlementRequest,
-  WorkstreamsNativeSettlementResponse,
-} from "./workstreamsNativeProvider.ts";
 
 const EnvironmentConversationLibraryInvalidError = Schema.Struct({
   kind: Schema.Literal("error"),
@@ -173,19 +138,13 @@ export type EnvironmentConversationLibraryError =
 
 export const EnvironmentConversationLibraryErrorCode = LibraryErrorCodeSchema;
 
-export const EnvironmentWorkstreamOperationConflictError = WorkstreamOperationConflictError.pipe(
-  (schema) => schema.annotate({ httpApiStatus: 409 }),
-  HttpApiSchema.status(409),
-);
-export type EnvironmentWorkstreamOperationConflictError =
-  typeof EnvironmentWorkstreamOperationConflictError.Type;
-
 export const makeJonesHttpGroups = ({
   OptionalBearerHeaders,
   EnvironmentAuthenticatedAuth,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
   EnvironmentHttpBadRequestError,
+  EnvironmentHttpConflictError,
 }: {
   readonly OptionalBearerHeaders: Schema.Struct<{
     authorization: Schema.optionalKey<Schema.String>;
@@ -194,6 +153,7 @@ export const makeJonesHttpGroups = ({
   readonly EnvironmentAuthenticatedAuth: typeof Environment.EnvironmentAuthenticatedAuth;
   readonly EnvironmentScopeRequiredError: typeof Environment.EnvironmentScopeRequiredError;
   readonly EnvironmentInternalError: typeof Environment.EnvironmentInternalError;
+  readonly EnvironmentHttpConflictError: typeof Environment.EnvironmentHttpConflictError;
   readonly EnvironmentHttpBadRequestError: typeof Environment.EnvironmentHttpBadRequestError;
 }) => {
   class EnvironmentConversationLibraryHttpApi extends HttpApiGroup.make("conversationLibrary").add(
@@ -373,54 +333,62 @@ export const makeJonesHttpGroups = ({
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+  // Retired feature routes retain authenticated, explicit unavailable responses.
   class EnvironmentWorkstreamAppearanceHttpApi extends HttpApiGroup.make("workstreams")
     .add(
       HttpApiEndpoint.post("appearanceRead", "/api/workstreams/appearance/read", {
         headers: OptionalBearerHeaders,
-        payload: WorkstreamAppearanceRead,
-        success: WorkstreamAppearanceResult,
-        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+        payload: Schema.Unknown,
+        success: Schema.Never,
+        error: [
+          EnvironmentHttpConflictError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+        ],
       }).middleware(EnvironmentAuthenticatedAuth),
     )
     .add(
       HttpApiEndpoint.post("appearanceSave", "/api/workstreams/appearance/write", {
         headers: OptionalBearerHeaders,
-        payload: WorkstreamAppearanceWrite,
-        success: WorkstreamAppearance,
-        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+        payload: Schema.Unknown,
+        success: Schema.Never,
+        error: [
+          EnvironmentHttpConflictError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+        ],
       }).middleware(EnvironmentAuthenticatedAuth),
     )
     .add(
       HttpApiEndpoint.get("registrationContext", "/api/workstreams/registration-context", {
         headers: OptionalBearerHeaders,
-        success: WorkstreamsRegistrationContextAcceptedResponse,
+        success: Schema.Never,
         error: [
+          EnvironmentHttpConflictError,
           EnvironmentScopeRequiredError,
           EnvironmentInternalError,
-          EnvironmentHttpBadRequestError,
         ],
       }).middleware(EnvironmentAuthenticatedAuth),
     )
     .add(
       HttpApiEndpoint.post("operationSubmit", "/api/workstreams/operations/submit", {
         headers: OptionalBearerHeaders,
-        payload: WorkstreamOperationSubmitRequest,
-        success: WorkstreamOperationSubmitResponse,
+        payload: Schema.Unknown,
+        success: Schema.Never,
         error: [
-          EnvironmentHttpBadRequestError,
+          EnvironmentHttpConflictError,
           EnvironmentScopeRequiredError,
           EnvironmentInternalError,
-          EnvironmentWorkstreamOperationConflictError,
         ],
       }).middleware(EnvironmentAuthenticatedAuth),
     )
     .add(
       HttpApiEndpoint.post("operationRead", "/api/workstreams/operations/read", {
         headers: OptionalBearerHeaders,
-        payload: WorkstreamOperationReadRequest,
-        success: WorkstreamOperationReadResponse,
+        payload: Schema.Unknown,
+        success: Schema.Never,
         error: [
-          EnvironmentHttpBadRequestError,
+          EnvironmentHttpConflictError,
           EnvironmentScopeRequiredError,
           EnvironmentInternalError,
         ],
@@ -429,131 +397,11 @@ export const makeJonesHttpGroups = ({
     .add(
       HttpApiEndpoint.get("setupStatus", "/api/workstreams/setup-status", {
         headers: OptionalBearerHeaders,
-        success: WorkstreamSetupStatus,
-        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
-      }).middleware(EnvironmentAuthenticatedAuth),
-    ) {}
-
-  class EnvironmentWorkstreamsNativeHttpApi extends HttpApiGroup.make("workstreamsNative")
-    .add(
-      HttpApiEndpoint.post(
-        "peerSetupOwnerOperations",
-        "/api/workstreams/native/peer-setup/v1/operations",
-        {
-          headers: OptionalBearerHeaders,
-          payload: WorkstreamsPeerSetupOwnerRequest,
-          success: WorkstreamsPeerSetupResult,
-          error: [
-            EnvironmentScopeRequiredError,
-            EnvironmentInternalError,
-            EnvironmentHttpBadRequestError,
-          ],
-        },
-      ).middleware(EnvironmentAuthenticatedAuth),
-    )
-    .add(
-      HttpApiEndpoint.post("ownerOperations", "/api/workstreams/native/owner/v1/operations", {
-        headers: OptionalBearerHeaders,
-        payload: WorkstreamsNativeOwnerRequest,
-        success: WorkstreamsNativeOwnerResponse,
+        success: Schema.Never,
         error: [
+          EnvironmentHttpConflictError,
           EnvironmentScopeRequiredError,
           EnvironmentInternalError,
-          EnvironmentHttpBadRequestError,
-        ],
-      }).middleware(EnvironmentAuthenticatedAuth),
-    )
-    .add(
-      HttpApiEndpoint.get("context", "/api/workstreams/native/v1/context", {
-        headers: OptionalBearerHeaders,
-        success: WorkstreamsNativeContextResponse,
-        error: [
-          EnvironmentScopeRequiredError,
-          EnvironmentInternalError,
-          EnvironmentHttpBadRequestError,
-        ],
-      }).middleware(EnvironmentAuthenticatedAuth),
-    )
-    .add(
-      HttpApiEndpoint.post("attestations", "/api/workstreams/native/v1/attestations", {
-        headers: OptionalBearerHeaders,
-        payload: WorkstreamsNativeAttestationRequest,
-        success: WorkstreamsNativeAttestationResponse,
-        error: [
-          EnvironmentScopeRequiredError,
-          EnvironmentInternalError,
-          EnvironmentHttpBadRequestError,
-        ],
-      }).middleware(EnvironmentAuthenticatedAuth),
-    )
-    .add(
-      HttpApiEndpoint.post("settlements", "/api/workstreams/native/v1/settlements", {
-        headers: OptionalBearerHeaders,
-        payload: WorkstreamsNativeSettlementRequest,
-        success: WorkstreamsNativeSettlementResponse,
-        error: [
-          EnvironmentScopeRequiredError,
-          EnvironmentInternalError,
-          EnvironmentHttpBadRequestError,
-        ],
-      }).middleware(EnvironmentAuthenticatedAuth),
-    )
-    .add(
-      HttpApiEndpoint.post("settlementLookup", "/api/workstreams/native/v1/settlements/lookup", {
-        headers: OptionalBearerHeaders,
-        payload: WorkstreamsNativeSettlementRequest,
-        success: WorkstreamsNativeSettlementResponse,
-        error: [
-          EnvironmentScopeRequiredError,
-          EnvironmentInternalError,
-          EnvironmentHttpBadRequestError,
-        ],
-      }).middleware(EnvironmentAuthenticatedAuth),
-    )
-    .add(
-      HttpApiEndpoint.get("contextV2", "/api/workstreams/native/v2/context", {
-        headers: OptionalBearerHeaders,
-        success: WorkstreamsNativeContextResponseV2,
-        error: [
-          EnvironmentScopeRequiredError,
-          EnvironmentInternalError,
-          EnvironmentHttpBadRequestError,
-        ],
-      }).middleware(EnvironmentAuthenticatedAuth),
-    )
-    .add(
-      HttpApiEndpoint.post("attestationsV2", "/api/workstreams/native/v2/attestations", {
-        headers: OptionalBearerHeaders,
-        payload: WorkstreamsNativeAttestationRequest,
-        success: WorkstreamsNativeAttestationResponseV2,
-        error: [
-          EnvironmentScopeRequiredError,
-          EnvironmentInternalError,
-          EnvironmentHttpBadRequestError,
-        ],
-      }).middleware(EnvironmentAuthenticatedAuth),
-    )
-    .add(
-      HttpApiEndpoint.post("settlementsV2", "/api/workstreams/native/v2/settlements", {
-        headers: OptionalBearerHeaders,
-        payload: WorkstreamsNativeSettlementRequest,
-        success: WorkstreamsNativeSettlementResponseV2,
-        error: [
-          EnvironmentScopeRequiredError,
-          EnvironmentInternalError,
-          EnvironmentHttpBadRequestError,
-        ],
-      }).middleware(EnvironmentAuthenticatedAuth),
-    )
-    .add(
-      HttpApiEndpoint.post("settlementLookupV2", "/api/workstreams/native/v2/settlements/lookup", {
-        headers: OptionalBearerHeaders,
-        payload: WorkstreamsNativeSettlementRequest,
-        success: WorkstreamsNativeSettlementResponseV2,
-        error: [
-          EnvironmentScopeRequiredError,
-          EnvironmentInternalError,
-          EnvironmentHttpBadRequestError,
         ],
       }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
@@ -746,6 +594,7 @@ export const makeJonesHttpGroups = ({
       EnvironmentScopeRequiredError,
       EnvironmentInternalError,
       EnvironmentHttpBadRequestError,
+      EnvironmentHttpConflictError,
     }),
     EnvironmentFleetUpdatesHttpApi: makeFleetUpdatesHttpGroup({
       OptionalBearerHeaders,
@@ -753,6 +602,7 @@ export const makeJonesHttpGroups = ({
       EnvironmentScopeRequiredError,
       EnvironmentInternalError,
       EnvironmentHttpBadRequestError,
+      EnvironmentHttpConflictError,
     }),
     EnvironmentPreviewCompanionHttpApi: makePreviewCompanionHttpGroup({
       OptionalBearerHeaders,
@@ -760,6 +610,7 @@ export const makeJonesHttpGroups = ({
       EnvironmentScopeRequiredError,
       EnvironmentInternalError,
       EnvironmentHttpBadRequestError,
+      EnvironmentHttpConflictError,
     }),
     EnvironmentImportedHistoryHttpApi,
     EnvironmentJonesUpdatesHttpApi,
@@ -770,6 +621,5 @@ export const makeJonesHttpGroups = ({
     EnvironmentHostStatusHttpApi,
     EnvironmentConversationLibraryHttpApi,
     EnvironmentWorkstreamAppearanceHttpApi,
-    EnvironmentWorkstreamsNativeHttpApi,
   };
 };
