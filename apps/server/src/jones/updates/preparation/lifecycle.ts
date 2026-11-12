@@ -209,7 +209,10 @@ export function preparationLifecycle(baseDir: string, jobId: string) {
             : boundEffects === undefined
               ? undefined
               : { pid: boundEffects.pid, processGroup: boundEffects.pid };
-          if (worker === undefined || (boundEffects !== undefined && boundEffects.pid !== worker.pid))
+          if (
+            worker === undefined ||
+            (boundEffects !== undefined && boundEffects.pid !== worker.pid)
+          )
             return "unknown";
           if (!gone(worker)) return "unreaped";
           if (

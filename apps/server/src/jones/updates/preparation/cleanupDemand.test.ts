@@ -12,7 +12,12 @@ it("runs once at startup and quiesces despite retained downloads or standing hol
 
 it("coalesces demand, shares an in-flight pass and preserves a later transition", async () => {
   let finish!: (result: typeof retained) => void;
-  const sweep = vi.fn(() => new Promise<typeof retained>((resolve) => { finish = resolve; }));
+  const sweep = vi.fn(
+    () =>
+      new Promise<typeof retained>((resolve) => {
+        finish = resolve;
+      }),
+  );
   const cleanup = preparationCleanupDemand(sweep);
   for (let i = 0; i < 100; i++) cleanup.request();
   const first = cleanup.flush();

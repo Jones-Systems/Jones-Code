@@ -180,19 +180,22 @@ export async function runSyntheticTransferRegression() {
 
 export function packagedRows() {
   // These are prerequisites, not skipped tests or evidence that either artifact was executed.
-  return ["transfer-interruption", "qualified-native-cleanup", "abrupt-native-kill"].map((scenario) => ({
-    scenario,
-    status: "unavailable",
-    packagedProof: false,
-    installedProducer,
-    reason: "No bound packaged execution with a controlled interruption milestone is supplied. Synthetic testkit identities cannot qualify an installed producer.",
-    prerequisites: [
-      "Actual producer executable and entry bound to source/tree, Actions archive and payload digests",
-      "Captured worker/group and durable transfer or native-effects interruption milestone",
-      "Exact request/result/lifecycle/effects and current recovery-code digests",
-      "Qualified native row additionally requires retained busy result, qualified producer contract, inspect/consent/proof and real restage",
-    ],
-  }));
+  return ["transfer-interruption", "qualified-native-cleanup", "abrupt-native-kill"].map(
+    (scenario) => ({
+      scenario,
+      status: "unavailable",
+      packagedProof: false,
+      installedProducer,
+      reason:
+        "No bound packaged execution with a controlled interruption milestone is supplied. Synthetic testkit identities cannot qualify an installed producer.",
+      prerequisites: [
+        "Actual producer executable and entry bound to source/tree, Actions archive and payload digests",
+        "Captured worker/group and durable transfer or native-effects interruption milestone",
+        "Exact request/result/lifecycle/effects and current recovery-code digests",
+        "Qualified native row additionally requires retained busy result, qualified producer contract, inspect/consent/proof and real restage",
+      ],
+    }),
+  );
 }
 
 async function main() {

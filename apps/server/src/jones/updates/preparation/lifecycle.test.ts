@@ -64,7 +64,9 @@ it("fast-reads only bounded owner-controlled exact release records without follo
     const released = { schema: 1, jobId, kind: "stage", state: "released", worker };
     expect(await readTerminalRelease(base, jobId)).toBe(false);
     for (const value of [
-      null, [], {},
+      null,
+      [],
+      {},
       { ...released, schema: 2 },
       { ...released, jobId: "88888888-8888-4888-8888-888888888888" },
       { ...released, kind: "unknown" },

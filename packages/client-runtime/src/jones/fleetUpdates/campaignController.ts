@@ -11,6 +11,7 @@ import type {
   FleetMemberPhase,
 } from "@t3tools/contracts/jones/fleet-updates";
 import type { JonesInstallPlanResult } from "@t3tools/contracts/jones/installPlan";
+import * as DateTime from "effect/DateTime";
 import type { FleetHostRequest } from "./hostBridge.ts";
 
 export interface FleetCampaignDriver {
@@ -330,6 +331,8 @@ async function advanceMember(
   }
 }
 
+const observationTime = () => DateTime.formatIso(DateTime.nowUnsafe());
+
 const unavailablePublication: FleetPublication = {
   kind: "withheld",
   code: "unavailable",
@@ -391,80 +394,105 @@ async function publishCommittedSource(driver: FleetCampaignDriver, state: FleetD
   const publication = await readPublication(driver);
   if (driver.cancelled()) return { state, followers, held };
   const committed = publicationSource(publication);
-  const hosts = await Promise.all(state.enrollments.filter((entry) => entry.enabled).map(
-    async (enrollment): Promise<FleetPublicationReceipt> => {
-      let follower: FleetFollowerStatus | undefined;
-      let outcome: FleetPublicationReceipt["outcome"] = "unknown";
-      if (driver.cancelled()) return { enrollment, outcome, observedAt: new Date().toISOString() };
-      try {
-        let status = await driver.host(enrollment.environmentId, { action: "status" });
-        if (driver.cancelled()) return { enrollment, outcome, observedAt: new Date().toISOString() };
-        if (boundStatus(status, enrollment)) {
-          follower = status.follower?.protocol === 1 ? status.follower : undefined;
-          if (follower?.planDirective !== undefined) outcome = "directive-held";
-          else if (status.follower === undefined) outcome = "legacy";
-          else if (follower !== undefined) {
-            outcome = "observed";
-            if (committed !== undefined) {
-              if (follower.leaderSource !== committed.sha) {
-                // Re-read local enrollment before sending a publication. The response is
-                // not authority until its environment, enrollment and source all match.
-                const current = await driver.desktop({ action: "read" });
-                if (driver.cancelled()) return { enrollment, outcome: "unknown", observedAt: new Date().toISOString() };
-                if (!current.enrollments.some((entry) => sameEnrollment(enrollment, entry)))
-                  return { enrollment, outcome: "unknown", observedAt: new Date().toISOString() };
-                const latestSource = publicationSource(await readPublication(driver));
-                if (driver.cancelled() || latestSource?.sha !== committed.sha || latestSource?.tree !== committed.tree)
-                  return { enrollment, outcome: "unknown", observedAt: new Date().toISOString() };
-                outcome = "unknown";
-                status = await driver.host(enrollment.environmentId, {
-                  action: "leader",
-                  input: {
-                    enrollmentId: enrollment.enrollmentId,
-                    environmentId: enrollment.environmentId,
-                    repository: "Jones-Systems/Jones-Code",
-                    committedSource: committed.sha,
-                    committedTree: committed.tree,
-                  },
-                });
-                if (driver.cancelled()) return { enrollment, outcome, observedAt: new Date().toISOString() };
-                // Do not display an invalid acknowledgement as a host receipt.
-                follower = boundStatus(status, enrollment) && status.follower?.protocol === 1
-                  ? status.follower : undefined;
+  const hosts = await Promise.all(
+    state.enrollments
+      .filter((entry) => entry.enabled)
+      .map(async (enrollment): Promise<FleetPublicationReceipt> => {
+        let follower: FleetFollowerStatus | undefined;
+        let outcome: FleetPublicationReceipt["outcome"] = "unknown";
+        if (driver.cancelled())
+          return { enrollment, outcome, observedAt: observationTime() };
+        try {
+          let status = await driver.host(enrollment.environmentId, { action: "status" });
+          if (driver.cancelled())
+            return { enrollment, outcome, observedAt: observationTime() };
+          if (boundStatus(status, enrollment)) {
+            follower = status.follower?.protocol === 1 ? status.follower : undefined;
+            if (follower?.planDirective !== undefined) outcome = "directive-held";
+            else if (status.follower === undefined) outcome = "legacy";
+            else if (follower !== undefined) {
+              outcome = "observed";
+              if (committed !== undefined) {
+                if (follower.leaderSource !== committed.sha) {
+                  // Re-read local enrollment before sending a publication. The response is
+                  // not authority until its environment, enrollment and source all match.
+                  const current = await driver.desktop({ action: "read" });
+                  if (driver.cancelled())
+                    return { enrollment, outcome: "unknown", observedAt: observationTime() };
+                  if (!current.enrollments.some((entry) => sameEnrollment(enrollment, entry)))
+                    return { enrollment, outcome: "unknown", observedAt: observationTime() };
+                  const latestSource = publicationSource(await readPublication(driver));
+                  if (
+                    driver.cancelled() ||
+                    latestSource?.sha !== committed.sha ||
+                    latestSource?.tree !== committed.tree
+                  )
+                    return { enrollment, outcome: "unknown", observedAt: observationTime() };
+                  outcome = "unknown";
+                  status = await driver.host(enrollment.environmentId, {
+                    action: "leader",
+                    input: {
+                      enrollmentId: enrollment.enrollmentId,
+                      environmentId: enrollment.environmentId,
+                      repository: "Jones-Systems/Jones-Code",
+                      committedSource: committed.sha,
+                      committedTree: committed.tree,
+                    },
+                  });
+                  if (driver.cancelled())
+                    return { enrollment, outcome, observedAt: observationTime() };
+                  // Do not display an invalid acknowledgement as a host receipt.
+                  follower =
+                    boundStatus(status, enrollment) && status.follower?.protocol === 1
+                      ? status.follower
+                      : undefined;
+                }
+                if (follower?.planDirective !== undefined) outcome = "directive-held";
+                else if (follower?.leaderSource === committed.sha) outcome = "following";
+                else outcome = "unknown";
               }
-              if (follower?.planDirective !== undefined) outcome = "directive-held";
-              else if (follower?.leaderSource === committed.sha) outcome = "following";
-              else outcome = "unknown";
             }
           }
+        } catch {
+          // A leader request may have committed before its response was lost. Only
+          // a subsequent authoritative status read can release this pass's hold.
+          outcome = "unknown";
         }
-      } catch {
-        // A leader request may have committed before its response was lost. Only
-        // a subsequent authoritative status read can release this pass's hold.
-        outcome = "unknown";
-      }
-      return {
-        enrollment, outcome, observedAt: new Date().toISOString(),
-        ...(follower === undefined ? {} : { follower }),
-      };
-    },
-  ));
+        return {
+          enrollment,
+          outcome,
+          observedAt: observationTime(),
+          ...(follower === undefined ? {} : { follower }),
+        };
+      }),
+  );
   if (driver.cancelled()) return { state, followers, held };
   const current = await driver.desktop({ action: "read" });
   if (driver.cancelled()) return { state: current, followers, held };
   const latestPublication = await readPublication(driver);
   if (driver.cancelled()) return { state: current, followers, held };
   const latestSource = publicationSource(latestPublication);
-  const sourceChanged = committed?.sha !== latestSource?.sha || committed?.tree !== latestSource?.tree;
-  const receipts = hosts.filter((host) => current.enrollments.some((entry) => sameEnrollment(host.enrollment, entry)));
+  const sourceChanged =
+    committed?.sha !== latestSource?.sha || committed?.tree !== latestSource?.tree;
+  const receipts = hosts.filter((host) =>
+    current.enrollments.some((entry) => sameEnrollment(host.enrollment, entry)),
+  );
   for (const host of hosts) {
     const stillEnrolled = receipts.includes(host);
-    if (!stillEnrolled || sourceChanged || host.outcome === "unknown" || host.outcome === "directive-held")
+    if (
+      !stillEnrolled ||
+      sourceChanged ||
+      host.outcome === "unknown" ||
+      host.outcome === "directive-held"
+    )
       held.add(host.enrollment.environmentId);
     else if (host.outcome === "following") followers.add(host.enrollment.environmentId);
   }
   try {
-    await driver.onPublication?.({ publication: latestPublication, hosts: sourceChanged ? [] : receipts });
+    await driver.onPublication?.({
+      publication: latestPublication,
+      hosts: sourceChanged ? [] : receipts,
+    });
   } catch {
     // Diagnostics cannot grant, revoke or interrupt update authority.
   }

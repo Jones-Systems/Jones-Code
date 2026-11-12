@@ -115,9 +115,7 @@
     "apps/server/src/jones/updates/recoverQualifiedStage.ts",
     "apps/server/src/jones/updates/recoverQualifiedStage.test.ts",
     "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts",
-    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts",
-    "scripts/jones/updates/interrupted-staging-fixture.mjs",
-    "scripts/jones/updates/interrupted-staging-fixture.node-test.mjs"
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",

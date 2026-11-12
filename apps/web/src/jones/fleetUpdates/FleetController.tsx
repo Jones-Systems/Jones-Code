@@ -5,12 +5,7 @@ import {
 } from "@t3tools/client-runtime/jones/fleet-updates";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { fleetInstalledSource, fleetPublication } from "./publicationState";
-import {
-  fleetDesktop,
-  fleetHost,
-  fleetStatusError,
-  refreshFleetDesktopState,
-} from "./runtime";
+import { fleetDesktop, fleetHost, fleetStatusError, refreshFleetDesktopState } from "./runtime";
 
 /** Native proof gates activation; ordinary app startup and source equality do not. */
 export function FleetController() {
@@ -23,7 +18,8 @@ export function FleetController() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
       try {
-        const readVersion = ++installedReadVersion;
+        installedReadVersion = installedReadVersion + 1;
+        const readVersion = installedReadVersion;
         // Label lookup cannot hold fleet observation or authorize publication.
         void Promise.resolve()
           .then(() => window.desktopBridge?.getUpdateState())
@@ -79,11 +75,13 @@ export async function readFleetPublication(): Promise<FleetPublication> {
     };
   try {
     const result = await bridge.installPlan({ type: "publication", acceptOrdinaryRecovery: 1 });
-    return result.publication ?? {
-      kind: "withheld",
-      code: "unavailable",
-      message: "Native publication proof is unavailable.",
-    };
+    return (
+      result.publication ?? {
+        kind: "withheld",
+        code: "unavailable",
+        message: "Native publication proof is unavailable.",
+      }
+    );
   } catch {
     return {
       kind: "withheld",

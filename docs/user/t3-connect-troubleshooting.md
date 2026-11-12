@@ -127,13 +127,13 @@ This app needs a newer T3 Code on the host. Update T3 Code on the host. See
 
 ## T3 Connect returned an error
 
-| Error                                                     | Fix                                                                                                                                         |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `environment_link_limit_exceeded` or managed tunnel limit | Remove an unused environment, then restart T3 Code on the host.                                                                             |
-| `auth_invalid` or `invalid_bearer`                        | Run `t3 connect login`. If credentials were revoked, run `t3 connect logout`, then `t3 connect` again. Restart the server after signing in. |
-| Expired or invalid link proof                             | Check the host's date and time, update T3 Code, then restart it.                                                                            |
+| Error                                                     | Fix                                                                                                                                                                                                                                          |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `environment_link_limit_exceeded` or managed tunnel limit | Remove an unused environment, then restart T3 Code on the host.                                                                                                                                                                              |
+| `auth_invalid` or `invalid_bearer`                        | Run `t3 connect login`. If credentials were revoked, run `t3 connect logout`, then `t3 connect` again. Restart the server after signing in.                                                                                                  |
+| Expired or invalid link proof                             | Check the host's date and time, update T3 Code, then restart it.                                                                                                                                                                             |
 | HTTP 403 from the host's anonymous address check          | This does not prove a signed-in device cannot connect. Try that device, then use **Details > Copy diagnostics** if it fails. Compare the host's local identity check and external path; a response Ray ID alone does not identify the cause. |
-| HTTP 408, 429, or 5xx                                     | Wait a few minutes. T3 Code retries temporary failures on its own.                                                                          |
+| HTTP 408, 429, or 5xx                                     | Wait a few minutes. T3 Code retries temporary failures on its own.                                                                                                                                                                           |
 
 After you fix a permanent rejection, restart the host's server with
 `t3 service restart`. For a foreground server, stop it and run `t3 serve` again.

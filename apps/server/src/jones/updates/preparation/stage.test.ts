@@ -16,7 +16,11 @@ import {
   type PreparationPhase,
 } from "./protocol.ts";
 import { adoptPreparedStage, adoptVerifiedStage } from "./rebind.ts";
-import { makePreparationSupervisor, type PreparationWorkerExit } from "./supervisor.ts";
+import {
+  makePreparationSupervisor,
+  type PreparationSupervisor,
+  type PreparationWorkerExit,
+} from "./supervisor.ts";
 import type { extractQualifiedDarwinRuntime } from "../../cloud/qualifiedDarwinRuntime.ts";
 import {
   actionsFixture,
@@ -33,9 +37,45 @@ import {
 } from "./Preparation.testkit.ts";
 
 const homes: PreparationHome[] = [];
+const supervisors = new Map<PreparationHome, PreparationSupervisor[]>();
 afterEach(async () => {
-  for (const home of homes.splice(0)) await home.remove();
+  const failures: Error[] = [];
+  for (const home of homes.splice(0)) {
+    try {
+      // A caller's stage outcome does not join its automatic cleanup worker. Join the real
+      // pending sweep before disposal, including when a preceding test assertion failed.
+      for (const supervisor of supervisors.get(home) ?? []) await joinPreparationCleanup(supervisor);
+      await home.remove();
+    } catch (cause) {
+      // Do not delete a synthetic home whose process/native release or cleanup is uncertain.
+      // Report its retained location while the runner also keeps the original test failure.
+      failures.push(new Error(`Preparation fixture evidence retained at ${home.root}`, { cause }));
+    } finally {
+      supervisors.delete(home);
+    }
+  }
+  if (failures.length > 0)
+    throw new AggregateError(failures, failures.map((failure) => failure.message).join("; "));
 });
+
+function trackSupervisor(
+  home: PreparationHome,
+  options: Parameters<typeof makePreparationSupervisor>[0],
+): PreparationSupervisor {
+  const supervisor = makePreparationSupervisor(options);
+  const tracked = supervisors.get(home) ?? [];
+  tracked.push(supervisor);
+  supervisors.set(home, tracked);
+  return supervisor;
+}
+
+async function joinPreparationCleanup(supervisor: PreparationSupervisor): Promise<void> {
+  if (supervisor.sweepIfNeeded === undefined || supervisor.unreleasedJobs === undefined)
+    throw new Error("The preparation fixture must expose cleanup settlement and release evidence.");
+  await supervisor.sweepIfNeeded();
+  if ((await supervisor.unreleasedJobs()).length > 0)
+    throw new Error("Preparation worker or native release remains unproved.");
+}
 
 it.each([false, true])(
   "preserves bounded Darwin cancellation cleanup evidence (proved: %s)",
@@ -196,7 +236,7 @@ describe("off-process stage job", () => {
     const fixture = await home();
     const actions = await actionsFixture(fixture);
     const phases: PreparationPhase[] = [];
-    const supervisor = makePreparationSupervisor({
+    const supervisor = trackSupervisor(fixture, {
       baseDir: fixture.base,
       cacheRoot: fixture.cacheRoot,
       command: sourceWorkerCommand,
@@ -243,6 +283,7 @@ describe("off-process stage job", () => {
     ).resolves.toEqual(adopted);
     expect(await NodeFSP.readFile(fixture.dbPath, "utf8")).toBe("untouched state");
 
+    await joinPreparationCleanup(supervisor);
     expect(await listing(preparationJobsDirectory(fixture.base))).toEqual([]);
     // The finished download stays selected for a re-stage; the sweep keeps it.
     await expect(supervisor.sweep()).resolves.toMatchObject({
@@ -301,7 +342,7 @@ describe("off-process stage job", () => {
   it("round-trips historical enrollment through the worker and rebinds to the current source", async () => {
     const fixture = await home();
     const actions = await actionsFixture(fixture);
-    const supervisor = makePreparationSupervisor({
+    const supervisor = trackSupervisor(fixture, {
       baseDir: fixture.base,
       cacheRoot: fixture.cacheRoot,
       command: sourceWorkerCommand,
@@ -309,6 +350,7 @@ describe("off-process stage job", () => {
     });
     const first = await supervisor.run(stageJob(fixture, actions));
     if (first.kind !== "stage") throw new Error("Expected initial stage.");
+    await joinPreparationCleanup(supervisor);
     const receiptPath = NodePath.join(
       fixture.base,
       "runtime",
@@ -323,6 +365,7 @@ describe("off-process stage job", () => {
     await NodeFSP.writeFile(receiptPath, historical);
     const recovered = await supervisor.run(stageJob(fixture, actions));
     if (recovered.kind !== "stage") throw new Error("Expected recovered stage.");
+    await joinPreparationCleanup(supervisor);
     expect(recovered.staged.protocol).toBe(2);
     const adoption = {
       baseDir: fixture.base,
@@ -340,13 +383,14 @@ describe("off-process stage job", () => {
       }),
     ).rejects.toSatisfy(blocked("invalid-artifact", /selected candidate's provenance/));
     expect(await NodeFSP.readFile(receiptPath, "utf8")).toBe(historical);
+    expect(await listing(preparationJobsDirectory(fixture.base))).toEqual([]);
   });
 
   it("refuses a candidate whose packaged preparation worker cannot start and stages nothing", async () => {
     const fixture = await home();
     const actions = await actionsFixture(fixture, { worker: false });
     const exits: PreparationWorkerExit[] = [];
-    const supervisor = makePreparationSupervisor({
+    const supervisor = trackSupervisor(fixture, {
       baseDir: fixture.base,
       cacheRoot: fixture.cacheRoot,
       command: sourceWorkerCommand,

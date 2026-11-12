@@ -3,12 +3,14 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ServerConfig,
+  WsSubscribeServerConfigRpc,
   WS_METHODS,
 } from "@t3tools/contracts";
 import { RelayAuthInvalidError, RelayEnvironmentConnectScope } from "@t3tools/contracts/relay";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -80,12 +82,16 @@ const config = Schema.encodeSync(ServerConfig)({
   settings: DEFAULT_SERVER_SETTINGS,
 });
 
-const Request = Schema.Struct({
-  _tag: Schema.Literal("Request"),
+const Request = Schema.TaggedStruct("Request", {
   id: Schema.Union([Schema.String, Schema.Number]),
   tag: Schema.String,
 });
 type Request = typeof Request.Type;
+const encodeConfigStreamExit = Schema.encodeSync(
+  Schema.toCodecJson(
+    Schema.Exit(Schema.Void, WsSubscribeServerConfigRpc.successSchema.error, Schema.Defect()),
+  ),
+);
 type SocketEvent = {
   readonly type: string;
   readonly data?: string;
@@ -102,12 +108,19 @@ class SyntheticSocket {
   readonly CLOSED = 3;
   readyState = 0;
   private readonly listeners = new Map<string, Set<(event: SocketEvent) => void>>();
+  readonly url: string;
+  private readonly listening: Deferred.Deferred<SyntheticSocket>;
+  private readonly requests: Queue.Queue<Request>;
 
   constructor(
-    readonly url: string,
-    private readonly listening: Deferred.Deferred<SyntheticSocket>,
-    private readonly requests: Queue.Queue<Request>,
-  ) {}
+    url: string,
+    listening: Deferred.Deferred<SyntheticSocket>,
+    requests: Queue.Queue<Request>,
+  ) {
+    this.url = url;
+    this.listening = listening;
+    this.requests = requests;
+  }
 
   addEventListener(type: string, listener: (event: SocketEvent) => void) {
     const listeners = this.listeners.get(type) ?? new Set();
@@ -160,8 +173,7 @@ const harness = Effect.fn("ConnectDiagnosticTest.harness")(function* (scenario: 
     if (path === "/.well-known/t3/environment") {
       return Response.json({
         ...descriptor,
-        environmentId:
-          scenario === "descriptor_mismatch" ? "another-host" : target.environmentId,
+        environmentId: scenario === "descriptor_mismatch" ? "another-host" : target.environmentId,
       });
     }
     if (path === "/oauth/token") {
@@ -305,12 +317,21 @@ const harness = Effect.fn("ConnectDiagnosticTest.harness")(function* (scenario: 
   const supervisor = yield* Supervisor.make({ target, profile: Option.none(), enabled: true }).pipe(
     Effect.provideService(Driver.ConnectionDriver, driver),
     Effect.provideService(Connectivity.Connectivity, {
-      status: Effect.succeed("online"),
+      status: Effect.succeed("online" as const),
       changes: Stream.empty,
     }),
     Effect.provideService(Wakeups.ConnectionWakeups, { changes: Stream.empty }),
   );
-  return { supervisor, listening, rpcRequests, requests, bootstrapCalls, authorization, signer, http };
+  return {
+    supervisor,
+    listening,
+    rpcRequests,
+    requests,
+    bootstrapCalls,
+    authorization,
+    signer,
+    http,
+  };
 });
 
 const awaitState = (
@@ -324,79 +345,97 @@ const awaitState = (
   );
 
 describe("Connect session diagnostics", () => {
-  it.effect("anonymous host 403 coexists with shared authorization, authenticated read, and synchronized RPC", () =>
-    Effect.gen(function* () {
-      const test = yield* harness("success");
-      // The host's source path and this device's source path may receive
-      // different answers at the same public URL.
-      const hostHttp = yield* HttpClient.HttpClient.pipe(
-        Effect.provide(
-          RpcHttp.layerRemoteHttpClient(async (input) => {
-            expect(String(input)).toBe(`${endpoint.httpBaseUrl}/.well-known/t3/environment`);
-            return new Response("", { status: 403 });
-          }),
-        ),
-      );
-      const anonymous = yield* hostHttp
-        .get(`${endpoint.httpBaseUrl}/.well-known/t3/environment`)
-        .pipe(Effect.scoped);
-      expect(anonymous.status).toBe(403);
-      yield* test.supervisor.connect;
-      const socket = yield* Deferred.await(test.listening);
-      expect(new URL(socket.url).searchParams.get("wsTicket")).toBe("synthetic-ticket");
-      socket.open();
-      const subscription = yield* Queue.take(test.rpcRequests);
-      expect(subscription.tag).toBe(WS_METHODS.subscribeServerConfig);
-      const synchronizing = yield* awaitState(
-        test.supervisor,
-        (state) => state.stage === "synchronizing",
-      );
-      expect(connectionSessionFacts(synchronizing)).toContainEqual([
-        "RPC readiness",
-        "not ready (waiting for initial configuration)",
-      ]);
-      socket.reply({
-        _tag: "Chunk",
-        requestId: subscription.id,
-        values: [{ version: 1, type: "snapshot", config }],
-      });
-      const connected = yield* awaitState(test.supervisor, (state) => state.phase === "connected");
-      const prepared = Option.getOrThrow(yield* SubscriptionRef.get(test.supervisor.prepared));
-      const session = yield* fetchEnvironmentSessionState({
-        prepared,
-        signer: Option.some(test.signer),
-        remoteAuthorization: Option.some(test.authorization),
-      }).pipe(Effect.provideService(HttpClient.HttpClient, test.http));
-      expect(session.authenticated).toBe(true);
-      expect(yield* Ref.get(test.bootstrapCalls)).toBe(1);
-      expect(test.requests.map((request) => request.path)).toContain("/oauth/token");
-      expect(test.requests).toContainEqual({
-        path: "/api/auth/session",
-        authorization: "DPoP synthetic-access",
-      });
-      expect(connectionSessionFacts(connected)).toContainEqual([
-        "RPC readiness",
-        "ready (current connection synchronized its initial configuration)",
-      ]);
-      // The diagnostic does not invent retained HTTP/bootstrap receipts from a
-      // successful socket, even though this test separately proved those calls.
-      expect(connectionSessionFacts(connected)).toContainEqual([
-        "Authenticated HTTP read",
-        "not checked (not recorded by connection state)",
-      ]);
-      socket.close(1006, "synthetic disconnect");
-      const disconnected = yield* awaitState(test.supervisor, (state) => state.phase === "backoff");
-      const diagnosis = presentConnectionDiagnosis({
-        hostLabel: target.label,
-        state: disconnected,
-        via: "relay",
-      });
-      expect(diagnosis).not.toBeNull();
-      const text = connectionDiagnosisText(target.label, diagnosis!);
-      expect(text).toContain("RPC readiness: not checked for a current connected session");
-      expect(text).not.toContain("RPC readiness: ready");
-      expect(text).not.toContain("synthetic-access");
-    }),
+  it.effect(
+    "anonymous host 403 coexists with shared authorization, authenticated read, and synchronized RPC",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* harness("success");
+        // The host's source path and this device's source path may receive
+        // different answers at the same public URL.
+        const hostHttp = yield* HttpClient.HttpClient.pipe(
+          Effect.provide(
+            RpcHttp.layerRemoteHttpClient(async (input) => {
+              expect(String(input)).toBe(`${endpoint.httpBaseUrl}/.well-known/t3/environment`);
+              return new Response("", { status: 403 });
+            }),
+          ),
+        );
+        const anonymous = yield* hostHttp
+          .get(`${endpoint.httpBaseUrl}/.well-known/t3/environment`)
+          .pipe(Effect.scoped);
+        expect(anonymous.status).toBe(403);
+        yield* test.supervisor.connect;
+        const socket = yield* Deferred.await(test.listening);
+        expect(new URL(socket.url).searchParams.get("wsTicket")).toBe("synthetic-ticket");
+        socket.open();
+        const subscription = yield* Queue.take(test.rpcRequests);
+        expect(subscription.tag).toBe(WS_METHODS.subscribeServerConfig);
+        const synchronizing = yield* awaitState(
+          test.supervisor,
+          (state) => state.stage === "synchronizing",
+        );
+        expect(connectionSessionFacts(synchronizing)).toContainEqual([
+          "RPC readiness",
+          "not ready (waiting for initial configuration)",
+        ]);
+        socket.reply({
+          _tag: "Chunk",
+          requestId: subscription.id,
+          values: [{ version: 1, type: "snapshot", config }],
+        });
+        const connected = yield* awaitState(
+          test.supervisor,
+          (state) => state.phase === "connected",
+        );
+        const prepared = Option.getOrThrow(yield* SubscriptionRef.get(test.supervisor.prepared));
+        const session = yield* fetchEnvironmentSessionState({
+          prepared,
+          signer: Option.some(test.signer),
+          remoteAuthorization: Option.some(test.authorization),
+        }).pipe(Effect.provideService(HttpClient.HttpClient, test.http));
+        expect(session.authenticated).toBe(true);
+        expect(yield* Ref.get(test.bootstrapCalls)).toBe(1);
+        expect(test.requests.map((request) => request.path)).toContain("/oauth/token");
+        expect(test.requests).toContainEqual({
+          path: "/api/auth/session",
+          authorization: "DPoP synthetic-access",
+        });
+        expect(connectionSessionFacts(connected)).toContainEqual([
+          "RPC readiness",
+          "ready (current connection synchronized its initial configuration)",
+        ]);
+        // The diagnostic does not invent retained HTTP/bootstrap receipts from a
+        // successful socket, even though this test separately proved those calls.
+        expect(connectionSessionFacts(connected)).toContainEqual([
+          "Authenticated HTTP read",
+          "not checked (not recorded by connection state)",
+        ]);
+        // End the server-owned stream before disposing its transport. Closing
+        // the socket first races supervisor disposal against the protocol's
+        // failure broadcast, leaving cancellation waiting on a closed writer.
+        socket.reply({
+          _tag: "Exit",
+          requestId: subscription.id,
+          exit: encodeConfigStreamExit(Exit.void),
+        });
+        const disconnected = yield* awaitState(
+          test.supervisor,
+          (state) => state.phase === "backoff",
+        );
+        const diagnosis = presentConnectionDiagnosis({
+          hostLabel: target.label,
+          state: disconnected,
+          via: "relay",
+        });
+        // Established-session loss clears lastFailure; a later attempt must
+        // fail before Details has a new failure to diagnose.
+        expect(diagnosis).toBeNull();
+        expect(socket.readyState).toBe(socket.CLOSED);
+        expect(connectionSessionFacts(disconnected)).toContainEqual([
+          "RPC readiness",
+          "not checked for a current connected session",
+        ]);
+      }),
   );
 
   for (const scenario of ["bootstrap_refused", "token_refused", "descriptor_mismatch"] as const) {
@@ -405,7 +444,11 @@ describe("Connect session diagnostics", () => {
         const test = yield* harness(scenario);
         yield* test.supervisor.connect;
         const state = yield* awaitState(test.supervisor, (state) => state.phase === "blocked");
-        const diagnosis = presentConnectionDiagnosis({ hostLabel: target.label, state, via: "relay" });
+        const diagnosis = presentConnectionDiagnosis({
+          hostLabel: target.label,
+          state,
+          via: "relay",
+        });
         expect(diagnosis?.hops.find((hop) => hop.result === "failed")?.hop).toBe(
           scenario === "bootstrap_refused" ? "relay" : "server",
         );

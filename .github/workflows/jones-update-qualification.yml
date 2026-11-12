@@ -52,7 +52,7 @@ on:
       - scripts/jones/boundary/fragments/launcher-commit-diagnostics.json
   workflow_dispatch:
   schedule:
-    - cron: '23 8 * * *'
+    - cron: "23 8 * * *"
 
 permissions:
   contents: read

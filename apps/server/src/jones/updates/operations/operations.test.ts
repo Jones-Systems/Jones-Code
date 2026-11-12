@@ -991,6 +991,40 @@ it("holds interrupted stage publication even after the worker is gone", async ()
     expect(f.updater.admissionHeld()).toBe(true);
   }));
 
+it("keeps adoption admission held when a later scan proves worker release", async () =>
+  fixture(async (f) => {
+    const jobId = NodeCrypto.randomUUID();
+    let unresolved = [jobId];
+    const preparation: PreparationSupervisor = {
+      ...f.preparation,
+      unreleasedJobs: async () => unresolved,
+      requestSweep: vi.fn(),
+    };
+    const operations = createTargetOperations({
+      key: f.base,
+      ledger: f.ledger,
+      updater: f.updater,
+      preparation,
+      refreshPolicy: f.refreshPolicy,
+      install: f.install,
+      reconcileNative: f.reconcileNative,
+      onFailure: () => {},
+    });
+    await f.ledger.accept(input);
+    await f.ledger.transition(input.operationId, (r) => ({ ...r, phase: "running", jobId }));
+    await f.ledger.transition(input.operationId, (r) => ({ ...r, phase: "adopting" }));
+    await operations.reconcile();
+    unresolved = [];
+    await operations.reconcile();
+    expect(await f.receipt()).toMatchObject({ phase: "held", code: "adoption-unconfirmed" });
+    expect(f.updater.admissionHeld()).toBe(true);
+    expect((await operations.start({ ...input, operationId: NodeCrypto.randomUUID() })).code).toBe(
+      "busy",
+    );
+    expect(f.prepareCalls()).toBe(0);
+    expect(f.install).not.toHaveBeenCalled();
+  }));
+
 it("lets adoption win a Stop race only after its durable marker and finishes with too-late", async () =>
   fixture(async (f) => {
     const publication = deferred<void>();
@@ -1159,27 +1193,37 @@ it("creates no idle or standing-hold sweep jobs, then coalesces release into one
       command: sourceWorkerCommand,
     });
     // The worker must see a deterministic standing hold too, independently of the parent probe.
-    const hold = () => withQualifiedRuntimeLock(f.base, preparationJobLock(jobId), async () => {
-      const operations = createTargetOperations({
-        key: f.base, ledger: f.ledger, updater: f.updater, preparation,
-        refreshPolicy: f.refreshPolicy, install: f.install, reconcileNative: f.reconcileNative,
-        onFailure: () => {},
+    const hold = () =>
+      withQualifiedRuntimeLock(f.base, preparationJobLock(jobId), async () => {
+        const operations = createTargetOperations({
+          key: f.base,
+          ledger: f.ledger,
+          updater: f.updater,
+          preparation,
+          refreshPolicy: f.refreshPolicy,
+          install: f.install,
+          reconcileNative: f.reconcileNative,
+          onFailure: () => {},
+        });
+        await operations.sweep(); // Startup demand, despite the hold.
+        const history = NodePath.join(f.base, "runtime", "jones-preparation", "lifecycle");
+        const names = async () =>
+          (await NodeFSP.readdir(history))
+            .filter((name) => !name.endsWith(".effects.json"))
+            .toSorted();
+        const locks = async () =>
+          (await NodeFSP.readdir(NodePath.join(f.base, "runtime", "jones-preparation")))
+            .filter((name) => name.startsWith("job-owner-"))
+            .toSorted();
+        const first = await names();
+        const firstLocks = await locks();
+        expect(first).toHaveLength(2); // Held job and exactly one startup sweep.
+        for (let tick = 0; tick < 20; tick++) await operations.sweep();
+        expect(await names()).toEqual(first);
+        expect(await locks()).toEqual(firstLocks);
+        expect(f.updater.admissionHeld()).toBe(true);
+        return { operations, names, locks };
       });
-      await operations.sweep(); // Startup demand, despite the hold.
-      const history = NodePath.join(f.base, "runtime", "jones-preparation", "lifecycle");
-      const names = async () => (await NodeFSP.readdir(history))
-        .filter((name) => !name.endsWith(".effects.json")).toSorted();
-      const locks = async () => (await NodeFSP.readdir(NodePath.join(f.base, "runtime", "jones-preparation")))
-        .filter((name) => name.startsWith("job-owner-")).toSorted();
-      const first = await names();
-      const firstLocks = await locks();
-      expect(first).toHaveLength(2); // Held job and exactly one startup sweep.
-      for (let tick = 0; tick < 20; tick++) await operations.sweep();
-      expect(await names()).toEqual(first);
-      expect(await locks()).toEqual(firstLocks);
-      expect(f.updater.admissionHeld()).toBe(true);
-      return { operations, names, locks };
-    });
     try {
       const { operations, names, locks } = await hold();
       live = false;
@@ -1212,8 +1256,13 @@ it("preserves holds and cleanup demand when reconciliation fails", async () =>
       sweepIfNeeded,
     };
     const operations = createTargetOperations({
-      key: f.base, ledger: f.ledger, updater: f.updater, preparation,
-      refreshPolicy: f.refreshPolicy, install: f.install, reconcileNative: f.reconcileNative,
+      key: f.base,
+      ledger: f.ledger,
+      updater: f.updater,
+      preparation,
+      refreshPolicy: f.refreshPolicy,
+      install: f.install,
+      reconcileNative: f.reconcileNative,
       onFailure: () => {},
     });
     await operations.reconcile();

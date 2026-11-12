@@ -38,45 +38,55 @@ export function connectHttpEvidence(
 }
 
 /** Uses this server's bound listener, including ephemeral ports; no runtime file or guessed port. */
-export const probeConnectLoopback = Effect.fn("ConnectReachability.loopbackDescriptor")(function* () {
-  const server = yield* HttpServer.HttpServer;
-  const environment = yield* ServerEnvironment.ServerEnvironment;
-  const expectedId = yield* environment.getEnvironmentId;
-  const address = server.address;
-  if (typeof address === "string" || !("port" in address)) return "unverified" as const;
-  const client = yield* HttpClient.HttpClient;
-  const origin = `http://${loopbackUrlHostForAddress(address)}:${address.port}`;
-  return yield* client.get(`${origin}/.well-known/t3/environment`).pipe(
-    Effect.flatMap((response) => {
-      if (response.status !== 200) return Effect.succeed<ConnectLocalEvidence>("unverified");
-      // Bound the public descriptor before decoding it. Even a wrong local listener may answer.
-      return response.stream.pipe(
-        Stream.runFoldEffect(() => new Uint8Array(0), (bytes, chunk) => {
-          if (bytes.byteLength + chunk.byteLength > 64 * 1024) {
-            return Effect.fail("descriptor_too_large");
-          }
-          const next = new Uint8Array(bytes.byteLength + chunk.byteLength);
-          next.set(bytes);
-          next.set(chunk, bytes.byteLength);
-          return Effect.succeed(next);
-        }),
-        Effect.flatMap((bytes) =>
-          Schema.decodeUnknownEffect(Schema.fromJsonString(ExecutionEnvironmentDescriptor))(
-            new TextDecoder().decode(bytes),
+export const probeConnectLoopback = Effect.fn("ConnectReachability.loopbackDescriptor")(
+  function* () {
+    const server = yield* HttpServer.HttpServer;
+    const environment = yield* ServerEnvironment.ServerEnvironment;
+    const expectedId = yield* environment.getEnvironmentId;
+    const address = server.address;
+    if (typeof address === "string" || !("port" in address)) return "unverified" as const;
+    const client = yield* HttpClient.HttpClient;
+    const origin = `http://${loopbackUrlHostForAddress(address)}:${address.port}`;
+    return yield* client.get(`${origin}/.well-known/t3/environment`).pipe(
+      Effect.flatMap((response) => {
+        if (response.status !== 200) return Effect.succeed<ConnectLocalEvidence>("unverified");
+        // Bound the public descriptor before decoding it. Even a wrong local listener may answer.
+        return response.stream.pipe(
+          Stream.runFoldEffect(
+            () => new Uint8Array(0),
+            (bytes, chunk) => {
+              if (bytes.byteLength + chunk.byteLength > 64 * 1024) {
+                return Effect.fail("descriptor_too_large");
+              }
+              const next = new Uint8Array(bytes.byteLength + chunk.byteLength);
+              next.set(bytes);
+              next.set(chunk, bytes.byteLength);
+              return Effect.succeed(next);
+            },
           ),
-        ),
-        Effect.map((descriptor): ConnectLocalEvidence =>
-          descriptor.environmentId === expectedId ? "matching_environment" : "different_environment",
-        ),
-      );
-    }),
-    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual", credentials: "omit" }),
-    Effect.scoped,
-    Effect.timeoutOption("3 seconds"),
-    Effect.map(Option.getOrElse((): ConnectLocalEvidence => "unverified")),
-    Effect.orElseSucceed((): ConnectLocalEvidence => "unverified"),
-  );
-});
+          Effect.flatMap((bytes) =>
+            Schema.decodeUnknownEffect(Schema.fromJsonString(ExecutionEnvironmentDescriptor))(
+              new TextDecoder().decode(bytes),
+            ),
+          ),
+          Effect.map((descriptor): ConnectLocalEvidence =>
+            descriptor.environmentId === expectedId
+              ? "matching_environment"
+              : "different_environment",
+          ),
+        );
+      }),
+      Effect.provideService(FetchHttpClient.RequestInit, {
+        redirect: "manual",
+        credentials: "omit",
+      }),
+      Effect.scoped,
+      Effect.timeoutOption("3 seconds"),
+      Effect.map(Option.getOrElse((): ConnectLocalEvidence => "unverified")),
+      Effect.orElseSucceed((): ConnectLocalEvidence => "unverified"),
+    );
+  },
+);
 
 export function unexpectedConnectResponse(
   evidence: ConnectHttpEvidence,

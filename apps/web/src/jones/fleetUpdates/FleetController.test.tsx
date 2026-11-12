@@ -16,7 +16,11 @@ describe("native fleet publication grant", () => {
         publication: { kind: "withheld", code, message: "Native proof is required." },
       }));
       vi.stubGlobal("window", { desktopBridge: { installPlan, getUpdateState } });
-      expect(await readFleetPublication()).toEqual({ kind: "withheld", code, message: "Native proof is required." });
+      expect(await readFleetPublication()).toEqual({
+        kind: "withheld",
+        code,
+        message: "Native proof is required.",
+      });
       expect(await readFleetPublicationSource()).toBeUndefined();
       expect(installPlan).toHaveBeenCalledWith({
         type: "publication",
@@ -40,7 +44,12 @@ describe("native fleet publication grant", () => {
     expect(getUpdateState).not.toHaveBeenCalled();
   });
   it("retains unavailable diagnostics for absent and failed native answers", async () => {
-    for (const installPlan of [async () => ({}), async () => { throw new Error("unavailable"); }]) {
+    for (const installPlan of [
+      async () => ({}),
+      async () => {
+        throw new Error("unavailable");
+      },
+    ]) {
       vi.stubGlobal("window", { desktopBridge: { installPlan } });
       expect(await readFleetPublication()).toMatchObject({ kind: "withheld", code: "unavailable" });
     }

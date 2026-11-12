@@ -68,9 +68,11 @@ describe("Connect host probe evidence", () => {
         });
         const observed = yield* probeConnectLoopback().pipe(
           Effect.provideService(HttpClient.HttpClient, client),
-          Effect.provide(Layer.mock(HttpServer.HttpServer)({
-            address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43129),
-          })),
+          Effect.provide(
+            Layer.mock(HttpServer.HttpServer)({
+              address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43129),
+            }),
+          ),
           Effect.provideService(ServerEnvironment.ServerEnvironment, {
             getEnvironmentId: Effect.succeed(environmentId),
             getDescriptor: Effect.die("No direct descriptor shortcut in probe"),

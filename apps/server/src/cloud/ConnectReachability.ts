@@ -14,10 +14,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
-import { HttpClient } from "effect/http";
+import { HttpClient, HttpServer } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import {
   connectHttpEvidence,
   probeConnectLoopback,
@@ -142,12 +143,7 @@ export function classifyReachability(
       endpoint?.kind === "status" ? endpoint : { status },
       facts.local,
     );
-    return fail(
-      "unexpected_response",
-      explanation.reason,
-      explanation.fix,
-      explanation.hint,
-    );
+    return fail("unexpected_response", explanation.reason, explanation.fix, explanation.hint);
   }
   return endpoint.kind === "dns_failed"
     ? fail(
@@ -214,6 +210,13 @@ const make = Effect.gen(function* () {
   const runtime = yield* ManagedEndpointRuntime.CloudManagedEndpointRuntime;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const httpClient = yield* HttpClient.HttpClient;
+  const httpServer = yield* HttpServer.HttpServer;
+  const environment = yield* ServerEnvironment.ServerEnvironment;
+  const probeLocal = probeConnectLoopback().pipe(
+    Effect.provideService(HttpClient.HttpClient, httpClient),
+    Effect.provideService(HttpServer.HttpServer, httpServer),
+    Effect.provideService(ServerEnvironment.ServerEnvironment, environment),
+  );
   // `order` ranks checks by start, so a slow older one cannot replace a newer result.
   const latestRef = yield* Ref.make(
     Option.none<{ readonly order: number; readonly result: EnvironmentConnectReachability }>(),
@@ -256,7 +259,7 @@ const make = Effect.gen(function* () {
       endpoint,
       local:
         endpoint?.kind === "status" && endpoint.status !== 200
-          ? yield* probeConnectLoopback()
+          ? yield* probeLocal
           : null,
       edgeReachable: null,
       exitNode: null,
