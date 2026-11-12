@@ -1,3 +1,4 @@
+import { showPersonalFailure } from "../workstreams/personalNotifications";
 import {
   DESIGN_REQUEST_PROTOCOL,
   type DesignRequestAttachmentData,
@@ -77,14 +78,7 @@ function RouteSummary({ route }: { route: DesignRequestResolvedRoute }) {
         </p>
       </div>
     );
-  return (
-    <Alert variant="warning">
-      <AlertTitle>Held · {route.reason}</AlertTitle>
-      <AlertDescription>
-        {designRequestHeldFix(route.reason)} Nothing is sent while a request is held.
-      </AlertDescription>
-    </Alert>
-  );
+  return <p className="text-sm text-muted-foreground">Waiting for a destination</p>;
 }
 
 export function DesignRequestsPage() {
@@ -245,6 +239,23 @@ export function DesignRequestsPage() {
     setBindings(readDesignRequestBindings(browserStorage()));
   };
 
+  const heldReason = route.state === "held" ? route.reason : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Present Workstreams routing failures through the shared toast owner.
+  useEffect(() => {
+    if (heldReason === null || heldReason === "no-binding" || heldReason === "origin-not-allowed")
+      return;
+    showPersonalFailure({
+      action: "assign",
+      reason:
+        heldReason === "runtime-unsupported"
+          ? "update_required"
+          : heldReason === "workstream-not-found"
+            ? "workstream_deleted"
+            : "failed",
+      environmentId: null,
+      dedupeKey: `design:${binding?.workstreamId ?? "destination"}:${heldReason}`,
+    });
+  }, [heldReason, binding?.workstreamId]);
   const workstreams = router.registry.data?.items ?? [];
 
   return (
@@ -393,7 +404,7 @@ export function DesignRequestsPage() {
                     ? "Queuing…"
                     : route.state === "routable"
                       ? `Queue to ${route.thread.title || route.thread.id}`
-                      : `Held · ${route.reason}`}
+                      : "Waiting for a destination"}
                 </Button>
               </div>
             )}
@@ -414,7 +425,9 @@ export function DesignRequestsPage() {
                       {entry.outcome.status}
                     </Badge>
                     <span>{entry.outcome.packetId}</span>
-                    {entry.outcome.reason && <span>· {entry.outcome.reason}</span>}
+                    {entry.outcome.reason && (
+                      <span>· {designRequestHeldFix(entry.outcome.reason)}</span>
+                    )}
                     {entry.outcome.delivery && <span>· {entry.outcome.delivery}</span>}
                     {entry.outcome.destination && (
                       <span className="text-muted-foreground">

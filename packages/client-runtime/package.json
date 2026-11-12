@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/workstreams/personal": {
+      "types": "./src/jones/workstreams/personal/index.ts",
+      "default": "./src/jones/workstreams/personal/index.ts"
+    },
     "./assembly-highlighting": {
       "types": "./src/assemblyHighlighting.ts",
       "default": "./src/assemblyHighlighting.ts"
@@ -535,10 +539,6 @@
       "types": "./src/jones/linkedThreads/index.ts",
       "default": "./src/jones/linkedThreads/index.ts"
     },
-    "./jones/workstreams/operations": {
-      "types": "./src/jones/workstreams/operations.ts",
-      "default": "./src/jones/workstreams/operations.ts"
-    },
     "./jones/remote-admission": {
       "types": "./src/jones/remoteAdmission/index.ts",
       "default": "./src/jones/remoteAdmission/index.ts"
@@ -611,18 +611,6 @@
       "types": "./src/jones/activity/reportLanes.ts",
       "default": "./src/jones/activity/reportLanes.ts"
     },
-    "./jones/workstreams/native-lifetime": {
-      "types": "./src/jones/workstreams/nativeLifetime.ts",
-      "default": "./src/jones/workstreams/nativeLifetime.ts"
-    },
-    "./jones/workstreams/native-http": {
-      "types": "./src/jones/workstreams/nativeHttp.ts",
-      "default": "./src/jones/workstreams/nativeHttp.ts"
-    },
-    "./jones/workstreams/native-lifetime-testing": {
-      "types": "./src/jones/workstreams/nativeLifetime.testkit.ts",
-      "default": "./src/jones/workstreams/nativeLifetime.testkit.ts"
-    },
     "./jones/thread-monitor": {
       "types": "./src/jones/threadMonitor/index.ts",
       "default": "./src/jones/threadMonitor/index.ts"
@@ -662,10 +650,6 @@
     "./voice-review": {
       "types": "./src/voice-review.ts",
       "default": "./src/voice-review.ts"
-    },
-    "./state/workstreams": {
-      "types": "./src/state/workstreams/index.ts",
-      "default": "./src/state/workstreams/index.ts"
     },
     "./composer-model-mentions": {
       "types": "./src/composerModelMentions.ts",

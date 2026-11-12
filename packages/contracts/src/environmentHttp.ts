@@ -1,9 +1,3 @@
-import { WorkstreamsNativeReadExportQuery } from "./jones/workstreamsNativeExport.ts";
-import { WorkstreamsHttpResponseContractHeaders } from "./jones/workstreamsHttp.ts";
-import {
-  WorkstreamsHomeReadResult,
-  WorkstreamsHomeReadResultRequest,
-} from "./jones/workstreamsHomeReadResult.ts";
 import { ThreadAttention } from "./jones/threadAttention.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { MessageId } from "./baseSchemas.ts";
@@ -110,28 +104,6 @@ export {
   EnvironmentConversationLibraryErrorCode,
   type EnvironmentConversationLibraryError,
 } from "./jones/environmentHttpGroups.ts";
-import {
-  T3WorkstreamCommandPollParams,
-  T3WorkstreamCommandRequest,
-  T3WorkstreamDetailParams,
-  T3WorkstreamListResult,
-  T3WorkstreamPageQuery,
-  T3WorkstreamReferenceParams,
-  WorkstreamDeclarationPage,
-  WorkstreamDetail,
-  WorkstreamEdgePage,
-  WorkstreamHistoryPage,
-  WorkstreamMembershipPage,
-  WorkstreamReferenceDetail,
-  WorkstreamReferencePage,
-  WorkstreamReceipt,
-} from "./workstreams.ts";
-import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
-import {
-  WorkstreamsLegacyReceiptLookupRequest,
-  WorkstreamsLegacyReceiptLookupResult,
-} from "./jones/workstreamsLegacyReceipts.ts";
-import { WorkstreamsNativePlacementResult } from "./jones/workstreamsNativePlacement.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -431,18 +403,9 @@ const EnvironmentOrchestrationSnapshotErrors = [
   EnvironmentInternalError,
 ] as const;
 const EnvironmentWorkstreamSnapshotErrors = [
-  EnvironmentScopeRequiredError,
-  EnvironmentInternalError,
-] as const;
-const EnvironmentWorkstreamCommandErrors = [
-  EnvironmentRequestInvalidError,
   EnvironmentHttpConflictError,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
-] as const;
-const EnvironmentWorkstreamPagedSnapshotErrors = [
-  ...EnvironmentWorkstreamSnapshotErrors,
-  EnvironmentHttpConflictError,
 ] as const;
 const EnvironmentOrchestrationThreadSnapshotErrors = [
   EnvironmentScopeRequiredError,
@@ -918,139 +881,123 @@ const {
   EnvironmentSettlementRestoreHttpApi: SettlementRestoreHttpApi,
   EnvironmentConversationLibraryHttpApi: ConversationLibraryHttpApi,
   EnvironmentWorkstreamAppearanceHttpApi,
-  EnvironmentWorkstreamsNativeHttpApi,
 } = makeJonesHttpGroups({
   OptionalBearerHeaders,
   EnvironmentAuthenticatedAuth,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
   EnvironmentHttpBadRequestError,
+  EnvironmentHttpConflictError,
 });
 
-const WorkstreamsHttpCommandHeaders = Schema.Struct({
-  ...OptionalBearerHeaders.fields,
-  ...WorkstreamsHttpResponseContractHeaders.fields,
-});
-
+// Exact retired routes are kept for independently upgraded clients.
 class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi.add(
   HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
-    headers: Schema.Struct({
-      ...OptionalBearerHeaders.fields,
-      "x-t3-workstreams-placement-contract": Schema.optionalKey(
-        Schema.Literal("workstreams-t3-placement/2.0.0"),
-      ),
-    }),
-    payload: T3PlacementLoadRequest,
-    success: Schema.Union([WorkstreamsNativePlacementResult, T3PlacementResult]),
-    error: EnvironmentWorkstreamPagedSnapshotErrors,
+    headers: OptionalBearerHeaders,
+    payload: Schema.Unknown,
+    success: Schema.Never,
+    error: EnvironmentWorkstreamSnapshotErrors,
   }).middleware(EnvironmentAuthenticatedAuth),
 )
   .add(
     HttpApiEndpoint.post("nativeRead", "/api/workstreams/native/v1/read", {
       headers: OptionalBearerHeaders,
-      payload: WorkstreamsHomeReadResultRequest,
-      success: WorkstreamsHomeReadResult,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      payload: Schema.Unknown,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("nativeExport", "/api/workstreams/native/v1/export", {
       headers: OptionalBearerHeaders,
-      query: WorkstreamsNativeReadExportQuery,
-      success: Schema.String.pipe(HttpApiSchema.asText({ contentType: "application/x-ndjson" })),
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.post("legacyReceiptLookup", "/api/workstreams/legacy-receipts/v1/lookup", {
       headers: OptionalBearerHeaders,
-      payload: WorkstreamsLegacyReceiptLookupRequest,
-      success: WorkstreamsLegacyReceiptLookupResult,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      payload: Schema.Unknown,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("list", "/api/workstreams", {
       headers: OptionalBearerHeaders,
-      payload: T3WorkstreamPageQuery,
-      success: T3WorkstreamListResult,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("references", "/api/workstreams/references", {
       headers: OptionalBearerHeaders,
-      payload: T3WorkstreamPageQuery,
-      success: WorkstreamReferencePage,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("reference", "/api/workstreams/references/:nativeReferenceId", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamReferenceParams,
-      success: WorkstreamReferenceDetail,
+      params: Schema.Struct({ nativeReferenceId: Schema.String }),
+      success: Schema.Never,
       error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("detail", "/api/workstreams/:workstreamId", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamDetailParams,
-      success: WorkstreamDetail,
+      params: Schema.Struct({ workstreamId: Schema.String }),
+      success: Schema.Never,
       error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("memberships", "/api/workstreams/:workstreamId/memberships", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamDetailParams,
-      payload: T3WorkstreamPageQuery,
-      success: WorkstreamMembershipPage,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      params: Schema.Struct({ workstreamId: Schema.String }),
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("declarations", "/api/workstreams/:workstreamId/declarations", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamDetailParams,
-      payload: T3WorkstreamPageQuery,
-      success: WorkstreamDeclarationPage,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      params: Schema.Struct({ workstreamId: Schema.String }),
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("edges", "/api/workstreams/:workstreamId/edges", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamDetailParams,
-      payload: T3WorkstreamPageQuery,
-      success: WorkstreamEdgePage,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      params: Schema.Struct({ workstreamId: Schema.String }),
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("history", "/api/workstreams/:workstreamId/history", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamDetailParams,
-      payload: T3WorkstreamPageQuery,
-      success: WorkstreamHistoryPage,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      params: Schema.Struct({ workstreamId: Schema.String }),
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("command", "/api/workstreams/commands/:commandId", {
-      headers: WorkstreamsHttpCommandHeaders,
-      params: T3WorkstreamCommandPollParams,
-      success: [WorkstreamReceipt, WorkstreamReceipt.pipe(HttpApiSchema.status(202))],
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ commandId: Schema.String }),
+      success: Schema.Never,
       error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.post("submit", "/api/workstreams/commands", {
-      headers: WorkstreamsHttpCommandHeaders,
-      payload: T3WorkstreamCommandRequest,
-      success: [WorkstreamReceipt, WorkstreamReceipt.pipe(HttpApiSchema.status(202))],
-      error: EnvironmentWorkstreamCommandErrors,
+      headers: OptionalBearerHeaders,
+      payload: Schema.Unknown,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
@@ -1329,7 +1276,6 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentWorkstreamsHttpApi)
-  .add(EnvironmentWorkstreamsNativeHttpApi)
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentConnectHttpApi)
