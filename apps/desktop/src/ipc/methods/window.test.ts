@@ -543,6 +543,7 @@ describe("getPreviewAutomationRuntimeIdentity", () => {
 
   it("exposes an async preload getter using the identity channel", async () => {
     vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("document", Object.assign(new EventTarget(), { fullscreenElement: null }));
     try {
       await import("../../preload.ts");
       const bridge = exposeInMainWorld.mock.calls.find(
