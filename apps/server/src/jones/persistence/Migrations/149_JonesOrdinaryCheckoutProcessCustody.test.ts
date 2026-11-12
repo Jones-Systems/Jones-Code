@@ -76,7 +76,7 @@ it.effect(
       );
       yield* runJonesMigrations([
         ...beforeUpgrade,
-        [148, "OrdinaryCheckoutProcessCustody", failAfterReplacement],
+        [149, "OrdinaryCheckoutProcessCustody", failAfterReplacement],
       ]).pipe(Effect.flip);
       const [after] = yield* sql<{
         readonly sql: string;
@@ -93,7 +93,7 @@ it.effect(
       );
       yield* runJonesMigrations([
         ...beforeUpgrade,
-        [148, "OrdinaryCheckoutProcessCustody", upgrade],
+        [149, "OrdinaryCheckoutProcessCustody", upgrade],
       ]);
     }).pipe(Effect.provide(memory)),
 );
@@ -111,7 +111,7 @@ it.effect(
       }>`SELECT sql FROM sqlite_master WHERE name='jones_ordinary_checkout_owner_identity'`;
       yield* runJonesMigrations([
         ...beforeUpgrade,
-        [148, "OrdinaryCheckoutProcessCustody", upgrade],
+        [149, "OrdinaryCheckoutProcessCustody", upgrade],
       ]).pipe(Effect.flip);
       const [after] = yield* sql<{
         readonly sql: string;
@@ -169,7 +169,7 @@ it.effect(
       const oldLedger = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
       yield* runJonesMigrations([
         ...beforeUpgrade,
-        [148, "OrdinaryCheckoutProcessCustody", upgrade],
+        [149, "OrdinaryCheckoutProcessCustody", upgrade],
       ]);
       assert.deepEqual(yield* sql`SELECT * FROM jones_ordinary_checkout_uses`, oldUses);
       assert.deepEqual(
@@ -227,7 +227,7 @@ it.effect(
       );
       yield* runJonesMigrations([
         ...beforeUpgrade,
-        [148, "OrdinaryCheckoutProcessCustody", upgrade],
+        [149, "OrdinaryCheckoutProcessCustody", upgrade],
       ]);
     }).pipe(Effect.provide(memory)),
 );

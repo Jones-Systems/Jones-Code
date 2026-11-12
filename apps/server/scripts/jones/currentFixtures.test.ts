@@ -210,6 +210,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 149, name: "OrdinaryCheckoutProcessCustody" },
           { id: 150, name: "AuthSessionClientMetadata" },
           { id: 151, name: "WorkspaceRuntimeUses" },
+          { id: 152, name: "PeerLinksAdoption" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

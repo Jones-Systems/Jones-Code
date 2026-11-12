@@ -210,19 +210,23 @@ it.effect(
 );
 
 it.effect(
-  "an already-applied142 without its atomic basis stays ineligible without schema or history repair",
+  "an already-applied 151 without its atomic basis stays ineligible without schema or history repair",
   () =>
     fixture(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* runJonesMigrations([
           ...prior,
-          [150, "WorkspaceRuntimeUses", createRuntimeUseSchema],
+          [151, "WorkspaceRuntimeUses", createRuntimeUseSchema],
         ]);
         const before = yield* sql`SELECT type,name,sql FROM sqlite_master ORDER BY name`;
         yield* appendSyntheticEvent(25, 2, "thread");
         assert.isNull(yield* readRuntimeUseInstallation());
-        assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+        // Rerunning through 151 must not repair it; later migrations are out of scope here.
+        assert.deepStrictEqual(
+          yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 151)),
+          [],
+        );
         yield* refused(sql.withTransaction(createRuntimeUseInstallation));
         assert.deepStrictEqual(
           yield* sql`SELECT type,name,sql FROM sqlite_master ORDER BY name`,
