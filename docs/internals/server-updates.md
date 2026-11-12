@@ -480,6 +480,13 @@ and await the captured backend exit, including after forced escalation; expirati
 of the grace alone does not establish closure. Ordinary restart recovery keeps
 queued runs held.
 
+Startup recovery then [closes records left open](../../apps/server/src/jones/orchestration/OrphanedRunRecords.ts)
+under work that already ended (a terminal run, or a provider-native subagent's ended
+runless root turn), marking provider turns, nodes and their turn items `interrupted`.
+Work open by design stays open: queued and held runs, message-capable questions, todo
+lists and plans, active subagent rows, and background items. Planned update continuity
+treats its receipts like recovery's own.
+
 Shutdown releases captured provider sessions concurrently, retaining the existing
 30-second bound for each session scope. The launcher gives the child 75 seconds
 for both session and parent-scope cleanup plus reconciliation; generated systemd
