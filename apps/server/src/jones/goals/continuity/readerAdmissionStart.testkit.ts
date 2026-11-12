@@ -13,7 +13,6 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { SqlError, classifySqliteError } from "effect/sql/SqlError";
 import { ProjectionStoreReadError } from "../../../orchestration-v2/ProjectionStore.ts";
-import type { ProviderTurnStartError } from "../../../orchestration-v2/ProviderTurnStartService.ts";
 import { CurrentEffectClaim, EffectClaimLost } from "../../workspaceLifecycle/ActiveEffectClaim.ts";
 import type * as GoalContinuity from "./GoalContinuity.ts";
 
@@ -25,9 +24,9 @@ export interface ReaderAdmissionHarnessInput {
   readonly retireBeforeRevalidation?: boolean;
 }
 
-interface Harness {
-  readonly start: Effect.Effect<void, ProviderTurnStartError>;
-  readonly startWithRetry: Effect.Effect<void, ProviderTurnStartError>;
+interface Harness<E extends Error> {
+  readonly start: Effect.Effect<void, E>;
+  readonly startWithRetry: Effect.Effect<void, E>;
   readonly open: unknown;
   readonly detach: unknown;
   readonly startRootRun: unknown;
@@ -51,8 +50,8 @@ const absent: ContinuityRequirement = {
 };
 
 /** Registers Jones regressions in the existing upstream start-service harness without copying it. */
-export function registerReaderAdmissionStartTests(
-  makeHarness: (input: ReaderAdmissionHarnessInput) => Harness,
+export function registerReaderAdmissionStartTests<E extends Error>(
+  makeHarness: (input: ReaderAdmissionHarnessInput) => Harness<E>,
 ) {
   it.effect.each(["absent", "required"] as const)(
     "retries continuity admission before exactly one start (%s)",

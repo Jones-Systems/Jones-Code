@@ -6,10 +6,6 @@
   "tombstones": [],
   "allowedImports": [
     {
-      "from": "apps/server/src/jones/goals/continuity/readerAdmissionStart.testkit.ts",
-      "to": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts"
-    },
-    {
       "from": "apps/server/src/orchestration-v2/UserFacingErrors.ts",
       "to": "packages/shared/src/jones/sqliteReaders/admissionFailure.ts"
     },
