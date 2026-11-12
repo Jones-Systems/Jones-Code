@@ -116,7 +116,7 @@ function scenarios(): readonly Scenario[] {
         state: state(id("dated-check-failure"), {
           phase: "no-new",
           checkClassification: { kind: "failure", checkedAt: "2026-11-10T15:00:00Z" },
-          lastCheck: { status: "failed", at: "2026-11-10T15:05:00Z" },
+          lastCheck: { outcome: "failed", at: "2026-11-10T15:05:00Z" },
         }),
         freshness: "fresh",
       },
@@ -132,7 +132,7 @@ function scenarios(): readonly Scenario[] {
         state: state(id("successful-recheck"), {
           phase: "no-new",
           checkClassification: { kind: "failure", checkedAt: "2026-11-10T15:00:00Z" },
-          lastCheck: { status: "succeeded", at: "2026-11-10T15:10:00Z" },
+          lastCheck: { outcome: "succeeded", at: "2026-11-10T15:10:00Z" },
         }),
         freshness: "fresh",
       },
