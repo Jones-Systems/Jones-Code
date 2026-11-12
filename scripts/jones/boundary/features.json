@@ -4,6 +4,11 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "workspace-preparation-reads",
+      "tests": ["apps/server/src/jones/orchestration/WorkspacePreparationRead.test.ts"],
+      "scope": "Workspace preparation progress, release, failure and retry snapshot reads retry tagged SQLite reader-admission failures at most twice before deciding events. Other commands and permanent read errors retain single-attempt behavior. The Orchestrator hook preserves the original cause and never retries command dispatch, setup, commits or provider effects. The integration test releases a real deferred run after injected read congestion and verifies same-command replay produces exactly one provider start outbox entry. No reader-pool limits, schema, wire, provider or client behavior changes."
+    },
+    {
       "id": "superseded-terminal-history",
       "tests": [
         "apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts",
@@ -1195,9 +1200,13 @@
       "id": "connection-diagnostics",
       "tests": [
         "apps/web/src/jones/observability/clientTracing.test.ts",
-        "packages/client-runtime/src/rpc/session.test.ts"
+        "packages/client-runtime/src/rpc/session.test.ts",
+        "apps/server/src/cloud/ConnectReachability.test.ts",
+        "apps/server/src/jones/cloud/connectProbeEvidence.test.ts",
+        "packages/client-runtime/src/connection/diagnosis.test.ts",
+        "packages/client-runtime/src/jones/connection/sessionDiagnostic.test.ts"
       ],
-      "scope": "Tracing initialization can retry after failure, and each RPC probe records its target environment. Two minimal shared-code repairs avoid duplicating upstream tracer/session ownership; session regressions reuse the existing virtual WebSocket harness. No connection policy or runtime adoption changes."
+      "scope": "Tracing initialization can retry after failure, and each RPC probe records its target environment. Two minimal shared-code repairs avoid duplicating upstream tracer/session ownership; session regressions reuse the existing virtual WebSocket harness. No connection policy or runtime adoption changes. Host self-probe status and bounded allowlisted HTTP evidence remain distinct from local descriptor identity and authenticated client reachability. Shared classifier and diagnosis hooks call Jones-owned helpers; existing shared tests cover those integration seams. Synthetic shared authorization, HTTP session read and RPC readiness fixtures exercise the real service owners without issuing production credentials; absent per-stage evidence remains unchecked."
     },
     {
       "id": "connection-rpc-isolation",
@@ -1278,8 +1287,12 @@
         "packages/contracts/src/jones/ipcUpdateReports.test.ts",
         "apps/server/src/environment/ServerEnvironment.test.ts",
         "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx",
-        "apps/server/src/jones/updates/preparation/stage.test.ts"
-      ]
+        "apps/server/src/jones/updates/preparation/stage.test.ts",
+        "apps/web/src/jones/fleetUpdates/publicationStatus.test.ts",
+        "apps/web/src/jones/fleetUpdates/FleetController.test.tsx",
+        "apps/web/src/jones/fleetUpdates/followerStatus.test.ts"
+      ],
+      "scope": "Publication observations validate source, environment, enrollment and autonomous-follow authority before campaign handoff. Directive-held or uncertain publication preserves accepted-operation reconciliation and blocks new dispatch. Native withheld reasons and independent per-host receipt observations remain visible, including stale or missing evidence; installed-source labels never authorize publication."
     },
     {
       "id": "update-continuity",
@@ -1972,9 +1985,11 @@
         "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
-        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.test.ts",
+        "apps/server/src/orchestration-v2/ContextHandoffBudget.test.ts"
       ],
-      "scope": "One confirmed Codex maintenance compaction after a local reclaimable handoff budget rejection; never attributes the unsent request to maintenance. Shared adapter replay and turn-start test exceptions exercise existing native and orchestration harnesses. ProviderAdapter adds an optional server-only capability; session hooks preserve activity. Other providers and explicit /compact retain existing paths. Session-manager integration tests prove the scoped maintenance activity lease survives delivery and clears on failure without clearing an accepted prompt lease. Jones recovery imports the existing upstream ContextHandoffDelivery helper to preserve budget selection and persistence semantics."
+      "scope": "One confirmed Codex maintenance compaction after a local reclaimable handoff budget rejection; never attributes the unsent request to maintenance. Shared adapter replay and turn-start test exceptions exercise existing native and orchestration harnesses. ProviderAdapter adds an optional server-only capability; session hooks preserve activity. Other providers and explicit /compact retain existing paths. Session-manager integration tests prove the scoped maintenance activity lease survives delivery and clears on failure without clearing an accepted prompt lease. Jones recovery imports the existing upstream ContextHandoffDelivery helper to preserve budget selection and persistence semantics. Current-invocation history outcome evidence restores exact prior records after proved-unsent injection or inline prompt refusal, including partial pending persistence. Ambiguous dispatch, response decoding, interrupted dispatch, failed accepted-injection recording and old pending markers remain fenced. Restoration uses current attempt/native binding and effect-claim ownership without reopening native start admission. The shared ContextHandoffDelivery hook preserves existing selection and invokes Jones outcome bookkeeping; ProviderTurnStartService retains the existing event persistence and adds its ownership-bound restoration callback. CodexAdapterV2 records local injection/start refusal evidence and exact method-attributed RPC rejection evidence. ContextHandoffBudget, ProviderTurnStartService and CodexAdapterV2 test additions are explicit Jones integration exceptions because their existing delivery, projection and native replay harnesses own these seams. Curated provider-core failure guidance directs uncertain delivery to a new thread without promising blind retry recovery. No wire, persisted schema, native identity or goal preservation changes."
     },
     {
       "id": "worktree-setup",
@@ -3187,6 +3202,19 @@
         "packages/contracts/src/jones/workstreamsPersonalRpc.test.ts"
       ],
       "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered."
+    },
+    {
+      "id": "preparation-history-reconciliation",
+      "tests": [
+        "apps/server/src/jones/updates/preparation/cleanupDemand.test.ts",
+        "apps/server/src/jones/updates/preparation/lifecycle.test.ts",
+        "apps/server/src/jones/updates/preparation/supervisor.test.ts",
+        "apps/server/src/jones/updates/preparation/sweep.test.ts",
+        "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
+        "apps/server/src/jones/updates/operations/operations.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts"
+      ],
+      "scope": "Reservation and launch remain under the existing job lock; immutable owner-controlled released evidence bypasses historical SQLite locks. Coalesced cleanup demand bounds failure retries, follows underlying worker settlement, and quiesces for expected retention and standing holds. History files are retained and still scanned linearly. Scale, race, cancellation and refusal cases are synthetic source coverage, not measured VPS latency."
     }
   ]
 }

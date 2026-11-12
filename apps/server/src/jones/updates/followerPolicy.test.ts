@@ -112,7 +112,9 @@ describe("follower target refusal", () => {
     expect(followerTargetRefusal(policy, leader)).toBeUndefined();
     expect(followerTargetRefusal(policy, leader, tree)).toBeUndefined();
     expect(followerTargetRefusal(policy, leader, "9".repeat(40))).toContain("source tree");
-    expect(followerTargetRefusal(policy, "c".repeat(40))).toContain("bbbbbbb");
+    expect(followerTargetRefusal(policy, "c".repeat(40))).toBe(
+      "This host follows its laptop and installs only the build its laptop last reported: bbbbbbb.",
+    );
     expect(followerTargetRefusal(policy, "a".repeat(40))).toContain("bbbbbbb");
     expect(followerTargetRefusal(policy, undefined)).toBeDefined();
   });

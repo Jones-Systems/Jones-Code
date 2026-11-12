@@ -1,3 +1,7 @@
+import {
+  historyWasNotApplied,
+  promptWasNotApplied,
+} from "../../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as CodexError from "effect-codex-app-server/errors";
@@ -62,6 +66,7 @@ import * as Deferred from "effect/Deferred";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
@@ -6344,7 +6349,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
   );
 
-  it.effect.each(["supported", "unsupported", "invalid"] as const)(
+  it.effect.each(["supported", "unsupported", "invalid", "inline-refused"] as const)(
     "delivers native history with %s app-server protocol",
     (response) =>
       Effect.gen(function* () {
@@ -6394,20 +6399,29 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   : {
                       id: 3,
                       error: {
-                        code: response === "unsupported" ? -32601 : -32602,
+                        code:
+                          response === "unsupported" || response === "inline-refused"
+                            ? -32601
+                            : -32602,
                         message: "Injection rejected",
                       },
                     },
             },
             ...(response === "invalid"
               ? []
-              : preamble
-                  .slice(-3)
-                  .map((entry) =>
-                    "frame" in entry && Predicate.isObject(entry.frame) && "id" in entry.frame
-                      ? { ...entry, frame: { ...entry.frame, id: 4 } }
-                      : entry,
-                  )),
+              : preamble.slice(-3, response === "inline-refused" ? -1 : undefined).map((entry) =>
+                  "frame" in entry && Predicate.isObject(entry.frame) && "id" in entry.frame
+                    ? {
+                        ...entry,
+                        frame:
+                          response === "inline-refused" &&
+                          entry.type === "emit_inbound" &&
+                          "result" in entry.frame
+                            ? { id: 4, error: { code: -32602, message: "Prompt rejected" } }
+                            : { ...entry.frame, id: 4 },
+                      }
+                    : entry,
+                )),
           ],
         });
         const requests: string[] = [];
@@ -6419,6 +6433,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               requests.push(method);
             }),
         );
+        if (response === "supported") {
+          const before = requests.length;
+          const missingId = yield* harness.runtime.injectHistory!({
+            providerThread: { ...harness.providerThread, nativeThreadRef: null },
+            ...history,
+          }).pipe(Effect.result);
+          assert.equal(missingId._tag, "Failure");
+          if (missingId._tag === "Failure") assert.isTrue(historyWasNotApplied(missingId.failure));
+          assert.equal(requests.length, before);
+        }
         const injection = yield* harness.runtime.injectHistory!({
           providerThread: harness.providerThread,
           ...history,
@@ -6427,7 +6451,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.equal(injection._tag, "Failure");
           if (injection._tag === "Failure") {
             assert.equal(injection.failure._tag, "ProviderAdapterProtocolError");
-            assert.propertyVal(injection.failure.cause, "code", -32602);
+            assert.isTrue(historyWasNotApplied(injection.failure));
+            assert.propertyVal(injection.failure.cause, "_tag", "HistoryNotApplied");
+            assert.propertyVal(
+              (injection.failure.cause as { cause: unknown }).cause,
+              "code",
+              -32602,
+            );
             assert.notProperty(injection.failure, "payload");
           }
           assert.notInclude(requests, "turn/start");
@@ -6435,15 +6465,19 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }
         assert.equal(injection._tag, "Success");
         if (injection._tag === "Success") assert.equal(injection.success, response === "supported");
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("inject-attempt"),
-            text: prompt,
-          }),
-        );
+        const started = yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("inject-attempt"),
+              text: prompt,
+            }),
+          )
+          .pipe(Effect.result);
+        assert.equal(started._tag, response === "inline-refused" ? "Failure" : "Success");
+        if (started._tag === "Failure") assert.isTrue(promptWasNotApplied(started.failure));
         assert.equal(requests.filter((method) => method === "turn/start").length, 1);
         assert.isBelow(requests.indexOf("thread/inject_items"), requests.indexOf("turn/start"));
       }).pipe(
@@ -17681,6 +17715,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           }).pipe(Effect.exit);
           assert.equal(start._tag, "Failure");
           assert.equal(inject._tag, "Failure");
+          if (inject._tag === "Failure") {
+            const failure = Cause.findErrorOption(inject.cause);
+            assert.isTrue(Option.isSome(failure) && historyWasNotApplied(failure.value));
+          }
           assert.equal(requests.length, before);
           yield* harness.runtime.interruptTurn({
             providerThread: harness.providerThread,

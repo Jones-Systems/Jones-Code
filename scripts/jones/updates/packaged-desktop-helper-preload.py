@@ -118,6 +118,8 @@ def _install():
         assert not os.path.lexists(receipt_path)
         assert not os.path.lexists(plan_path.with_name("before-relaunch.json"))
         assert not os.path.lexists(plan_path.with_name("before-pair-state.json"))
+        for name in ("launch-services.json", "launch-return.json", "launch-observation-failure.json"):
+            assert not os.path.lexists(plan_path.with_name(name))
         plan_sha = hashlib.sha256(read_file(plan_path, 16384)).hexdigest()
 
 
@@ -171,8 +173,72 @@ def _install():
 
         fault_record = None
         quiet_state = None
+        launch_frame = None
+        services_frame = None
+        services_sha = None
+        services_returned = False
+        before_relaunch_sha = None
+
+        def launch_record(name, kind, **fields):
+            record = dict(fault_record, kind=kind, beforeRelaunchSha256=before_relaunch_sha, **fields)
+            raw = json.dumps(record, sort_keys=True).encode()
+            assert len(raw) <= 16384
+            fd = os.open(plan_path.with_name(name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            fd = os.open(plan_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            return hashlib.sha256(raw).hexdigest()
+
+        def observation_failed(category):
+            # After launch effects, observation failure must not replace the helper's
+            # result or exception. A missing terminal receipt or this marker holds custody.
+            try:
+                launch_record("launch-observation-failure.json", "packaged-desktop-launch-observation-failure",
+                              failure=category)
+            except BaseException:
+                pass
+
+        def bounded_result(value, keys):
+            if type(value) is not dict or not set(value) <= keys:
+                return None
+            if any(type(item) not in (str, int, type(None)) for item in value.values()):
+                return None
+            raw = json.dumps(value, sort_keys=True).encode()
+            return json.loads(raw) if len(raw) <= 8192 else None
 
         def observe_relaunch(frame, event, arg):
+            nonlocal launch_frame, services_frame, services_sha, services_returned, before_relaunch_sha
+            if deferred and fault_record is not None and plan["observeRelaunch"]:
+                try:
+                    if (event == "call" and frame.f_code.co_filename == str(helper)
+                            and frame.f_code.co_name == "launch_services" and frame.f_back is launch_frame):
+                        if services_frame is not None:
+                            observation_failed("duplicate-observation")
+                        else:
+                            services_frame = frame
+                        return
+                    if event == "return" and frame is services_frame:
+                        reply = bounded_result(arg, {"protocol", "status", "pid", "bundlePath", "executablePath", "domain", "code"})
+                        services_sha = launch_record("launch-services.json", "packaged-desktop-launch-services",
+                            sequence=1, reply=reply, failure=None if reply is not None else "launch-services-return-unproved")
+                        services_returned = reply is not None
+                        return
+                    if event == "return" and frame is launch_frame:
+                        identity = bounded_result(arg, {"pid", "startSec", "startUsec", "executable"})
+                        launch_record("launch-return.json", "packaged-desktop-launch-return", sequence=2,
+                            launchServicesSha256=services_sha, identity=identity,
+                            failure=None if identity is not None else (
+                                "launch-validation-unproved" if services_returned else "launch-services-unproved"))
+                        return
+                except BaseException:
+                    observation_failed("observation-failed")
+                    return
             if (not plan["observeRelaunch"] or fault_record is None or event != "call"
                     or frame.f_code.co_filename != str(helper) or frame.f_code.co_name != "launch"):
                 return
@@ -181,7 +247,11 @@ def _install():
             if (parent is None or parent.f_code.co_filename != str(helper) or parent.f_code.co_name != "relaunch_previous"
                     or activation is None or activation.f_code.co_filename != str(helper) or activation.f_code.co_name != "activate"):
                 return
-            sys.setprofile(None)
+            if deferred and launch_frame is not None:
+                observation_failed("duplicate-observation")
+                return
+            if not deferred:
+                sys.setprofile(None)
             try:
                 local = activation.f_locals
                 assert local.get("transaction_id") == plan["transactionId"]
@@ -217,6 +287,9 @@ def _install():
                     os.fsync(fd)
                 finally:
                     os.close(fd)
+                if deferred:
+                    before_relaunch_sha = hashlib.sha256(raw).hexdigest()
+                    launch_frame = frame
             except BaseException:
                 os.write(2, b"RH-F2 pre-relaunch observation failed; owned evidence retained.\n")
                 os._exit(125)
@@ -267,7 +340,7 @@ def _install():
                     alive = frame.f_globals["alive"]
                     assert valid(proofs) and all(not alive(proof) for proof in proofs)
                     quiet_state = snapshot_state()
-                    snapshot = dict(kind="packaged-desktop-before-pair-state", processesStopped=True,
+                    snapshot = dict(protocol=1, kind="packaged-desktop-before-pair-state", processesStopped=True,
                                     state=quiet_state, **{key: receipt[key] for key in
                                     ("pid", "planSha256", "transactionId", "intentSha256", "journalSha256")})
                     raw = json.dumps(snapshot, sort_keys=True).encode()

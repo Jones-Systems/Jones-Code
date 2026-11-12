@@ -1,7 +1,7 @@
 import { expect, it } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
-import { jonesTargetStatus } from "./targetStatus.ts";
+import { jonesCheckOutcome, jonesTargetStatus } from "./targetStatus.ts";
 
 const env = EnvironmentId.make("status-host"),
   source = "a".repeat(40);
@@ -123,3 +123,119 @@ it.each(["available", "downloading", "staged"] as const)(
     expect(unknown.actions.install).toBeUndefined();
   },
 );
+
+it("removes both install paths only for already-running staged builds", () => {
+  const { operation: _operation, ...idle } = state;
+  const staged: JonesUpdateState = {
+    ...idle,
+    phase: "staged",
+    currentVersion: "old",
+    stagedHandle: "stage",
+    installedSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "b".repeat(40),
+      tree: "c".repeat(40),
+    },
+    provenance: {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: source,
+      sourceTree: "c".repeat(40),
+      artifactId: 1,
+      workflow: "synthetic",
+      runId: 1,
+      runAttempt: 1,
+      artifactDigest: "d".repeat(64),
+      platform: "linux",
+      architecture: "x64",
+      version: "new",
+    },
+  };
+  for (const targetSource of [undefined, source]) {
+    const options = { canOperate: true, ...(targetSource === undefined ? {} : { targetSource }) };
+    expect(jonesTargetStatus({ state: staged, freshness: "fresh" }, options).actions.install).toBe(
+      true,
+    );
+    const status = jonesTargetStatus(
+      { state: { ...staged, stagedAlreadyRunning: true }, freshness: "fresh" },
+      options,
+    );
+    expect(status.actions.install).toBeUndefined();
+    expect(status.actions.reasons).toContain(
+      "The downloaded build is already running on this host. Nothing to install.",
+    );
+  }
+});
+
+it("dates failed checks by their own receipt, clears stale generic failure after success, and retains classifications", () => {
+  const failure = { kind: "failure" as const, checkedAt: "2026-01-10T15:00:00Z" };
+  const failed = {
+    outcome: "failed" as const,
+    at: "2026-07-10T15:05:00Z",
+    reason: "Do not repeat this host reason",
+  };
+  for (const checkClassification of [
+    undefined,
+    failure,
+    { kind: "available" as const, checkedAt: failure.checkedAt },
+  ]) {
+    const observed = {
+      ...state,
+      checkedAt: "2099-01-01T00:00:00Z",
+      ...(checkClassification === undefined ? {} : { checkClassification }),
+      lastCheck: failed,
+    };
+    expect(jonesCheckOutcome(observed)).toMatchObject({
+      kind: "failure",
+      checkedAt: failed.at,
+      text: "The update check failed. Check the connection or authentication. Checked Jul 10, 2026, 11:05 AM EDT.",
+    });
+    expect(jonesCheckOutcome(observed)?.text).not.toContain(failed.reason);
+  }
+  expect(
+    jonesCheckOutcome({
+      ...state,
+      checkClassification: failure,
+      lastCheck: { outcome: "succeeded", at: failed.at },
+    }),
+  ).toBeUndefined();
+  expect(jonesCheckOutcome({ ...state, checkClassification: failure })?.text).toBe(
+    "The update check failed. Check the connection or authentication. Checked Jan 10, 2026, 10:00 AM EST.",
+  );
+  for (const kind of [
+    "available",
+    "target-already-running",
+    "qualification-pending",
+    "qualification-failed",
+    "no-eligible-package-in-window",
+    "incomplete-discovery",
+  ] as const) {
+    for (const lastCheck of [undefined, { outcome: "succeeded" as const, at: failed.at }]) {
+      const observed = {
+        ...state,
+        ...(lastCheck === undefined ? {} : { lastCheck }),
+        checkClassification: { ...failure, kind },
+      };
+      expect(jonesCheckOutcome(observed)).toMatchObject({ kind, checkedAt: failure.checkedAt });
+      expect(jonesCheckOutcome(observed)?.text).toContain("Jan 10, 2026, 10:00 AM EST");
+    }
+  }
+  expect(jonesCheckOutcome(null)).toBeUndefined();
+  expect(jonesCheckOutcome(state)).toBeUndefined();
+  expect(
+    jonesCheckOutcome({ ...state, lastCheck: { outcome: "succeeded", at: failed.at } }),
+  ).toBeUndefined();
+  for (const lastCheck of [undefined, { ...failed, at: "invalid" }]) {
+    expect(
+      jonesCheckOutcome({
+        ...state,
+        checkedAt: failed.at,
+        ...(lastCheck === undefined ? {} : { lastCheck }),
+        checkClassification: { ...failure, checkedAt: "invalid" },
+      })?.text,
+    ).toBe("The update check failed. Check the connection or authentication.");
+  }
+  expect(
+    jonesTargetStatus({ state: { ...state, checkClassification: failure }, freshness: "fresh" })
+      .check?.text,
+  ).toBe("The update check failed. Check the connection or authentication.");
+});

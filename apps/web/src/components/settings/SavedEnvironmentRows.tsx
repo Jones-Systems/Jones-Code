@@ -308,8 +308,19 @@ export function SavedBackendListRow({
       }
       below={
         <>
-          {enabled ? <JonesUpdateControls environmentId={environmentId} compareWithLaptop /> : null}
-          <FleetEnrollmentControls environmentId={environmentId} label={environment.label} />
+          {enabled ? (
+            <JonesUpdateControls
+              environmentId={environmentId}
+              compareWithLaptop
+              extraAction={
+                <FleetEnrollmentControls environmentId={environmentId} label={environment.label} />
+              }
+            />
+          ) : (
+            <div className="mt-1.5 flex justify-end empty:hidden">
+              <FleetEnrollmentControls environmentId={environmentId} label={environment.label} />
+            </div>
+          )}
           {diagnosis ? (
             <ConnectionDiagnosisSummary
               diagnosis={diagnosis}

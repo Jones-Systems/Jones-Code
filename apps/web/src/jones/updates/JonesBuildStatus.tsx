@@ -1,5 +1,7 @@
 import {
   jonesCandidatePresentation,
+  jonesStagedAlreadyRunning,
+  JONES_STAGED_ALREADY_RUNNING_MESSAGE,
   jonesAlternativePresentation,
   jonesFollowerHold,
   jonesFollowerSummary,
@@ -31,7 +33,7 @@ import {
   INLINE_ACTIONS_CLASSNAME,
 } from "./disclosure";
 import { BuildVersion, CopyableValue } from "./updateDisplay";
-import { randomUUID } from "../../lib/utils";
+import { cn, randomUUID } from "../../lib/utils";
 import { ProductionExactSourceUpdateAction } from "./ProductionExactSourceUpdateAction";
 
 export type JonesBuildRequest =
@@ -39,6 +41,33 @@ export type JonesBuildRequest =
   | { readonly action: "download"; readonly input: JonesUpdateDownloadInput }
   | { readonly action: "reconcile"; readonly input: JonesUpdateReconcileInput }
   | { readonly action: "install"; readonly input: JonesUpdateInstallInput };
+
+export type JonesBuildCheck = { readonly kind: string; readonly text: string };
+
+export type JonesBuildOperation = {
+  readonly headline: string;
+  readonly operationId: string;
+  readonly held: boolean;
+  readonly unknown: boolean;
+  readonly planCorrelated: boolean;
+};
+
+const FAILED_CHECKS: ReadonlySet<string> = new Set(["failure", "qualification-failed"]);
+
+type StatusNote = {
+  readonly text: string;
+  readonly tone: "muted" | "warning" | "error";
+  /** Alerts are announced; other notes are polite status. */
+  readonly alert?: boolean;
+  /** Replaces the plain text on the status line, keeping `text` for Details. */
+  readonly node?: ReactNode;
+};
+
+const NOTE_TONE = {
+  muted: "text-muted-foreground",
+  warning: "text-warning",
+  error: "text-destructive",
+} as const;
 
 const LAYOUTS = {
   // A direct row in a grouped settings section, aligned with its SettingsRow siblings.
@@ -133,6 +162,8 @@ export function JonesBuildStatus({
   actionError = null,
   layout = "inline",
   extraAction,
+  check,
+  operation,
   onRequest,
 }: {
   readonly environmentId: EnvironmentId;
@@ -147,6 +178,10 @@ export function JonesBuildStatus({
   readonly actionError?: string | null;
   readonly layout?: JonesBuildStatusLayout;
   readonly extraAction?: ReactNode;
+  /** The latest package check. Only a failed check reaches the status line; the rest is detail. */
+  readonly check?: JonesBuildCheck | undefined;
+  /** The host's current update operation receipt. Its ID and plan stay in Details. */
+  readonly operation?: JonesBuildOperation | undefined;
   readonly onRequest: (request: JonesBuildRequest) => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -188,6 +223,7 @@ export function JonesBuildStatus({
     );
   }
 
+  const alreadyRunning = jonesStagedAlreadyRunning(state);
   const presentation = jonesUpdatePresentation(state);
   const candidate = jonesCandidatePresentation(state);
   const alternative = jonesAlternativePresentation(state);
@@ -311,13 +347,94 @@ export function JonesBuildStatus({
     </div>
   ) : null;
 
+  // Every message this host could show, most actionable first. The status line shows only the
+  // first; the rest stay in Details so the row never repeats itself.
+  const outcomeFailed = outcome !== undefined && outcome.status !== "committed";
+  const candidates: ReadonlyArray<StatusNote | false | undefined | null> = [
+    actionError ? { text: actionError, tone: "error", alert: true } : null,
+    presentation.refusalMessage !== undefined && {
+      text: presentation.refusalMessage,
+      tone: "error",
+      alert: true,
+    },
+    operation !== undefined &&
+      (operation.held || operation.unknown) && { text: operation.headline, tone: "warning" },
+    presentation.busy && { text: presentation.message, tone: "muted" },
+    presentation.settlementMessage !== undefined && {
+      text: presentation.settlementMessage,
+      tone: presentation.settled ? "muted" : "error",
+    },
+    outcomeFailed &&
+      presentation.settlementMessage === undefined && {
+        text: `${presentation.settled ? "No changes" : outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: ${outcomeText}`,
+        tone: presentation.settled ? "muted" : "error",
+        node: (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  className="min-w-0"
+                  tabIndex={0}
+                  aria-label={`${outcome.status}: ${outcomeBuildDetail(state)}${outcome.reason ? `; ${outcome.reason}` : ""}`}
+                />
+              }
+            >
+              {presentation.settled
+                ? "No changes"
+                : outcome.status === "rolled-back"
+                  ? "Rolled back"
+                  : "Blocked"}
+              : {outcomeText}
+            </TooltipTrigger>
+            <TooltipPopup side="top">{outcomeBuildDetail(state)}</TooltipPopup>
+          </Tooltip>
+        ),
+      },
+    freshnessReason !== undefined && { text: freshnessReason, tone: "muted" },
+    check !== undefined && FAILED_CHECKS.has(check.kind) && { text: check.text, tone: "error" },
+    // An operation's own phase (stopped, restarting); its idle headline repeats the host message.
+    operation !== undefined &&
+      operation.headline !== presentation.message && { text: operation.headline, tone: "muted" },
+    freshness === "fresh" &&
+      state.environmentId === environmentId &&
+      alreadyRunning && { text: JONES_STAGED_ALREADY_RUNNING_MESSAGE, tone: "muted" },
+    followerHold !== undefined &&
+      candidate !== undefined && {
+        text:
+          state.policy?.leaderSource === null
+            ? "Waiting for the laptop's installed build"
+            : `${candidate.label} build is not the laptop's, so it will not install`,
+        tone: "muted",
+      },
+    (state.launcherRefresh === "recommended" || state.launcherSettlement === "unsupported") && {
+      text: "Launcher refresh recommended",
+      tone: "muted",
+    },
+    state.capability.reason === "bootstrap-required" && {
+      text: "Installing needs a qualified launcher on this host first.",
+      tone: "muted",
+    },
+    { text: presentation.message, tone: "muted" },
+    check !== undefined && { text: check.text, tone: "muted" },
+  ];
+  const notes: StatusNote[] = [];
+  for (const note of candidates) {
+    if (note && note.text !== "" && !notes.some((seen) => seen.text === note.text))
+      notes.push(note);
+  }
+  const [primary, ...otherNotes] = notes;
+
   const statusLine = (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground">
-      <span className="min-w-0">
-        {presentation.busy
-          ? presentation.message
-          : (presentation.settlementMessage ?? presentation.message)}
-      </span>
+      {primary !== undefined ? (
+        <span
+          role={primary.alert ? "alert" : "status"}
+          className={cn("min-w-0", NOTE_TONE[primary.tone])}
+        >
+          {primary.node ?? primary.text}
+        </span>
+      ) : null}
+      {primary !== undefined ? <span aria-hidden="true">·</span> : null}
       <DisclosureButton
         open={detailsOpen}
         controls={detailsId}
@@ -381,12 +498,18 @@ export function JonesBuildStatus({
               size={styles.button}
               disabled={
                 busy ||
+                alreadyRunning ||
                 !state.capability.install ||
                 state.currentVersion === undefined ||
                 followerHold !== undefined
               }
               onClick={() => {
-                if (state.stagedHandle === undefined || state.currentVersion === undefined) return;
+                if (
+                  alreadyRunning ||
+                  state.stagedHandle === undefined ||
+                  state.currentVersion === undefined
+                )
+                  return;
                 onRequest({
                   action: "install",
                   input: {
@@ -416,75 +539,29 @@ export function JonesBuildStatus({
         </div>
       </div>
       <div className={styles.after}>
-        {presentation.settlementMessage !== undefined && state.updateId !== undefined ? (
-          <p role="status" className="text-muted-foreground">
-            Attempt{" "}
-            <CopyableValue
-              label="attempt ID"
-              value={state.updateId}
-              display={state.updateId.slice(0, 8)}
-            />
-          </p>
-        ) : null}
-        {state.launcherRefresh === "recommended" || state.launcherSettlement === "unsupported" ? (
-          <p className="text-muted-foreground">Launcher refresh recommended</p>
-        ) : null}
-        {presentation.refusalMessage !== undefined &&
-        actionError !== presentation.refusalMessage ? (
-          <p role="alert" className="text-destructive">
-            {presentation.refusalMessage}
-          </p>
-        ) : null}
-        {freshness !== "fresh" ? (
-          <p role="status" className="text-muted-foreground">
-            {freshnessMessage}
-          </p>
-        ) : null}
-        {followerSummary !== undefined ? (
-          <p className="text-muted-foreground">
-            {followerSummary}
-            {followerHold !== undefined &&
-            candidate !== undefined &&
-            state.policy?.leaderSource !== null
-              ? ` · ${candidate.label} build is not the laptop's, so it will not install`
-              : ""}
-          </p>
-        ) : null}
-        {actionError ? (
-          <p role="alert" className="text-destructive">
-            {actionError}
-          </p>
-        ) : null}
-        {outcome !== undefined && outcome.status !== "committed" ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <p
-                  role="status"
-                  className={presentation.settled ? "text-muted-foreground" : "text-destructive"}
-                  tabIndex={0}
-                  aria-label={`${outcome.status}: ${outcomeBuildDetail(state)}${outcome.reason ? `; ${outcome.reason}` : ""}`}
-                />
-              }
-            >
-              {presentation.settled
-                ? "No changes"
-                : outcome.status === "rolled-back"
-                  ? "Rolled back"
-                  : "Blocked"}
-              : {outcomeText}
-            </TooltipTrigger>
-            <TooltipPopup side="top">{outcomeBuildDetail(state)}</TooltipPopup>
-          </Tooltip>
-        ) : null}
-        {state.capability.reason === "bootstrap-required" ? (
-          <p className="text-muted-foreground">
-            Installing needs a qualified launcher on this host first.
-          </p>
-        ) : null}
         {detailsOpen ? (
           <div id={detailsId} className={DETAIL_PANEL_CLASSNAME}>
             <DetailList>
+              {otherNotes.length > 0 ? (
+                <DetailItem label="Status">
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    {otherNotes.map((note) => (
+                      <span key={note.text} className={NOTE_TONE[note.tone]}>
+                        {note.text}
+                      </span>
+                    ))}
+                  </span>
+                </DetailItem>
+              ) : null}
+              {followerSummary !== undefined ? (
+                <DetailItem label="Policy">{followerSummary}</DetailItem>
+              ) : null}
+              {operation !== undefined ? (
+                <DetailItem label="Operation">
+                  <CopyableValue label="operation ID" value={operation.operationId} />
+                  {operation.planCorrelated ? <span>Part of this laptop's update plan</span> : null}
+                </DetailItem>
+              ) : null}
               {state.launcherVersion === undefined ? null : (
                 <DetailItem label="Launcher version">{state.launcherVersion}</DetailItem>
               )}

@@ -31,7 +31,7 @@ export function ThreadActivitySettings() {
     <SettingsSection title="Sidebar activity">
       <SettingsRow
         {...searchableSetting("thread-activity-window")}
-        description="Limit Working, Input and Done counts and views to recent thread activity. Done includes completions you have already read. All still shows every thread. Saved on this device."
+        description="Limit Working, Input and Done to recent activity. All still shows every thread."
         control={
           <Switch
             aria-label="Thread activity window"

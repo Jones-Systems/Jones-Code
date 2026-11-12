@@ -1,5 +1,4 @@
 import {
-  SettingsPageContainer,
   SettingsRow,
   SettingsSection,
 } from "../../components/settings/settingsLayout";
@@ -16,23 +15,21 @@ export function WorkstreamsSetupStatus() {
   const { state } = usePersonalWorkstreams();
   const { environments } = useEnvironments();
   return (
-    <SettingsPageContainer>
-      <SettingsSection title="Workstreams">
-        {state.environments.map((entry) => (
-          <SettingsRow
-            key={entry.environmentId}
-            title={
-              environments.find((item) => item.environmentId === entry.environmentId)?.label ??
-              "Environment"
-            }
-            control={
-              <span className="text-sm text-muted-foreground">
-                {personalStatusLabels[entry.status]}
-              </span>
-            }
-          />
-        ))}
-      </SettingsSection>
-    </SettingsPageContainer>
+    <SettingsSection title="Workstreams">
+      {state.environments.map((entry) => (
+        <SettingsRow
+          key={entry.environmentId}
+          title={
+            environments.find((item) => item.environmentId === entry.environmentId)?.label ??
+            "Environment"
+          }
+          control={
+            <span className="text-sm text-muted-foreground">
+              {personalStatusLabels[entry.status]}
+            </span>
+          }
+        />
+      ))}
+    </SettingsSection>
   );
 }

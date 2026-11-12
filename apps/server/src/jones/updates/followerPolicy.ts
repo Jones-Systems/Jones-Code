@@ -199,7 +199,7 @@ export function followerTargetRefusal(
   if (policy.leaderSource === null || policy.leaderTree === undefined)
     return "This host follows its laptop and waits for the laptop to report its installed build. A laptop app that predates following cannot report it; update the laptop app, or turn off fleet updates for this host to choose builds here.";
   if (target !== policy.leaderSource)
-    return `This host follows its laptop and installs only the laptop's installed source ${policy.leaderSource.slice(0, 7)}.`;
+    return `This host follows its laptop and installs only the build its laptop last reported: ${policy.leaderSource.slice(0, 7)}.`;
   if (tree !== undefined && tree !== policy.leaderTree)
     return "The laptop reported a source tree that the repository does not record for that commit, so this host does not install it.";
   return undefined;

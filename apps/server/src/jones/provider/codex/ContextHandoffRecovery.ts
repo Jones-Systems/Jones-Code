@@ -1,3 +1,4 @@
+import { HistoryNotApplied } from "./HistoryDeliveryOutcome.ts";
 import type { OrchestrationV2ProviderThread } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -7,8 +8,8 @@ import { deliverContextHandoffs } from "../../../orchestration-v2/ContextHandoff
 
 const isContextHandoffBudgetError = Schema.is(ContextHandoffBudgetError);
 
-// Only the local budget failure is recoverable. Persist/inject failures retain
-// their original semantics, and the second delivery has no recovery handler.
+// Only the local budget failure can trigger compaction. Delivery restores this
+// invocation's proved-unsent records without admitting another native operation.
 export const deliverWithHandoffRecovery = <
   InjectError = never,
   PersistError = never,
@@ -35,6 +36,8 @@ export const deliverWithHandoffRecovery = <
         deliverContextHandoffs({
           ...delivery,
           budget,
+          // Metadata restoration must not re-open native start admission.
+          restore: delivery.restore ?? delivery.persist,
           persist: (handoff) =>
             recovery.revalidate.pipe(
               Effect.andThen(markDelivery),
@@ -45,6 +48,7 @@ export const deliverWithHandoffRecovery = <
             : {
                 inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
                   recovery.revalidate.pipe(
+                    Effect.mapError((cause) => new HistoryNotApplied({ cause })),
                     Effect.andThen(markDelivery),
                     Effect.andThen(delivery.inject!(history)),
                   ),
