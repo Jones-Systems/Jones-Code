@@ -2556,6 +2556,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly earlyStarts: Map<string, CodexSchema.V2TurnStartedNotification>;
           /** The failed turn this promptless start continues (upstream capacity retry). */
           readonly continuationOf?: ActiveCodexTurnContext;
+          /** The root an original start's ACK registered; it owns any later local terminal. */
+          acknowledgedContext?: ActiveCodexTurnContext;
           startDispatched: boolean;
           lateStartDispatch?: CodexStartDispatch | undefined;
           pendingStartCancelled?: Deferred.Deferred<void> | undefined;
@@ -8436,7 +8438,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               type: "startUnknown",
               retryOrdinal: request.state.retryOrdinal,
             });
-            const context = request.continuationOf;
+            const context = request.continuationOf ?? request.acknowledgedContext;
             if (context === undefined || request.terminalEmitted) {
               releaseCapacityRequest(request);
               return;
@@ -8696,6 +8698,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             startedAt: codexTimestamp(started.turn.startedAt),
             waitForNativeStart: started.turn.startedAt === null,
           });
+          // A replay overflow or cancellation after this ACK must still close the registered root.
+          request.acknowledgedContext ??= context;
           capacityByTurn.set(started.turn.id, request);
           reduceCapacity(request, {
             type: "startAcknowledged",

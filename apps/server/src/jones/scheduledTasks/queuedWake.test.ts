@@ -39,6 +39,9 @@ it.effect("coalesces timer wakes by task and thread until the queued run clears"
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(SecretRequests.SecretRequests)({}),
       Layer.mock(ThreadManagementService.ThreadManagementService)({
+        // Upstream requires a live destination thread in the task's project.
+        getThreadShell: () =>
+          Effect.succeed({ projectId: "project:test", archivedAt: null, deletedAt: null } as never),
         getThreadRecords: (threadId, _fields, filter) =>
           Effect.sync(
             () =>

@@ -1465,10 +1465,17 @@ it.effect("restores a checkpoint before the first commit without staging its fil
     const path = yield* Path.Path;
     const driver = yield* GitVcsDriver.makeVcsDriverShape();
     for (const nested of [false, true]) {
-      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-unborn-restore-" });
-      yield* runGit(root, ["init"]);
-      yield* runGit(root, ["config", "user.email", "test@test.com"]);
-      yield* runGit(root, ["config", "user.name", "Test"]);
+      const temporaryRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-unborn-restore-",
+      });
+      // Checkpoints refuse Git's primary checkout; an orphan linked worktree is still unborn.
+      const repository = path.join(temporaryRoot, "repository");
+      const root = path.join(temporaryRoot, "worktree");
+      yield* fileSystem.makeDirectory(repository);
+      yield* runGit(repository, ["init"]);
+      yield* runGit(repository, ["config", "user.email", "test@test.com"]);
+      yield* runGit(repository, ["config", "user.name", "Test"]);
+      yield* runGit(repository, ["worktree", "add", "--orphan", "-b", "unborn-test", root]);
       if (nested) {
         yield* fileSystem.writeFileString(path.join(root, "outside.txt"), "staged\n");
         yield* runGit(root, ["add", "outside.txt"]);

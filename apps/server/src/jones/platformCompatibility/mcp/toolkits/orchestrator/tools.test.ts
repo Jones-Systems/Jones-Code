@@ -103,24 +103,22 @@ describe("orchestrator MCP tool guidance", () => {
       number: 1,
       url: "https://github.com/Jones-Systems/Jones-Code/pull/1",
     };
+    // Pull request linking moved to the pull request toolkit's own tools.
     const rejected: ReadonlyArray<unknown> = [
       { action: "rename" },
-      { action: "rename", title: "Title", pullRequest },
-      { action: "link_pull_request" },
-      { action: "link_pull_request", pullRequest, title: "Title" },
       { action: "regenerate_title", title: "Title" },
-      { action: "unlink_pull_request", pullRequest },
       { action: "block_thread_messages", title: "Title" },
-      { action: "allow_thread_messages", pullRequest },
+      { action: "allow_thread_messages", title: "Title" },
+      { action: "link_pull_request", pullRequest },
+      { action: "unlink_pull_request" },
     ];
     for (const input of rejected) {
       assert.isTrue(decode(input)._tag === "Failure", JSON.stringify(input));
     }
     const accepted: ReadonlyArray<unknown> = [
       { action: "rename", title: "Title" },
-      { environmentId: "environment-1", action: "link_pull_request", pullRequest },
+      { environmentId: "environment-1", action: "rename", title: "Title" },
       { action: "regenerate_title" },
-      { action: "unlink_pull_request" },
       { action: "block_thread_messages" },
       { action: "allow_thread_messages" },
     ];

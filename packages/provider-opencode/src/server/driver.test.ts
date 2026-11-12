@@ -611,6 +611,9 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
         ),
         Effect.provideService(HttpClient.HttpClient, server),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+        // The registry lookup falls back to the host PATH; a host npm would hold the version
+        // advisory on a TestClock timeout that races the usage recovery tick.
+        Effect.provideService(HostProcess.Environment, { PATH: "" }),
       );
       const initial = scenario.enabled
         ? yield* instance.snapshot.streamChanges.pipe(

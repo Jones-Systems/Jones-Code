@@ -717,6 +717,8 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const cached = pinnedRuntimePaths(path, baseDir, version, "linux");
       yield* fs.makeDirectory(path.dirname(cached.entryPath), { recursive: true });
       yield* fs.writeFileString(cached.entryPath, "#!/bin/sh\n");
+      // Jones reuses a cached runtime only with verified provenance; the mirror gate follows.
+      yield* writeProvenance(fs, path, cached, "#!/bin/sh\n");
       yield* fs.writeFileString(cached.sentinelPath, `${version}\n`);
       const install = (checksums: string, requests: string[]) =>
         ensurePinnedRuntimeInstalled({
