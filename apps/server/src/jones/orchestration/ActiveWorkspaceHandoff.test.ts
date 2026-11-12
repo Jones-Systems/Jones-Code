@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
+  RunAttemptId,
   ThreadId,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ThreadProjection,
@@ -19,6 +20,7 @@ import * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
+import * as Projection from "../../orchestration-v2/ProjectionStore.ts";
 import * as Executor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as Legacy from "../../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as DateTime from "effect/DateTime";
@@ -70,6 +72,8 @@ const request = JSON.stringify({
 
 it.live.each([
   "handoff",
+  "handoff without terminal",
+  "settlement identity guards",
   "unexpected failure",
   "failure before planning",
   "failure after planning",
@@ -209,7 +213,7 @@ it.live.each([
                 else yield* terminal(turn, "completed");
               }),
             interruptTurn: () =>
-              scenario === "failure after lease"
+              scenario === "failure after lease" || scenario === "handoff without terminal"
                 ? Effect.void
                 : scenario.startsWith("failure ")
                   ? Deferred.succeed(failureReached, undefined).pipe(
@@ -354,6 +358,74 @@ it.live.each([
           p.runs[0]?.status === "running" && p.providerTurns.some((t) => t.status === "running"),
       );
       const initialRun = running.runs[0]!;
+      if (scenario === "settlement identity guards") {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("queue-identity-control"),
+          threadId,
+          messageId: MessageId.make("identity-control"),
+          text: "queued identity control",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const projection = yield* Projection.ProjectionStoreV2;
+        const context = yield* projection.getRunningTurnContext(threadId);
+        assert.equal(context.run?.id, initialRun.id);
+        assert.equal(context.run?.activeAttemptId, context.providerTurn?.runAttemptId);
+        assert.equal(context.providerTurn?.providerThreadId, context.providerThread?.id);
+        const runtime = Option.getOrThrow(
+          yield* sessions.get(context.providerThread!.providerSessionId!, { touchActivity: false }),
+        );
+        let settlements = 0;
+        const input = {
+          runtime,
+          threadId,
+          providerThreadId: context.providerThread!.id,
+          providerTurnId: context.providerTurn!.id,
+          settle: Effect.sync(() => {
+            settlements += 1;
+          }),
+        };
+        const settleHandoff = sessions.settleHandoff!;
+        yield* settleHandoff({ ...input, runtime: { ...runtime } });
+        yield* settleHandoff({
+          ...input,
+          providerThreadId: ProviderThreadId.make("different-provider-thread"),
+        });
+        yield* settleHandoff({
+          ...input,
+          providerTurnId: ProviderTurnId.make("different-provider-turn"),
+        });
+        assert.equal(settlements, 0);
+        const getContext = projection.getRunningTurnContext;
+        const mismatch = vi.spyOn(projection, "getRunningTurnContext").mockImplementation((id) =>
+          getContext(id).pipe(
+            Effect.map((value) => ({
+              ...value,
+              run:
+                value.run === undefined
+                  ? undefined
+                  : { ...value.run, activeAttemptId: RunAttemptId.make("different-attempt") },
+            })),
+          ),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => mismatch.mockRestore()));
+        yield* settleHandoff(input);
+        assert.equal(settlements, 0);
+        mismatch.mockRestore();
+        yield* settleHandoff(input);
+        assert.equal(settlements, 1);
+        const unchanged = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(unchanged.runs.find((run) => run.id === initialRun.id)?.status, "running");
+        assert.equal(
+          unchanged.runs.find((run) => run.userMessageId === "identity-control")?.status,
+          "queued",
+        );
+        assert.equal(starts, 1);
+        return;
+      }
       if (scenario === "unexpected failure") {
         yield* orchestrator.dispatch({
           type: "message.dispatch",

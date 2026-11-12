@@ -4259,20 +4259,20 @@ export const layerWithOptions = (
           yield* entry.failureOwnership.permit.withPermits(1)(
             Effect.gen(function* () {
               if (entry.failureOwnership.failed) return;
-              const context = yield* projectionStore
-                .getProviderControlContext(input.threadId, input)
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderSessionLookupError({
-                        providerSessionId: input.runtime.providerSessionId,
-                        cause,
-                      }),
-                  ),
-                );
+              const context = yield* projectionStore.getRunningTurnContext(input.threadId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionLookupError({
+                      providerSessionId: input.runtime.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
               if (
-                context.providerThread?.providerSessionId !== input.runtime.providerSessionId ||
-                context.providerTurn?.status !== "running" ||
+                context.providerThread?.id !== input.providerThreadId ||
+                context.providerThread.providerSessionId !== input.runtime.providerSessionId ||
+                context.providerTurn?.id !== input.providerTurnId ||
+                context.providerTurn.status !== "running" ||
                 context.providerTurn.runAttemptId === null ||
                 context.providerTurn.providerThreadId !== input.providerThreadId ||
                 context.providerTurn.runAttemptId !== context.run?.activeAttemptId ||
