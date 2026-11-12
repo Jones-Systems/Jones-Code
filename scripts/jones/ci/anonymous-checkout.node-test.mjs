@@ -7,7 +7,12 @@ import * as NodeTest from "node:test";
 const repository = NodePath.resolve(import.meta.dirname, "../../..");
 const script = await NodeFSP.readFile(new URL("./anonymous-checkout.sh", import.meta.url), "utf8");
 const sparse = "/*\n!/.repos/";
-const workflowNames = ["ci", "jones-update-qualification", "native-enrollment-candidate"];
+const workflowNames = [
+  "ci",
+  "jones-update-qualification",
+  "native-enrollment-candidate",
+  "jones-thread-monitor-native",
+];
 const steps = [];
 for (const workflow of workflowNames) {
   const text = await NodeFSP.readFile(
@@ -31,9 +36,9 @@ for (const workflow of workflowNames) {
   }
 }
 
-NodeTest.test("all 22 bootstraps preserve merge/head, depth, history and sparse selection", () => {
-  NodeAssert.equal(steps.length, 22);
-  const expectedDepths = [2, 0, ...Array(15).fill(1), 0, 0, 0, 0, 1];
+NodeTest.test("all 23 bootstraps preserve merge/head, depth, history and sparse selection", () => {
+  NodeAssert.equal(steps.length, 23);
+  const expectedDepths = [2, 0, ...Array(15).fill(1), 0, 0, 0, 0, 1, 1];
   for (const [index, item] of steps.entries()) {
     NodeAssert.equal(item.run, script);
     NodeAssert.match(item.step, /shell: bash/);
@@ -41,7 +46,7 @@ NodeTest.test("all 22 bootstraps preserve merge/head, depth, history and sparse 
     NodeAssert.match(item.step, new RegExp(`JONES_CHECKOUT_DEPTH: "${expectedDepths[index]}"`));
     NodeAssert.ok(
       item.step.includes(
-        `JONES_CHECKOUT_SHA: ${index === 20 ? "${{ github.event.pull_request.head.sha || github.sha }}" : "${{ github.sha }}"}`,
+        `JONES_CHECKOUT_SHA: ${index === 20 || index === 22 ? "${{ github.event.pull_request.head.sha || github.sha }}" : "${{ github.sha }}"}`,
       ),
     );
     if (index === 9 || index === 11) {
@@ -64,6 +69,7 @@ NodeTest.test("all 22 bootstraps preserve merge/head, depth, history and sparse 
     ["ci", 17],
     ["jones-update-qualification", 4],
     ["native-enrollment-candidate", 1],
+    ["jones-thread-monitor-native", 1],
   ])
     NodeAssert.equal(steps.filter((item) => item.workflow === workflow).length, count);
 });
