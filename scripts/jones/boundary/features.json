@@ -3766,7 +3766,10 @@
         "apps/server/src/jones/threadResultDependencies/Settlement.test.ts",
         "apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts",
         "apps/server/src/jones/persistence/Migrations.test.ts",
-        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts"
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/orchestration-v2/ContextHandoffService.test.ts",
+        "packages/provider-core/src/server/notification.test.ts"
       ],
       "scope": "ETS-P v5: immutable notification wake/attempt/epoch binding, atomic post-certification peer hold, query-level retention, single-use accepted Codex witness/probe release, lifecycle fences and counted held duty. Shared EventSink and B certification edits only connect the Jones consumer. No wire enum, provider-start or linked-origin ownership changes."
     }
