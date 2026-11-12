@@ -5837,6 +5837,22 @@
         "node scripts/jones/check-boundary.ts --strict",
         "git diff --check"
       ]
+    },
+    {
+      "id": "jones-server-swap-cli",
+      "tests": [
+        "apps/server-swap-cli/core.test.cjs",
+        "apps/server-swap-cli/native.test.cjs",
+        "apps/server-swap-cli/transport.test.cjs",
+        "apps/server-swap-cli/prepare.test.cjs",
+        "apps/server-swap-cli/fleet.test.cjs",
+        "apps/server-swap-cli/cli.test.cjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 apps/server-swap-cli/core.test.cjs apps/server-swap-cli/native.test.cjs apps/server-swap-cli/transport.test.cjs apps/server-swap-cli/prepare.test.cjs apps/server-swap-cli/fleet.test.cjs apps/server-swap-cli/cli.test.cjs",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
     }
   ]
 }

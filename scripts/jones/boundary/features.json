@@ -3736,6 +3736,18 @@
         "apps/server/src/jones/updates/JonesUpdater.test.ts"
       ],
       "scope": "Reservation and launch remain under the existing job lock; immutable owner-controlled released evidence bypasses historical SQLite locks. Coalesced cleanup demand bounds failure retries, follows underlying worker settlement, and quiesces for expected retention and standing holds. History files are retained and still scanned linearly. Scale, race, cancellation and refusal cases are synthetic source coverage, not measured VPS latency."
+    },
+    {
+      "id": "server-swap-cli",
+      "tests": [
+        "apps/server-swap-cli/core.test.cjs",
+        "apps/server-swap-cli/native.test.cjs",
+        "apps/server-swap-cli/transport.test.cjs",
+        "apps/server-swap-cli/prepare.test.cjs",
+        "apps/server-swap-cli/fleet.test.cjs",
+        "apps/server-swap-cli/cli.test.cjs"
+      ],
+      "scope": "Standalone maintainer CLI for digest-bound server-swap preparation and finalization, journaled intent and recovery, native configuration/runtime identity validation, and ordered SSH fleet control. Existing 79 synthetic tests cover rollback fences, reverse states, resume/reconciliation, current runtime readback, and CLI/transport seams. This feature does not change application runtime/updater/shared modules, expose MCP or scheduled-task entry points, or establish live host, client, provider-session, or exact-version data compatibility qualification. Operator guidance is docs/operations/server-swap-cli.md."
     }
   ]
 }
