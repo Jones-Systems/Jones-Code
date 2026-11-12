@@ -1,6 +1,15 @@
 import { it } from "@effect/vitest";
 import { historyScenario } from "./HistoricalTerminalHistory.testkit.ts";
 
+it.effect("current snapshot and matching logical terminal leave no history-loss diagnostic", () =>
+  historyScenario({ mode: "current", logicalAfterSnapshot: true }),
+);
+
+it.effect(
+  "successful historical snapshot and matching logical terminal leave no history-loss diagnostic",
+  () => historyScenario({ mode: "superseded-same-session", consumer: true }),
+);
+
 it.effect.each([false, true])(
   "retains the old terminal when restart selects another account, reused account: %s",
   (reusedAccount) =>
@@ -81,6 +90,11 @@ it.effect(
       normalizationFailure: true,
       logicalOnly: true,
     }),
+);
+
+it.effect.each(["ordinary-current-guard-race", "ordinary-owner-guard-race"] as const)(
+  "records an ineligible loss diagnostic after a logical terminal's actual %s refusal",
+  (mode) => historyScenario({ mode, logicalOnly: true }),
 );
 
 it.effect.each(["found", "missing", "unavailable", "mismatched"] as const)(
