@@ -2433,6 +2433,7 @@
     "packages/shared/src/jones/sqliteReaders/lifecycle.test.ts": "jones-owned",
     "packages/shared/src/jones/sqliteReaders/lifecycle.ts": "jones-owned",
     "packages/shared/src/jones/sqliteWriterAdmission.fixture.ts": "jones-owned",
+    "apps/server/src/jones/persistence/ReaderCheckpointPressure.test.ts": "jones-owned",
     "packages/shared/src/jones/sqliteWriterAdmission.test.ts": "jones-owned",
     "packages/shared/src/jones/threadAttention.test.ts": "jones-owned",
     "packages/shared/src/jones/threadAttention.ts": "jones-owned",
