@@ -9,6 +9,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { SCAN_CACHE_FILE_NAME } from "./usage/usageScanCache.ts";
@@ -16,6 +17,7 @@ import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/sql/SqlClient";
 import {
   DEFAULT_SERVER_SETTINGS,
+  ServerSettingsError,
   type WorktreeKeepWhen,
   type StorageCleanupSettings,
 } from "@t3tools/contracts";
@@ -283,6 +285,10 @@ const cleanupFixture = (
     const deletionRefusals: string[] = [];
     let qualifiedDeletions = 0;
     let snapshotReads = 0;
+    let settingsFailure: ServerSettingsError | null = null;
+    let settingsReads = 0;
+    let threadReadFailure: ThreadId | null = null;
+    let projectReadFailure: ProjectId | null = null;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
     const lifetime = yield* Effect.scope;
@@ -492,10 +498,30 @@ const cleanupFixture = (
         },
       }),
       Effect.provideService(Settings.ServerSettingsService, {
-        getSettings: Effect.sync(() => settings),
+        getSettings: Effect.suspend(() => {
+          settingsReads++;
+          return settingsFailure === null ? Effect.succeed(settings) : Effect.fail(settingsFailure);
+        }),
         subscribeChanges: Effect.succeed(Stream.empty),
       } as unknown as Settings.ServerSettingsService["Service"]),
       Effect.provideService(ProjectStore.ProjectStoreV2, {
+        get: (projectId: ProjectId) =>
+          Effect.suspend(() =>
+            projectId === projectReadFailure
+              ? Effect.fail(
+                  new ProjectStore.ProjectStoreV2Error({ operation: "get", cause: "synthetic" }),
+                )
+              : Effect.succeed(
+                  Option.fromNullishOr(
+                    projectRoots
+                      .map((workspaceRoot, index) => ({
+                        projectId: ProjectId.make(`project-${index + 1}`),
+                        workspaceRoot,
+                      }))
+                      .find((project) => project.projectId === projectId),
+                  ),
+                ),
+          ),
         list: () => Effect.sync(() => projectRoots.map((workspaceRoot) => ({ workspaceRoot }))),
         listShells: () =>
           Effect.sync(() =>
@@ -532,10 +558,14 @@ const cleanupFixture = (
             ),
           ),
         getThread: (threadId: ThreadId) =>
-          Effect.sync(() => {
-            const thread = [...threads, ...deletedThreads].find((thread) => thread.id === threadId);
-            if (!thread) throw new Error(`Missing synthetic thread ${threadId}`);
-            return thread;
+          Effect.suspend(() => {
+            if (threadId === threadReadFailure)
+              return Effect.fail(new ProjectionStore.ProjectionStoreReadError({ threadId }));
+            return Effect.sync(() => {
+              const thread = [...threads, ...deletedThreads].find((thread) => thread.id === threadId);
+              if (!thread) throw new Error(`Missing synthetic thread ${threadId}`);
+              return thread;
+            });
           }),
         getCheckpointContext: () => Effect.succeed({ runs: [], checkpoints: [] }),
         getThreadShell: (threadId: ThreadId) =>
@@ -599,6 +629,20 @@ const cleanupFixture = (
           },
         };
       },
+      failSettings: (error: ServerSettingsError) => {
+        settingsFailure = error;
+      },
+      settingsReads: () => settingsReads,
+      failThreadRead: (threadId: ThreadId) => {
+        threadReadFailure = threadId;
+      },
+      failProjectRead: (projectId: ProjectId) => {
+        projectReadFailure = projectId;
+      },
+      retirementRows: Effect.all({
+        receipts: retirementSql`SELECT * FROM jones_workspace_retirement_receipts`,
+        disposal: retirementSql`SELECT * FROM jones_workspace_disposal_journal`,
+      }),
       setSettings: (next: Partial<typeof settings>) => {
         settings = { ...settings, ...next };
       },
@@ -1541,6 +1585,166 @@ describe("orphan worktree reports", () => {
 });
 
 describe("storage cleanup reports and local file policies", () => {
+  it.live("preserves a proposed checkout and publishes its later exact manual retirement", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture();
+        const reads = fixture.settingsReads();
+        const report = yield* fixture.service.retirement({ action: "propose" });
+        expect(report.entries).toMatchObject([
+          {
+            path: fixture.worktree,
+            outcome: "kept",
+            retirement: { state: "proposed", fingerprint: expect.any(String), receiptId: null },
+          },
+        ]);
+        expect(fixture.settingsReads() - reads).toBe(1);
+        expect(yield* fixture.fs.readFileString(`${fixture.worktree}/tracked.txt`)).toBe("original\n");
+        expect(
+          (yield* fixture.command(fixture.repo, ["branch", "--list", "feature"])).stdout,
+        ).toContain("feature");
+        expect(
+          (yield* fixture.command(fixture.repo, ["worktree", "list", "--porcelain"])).stdout,
+        ).toContain(`worktree ${fixture.worktree}`);
+        expect(fixture.removalArgs()).toEqual([]);
+        expect(yield* fixture.retirementRows).toEqual({ receipts: [], disposal: [] });
+        const retired = yield* fixture.service.retirement({
+          action: "retire",
+          threadId: ThreadId.make("thread-1"),
+          worktreePath: fixture.worktree,
+          expectedFingerprint: report.entries[0]!.retirement!.fingerprint!,
+        });
+        expect(retired.entries[0]?.retirement?.state).toBe("retired");
+        expect(yield* fixture.service.latestReport).toBe(retired);
+      }),
+    ),
+  );
+
+  it.live.each(["thread", "project", "missing-project"] as const)(
+    "reports a first candidate's %s metadata failure and still proposes the healthy checkout",
+    (failure) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const fixture = yield* cleanupFixture();
+          const brokenId = ThreadId.make("broken-thread");
+          const brokenProject = ProjectId.make("missing-project");
+          const brokenPath = `${fixture.worktree}-unavailable`;
+          fixture.setThreads([
+            shell({ id: brokenId, projectId: brokenProject, worktreePath: brokenPath }),
+            shell({ branch: "feature", worktreePath: fixture.worktree }),
+          ]);
+          if (failure === "thread") fixture.failThreadRead(brokenId);
+          if (failure === "project") fixture.failProjectRead(brokenProject);
+          const reads = fixture.settingsReads();
+          const report = yield* fixture.service.retirement({ action: "propose" });
+          expect(report.counts).toEqual({ removed: 0, kept: 1, failed: 1 });
+          expect(report.entries).toMatchObject([
+            {
+              threadId: brokenId,
+              path: brokenPath,
+              outcome: "failed",
+              threadTitle: failure === "thread" ? null : "Thread",
+              projectPath: null,
+              retirement: {
+                state: "held",
+                fingerprint: null,
+                reasonCodes: [
+                  failure === "thread"
+                    ? "thread_metadata_unavailable"
+                    : failure === "project"
+                      ? "project_metadata_unavailable"
+                      : "project_metadata_missing",
+                ],
+              },
+            },
+            { path: fixture.worktree, outcome: "kept", retirement: { state: "proposed" } },
+          ]);
+          expect(fixture.settingsReads() - reads).toBe(1);
+          if (failure === "missing-project") {
+            const sole = yield* fixture.service.retirement({ action: "propose", threadId: brokenId });
+            expect(sole.counts).toEqual({ removed: 0, kept: 0, failed: 1 });
+            expect(sole.entries[0]?.retirement?.reasonCodes).toEqual(["project_metadata_missing"]);
+          }
+        }),
+      ),
+  );
+
+  it.live("leaves the last manual report intact when proposal settings cannot be read", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture();
+        const proposal = yield* fixture.service.retirement({ action: "propose" });
+        const error = new ServerSettingsError({
+          settingsPath: fixture.config.settingsPath,
+          operation: "read-file",
+          cause: "synthetic settings failure",
+        });
+        fixture.failSettings(error);
+        const result = yield* fixture.service.retirement({ action: "propose" }).pipe(Effect.result);
+        expect(Result.isFailure(result) && result.failure).toBe(error);
+        expect(yield* fixture.service.latestReport).toBe(proposal);
+        expect(yield* fixture.retirementRows).toEqual({ receipts: [], disposal: [] });
+      }),
+    ),
+  );
+
+  it.effect.each(["before-sweep", "overlapping-sweep"] as const)(
+    "preserves a manual proposal through automatic completion (%s) and allows later manual reports",
+    (timing) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(NOW_MS);
+          const fixture = yield* pausedMeasurementFixture();
+          let proposal;
+          if (timing === "before-sweep")
+            proposal = yield* fixture.service.retirement({ action: "propose" });
+          yield* fixture.activate(Stream.empty);
+          yield* Deferred.await(fixture.measuring);
+          if (timing === "overlapping-sweep")
+            proposal = yield* fixture.service.retirement({ action: "propose" });
+          expect(proposal?.entries[0]?.retirement?.state).toBe("proposed");
+          yield* Deferred.succeed(fixture.resume, undefined);
+          yield* fixture.service.drain;
+          expect(yield* fixture.service.latestReport).toBe(proposal);
+          expect(yield* fixture.service.reports.pipe(Stream.take(1), Stream.runCollect)).toEqual([
+            proposal,
+          ]);
+          expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+          expect(fixture.removalArgs()).toHaveLength(1);
+          const nextProposal = yield* fixture.service.retirement({ action: "propose" });
+          expect(yield* fixture.service.latestReport).toBe(nextProposal);
+          const cleanup = yield* fixture.service.runNow;
+          expect(yield* fixture.service.latestReport).toBe(cleanup);
+        }),
+      ),
+  );
+
+  it.effect("publishes successive automatic reports when there is no manual report", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MS);
+        const fixture = yield* cleanupFixture();
+        fixture.disable();
+        yield* fixture.activate(Stream.empty);
+        const [first] = yield* fixture.service.reports.pipe(
+          Stream.filter((report) => report !== null),
+          Stream.take(1),
+          Stream.runCollect,
+        );
+        yield* fixture.service.drain;
+        yield* TestClock.adjust("1 hour");
+        const [second] = yield* fixture.service.reports.pipe(
+          Stream.filter((report) => report !== null && report !== first),
+          Stream.take(1),
+          Stream.runCollect,
+        );
+        expect(first?.trigger).toBe("automatic");
+        expect(second?.trigger).toBe("automatic");
+        expect(yield* fixture.service.latestReport).toBe(second);
+      }),
+    ),
+  );
+
   it.effect("automatically removes an eligible archived thread checkout", () =>
     runCleanupTest(
       Effect.gen(function* () {

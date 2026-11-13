@@ -1210,7 +1210,9 @@ const make = Effect.gen(function* () {
       bytesFreed,
       omittedCount: Math.max(0, entries.length - REPORT_ENTRY_LIMIT),
     };
-    yield* SubscriptionRef.set(reportRef, latestReport);
+    yield* SubscriptionRef.update(reportRef, (current) =>
+      trigger === "automatic" && current?.trigger === "manual" ? current : latestReport,
+    );
     return latestReport;
   });
   const automaticSweepQueued = yield* Ref.make(false);

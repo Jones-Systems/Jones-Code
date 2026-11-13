@@ -55,127 +55,182 @@ export const make = Effect.gen(function* () {
           target: input.worktreePath!,
           reason: "binding_changed",
         });
+      const serverSettings = yield* settings.getSettings;
       for (const item of selected.slice(0, 200)) {
-        const thread = yield* projections.getThread(item.threadId),
-          project = yield* projects.get(thread.projectId);
-        if (Option.isNone(project)) continue;
-        const rules = resolveWorktreeCleanup(yield* settings.getSettings, thread.projectId);
-        const revalidate = Effect.gen(function* () {
-          const fresh = yield* projections.getThread(item.threadId);
-          if (
-            fresh.worktreePath !== thread.worktreePath ||
-            fresh.branch !== thread.branch ||
-            DateTime.toEpochMillis(fresh.updatedAt) !== DateTime.toEpochMillis(thread.updatedAt)
-          )
+        let threadTitle: string | null = null;
+        let projectPath: string | null = null;
+        let failureReason = "thread_metadata_unavailable";
+        let nextAction = "Restore this thread's metadata lookup, then repeat the proposal.";
+        const entry = yield* Effect.gen(function* () {
+          const thread = yield* projections.getThread(item.threadId);
+          threadTitle = thread.title;
+          failureReason = "project_metadata_unavailable";
+          nextAction = "Restore this thread's project metadata lookup, then repeat the proposal.";
+          const project = yield* projects.get(thread.projectId);
+          if (Option.isNone(project)) {
+            failureReason = "project_metadata_missing";
+            nextAction =
+              "Restore or reconcile this thread's missing project, then repeat the proposal.";
             return yield* new RetirementError({
               target: item.worktreePath,
-              reason: "binding_changed",
+              reason: failureReason,
             });
-        }).pipe(
-          Effect.mapError((cause) =>
-            Schema.is(RetirementError)(cause)
-              ? cause
-              : new RetirementError({
-                  target: item.worktreePath,
-                  reason: "observation_failed",
-                  cause,
-                }),
-          ),
-        );
-        const result = yield* evaluate({
-          worktree: item.worktreePath,
-          projectRoot: project.value.workspaceRoot,
-          threadId: item.threadId,
-          rules,
-          cause: "owner_action",
-          execute: input.action === "retire",
-          ...(input.action === "retire"
-            ? {
-                ownerCoverage: {
-                  fingerprint: input.expectedFingerprint!,
-                  paths: input.coveredPaths ?? [],
-                },
-              }
-            : {}),
-          admit: withOperation(
-            {
-              id: `retire:${item.threadId}`,
-              kind: "preservation",
-              threadId: item.threadId,
-              worktree: item.worktreePath,
-              boundaries: ["cleanup"],
-              inherit: false,
-              check: revalidate,
-            },
-            beforeCleanup({
-              id: `retire:${item.threadId}`,
-              threadId: item.threadId,
-              boundary: "cleanup",
-            }),
-          ).pipe(
-            Effect.mapError(
-              (cause) =>
-                new RetirementError({
-                  target: item.worktreePath,
-                  reason: "workspace_preservation_hold",
-                  cause,
-                }),
+          }
+          projectPath = project.value.workspaceRoot;
+          failureReason = "candidate_evaluation_unavailable";
+          nextAction = "Restore this checkout's retirement observations, then repeat the proposal.";
+          const rules = resolveWorktreeCleanup(serverSettings, thread.projectId);
+          const revalidate = Effect.gen(function* () {
+            const fresh = yield* projections.getThread(item.threadId);
+            if (
+              fresh.worktreePath !== thread.worktreePath ||
+              fresh.branch !== thread.branch ||
+              DateTime.toEpochMillis(fresh.updatedAt) !== DateTime.toEpochMillis(thread.updatedAt)
+            )
+              return yield* new RetirementError({
+                target: item.worktreePath,
+                reason: "binding_changed",
+              });
+          }).pipe(
+            Effect.mapError((cause) =>
+              Schema.is(RetirementError)(cause)
+                ? cause
+                : new RetirementError({
+                    target: item.worktreePath,
+                    reason: "observation_failed",
+                    cause,
+                  }),
             ),
-          ),
-          revalidate,
-        }).pipe(
-          Effect.provide(context),
-          Effect.catch((error) => {
-            const reason = Schema.is(RetirementError)(error)
-              ? error.reason
-              : "target_observation_unavailable";
-            return Effect.succeed({
-              state: "held" as const,
-              reasons: [reason],
-              outcome: {
+          );
+          const result = yield* evaluate({
+            worktree: item.worktreePath,
+            projectRoot: project.value.workspaceRoot,
+            threadId: item.threadId,
+            rules,
+            cause: "owner_action",
+            execute: input.action === "retire",
+            ...(input.action === "retire"
+              ? {
+                  ownerCoverage: {
+                    fingerprint: input.expectedFingerprint!,
+                    paths: input.coveredPaths ?? [],
+                  },
+                }
+              : {}),
+            admit: withOperation(
+              {
+                id: `retire:${item.threadId}`,
+                kind: "preservation",
+                threadId: item.threadId,
+                worktree: item.worktreePath,
+                boundaries: ["cleanup"],
+                inherit: false,
+                check: revalidate,
+              },
+              beforeCleanup({
+                id: `retire:${item.threadId}`,
+                threadId: item.threadId,
+                boundary: "cleanup",
+              }),
+            ).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new RetirementError({
+                    target: item.worktreePath,
+                    reason: "workspace_preservation_hold",
+                    cause,
+                  }),
+              ),
+            ),
+            revalidate,
+          }).pipe(
+            Effect.provide(context),
+            Effect.catch((error) => {
+              const reason = Schema.is(RetirementError)(error)
+                ? error.reason
+                : "target_observation_unavailable";
+              return Effect.succeed({
                 state: "held" as const,
-                reasonCodes: [reason],
+                reasons: [reason],
+                outcome: {
+                  state: "held" as const,
+                  reasonCodes: [reason],
+                  receiptId: null,
+                  fingerprint: null,
+                  paths: [],
+                  details: [
+                    {
+                      reason,
+                      target: item.worktreePath,
+                      root: item.worktreePath,
+                      fact: reason,
+                      missingFact: reason,
+                      lineage: [{ threadId: item.threadId }],
+                      nextAction:
+                        "Repeat the named observation for this checkout with its owning adapter.",
+                    },
+                  ],
+                  outputObligations: [],
+                },
+              });
+            }),
+          );
+          return {
+            kind: "worktree",
+            outcome:
+              result.state === "retired"
+                ? "removed"
+                : result.state === "partial" || result.state === "unknown"
+                  ? "failed"
+                  : "kept",
+            reason:
+              result.reasons.join(", ") ||
+              (input.action === "propose"
+                ? "Retirement proposed; confirmation is required."
+                : result.state),
+            path: item.worktreePath,
+            projectPath: project.value.workspaceRoot,
+            threadId: item.threadId,
+            threadTitle: thread.title,
+            bytes: null,
+            files: null,
+            retirement: result.outcome,
+          } satisfies StorageCleanupReportEntry;
+        }).pipe(
+          Effect.catch(() =>
+            Effect.succeed({
+              kind: "worktree",
+              outcome: "failed",
+              reason: `${failureReason}: ${nextAction}`,
+              path: item.worktreePath,
+              projectPath,
+              threadId: item.threadId,
+              threadTitle,
+              bytes: null,
+              files: null,
+              retirement: {
+                state: "held",
+                reasonCodes: [failureReason],
                 receiptId: null,
                 fingerprint: null,
                 paths: [],
                 details: [
                   {
-                    reason,
+                    reason: failureReason,
                     target: item.worktreePath,
                     root: item.worktreePath,
-                    fact: reason,
-                    missingFact: reason,
+                    fact: failureReason,
+                    missingFact: failureReason,
                     lineage: [{ threadId: item.threadId }],
-                    nextAction:
-                      "Repeat the named observation for this checkout with its owning adapter.",
+                    nextAction,
                   },
                 ],
                 outputObligations: [],
               },
-            });
-          }),
+            } satisfies StorageCleanupReportEntry),
+          ),
         );
-        entries.push({
-          kind: "worktree",
-          outcome:
-            result.state === "retired"
-              ? "removed"
-              : result.state === "partial" || result.state === "unknown"
-                ? "failed"
-                : "kept",
-          reason:
-            result.reasons.join(", ") ||
-            (input.action === "propose"
-              ? "Retirement proposed; confirmation is required."
-              : result.state),
-          path: item.worktreePath,
-          projectPath: project.value.workspaceRoot,
-          threadId: item.threadId,
-          threadTitle: thread.title,
-          bytes: null,
-          files: null,
-          retirement: result.outcome,
-        });
+        entries.push(entry);
       }
       return {
         trigger: "manual",

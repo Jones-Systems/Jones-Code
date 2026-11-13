@@ -47,6 +47,7 @@
     "apps/server/src/jones/workspaceRetirement/EffectSeam.node-test-support.mjs": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/EventIntegration.ts": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/Outcome.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/OwnerAction.test.ts": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/OwnerAction.ts": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/Receipts.ts": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/RemovalGate.ts": "jones-owned",

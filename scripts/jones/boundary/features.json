@@ -135,6 +135,7 @@
         "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.test.ts",
         "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.test.ts",
         "apps/server/src/jones/workspaceRetirement/ClaimReconciliation.test.ts",
+        "apps/server/src/jones/workspaceRetirement/OwnerAction.test.ts",
         "apps/server/src/jones/workspaceRetirement/ProjectScriptObservation.test.ts",
         "apps/server/src/jones/workspaceRetirement/Retirement.test.ts",
         "apps/server/src/jones/workspaceRetirement/SettlementRecovery.test.ts",
