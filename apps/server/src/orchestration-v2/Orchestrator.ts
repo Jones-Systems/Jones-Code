@@ -15500,9 +15500,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return;
     }
 
-    const refusal = Option.isSome(startRefusals)
-      ? yield* startRefusals.value.classify(threadId, runId)
-      : "ordinary";
+    const hasClaims = projection.subagents.some(
+      (task) =>
+        task.origin === "app_owned" &&
+        task.runId === parentRun.id &&
+        delivery.taskIds.includes(task.id) &&
+        task.completionDelivery?.state === "claimed",
+    );
+    // With no claims at stake, ordinary finalization can reserve pending siblings
+    // even when refusal evidence is unavailable.
+    const refusal =
+      hasClaims && Option.isSome(startRefusals)
+        ? yield* startRefusals.value.classify(threadId, runId)
+        : "ordinary";
     if (refusal === "unknown") return;
     if (refusal === "qualified") {
       const successor = {
@@ -16933,8 +16943,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
-    // Serialize the first reservation ahead of a racing disposition. The decider
-    // then sees a held key, so its existing remainder transaction records lineage.
+    // Prefinalization serializes only already-certified refusals. During starting,
+    // disposition subtracts in place; survivors reserve when refusal is certified.
     if (
       (command.type === "delegated_task.completion-delivery.acknowledge" ||
         command.type === "delegated_task.completion-delivery.dispose") &&
@@ -17326,10 +17336,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       command.type === "delegated_task.wake-policy" ||
       command.type === "delegated_task.remote.complete" ||
-      command.type === "delegated_task.completion-delivery.acknowledge" ||
-      command.type === "delegated_task.completion-delivery.dispose"
+      isUnobservedAcknowledgement(command)
     ) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.parentThreadId));
+    } else if (
+      (command.type === "delegated_task.completion-delivery.acknowledge" ||
+        command.type === "delegated_task.completion-delivery.dispose") &&
+      committed.committed &&
+      plan.updateDelegatedCompletionOnlyRunId !== undefined &&
+      committed.storedEvents.some(
+        ({ event }) =>
+          event.type === "run.updated" &&
+          event.payload.id === plan.updateDelegatedCompletionOnlyRunId,
+      )
+    ) {
+      yield* mapDispatchError(command)(
+        offerDelegatedCompletionDelivery(
+          command.parentThreadId,
+          plan.updateDelegatedCompletionOnlyRunId,
+        ),
+      );
     }
 
     return {

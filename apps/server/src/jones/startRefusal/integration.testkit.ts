@@ -18,6 +18,7 @@ import {
 import * as Continuations from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as DateTime from "effect/DateTime";
@@ -104,10 +105,37 @@ const continuationsLayer = Layer.effect(
     };
   }),
 ).pipe(Layer.provide(offersLayer));
+export class StartingGate extends Context.Service<
+  StartingGate,
+  { readonly entered: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
+>()("t3/jones/startRefusal/integration.testkit/StartingGate") {}
+const startingGateLayer = Layer.effect(
+  StartingGate,
+  Effect.gen(function* () {
+    return { entered: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+  }),
+);
+const heldAdmission = Layer.mock(Admission.ControlAdmission)({
+  assertOpen: ({ instanceId }) => Effect.fail(new Admission.ControlAdmissionHeld({ instanceId })),
+});
+const startingAdmission = Layer.unwrap(
+  Effect.gen(function* () {
+    const gate = yield* StartingGate;
+    return Layer.mock(Admission.ControlAdmission)({
+      assertOpen: ({ instanceId }) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(gate.entered, undefined);
+          yield* Deferred.await(gate.release);
+          return yield* new Admission.ControlAdmissionHeld({ instanceId });
+        }),
+    });
+  }),
+).pipe(Layer.provide(startingGateLayer));
 const makeRuntime = <Output>(
   extra: Layer.Layer<Output>,
   missing: false | "both" | "attempts" | "holds" = false,
   suppliedDatabase = database,
+  startAdmissionLayer = heldAdmission,
 ) => {
   const db = missing
     ? Layer.effect(
@@ -131,10 +159,7 @@ const makeRuntime = <Output>(
       runEffectWorker: false,
       runContinuationWorker: false,
       continuationRequestsLayer: continuationsLayer,
-      startAdmissionLayer: Layer.mock(Admission.ControlAdmission)({
-        assertOpen: ({ instanceId }) =>
-          Effect.fail(new Admission.ControlAdmissionHeld({ instanceId })),
-      }),
+      startAdmissionLayer,
     },
   ).pipe(
     Layer.provideMerge(Store.layer.pipe(Layer.provideMerge(db))),
@@ -143,6 +168,9 @@ const makeRuntime = <Output>(
   );
 };
 export const runtime = makeRuntime(probeLayer);
+export const startingRuntime = makeRuntime(probeLayer, false, database, startingAdmission).pipe(
+  Layer.provideMerge(startingGateLayer),
+);
 export const runtimeWithoutProbe = makeRuntime(Layer.empty);
 export const legacyRuntime = makeRuntime(probeLayer, "both");
 export const missingAttemptsRuntime = makeRuntime(probeLayer, "attempts");

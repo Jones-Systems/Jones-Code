@@ -207,10 +207,11 @@ const make = Effect.gen(function* () {
             AND child.run_id = ${key.parentRunId} AND child.origin = 'app_owned'
         WHERE run.run_id = ${refusedRunId} AND run.thread_id = ${key.threadId}
           AND message.run_id = ${refusedRunId} AND message.thread_id = ${key.threadId}
-          AND json_extract(message.payload_json, '$.delegatedCompletion.parentRunId') = ${key.parentRunId}`;
-      // A remainder gets a new key linked to the preceding reservation. Its proof
-      // still describes the immutable refused message; only explicit dispositions
-      // may subtract obligations. Membership under the old key must stay exact.
+          AND json_extract(message.payload_json, '$.delegatedCompletion.parentRunId') = ${key.parentRunId}
+        ORDER BY CAST(task.key AS INTEGER)`;
+      // The immutable admitted message fixes membership. Acknowledgement/disposal
+      // can subtract claims during starting, before a refusal or hold link exists.
+      // Later rekeys retain their exact source-generation lineage.
       const anchor =
         replacing === undefined
           ? key
@@ -221,7 +222,6 @@ const make = Effect.gen(function* () {
               messageId: MessageId.make(replacing.message_id),
             };
       const chain = yield* sql<{
-        readonly size: number;
         readonly source_generation: number | null;
       }>`
         WITH RECURSIVE lineage AS (
@@ -234,26 +234,23 @@ const make = Effect.gen(function* () {
           JOIN lineage ON previous.generation = lineage.source_generation
           WHERE previous.thread_id = ${key.threadId} AND previous.parent_run_id = ${key.parentRunId}
             AND previous.refused_run_id = ${refusedRunId} AND previous.generation > previous.source_generation
-        ) SELECT count(*) AS size, min(source_generation) AS source_generation FROM lineage`;
-      const removed = Math.max(0, chain[0]!.size - (replacing === undefined ? 1 : 0));
-      const inherited = removed > 0;
-      // Each link records one explicit task disposition. Counting the immutable
-      // links prevents further subtraction under an already reserved key.
+        ) SELECT min(source_generation) AS source_generation FROM lineage`;
+      // Every admitted member needs one owned row proving a claim or an explicit
+      // disposition; the open cohort must equal the claims in admitted-message order.
       if (
-        inherited &&
-        (chain[0]!.source_generation !== source[0]?.generation ||
-          source.length - ids.length !== removed)
+        chain[0]!.source_generation !== null &&
+        chain[0]!.source_generation !== source[0]?.generation
       )
         return undefined;
       if (
-        inherited &&
+        new Set(source.map((row) => row.id)).size !== source.length ||
         source.some(
           (row) =>
             row.state !== "claimed" && row.state !== "acknowledged" && row.state !== "disposed",
         )
       )
         return undefined;
-      const expected = inherited ? source.filter((row) => row.state === "claimed") : source;
+      const expected = source.filter((row) => row.state === "claimed");
       if (expected.length !== ids.length || expected.some((row, i) => row.id !== ids[i]))
         return undefined;
     }
