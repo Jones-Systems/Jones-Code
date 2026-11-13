@@ -9,7 +9,12 @@ import * as Schema from "effect/Schema";
 import type { DesktopCompanionBridge } from "./jones/previewCompanion.ts";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 
-import { JonesUpdateState, type JonesUpdateDownloadInput } from "./jones/jonesUpdates.ts";
+import {
+  JonesUpdateState,
+  type JonesUpdateBuildList,
+  type JonesUpdateDownloadInput,
+  type JonesUpdateProvenance,
+} from "./jones/jonesUpdates.ts";
 import { JonesDesktopPreparationState } from "./jones/desktopPreparation.ts";
 import type {
   DesktopDeviceMediaTunnelInput,
@@ -1232,6 +1237,8 @@ export interface DesktopBridge {
   ) => Promise<DesktopUpdateState>;
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
   downloadUpdate: (selection?: JonesUpdateDownloadInput) => Promise<DesktopUpdateActionResult>;
+  listJonesUpdateBuilds?: () => Promise<JonesUpdateBuildList>;
+  selectJonesUpdateBuild?: (build: JonesUpdateProvenance) => Promise<boolean>;
   discardUpdate?: (stagedHandle: string) => Promise<DesktopUpdateActionResult>;
   /** Optional: older desktop builds cannot prepare Jones updates in the background. */
   setJonesBackgroundPreparation?: (enabled: boolean) => Promise<DesktopUpdateState>;

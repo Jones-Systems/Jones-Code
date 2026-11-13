@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { ChevronRightIcon } from "lucide-react";
-import { Fragment, type RefObject, useRef } from "react";
+import { Fragment, type ReactNode, type RefObject, useRef } from "react";
 
 import { environmentThreadShells } from "~/state/threads";
 import {
@@ -51,6 +51,8 @@ interface UpdateEverythingDialogProps {
   readonly rows: ReadonlyArray<UpdateEverythingRow>;
   readonly restarts: ReadonlyArray<RestartingMachine>;
   readonly onConfirm: () => void;
+  readonly onProvidersOnly?: () => void;
+  readonly buildReview?: ReactNode;
   /** Overrides the "Update N machines?" title, for an update-track switch. */
   readonly title?: string;
   readonly confirmLabel?: string;
@@ -102,6 +104,8 @@ function UpdateEverythingDialogContent({
   rows,
   restarts,
   onConfirm,
+  onProvidersOnly,
+  buildReview,
   cancelRef,
   title,
   confirmLabel = "Update",
@@ -155,6 +159,7 @@ function UpdateEverythingDialogContent({
       </AlertDialogHeader>
       <ScrollArea scrollFade>
         <div className="flex flex-col gap-3 px-6 pb-4">
+          {buildReview}
           {notes.map((note) => (
             <p key={note} className="text-muted-foreground text-sm">
               {note}
@@ -249,6 +254,11 @@ function UpdateEverythingDialogContent({
         <AlertDialogClose ref={cancelRef} render={<Button variant="outline" disabled={busy} />}>
           Cancel
         </AlertDialogClose>
+        {onProvidersOnly !== undefined ? (
+          <Button variant="outline" disabled={busy} onClick={onProvidersOnly}>
+            Update providers only
+          </Button>
+        ) : null}
         <Button disabled={disabledReason !== null || busy} onClick={onConfirm}>
           {confirmLabel}
         </Button>

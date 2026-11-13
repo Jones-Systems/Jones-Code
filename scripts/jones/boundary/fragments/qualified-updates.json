@@ -116,7 +116,8 @@
     "apps/server/src/jones/updates/recoverQualifiedStage.ts",
     "apps/server/src/jones/updates/recoverQualifiedStage.test.ts",
     "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts",
-    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts"
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts",
+    "apps/web/src/jones/updates/qualifiedBuildReview.browser.test.tsx"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -277,6 +278,10 @@
     },
     {
       "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
       "to": "apps/desktop/src/jones/updates/jonesMacStaging.ts"
     },
     {
@@ -390,6 +395,14 @@
     {
       "from": "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
       "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/useUpdateEverything.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
     },
     {
       "from": "apps/web/src/components/settings/SettingsPanels.tsx",

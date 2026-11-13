@@ -340,6 +340,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   setUpdateChannel: (channel, minimumVersion) =>
     ipcRenderer.invoke(IpcChannels.UPDATE_SET_CHANNEL_CHANNEL, { channel, minimumVersion }),
   checkForUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_CHECK_CHANNEL),
+  listJonesUpdateBuilds: () => ipcRenderer.invoke(IpcChannels.JONES_UPDATE_LIST_BUILDS_CHANNEL),
+  selectJonesUpdateBuild: (build) =>
+    ipcRenderer.invoke(IpcChannels.JONES_UPDATE_SELECT_BUILD_CHANNEL, build),
   downloadUpdate: (selection) =>
     selection === undefined
       ? ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL)

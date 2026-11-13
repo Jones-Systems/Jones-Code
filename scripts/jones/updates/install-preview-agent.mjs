@@ -30,6 +30,11 @@ export function sanitizeFailurePageState(value) {
     Number.isSafeInteger(raw[field]) && raw[field] >= 0 && raw[field] <= 10_000_000
       ? raw[field]
       : null;
+  const position =
+    typeof raw.fixtureStartupPosition === "string" &&
+    /^assets\/[a-zA-Z0-9_.-]{1,96}\.js:[1-9]\d{0,6}:[1-9]\d{0,6}$/.test(raw.fixtureStartupPosition)
+      ? raw.fixtureStartupPosition
+      : undefined;
   return {
     readyState: ["loading", "interactive", "complete"].includes(raw.readyState)
       ? raw.readyState
@@ -39,6 +44,17 @@ export function sanitizeFailurePageState(value) {
     bodyTextLength: count("bodyTextLength"),
     dialogs: count("dialogs"),
     onConnectionsRoute: raw.onConnectionsRoute === true,
+    ...(raw.onFixtureRoute === true &&
+    ["guard", "bridge", "renderer-import", "mount"].includes(raw.fixtureStartupPhase) &&
+    ["type", "reference", "other"].includes(raw.fixtureStartupError)
+      ? {
+          fixtureStartup: {
+            phase: raw.fixtureStartupPhase,
+            error: raw.fixtureStartupError,
+            ...(position === undefined ? {} : { position }),
+          },
+        }
+      : {}),
     ui: Object.fromEntries(
       [
         "sourceMatches",
@@ -450,6 +466,13 @@ export async function runScenario(client, scenario, report) {
           text: step.text,
           clear: true,
         });
+      else if (step.action === "select")
+        await call("preview_act", {
+          action: "select",
+          tabId,
+          locator: step.locator,
+          values: step.values,
+        });
       else if (step.action === "wait")
         await call("preview_wait_for", { tabId, text: step.text, timeoutMs: 30_000 });
       else if (step.action === "capture") {
@@ -486,6 +509,10 @@ export async function runScenario(client, scenario, report) {
             bodyTextLength: text.length,
             dialogs: document.querySelectorAll('[role="dialog"]').length,
             onConnectionsRoute: window.location.pathname === '/settings/connections',
+            onFixtureRoute: window.location.pathname === '/jones-install-fixture.html',
+            fixtureStartupPhase: root?.dataset.fixtureStartupPhase,
+            fixtureStartupError: root?.dataset.fixtureStartupError,
+            fixtureStartupPosition: root?.dataset.fixtureStartupPosition,
             ui: Object.fromEntries(Object.entries({
               sourceMatches: 'Source matches this app.', remoteListed: 'Synthetic incompatible Jones host',
               addFailed: 'Could not add backend', rootError: 'Something went wrong.',

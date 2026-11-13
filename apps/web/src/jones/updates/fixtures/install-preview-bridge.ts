@@ -14,6 +14,7 @@ const SCENARIOS = [
   "staged",
   "bootstrap-required",
   "initial-race",
+  "build-review",
   // A verified Laptop with hosts mid-install, failed, stalled and unreachable.
   "progress",
   "source-proof",
@@ -213,6 +214,17 @@ export function installPreviewBridge(
     },
   });
   const plan = planFixture;
+  const latest = initialState(false).jones!.provenance!;
+  const alternative = {
+    ...latest,
+    sourceSha: "6".repeat(40),
+    sourceTree: "7".repeat(40),
+    artifactId: 9002,
+    artifactDigest: "8".repeat(64),
+    runId: 3,
+    version: "0.0.45-preview.20261011.3.1",
+  };
+  const builds = [latest, alternative];
   if (selectedScenario === "progress") {
     plan.showcaseStepProgress();
     installStatusStore.open();
@@ -224,6 +236,27 @@ export function installPreviewBridge(
   const bridge = {
     ...(installPlansSupported
       ? { installPlan: plan.request, onInstallPlan: plan.onInstallPlan }
+      : {}),
+    ...(selectedScenario === "build-review" && installPlansSupported
+      ? {
+          listJonesUpdateBuilds: async () => ({ builds, unavailable: false }),
+          selectJonesUpdateBuild: async (reviewed: typeof latest) => {
+            record("selectJonesUpdateBuild", reviewed);
+            const qualified = builds.find(
+              (candidate) =>
+                candidate.artifactId === reviewed.artifactId &&
+                candidate.artifactDigest === reviewed.artifactDigest &&
+                candidate.sourceSha === reviewed.sourceSha,
+            );
+            if (qualified === undefined) return false;
+            publish({
+              ...initialState(false),
+              availableVersion: qualified.version ?? null,
+              jones: { ...initialState(false).jones!, provenance: qualified },
+            });
+            return true;
+          },
+        }
       : {}),
     getAppBranding: () => ({
       baseName: "Jones Code",
@@ -358,6 +391,8 @@ export function installPreviewBridge(
     | "onUpdateState"
     | "setUpdateChannel"
     | "checkForUpdate"
+    | "listJonesUpdateBuilds"
+    | "selectJonesUpdateBuild"
     | "downloadUpdate"
     | "installUpdate"
     | "discardUpdate"
