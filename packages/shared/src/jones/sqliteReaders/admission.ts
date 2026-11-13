@@ -356,7 +356,9 @@ export const makeReaderPool = Effect.fnUntraced(function* (
               timedOut = true;
               active = false;
               // Publish the barrier before retirement can synchronously close the borrower's scope.
-              runFork(Deferred.complete(retired, slot.retire("SQLite reader lease watchdog expired")));
+              runFork(
+                Deferred.complete(retired, slot.retire("SQLite reader lease watchdog expired")),
+              );
               // Retirement proof returns capacity even if the owner cannot close its lease scope.
               runFork(release(Exit.void));
               owner.interruptUnsafe();
