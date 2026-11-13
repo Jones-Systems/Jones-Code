@@ -17336,10 +17336,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       command.type === "delegated_task.wake-policy" ||
       command.type === "delegated_task.remote.complete" ||
-      command.type === "delegated_task.completion-delivery.acknowledge" ||
-      command.type === "delegated_task.completion-delivery.dispose"
+      isUnobservedAcknowledgement(command)
     ) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.parentThreadId));
+    } else if (
+      (command.type === "delegated_task.completion-delivery.acknowledge" ||
+        command.type === "delegated_task.completion-delivery.dispose") &&
+      committed.committed &&
+      plan.updateDelegatedCompletionOnlyRunId !== undefined &&
+      committed.storedEvents.some(
+        ({ event }) =>
+          event.type === "run.updated" &&
+          event.payload.id === plan.updateDelegatedCompletionOnlyRunId,
+      )
+    ) {
+      yield* mapDispatchError(command)(
+        offerDelegatedCompletionDelivery(
+          command.parentThreadId,
+          plan.updateDelegatedCompletionOnlyRunId,
+        ),
+      );
     }
 
     return {
