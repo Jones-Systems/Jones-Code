@@ -6,15 +6,15 @@ import { describe, it } from "vite-plus/test";
 
 describe("install and runtime retention protocol", () => {
   it.each([
-    { group: "database admission", pattern: "^DBR T[1-4]" },
-    { group: "remaining recovery protocols", pattern: "^(?!DBR T[1-4])" },
-  ])("preserves recovery closure and refuses destructive drift ($group)", ({ pattern }) => {
+    { group: "database admission", filter: "--test-name-pattern=^DBR T[1-4]" },
+    { group: "remaining recovery protocols", filter: "--test-skip-pattern=^DBR T[1-4]" },
+  ])("preserves recovery closure and refuses destructive drift ($group)", ({ filter }) => {
     NodeChildProcess.execFileSync(
       NodeProcess.execPath,
       [
         "--test",
         "--test-concurrency=1",
-        `--test-name-pattern=${pattern}`,
+        filter,
         NodeURL.fileURLToPath(
           new URL(
             "../../../../../scripts/jones/updates/install-retention.node-test.mjs",
