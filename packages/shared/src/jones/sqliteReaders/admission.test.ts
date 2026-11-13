@@ -228,7 +228,6 @@ it.effect.each(["completed", "masked", "closing"] as const)(
       const exited = yield* Deferred.make<void>();
       const ownerHeld = yield* Deferred.make<void>();
       const ownerRelease = yield* Deferred.make<void>();
-      const runFork = Effect.runForkWith(yield* Effect.context<never>());
       const oldScope = yield* Scope.make();
       const newScope = yield* Scope.make();
       yield* Effect.addFinalizer(() => Scope.close(oldScope, Exit.void));
@@ -240,9 +239,13 @@ it.effect.each(["completed", "masked", "closing"] as const)(
         retire: () =>
           Effect.sync(() => {
             retirements++;
-            // Native retirement can synchronously fail a query and close its borrower scope.
-            if (ownerState === "closing") runFork(Scope.close(oldScope, Exit.void));
           }).pipe(
+            // Native retirement can synchronously fail a query and close its borrower scope.
+            Effect.andThen(
+              ownerState === "closing"
+                ? Effect.forkChild(Scope.close(oldScope, Exit.void), { startImmediately: true })
+                : Effect.void,
+            ),
             Effect.andThen(Deferred.succeed(retiring, undefined)),
             Effect.andThen(Deferred.await(exited)),
             Effect.andThen(
