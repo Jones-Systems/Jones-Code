@@ -28,6 +28,7 @@ function fixture() {
       directory,
       root: directory,
       platform: "darwin",
+      environment: {},
       signal: new AbortController().signal,
       jobs: 1,
     },
@@ -104,6 +105,21 @@ NodeTest.test(
 NodeTest.test(
   "missing/cancelled/stale/storage refusal starts nothing and releases only owned lock",
   async () => {
+    for (const deadlineMs of [0, -1, NaN, Infinity, 600_001]) {
+      const f = fixture();
+      try {
+        await NodeAssert.rejects(
+          withLocalMacCapacity(
+            { ...f.options, deadlineMs },
+            async () => NodeAssert.fail("invalid deadline launch"),
+            f.dependencies,
+          ),
+          /deadline/,
+        );
+      } finally {
+        f.close();
+      }
+    }
     for (const kind of ["missing", "busy", "cancel", "stale", "memory", "storage"]) {
       const f = fixture();
       const c = new AbortController();

@@ -189,7 +189,7 @@ it.effect(
 
       assert.deepStrictEqual(yield* runMigrations(), []);
 
-      assert.deepStrictEqual(yield* jonesLedger, ledgerBefore);
+      assert.deepStrictEqual(yield* jonesLedger, [...ledgerBefore, [153, "PersonalWorkstreams"]]);
       assert.deepStrictEqual(yield* jonesLinks, legacy);
       // No cleanup or repair: residue is neither read, rewritten nor removed.
       assert.deepStrictEqual(yield* upstreamLinks, upstreamBefore);

@@ -51,8 +51,8 @@ import * as PreviewAutomationBroker from "../../../../../mcp/PreviewAutomationBr
 import * as PreviewBrowser from "../../../../../preview/PreviewBrowser.ts";
 import * as PeerForwarding from "../../../../../peer/PeerForwarding.ts";
 
-import * as WorkstreamGateway from "../../../../../workstreams/WorkstreamGateway.ts";
-import * as WorkstreamOperations from "../../../../workstreams/operations/service.ts";
+import * as PersonalWorkstreams from "../../../../workstreams/personal/service.ts";
+import * as AgentWorkstreams from "../../../../workstreams/personal/agentService.ts";
 
 type TurnAttachment = Parameters<
   NonNullable<ConversationPolicy.ConversationPolicy["Service"]["registerTurnAttachment"]>
@@ -99,17 +99,8 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
     Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
     Layer.mock(ThreadSearch.ThreadSearch)({}),
-    Layer.mock(WorkstreamOperations.WorkstreamOperations)({}),
-    Layer.mock(WorkstreamGateway.WorkstreamGateway)({
-      purgeAuthorization: () => {},
-      readRegistryCounts: () =>
-        Effect.fail(
-          new WorkstreamGateway.WorkstreamGatewayError({
-            reason: "contract-mismatch",
-            detail: "Tool-list fixture does not provide registry counts.",
-          }),
-        ),
-    }),
+    Layer.mock(AgentWorkstreams.AgentWorkstreams)({}),
+    Layer.mock(PersonalWorkstreams.PersonalWorkstreams)({}),
   );
 
 const ToolsListPayload = Schema.fromJsonString(
@@ -207,10 +198,9 @@ it.effect("production mcp layer lists worktree tools over http", () =>
         expect.arrayContaining([
           "t3_workstreams_list",
           "t3_workstream_create",
+          "t3_workstream_update",
           "t3_thread_workstream_set",
           "t3_thread_workstream_read",
-          "t3_workstream_operation_status",
-          "t3_workstreams_status",
         ]),
       );
 

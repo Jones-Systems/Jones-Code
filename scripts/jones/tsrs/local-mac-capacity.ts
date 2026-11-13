@@ -62,6 +62,7 @@ export type CapacityOptions = {
   signal: AbortSignal;
   jobs: number;
   platform?: string;
+  environment?: NodeJS.ProcessEnv;
   directory?: string;
   deadlineMs?: number;
   /** Warm's in-process native pools retain the lease until normal process exit. */
@@ -106,11 +107,14 @@ export async function withLocalMacCapacity<T>(
   dependencies: Dependencies = defaults,
 ): Promise<T> {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Admission measures the physical host before starting the application/compiler runtime.
-  if (!usesLocalMacCapacity(options.platform ?? NodeOS.platform(), process.env))
-    return run(options.jobs);
+  const platform = options.platform ?? NodeOS.platform();
+  if (!usesLocalMacCapacity(platform, options.environment ?? process.env)) return run(options.jobs);
   compilerBudget(1, 0, 0, options.jobs);
+  const duration = options.deadlineMs ?? 600_000;
+  if (!Number.isFinite(duration) || duration <= 0 || duration > 600_000)
+    throw new Error("Invalid compiler admission deadline");
   const d = dependencies,
-    deadline = d.now() + (options.deadlineMs ?? 600_000);
+    deadline = d.now() + duration;
   const directory =
     options.directory ?? NodePath.join(NodeOS.homedir(), ".cache/jones/local-mac-capacity");
   privateDirectory(directory);

@@ -26,10 +26,13 @@ import {
   planWritableSidebarReorder,
   dropPinnedThreadOnWorkstream,
 } from "../jones/workstreams/sidebarThreadDrop";
-import { canEditWorkstreams, moveNativeThreadOrder } from "./workstreams/nativeWorkstreamActions";
-import { useWorkstreams } from "../state/workstreams";
-import { groupNativeThreadsWithConnectedTrust } from "../jones/workstreams/connectedWorkstreamTrust";
-import { useConnectedWorkstreamTrust } from "../jones/workstreams/useConnectedWorkstreamTrust";
+import { moveNativeThreadOrder } from "../jones/workstreams/personalPresentation";
+import { usePersonalWorkstreams } from "../state/workstreamsPersonal";
+import {
+  groupPersonalThreads,
+  personalThreadKey,
+} from "@t3tools/client-runtime/jones/workstreams/personal";
+import { showPinnedUnpinFailure } from "../jones/workstreams/personalNotifications";
 import {
   WorkstreamNativeSidebar,
   type NativeThreadAssignmentMenu,
@@ -1411,7 +1414,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     cycleStatusFilter,
     hideWorkingThreads,
     statusCounts,
-    environmentThreads,
   } = useSidebarThreads({
     excludedEnvironmentIds,
     excludedEnvironmentKey,
@@ -1454,23 +1456,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     return count;
   });
 
-  const workstreamController = useWorkstreams(true, threads);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes connected workstream names to the work-queue registry while this sidebar owns them
+  const workstreamController = usePersonalWorkstreams();
+  const workstreamsEnabled = workstreamController.state.environments.some(
+    (entry) => entry.status !== "update_required",
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publishes personal definition labels while Sidebar owns the work-queue label publisher.
   useEffect(() => {
-    if (
-      !primaryEnvironmentId ||
-      !workstreamController.data ||
-      workstreamController.loading ||
-      workstreamController.stale
-    )
-      return;
-    return publishWorkQueueLocalNames(primaryEnvironmentId, workstreamController.data.items);
-  }, [
-    primaryEnvironmentId,
-    workstreamController.data,
-    workstreamController.loading,
-    workstreamController.stale,
-  ]);
+    if (!primaryEnvironmentId) return;
+    return publishWorkQueueLocalNames(
+      primaryEnvironmentId,
+      workstreamController.state.workstreams.map((item) => ({
+        workstreamId: item.id,
+        name: item.name,
+      })),
+    );
+  }, [primaryEnvironmentId, workstreamController.state.workstreams]);
   const workstreamAssignmentMenuRef = useRef<
     ((thread: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
   >(null);
@@ -1478,34 +1478,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useStableCallback(() => setWorkstreamCreateOpen(false));
-  // Display-only trust across connected environments; assignment changes keep placement trust.
-  const workstreamTrust = useConnectedWorkstreamTrust(
-    workstreamController.placements?.trustedEnvironments,
-  );
-  // Stored assignments group immediately; only proof assurance follows the hook's clock.
-  const workstreamAssignmentInput = workstreamController.assignmentIndex
-    ? {
-        assignmentIndex: workstreamController.assignmentIndex,
-        verificationNow: workstreamController.verificationNow ?? snoozeNow,
-      }
-    : {};
-  const workstreamGrouping = groupNativeThreadsWithConnectedTrust({
-    workstreams: workstreamController.data?.items ?? [],
-    placements: workstreamController.placements?.items ?? [],
-    threads: activeThreads,
-    trustedNow: snoozeNow,
-    ...workstreamAssignmentInput,
-    trust: workstreamTrust,
-  });
-
-  const workstreamSummaryGrouping = groupNativeThreadsWithConnectedTrust({
-    workstreams: workstreamController.data?.items ?? [],
-    placements: workstreamController.placements?.items ?? [],
-    threads: environmentThreads,
-    trustedNow: snoozeNow,
-    ...workstreamAssignmentInput,
-    trust: workstreamTrust,
-  });
+  const workstreamGrouping = groupPersonalThreads(workstreamController.state, activeThreads);
 
   // Ranked across environments as the palette ranks them, so one
   // environment's list does not sit above another's better matches; rows
@@ -1954,7 +1927,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         point,
         thread: activeThread,
         unpin: async () => {
-          if (!checkThreadOperations([activeThread])) return;
+          if (!checkThreadOperations([activeThread])) throw new Error("Unpin unavailable");
           const result = await unpinThread(
             scopeThreadRef(activeThread.environmentId, activeThread.id),
           );
@@ -1963,13 +1936,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               "Workstream assigned, but the thread could not be unpinned. Retry unpinning it.",
             );
         },
-        onError: (cause) =>
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not move pinned thread",
-              description: cause instanceof Error ? cause.message : "Refresh before retrying.",
-            }),
+        onError: () =>
+          showPinnedUnpinFailure(
+            scopedThreadKey(scopeThreadRef(activeThread.environmentId, activeThread.id)),
           ),
       }),
     );
@@ -2142,7 +2111,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         workingThreads.length +
         snoozedThreads.length +
         settledCount ===
-        0
+        0 &&
+      !workstreamsEnabled
     ) {
       return [];
     }
@@ -3507,8 +3477,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               }
               onNewWorkstream={() => setWorkstreamCreateOpen(true)}
               newWorkstreamDisabled={
-                !canEditWorkstreams(workstreamController.data) ||
-                workstreamController.loading ||
+                !workstreamController.state.canCreate ||
                 workstreamCreatePending ||
                 workstreamCreateOpen
               }
@@ -3537,7 +3506,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               onClearSearch={clearThreadSearch}
             />
             <WorkstreamCreateForm
-              controller={workstreamController}
+              controller={workstreamController.controller}
               open={workstreamCreateOpen}
               onClose={closeWorkstreamCreate}
               onPendingChange={setWorkstreamCreatePending}
@@ -3624,14 +3593,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               </p>
             )
           ) : null}
-          {!isSearchingThreads && workstreamController.error ? (
-            <p role="status" className="px-2 py-1 text-xs text-sidebar-muted-foreground">
-              Workstreams unavailable.{" "}
-              <button type="button" onClick={workstreamController.refresh}>
-                Retry
-              </button>
-            </p>
-          ) : null}
+
           {!isSearchingThreads ? (
             <TooltipProvider
               key="sidebar-thread-tooltips-150"
@@ -3813,11 +3775,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           />
                         ) : null,
                       ];
-                      if (workstreamController.data !== null) {
+                      if (workstreamsEnabled) {
                         items.unshift(
                           <li key="native-workstream-groups" className="list-none">
                             <WorkstreamNativeSidebar
-                              controller={workstreamController}
+                              controller={workstreamController.controller}
                               assignmentMenuRef={workstreamAssignmentMenuRef}
                               externalDropRef={workstreamExternalDropRef}
                               canOperate={(thread) =>
@@ -3826,8 +3788,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   AuthOrchestrationOperateScope,
                                 )
                               }
-                              grouping={workstreamGrouping}
-                              summaryGrouping={workstreamSummaryGrouping}
+                              threads={activeThreads}
                               renderThread={(thread, assignment) =>
                                 renderThreadRow(thread, "active", undefined, assignment)
                               }
@@ -3845,18 +3806,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
                           // The mounted Workstream section owns every active row, including Unassigned.
-                          if (workstreamController.data !== null && item.section === "active")
-                            continue;
+                          if (workstreamsEnabled && item.section === "active") continue;
                           // Folders draw active rows in their own place below.
                           if (projectFolders !== null && item.section === "active") continue;
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
                           continue;
                         }
-                        if (
-                          item.marker === "active-placeholder" &&
-                          workstreamController.data !== null
-                        )
-                          continue;
+                        if (item.marker === "active-placeholder" && workstreamsEnabled) continue;
                         if (projectFolders !== null && item.marker === "active-placeholder") {
                           for (const folder of projectFolders) {
                             items.push(
@@ -3872,8 +3828,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             );
                             for (const thread of folder.threads) {
                               if (
-                                workstreamGrouping.groupedKeys.has(
-                                  scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+                                workstreamGrouping.workstreamIdByThreadKey.has(
+                                  personalThreadKey(thread),
                                 )
                               )
                                 continue;
@@ -3912,7 +3868,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             );
                             break;
                           case "active-placeholder":
-                            if (workstreamController.data !== null) break;
+                            if (workstreamsEnabled) break;
                             items.push(
                               <SidebarSectionPlaceholder
                                 key="active-placeholder"

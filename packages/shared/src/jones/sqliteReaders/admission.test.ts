@@ -219,6 +219,114 @@ it.effect("keeps a watchdog's slot occupied until retirement proof completes", (
   }).pipe(Effect.scoped),
 );
 
+it.effect.each(["completed", "masked", "closing"] as const)(
+  "recovers watchdog-retired capacity independently of a %s owner",
+  (ownerState) =>
+    Effect.gen(function* () {
+      const bridge = makeCheckpointReaderAdmission();
+      const retiring = yield* Deferred.make<void>();
+      const exited = yield* Deferred.make<void>();
+      const ownerHeld = yield* Deferred.make<void>();
+      const ownerRelease = yield* Deferred.make<void>();
+      const oldScope = yield* Scope.make();
+      const newScope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(oldScope, Exit.void));
+      yield* Effect.addFinalizer(() => Scope.close(newScope, Exit.void));
+      let proved = false;
+      let retirements = 0;
+      const shared: ReaderSlot = {
+        ...slot(),
+        retire: () =>
+          Effect.sync(() => {
+            retirements++;
+          }).pipe(
+            // Native retirement can synchronously fail a query and close its borrower scope.
+            Effect.andThen(
+              ownerState === "closing"
+                ? Effect.forkChild(Scope.close(oldScope, Exit.void), { startImmediately: true })
+                : Effect.void,
+            ),
+            Effect.andThen(Deferred.succeed(retiring, undefined)),
+            Effect.andThen(Deferred.await(exited)),
+            Effect.andThen(
+              Effect.sync(() => {
+                proved = true;
+              }),
+            ),
+          ),
+        settled: Effect.sync(() => proved),
+      };
+      const pool = yield* makeReaderPool(
+        { ...options(2), leaseWatchdogMs: 100, backgroundQueueTimeoutMs: 1_000 },
+        [slot(), shared],
+        bridge,
+      );
+      const acquisition = Scope.provide(acquire(pool, "background"), oldScope);
+      const owner = yield* Effect.forkChild(
+        ownerState !== "masked"
+          ? acquisition
+          : Effect.uninterruptible(
+              acquisition.pipe(
+                Effect.tap(() => Deferred.succeed(ownerHeld, undefined)),
+                Effect.tap(() => Deferred.await(ownerRelease)),
+              ),
+            ),
+        { startImmediately: true },
+      );
+      yield* Effect.addFinalizer(() => Deferred.succeed(ownerRelease, undefined));
+      yield* Effect.addFinalizer(() => Deferred.succeed(exited, undefined));
+      if (ownerState !== "masked") yield* Fiber.join(owner);
+      else yield* Deferred.await(ownerHeld);
+      yield* Deferred.await(retiring);
+      const successor = yield* Effect.forkChild(
+        Scope.provide(acquire(pool, "background"), newScope),
+        { startImmediately: true },
+      );
+      assert.isUndefined(successor.pollUnsafe());
+      yield* Deferred.succeed(exited, undefined);
+      assert.equal((yield* Fiber.join(successor)).slotId, 1);
+      yield* Scope.close(oldScope, Exit.void);
+      // Closing the retired reservation must not release its replacement.
+      const blocked = yield* Effect.forkChild(Effect.scoped(acquire(pool, "background")), {
+        startImmediately: true,
+      });
+      assert.isUndefined(blocked.pollUnsafe());
+      assert.equal(retirements, 1);
+      yield* Scope.close(newScope, Exit.void);
+      assert.equal((yield* Fiber.join(blocked)).slotId, 1);
+      yield* Deferred.succeed(ownerRelease, undefined);
+      yield* Fiber.await(owner);
+    }).pipe(Effect.scoped),
+);
+
+it.effect("quarantines a watchdog retirement without termination proof", () =>
+  Effect.gen(function* () {
+    const bridge = makeCheckpointReaderAdmission();
+    const retired = yield* Deferred.make<void>();
+    const reservation = yield* Scope.make();
+    yield* Effect.addFinalizer(() => Scope.close(reservation, Exit.void));
+    const pool = yield* makeReaderPool(
+      { ...options(2), leaseWatchdogMs: 1, backgroundQueueTimeoutMs: 1 },
+      [
+        slot(),
+        {
+          ...slot(),
+          retire: () => Deferred.succeed(retired, undefined).pipe(Effect.asVoid),
+          settled: Effect.succeed(false),
+        },
+      ],
+      bridge,
+    );
+    yield* Fiber.join(
+      yield* Effect.forkChild(Scope.provide(acquire(pool, "background"), reservation)),
+    );
+    yield* Deferred.await(retired);
+    const error = yield* Effect.scoped(acquire(pool, "background")).pipe(Effect.flip);
+    assert.equal(findSqliteReaderAdmissionFailure(error)?.reason, "queue-timeout");
+    assert.equal((yield* Effect.scoped(acquire(pool, "interactive"))).slotId, 0);
+  }).pipe(Effect.scoped),
+);
+
 it.effect("closes admission and fails queued leases on database scope shutdown", () =>
   Effect.gen(function* () {
     const databaseScope = yield* Scope.make();

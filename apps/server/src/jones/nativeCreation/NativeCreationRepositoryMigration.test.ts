@@ -101,6 +101,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 150, name: "AuthSessionClientMetadata" },
         { migration_id: 151, name: "WorkspaceRuntimeUses" },
         { migration_id: 152, name: "PeerLinksAdoption" },
+        { migration_id: 153, name: "PersonalWorkstreams" },
       ],
     );
     assert.deepEqual(
