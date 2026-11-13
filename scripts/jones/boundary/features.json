@@ -3331,9 +3331,10 @@
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/scripts/jones/currentFixtures.test.ts",
         "apps/server/src/orchestration-v2/ContextHandoffService.test.ts",
-        "packages/provider-core/src/server/notification.test.ts"
+        "packages/provider-core/src/server/notification.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
-      "scope": "ETS-P v5: immutable notification wake/attempt/epoch binding, atomic post-certification peer hold, query-level retention, single-use accepted Codex witness/probe release, lifecycle fences and counted held duty. Shared EventSink and B certification edits only connect the Jones consumer. No wire enum, provider-start or linked-origin ownership changes."
+      "scope": "ETS-P v5: immutable notification wake/attempt/epoch binding, atomic post-certification peer hold, query-level retention, single-use accepted Codex witness/probe release, lifecycle fences and counted held duty. Shared EventSink and B certification edits only connect the Jones consumer. No wire enum, provider-start or linked-origin ownership changes. The runtime composition exports its existing memoized admission probe to the dependency reactor; the shared runtimeLayer.test.ts case reuses its production runtime harness to prove closed-gate retention and one open-gate successor without a synthetic probe."
     },
     {
       "id": "server-swap-cli",

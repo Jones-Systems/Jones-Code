@@ -4,5 +4,38 @@
   "jonesOwnedPaths": [],
   "hookPaths": [],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/jones/orchestration/ControlAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyReactor.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyChanges.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/RequestWatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyCommit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/jones/persistence/JonesTablePresence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/Wake.ts"
+    }
+  ]
 }

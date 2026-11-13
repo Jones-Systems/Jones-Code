@@ -309,7 +309,8 @@ const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
 
 const layerOrchestratorProvided = Orchestrator.layer.pipe(
   Layer.provide(StartRefusal.layer),
-  Layer.provide(
+  // Export this same memoized probe for the separately composed dependency reactor.
+  Layer.provideMerge(
     StartRefusalProbe.layer.pipe(
       Layer.provide(
         Layer.mergeAll(layerGoalContinuity, ProjectionStore.layer, ControlAdmission.layer),

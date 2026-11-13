@@ -45,6 +45,7 @@ import {
   CommandId,
   ContextTransferId,
   EventId,
+  EnvironmentId,
   MessageId,
   NodeId,
   RuntimeRequestId,
@@ -65,8 +66,10 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunId,
+  RunAttemptId,
   ScheduledTaskId,
   ThreadId,
+  type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Context from "effect/Context";
@@ -127,6 +130,16 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PreviewManager from "../preview/Manager.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
+import * as DependencyReactor from "../jones/threadResultDependencies/DependencyReactor.ts";
+import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
+import * as RequestWatch from "../jones/threadResultDependencies/RequestWatch.ts";
+import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
+import { DependencyWakeCommit } from "../jones/threadResultDependencies/DependencyCommit.ts";
+import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
+import { notification } from "../jones/threadResultDependencies/Wake.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
 
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
@@ -374,6 +387,239 @@ const layerTest = Layer.mergeAll(
   Layer.provide(layerProjectServiceTest),
   Layer.provide(layerPlatformTest),
 );
+
+const layerPeerWakeTest = DependencyReactor.layer.pipe(
+  Layer.provideMerge(layerTest),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
+  Layer.provideMerge(DependencyChanges.layer),
+  Layer.provide(Layer.mock(RequestWatch.RequestWatch)({ observe: () => Effect.die("unused") })),
+  Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({ call: () => Effect.die("unused") })),
+  Layer.provideMerge(ControlAdmission.layer),
+  Layer.provide(
+    Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+      getEnvironmentId: Effect.succeed(EnvironmentId.make("peer-wake-composition")),
+    }),
+  ),
+  Layer.provide(NodeCrypto.layer),
+);
+
+it.layer(layerPeerWakeTest)("production peer wake composition", (it) => {
+  it.effect(
+    "shares the configured admission gate with the reactor and releases one successor",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const store = makeDependencyStore(sql, makeJonesTablePresence(sql));
+        const threadId = ThreadId.make("peer-wake-composition");
+        const now = yield* DateTime.now;
+        yield* seedProject({
+          projectId: ProjectId.make("peer-wake-project"),
+          title: "Peer wake",
+          workspaceRoot: process.cwd(),
+          defaultModelSelection: modelSelection,
+          createdAt: DateTime.formatIso(now),
+        });
+        let sequence = 0;
+        const event = (value: Omit<OrchestrationV2DomainEvent, "id" | "occurredAt">) =>
+          ({
+            ...value,
+            id: EventId.make(`peer-wake:${++sequence}`),
+            occurredAt: now,
+          }) as OrchestrationV2DomainEvent;
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("peer-wake:create"),
+          threadId,
+          projectId: ProjectId.make("peer-wake-project"),
+          title: "Peer wake composition",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* store.prepare({
+              dependencyId: "peer-wake",
+              operationId: "peer-wake",
+              waiterThreadId: threadId,
+              waiterRunId: null,
+              targetEnvironmentId: "remote",
+              targetThreadId: threadId,
+              targetLabel: "Peer result",
+              scope: {
+                environmentId: EnvironmentId.make("local"),
+                requestNamespace: "peer",
+                thread: {
+                  threadId,
+                  providerSessionId: "fixture",
+                  providerInstanceId: modelSelection.instanceId,
+                },
+              },
+              forwardedRequestKey: "peer-wake",
+              requestDigest: "peer-wake",
+              waiterGeneration: 0,
+            });
+            yield* store.resolve("peer-wake", 0, "fulfilled", "COMPOSED_PEER_ANSWER");
+          }),
+        );
+        const dependency = (yield* store.get("peer-wake"))!;
+        const messageId = MessageId.make("peer-wake:refused");
+        yield* orchestrator
+          .dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("peer-wake:dispatch"),
+            threadId,
+            messageId,
+            text: "Peer result",
+            notification: notification(dependency),
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "agent",
+            creationSource: "server",
+          })
+          .pipe(
+            Effect.provideService(DependencyWakeCommit, {
+              dependencyId: "peer-wake",
+              generation: 0,
+              waiterThreadId: threadId,
+              messageId,
+            }),
+          );
+        const admitted = yield* orchestrator.getThreadProjection(threadId);
+        const run = admitted.runs.find((r) => r.userMessageId === messageId)!;
+        const attempt = admitted.attempts.find((a) => a.id === run.activeAttemptId)!;
+        yield* sink.writeIfRunCurrent({
+          threadId,
+          runId: run.id,
+          activeAttemptId: attempt.id,
+          expectedStatus: "starting",
+          startRefusalReason: "control_held",
+          effects: [],
+          events: [
+            event({
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              payload: { ...run, status: "failed", completedAt: now },
+            }),
+            event({
+              type: "run-attempt.updated",
+              threadId,
+              runId: run.id,
+              payload: { ...attempt, status: "failed", completedAt: now },
+            }),
+          ],
+        });
+        assert.equal((yield* store.get("peer-wake"))?.wakeHold, "held");
+        const control = yield* ControlAdmission.ControlAdmission;
+        const binding = {
+          instanceId: modelSelection.instanceId,
+          threadId,
+          nativeThreadId: "peer-wake-native",
+          producer: {
+            instanceId: modelSelection.instanceId,
+            providerSessionId: "peer-wake-session",
+            runtimeGeneration: "peer-wake-generation",
+          },
+        };
+        const hold = yield* control.holdStartup(binding);
+        yield* (yield* DependencyReactor.DependencyReactor).start();
+        const changes = yield* DependencyChanges.DependencyChanges;
+        const updates = yield* changes.subscribe;
+        const witness = (key: string, ordinal: number) =>
+          Effect.gen(function* () {
+            const witnessRun = {
+              ...run,
+              id: RunId.make(`peer-wake:${key}`),
+              ordinal,
+              userMessageId: MessageId.make(`peer-wake:${key}`),
+              activeAttemptId: RunAttemptId.make(`peer-wake:${key}`),
+              status: "running" as const,
+              startedAt: now,
+              completedAt: null,
+            };
+            const witnessAttempt = {
+              ...attempt,
+              id: witnessRun.activeAttemptId,
+              runId: witnessRun.id,
+              status: "running" as const,
+              startedAt: now,
+              completedAt: null,
+            };
+            const accepted = event({
+              type: "provider-turn.updated",
+              threadId,
+              runId: witnessRun.id,
+              driver,
+              payload: {
+                id: ProviderTurnId.make(`peer-wake:${key}`),
+                providerThreadId: attempt.providerThreadId,
+                runAttemptId: witnessAttempt.id,
+                nodeId: witnessAttempt.rootNodeId,
+                ordinal,
+                nativeTurnRef: { driver, nativeId: `peer-wake:${key}`, strength: "strong" },
+                status: "running",
+                startedAt: now,
+                completedAt: null,
+              },
+            });
+            yield* sink.write({
+              events: [
+                event({ type: "run.created", threadId, runId: witnessRun.id, payload: witnessRun }),
+                event({
+                  type: "run-attempt.created",
+                  threadId,
+                  runId: witnessRun.id,
+                  payload: witnessAttempt,
+                }),
+              ],
+            });
+            yield* sink.write({ events: [accepted] });
+            yield* Stream.fromSubscription(updates).pipe(
+              Stream.mapEffect(() => store.get("peer-wake")),
+              Stream.filter((d) => d?.wakeHold === "held" || d?.state === "delivered"),
+              Stream.take(1),
+              Stream.runDrain,
+            );
+            return { accepted, witnessRun };
+          });
+        const blocked = yield* witness("closed", 2);
+        assert.equal((yield* store.get("peer-wake"))?.wakeHold, "held");
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 2);
+        yield* control.resolveStartup(hold, { kind: "not_applied" });
+        yield* sink.write({
+          events: [
+            event({
+              type: "run.updated",
+              threadId,
+              runId: blocked.witnessRun.id,
+              payload: { ...blocked.witnessRun, status: "completed", completedAt: now },
+            }),
+          ],
+        });
+        const released = yield* witness("open", 3);
+        assert.equal((yield* store.get("peer-wake"))?.state, "delivered");
+        assert.equal((yield* store.get("peer-wake"))?.wakeHold, "consumed");
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(after.runs, 4);
+        assert.lengthOf(
+          after.messages.filter((m) => m.notification?.detail?.includes("COMPOSED_PEER_ANSWER")),
+          2,
+        );
+        yield* sink.write({
+          events: [{ ...released.accepted, id: EventId.make("peer-wake:duplicate") }],
+        });
+        yield* changes.publish({ sequence: yield* store.sequence, threadIds: [threadId] });
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 4);
+      }),
+  );
+});
 
 const layerLegacyImportTest = Layer.merge(RuntimeLayer.layer, layerProjectionReplayTest).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
