@@ -459,9 +459,10 @@
         "packages/shared/src/nodeSqliteClient.test.ts",
         "apps/server/src/persistence/Sqlite.test.ts",
         "packages/shared/src/jones/checkpointContention.test.ts",
-        "packages/shared/src/jones/sqliteWriterAdmission.test.ts"
+        "packages/shared/src/jones/sqliteWriterAdmission.test.ts",
+        "apps/server/src/jones/persistence/ReaderCheckpointPressure.test.ts"
       ],
-      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions. Real server persistence with a two-reader pool discriminates retained-snapshot admission at the current 128 MiB WAL limit versus a test-local 32 MiB override, with native checkpoint and recovery receipts."
     },
     {
       "id": "usage",
