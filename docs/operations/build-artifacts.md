@@ -193,6 +193,7 @@ These facts hold for the DMG above and affect any install or update plan:
   scratch helper and directory (`rm "$S/helper.py"; rmdir "$S"`). Report
   observed free space separately from logical bytes: shared clone blocks and
   local snapshots can make physical reclaim much smaller.
+
 - The DMG is named `T3-Code-VERSION-arm64.dmg`, but it contains `Jones Code.app`
   with bundle identifier `com.t3tools.t3code`. Upstream T3 Code builds, such as
   `T3 Code (Nightly).app` from the upstream installers or Homebrew cask, use the

@@ -678,8 +678,10 @@ for name in ('database-retirement.json', '.database-retirement.json.retiring-' +
 `),
 );
 
-NodeTest.test("DBR T1/T2: exact DB-only retirement survives generation changes and is idempotent", () =>
-  databasePython(String.raw`
+NodeTest.test(
+  "DBR T1/T2: exact DB-only retirement survives generation changes and is idempotent",
+  () =>
+    databasePython(String.raw`
 p = ready()
 protected = {path: (database_file(path), path.read_bytes()) for pair in pairs for path in pair.iterdir() if not path.name.startswith('state.sqlite')}
 protected.update({path: (database_file(path), None) for path in live.iterdir()})
@@ -699,19 +701,26 @@ assert inspect()['logicalBytes'] == 18
 
 const databaseDrifts = {
   binding: "durable(manifest_path, dict(active, environmentId='changed'))",
-  receipt: "durable(pairs[0].parent / 'receipt.json', dict(read(pairs[0].parent / 'receipt.json'), note='changed'))",
-  journal: "durable(pairs[2].parent / 'journal.json', dict(read(pairs[2].parent / 'journal.json'), note='changed'))",
+  receipt:
+    "durable(pairs[0].parent / 'receipt.json', dict(read(pairs[0].parent / 'receipt.json'), note='changed'))",
+  journal:
+    "durable(pairs[2].parent / 'journal.json', dict(read(pairs[2].parent / 'journal.json'), note='changed'))",
   pair: "path = pairs[0] / 'pair.json'; path.write_bytes(path.read_bytes() + b' ')",
-  settings: "path = pairs[0] / 'settings.json'; path.rename(root / 'saved'); path.write_bytes(b'{}')",
-  replacement: "path = pairs[0] / 'state.sqlite'; path.rename(root / 'saved'); path.write_bytes(b'{}')",
+  settings:
+    "path = pairs[0] / 'settings.json'; path.rename(root / 'saved'); path.write_bytes(b'{}')",
+  replacement:
+    "path = pairs[0] / 'state.sqlite'; path.rename(root / 'saved'); path.write_bytes(b'{}')",
   resized: "(pairs[0] / 'state.sqlite').write_bytes(b'changed')",
   touched: "path = pairs[0] / 'state.sqlite'; os.utime(path, ns=(1, 1))",
   extra: "(pairs[0] / 'extra').write_bytes(b'')",
-  symlink: "path = pairs[0] / 'state.sqlite'; path.unlink(); path.symlink_to(live / 'state.sqlite')",
+  symlink:
+    "path = pairs[0] / 'state.sqlite'; path.unlink(); path.symlink_to(live / 'state.sqlite')",
   hardlink: "os.link(pairs[0] / 'state.sqlite', root / 'extra-link')",
   scope: "path = pairs[0] / 'pair.json'; durable(path, dict(read(path), stateScope='profile'))",
-  flags: "path = pairs[0] / 'pair.json'; value = read(path); value['files']['-wal'] = False; durable(path, value)",
-  unfinished: "path = pairs[0].parent / 'receipt.json'; durable(path, dict(read(path), phase='preparing'))",
+  flags:
+    "path = pairs[0] / 'pair.json'; value = read(path); value['files']['-wal'] = False; durable(path, value)",
+  unfinished:
+    "path = pairs[0].parent / 'receipt.json'; durable(path, dict(read(path), phase='preparing'))",
 };
 for (const [name, mutation] of Object.entries(databaseDrifts)) {
   NodeTest.test(`DBR T3: pre-effect ${name} drift preserves all targets`, () =>
@@ -729,19 +738,26 @@ assert all((pair / 'state.sqlite-wal').exists() for pair in pairs)
 }
 
 const databaseHolds = {
-  trial: "d = make_backup('warm', 'e' * 64).parent; path = d / 'journal.json'; durable(path, dict(read(path), phase='trial'))",
-  blocked: "d = make_backup('warm', 'e' * 64).parent; path = d / 'journal.json'; durable(path, dict(read(path), phase='blocked'))",
+  trial:
+    "d = make_backup('warm', 'e' * 64).parent; path = d / 'journal.json'; durable(path, dict(read(path), phase='trial'))",
+  blocked:
+    "d = make_backup('warm', 'e' * 64).parent; path = d / 'journal.json'; durable(path, dict(read(path), phase='blocked'))",
   intent: "d = make_backup('warm', 'e' * 64).parent; (d / 'journal.json').unlink()",
   preparation: "d = warm_root / ('e' * 64); durable(d / 'prepare-intent.json', {})",
-  request: "d = warm_root / ('e' * 64); durable(d / 'activation-request.json', {'protocol': 1, 'transactionId': d.name, 'expected': active})",
+  request:
+    "d = warm_root / ('e' * 64); durable(d / 'activation-request.json', {'protocol': 1, 'transactionId': d.name, 'expected': active})",
   empty: "(warm_root / ('e' * 64)).mkdir()",
   retirement: "d = make_backup('warm', 'e' * 64).parent; durable(d / 'retirement-intent.json', {})",
-  cleanup: "path = pairs[2].parent / 'journal.json'; durable(path, dict(read(path), recoveryReserveCleanup='held'))",
+  cleanup:
+    "path = pairs[2].parent / 'journal.json'; durable(path, dict(read(path), recoveryReserveCleanup='held'))",
   cold: "path = pairs[2].parent / 'intent.json'; value = dict(read(path), maintenanceGeneration='cold'); durable(path, value); path = pairs[2].parent / 'journal.json'; durable(path, dict(read(path), intent=value))",
   held: "d = make_backup('manual', 'e' * 64).parent; path = d / 'receipt.json'; durable(path, dict(read(path), phase='held'))",
-  preparing: "d = make_backup('manual', 'e' * 64).parent; path = d / 'receipt.json'; durable(path, dict(read(path), phase='preparing'))",
-  audit_intent: "durable(manifest_path.parent / 'jones-install-retention' / ('e' * 64 + '.json'), {'protocol': 1, 'status': 'intent'})",
-  audit_held: "durable(manifest_path.parent / 'jones-install-retention' / ('e' * 64 + '.json'), {'protocol': 1, 'status': 'held'})",
+  preparing:
+    "d = make_backup('manual', 'e' * 64).parent; path = d / 'receipt.json'; durable(path, dict(read(path), phase='preparing'))",
+  audit_intent:
+    "durable(manifest_path.parent / 'jones-install-retention' / ('e' * 64 + '.json'), {'protocol': 1, 'status': 'intent'})",
+  audit_held:
+    "durable(manifest_path.parent / 'jones-install-retention' / ('e' * 64 + '.json'), {'protocol': 1, 'status': 'held'})",
   maintenance: "(manifest_path.parent / 'jones-maintenance').mkdir()",
 };
 for (const [name, mutation] of Object.entries(databaseHolds)) {
@@ -755,8 +771,10 @@ assert tree() == before and not (manifest_path.parent / DATABASE_RETIREMENT_STOR
   );
 }
 for (const payload of ["empty", "partial", "absent"]) {
-  NodeTest.test(`DBR T4: terminal pre-effect sibling with ${payload} backup passes bounded admission`, () =>
-    databasePython(String.raw`
+  NodeTest.test(
+    `DBR T4: terminal pre-effect sibling with ${payload} backup passes bounded admission`,
+    () =>
+      databasePython(String.raw`
 pair = make_backup('warm', 'e' * 64); directory = pair.parent
 for path in pair.iterdir(): path.unlink()
 if '${payload}' == 'partial': (pair / 'state.sqlite').write_bytes(b'partial')
@@ -772,13 +790,20 @@ ready()
 // Forks die inside the real filesystem calls, rather than after a publisher returns.
 const databaseCrashes = {
   directory: "if event == 'fsync' and recdir.exists() and not list(recdir.iterdir()): crash()",
-  record_scratch: "if event == 'replace' and str(dst) == str(rec) and '.intent-' in str(src): crash()",
-  record_rename: "if event == 'fsync' and rec.exists() and not (pairs[0] / DATABASE_RETIREMENT_MARKER).exists(): crash()",
-  marker_scratch: "if event == 'replace' and str(dst) == str(marker) and '.retiring-' in str(src): crash()",
-  marker_rename: "if event == 'fsync' and marker.exists() and (pairs[0] / 'state.sqlite').exists(): crash()",
-  unlink: "if event == 'fsync' and marker.exists() and not (pairs[0] / 'state.sqlite').exists(): crash()",
-  marker_retired: "if event == 'fsync' and marker.exists() and read(marker)['status'] == 'retired': crash()",
-  record_retired: "if event == 'replace' and str(dst) == str(rec) and '.retired-' in str(src): crash()",
+  record_scratch:
+    "if event == 'replace' and str(dst) == str(rec) and '.intent-' in str(src): crash()",
+  record_rename:
+    "if event == 'fsync' and rec.exists() and not (pairs[0] / DATABASE_RETIREMENT_MARKER).exists(): crash()",
+  marker_scratch:
+    "if event == 'replace' and str(dst) == str(marker) and '.retiring-' in str(src): crash()",
+  marker_rename:
+    "if event == 'fsync' and marker.exists() and (pairs[0] / 'state.sqlite').exists(): crash()",
+  unlink:
+    "if event == 'fsync' and marker.exists() and not (pairs[0] / 'state.sqlite').exists(): crash()",
+  marker_retired:
+    "if event == 'fsync' and marker.exists() and read(marker)['status'] == 'retired': crash()",
+  record_retired:
+    "if event == 'replace' and str(dst) == str(rec) and '.retired-' in str(src): crash()",
 };
 for (const [name, point] of Object.entries(databaseCrashes)) {
   NodeTest.test(`DBR T5: process death at ${name} publication window resumes exact P`, () =>
@@ -909,8 +934,10 @@ else:
   }
 }
 
-NodeTest.test("DBR T7: pending records hold generic readers and missing generations still fail closure", () =>
-  databasePython(String.raw`
+NodeTest.test(
+  "DBR T7: pending records hold generic readers and missing generations still fail closure",
+  () =>
+    databasePython(String.raw`
 p = ready(); plan = database_fresh_plan(active, database_selection(selection))
 directory = manifest_path.parent / DATABASE_RETIREMENT_STORE; directory.mkdir()
 rec = directory / (p + '.json'); rec.write_bytes(database_record(plan, p, 'intent'))
@@ -925,8 +952,10 @@ else: raise AssertionError('closure was weakened')
 `),
 );
 
-NodeTest.test("DBR T8: released inventory guard still holds with the retirement guard disabled", () =>
-  databasePython(String.raw`
+NodeTest.test(
+  "DBR T8: released inventory guard still holds with the retirement guard disabled",
+  () =>
+    databasePython(String.raw`
 require_unretired_pair = lambda directory: None
 prove_quiescence = lambda *args: (_ for _ in ()).throw(AssertionError('quiescence reached'))
 for status in ('retiring', 'retired', 'scratch'):
@@ -950,7 +979,9 @@ NodeTest.test("DBR T2/T9: actual CLI uses existing read-only lock, exact flags a
     NodeAssert.strict.equal(jonesNativeHelperSource.split(platformGuard).length, 2);
     await NodeFSP.writeFile(helper, jonesNativeHelperSource.replace(platformGuard, "\n"));
     NodeChildProcess.execFileSync("python3", ["-B", "-", root, helper], {
-      input: `${definitions}\n${databaseSeed}\n` + String.raw`
+      input:
+        `${definitions}\n${databaseSeed}\n` +
+        String.raw`
 helper = sys.argv[2]
 base = [sys.executable, '-B', helper, '--manifest', str(manifest_path)]
 args = [item for snapshot in selection for item in ('--snapshot', snapshot)]
