@@ -3570,7 +3570,10 @@
     "scripts/jones/boundary/fragments/server-swap-cli.json": "jones-owned",
     "apps/server-swap-cli/host-process.mjs": "jones-owned",
     "apps/server-swap-cli/host-process.test.cjs": "jones-owned",
-    "apps/server-swap-cli/build.test.cjs": "jones-owned"
+    "apps/server-swap-cli/build.test.cjs": "jones-owned",
+    "scripts/jones/direct-producers/server-bundle.ts": "jones-owned",
+    "scripts/jones/direct-producers/server-pack-profile.ts": "jones-owned",
+    "scripts/jones/direct-producers/server-bundle.node-test.mjs": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

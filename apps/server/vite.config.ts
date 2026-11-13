@@ -1,3 +1,4 @@
+import { serverBundlePackProfile } from "../../scripts/jones/direct-producers/server-pack-profile.ts";
 import * as NodeURL from "node:url";
 import {
   computeBuildPlaceholder,
@@ -110,9 +111,13 @@ export default mergeConfig(
         : packExecutable
           ? ["src/binMain.ts"]
           : ["src/bin.ts", "src/claude-history-worker.ts"],
-      outDir: packBootstrap ? "dist-exe" : packExecutable ? cliAssetDir : "dist",
+      outDir: packBootstrap
+        ? "dist-exe"
+        : packExecutable
+          ? cliAssetDir
+          : serverBundlePackProfile.outDir,
       sourcemap: !packExecutable,
-      clean: true,
+      clean: serverBundlePackProfile.clean,
       // SEA can only resolve built-ins; keep dynamic imports inside each emitted module.
       ...(packExecutable ? { outputOptions: { codeSplitting: false } } : {}),
       ...(packMode === "1"

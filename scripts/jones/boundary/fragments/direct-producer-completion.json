@@ -11,6 +11,14 @@
     {
       "from": "apps/server/scripts/cli.ts",
       "to": "scripts/jones/direct-producers/finite-production.ts"
+    },
+    {
+      "from": "apps/server/scripts/cli.ts",
+      "to": "scripts/jones/direct-producers/server-pack-profile.ts"
+    },
+    {
+      "from": "apps/server/vite.config.ts",
+      "to": "scripts/jones/direct-producers/server-pack-profile.ts"
     }
   ]
 }

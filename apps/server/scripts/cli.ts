@@ -6,6 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Runtime from "effect/Runtime";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -13,6 +14,10 @@ import {
   withFiniteProduction,
   type FiniteProductionEvidence,
 } from "../../../scripts/jones/direct-producers/finite-production.ts";
+import {
+  assertManagedServerBundle,
+  serverBundlePackProfile,
+} from "../../../scripts/jones/direct-producers/server-pack-profile.ts";
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
 import { injectLinuxArm64Sea } from "../../../scripts/lib/linux-arm64-sea.ts";
@@ -94,7 +99,7 @@ const buildCmd = Command.make(
           Effect.gen(function* () {
             yield* Effect.log("[cli] Running tsdown...");
             yield* runCommand(
-              ChildProcess.make(process.execPath, ["--run", "build:bundle"], {
+              ChildProcess.make(process.execPath, ["--run", "build:bundle:internal"], {
                 cwd: serverDir,
                 stdout: config.verbose ? "inherit" : "ignore",
                 stderr: "inherit",
@@ -126,6 +131,52 @@ const buildCmd = Command.make(
       );
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
+
+let managedBundleExitCode: number | undefined;
+
+const buildBundleCmd = Command.make("build-bundle", {}, () =>
+  Effect.gen(function* () {
+    assertManagedServerBundle([], process.env.T3CODE_PACK_EXE);
+    const path = yield* Path.Path;
+    const repoRoot = yield* RepoRoot;
+    const serverDir = path.join(repoRoot, "apps/server");
+    return yield* withFiniteProduction(
+      {
+        producer: "jones-server-bundle",
+        worktree: repoRoot,
+        root: path.join(serverDir, serverBundlePackProfile.outDir),
+      },
+      (evidence) =>
+        Effect.gen(function* () {
+          const command = yield* resolveSpawnCommand("vp", ["pack"]);
+          yield* runCommand(
+            ChildProcess.make(command.command, command.args, {
+              cwd: serverDir,
+              stdout: "inherit",
+              stderr: "inherit",
+              shell: command.shell,
+              // oxlint-disable-next-line t3code/no-global-process-runtime -- The native spawner ABI determines detached-session accounting.
+              detached: process.platform !== "win32",
+            }),
+            evidence.spawn,
+          ).pipe(
+            Effect.tap(() => Effect.sync(evidence.leaderExited)),
+            Effect.tapError((error) =>
+              error._tag === "ServerCliCommandExitError"
+                ? Effect.sync(evidence.leaderExited)
+                : Effect.void,
+            ),
+          );
+        }),
+    );
+  }).pipe(
+    Effect.tapError((error) =>
+      Effect.sync(() => {
+        if (error._tag === "ServerCliCommandExitError") managedBundleExitCode = error.exitCode;
+      }),
+    ),
+  ),
+).pipe(Command.withDescription("Managed default server bundle; no pack arguments."));
 
 const buildExeCmd = Command.make(
   "build-exe",
@@ -275,11 +326,15 @@ const publishCmd = Command.make(
 
 const cli = Command.make("cli").pipe(
   Command.withDescription("T3 server build & publish CLI."),
-  Command.withSubcommands([buildCmd, buildExeCmd, publishCmd]),
+  Command.withSubcommands([buildCmd, buildBundleCmd, buildExeCmd, publishCmd]),
 );
 
 Command.run(cli, { version: "0.0.0" }).pipe(
   Effect.scoped,
   Effect.provide([Logger.layer([Logger.consolePretty()]), NodeServices.layer]),
-  NodeRuntime.runMain,
+  (effect) =>
+    NodeRuntime.runMain(effect, {
+      teardown: (exit, onExit) =>
+        Runtime.defaultTeardown(exit, (code) => onExit(managedBundleExitCode ?? code)),
+    }),
 );
