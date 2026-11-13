@@ -1177,11 +1177,12 @@ def retirement_context(active, transaction_id):
     for directory, marker, database_name in ((tx / 'previous-pair', 'pair.json', 'state.sqlite'), (tx / 'advanced-state', 'retained.json', pathlib.Path(prior['databasePath']).name)):
         if not directory.exists(): continue
         if directory.is_symlink() or directory.resolve(strict=True) != directory: raise SelectionRefused('unknown-state')
-        evidence, _, _ = bounded_native_json(directory / marker)
+        evidence, pair_raw, _ = bounded_native_json(directory / marker)
         if evidence.get('expected' if marker == 'pair.json' else 'previous') != prior:
             raise SelectionRefused('unknown-state')
+        if marker == 'pair.json': database_marker_state(directory, 'warm', transaction_id, pair_raw)
         names = [database_name + suffix for suffix in ('', '-wal', '-shm')] + list(SETTINGS) + ['profile']
-        if any(child.name not in names + [marker] for child in directory.iterdir()): raise SelectionRefused('unknown-payload')
+        if any(child.name not in names + [marker] + ([DATABASE_RETIREMENT_MARKER] if marker == 'pair.json' else []) for child in directory.iterdir()): raise SelectionRefused('unknown-payload')
         allowed.extend((directory / name, None) for name in names)
     allowed.extend((derived[key], None) for key in ('incomingBundle', 'previousBundle') if key in journal)
     for reserve in journal.get('recoveryReserves', []):
@@ -1895,7 +1896,12 @@ def warm_retention_inventory(retiring=None):
         for name, marker, database in (('previous-pair', 'pair.json', 'state.sqlite'),
                                       ('advanced-state', 'retained.json', pathlib.Path(expected['databasePath']).name)):
             if name not in names: continue
-            allowed_payload = {database + suffix for suffix in ('', '-wal', '-shm')} | set(SETTINGS) | {'profile', marker}
+            if name == 'previous-pair':
+                pair_path = directory / name / marker
+                _, pair_raw, _ = bounded_native_json(pair_path)
+                if database_marker_state(directory / name, 'warm', identifier, pair_raw) == 'retired':
+                    bindings.append([name + '/' + DATABASE_RETIREMENT_MARKER, digest(directory / name / DATABASE_RETIREMENT_MARKER)])
+            allowed_payload = {database + suffix for suffix in ('', '-wal', '-shm')} | set(SETTINGS) | {'profile', marker} | ({DATABASE_RETIREMENT_MARKER} if name == 'previous-pair' else set())
             if any(child.name not in allowed_payload for child in (directory / name).iterdir()):
                 raise RuntimeError('Unknown warm recovery payload; retention held.')
         for name in ('recovery-reserve.bin', 'recovery-journal-reserve.bin'):
@@ -1908,8 +1914,359 @@ def warm_retention_inventory(retiring=None):
         snapshot.append({'transactionId': identifier, 'identity': identity, 'records': bindings})
     return root, records, snapshot
 
+DATABASE_RETIREMENT_MARKER = 'database-retirement.json'
+DATABASE_RETIREMENT_STORE = 'jones-database-retirement'
+DATABASE_SUFFIXES = ('', '-wal', '-shm')
+
+def database_hex(value):
+    return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
+
+def database_canon(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+
+def database_file(path):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_dev != path.parent.stat().st_dev:
+        raise SelectionRefused('pair-inventory-changed')
+    return {'name': path.name, 'device': str(info.st_dev), 'inode': str(info.st_ino), 'bytes': info.st_size,
+            'mode': stat.S_IMODE(info.st_mode), 'mtimeNs': info.st_mtime_ns}
+
+def database_read(path, limit=1024 * 1024):
+    value, raw, _ = bounded_native_json(path, limit)
+    database_file(path)
+    return value, raw
+
+def database_binding(active):
+    if type(active.get('protocol')) is not int or active['protocol'] != PROTOCOL or active.get('owner') != 'desktop' or pathlib.Path(active['home']) / 'runtime' / 'jones-active-install.json' != manifest_path:
+        raise SelectionRefused('unknown-state')
+    return {key: active[key] for key in ('protocol', 'owner', 'home', 'databasePath', 'profile', 'environmentId')}
+
+def database_directory(store, identifier):
+    if store not in ('manual', 'warm') or not database_hex(identifier): raise SelectionRefused('invalid-snapshot')
+    return manifest_path.parent / ('jones-manual-installs' if store == 'manual' else 'jones-updates/transactions') / identifier
+
+def database_selection(selection):
+    if not selection or len(selection) > 1000: raise SelectionRefused('invalid-snapshot')
+    parsed = []
+    for item in selection:
+        parts = item.split(':')
+        if len(parts) != 2: raise SelectionRefused('invalid-snapshot')
+        if parts[0] not in ('manual', 'warm') or not database_hex(parts[1]): raise SelectionRefused('invalid-snapshot')
+        parsed.append(tuple(parts))
+    if len(set(parsed)) != len(parsed): raise SelectionRefused('invalid-snapshot')
+    return sorted(parsed)
+
+def database_record(plan, p, status):
+    value = {'protocol': 1, 'operation': 'database-retirement', 'status': status, 'planSha256': p, 'plan': plan}
+    if status == 'retired': value['logicalBytes'] = sum(t['bytes'] for s in plan['snapshots'] for t in s['targets'])
+    return database_canon(value)
+
+def database_marker(snap, p, status):
+    return database_canon(dict({key: snap[key] for key in ('store', 'transactionId', 'pairIdentity', 'pairFile', 'pairSha256', 'targets')},
+                               protocol=1, operation='database-retirement', status=status, planSha256=p))
+
+def database_scratch(target, p, status):
+    return target.with_name('.' + target.name + '.' + status + '-' + p + '.pending')
+
+def database_artifacts(target, p, raws, recover=False):
+    found = []
+    for path in sorted(target.parent.iterdir()):
+        if not path.name.startswith('.' + target.name + '.'): continue
+        matches = [raw for status, raw in raws.items() if path == database_scratch(target, p, status)]
+        if len(matches) != 1: raise SelectionRefused('unknown-publication-artifact')
+        raw = matches[0]
+        metadata = database_file(path)
+        if metadata['bytes'] > len(raw): raise SelectionRefused('unknown-publication-artifact')
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(descriptor)
+            if (str(info.st_dev), str(info.st_ino)) != (metadata['device'], metadata['inode']): raise SelectionRefused('unknown-publication-artifact')
+            content = os.read(descriptor, len(raw) + 1)
+        finally: os.close(descriptor)
+        if not raw.startswith(content): raise SelectionRefused('unknown-publication-artifact')
+        found.append(path.name)
+        if recover:
+            parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                if [os.fstat(parent).st_dev, os.fstat(parent).st_ino] != retention_identity(path.parent) or database_file(path) != metadata:
+                    raise SelectionRefused('unknown-publication-artifact')
+                os.unlink(path.name, dir_fd=parent)
+                os.fsync(parent)
+            finally: os.close(parent)
+    return found
+
+def database_publish(target, raw, p, status, first=False):
+    if first and (target.exists() or target.is_symlink()): raise SelectionRefused('unknown-retirement')
+    scratch = database_scratch(target, p, status)
+    descriptor = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'wb') as stream:
+        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+    os.replace(scratch, target)
+    sync_parent(target)
+    _, actual = database_read(target, max(1024 * 1024, len(raw)))
+    if actual != raw: raise SelectionRefused('unknown-publication-artifact')
+
+def database_records():
+    directory = manifest_path.parent / DATABASE_RETIREMENT_STORE
+    if not directory.exists() and not directory.is_symlink(): return directory, {}, []
+    retention_identity(directory)
+    entries = sorted(directory.iterdir())
+    if len(entries) > 2000: raise SelectionRefused('database-retirement-pending')
+    records, scratches = {}, []
+    for path in entries:
+        if path.name.startswith('.'):
+            parts = path.name.split('.')
+            if len(parts) != 5 or parts[0] != '' or parts[2] != 'json' or parts[4] != 'pending' or not database_hex(parts[1]) or parts[3] not in ('intent-' + parts[1], 'retired-' + parts[1]):
+                raise SelectionRefused('unknown-publication-artifact')
+            database_file(path)
+            scratches.append((parts[1], path.name))
+            continue
+        p = path.stem
+        if path.name != p + '.json' or not database_hex(p): raise SelectionRefused('unknown-publication-artifact')
+        value, raw = database_read(path, 32 * 1024 * 1024)
+        plan, status = value.get('plan'), value.get('status')
+        if not isinstance(plan, dict) or status not in ('intent', 'retired') or retirement_digest(plan) != p or raw != database_record(plan, p, status):
+            raise SelectionRefused('unknown-retirement')
+        records[p] = value
+    return directory, records, scratches
+
+def database_retirement_pending():
+    try:
+        _, records, scratches = database_records()
+        if scratches or any(v['status'] != 'retired' for v in records.values()): raise SelectionRefused('database-retirement-pending')
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, SelectionRefused):
+        raise RuntimeError('Unsettled database retirement; retention held.')
+
+def database_marker_state(pair, store, identifier, pair_raw):
+    marker = pair / DATABASE_RETIREMENT_MARKER
+    if not marker.exists() and not marker.is_symlink() and not any(c.name.startswith('.' + DATABASE_RETIREMENT_MARKER + '.') for c in pair.iterdir()): return None
+    try:
+        if any(c.name.startswith('.' + DATABASE_RETIREMENT_MARKER + '.') for c in pair.iterdir()): raise ValueError()
+        value, raw = database_read(marker)
+        advertised = json.loads(pair_raw).get('files', {})
+        names = ['state.sqlite' + suffix for suffix, exists in advertised.items() if exists is True and suffix in DATABASE_SUFFIXES]
+        targets = value['targets']
+        if value.get('protocol') != 1 or value.get('operation') != 'database-retirement' or value.get('status') != 'retired' or not database_hex(value.get('planSha256')) or value.get('store') != store or value.get('transactionId') != identifier or value.get('pairSha256') != hashlib.sha256(pair_raw).hexdigest() or value.get('pairIdentity') != retention_identity(pair) or value.get('pairFile') != database_file(pair / 'pair.json') or not isinstance(targets, list): raise ValueError()
+        if sorted(t['name'] for t in targets) != sorted(names) or any((pair / name).exists() or (pair / name).is_symlink() for name in names): raise ValueError()
+        return 'retired'
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, SelectionRefused):
+        raise RuntimeError('Unsettled database retirement; retention held.')
+
+def database_admission(active, exempt=None):
+    require_retention_exclusion()
+    database_binding(active)
+    maintenance = manifest_path.parent / 'jones-maintenance'
+    if maintenance.exists() or maintenance.is_symlink(): raise SelectionRefused('maintenance-pending')
+    inspect_selection_transactions(active)
+    warm = manifest_path.parent / 'jones-updates' / 'transactions'
+    if warm.exists():
+        for directory in warm.iterdir():
+            if not (directory / 'journal.json').exists(): raise SelectionRefused('activation-pending')
+            for name in ('intent.json', 'journal.json'):
+                path = directory / name
+                if not path.exists(): continue
+                value, _ = database_read(path)
+                if (name == 'intent.json' and any(k in value for k in ('kind', 'maintenanceGeneration', 'handoffSha256', 'stateTransaction'))) or (name == 'journal.json' and value.get('recoveryReserveCleanup') == 'held'):
+                    raise SelectionRefused('reconciliation-required')
+    manual = manifest_path.parent / 'jones-manual-installs'
+    if manual.exists() or manual.is_symlink():
+        retention_identity(manual)
+        entries = list(manual.iterdir())
+        if len(entries) > 1000: raise SelectionRefused('unknown-state')
+        for directory in entries:
+            if not database_hex(directory.name): raise SelectionRefused('unknown-state')
+            retention_identity(directory)
+            value, _ = database_read(directory / 'receipt.json')
+            if value.get('protocol') != 1 or value.get('operation') != 'manual-install' or value.get('transactionId') != directory.name or value.get('phase') != 'launched' or value.get('recoveryReserveCleanup') == 'held': raise SelectionRefused('reconciliation-required')
+    audit = manifest_path.parent / 'jones-install-retention'
+    if audit.exists() or audit.is_symlink():
+        retention_identity(audit)
+        entries = list(audit.iterdir())
+        if len(entries) > 1000: raise SelectionRefused('unknown-state')
+        for path in entries:
+            value, _ = database_read(path)
+            if value.get('protocol') != 1 or value.get('status') != 'removed': raise SelectionRefused('reconciliation-required')
+    directory, records, scratches = database_records()
+    if any(p != exempt and v['status'] == 'intent' for p, v in records.items()) or any(p != exempt for p, _ in scratches): raise SelectionRefused('database-retirement-pending')
+    return directory, records, scratches
+
+def database_pair_metadata(active, store, identifier):
+    directory = database_directory(store, identifier)
+    identity = retention_identity(directory)
+    if store == 'manual':
+        receipt, raw = database_read(directory / 'receipt.json')
+        if receipt.get('protocol') != 1 or receipt.get('operation') != 'manual-install' or receipt.get('transactionId') != identifier or receipt.get('phase') != 'launched' or receipt.get('recoveryReserveCleanup') == 'held': raise SelectionRefused('reconciliation-required')
+        expected, record_sha = json.loads(receipt['originalManifest']), hashlib.sha256(raw).hexdigest()
+        record = receipt
+    else:
+        intent, intent_raw = database_read(directory / 'intent.json')
+        journal, journal_raw = database_read(directory / 'journal.json')
+        if journal.get('intent') != intent or intent.get('protocol') != 1 or intent.get('transactionId') != identifier or journal.get('phase') != 'resumed' or journal.get('recoveryReserveCleanup') == 'held': raise SelectionRefused('reconciliation-required')
+        expected, record = intent['expected'], journal
+        record_sha = retirement_digest([hashlib.sha256(intent_raw).hexdigest(), hashlib.sha256(journal_raw).hexdigest()])
+    pair = directory / 'previous-pair'
+    if (store == 'warm' or 'pairedState' in record) and record.get('pairedState') != str(pair): raise SelectionRefused('pair-inventory-changed')
+    if any(expected.get(k) != active[k] for k in ('home', 'databasePath', 'profile', 'environmentId')): raise SelectionRefused('plan-changed')
+    pair_identity = retention_identity(pair)
+    value, raw = database_read(pair / 'pair.json')
+    if value.get('stateScope') != 'database-settings' or value.get('expected') != expected: raise SelectionRefused('pair-inventory-changed')
+    for field, keys in (('files', set(DATABASE_SUFFIXES)), ('settings', set(SETTINGS))):
+        flags = value.get(field)
+        if not isinstance(flags, dict) or set(flags) != keys or any(type(v) is not bool for v in flags.values()): raise SelectionRefused('pair-inventory-changed')
+    if not value['files'][''] and (value['files']['-wal'] or value['files']['-shm']): raise SelectionRefused('pair-inventory-changed')
+    preserved = [database_file(pair / name) for name in sorted(SETTINGS) if value['settings'][name]]
+    snap = {'store': store, 'transactionId': identifier, 'directoryIdentity': identity, 'recordSha256': record_sha,
+            'pairIdentity': pair_identity, 'pairFile': database_file(pair / 'pair.json'), 'pairSha256': hashlib.sha256(raw).hexdigest(), 'preserved': preserved}
+    return pair, value, snap
+
+def database_live_exclusion(active, pair, targets):
+    database = pathlib.Path(active['databasePath'])
+    state = database.parent.resolve(strict=True)
+    runtime = manifest_path.parent
+    if state == runtime or state.is_relative_to(runtime) or pair == state or pair.is_relative_to(state) or state.is_relative_to(pair): raise SelectionRefused('live-topology-overlap')
+    if len({pair.stat().st_dev, state.stat().st_dev, runtime.stat().st_dev}) != 1: raise SelectionRefused('pair-inventory-changed')
+    for suffix in DATABASE_SUFFIXES:
+        try: info = pathlib.Path(str(database) + suffix).stat()
+        except FileNotFoundError: continue
+        if any((str(info.st_dev), str(info.st_ino)) == (t['device'], t['inode']) for t in targets): raise SelectionRefused('live-identity-collision')
+
+def database_fresh_plan(active, selection):
+    snapshots = []
+    for store, identifier in selection:
+        pair, value, snap = database_pair_metadata(active, store, identifier)
+        names = {'state.sqlite' + s for s in DATABASE_SUFFIXES if value['files'][s]}
+        allowed = names | {v['name'] for v in snap['preserved']} | {'pair.json'}
+        actual = {c.name for c in pair.iterdir()}
+        if DATABASE_RETIREMENT_MARKER in actual or any(n.startswith('.' + DATABASE_RETIREMENT_MARKER + '.') for n in actual): raise SelectionRefused('unknown-retirement')
+        if actual != allowed: raise SelectionRefused('pair-inventory-changed')
+        snap['targets'] = [database_file(pair / name) for name in sorted(names)]
+        database_live_exclusion(active, pair, snap['targets'])
+        snapshots.append(snap)
+    return {'protocol': 1, 'operation': 'database-retirement', 'stateBinding': database_binding(active), 'snapshots': snapshots}
+
+def database_reconcile(plan, snap, p, inspecting=False):
+    require_retention_exclusion()
+    active, _ = database_read(manifest_path)
+    if database_binding(active) != plan['stateBinding']: raise SelectionRefused('plan-changed')
+    pair, value, current = database_pair_metadata(active, snap['store'], snap['transactionId'])
+    if current != {k: v for k, v in snap.items() if k != 'targets'}: raise SelectionRefused('plan-changed')
+    advertised = sorted('state.sqlite' + s for s in DATABASE_SUFFIXES if value['files'][s])
+    if sorted(t['name'] for t in snap['targets']) != advertised: raise SelectionRefused('plan-changed')
+    marker = pair / DATABASE_RETIREMENT_MARKER
+    raws = {status: database_marker(snap, p, status) for status in ('retiring', 'retired')}
+    artifacts = database_artifacts(marker, p, raws)
+    if artifacts and not inspecting: raise SelectionRefused('unknown-publication-artifact')
+    actual = {c.name for c in pair.iterdir()}
+    if actual - (set(advertised) | {v['name'] for v in snap['preserved']} | {'pair.json', DATABASE_RETIREMENT_MARKER} | set(artifacts)): raise SelectionRefused('pair-inventory-changed')
+    status = None
+    if marker.exists() or marker.is_symlink():
+        _, raw = database_read(marker)
+        matches = [s for s, wanted in raws.items() if raw == wanted]
+        if len(matches) != 1: raise SelectionRefused('unknown-retirement')
+        status = matches[0]
+    remaining = []
+    for target in snap['targets']:
+        path = pair / target['name']
+        if path.exists() or path.is_symlink():
+            if database_file(path) != target or status == 'retired': raise SelectionRefused('plan-changed')
+            remaining.append(target['name'])
+        elif status is None: raise SelectionRefused('reconciliation-required')
+    database_live_exclusion(active, pair, snap['targets'])
+    return {'store': snap['store'], 'transactionId': snap['transactionId'], 'marker': status, 'remaining': remaining, 'artifacts': artifacts,
+            'role': 'active-rollback' if (snap['store'] == 'manual' and active.get('transactionId') == 'manual-' + snap['transactionId']) or active.get('transactionId') == snap['transactionId'] else 'historical'}
+
+def database_unlink(pair, identity, target):
+    descriptor = os.open(pair, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if [opened.st_dev, opened.st_ino] != identity: raise SelectionRefused('plan-changed')
+        info = os.stat(target['name'], dir_fd=descriptor, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or {'name': target['name'], 'device': str(info.st_dev), 'inode': str(info.st_ino), 'bytes': info.st_size, 'mode': stat.S_IMODE(info.st_mode), 'mtimeNs': info.st_mtime_ns} != target: raise SelectionRefused('plan-changed')
+        os.unlink(target['name'], dir_fd=descriptor)
+        os.fsync(descriptor)
+    finally: os.close(descriptor)
+
+def database_retirement_command(execute, snapshots, plan_sha=None):
+    result = {'protocol': 1, 'operation': 'database-retirement'}
+    affected = False
+    try:
+        selection = database_selection(snapshots)
+        active, _ = database_read(manifest_path)
+        directory, records, scratches = database_records()
+        matches = [(p, r) for p, r in records.items() if [(s['store'], s['transactionId']) for s in r['plan']['snapshots']] == selection]
+        if len(matches) > 1: raise SelectionRefused('unknown-retirement')
+        if matches:
+            p, record = matches[0]
+            if execute and plan_sha != p: raise SelectionRefused('database-retirement-pending')
+            plan = record['plan']; affected = True
+        else:
+            record = None
+            plan = None
+            p = plan_sha if execute else None
+            # A scratch-only intent still has a reproducible fresh plan.
+            if not execute and scratches:
+                pending = {key for key, _ in scratches}
+                if len(pending) != 1: raise SelectionRefused('database-retirement-pending')
+                p = next(iter(pending))
+        database_admission(active, exempt=p)
+        if plan is None:
+            plan = database_fresh_plan(active, selection)
+            expected = retirement_digest(plan)
+            if p is not None and p != expected: raise SelectionRefused('plan-changed')
+            p = expected
+        result['planSha256'] = p
+        if plan.get('protocol') != 1 or plan.get('operation') != 'database-retirement' or plan['stateBinding'] != database_binding(active): raise SelectionRefused('plan-changed')
+        rec = directory / (p + '.json')
+        raws = {s: database_record(plan, p, s) for s in ('intent', 'retired')}
+        artifacts = database_artifacts(rec, p, raws) if directory.exists() else []
+        affected = affected or bool(artifacts)
+        states = [database_reconcile(plan, snap, p, inspecting=True) for snap in plan['snapshots']]
+        if record is None and any(s['marker'] is not None or s['artifacts'] for s in states): raise SelectionRefused('unknown-retirement')
+        if record is not None and record['status'] == 'retired' and (artifacts or any(s['marker'] != 'retired' or s['remaining'] or s['artifacts'] for s in states)): raise SelectionRefused('reconciliation-required')
+        result.update(logicalBytes=sum(t['bytes'] for s in plan['snapshots'] for t in s['targets']), snapshots=[dict(state, targets=[{k: t[k] for k in ('name', 'bytes', 'device', 'inode')} for t in snap['targets']]) for state, snap in zip(states, plan['snapshots'])], artifacts=artifacts)
+        if not execute:
+            return dict(result, status='retired' if record and record['status'] == 'retired' else 'ready', reconciliation=bool(record or artifacts or directory.exists()))
+        if not database_hex(plan_sha) or p != plan_sha: raise SelectionRefused('plan-changed')
+        before = os.statvfs(manifest_path.parent)
+        if not directory.exists():
+            affected = True
+            directory.mkdir(mode=0o700)
+        sync_parent(directory)
+        retention_identity(directory)
+        database_artifacts(rec, p, raws, recover=True)
+        if record is None:
+            affected = True
+            database_publish(rec, raws['intent'], p, 'intent', first=True)
+            record = json.loads(raws['intent'])
+        else: sync_parent(rec)
+        if record['status'] != 'retired':
+            for snap in plan['snapshots']:
+                pair = database_directory(snap['store'], snap['transactionId']) / 'previous-pair'
+                marker = pair / DATABASE_RETIREMENT_MARKER
+                marker_raws = {s: database_marker(snap, p, s) for s in ('retiring', 'retired')}
+                database_reconcile(plan, snap, p, inspecting=True)
+                database_artifacts(marker, p, marker_raws, recover=True)
+                state = database_reconcile(plan, snap, p)
+                if state['marker'] is None: database_publish(marker, marker_raws['retiring'], p, 'retiring', first=True)
+                sync_parent(marker)
+                for target in snap['targets']:
+                    current, _ = database_read(rec, 32 * 1024 * 1024)
+                    if current != record: raise SelectionRefused('plan-changed')
+                    state = database_reconcile(plan, snap, p)
+                    if target['name'] in state['remaining']: database_unlink(pair, snap['pairIdentity'], target)
+                state = database_reconcile(plan, snap, p)
+                if state['remaining']: raise SelectionRefused('reconciliation-required')
+                if state['marker'] != 'retired': database_publish(marker, marker_raws['retired'], p, 'retired')
+            database_publish(rec, raws['retired'], p, 'retired')
+        states = [database_reconcile(plan, snap, p) for snap in plan['snapshots']]
+        after = os.statvfs(manifest_path.parent)
+        return dict(result, status='retired', snapshots=states, availableBytesBefore=before.f_bavail * before.f_frsize, availableBytesAfter=after.f_bavail * after.f_frsize)
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, SelectionRefused) as error:
+        return dict(result, status='uncertain' if execute and affected else 'refused', reason=error.reason if isinstance(error, SelectionRefused) else 'plan-changed')
+
 def install_retention_plan(in_progress=None, retiring=None):
     require_retention_exclusion()
+    database_retirement_pending()
     active, manifest_raw, manifest_info = bounded_native_json(manifest_path)
     if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop' or pathlib.Path(active['home']) / 'runtime' / 'jones-active-install.json' != manifest_path:
         raise RuntimeError('Unknown manual retention binding; preserved.')
@@ -1943,7 +2300,7 @@ def install_retention_plan(in_progress=None, retiring=None):
                 raise RuntimeError('Unfinished manual receipt; retention held.')
             if receipt.get('protocol') != 1 or receipt.get('operation') != 'manual-install' or receipt.get('transactionId') != identifier:
                 raise RuntimeError('Unknown manual receipt; retention held.')
-            pair, pair_digest, pair_identity = None, None, None
+            pair, pair_digest, pair_identity, database_marker_sha = None, None, None, None
             pair_path = directory / 'previous-pair' / 'pair.json'
             if pair_path.exists() or pair_path.is_symlink():
                 retention_identity(pair_path.parent)
@@ -1952,10 +2309,12 @@ def install_retention_plan(in_progress=None, retiring=None):
                 pair_identity = [pair_info.st_dev, pair_info.st_ino]
                 if pair.get('stateScope') != 'database-settings' or pair.get('expected') != json.loads(receipt.get('originalManifest', 'null')):
                     raise RuntimeError('Manual recovery pair no longer binds its receipt; preserved.')
+                if database_marker_state(pair_path.parent, 'manual', identifier, pair_raw) == 'retired':
+                    database_marker_sha = digest(pair_path.parent / DATABASE_RETIREMENT_MARKER)
             elif receipt.get('phase') == 'launched':
                 raise RuntimeError('Completed manual receipt lacks its recovery pair; preserved.')
             snapshots.append({'transactionId': identifier, 'identity': identity, 'receiptIdentity': [receipt_info.st_dev, receipt_info.st_ino],
-                              'receiptSha256': hashlib.sha256(raw).hexdigest(), 'pairIdentity': pair_identity, 'pairSha256': pair_digest})
+                              'receiptSha256': hashlib.sha256(raw).hexdigest(), 'pairIdentity': pair_identity, 'pairSha256': pair_digest, 'databaseMarkerSha256': database_marker_sha})
             records['manual-' + identifier] = {'receipt': receipt, 'pair': pair}
             if receipt.get('phase') != 'launched' or receipt.get('recoveryReserveCleanup') == 'held': roots.add('manual-' + identifier)
             if receipt.get('phase') in ('held', 'failed'):
@@ -2271,6 +2630,8 @@ action.add_argument('--inspect-manual-install')
 action.add_argument('--manual-install')
 action.add_argument('--inspect-install-retention', action='store_true')
 action.add_argument('--retire-install-retention')
+action.add_argument('--inspect-database-retirement', action='store_true')
+action.add_argument('--retire-database-snapshots', action='store_true')
 action.add_argument('--launch', action='store_true')
 action.add_argument('--cli', action='store_true')
 action.add_argument('--discard-staged')
@@ -2289,6 +2650,7 @@ parser.add_argument('--staged-handle')
 parser.add_argument('--selection')
 parser.add_argument('--selection-sha256')
 parser.add_argument('--plan-sha256')
+parser.add_argument('--snapshot', action='append')
 parser.add_argument('--require-clone', action='store_true')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
 args = parser.parse_args()
@@ -2303,6 +2665,16 @@ if args.process_identity is not None:
     print(json.dumps(identity, separators=(',', ':')))
     raise SystemExit(0)
 if args.manifest is None: parser.error('--manifest is required for this action')
+database_action = args.inspect_database_retirement or args.retire_database_snapshots
+if args.snapshot is not None and not database_action: parser.error('--snapshot requires a database retirement action')
+if database_action:
+    if not args.snapshot: parser.error('--snapshot is required for database retirement')
+    allowed = {'manifest', 'snapshot', 'inspect_database_retirement', 'retire_database_snapshots', 'plan_sha256'}
+    if any(value not in (None, False, []) for key, value in vars(args).items() if key not in allowed): parser.error('unrelated flags are not allowed for database retirement')
+    if args.retire_database_snapshots and not database_hex(args.plan_sha256): parser.error('--retire-database-snapshots requires --plan-sha256 with 64 lowercase hex characters')
+    if args.inspect_database_retirement and args.plan_sha256 is not None: parser.error('--plan-sha256 requires --retire-database-snapshots')
+    try: database_selection(args.snapshot)
+    except SelectionRefused: parser.error('--snapshot must be a unique manual:ID or warm:ID with 64 lowercase hex characters')
 if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
 manifest_path = pathlib.Path(args.manifest).resolve(strict=True)
@@ -2318,17 +2690,31 @@ if args.inspect_recovery:
     print(json.dumps(result))
     raise SystemExit(0)
 lock_path = manifest_path.with_name('jones-activation.lock')
-try:
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    os.write(descriptor, b'jones-activation-lock-v1\n')
-    os.fsync(descriptor)
-except FileExistsError:
-    descriptor = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+if database_action:
+    try: descriptor = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        print(json.dumps({'protocol': 1, 'operation': 'database-retirement', 'status': 'refused', 'reason': 'activation-lock-absent'}))
+        raise SystemExit(0)
+    except OSError:
+        print(json.dumps({'protocol': 1, 'operation': 'database-retirement', 'status': 'refused', 'reason': 'activation-lock-unknown'}))
+        raise SystemExit(0)
     info = os.fstat(descriptor)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or os.read(descriptor, 256) != b'jones-activation-lock-v1\n':
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or os.read(descriptor, 256) != b'jones-activation-lock-v1\n':
         os.close(descriptor)
-        raise SystemExit('An occupied native activation lock is unknown and was preserved.')
-with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
+        print(json.dumps({'protocol': 1, 'operation': 'database-retirement', 'status': 'refused', 'reason': 'activation-lock-unknown'}))
+        raise SystemExit(0)
+else:
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        os.write(descriptor, b'jones-activation-lock-v1\n')
+        os.fsync(descriptor)
+    except FileExistsError:
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or os.read(descriptor, 256) != b'jones-activation-lock-v1\n':
+            os.close(descriptor)
+            raise SystemExit('An occupied native activation lock is unknown and was preserved.')
+with os.fdopen(descriptor, 'r' if database_action else 'r+', encoding='utf8') as lock:
     operation = 'discard-staged' if args.discard_staged else 'claim-activation' if args.claim_activation else 'claim-preparation' if args.claim_preparation else None
     retirement_operation = 'inspect-retirement' if args.inspect_retirement else 'retire-transaction' if args.retire_transaction else None
     preparation_operation = 'inspect-preparation' if args.inspect_preparation else 'retire-preparation' if args.retire_preparation else None
@@ -2336,6 +2722,9 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     transaction_id = args.transaction if args.claim_preparation else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        if database_action:
+            print(json.dumps({'protocol': 1, 'operation': 'database-retirement', 'status': 'refused', 'reason': 'busy'}))
+            raise SystemExit(0)
         if args.inspect_install_retention or args.retire_install_retention:
             print(json.dumps({'protocol': 1, 'operation': 'install-retention', 'status': 'held', 'reason': 'busy'}))
             raise SystemExit(0)
@@ -2362,6 +2751,9 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
         raise
     retention_exclusion_held = True
     retention_exclusion_descriptor = lock.fileno()
+    if database_action:
+        print(json.dumps(database_retirement_command(args.retire_database_snapshots, args.snapshot, args.plan_sha256)))
+        raise SystemExit(0)
     if args.settle_interrupted_activation:
         print(json.dumps(settle_interrupted_activation(args.settle_interrupted_activation)))
         raise SystemExit(0)

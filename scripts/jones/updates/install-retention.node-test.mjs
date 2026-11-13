@@ -594,3 +594,403 @@ NodeTest.test(
       );
     }),
 );
+
+// DBR fixtures use the production pair writer; only its native clone boundary is synthetic.
+const databaseSeed = String.raw`
+root = pathlib.Path(sys.argv[1])
+manifest_path = root / 'runtime' / 'jones-active-install.json'
+live = root / 'userdata'; live.mkdir()
+for name in ('state.sqlite', 'state.sqlite-wal', 'state.sqlite-shm', 'settings.json', 'environment-id'):
+    (live / name).write_bytes(b'{}')
+active = {'protocol': 1, 'owner': 'desktop', 'home': str(root), 'databasePath': str(live / 'state.sqlite'),
+          'profile': str(root / 'profile'), 'environmentId': 'synthetic', 'appPath': str(root / 'Jones.app'),
+          'generation': 'a' * 64, 'transactionId': 'manual-' + 'a' * 64}
+durable(manifest_path, active)
+lock_path = manifest_path.with_name('jones-activation.lock')
+lock_path.write_bytes(b'jones-activation-lock-v1\n')
+lock = open(lock_path, 'r'); fcntl.flock(lock, fcntl.LOCK_EX)
+retention_exclusion_held, retention_exclusion_descriptor = True, lock.fileno()
+clone_file = lambda source, target, **kwargs: bool(shutil.copy2(source, target))
+manual = manifest_path.parent / 'jones-manual-installs'
+warm_root = manifest_path.parent / 'jones-updates' / 'transactions'
+def make_backup(store, identifier, prior=None):
+    expected = dict(active, generation='bootstrap', transactionId='bootstrap') if prior is None else prior
+    directory = (manual if store == 'manual' else warm_root) / identifier
+    directory.mkdir(parents=True)
+    pair_state(expected, directory / 'previous-pair')
+    if store == 'manual':
+        durable(directory / 'receipt.json', {'protocol': 1, 'operation': 'manual-install', 'transactionId': identifier,
+                'phase': 'launched', 'originalManifest': json.dumps(expected), 'pairedState': str(directory / 'previous-pair')})
+    else:
+        claim = preparation_claim(expected, '9' * 64, identifier, root / 'selection.json', '0' * 64)
+        for name, value in (('prepare-intent.json', claim), ('prepare-dispatched.json', claim), ('continuation.json', dict(claim, prepared=True))): durable(directory / name, value)
+        intent = {'protocol': 1, 'transactionId': identifier, 'expected': expected, 'staged': {'handle': '9' * 64},
+                  'continuationReceipt': str(directory / 'continuation.json'), 'processes': [{'pid': 1, 'identity': 'synthetic'}], 'listener': 'synthetic'}
+        durable(directory / 'intent.json', intent)
+        durable(directory / 'journal.json', {'intent': intent, 'phase': 'resumed', 'pairedState': str(directory / 'previous-pair')})
+    return directory / 'previous-pair'
+pairs = [make_backup('manual', 'a' * 64), make_backup('manual', 'b' * 64), make_backup('warm', 'c' * 64)]
+selection = ['manual:' + 'a' * 64, 'manual:' + 'b' * 64, 'warm:' + 'c' * 64]
+def tree():
+    return {str(p.relative_to(root)): (p.lstat().st_mode, p.lstat().st_ino, p.lstat().st_size, p.lstat().st_mtime_ns)
+            for p in [root] + sorted(root.rglob('*'))}
+def inspect():
+    before = tree()
+    value = database_retirement_command(False, selection)
+    assert tree() == before, 'inspect changed the tree'
+    return value
+def ready():
+    value = inspect(); assert value['status'] == 'ready', value
+    return value['planSha256']
+def retire(p): return database_retirement_command(True, selection, p)
+def complete(p):
+    value = retire(p); assert value['status'] == 'retired', value
+    for pair in pairs:
+        assert not any((pair / ('state.sqlite' + s)).exists() for s in ('', '-wal', '-shm'))
+        assert read(pair / 'database-retirement.json')['status'] == 'retired'
+    before = tree()
+    assert retire(p)['status'] == inspect()['status'] == 'retired'
+    assert tree() == before
+`;
+async function databasePython(body) {
+  await fixture(async (root) => {
+    NodeChildProcess.execFileSync("python3", ["-B", "-", root], {
+      input: `${definitions}\n${databaseSeed}\n${body}\n`,
+      encoding: "utf8",
+      timeout: 20000,
+    });
+  });
+}
+
+NodeTest.test("DBR T8: restore rejects retirement evidence before quiescence or mutation", () =>
+  databasePython(String.raw`
+pair = pairs[0]
+prove_quiescence = lambda *args: (_ for _ in ()).throw(AssertionError('quiescence reached'))
+native_authority_transition = lambda *args: (_ for _ in ()).throw(AssertionError('transition reached'))
+for name in ('database-retirement.json', '.database-retirement.json.retiring-' + 'f' * 64 + '.pending'):
+    marker = pair / name; marker.write_bytes(b'{}')
+    before = tree()
+    try: restore_pair(read(pair / 'pair.json')['expected'], pair, pair.parent / 'advanced-state', {})
+    except RuntimeError as error: assert str(error) == 'Recovery database snapshot was retired by its owner; restore held before state mutation.', str(error)
+    else: raise AssertionError('restore accepted retirement evidence')
+    assert tree() == before
+    marker.unlink()
+`),
+);
+
+NodeTest.test("DBR T1/T2: exact DB-only retirement survives generation changes and is idempotent", () =>
+  databasePython(String.raw`
+p = ready()
+protected = {path: (database_file(path), path.read_bytes()) for pair in pairs for path in pair.iterdir() if not path.name.startswith('state.sqlite')}
+protected.update({path: (database_file(path), None) for path in live.iterdir()})
+for pair in pairs:
+    for path in pair.parent.iterdir():
+        if path.is_file(): protected[path] = (database_file(path), path.read_bytes())
+make_backup('manual', 'd' * 64)
+durable(manifest_path, dict(active, generation='d' * 64, transactionId='manual-' + 'd' * 64))
+complete(p)
+for path, (metadata, raw) in protected.items():
+    assert database_file(path) == metadata, path
+    if raw is not None: assert path.read_bytes() == raw
+assert not list(root.rglob('*.pending'))
+assert inspect()['logicalBytes'] == 18
+`),
+);
+
+const databaseDrifts = {
+  binding: "durable(manifest_path, dict(active, environmentId='changed'))",
+  receipt: "durable(pairs[0].parent / 'receipt.json', dict(read(pairs[0].parent / 'receipt.json'), note='changed'))",
+  journal: "durable(pairs[2].parent / 'journal.json', dict(read(pairs[2].parent / 'journal.json'), note='changed'))",
+  pair: "path = pairs[0] / 'pair.json'; path.write_bytes(path.read_bytes() + b' ')",
+  settings: "path = pairs[0] / 'settings.json'; path.rename(root / 'saved'); path.write_bytes(b'{}')",
+  replacement: "path = pairs[0] / 'state.sqlite'; path.rename(root / 'saved'); path.write_bytes(b'{}')",
+  resized: "(pairs[0] / 'state.sqlite').write_bytes(b'changed')",
+  touched: "path = pairs[0] / 'state.sqlite'; os.utime(path, ns=(1, 1))",
+  extra: "(pairs[0] / 'extra').write_bytes(b'')",
+  symlink: "path = pairs[0] / 'state.sqlite'; path.unlink(); path.symlink_to(live / 'state.sqlite')",
+  hardlink: "os.link(pairs[0] / 'state.sqlite', root / 'extra-link')",
+  scope: "path = pairs[0] / 'pair.json'; durable(path, dict(read(path), stateScope='profile'))",
+  flags: "path = pairs[0] / 'pair.json'; value = read(path); value['files']['-wal'] = False; durable(path, value)",
+  unfinished: "path = pairs[0].parent / 'receipt.json'; durable(path, dict(read(path), phase='preparing'))",
+};
+for (const [name, mutation] of Object.entries(databaseDrifts)) {
+  NodeTest.test(`DBR T3: pre-effect ${name} drift preserves all targets`, () =>
+    databasePython(String.raw`
+p = ready()
+${mutation}
+before = tree()
+value = retire(p)
+assert value['status'] == 'refused' and value['reason'], value
+assert tree() == before
+assert not (manifest_path.parent / DATABASE_RETIREMENT_STORE).exists()
+assert all((pair / 'state.sqlite-wal').exists() for pair in pairs)
+`),
+  );
+}
+
+const databaseHolds = {
+  trial: "d = make_backup('warm', 'e' * 64).parent; path = d / 'journal.json'; durable(path, dict(read(path), phase='trial'))",
+  blocked: "d = make_backup('warm', 'e' * 64).parent; path = d / 'journal.json'; durable(path, dict(read(path), phase='blocked'))",
+  intent: "d = make_backup('warm', 'e' * 64).parent; (d / 'journal.json').unlink()",
+  preparation: "d = warm_root / ('e' * 64); durable(d / 'prepare-intent.json', {})",
+  request: "d = warm_root / ('e' * 64); durable(d / 'activation-request.json', {'protocol': 1, 'transactionId': d.name, 'expected': active})",
+  empty: "(warm_root / ('e' * 64)).mkdir()",
+  retirement: "d = make_backup('warm', 'e' * 64).parent; durable(d / 'retirement-intent.json', {})",
+  cleanup: "path = pairs[2].parent / 'journal.json'; durable(path, dict(read(path), recoveryReserveCleanup='held'))",
+  cold: "path = pairs[2].parent / 'intent.json'; value = dict(read(path), maintenanceGeneration='cold'); durable(path, value); path = pairs[2].parent / 'journal.json'; durable(path, dict(read(path), intent=value))",
+  held: "d = make_backup('manual', 'e' * 64).parent; path = d / 'receipt.json'; durable(path, dict(read(path), phase='held'))",
+  preparing: "d = make_backup('manual', 'e' * 64).parent; path = d / 'receipt.json'; durable(path, dict(read(path), phase='preparing'))",
+  audit_intent: "durable(manifest_path.parent / 'jones-install-retention' / ('e' * 64 + '.json'), {'protocol': 1, 'status': 'intent'})",
+  audit_held: "durable(manifest_path.parent / 'jones-install-retention' / ('e' * 64 + '.json'), {'protocol': 1, 'status': 'held'})",
+  maintenance: "(manifest_path.parent / 'jones-maintenance').mkdir()",
+};
+for (const [name, mutation] of Object.entries(databaseHolds)) {
+  NodeTest.test(`DBR T4: global ${name} recovery holds without inspecting sibling payloads`, () =>
+    databasePython(String.raw`
+${mutation}
+before = tree(); value = inspect()
+assert value['status'] == 'refused' and value['reason'], value
+assert tree() == before and not (manifest_path.parent / DATABASE_RETIREMENT_STORE).exists()
+`),
+  );
+}
+for (const payload of ["empty", "partial", "absent"]) {
+  NodeTest.test(`DBR T4: terminal pre-effect sibling with ${payload} backup passes bounded admission`, () =>
+    databasePython(String.raw`
+pair = make_backup('warm', 'e' * 64); directory = pair.parent
+for path in pair.iterdir(): path.unlink()
+if '${payload}' == 'partial': (pair / 'state.sqlite').write_bytes(b'partial')
+if '${payload}' == 'absent': pair.rmdir()
+path = directory / 'journal.json'; value = read(path)
+value.update(phase='rolled-back', preSwapPreparationRecovery={'settled': True})
+value.pop('pairedState'); durable(path, value)
+ready()
+`),
+  );
+}
+
+// Forks die inside the real filesystem calls, rather than after a publisher returns.
+const databaseCrashes = {
+  directory: "if event == 'fsync' and recdir.exists() and not list(recdir.iterdir()): crash()",
+  record_scratch: "if event == 'replace' and str(dst) == str(rec) and '.intent-' in str(src): crash()",
+  record_rename: "if event == 'fsync' and rec.exists() and not (pairs[0] / DATABASE_RETIREMENT_MARKER).exists(): crash()",
+  marker_scratch: "if event == 'replace' and str(dst) == str(marker) and '.retiring-' in str(src): crash()",
+  marker_rename: "if event == 'fsync' and marker.exists() and (pairs[0] / 'state.sqlite').exists(): crash()",
+  unlink: "if event == 'fsync' and marker.exists() and not (pairs[0] / 'state.sqlite').exists(): crash()",
+  marker_retired: "if event == 'fsync' and marker.exists() and read(marker)['status'] == 'retired': crash()",
+  record_retired: "if event == 'replace' and str(dst) == str(rec) and '.retired-' in str(src): crash()",
+};
+for (const [name, point] of Object.entries(databaseCrashes)) {
+  NodeTest.test(`DBR T5: process death at ${name} publication window resumes exact P`, () =>
+    databasePython(String.raw`
+p = ready()
+recdir = manifest_path.parent / DATABASE_RETIREMENT_STORE
+rec, marker = recdir / (p + '.json'), pairs[0] / DATABASE_RETIREMENT_MARKER
+pid = os.fork()
+if pid == 0:
+    original_fsync, original_replace = os.fsync, os.replace
+    def crash(): os._exit(91)
+    def fsync(fd):
+        event, src, dst = 'fsync', None, None
+        ${point}
+        return original_fsync(fd)
+    def replace(src, dst):
+        event = 'replace'
+        ${point}
+        return original_replace(src, dst)
+    os.fsync, os.replace = fsync, replace
+    retire(p)
+    os._exit(92)
+_, status = os.waitpid(pid, 0)
+assert os.WEXITSTATUS(status) == 91, status
+value = inspect(); assert value['status'] == 'ready' and value['reconciliation'], value
+complete(p)
+`),
+  );
+}
+for (const partial of [0, 17]) {
+  NodeTest.test(`DBR T5: ${partial}-byte record scratch reconciles without inspect writes`, () =>
+    databasePython(String.raw`
+p = ready(); plan = database_fresh_plan(active, database_selection(selection))
+directory = manifest_path.parent / DATABASE_RETIREMENT_STORE; directory.mkdir()
+rec = directory / (p + '.json'); raw = database_record(plan, p, 'intent')
+database_scratch(rec, p, 'intent').write_bytes(raw[:${partial}])
+value = inspect(); assert value['status'] == 'ready' and value['reconciliation'], value
+complete(p)
+`),
+  );
+}
+
+for (const fault of ["foreign", "other-P", "unknown", "orphan", "missing-unmarked", "selection"]) {
+  NodeTest.test(`DBR T5n: ${fault} state holds without further effects`, () =>
+    databasePython(String.raw`
+p = ready(); plan = database_fresh_plan(active, database_selection(selection))
+directory = manifest_path.parent / DATABASE_RETIREMENT_STORE
+if '${fault}' != 'orphan': directory.mkdir()
+rec = directory / (p + '.json')
+if '${fault}' == 'foreign': database_scratch(rec, p, 'intent').write_bytes(b'foreign')
+elif '${fault}' == 'other-P': database_scratch(directory / ('f' * 64 + '.json'), 'f' * 64, 'intent').write_bytes(b'')
+elif '${fault}' == 'unknown': (directory / 'unknown').write_bytes(b'')
+elif '${fault}' == 'orphan': (pairs[0] / DATABASE_RETIREMENT_MARKER).write_bytes(database_marker(plan['snapshots'][0], p, 'retiring'))
+else:
+    rec.write_bytes(database_record(plan, p, 'intent'))
+    if '${fault}' == 'missing-unmarked': (pairs[0] / 'state.sqlite').unlink()
+    else: selection.pop()
+before = tree(); value = retire(p)
+assert value['status'] in ('refused', 'uncertain') and value['reason'], value
+assert tree() == before
+`),
+  );
+}
+
+for (const drift of ["pair", "settings", "target", "live", "live-identity"]) {
+  NodeTest.test(`DBR T6: ${drift} mutation after first unlink stops the next target`, () =>
+    databasePython(String.raw`
+p = ready(); original_unlink = database_unlink
+called = False
+def unlink(pair, identity, target):
+    global called
+    original_unlink(pair, identity, target)
+    if called: return
+    called = True
+    if '${drift}' == 'pair':
+        path = pair / 'pair.json'; path.write_bytes(path.read_bytes() + b' ')
+    elif '${drift}' == 'settings':
+        path = pair / 'settings.json'; path.rename(root / 'saved'); path.write_bytes(b'{}')
+    elif '${drift}' == 'target':
+        path = pair / 'state.sqlite-shm'; path.rename(root / 'saved'); path.write_bytes(b'{}')
+    elif '${drift}' == 'live': durable(manifest_path, dict(active, databasePath=str(pair / 'state.sqlite-shm')))
+    else:
+        path = live / 'state.sqlite'; path.unlink(); path.symlink_to(pair / 'state.sqlite-shm')
+database_unlink = unlink
+value = retire(p)
+assert value['status'] == 'uncertain' and value['reason'] in ('plan-changed', 'live-identity-collision'), value
+assert not (pairs[0] / 'state.sqlite').exists() and (pairs[0] / 'state.sqlite-shm').exists() and (pairs[0] / 'state.sqlite-wal').exists()
+assert read(pairs[0] / DATABASE_RETIREMENT_MARKER)['status'] == 'retiring'
+try: install_retention_plan()
+except RuntimeError as error: assert 'Unsettled database retirement' in str(error)
+else: raise AssertionError('generic retention accepted uncertain state')
+`),
+  );
+}
+
+for (const store of ["manual", "warm"]) {
+  for (const state of ["retiring", "scratch", "present", "hash", "retired"]) {
+    NodeTest.test(`DBR T7: ${store} reader qualification for ${state} evidence`, () =>
+      databasePython(String.raw`
+p = ready(); plan = database_fresh_plan(active, database_selection(selection))
+snap = plan['snapshots'][0 if '${store}' == 'manual' else 2]
+pair = pairs[0 if '${store}' == 'manual' else 2]
+marker = pair / DATABASE_RETIREMENT_MARKER
+status = 'retiring' if '${state}' == 'retiring' else 'retired'
+raw = database_marker(snap, p, status)
+if '${state}' == 'scratch': database_scratch(marker, p, 'retiring').write_bytes(b'')
+else:
+    if '${state}' == 'hash':
+        value = json.loads(raw); value['pairSha256'] = '0' * 64; raw = database_canon(value)
+    marker.write_bytes(raw)
+    if '${state}' not in ('retiring', 'present'):
+        for target in snap['targets']: (pair / target['name']).unlink()
+def readers():
+    warm_retention_inventory()
+    install_retention_plan()
+    retirement_context(active, 'c' * 64)
+if '${state}' == 'retired':
+    readers()
+    _, records, _ = warm_retention_inventory()
+    assert all('database-retirement' not in key for key in records['c' * 64]), records
+else:
+    for reader in ([warm_retention_inventory] if '${store}' == 'warm' else []) + [install_retention_plan, lambda: retirement_context(active, 'c' * 64)]:
+        try: reader()
+        except RuntimeError as error: assert 'Unsettled database retirement' in str(error), str(error)
+        else: raise AssertionError('generic reader accepted unsettled marker')
+`),
+    );
+  }
+}
+
+NodeTest.test("DBR T7: pending records hold generic readers and missing generations still fail closure", () =>
+  databasePython(String.raw`
+p = ready(); plan = database_fresh_plan(active, database_selection(selection))
+directory = manifest_path.parent / DATABASE_RETIREMENT_STORE; directory.mkdir()
+rec = directory / (p + '.json'); rec.write_bytes(database_record(plan, p, 'intent'))
+try: install_retention_plan()
+except RuntimeError as error: assert 'Unsettled database retirement' in str(error)
+else: raise AssertionError('pending record accepted')
+rec.unlink(); directory.rmdir()
+make_backup('warm', 'e' * 64, dict(active, generation='f' * 64, transactionId='f' * 64))
+try: install_retention_plan()
+except RuntimeError as error: assert str(error) == 'Missing warm recovery generation; preserved.', str(error)
+else: raise AssertionError('closure was weakened')
+`),
+);
+
+NodeTest.test("DBR T8: released inventory guard still holds with the retirement guard disabled", () =>
+  databasePython(String.raw`
+require_unretired_pair = lambda directory: None
+prove_quiescence = lambda *args: (_ for _ in ()).throw(AssertionError('quiescence reached'))
+for status in ('retiring', 'retired', 'scratch'):
+    pair = pairs[0]
+    marker = pair / (DATABASE_RETIREMENT_MARKER if status != 'scratch' else '.database-retirement.json.retiring-' + 'f' * 64 + '.pending')
+    marker.write_bytes(b'{}')
+    before = tree()
+    try: restore_pair(read(pair / 'pair.json')['expected'], pair, pair.parent / 'advanced-state', {})
+    except RuntimeError as error: assert str(error) == 'Recovery file inventory changed; restore held before state mutation.', str(error)
+    else: raise AssertionError('released guard bypassed')
+    assert tree() == before
+    marker.unlink()
+`),
+);
+
+NodeTest.test("DBR T2/T9: actual CLI uses existing read-only lock, exact flags and resume", () =>
+  fixture(async (root) => {
+    const helper = NodePath.join(root, "helper.py");
+    const platformGuard =
+      "\nif sys.platform != 'darwin': raise SystemExit('The Jones native helper requires macOS.')\n";
+    NodeAssert.strict.equal(jonesNativeHelperSource.split(platformGuard).length, 2);
+    await NodeFSP.writeFile(helper, jonesNativeHelperSource.replace(platformGuard, "\n"));
+    NodeChildProcess.execFileSync("python3", ["-B", "-", root, helper], {
+      input: `${definitions}\n${databaseSeed}\n` + String.raw`
+helper = sys.argv[2]
+base = [sys.executable, '-B', helper, '--manifest', str(manifest_path)]
+args = [item for snapshot in selection for item in ('--snapshot', snapshot)]
+def cli(action, extra=None):
+    value = subprocess.run(base + [action] + args + (extra or []), capture_output=True, text=True, timeout=5)
+    assert value.returncode == 0, value.stderr
+    return json.loads(value.stdout)
+before = tree()
+assert cli('--inspect-database-retirement')['reason'] == 'busy'
+assert tree() == before
+lock.close(); lock_path.unlink()
+for action, extra in (('--inspect-database-retirement', []), ('--retire-database-snapshots', ['--plan-sha256', '0' * 64])):
+    before = tree()
+    value = cli(action, extra); assert value['status'] == 'refused' and value['reason'] == 'activation-lock-absent', value
+    assert tree() == before and not lock_path.exists()
+for misuse in (['--inspect-database-retirement'], ['--inspect-database-retirement', '--snapshot', 'warm:bad'],
+               ['--inspect-database-retirement'] + args + ['--plan-sha256', '0' * 64],
+               ['--retire-database-snapshots'] + args,
+               ['--inspect-database-retirement'] + args + ['--quiescent'],
+               ['--inspect-install-retention', '--snapshot', selection[0]],
+               ['--inspect-database-retirement'] + args + ['--snapshot', selection[0]]):
+    value = subprocess.run(base + misuse, capture_output=True, text=True, timeout=5)
+    assert value.returncode == 2, (misuse, value)
+lock_path.symlink_to(manifest_path)
+before = tree()
+assert cli('--inspect-database-retirement')['reason'] == 'activation-lock-unknown'
+assert tree() == before
+lock_path.unlink()
+lock_path.write_bytes(b'jones-activation-lock-v1\n')
+before = tree(); value = cli('--inspect-database-retirement')
+assert value['status'] == 'ready' and tree() == before, value
+p = value['planSha256']
+assert cli('--retire-database-snapshots', ['--plan-sha256', p])['status'] == 'retired'
+before = tree()
+assert cli('--retire-database-snapshots', ['--plan-sha256', p])['status'] == 'retired'
+assert cli('--inspect-database-retirement')['status'] == 'retired'
+assert tree() == before
+`,
+      encoding: "utf8",
+      timeout: 20000,
+    });
+  }),
+);

@@ -154,6 +154,45 @@ trial plan. Download and verification alone do not perform those steps.
 
 These facts hold for the DMG above and affect any install or update plan:
 
+- To permanently retire selected backup SQLite files while preserving the live
+  database, settings copies, `pair.json` bytes, receipts, journals and apps, use
+  the source helper's explicit database retirement route. Select each finished
+  backup as `--snapshot manual:ID` or `--snapshot warm:ID`; unresolved recovery,
+  cold maintenance, unknown payloads and a busy activation lock hold the action.
+  Both actions require an existing activation lock; inspect creates nothing.
+  Use a reviewed source commit with green required CI. Materialize it on an
+  Apple Silicon Mac with Node 24 and Python 3.9 or newer, without installing or
+  restarting the app:
+
+  ```sh
+  WT=/absolute/path/to/reviewed/worktree
+  S=$(mktemp -d "${TMPDIR:-/tmp}/jones-db-retire.XXXXXX")
+  node --input-type=module -e '
+  const [src, dir] = process.argv.slice(1);
+  const { pathToFileURL } = await import("node:url");
+  const fs = await import("node:fs");
+  const { jonesNativeHelperSource: source } = await import(pathToFileURL(src).href);
+  fs.writeFileSync(dir + "/helper.py", source, { flag: "wx", mode: 0o700 });
+  ' "$WT/apps/desktop/src/jones/updates/jonesNativeHelperSource.ts" "$S"
+  /usr/bin/python3 -I -B "$S/helper.py" --manifest "$HOME/.t3/runtime/jones-active-install.json" \
+    --inspect-database-retirement --snapshot manual:ID --snapshot warm:ID
+  /usr/bin/python3 -I -B "$S/helper.py" --manifest "$HOME/.t3/runtime/jones-active-install.json" \
+    --retire-database-snapshots --snapshot manual:ID --snapshot warm:ID --plan-sha256 PLAN
+  ```
+
+  Substitute the exact IDs and the plan hash returned by inspect. The execute
+  command deletes only the approved `state.sqlite`, `state.sqlite-wal` and
+  `state.sqlite-shm` files in those backups. This is irreversible: those
+  generations can no longer restore their database. After `uncertain`, inspect
+  again; resume with the same selection and hash only when inspect reports
+  `ready` with `reconciliation: true`. A repeated completed action returns
+  `retired`. Restore refuses on a marker or publication scratch file; current
+  retention readers hold until the marker is bound and retired. Older restore
+  and warm-payload inventory guards also reject these extra files. Retain the
+  JSON results, then remove the exact
+  scratch helper and directory (`rm "$S/helper.py"; rmdir "$S"`). Report
+  observed free space separately from logical bytes: shared clone blocks and
+  local snapshots can make physical reclaim much smaller.
 - The DMG is named `T3-Code-VERSION-arm64.dmg`, but it contains `Jones Code.app`
   with bundle identifier `com.t3tools.t3code`. Upstream T3 Code builds, such as
   `T3 Code (Nightly).app` from the upstream installers or Homebrew cask, use the

@@ -241,7 +241,12 @@ def pair_state(expected, directory, clone_required=False):
             'bytes': sum(path.stat().st_size for path in directory.iterdir()), 'startedAt': started, 'completedAt': time.time()}
     durable(directory / 'pair.json', snapshot, True)
 
+def require_unretired_pair(directory):
+    if any(path.name == 'database-retirement.json' or path.name.startswith('.database-retirement.json.') for path in directory.iterdir()):
+        raise RuntimeError('Recovery database snapshot was retired by its owner; restore held before state mutation.')
+
 def restore_pair(expected, directory, advanced, candidate):
+    require_unretired_pair(directory)
     pair = read(directory / 'pair.json')
     database_settings = pair.get('stateScope') == 'database-settings'
     if pair.get('stateScope') not in (None, 'database-settings') or pair['expected'] != expected or (not database_settings and not (directory / 'state.sqlite').is_file()) or (not database_settings and not (directory / 'profile').is_dir()):
