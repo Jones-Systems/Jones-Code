@@ -3149,7 +3149,8 @@
     "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts": "jones-owned",
     "apps/server/src/orchestration-v2/ContextHandoffBudget.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/orchestration-v2/ContextHandoffDelivery.ts": "hook"
+    "apps/server/src/orchestration-v2/ContextHandoffDelivery.ts": "hook",
+    "apps/web/scripts/warm-dep-cache.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -4214,6 +4215,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
       "to": "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts"
+    },
+    {
+      "from": "apps/web/scripts/warm-dep-cache.ts",
+      "to": "scripts/jones/tsrs/local-mac-capacity.ts"
     }
   ]
 }
