@@ -13,6 +13,38 @@ export const packagedDesktopFaultPoints = Object.freeze([
 
 const sha = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 
+export const packagedDesktopFixtureArguments = Object.freeze([
+  "--use-mock-keychain",
+  "--remote-debugging-port=0",
+  "--remote-debugging-address=127.0.0.1",
+]);
+// Pin the emitted helper's script, not the surrounding fixture configuration.
+export const packagedDesktopLaunchScriptSha256 =
+  "c5b834de0ac6135465260188eb0aa5047399b3be7a42618b69f202cf0c4a9595";
+
+export async function validatePackagedDesktopLaunchContext(root, context, helperBytes) {
+  exactKeys(context, ["protocol", "originalScriptSha256", "arguments", "environment"]);
+  NodeAssert.equal(context.protocol, 1);
+  NodeAssert.equal(context.originalScriptSha256, packagedDesktopLaunchScriptSha256);
+  NodeAssert.deepEqual(context.arguments, packagedDesktopFixtureArguments);
+  exactKeys(context.environment, ["HOME", "CFFIXED_USER_HOME", "TMPDIR"]);
+  NodeAssert.equal(context.environment.HOME, context.environment.CFFIXED_USER_HOME);
+  for (const value of Object.values(context.environment)) {
+    NodeAssert.notEqual(value, root);
+    await privatePath(root, value, true);
+  }
+  const matches = [
+    ...helperBytes.toString("utf8").matchAll(/^LAUNCH_SERVICES_SCRIPT = r'''([\s\S]*?)'''/gm),
+  ];
+  NodeAssert.equal(matches.length, 1, "Expected one pinned LaunchServices script.");
+  NodeAssert.equal(
+    sha(matches[0][1]),
+    context.originalScriptSha256,
+    "LaunchServices script hash mismatch.",
+  );
+  return immutable(structuredClone(context));
+}
+
 function exactKeys(record, keys) {
   NodeAssert.ok(record && typeof record === "object" && !Array.isArray(record));
   NodeAssert.deepEqual(Object.keys(record).sort(), [...keys].sort());
@@ -27,6 +59,7 @@ function immutable(record) {
 }
 
 const launchObservationNames = Object.freeze([
+  "launch-context.json",
   "launch-services.json",
   "launch-return.json",
   "launch-observation-failure.json",
@@ -165,12 +198,16 @@ export async function preparePackagedDesktopHelperFault({
   point,
   observeRelaunch = false,
   controller,
+  launchContext,
 }) {
   NodeAssert.ok(packagedDesktopFaultPoints.includes(point));
   const deferred = selection !== undefined;
   NodeAssert.ok(deferred ? intent === undefined : typeof intent === "string");
   NodeAssert.ok(
-    !deferred || observeRelaunch === false || point === "before-pair" || controller !== undefined,
+    !deferred ||
+      observeRelaunch === false ||
+      ["before-pair", "exit-wait"].includes(point) ||
+      controller !== undefined,
     "Deferred relaunch observation requires the quiet before-pair boundary.",
   );
   if (controller !== undefined) {
@@ -201,10 +238,19 @@ export async function preparePackagedDesktopHelperFault({
   const rootInfo = await NodeFSP.lstat(fixtureRoot, { bigint: true });
   const helperBytes = await readPrivate(fixtureRoot, helper, 2 * 1024 * 1024);
   const helperSha256 = sha(helperBytes);
+  if (launchContext !== undefined) {
+    NodeAssert.ok(deferred && observeRelaunch && ["before-pair", "exit-wait"].includes(point));
+    launchContext = await validatePackagedDesktopLaunchContext(
+      fixtureRoot,
+      launchContext,
+      helperBytes,
+    );
+  }
   NodeAssert.equal(NodePath.basename(helper), "activate-v1-" + helperSha256 + ".py");
   const manifestBytes = await readPrivate(fixtureRoot, manifest, 65536);
   const intentBytes = deferred ? null : await readPrivate(fixtureRoot, intent, 65536);
   const active = JSON.parse(manifestBytes);
+  if (launchContext !== undefined) NodeAssert.equal(launchContext.environment.HOME, active.home);
   const activation = deferred ? null : JSON.parse(intentBytes);
   NodeAssert.equal(active.protocol, 1);
   NodeAssert.equal(active.owner, "desktop");
@@ -259,6 +305,7 @@ export async function preparePackagedDesktopHelperFault({
     point,
     observeRelaunch,
     ...(controller === undefined ? {} : { controller }),
+    ...(launchContext === undefined ? {} : { launchContext }),
   };
   const preload = NodePath.join(fixtureRoot, "python-preload");
   await NodeFSP.mkdir(preload, { mode: 0o700 });
@@ -440,12 +487,14 @@ export async function preparePackagedDesktopHelperFault({
         sha(await readPrivate(fixtureRoot, NodePath.join(preload, "fault-receipt.json"), 16384)),
       );
       NodeAssert.match(receipt.journalSha256, /^[a-f0-9]{64}$/);
-      const baseline = deferred ? await this.readBeforePairState() : stateBefore;
-      NodeAssert.deepEqual(
-        receipt.state,
-        baseline,
-        "Protected fixture state changed before relaunch.",
-      );
+      if (!deferred || point !== "exit-wait" || controller !== undefined) {
+        const baseline = deferred ? await this.readBeforePairState() : stateBefore;
+        NodeAssert.deepEqual(
+          receipt.state,
+          baseline,
+          "Protected fixture state changed before relaunch.",
+        );
+      }
       return Object.freeze(receipt);
     },
     async readBeforePairState() {
@@ -471,7 +520,9 @@ export async function preparePackagedDesktopHelperFault({
     // launchd-born tree. Native custody must be acquired before launch effects.
     async readLaunchObservation() {
       NodeAssert.ok(
-        deferred && observeRelaunch && (point === "before-pair" || controller !== undefined),
+        deferred &&
+          observeRelaunch &&
+          (["before-pair", "exit-wait"].includes(point) || controller !== undefined),
       );
       await NodeAssert.rejects(
         NodeFSP.lstat(NodePath.join(preload, "launch-observation-failure.json")),
@@ -501,28 +552,30 @@ export async function preparePackagedDesktopHelperFault({
         "manifestSha256",
         "intentSha256",
         "journalSha256",
-        "beforePairStateSha256",
+        ...(point !== "exit-wait" || controller !== undefined ? ["beforePairStateSha256"] : []),
       ]);
       await read(NodePath.join(preload, "fault-receipt.json"));
       const beforeRelaunch = await this.readRelaunchReceipt();
       exactKeys(beforeRelaunch, [...Object.keys(fault), "faultReceiptSha256", "state"]);
       const beforeBytes = await read(NodePath.join(preload, "before-relaunch.json"), 1024 * 1024);
       NodeAssert.deepEqual(JSON.parse(beforeBytes), beforeRelaunch);
-      const quiet = JSON.parse(
-        await read(NodePath.join(preload, "before-pair-state.json"), 1024 * 1024),
-      );
-      exactKeys(quiet, [
-        "protocol",
-        "kind",
-        "processesStopped",
-        "state",
-        "pid",
-        "planSha256",
-        "transactionId",
-        "intentSha256",
-        "journalSha256",
-      ]);
-      NodeAssert.equal(quiet.protocol, 1);
+      if (point !== "exit-wait" || controller !== undefined) {
+        const quiet = JSON.parse(
+          await read(NodePath.join(preload, "before-pair-state.json"), 1024 * 1024),
+        );
+        exactKeys(quiet, [
+          "protocol",
+          "kind",
+          "processesStopped",
+          "state",
+          "pid",
+          "planSha256",
+          "transactionId",
+          "intentSha256",
+          "journalSha256",
+        ]);
+        NodeAssert.equal(quiet.protocol, 1);
+      }
       const intentPath = NodePath.join(
         active.home,
         "runtime/jones-updates/transactions",
@@ -559,6 +612,81 @@ export async function preparePackagedDesktopHelperFault({
       const servicesBytes = await read(NodePath.join(preload, "launch-services.json"));
       const services = JSON.parse(servicesBytes);
       const returned = JSON.parse(await read(NodePath.join(preload, "launch-return.json")));
+      let contextReceipt = null;
+      let contextHash;
+      if (launchContext !== undefined) {
+        const contextBytes = await read(NodePath.join(preload, "launch-context.json"));
+        contextHash = sha(contextBytes);
+        contextReceipt = JSON.parse(contextBytes);
+        exactKeys(contextReceipt, [
+          ...Object.keys(fault),
+          "beforeRelaunchSha256",
+          "sequence",
+          "originalScriptSha256",
+          "transformedScriptSha256",
+          "effectiveRequest",
+          "selector",
+          "options",
+        ]);
+        for (const [key, value] of Object.entries(fault))
+          NodeAssert.deepEqual(
+            contextReceipt[key],
+            key === "kind" ? "packaged-desktop-launch-context" : value,
+          );
+        NodeAssert.equal(contextReceipt.beforeRelaunchSha256, sha(beforeBytes));
+        NodeAssert.equal(contextReceipt.sequence, 0);
+        NodeAssert.equal(
+          contextReceipt.selector,
+          "launchApplicationAtURLOptionsConfigurationError",
+        );
+        NodeAssert.equal(contextReceipt.options, 0x80000 | 0x10000 | 0x100);
+        const helperBytes = await read(helper, 2 * 1024 * 1024);
+        await validatePackagedDesktopLaunchContext(fixtureRoot, launchContext, helperBytes);
+        const script = helperBytes
+          .toString("utf8")
+          .match(/^LAUNCH_SERVICES_SCRIPT = r'''([\s\S]*?)'''/m)[1];
+        NodeAssert.equal(contextReceipt.originalScriptSha256, sha(script));
+        NodeAssert.equal(
+          contextReceipt.transformedScriptSha256,
+          sha(
+            script.replace(
+              "$.NSDictionary.dictionaryWithObjectForKey($(request.environment), key)",
+              "$.NSDictionary.dictionaryWithObjectsForKeys($([request.environment, request.arguments]), $([key, $.NSWorkspaceLaunchConfigurationArguments]))",
+            ),
+          ),
+        );
+        const request = contextReceipt.effectiveRequest;
+        exactKeys(request, ["appPath", "environment", "arguments"]);
+        NodeAssert.equal(request.appPath, active.appPath);
+        NodeAssert.deepEqual(request.arguments, launchContext.arguments);
+        for (const [key, value] of Object.entries(launchContext.environment))
+          NodeAssert.equal(request.environment[key], value);
+        const helperEnvironment = {
+          T3CODE_HOME: active.home,
+          T3CODE_DESKTOP_USER_DATA_DIR: active.profile,
+          T3CODE_JONES_ACTIVE_MANIFEST: manifest,
+          T3CODE_JONES_ACTIVE_GENERATION: active.generation,
+        };
+        for (const [key, value] of Object.entries(helperEnvironment))
+          NodeAssert.equal(request.environment[key], value);
+        exactKeys(request.environment, [
+          ...Object.keys(helperEnvironment),
+          ...Object.keys(launchContext.environment),
+          ...(Object.hasOwn(request.environment, "T3CODE_NATIVE_AUTHORITY_STATE_DIR")
+            ? ["T3CODE_NATIVE_AUTHORITY_STATE_DIR"]
+            : []),
+        ]);
+        if (Object.hasOwn(request.environment, "T3CODE_NATIVE_AUTHORITY_STATE_DIR"))
+          await privatePath(
+            fixtureRoot,
+            request.environment.T3CODE_NATIVE_AUTHORITY_STATE_DIR,
+            true,
+          );
+      } else {
+        await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(preload, "launch-context.json")), {
+          code: "ENOENT",
+        });
+      }
       for (const [record, kind, sequence, fields] of [
         [services, "packaged-desktop-launch-services", 1, ["reply", "failure"]],
         [
@@ -568,7 +696,14 @@ export async function preparePackagedDesktopHelperFault({
           ["launchServicesSha256", "identity", "failure"],
         ],
       ]) {
-        exactKeys(record, [...Object.keys(fault), "sequence", "beforeRelaunchSha256", ...fields]);
+        exactKeys(record, [
+          ...Object.keys(fault),
+          "sequence",
+          "beforeRelaunchSha256",
+          ...fields,
+          ...(contextHash === undefined ? [] : ["launchContextSha256"]),
+        ]);
+        if (contextHash !== undefined) NodeAssert.equal(record.launchContextSha256, contextHash);
         for (const [key, value] of Object.entries(fault))
           NodeAssert.deepEqual(record[key], key === "kind" ? kind : value);
         NodeAssert.equal(record.sequence, sequence);
@@ -636,6 +771,7 @@ export async function preparePackagedDesktopHelperFault({
         beforeRelaunch,
         launchServices: services,
         launchReturn: returned,
+        ...(contextReceipt === null ? {} : { launchContext: contextReceipt }),
         externalDescendantSettlementRequired: true,
         activationAllowed: false,
         packagedDesktopMatrixPassed: false,
@@ -648,8 +784,10 @@ export async function preparePackagedDesktopHelperFault({
       await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(preload, "before-relaunch.json")), {
         code: "ENOENT",
       });
-      const baseline = deferred ? await this.readBeforePairState() : stateBefore;
-      NodeAssert.deepEqual(await snapshotRecoveryState(fixtureRoot, active), baseline);
+      if (!deferred || point !== "exit-wait" || controller !== undefined) {
+        const baseline = deferred ? await this.readBeforePairState() : stateBefore;
+        NodeAssert.deepEqual(await snapshotRecoveryState(fixtureRoot, active), baseline);
+      }
     },
     packagedDesktopMatrixPassed: false,
   });

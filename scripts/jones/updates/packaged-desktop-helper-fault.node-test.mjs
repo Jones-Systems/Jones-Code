@@ -4,6 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
+import { jonesNativeHelperSource } from "../../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts";
 import {
   packagedDesktopFaultPoints,
   preparePackagedDesktopHelperFault,
@@ -386,32 +387,37 @@ def launch(active, descriptor=None):
     );
 }
 
-async function deferredLaunchFixture(body, mode = "returned") {
-  await fixture(async (f) => {
-    const appPath = NodePath.join(f.root, "Previous.app");
-    const executablePath = NodePath.join(appPath, "Contents/MacOS/previous");
-    await NodeFSP.mkdir(NodePath.dirname(executablePath), { recursive: true, mode: 0o700 });
-    await NodeFSP.writeFile(executablePath, "not an executable app", { mode: 0o600 });
-    f.active = { ...f.active, appPath, executablePath };
-    const selected = await installSelection(f);
-    const prepared = await preparePackagedDesktopHelperFault({
-      fixtureRoot: f.root,
-      helper: f.helper,
-      manifest: f.manifest,
-      selection: selected.selection,
-      point: "before-pair",
-      observeRelaunch: true,
-    });
-    await selected.prepare();
-    const result = await execute(f, prepared, [
-      f.helper,
-      "--manifest",
-      f.manifest,
-      "--activate",
-      f.intent,
-    ]);
-    await body({ ...f, prepared, result });
-  }, launchServicesControl(mode));
+async function deferredLaunchFixture(body, mode = "returned", options = {}) {
+  await fixture(
+    async (f) => {
+      const appPath = NodePath.join(f.root, "Previous.app");
+      const executablePath = NodePath.join(appPath, "Contents/MacOS/previous");
+      await NodeFSP.mkdir(NodePath.dirname(executablePath), { recursive: true, mode: 0o700 });
+      await NodeFSP.writeFile(executablePath, "not an executable app", { mode: 0o600 });
+      f.active = { ...f.active, appPath, executablePath, generation: "control-generation" };
+      const selected = await installSelection(f);
+      const prepared = await preparePackagedDesktopHelperFault({
+        fixtureRoot: f.root,
+        helper: f.helper,
+        manifest: f.manifest,
+        selection: selected.selection,
+        point: "before-pair",
+        observeRelaunch: true,
+        ...options,
+        ...(options.launchContext ? { launchContext: options.launchContext(f) } : {}),
+      });
+      await selected.prepare();
+      const result = await execute(f, prepared, [
+        f.helper,
+        "--manifest",
+        f.manifest,
+        "--activate",
+        f.intent,
+      ]);
+      await body({ ...f, prepared, result });
+    },
+    options.source ?? launchServicesControl(mode),
+  );
 }
 
 NodeTest.test(
@@ -592,6 +598,7 @@ NodeTest.test("no-relaunch proof requires every launch observation absent", asyn
     NodeAssert.equal(result.code, 0, result.stderr);
     await prepared.assertNoRelaunch();
     for (const name of [
+      "launch-context.json",
       "launch-services.json",
       "launch-return.json",
       "launch-observation-failure.json",
@@ -676,7 +683,7 @@ NodeTest.test(
   async () => {
     await fixture(async (f) => {
       const selected = await installSelection(f);
-      for (const point of ["storage", "reserve", "exit-wait"])
+      for (const point of ["storage", "reserve"])
         await NodeAssert.rejects(
           preparePackagedDesktopHelperFault({
             fixtureRoot: f.root,
@@ -1067,4 +1074,199 @@ for (const point of packagedDesktopFaultPoints)
   );
 NodeTest.test("controller refuses changed protected state before reopen", () =>
   custodyFixture("storage", "mutated-before-relaunch"),
+);
+
+const pinnedScript = jonesNativeHelperSource.match(
+  /^LAUNCH_SERVICES_SCRIPT = r'''([\s\S]*?)'''/m,
+)[1];
+const fixtureArguments = [
+  "--use-mock-keychain",
+  "--remote-debugging-port=0",
+  "--remote-debugging-address=127.0.0.1",
+];
+const launchContext = (f) => ({
+  protocol: 1,
+  originalScriptSha256: NodeCrypto.createHash("sha256").update(pinnedScript).digest("hex"),
+  arguments: fixtureArguments,
+  environment: { HOME: f.active.home, CFFIXED_USER_HOME: f.active.home, TMPDIR: f.active.profile },
+});
+function contextControl(throws = false) {
+  const source = launchServicesControl("returned")
+    .replace(
+      "def launch_services(request):",
+      "LAUNCH_SERVICES_SCRIPT = r'''" +
+        pinnedScript +
+        "'''\ndef launch_services(request):\n" +
+        "    if request.get('probe'):\n        durable(tx / 'probe.json', {'request':request, 'scriptSha256': __import__('hashlib').sha256(LAUNCH_SERVICES_SCRIPT.encode()).hexdigest()})\n        return {'protocol':1, 'status':'available'}\n" +
+        "    durable(tx / 'effective-request.json', {'request':request, 'scriptSha256': __import__('hashlib').sha256(LAUNCH_SERVICES_SCRIPT.encode()).hexdigest()})\n" +
+        (throws
+          ? "    raise " +
+            (throws === "error"
+              ? "ValueError('control error')"
+              : "KeyboardInterrupt('control cancellation')") +
+            "\n"
+          : ""),
+    )
+    .replace(
+      "'environment': {}",
+      `'environment': {'T3CODE_HOME': active['home'], 'T3CODE_DESKTOP_USER_DATA_DIR': active['profile'], 'T3CODE_JONES_ACTIVE_MANIFEST': str(manifest_path), 'T3CODE_JONES_ACTIVE_GENERATION': active['generation']}`,
+    );
+  return source.replace(
+    /\nactivate\(\)\s*$/,
+    `
+launch_services({'probe': True})
+try:
+    activate()
+finally:
+    assert __import__('hashlib').sha256(LAUNCH_SERVICES_SCRIPT.encode()).hexdigest() == '${NodeCrypto.createHash("sha256").update(pinnedScript).digest("hex")}'
+    durable(tx / 'restored.json', {'restored': True})
+`,
+  );
+}
+NodeTest.test(
+  "launch context changes exactly the one request and restores the pinned script on return or cancellation",
+  async () => {
+    for (const throws of [false, "error", "cancel"]) {
+      await deferredLaunchFixture(
+        async ({ prepared, result, tx, active }) => {
+          NodeAssert.equal(
+            result.code,
+            throws === "cancel" ? null : throws === "error" ? 1 : 0,
+            result.stderr,
+          );
+          if (throws === "cancel") NodeAssert.equal(result.signal, "SIGINT");
+          const probe = JSON.parse(await NodeFSP.readFile(NodePath.join(tx, "probe.json")));
+          NodeAssert.deepEqual(probe.request, { probe: true });
+          NodeAssert.equal(probe.scriptSha256, launchContext({ active }).originalScriptSha256);
+          const effective = JSON.parse(
+            await NodeFSP.readFile(NodePath.join(tx, "effective-request.json")),
+          );
+          NodeAssert.deepEqual(effective.request.arguments, fixtureArguments);
+          NodeAssert.equal(effective.request.environment.HOME, active.home);
+          NodeAssert.notEqual(
+            effective.scriptSha256,
+            launchContext({ active }).originalScriptSha256,
+          );
+          NodeAssert.equal(
+            JSON.parse(await NodeFSP.readFile(NodePath.join(tx, "restored.json"))).restored,
+            true,
+          );
+          const observation = await prepared.readLaunchObservation();
+          NodeAssert.deepEqual(observation.launchContext.effectiveRequest, effective.request);
+          NodeAssert.equal(observation.activationAllowed, false);
+          const path = NodePath.join(NodePath.dirname(prepared.planPath), "launch-context.json");
+          const bytes = await NodeFSP.readFile(path);
+          const changed = JSON.parse(bytes);
+          changed.effectiveRequest.arguments.push("--no-sandbox");
+          await NodeFSP.writeFile(path, JSON.stringify(changed));
+          await NodeAssert.rejects(prepared.readLaunchObservation());
+          await NodeFSP.writeFile(path, bytes);
+        },
+        "returned",
+        { source: contextControl(throws), launchContext },
+      );
+    }
+  },
+);
+NodeTest.test(
+  "absent launch context leaves the fake launch_services request unshimmed",
+  async () => {
+    await deferredLaunchFixture(
+      async ({ prepared, result, tx }) => {
+        NodeAssert.equal(result.code, 0, result.stderr);
+        const effective = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(tx, "effective-request.json")),
+        );
+        NodeAssert.equal(effective.request.arguments, undefined);
+        NodeAssert.equal(effective.request.environment.HOME, undefined);
+        NodeAssert.equal(
+          effective.scriptSha256,
+          launchContext({ active: {} }).originalScriptSha256,
+        );
+        await prepared.readLaunchObservation();
+      },
+      "returned",
+      { source: contextControl() },
+    );
+  },
+);
+NodeTest.test(
+  "launch context rejects unknown flags, foreign or symlinked homes, extra keys and script hash mismatch before activation",
+  async () => {
+    for (const change of [
+      (context) => context.arguments.push("--no-sandbox"),
+      (context) => {
+        context.environment.TMPDIR = "/tmp";
+      },
+      (context) => {
+        context.environment.PYTHONPATH = context.environment.HOME;
+      },
+      (context) => {
+        context.originalScriptSha256 = "0".repeat(64);
+      },
+      (context) => {
+        context.script = "arbitrary script";
+      },
+      async (context, f) => {
+        const link = NodePath.join(f.root, "home-link");
+        await NodeFSP.symlink(f.active.home, link);
+        context.environment.HOME = context.environment.CFFIXED_USER_HOME = link;
+      },
+    ]) {
+      await fixture(async (f) => {
+        const selected = await installSelection(f);
+        const context = launchContext(f);
+        context.arguments = [...context.arguments];
+        await change(context, f);
+        await NodeAssert.rejects(
+          preparePackagedDesktopHelperFault({
+            fixtureRoot: f.root,
+            ...f,
+            intent: undefined,
+            selection: selected.selection,
+            point: "before-pair",
+            observeRelaunch: true,
+            launchContext: context,
+          }),
+        );
+        await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(f.tx, "journal.json")), {
+          code: "ENOENT",
+        });
+      }, contextControl());
+    }
+    await fixture(
+      async (f) => {
+        const selected = await installSelection(f);
+        await NodeAssert.rejects(
+          preparePackagedDesktopHelperFault({
+            fixtureRoot: f.root,
+            ...f,
+            intent: undefined,
+            selection: selected.selection,
+            point: "before-pair",
+            observeRelaunch: true,
+            launchContext: launchContext(f),
+          }),
+          /script hash mismatch/,
+        );
+      },
+      contextControl().replace('ObjC.import("AppKit")', 'ObjC.import("changed")'),
+    );
+  },
+);
+NodeTest.test(
+  "exit-wait relaunch observes replies without inventing a quiet before-pair comparison",
+  async () => {
+    await deferredLaunchFixture(
+      async ({ prepared, result }) => {
+        NodeAssert.equal(result.code, 0, result.stderr);
+        const observed = await prepared.readLaunchObservation();
+        NodeAssert.equal(observed.launchReturn.identity.pid, 321);
+        NodeAssert.equal(observed.beforeRelaunch.beforePairStateSha256, undefined);
+        await NodeAssert.rejects(prepared.readBeforePairState());
+      },
+      "returned",
+      { point: "exit-wait" },
+    );
+  },
 );
