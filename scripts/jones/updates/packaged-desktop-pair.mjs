@@ -1415,11 +1415,10 @@ function completeInventory(record, binding, bootId) {
   return record;
 }
 
-// This is a capability boundary for a separately qualified private native
-// controller, not a PID manager or a native proof implementation. The controller
-// owns continuous same-boot kernel watches and independent path/open-file/parent
-// inventories from arm through settlement, including misroutes and further workers.
-// Receipts below are corroboration; none can authorize a signal or release alone.
+// This interface requires a separately qualified private native controller.
+// It owns continuous same-boot kernel watches and independent path/open-file/parent
+// inventories through settlement, including misroutes and further workers.
+// Receipts supply neither native proof nor authority to signal or release.
 export async function observePackagedDesktopInstallRelaunch({
   pair,
   helper,
