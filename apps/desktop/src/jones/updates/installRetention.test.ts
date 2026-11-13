@@ -5,12 +5,16 @@ import * as NodeProcess from "node:process";
 import { describe, it } from "vite-plus/test";
 
 describe("install and runtime retention protocol", () => {
-  it("preserves recovery closure and refuses destructive drift at real entry points", () => {
+  it.each([
+    { group: "database admission", filter: "--test-name-pattern=^DBR T[1-4]" },
+    { group: "remaining recovery protocols", filter: "--test-skip-pattern=^DBR T[1-4]" },
+  ])("preserves recovery closure and refuses destructive drift ($group)", ({ filter }) => {
     NodeChildProcess.execFileSync(
       NodeProcess.execPath,
       [
         "--test",
         "--test-concurrency=1",
+        filter,
         NodeURL.fileURLToPath(
           new URL(
             "../../../../../scripts/jones/updates/install-retention.node-test.mjs",
