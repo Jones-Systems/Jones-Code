@@ -5260,6 +5260,52 @@
       ]
     },
     {
+      "id": "jones-start-refusal-retention",
+      "tests": [
+        "apps/server/src/jones/startRefusal/Store.test.ts",
+        "apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts",
+        "apps/server/src/jones/startRefusal/Probe.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+        "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/startRefusal/Store.test.ts apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts apps/server/src/jones/startRefusal/Probe.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/updates/migrationPlan.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
+      "id": "jones-peer-wake-obligations",
+      "tests": [
+        "apps/server/src/jones/threadResultDependencies/WakeObligations.test.ts",
+        "apps/server/src/jones/threadResultDependencies/WakeObligations.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/DependencyStore.test.ts",
+        "apps/server/src/jones/threadResultDependencies/DependencyReactor.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Orchestrator.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Settlement.test.ts",
+        "apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/orchestration-v2/ContextHandoffService.test.ts",
+        "packages/provider-core/src/server/notification.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/threadResultDependencies/WakeObligations.test.ts apps/server/src/jones/threadResultDependencies/WakeObligations.integration.test.ts apps/server/src/jones/threadResultDependencies/DependencyStore.test.ts apps/server/src/jones/threadResultDependencies/DependencyReactor.test.ts apps/server/src/jones/threadResultDependencies/Orchestrator.integration.test.ts apps/server/src/jones/threadResultDependencies/Settlement.test.ts apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/orchestration-v2/ContextHandoffService.test.ts packages/provider-core/src/server/notification.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
       "id": "jones-server-swap-cli",
       "tests": [
         "apps/server-swap-cli/core.test.cjs",

@@ -3,6 +3,8 @@ import type {
   ThreadResultDependency,
 } from "@t3tools/contracts";
 
+import type { WakeHoldState } from "./WakeObligations.ts";
+
 const reasons = {
   admission_held: "Awaiting receiving owner approval",
   admission_dispatching: "Receiving environment is admitting the request",
@@ -16,7 +18,7 @@ const reasons = {
   delivery_unknown: "Delivery unknown; checking",
 };
 export function roster(
-  dependencies: ReadonlyArray<ThreadResultDependency>,
+  dependencies: ReadonlyArray<ThreadResultDependency & { readonly wakeHold?: WakeHoldState }>,
 ): ReadonlyArray<OrchestrationV2PendingBackgroundTask> {
   return dependencies
     .filter((dependency) => ["sending", "awaiting", "resolved"].includes(dependency.state))
@@ -25,7 +27,7 @@ export function roster(
       kind: "monitor" as const,
       awaited: true,
       description:
-        `${dependency.state === "resolved" ? "Result ready; delivering" : reasons[dependency.observation]}: ${dependency.targetLabel}`.slice(
+        `${dependency.state === "resolved" ? (dependency.wakeHold === "held" || dependency.wakeHold === "armed" ? "Result held: delivery refused before provider start; retries after the next accepted start, or release" : "Result ready; delivering") : reasons[dependency.observation]}: ${dependency.targetLabel}`.slice(
           0,
           160,
         ),
@@ -34,10 +36,16 @@ export function roster(
 
 export function byThread(
   dependencies: ReadonlyArray<
-    ThreadResultDependency & { readonly waiterThreadId: import("@t3tools/contracts").ThreadId }
+    ThreadResultDependency & {
+      readonly waiterThreadId: import("@t3tools/contracts").ThreadId;
+      readonly wakeHold?: WakeHoldState;
+    }
   >,
 ) {
-  const grouped = new Map<import("@t3tools/contracts").ThreadId, ThreadResultDependency[]>();
+  const grouped = new Map<
+    import("@t3tools/contracts").ThreadId,
+    (ThreadResultDependency & { readonly wakeHold?: WakeHoldState })[]
+  >();
   for (const dependency of dependencies) {
     const group = grouped.get(dependency.waiterThreadId) ?? [];
     group.push(dependency);

@@ -7,6 +7,12 @@
   },
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "paths": {
+    "apps/server/src/jones/threadResultDependencies/WakeObligations.ts": "jones-owned",
+    "apps/server/src/jones/threadResultDependencies/WakeObligations.test.ts": "jones-owned",
+    "apps/server/src/jones/threadResultDependencies/WakeObligations.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/155_JonesPeerWakeObligations.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/peer-wake-obligations.json": "jones-owned",
+
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
     ".agents/skills/capture-ui-evidence/references/native-self-configuration.md": "policy",
     ".agents/skills/capture-ui-evidence/references/runner-output-and-limits.md": "policy",
@@ -2577,6 +2583,7 @@
     "scripts/jones/boundary/fragments/shell-publication-batching.json": "jones-owned",
     "scripts/jones/boundary/fragments/sqlite-checkpoint-lifecycle.json": "jones-owned",
     "scripts/jones/boundary/fragments/staged-selection-recovery.json": "jones-owned",
+    "scripts/jones/boundary/fragments/start-refusal-retention.json": "jones-owned",
     "scripts/jones/boundary/fragments/startup-access-logging.json": "jones-owned",
     "scripts/jones/boundary/fragments/task-continuation.json": "jones-owned",
     "scripts/jones/boundary/fragments/terminal-history-urgent-flush.json": "jones-owned",

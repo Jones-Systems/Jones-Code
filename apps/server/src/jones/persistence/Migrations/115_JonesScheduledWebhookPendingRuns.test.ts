@@ -7,6 +7,7 @@ import { migrationManifest, runMigrations } from "../../../persistence/Migration
 import { runJonesMigrations } from "../JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../JonesMigrations.ts";
 
+const throughUpgrade = jonesMigrationEntries.filter(([id]) => id <= 115);
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 
 // Builds released before this migration may already have recorded 114. The guard rejects a
@@ -18,43 +19,26 @@ it.effect("115 adds the pending webhook run table to a ledger already recorded t
     yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id < 115));
     const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
 
-    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+    const ledgerBefore = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
+
+    assert.deepStrictEqual(yield* runJonesMigrations(throughUpgrade), [
       [115, "ScheduledWebhookPendingRuns"],
-      [116, "RemoteAdmission"],
-      [117, "RemoteDelegationIntents"],
-      [118, "RemoteAdmissionIntegration"],
-      [119, "PeerEnvironmentLinks"],
-      [120, "SettlementRestores"],
-      [121, "RemoteTaskObservations"],
-      [122, "ThreadLinks"],
-      [123, "WorkspaceLifecycle"],
-      [124, "TaskContinuations"],
-      [129, "CodexFailover"],
-      [130, "ThreadTitleRefinement"],
-      [132, "OwnerSelections"],
-      [133, "ThreadResultDependencies"],
-      [134, "GoalContinuity"],
-      [135, "IdleWorktreeAdmission"],
-      [136, "WorkspaceProvenance"],
-      [137, "NativeCreationLeaseRenewal"],
-      [138, "WorkspaceRetirement"],
-      [139, "ConversationWorkspace"],
-      [140, "WorkstreamsNative"],
-      [141, "WorkstreamsSourceEnrollments"],
-      [142, "WorkstreamsRollupAttempts"],
-      [143, "WorkstreamsPeerSessionPins"],
-      [144, "WorkstreamsMemberBindings"],
-      [145, "WorkstreamsForwardReceipts"],
-      [146, "SettlementOriginRetention"],
-      [147, "QueueHolds"],
-      [148, "NativeExecutionProcessCustody"],
-      [149, "OrdinaryCheckoutProcessCustody"],
-      [150, "AuthSessionClientMetadata"],
-      [151, "WorkspaceRuntimeUses"],
-      [152, "PeerLinksAdoption"],
-      [153, "PersonalWorkstreams"],
     ]);
-    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+    const ledger =
+      yield* sql`SELECT migration_id, name FROM jones_sql_migrations ORDER BY migration_id`;
+    assert.deepStrictEqual(ledger, [
+      ...ledgerBefore.map(({ migration_id, name }) => ({ migration_id, name })),
+      { migration_id: 115, name: "ScheduledWebhookPendingRuns" },
+    ]);
+    assert.deepStrictEqual(
+      yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id < 115 ORDER BY migration_id`,
+      ledgerBefore,
+    );
+    assert.deepStrictEqual(yield* runJonesMigrations(throughUpgrade), []);
+    assert.deepStrictEqual(
+      yield* sql`SELECT migration_id, name FROM jones_sql_migrations ORDER BY migration_id`,
+      ledger,
+    );
     assert.deepStrictEqual(
       yield* sql`SELECT name FROM pragma_table_info('jones_scheduled_webhook_pending_runs')
         ORDER BY cid`,

@@ -1,3 +1,7 @@
+import * as StartRefusal from "../jones/startRefusal/Store.ts";
+import { SqlError, UnknownError } from "effect/sql/SqlError";
+import { SqliteReaderAdmissionError } from "@t3tools/shared/jones/sqliteReaders/admissionFailure";
+import { GoalContinuityError } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import { HistoryNotApplied } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
@@ -504,6 +508,8 @@ function makeLocalCommandHarness(
     readonly conversationLayer?: Layer.Layer<ConversationPolicy.ConversationPolicy>;
     readonly conversationDriver?: string;
     readonly continuityRequirement?: ContinuityRequirement;
+    readonly restartHeld?: boolean;
+    readonly controlHeld?: boolean;
     readonly text: string;
     readonly driver?: "codex" | "claudeAgent";
     readonly goal?: OrchestrationV2ThreadProjection["providerThreads"][number]["goal"];
@@ -1425,9 +1431,23 @@ function makeLocalCommandHarness(
         input.continuityRead,
       ),
     ),
-    Layer.provide(ControlAdmission.layer),
     Layer.provide(
-      Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
+      input.controlHeld
+        ? Layer.mock(ControlAdmission.ControlAdmission)({
+            assertOpen: ({ instanceId }) =>
+              Effect.fail(new ControlAdmission.ControlAdmissionHeld({ instanceId })),
+          })
+        : ControlAdmission.layer,
+    ),
+    Layer.provide(
+      Layer.mock(RestartPreparation.RestartPreparation)({
+        assertThreadOpen: (threadId) =>
+          input.restartHeld
+            ? Effect.fail(
+                new RestartPreparation.RestartThreadHeld({ threadId, stage: "interrupt" }),
+              )
+            : Effect.void,
+      }),
     ),
     Layer.provide(
       Layer.mock(ProviderSwitchService.ProviderSwitchServiceV2)({
@@ -2575,6 +2595,8 @@ effectIt.effect.each([false, true])(
         });
       yield* fail(new EffectClaimLost({ effectId: "effect:before-native-issue" }));
       yield* fail(new Error("late issue response"));
+      for (const [input] of harness.writeIfRunCurrent.mock.calls)
+        expect(input).not.toHaveProperty("startRefusalReason");
       expect(harness.open).not.toHaveBeenCalled();
       expect(harness.startRootRun).not.toHaveBeenCalled();
       expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(
@@ -3610,5 +3632,82 @@ effectIt.effect.each([
       expect(harness.projection().contextHandoffs[0]?.delivery?.status).toBe(
         row.restored ? undefined : "pending",
       );
+    }),
+);
+
+effectIt.effect.each([
+  "restart_admission",
+  "continuity_unavailable",
+  "continuity_held",
+  "control_held",
+] as const)("certification is explicitly limited to the %s prefix refusal", (reason) =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      restartHeld: reason === "restart_admission",
+      controlHeld: reason === "control_held",
+      ...(reason === "continuity_held"
+        ? {
+            continuityRequirement: {
+              outcome: "hold" as const,
+              reason: "delivery_unknown" as const,
+              current: null,
+              gate: {
+                outcome: "hold" as const,
+                reason: "delivery_unknown" as const,
+                fenceRevision: "1",
+                deliveryIds: [],
+              },
+            },
+          }
+        : {}),
+      ...(reason === "continuity_unavailable"
+        ? {
+            continuityRead: () =>
+              Effect.fail(
+                Object.defineProperty(new GoalContinuityError({ reason: "unavailable" }), "cause", {
+                  value: new SqliteReaderAdmissionError({ reason: "queue-timeout" }),
+                }),
+              ),
+          }
+        : {}),
+    });
+    yield* harness.start.pipe(Effect.result);
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startRefusalReason: reason,
+        activeAttemptId: harness.attemptId,
+        expectedStatus: "starting",
+      }),
+    );
+  }),
+);
+
+effectIt.effect.each(["Continue", "/logout"])(
+  "a failed durable crossing prevents post-prefix work for %s",
+  (text) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text });
+      const cross = vi.fn(() =>
+        Effect.fail(
+          new SqlError({
+            reason: new UnknownError({ cause: "synthetic crossing commit failure" }),
+          }),
+        ),
+      );
+      const outcome = yield* harness.startWithRetry.pipe(
+        Effect.provide(Layer.mock(StartRefusal.StartRefusals)({ cross })),
+        Effect.result,
+      );
+      expect(outcome._tag).toBe("Failure");
+      expect(cross).toHaveBeenCalledOnce();
+      expect(cross).toHaveBeenCalledWith(expect.objectContaining({ attemptId: harness.attemptId }));
+      expect(harness.tryHandlePromptCommand).not.toHaveBeenCalled();
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
     }),
 );
