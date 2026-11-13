@@ -35,6 +35,8 @@
     "scripts/warm-dep-cache.ts",
     "../../scripts/lib/public-config.ts",
     "../../scripts/lib/third-party-licenses.ts",
-    "../../scripts/jones/tsrs/task-cache.ts"
+    "../../scripts/jones/tsrs/task-cache.ts",
+    "../../scripts/jones/tsrs/local-mac-capacity.ts",
+    "../../scripts/jones/worktree-setup/local-mac-admission.ts"
   ]
 }

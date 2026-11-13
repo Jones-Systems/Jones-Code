@@ -2017,9 +2017,10 @@
       "id": "worktree-setup",
       "tests": [
         "scripts/jones/worktree-setup/entrypoint.node-test.mjs",
-        "scripts/jones/worktree-setup/setup.node-test.mjs"
+        "scripts/jones/worktree-setup/setup.node-test.mjs",
+        "scripts/jones/tsrs/local-mac-capacity.node-test.mjs"
       ],
-      "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests. Darwin producers additionally require fresh one-shot same-process CPU/native memory admission, bounded utility closure, cancellation and freshness checks, and child-only pnpm/Rolldown controls. Synthetic refusal tests preserve non-Darwin and link-only behavior; actual native descendant qualification remains separate."
+      "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests. Darwin producers additionally require fresh one-shot same-process CPU/native memory admission, bounded utility closure, cancellation and freshness checks, and child-only pnpm/Rolldown controls. Synthetic refusal tests preserve non-Darwin and link-only behavior; actual native descendant qualification remains separate. Local Darwin compiler entrypoints additionally serialize participating user builds across worktrees and require fresh30s/final5s adaptive CPU, native-memory and output-storage admission. Unknown producer closure retains its lease; Linux/hosted policies and patch-lock identity remain separate."
     },
     {
       "id": "native-self-configuration-harness",
@@ -2577,9 +2578,10 @@
         "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
         "packages/client-runtime/src/state/fileMetadata.test.ts",
         "packages/client-runtime/src/state/projectCommands.test.ts",
-        "packages/client-runtime/src/state/threadCommands.test.ts"
+        "packages/client-runtime/src/state/threadCommands.test.ts",
+        "scripts/jones/tsrs/local-mac-capacity.node-test.mjs"
       ],
-      "scope": "Pinned official Effect-TS TSRS identity, private-install patch recovery, verified launcher on all33 CLI surfaces and uncached CI admission. Pure task-cache helper retains automatic input/output tracking and excludes only buildinfo and exact patch lock/reclaim metadata;31 public aliases retain exact native commands. Five complete ConnectionTarget fixture values preserve existing tests. Unsupported local fallback has the explicit Q2-R1 TS377049 limitation; full adoption qualification is required before main integration. One-shot CLI grammar refuses unqualified modes before candidate/fallback lookup. Shared finite raw-config and bounded seed utilities preserve retained v2 identity; Ordinary native state uses configuration-bound logical-form envelopes, same-parent private working files, self-reference-only conversion and bounded external/raw accounting. Native cache metadata stays excluded from task restoration; complete adoption qualification remains required."
+      "scope": "Pinned official Effect-TS TSRS identity, private-install patch recovery, verified launcher on all33 CLI surfaces and uncached CI admission. Pure task-cache helper retains automatic input/output tracking and excludes only buildinfo and exact patch lock/reclaim metadata;31 public aliases retain exact native commands. Five complete ConnectionTarget fixture values preserve existing tests. Unsupported local fallback has the explicit Q2-R1 TS377049 limitation; full adoption qualification is required before main integration. One-shot CLI grammar refuses unqualified modes before candidate/fallback lookup. Shared finite raw-config and bounded seed utilities preserve retained v2 identity; Ordinary native state uses configuration-bound logical-form envelopes, same-parent private working files, self-reference-only conversion and bounded external/raw accounting. Native cache metadata stays excluded from task restoration; complete adoption qualification remains required. Local Darwin compiler entrypoints additionally serialize participating user builds across worktrees and require fresh30s/final5s adaptive CPU, native-memory and output-storage admission. Unknown producer closure retains its lease; Linux/hosted policies and patch-lock identity remain separate."
     },
     {
       "id": "shell-publication-batching",

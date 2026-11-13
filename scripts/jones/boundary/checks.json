@@ -3248,9 +3248,11 @@
       "id": "jones-worktree-setup",
       "tests": [
         "scripts/jones/worktree-setup/entrypoint.node-test.mjs",
-        "scripts/jones/worktree-setup/setup.node-test.mjs"
+        "scripts/jones/worktree-setup/setup.node-test.mjs",
+        "scripts/jones/tsrs/local-mac-capacity.node-test.mjs"
       ],
       "commands": [
+        "node --test --test-concurrency=1 scripts/jones/tsrs/local-mac-capacity.node-test.mjs",
         "node --test --test-concurrency=1 scripts/jones/worktree-setup/*.node-test.mjs",
         "node scripts/jones/check-boundary.ts --strict",
         "vp lint scripts/setup-worktree.ts scripts/jones/worktree-setup/setup.ts scripts/jones/worktree-setup/local-mac-admission.ts scripts/jones/worktree-setup/setup.node-test.mjs scripts/jones/worktree-setup/entrypoint.node-test.mjs",
@@ -4041,7 +4043,8 @@
         "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
         "packages/client-runtime/src/state/fileMetadata.test.ts",
         "packages/client-runtime/src/state/projectCommands.test.ts",
-        "packages/client-runtime/src/state/threadCommands.test.ts"
+        "packages/client-runtime/src/state/threadCommands.test.ts",
+        "scripts/jones/tsrs/local-mac-capacity.node-test.mjs"
       ],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/tsrs/*.node-test.mjs",

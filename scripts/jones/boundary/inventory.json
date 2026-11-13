@@ -3556,6 +3556,7 @@
     "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts": "jones-owned",
     "apps/server/src/orchestration-v2/ContextHandoffBudget.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/ContextHandoffDelivery.ts": "hook",
+    "apps/web/scripts/warm-dep-cache.ts": "hook",
     "apps/server/src/jones/workstreams/deferredShellActivation.ts": "jones-owned",
     "apps/server/src/jones/workstreams/deferredShellActivation.test.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamShellActivation.ts": "jones-owned",
@@ -4535,6 +4536,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
       "to": "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts"
+    },
+    {
+      "from": "apps/web/scripts/warm-dep-cache.ts",
+      "to": "scripts/jones/tsrs/local-mac-capacity.ts"
     },
     {
       "from": "apps/server/src/auth/SessionStore.ts",
