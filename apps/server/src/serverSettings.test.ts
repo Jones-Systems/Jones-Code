@@ -1010,7 +1010,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       const instance = (yield* settings.getSettings).providerInstances[
         ProviderInstanceId.make("cursor_work")
       ];
-      assert.deepEqual(instance, { driver: "cursor", config: {} });
+      assert.deepEqual(instance, { driver: ProviderDriverKind.make("cursor"), config: {} });
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
