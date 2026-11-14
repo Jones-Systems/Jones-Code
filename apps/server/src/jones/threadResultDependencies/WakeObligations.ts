@@ -103,12 +103,23 @@ export function makeWakeObligations(sql: SqlClient.SqlClient, tables: JonesTable
     for (const stored of events) {
       const turn = acceptedStartWitness(stored);
       if (turn === undefined) continue;
+      // Most native starts have no wake to release. Check the waiter's holds before reading history.
+      const holds = yield* sql<{
+        dependency_id: string;
+        generation: number;
+        created_sequence: number;
+      }>`SELECT h.dependency_id,h.generation,h.created_sequence FROM jones_peer_wake_holds h
+        JOIN jones_thread_result_dependencies d ON d.dependency_id = h.dependency_id AND d.generation = h.generation
+        WHERE d.waiter_thread_id = ${stored.event.threadId} AND h.state IN ('held','armed') AND h.created_sequence < ${stored.sequence}
+          AND h.refused_run_id != ${stored.event.runId ?? null} ORDER BY h.created_sequence,h.dependency_id`;
+      if (holds.length === 0) continue;
       const used =
         yield* sql`SELECT 1 FROM jones_peer_wake_holds WHERE release_event_id = ${stored.event.id}
         ${childHolds ? sql`UNION ALL SELECT 1 FROM jones_start_refusal_holds WHERE release_event_id = ${stored.event.id}` : sql``}`;
       if (used.length > 0) continue;
-      const births = yield* sql<{ run_id: string; sequence: number }>`SELECT a.run_id,e.sequence
+      const births = yield* sql<{ sequence: number }>`SELECT e.sequence
         FROM orchestration_v2_projection_run_attempts a JOIN orchestration_events e ON e.stream_id = a.thread_id
+        AND e.application_event_version = 2 AND e.aggregate_kind = 'thread'
         AND e.event_type = 'run-attempt.created' AND json_extract(e.payload_json,'$.id') = a.attempt_id
         AND json_extract(e.payload_json,'$.runId') = a.run_id
         WHERE a.attempt_id = ${turn.runAttemptId} AND a.thread_id = ${stored.event.threadId}
@@ -123,14 +134,8 @@ export function makeWakeObligations(sql: SqlClient.SqlClient, tables: JonesTable
         WHERE d.waiter_thread_id = ${stored.event.threadId} AND h.release_sequence >= ${birth.sequence}
         ${childHolds ? sql`UNION ALL SELECT 1 FROM jones_start_refusal_holds WHERE thread_id = ${stored.event.threadId} AND release_sequence >= ${birth.sequence}` : sql``}`;
       if (alreadyWitnessed.length > 0) continue;
-      const holds = yield* sql<{
-        dependency_id: string;
-        generation: number;
-      }>`SELECT h.dependency_id,h.generation FROM jones_peer_wake_holds h
-        JOIN jones_thread_result_dependencies d ON d.dependency_id = h.dependency_id AND d.generation = h.generation
-        WHERE d.waiter_thread_id = ${stored.event.threadId} AND h.state IN ('held','armed') AND h.created_sequence < ${birth.sequence}
-          AND h.refused_run_id != ${birth.run_id} ORDER BY h.created_sequence,h.dependency_id`;
       for (const hold of holds) {
+        if (hold.created_sequence >= birth.sequence) break;
         if ((yield* current(hold.dependency_id, hold.generation)).length !== 1) continue;
         yield* sql`UPDATE jones_peer_wake_holds SET state = 'armed',release_event_id = ${stored.event.id},release_sequence = ${stored.sequence}
           WHERE dependency_id = ${hold.dependency_id} AND generation = ${hold.generation} AND state IN ('held','armed')`;

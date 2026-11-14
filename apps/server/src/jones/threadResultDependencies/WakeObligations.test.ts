@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as Statement from "effect/sql/Statement";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
 import * as Reactor from "./DependencyReactor.ts";
@@ -248,6 +249,45 @@ it.effect(
       assert.isTrue(Exit.isFailure(settlement));
       assert.equal((yield* restarted.get(held.dependencyId))?.wakeHold, "held");
     }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect("reads only the waiter's event stream when a native start can release a wake", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const wake = yield* admit(f);
+    const history: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+    const capture: Statement.Transformer = (statement) => {
+      const [query, params] = statement.compile();
+      if (/\borchestration_events\b/.test(query)) history.push([query, params]);
+      return Effect.succeed(statement);
+    };
+    const beforeHold = yield* witness(f, wake, "before", true, undefined, false);
+    yield* f.store.wakes
+      .events([{ event: beforeHold, sequence: 1000, commandId: null }])
+      .pipe(Effect.provideService(Statement.CurrentTransformer, capture));
+    assert.isEmpty(history);
+
+    yield* wake.refuse();
+    const start = yield* witness(f, wake, "after", true, undefined, false);
+    yield* f.sql`WITH RECURSIVE unrelated(n) AS (
+      VALUES(1) UNION ALL SELECT n+1 FROM unrelated WHERE n<2000
+    ) INSERT INTO orchestration_events (
+      event_id,aggregate_kind,stream_id,stream_version,event_type,occurred_at,
+      actor_kind,payload_json,metadata_json,application_event_version
+    ) SELECT 'foreign:'||n,'thread','foreign',n,'run-attempt.created','2026-11-01',
+      'server','{}','{}',2 FROM unrelated`;
+    const head = yield* f.sql<{
+      sequence: number;
+    }>`SELECT MAX(sequence) AS sequence FROM orchestration_events`;
+    yield* f.store.wakes
+      .events([{ event: start, sequence: head[0]!.sequence + 1, commandId: null }])
+      .pipe(Effect.provideService(Statement.CurrentTransformer, capture));
+    assert.lengthOf(yield* f.store.wakes.armedBy(start.id), 1);
+    assert.lengthOf(history, 1);
+    const [query, params] = history[0]!;
+    const plan = yield* f.sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, params);
+    assert.isTrue(plan.some(({ detail }) => /SEARCH e USING .*\bstream_id=\?/.test(detail)));
+  }).pipe(Effect.provide(Fixture.layer)),
 );
 
 it.effect(
