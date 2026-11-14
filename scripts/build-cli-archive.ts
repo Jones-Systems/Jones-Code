@@ -26,6 +26,7 @@ import serverPackageJson from "../apps/server/package.json" with { type: "json" 
 
 import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
 import { planCliArchiveDependencies } from "./jones/packaging/cliArchiveDependencies.ts";
+import { linuxLibatomicLayout } from "./jones/packaging/linuxRuntimeLibraries.ts";
 import {
   assertCliPayloadUnchanged,
   requireProductionCliBuild,
@@ -295,8 +296,10 @@ const bundleLinuxLibatomic = Effect.fn("bundleLinuxLibatomic")(function* (input:
       hint: `ldd did not resolve it for ${input.executablePath}. Install libatomic1 on the build host.`,
     });
   }
-  yield* fs.makeDirectory(path.join(input.contentDir, "lib"));
-  yield* fs.copyFile(source, path.join(input.contentDir, "lib/libatomic.so.1"));
+  yield* fs.makeDirectory(path.join(input.contentDir, linuxLibatomicLayout.directory), {
+    recursive: true,
+  });
+  yield* fs.copyFile(source, path.join(input.contentDir, linuxLibatomicLayout.file));
 
   // libatomic is GPL-3.0-or-later WITH GCC-exception-3.1, so its terms and source travel with it.
   const owner = yield* spawner.string(
@@ -329,16 +332,20 @@ const bundleLinuxLibatomic = Effect.fn("bundleLinuxLibatomic")(function* (input:
     path.join(input.repoRoot, "scripts/licenses/libatomic.LICENSE"),
   );
   yield* fs.writeFileString(
-    path.join(input.contentDir, "lib/libatomic.so.1.LICENSE"),
+    path.join(input.contentDir, `${linuxLibatomicLayout.file}.LICENSE`),
     `${header}\n\n${license}`,
   );
 
   // RUNPATH resolves through symlinks and is not inherited by child processes, unlike LD_LIBRARY_PATH.
   yield* runCommand(
-    ChildProcess.make("patchelf", ["--set-rpath", "$ORIGIN/lib", input.executablePath]),
+    ChildProcess.make("patchelf", [
+      "--set-rpath",
+      linuxLibatomicLayout.runpath,
+      input.executablePath,
+    ]),
     "patchelf --set-rpath",
   );
-  yield* Effect.log(`[cli-archive] Bundled ${source} as lib/libatomic.so.1.`);
+  yield* Effect.log(`[cli-archive] Bundled ${source} as ${linuxLibatomicLayout.file}.`);
 });
 
 const MacSigningConfig = Config.all({

@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "linux-runtime-library-layout",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "scripts/build-cli-archive.ts",
+      "to": "scripts/jones/packaging/linuxRuntimeLibraries.ts"
+    },
+    {
+      "from": "scripts/smoke-cli-archive.ts",
+      "to": "scripts/jones/packaging/linuxRuntimeLibraries.ts"
+    }
+  ]
+}
