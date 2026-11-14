@@ -18,7 +18,9 @@ it("stages bundled Linux libraries through the installed updater's existing payl
     const runtime = NodePath.join(scratch, "runtime");
     const destination = NodePath.join(scratch, "extracted");
     const library = linuxLibatomicLayout.file;
-    await NodeFSP.mkdir(NodePath.join(runtime, linuxLibatomicLayout.directory), { recursive: true });
+    await NodeFSP.mkdir(NodePath.join(runtime, linuxLibatomicLayout.directory), {
+      recursive: true,
+    });
     await NodeFSP.mkdir(NodePath.join(runtime, "client"));
     await NodeFSP.mkdir(NodePath.join(runtime, "resource-monitor"));
     await NodeFSP.mkdir(destination);
