@@ -5338,6 +5338,22 @@
         "node scripts/jones/check-boundary.ts --strict",
         "git diff --check"
       ]
+    },
+    {
+      "id": "jones-thread-activity-label",
+      "tests": [
+        "packages/client-runtime/src/jones/threadActivityLabel.test.ts",
+        "apps/mobile/src/jones/threadActivityLabel.test.ts",
+        "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx",
+        "apps/mobile/src/lib/threadActivity.test.ts",
+        "packages/client-runtime/src/state/threadExecution.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/threadActivityLabel.test.ts apps/mobile/src/jones/threadActivityLabel.test.ts apps/web/src/components/chat/MessagesTimeline.browser.test.tsx apps/mobile/src/lib/threadActivity.test.ts packages/client-runtime/src/state/threadExecution.test.ts packages/shared/src/jones/threadAttention.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/shared --filter @t3tools/client-runtime --filter @t3tools/web --filter @t3tools/mobile --concurrency-limit 1 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

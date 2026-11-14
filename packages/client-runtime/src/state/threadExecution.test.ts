@@ -273,7 +273,7 @@ describe("thread execution presentation", () => {
     expect(threadRuntimeHasInterruptibleRun(runtime)).toBe(true);
   });
 
-  it("marks an open run whose provider turn already ended", () => {
+  it("distinguishes a scheduled run, native activity, and an ended provider turn", () => {
     const attemptId = RunAttemptId.make("attempt-open");
     const openRun = { ...run("run-open", 1, "running"), activeAttemptId: attemptId };
     const providerTurn = (status: "running" | "failed") => ({
@@ -295,6 +295,35 @@ describe("thread execution presentation", () => {
     });
 
     expect(deriveThreadActivityRun(projection("running"))?.turnEnded).toBeUndefined();
+    expect(deriveThreadActivityRun(projection("running"))?.providerActivityStarted).toBe(false);
+    const turn = providerTurn("running");
+    const thought = {
+      id: TurnItemId.make("native-thought"),
+      threadId: openRun.threadId,
+      runId: openRun.id,
+      nodeId: turn.nodeId,
+      providerThreadId: turn.providerThreadId,
+      providerTurnId: turn.id,
+      nativeItemRef: {
+        driver: ProviderDriverKind.make("codex"),
+        nativeId: "thought",
+        strength: "strong" as const,
+      },
+      parentItemId: null,
+      ordinal: 1,
+      status: "running" as const,
+      title: null,
+      startedAt: now,
+      completedAt: null,
+      updatedAt: now,
+      type: "reasoning" as const,
+      text: "Working on the request",
+      streaming: true,
+    };
+    expect(
+      deriveThreadActivityRun({ ...projection("running"), turnItems: [thought] })
+        ?.providerActivityStarted,
+    ).toBe(true);
     expect(deriveThreadActivityRun(projection("failed"))).toMatchObject({
       status: "running",
       turnEnded: true,

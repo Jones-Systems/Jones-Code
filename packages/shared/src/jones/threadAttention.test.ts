@@ -165,6 +165,7 @@ describe("shared native thread attention", () => {
     "completed",
   ] as const)("preserves %s runtime status and separate pill", (status) => {
     const state = shellAttentionInput(shell({ latestRunId: RunId.make("run"), status }));
+    expect(state.latestRun?.providerActivityStarted).toBe(false);
     expect(resolveThreadAttentionStatus(state)).toBe(
       status === "idle"
         ? "waiting"

@@ -15,7 +15,6 @@
     "apps/server/src/jones/threadResultDependencies/WakeObligations.integration.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/155_JonesPeerWakeObligations.ts": "jones-owned",
     "scripts/jones/boundary/fragments/peer-wake-obligations.json": "jones-owned",
-
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
     ".agents/skills/capture-ui-evidence/references/native-self-configuration.md": "policy",
     ".agents/skills/capture-ui-evidence/references/runner-output-and-limits.md": "policy",
@@ -3582,7 +3581,14 @@
     "scripts/jones/boundary/fragments/server-swap-cli.json": "jones-owned",
     "apps/server-swap-cli/host-process.mjs": "jones-owned",
     "apps/server-swap-cli/host-process.test.cjs": "jones-owned",
-    "apps/server-swap-cli/build.test.cjs": "jones-owned"
+    "apps/server-swap-cli/build.test.cjs": "jones-owned",
+    "packages/client-runtime/src/jones/threadActivityLabel.ts": "jones-owned",
+    "packages/client-runtime/src/jones/threadActivityLabel.test.ts": "jones-owned",
+    "apps/mobile/src/jones/threadActivityLabel.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/thread-activity-label.json": "jones-owned",
+    "apps/web/src/components/chat/TimelineWorkGroupRows.tsx": "hook",
+    "apps/web/src/components/chat/timelineRowContext.ts": "hook",
+    "apps/mobile/src/features/threads/thread-work-log.tsx": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
