@@ -215,6 +215,42 @@ function text() {
   return container.textContent ?? "";
 }
 
+it("distinguishes a pending send, accepted startup, and confirmed provider work", async () => {
+  const props = {
+    ...baseProps(),
+    isWorking: true,
+    activeTurnStartedAt: CREATED_AT,
+    timelineEntries: [message("Check this change", { role: "user" })],
+  };
+  await using screen = await renderElement(<MessagesTimeline {...props} />);
+  await vi.waitFor(() => expect(text()).toContain("Connecting"));
+  expect(text()).not.toContain("Thinking");
+
+  const run = { runId: RunId.make("activity-run"), startedAt: null, completedAt: null };
+  await screen.rerender(<MessagesTimeline {...props} latestRun={{ ...run, status: "starting" }} />);
+  await vi.waitFor(() => expect(text()).toContain("Starting"));
+  expect(text()).not.toContain("Connecting");
+  expect(text()).not.toContain("Thinking");
+
+  await screen.rerender(
+    <MessagesTimeline
+      {...props}
+      latestRun={{ ...run, status: "running", startedAt: CREATED_AT }}
+    />,
+  );
+  await vi.waitFor(() => expect(text()).toContain("Thinking"));
+  expect(text()).not.toContain("Starting");
+
+  await screen.rerender(
+    <MessagesTimeline
+      {...props}
+      isWorking={false}
+      latestRun={{ ...run, status: "completed", completedAt: CREATED_AT }}
+    />,
+  );
+  await vi.waitFor(() => expect(text()).not.toContain("Thinking"));
+});
+
 function buttons(name: string | RegExp) {
   return [...container.querySelectorAll<HTMLElement>("button, [role=button]")].filter((button) => {
     const label = button.getAttribute("aria-label") ?? button.textContent ?? "";

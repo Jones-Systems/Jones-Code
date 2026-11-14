@@ -1,0 +1,30 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-activity-label",
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/jones/threadActivityLabel.ts",
+    "packages/client-runtime/src/jones/threadActivityLabel.test.ts",
+    "apps/mobile/src/jones/threadActivityLabel.test.ts"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/chat/MessagesTimeline.tsx",
+    "apps/web/src/components/chat/timelineRowContext.ts",
+    "apps/web/src/components/chat/TimelineWorkGroupRows.tsx",
+    "apps/mobile/src/lib/threadActivity.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/MessagesTimeline.tsx",
+      "to": "packages/client-runtime/src/jones/threadActivityLabel.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/timelineRowContext.ts",
+      "to": "packages/client-runtime/src/jones/threadActivityLabel.ts"
+    },
+    {
+      "from": "apps/mobile/src/lib/threadActivity.ts",
+      "to": "packages/client-runtime/src/jones/threadActivityLabel.ts"
+    }
+  ]
+}

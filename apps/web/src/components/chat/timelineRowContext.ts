@@ -1,3 +1,4 @@
+import type { threadActivityLabel } from "@t3tools/client-runtime/jones/thread-activity-label";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import type {
   ProviderApprovalDecision,
@@ -100,6 +101,7 @@ export interface TimelineRowSharedState {
 }
 
 export interface TimelineRowActivityState {
+  activityLabel: ReturnType<typeof threadActivityLabel>;
   isWorking: boolean;
   isCompacting: boolean;
   isRevertingCheckpoint: boolean;

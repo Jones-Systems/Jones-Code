@@ -2,6 +2,7 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import { AudioPreviewUnmountContext } from "../files/AudioPreview";
+import { threadActivityLabel } from "@t3tools/client-runtime/jones/thread-activity-label";
 import { ThreadFindTimelineContext } from "./ThreadFindProvider";
 import { MarkdownFindContext } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
@@ -1058,6 +1059,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       ? worktreeSetup
       : null;
   const activityState: TimelineRowActivityState = {
+    activityLabel: threadActivityLabel(latestRun?.status, runlessWorkActive),
     isWorking,
     isCompacting: compactionAwaitingRow,
     isRevertingCheckpoint,
