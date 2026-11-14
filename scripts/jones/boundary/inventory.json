@@ -7,6 +7,9 @@
   },
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "paths": {
+    "scripts/jones/packaging/linuxRuntimeLibraries.ts": "jones-owned",
+    "scripts/jones/packaging/linuxRuntimeLibraries.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/linux-runtime-library-layout.json": "jones-owned",
     "apps/server/src/jones/threadResultDependencies/WakeObligations.ts": "jones-owned",
     "apps/server/src/jones/threadResultDependencies/WakeObligations.test.ts": "jones-owned",
     "apps/server/src/jones/threadResultDependencies/WakeObligations.integration.test.ts": "jones-owned",
