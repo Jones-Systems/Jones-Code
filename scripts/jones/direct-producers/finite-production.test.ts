@@ -101,7 +101,7 @@ it.each([
           if (command._tag !== "StandardCommand") return yield* Effect.die("unexpected pipeline");
           const call = ++calls;
           expect(command.command).toBe(executable ? "fixture-vp" : process.execPath);
-          expect(command.args).toEqual(executable ? ["pack"] : ["--run", "build:bundle"]);
+          expect(command.args).toEqual(executable ? ["pack"] : ["--run", "build:bundle:internal"]);
           expect(command.options.cwd).toBe(NodePath.join(worktree, "apps/server"));
           expect(command.options.stdout).toBe("ignore");
           expect(command.options.stderr).toBe("inherit");

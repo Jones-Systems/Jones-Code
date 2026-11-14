@@ -80,6 +80,20 @@ and process exit. Its unique fixtures live in disk-backed `node_modules` and
 are removed after owned consumers close. A source PR does not update other
 checkouts' dependencies or remove older temporary data.
 
+### Managed server bundles
+
+The server package's `build:bundle` command owns the audited checked-in default
+pack profile and accepts no arguments. Configuration/output overrides and watch
+flags are rejected before configuration or bundling starts. Executable pack
+modes use `build:exe`. Full `build` retains its outer owner and invokes the
+explicit internal pack operation, without enrolling a second bundle owner.
+
+The shared Jones pack profile declares the normal output/clean root. Changes to
+configured cleanup, copy or output roots require matching ownership declarations
+and route tests. Direct `vp pack` remains available as an unmanaged invocation.
+A managed native result does not prove descendant absence: unresolved duties
+retain their exact id/root/path independently of optional completion capture.
+
 ## Choosing a dev process
 
 Use `vp run dev` for server and web, or `vp run dev:desktop` for the Electron client.

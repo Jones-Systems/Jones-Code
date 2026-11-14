@@ -115,7 +115,8 @@
         "scripts/jones/direct-producers/finite-production.test.ts",
         "scripts/jones/direct-producers/finite-production.node-test.mjs",
         "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts",
-        "scripts/jones/direct-producers/resolve.test.ts"
+        "scripts/jones/direct-producers/resolve.test.ts",
+        "scripts/jones/direct-producers/server-bundle.node-test.mjs"
       ],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/direct-producers/completion.node-test.mjs native/process-placement/build.test.mjs",
@@ -127,7 +128,9 @@
         "vp test run scripts/jones/direct-producers/finite-production.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/server/scripts/cli.ts scripts/jones/direct-producers/finite-production.ts scripts/jones/direct-producers/finite-production.test.ts scripts/jones/direct-producers/finite-production.testkit.ts scripts/jones/direct-producers/finite-production.node-test.mjs",
         "vp test run apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts scripts/jones/direct-producers/resolve.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp lint apps/server/src/jones/workspaceRetirement/ProducerFinalizer.ts apps/server/src/jones/workspaceRetirement/ProducerSessionObservation.ts apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts apps/server/src/jones/workspaceRetirement/Runtime.ts scripts/jones/direct-producers/resolve.ts scripts/jones/direct-producers/resolve.test.ts"
+        "vp lint apps/server/src/jones/workspaceRetirement/ProducerFinalizer.ts apps/server/src/jones/workspaceRetirement/ProducerSessionObservation.ts apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts apps/server/src/jones/workspaceRetirement/Runtime.ts scripts/jones/direct-producers/resolve.ts scripts/jones/direct-producers/resolve.test.ts",
+        "node --test --test-concurrency=1 scripts/jones/direct-producers/server-bundle.node-test.mjs",
+        "vp lint scripts/jones/direct-producers/server-bundle.ts scripts/jones/direct-producers/server-pack-profile.ts scripts/jones/direct-producers/server-bundle.node-test.mjs"
       ]
     },
     {
