@@ -44,7 +44,7 @@ def digest(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''): result.update(block)
     return result.hexdigest()
 
-def app_digest(root, opaque_profile=False):
+def app_digest(root, opaque_profile=False, original_directories=None):
     root = pathlib.Path(root).resolve()
     result = hashlib.sha256()
     entries = sorted(root.rglob('*'), key=lambda value: value.relative_to(root).as_posix().encode('utf8'))
@@ -61,7 +61,13 @@ def app_digest(root, opaque_profile=False):
             total_bytes += info.st_size
             if total_bytes > 8 * 1024 * 1024 * 1024: raise RuntimeError('Native app exceeds its payload-size bound.')
             record = ['file', relative, info.st_mode & 0o777, digest(entry)]
-        elif entry.is_dir(): record = ['directory', relative, info.st_mode & 0o777]
+        elif entry.is_dir():
+            mode = info.st_mode & 0o777
+            if original_directories is not None:
+                original = (original_directories / relative).lstat()
+                manual_check(stat.S_ISDIR(original.st_mode) and mode in (original.st_mode & 0o777, original.st_mode & 0o700))
+                mode = original.st_mode & 0o777
+            record = ['directory', relative, mode]
         else: raise RuntimeError('Unexpected app payload file type.')
         result.update((json.dumps(record, separators=(',', ':'), ensure_ascii=False) + '\n').encode())
     return result.hexdigest()
@@ -2474,6 +2480,178 @@ def propose_install_retention():
     except Exception as error:
         return {'protocol': 1, 'operation': 'install-retention', 'status': 'held', 'reason': str(error)}
 
+# A held receipt remains an accurate history. Only this companion, committed after
+# comparing the stopped live preimage, can classify an interrupted copy as aborted.
+MANUAL_ABORT = 'aborted-before-swap.json'
+MANUAL_EVIDENCE = 'manual-settlement-proof-'
+
+def manual_check(condition):
+    if not condition: raise RuntimeError('Manual pre-swap settlement evidence changed; preserved.')
+
+def manual_pair_inventory(pair_path, expected, recovery, check_live):
+    pair, raw = database_read(pair_path / 'pair.json')
+    manual_check(pair.get('expected') == expected and pair.get('stateScope') == 'database-settings' and pair.get('recovery') == recovery)
+    manual_check(recovery['method'] == 'clone' and recovery['strictClone'] is True and recovery['copyFallback'] is False)
+    database = pathlib.Path(expected['databasePath'])
+    files, settings = pair['files'], pair['settings']
+    manual_check(set(files) == set(DATABASE_SUFFIXES) and files[''] is True and set(settings) == set(SETTINGS))
+    items = [('state.sqlite' + suffix, pathlib.Path(str(database) + suffix), files[suffix]) for suffix in DATABASE_SUFFIXES]
+    items += [(name, database.parent / name, settings[name]) for name in SETTINGS]
+    names = {name for name, _, present in items if present}
+    manual_check({p.name for p in pair_path.iterdir()} == names | {'pair.json'})
+    inventory, live = [], []
+    for name, original, present in items:
+        manual_check(type(present) is bool)
+        if check_live: manual_check(os.path.lexists(original) == present)
+        if not present: continue
+        target = database_file(pair_path / name)
+        inventory.append(target)
+        if check_live:
+            source = database_file(original)
+            manual_check(target['device'] == source['device'] and target['inode'] != source['inode'] and
+                         all(target[k] == source[k] for k in ('bytes', 'mtimeNs')))
+            live.append(source)
+    manual_check(sum(item['bytes'] for item in inventory) == recovery['bytes'])
+    return {'identity': retention_identity(pair_path), 'metadata': database_file(pair_path / 'pair.json'),
+            'sha256': hashlib.sha256(raw).hexdigest(), 'files': inventory}, live
+
+def manual_retained(directory, check_live=False):
+    identity = retention_identity(directory)
+    manual_check(stat.S_IMODE(directory.stat().st_mode) == 0o700)
+    witnesses = [p for p in directory.iterdir() if p.name.startswith(MANUAL_EVIDENCE)]
+    manual_check(len(witnesses) <= 1 and all(p.suffix == '.json' and database_hex(p.stem[len(MANUAL_EVIDENCE):]) for p in witnesses))
+    manual_check(not {p.name for p in directory.iterdir()} - (
+        {'receipt.json', 'previous-pair', 'recovery-reserve.bin', MANUAL_ABORT} | {p.name for p in witnesses}))
+    receipt, raw = database_read(directory / 'receipt.json')
+    manual_check(set(receipt) == {'protocol','operation','transactionId','phase','stoppedAt','message','planSha256',
+        'originalManifest','installed','candidate','automaticContinuationRequested','stateRecovery','pairedState','recovery','recoveryReserves','storage'})
+    manual_check(receipt['protocol'] == 1 and receipt['operation'] == 'manual-install' and receipt['transactionId'] == directory.name
+        and receipt['phase'] == 'held' and receipt['stoppedAt'] == 'paired' and receipt['stateRecovery'] == 'clone-required'
+        and receipt['automaticContinuationRequested'] is False and receipt['message'] == 'Staged app integrity changed during bundle preparation.')
+    expected = json.loads(receipt['originalManifest'])
+    manual_check(receipt['installed'] == expected and receipt['pairedState'] == str(directory / 'previous-pair'))
+    database_binding(expected)
+    stable = pathlib.Path(expected['appPath'])
+    incoming = stable.with_name(stable.name + '.jones-incoming-' + directory.name)
+    pair, live = manual_pair_inventory(directory / 'previous-pair', expected, receipt['recovery'], check_live)
+    reserves = receipt['recoveryReserves']
+    # Only the same-volume clone case: the failure released its journal reserve.
+    manual_check(len(reserves) == 2 and [item['purpose'] for item in reserves] == ['journal','recovery']
+        and reserves[0]['path'] == str(directory / 'recovery-journal-reserve.bin')
+        and stable.parent.stat().st_dev == directory.stat().st_dev)
+    reserve = database_file(directory / 'recovery-reserve.bin')
+    manual_check(reserves[1] == dict({k: reserve[k] for k in ('device','inode','bytes')},
+                                      path=str(directory / 'recovery-reserve.bin'), purpose='recovery'))
+    retained = {'transactionId': directory.name, 'directoryIdentity': identity, 'receipt': database_file(directory / 'receipt.json'),
+        'receiptSha256': hashlib.sha256(raw).hexdigest(), 'pair': pair, 'reserve': reserve,
+        'incomingIdentity': retention_identity(incoming), 'incomingDigest': app_digest(incoming)}
+    return receipt, retained, live
+
+def manual_request(receipt, raw):
+    request = json.loads(raw)
+    manual_check(hashlib.sha256(raw).hexdigest() == receipt['planSha256'] and request['protocol'] == 1
+        and request['restart'] == 'ordinary' and request.get('stateRecovery') == 'clone-required'
+        and request['expectedManifestSha256'] == hashlib.sha256(receipt['originalManifest'].encode()).hexdigest()
+        and request['installed'] == receipt['installed'] and request['candidate'] == receipt['candidate']
+        and valid_kernel_processes(request['processes']) and all(p['executable'] == request['installed']['executablePath'] for p in request['processes']))
+    return request
+
+def manual_abort_record(directory):
+    # An exclusive hard link is the commit point. Both names remain as evidence.
+    # A lone evidence file, including a short write after a crash, never admits an install.
+    receipt, retained, _ = manual_retained(directory)
+    value, raw, info = bounded_native_json(directory / MANUAL_ABORT)
+    manual_check(database_hex(value.get('proofSha256')))
+    witness = (directory / (MANUAL_EVIDENCE + value['proofSha256'] + '.json')).lstat()
+    manual_check(stat.S_ISREG(witness.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 2 and
+                 (info.st_dev, info.st_ino) == (witness.st_dev, witness.st_ino))
+    proof = value['proof']
+    manual_check(value == {'protocol': 1, 'status': 'aborted-before-swap', 'proofSha256': retirement_digest(proof), 'proof': proof}
+        and raw == database_canon(value) and proof['retained'] == retained)
+    manual_request(receipt, proof['requestRaw'].encode())
+    return value
+
+def manual_aborted_before_swap(directory):
+    return os.path.lexists(directory / MANUAL_ABORT) and bool(manual_abort_record(directory))
+
+def publish_manual_abort(directory, record):
+    evidence = directory / (MANUAL_EVIDENCE + record['proofSha256'] + '.json')
+    marker = directory / MANUAL_ABORT
+    raw = database_canon(record)
+    try: fd = os.open(evidence, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except FileExistsError: fd = os.open(evidence, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'r+b') as stream:
+        info = os.fstat(fd)
+        manual_check(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1 and
+                     stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= len(raw) and os.path.samestat(info, evidence.lstat()))
+        prefix = stream.read(len(raw) + 1)
+        manual_check(raw.startswith(prefix))
+        stream.write(raw[len(prefix):]); stream.flush(); os.fsync(fd)
+        manual_check(os.path.samestat(os.fstat(fd), evidence.lstat()))
+        os.link(evidence, marker, follow_symlinks=False)
+    sync_parent(marker)
+
+def manual_settlement(identifier, plan_path, expected_proof=None):
+    require_retention_exclusion()
+    manual_check(database_hex(identifier))
+    root = manifest_path.parent / 'jones-manual-installs'
+    retention_identity(root)
+    directory = root / identifier
+    retention_identity(directory)
+    raw = bounded_native_json(pathlib.Path(plan_path))[1]
+    request_file = database_file(pathlib.Path(plan_path))
+    if os.path.lexists(directory / MANUAL_ABORT):
+        record = manual_abort_record(directory)
+        manual_check(record['proof']['requestRaw'] == raw.decode() and record['proof']['requestFile'] == request_file
+                     and (expected_proof is None or expected_proof == record['proofSha256']))
+        if expected_proof is not None: sync_parent(directory / MANUAL_ABORT)
+        return {'status': 'settled', 'proofSha256': record['proofSha256'], 'transactionId': identifier}
+    receipt = database_read(directory / 'receipt.json')[0]
+    request = manual_request(receipt, raw)
+    active, manifest_raw = database_read(manifest_path)
+    manual_check(manifest_raw == receipt['originalManifest'].encode() and active == request['installed'] and
+                 not os.path.lexists(manifest_path.parent / 'jones-maintenance'))
+    inspect_selection_transactions(active)
+    prove_quiescence(active)
+    writers = acquire_writer_exclusion(active, initialize=False)
+    try:
+        prove_quiescence(active)
+        receipt, retained, live = manual_retained(directory, check_live=True)
+        manual_check(manual_request(receipt, raw) == request and database_read(manifest_path)[1] == manifest_raw)
+        stable, candidate = pathlib.Path(active['appPath']), request['candidate']
+        previous = stable.with_name(stable.name + '.jones-previous-' + active['generation'])
+        manual_check(not os.path.lexists(previous))
+        for bundle, installed in ((active,True),(candidate,False)):
+            bundle_identity(bundle, stable=installed)
+            manual_check(app_digest(bundle['appPath']) == bundle['appDigest'])
+        manual_check(digest(request['artifact']['path']) == request['artifact']['sha256'])
+        incoming = stable.with_name(stable.name + '.jones-incoming-' + identifier)
+        manual_check(retained['incomingDigest'] != candidate['appDigest'] and
+                     app_digest(incoming, original_directories=pathlib.Path(candidate['appPath'])) == candidate['appDigest'])
+        for process in request['processes']:
+            try: kernel_process_identity(process['pid'])
+            except KernelProcessError as error:
+                if error.diagnostic['error'] == 'process-exited': continue
+                raise
+            raise RuntimeError('Manual process still exists; settlement held.')
+        proof = {'retained': retained, 'requestRaw': raw.decode(), 'requestFile': request_file, 'liveFiles': live,
+                 'manifest': database_file(manifest_path), 'stableIdentity': retention_identity(stable),
+                 'candidateIdentity': retention_identity(pathlib.Path(candidate['appPath']))}
+        sha = retirement_digest(proof)
+        record = {'protocol': 1, 'status': 'aborted-before-swap', 'proofSha256': sha, 'proof': proof}
+        evidence = directory / (MANUAL_EVIDENCE + sha + '.json')
+        for partial in directory.glob(MANUAL_EVIDENCE + '*'):
+            manual_check(partial == evidence)
+            metadata = database_file(partial)
+            expected_bytes = database_canon(record)
+            manual_check(metadata['bytes'] <= len(expected_bytes) and expected_bytes.startswith(partial.read_bytes()))
+        if expected_proof is not None:
+            manual_check(expected_proof == sha)
+            publish_manual_abort(directory, record)
+            manual_check(manual_abort_record(directory) == record)
+        return {'status': 'ready' if expected_proof is None else 'settled', 'proofSha256': sha, 'transactionId': identifier}
+    finally: release_writer_exclusion(writers)
+
 def manual_install_plan(plan_path, plan_sha256, clone_required=False):
     plan, raw, _ = bounded_native_json(pathlib.Path(plan_path))
     if hashlib.sha256(raw).hexdigest() != plan_sha256 or plan.get('protocol') != 1 or plan.get('restart') != 'ordinary':
@@ -2498,6 +2676,9 @@ def manual_install_plan(plan_path, plan_sha256, clone_required=False):
         for directory in manual_root.iterdir():
             if directory.is_symlink() or not directory.is_dir() or not (directory / 'receipt.json').is_file():
                 raise RuntimeError('Unfinished manual installation requires reconciliation.')
+            if os.path.lexists(directory / MANUAL_ABORT) or any(directory.glob(MANUAL_EVIDENCE + '*')):
+                if manual_aborted_before_swap(directory): continue
+                raise RuntimeError('Unfinished manual settlement requires reconciliation.')
             if read(directory / 'receipt.json').get('phase') != 'launched':
                 raise RuntimeError('Unfinished manual installation requires reconciliation.')
     installed, candidate = plan['installed'], plan['candidate']
@@ -2626,6 +2807,8 @@ action.add_argument('--activate')
 action.add_argument('--inspect-recovery')
 action.add_argument('--settle-interrupted-activation')
 action.add_argument('--reconcile-running')
+action.add_argument('--inspect-manual-settlement')
+action.add_argument('--settle-manual-install')
 action.add_argument('--inspect-manual-install')
 action.add_argument('--manual-install')
 action.add_argument('--inspect-install-retention', action='store_true')
@@ -2650,6 +2833,7 @@ parser.add_argument('--staged-handle')
 parser.add_argument('--selection')
 parser.add_argument('--selection-sha256')
 parser.add_argument('--plan-sha256')
+parser.add_argument('--manual-plan')
 parser.add_argument('--snapshot', action='append')
 parser.add_argument('--require-clone', action='store_true')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
@@ -2665,6 +2849,14 @@ if args.process_identity is not None:
     print(json.dumps(identity, separators=(',', ':')))
     raise SystemExit(0)
 if args.manifest is None: parser.error('--manifest is required for this action')
+settlement = args.inspect_manual_settlement or args.settle_manual_install
+if args.manual_plan and not settlement: parser.error('--manual-plan requires a manual settlement action')
+if settlement is not None:
+    allowed = {'manifest','manual_plan','inspect_manual_settlement','settle_manual_install','plan_sha256'}
+    if not database_hex(settlement) or not args.manual_plan or any(value not in (None, False, []) for key,value in vars(args).items() if key not in allowed):
+        parser.error('Manual settlement requires the exact transaction and original manual plan.')
+    if (args.settle_manual_install and not database_hex(args.plan_sha256)) or (args.inspect_manual_settlement and args.plan_sha256 is not None):
+        parser.error('Manual settlement apply requires the inspected proof digest.')
 database_action = args.inspect_database_retirement or args.retire_database_snapshots
 if args.snapshot is not None and not database_action: parser.error('--snapshot requires a database retirement action')
 if database_action:
@@ -2678,7 +2870,7 @@ if database_action:
 if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
 manifest_path = pathlib.Path(args.manifest).resolve(strict=True)
-if args.inspect_recovery and pathlib.Path(args.manifest) != manifest_path:
+if (args.inspect_recovery or settlement) and pathlib.Path(args.manifest) != manifest_path:
     raise SystemExit('Recovery manifest must be an exact confined native path.')
 if sys.platform != 'darwin': raise SystemExit('The Jones native helper requires macOS.')
 if args.inspect_recovery:
@@ -2690,18 +2882,20 @@ if args.inspect_recovery:
     print(json.dumps(result))
     raise SystemExit(0)
 lock_path = manifest_path.with_name('jones-activation.lock')
-if database_action:
+readonly_lock = bool(database_action or settlement)
+lock_operation = 'manual-settlement' if settlement else 'database-retirement'
+if readonly_lock:
     try: descriptor = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
-        print(json.dumps({'protocol': 1, 'operation': 'database-retirement', 'status': 'refused', 'reason': 'activation-lock-absent'}))
+        print(json.dumps({'protocol': 1, 'operation': lock_operation, 'status': 'refused', 'reason': 'activation-lock-absent'}))
         raise SystemExit(0)
     except OSError:
-        print(json.dumps({'protocol': 1, 'operation': 'database-retirement', 'status': 'refused', 'reason': 'activation-lock-unknown'}))
+        print(json.dumps({'protocol': 1, 'operation': lock_operation, 'status': 'refused', 'reason': 'activation-lock-unknown'}))
         raise SystemExit(0)
     info = os.fstat(descriptor)
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or os.read(descriptor, 256) != b'jones-activation-lock-v1\n':
         os.close(descriptor)
-        print(json.dumps({'protocol': 1, 'operation': 'database-retirement', 'status': 'refused', 'reason': 'activation-lock-unknown'}))
+        print(json.dumps({'protocol': 1, 'operation': lock_operation, 'status': 'refused', 'reason': 'activation-lock-unknown'}))
         raise SystemExit(0)
 else:
     try:
@@ -2714,7 +2908,7 @@ else:
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or os.read(descriptor, 256) != b'jones-activation-lock-v1\n':
             os.close(descriptor)
             raise SystemExit('An occupied native activation lock is unknown and was preserved.')
-with os.fdopen(descriptor, 'r' if database_action else 'r+', encoding='utf8') as lock:
+with os.fdopen(descriptor, 'r' if readonly_lock else 'r+', encoding='utf8') as lock:
     operation = 'discard-staged' if args.discard_staged else 'claim-activation' if args.claim_activation else 'claim-preparation' if args.claim_preparation else None
     retirement_operation = 'inspect-retirement' if args.inspect_retirement else 'retire-transaction' if args.retire_transaction else None
     preparation_operation = 'inspect-preparation' if args.inspect_preparation else 'retire-preparation' if args.retire_preparation else None
@@ -2722,8 +2916,8 @@ with os.fdopen(descriptor, 'r' if database_action else 'r+', encoding='utf8') as
     transaction_id = args.transaction if args.claim_preparation else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        if database_action:
-            print(json.dumps({'protocol': 1, 'operation': 'database-retirement', 'status': 'refused', 'reason': 'busy'}))
+        if readonly_lock:
+            print(json.dumps({'protocol': 1, 'operation': lock_operation, 'status': 'refused', 'reason': 'busy'}))
             raise SystemExit(0)
         if args.inspect_install_retention or args.retire_install_retention:
             print(json.dumps({'protocol': 1, 'operation': 'install-retention', 'status': 'held', 'reason': 'busy'}))
@@ -2751,6 +2945,9 @@ with os.fdopen(descriptor, 'r' if database_action else 'r+', encoding='utf8') as
         raise
     retention_exclusion_held = True
     retention_exclusion_descriptor = lock.fileno()
+    if settlement:
+        print(json.dumps(manual_settlement(settlement, args.manual_plan, args.plan_sha256)))
+        raise SystemExit(0)
     if database_action:
         print(json.dumps(database_retirement_command(args.retire_database_snapshots, args.snapshot, args.plan_sha256)))
         raise SystemExit(0)
