@@ -315,6 +315,7 @@ it.each([
   "317c4df82c77d06922a6723e318e09b0de20ff99",
   "8dd90ff9e3d41e7ba9ac1c81bceb4f973734314b",
   "245409b7feefd2509b12f2fb7e48e6ec5e8d0b50",
+  "47cad979dcb769e511581e6de9e1aa5be99fd461",
 ])(
   "releases producer %s only after durable proof, preserving native effects and identity",
   async (installedSource) =>
@@ -508,7 +509,7 @@ it("retains lifecycle when full artifact qualification refuses", async () =>
   }));
 
 it.each([
-  "unqualified 47cad979",
+  "unqualified producer",
   "abrupt native kill (missing result)",
   "missing effects",
 ] as const)(
@@ -594,7 +595,7 @@ it.each([
         if (scenario === "missing effects")
           await expect(NodeFSP.lstat(f.effects)).rejects.toMatchObject({ code: "ENOENT" });
       },
-      scenario === "unqualified 47cad979" ? "47cad979dcb769e511581e6de9e1aa5be99fd461" : undefined,
+      scenario === "unqualified producer" ? "0".repeat(40) : undefined,
     ),
 );
 
