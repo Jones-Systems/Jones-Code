@@ -111,6 +111,78 @@ async function setupTest(): Promise<AsyncDisposable> {
 }
 
 describe.each(["current", "legacy"] as const)("%s active status-filter retention", (layout) => {
+  it("counts and positively filters only roots while keeping children reachable in All", async () => {
+    await using _fixture = await setupTest();
+    const working: SidebarThreadSummary = {
+      ...thread,
+      id: ThreadId.make("working"),
+      runtime: {
+        status: "running",
+        providerName: "Codex",
+        providerInstanceId: thread.providerInstanceId,
+        activeRunId: null,
+        lastError: null,
+        updatedAt: completed,
+      },
+      pendingBackgroundTasks: [{ taskId: "monitor", kind: "monitor" }],
+    };
+    const inputThread = { ...thread, id: ThreadId.make("input"), hasPendingUserInput: true };
+    const roots = [working, inputThread, thread];
+    const children = roots.flatMap((root) => [
+      ...(["subagent", "fork"] as const).map((relationshipToParent) => ({
+        ...root,
+        id: ThreadId.make(`${root.id}-${relationshipToParent}`),
+        lineage: { rootThreadId: root.id, parentThreadId: root.id, relationshipToParent },
+      })),
+      {
+        ...root,
+        id: ThreadId.make(`${root.id}-delegated`),
+        delegatedFrom: {
+          environmentId: EnvironmentId.make("unlisted"),
+          threadId: root.id,
+          title: "Parent",
+        },
+      },
+    ]);
+    const roster = [...roots, ...children];
+    await render({ layout, threads: roster, filter: "all", selected: null });
+    const counts = () => container.querySelector("output")?.textContent;
+    expect(counts()).toBe('{"working":1,"input":1,"done":1}');
+    expect(visible()).toEqual(roster.map(key));
+    for (const [filter, root] of [
+      ["working", working],
+      ["input", inputThread],
+      ["done", thread],
+    ] as const) {
+      await render({ filter });
+      expect(visible()).toEqual([key(root)]);
+      expect(counts()).toBe('{"working":1,"input":1,"done":1}');
+    }
+    await render({ filter: "hide-working" });
+    expect(visible()).toEqual(roster.filter((row) => !row.pendingBackgroundTasks?.length).map(key));
+    await render({ filter: "done", threads: children, selected: key(children[0]!) });
+    expect(counts()).toBe('{"working":0,"input":0,"done":0}');
+    expect(visible()).toEqual([]);
+  });
+  it("drops retained status rows when they become children", async () => {
+    await using _fixture = await setupTest();
+    await render({ layout });
+    expect(visible()).toEqual([key(thread)]);
+    await render({
+      threads: [
+        {
+          ...thread,
+          lineage: {
+            rootThreadId: ThreadId.make("parent"),
+            parentThreadId: ThreadId.make("parent"),
+            relationshipToParent: "fork",
+          },
+        },
+      ],
+    });
+    expect(visible()).toEqual([]);
+    expect(container.querySelector("output")?.textContent).toBe('{"working":0,"input":0,"done":0}');
+  });
   it("retains a selected completion after its read watermark changes, with actual counts", async () => {
     await using _fixture = await setupTest();
     await render({ layout });
