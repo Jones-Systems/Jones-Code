@@ -243,6 +243,7 @@ type ThreadFeedEntryContent =
     };
 
 export interface ThreadFeedLatestRun {
+  readonly providerActivityStarted?: boolean;
   readonly runId: RunId;
   readonly status: OrchestrationV2RunStatus;
   readonly startedAt: string | null;
@@ -1712,7 +1713,11 @@ export function deriveThreadFeedPresentation(
           row.activities[0]?.projectedItem.item.status === "running"),
     )
   ) {
-    const activityLabel = threadActivityLabel(latestRun?.status, runlessWorkActive);
+    const activityLabel = threadActivityLabel(
+      latestRun?.status,
+      runlessWorkActive,
+      latestRun?.providerActivityStarted,
+    );
     result.push(
       thinkingRow(
         activeWorkStartedAt,

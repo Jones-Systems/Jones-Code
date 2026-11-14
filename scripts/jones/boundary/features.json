@@ -3366,9 +3366,11 @@
         "packages/client-runtime/src/jones/threadActivityLabel.test.ts",
         "apps/mobile/src/jones/threadActivityLabel.test.ts",
         "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx",
-        "apps/mobile/src/lib/threadActivity.test.ts"
+        "apps/mobile/src/lib/threadActivity.test.ts",
+        "packages/client-runtime/src/state/threadExecution.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts"
       ],
-      "scope": "Shared client presentation distinguishes local message dispatch from accepted provider startup and confirmed active work, preserving runless activity, Zen answer previews, compaction and workspace preparation. Web/desktop and mobile use small renderer hooks; the existing full timeline browser harness retains a Jones regression because it owns virtualization and projection updates. Mobile reuses its existing optional activity label and cache. The shared ChatView busy-state edit preserves the activity slot during server startup; the small mobile icon edit distinguishes startup from thinking without duplicating the work-log renderer. No wire, persistence, provider execution or transport changes."
+      "scope": "Shared client presentation distinguishes local message dispatch from accepted provider startup and confirmed active work, preserving runless activity, Zen answer previews, compaction and workspace preparation. Web/desktop and mobile use small renderer hooks; the existing full timeline browser harness retains a Jones regression because it owns virtualization and projection updates. Mobile reuses its existing optional activity label and cache. The shared ChatView busy-state edit preserves the activity slot during server startup; the small mobile icon edit distinguishes startup from thinking without duplicating the work-log renderer. No wire, persistence, provider execution or transport changes. Run scheduling becomes running before provider dispatch, so the current-attempt summary separately records native output/work evidence. Shell-only summaries retain unknown activity as startup. Existing execution-summary and mobile visibility fixtures retain integration coverage to prove production propagation and confirmed Zen previews."
     }
   ]
 }

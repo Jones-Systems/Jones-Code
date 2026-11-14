@@ -1059,7 +1059,11 @@ const ConversationTimeline = memo(function ConversationTimeline({
       ? worktreeSetup
       : null;
   const activityState: TimelineRowActivityState = {
-    activityLabel: threadActivityLabel(latestRun?.status, runlessWorkActive),
+    activityLabel: threadActivityLabel(
+      latestRun?.status,
+      runlessWorkActive,
+      latestRun?.providerActivityStarted,
+    ),
     isWorking,
     isCompacting: compactionAwaitingRow,
     isRevertingCheckpoint,

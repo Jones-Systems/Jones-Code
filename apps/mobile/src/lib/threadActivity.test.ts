@@ -1278,7 +1278,13 @@ describe("buildThreadFeed", () => {
       ran("failed", 4, "failed"),
       say("final", 5),
     ];
-    const running = { runId, status: "running" as const, startedAt: at(1), completedAt: null };
+    const running = {
+      runId,
+      status: "running" as const,
+      startedAt: at(1),
+      completedAt: null,
+      providerActivityStarted: true,
+    };
     const rows = (
       items: ReadonlyArray<OrchestrationV2TurnItem>,
       toolCallVisibility: "hideSuccessful" | "hideAll" | "zen",

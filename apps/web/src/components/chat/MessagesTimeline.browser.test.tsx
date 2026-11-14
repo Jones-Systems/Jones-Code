@@ -226,7 +226,12 @@ it("distinguishes a pending send, accepted startup, and confirmed provider work"
   await vi.waitFor(() => expect(text()).toContain("Connecting"));
   expect(text()).not.toContain("Thinking");
 
-  const run = { runId: RunId.make("activity-run"), startedAt: null, completedAt: null };
+  const run = {
+    runId: RunId.make("activity-run"),
+    startedAt: null,
+    completedAt: null,
+    providerActivityStarted: false,
+  };
   await screen.rerender(<MessagesTimeline {...props} latestRun={{ ...run, status: "starting" }} />);
   await vi.waitFor(() => expect(text()).toContain("Starting"));
   expect(text()).not.toContain("Connecting");
@@ -236,6 +241,20 @@ it("distinguishes a pending send, accepted startup, and confirmed provider work"
     <MessagesTimeline
       {...props}
       latestRun={{ ...run, status: "running", startedAt: CREATED_AT }}
+    />,
+  );
+  await vi.waitFor(() => expect(text()).toContain("Starting"));
+  expect(text()).not.toContain("Thinking");
+
+  await screen.rerender(
+    <MessagesTimeline
+      {...props}
+      latestRun={{
+        ...run,
+        status: "running",
+        startedAt: CREATED_AT,
+        providerActivityStarted: true,
+      }}
     />,
   );
   await vi.waitFor(() => expect(text()).toContain("Thinking"));

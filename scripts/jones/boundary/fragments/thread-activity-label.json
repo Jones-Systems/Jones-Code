@@ -23,6 +23,10 @@
     {
       "from": "apps/mobile/src/lib/threadActivity.ts",
       "to": "packages/client-runtime/src/jones/threadActivityLabel.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/state/threadExecution.ts",
+      "to": "packages/client-runtime/src/jones/threadActivityLabel.ts"
     }
   ]
 }

@@ -47,6 +47,7 @@ import {
 } from "./models.ts";
 import { commandDisplayText } from "../work-log/commandLabel.ts";
 import { formatSubagentDisplayTitle } from "./subagentDisplay.ts";
+import { hasThreadProviderActivity } from "../jones/threadActivityLabel.ts";
 
 const ACTIVITY_RUN_STATUSES = new Set(["preparing", "starting", "running", "waiting"]);
 const INTERRUPTIBLE_RUN_STATUSES = new Set(["preparing", "starting", "running"]);
@@ -110,9 +111,8 @@ function summarizeThreadRun(
   const settlement = projection.attempts.find(
     (attempt) => attempt.id === run.activeAttemptId,
   )?.providerSettlement;
-  const turnStatus = ACTIVITY_RUN_STATUSES.has(run.status)
-    ? latestProviderTurnForAttempt(projection.providerTurns, run.activeAttemptId)?.status
-    : undefined;
+  const providerTurn = latestProviderTurnForAttempt(projection.providerTurns, run.activeAttemptId);
+  const turnStatus = ACTIVITY_RUN_STATUSES.has(run.status) ? providerTurn?.status : undefined;
   return {
     ...(settlement === undefined
       ? {}
@@ -127,6 +127,11 @@ function summarizeThreadRun(
         }),
     runId: run.id,
     status: run.status,
+    providerActivityStarted: hasThreadProviderActivity(
+      projection.turnItems,
+      run.id,
+      providerTurn?.id ?? null,
+    ),
     requestedAt: DateTime.formatIso(run.requestedAt),
     startedAt: run.startedAt === null ? null : DateTime.formatIso(run.startedAt),
     completedAt: run.completedAt === null ? null : DateTime.formatIso(run.completedAt),
