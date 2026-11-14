@@ -316,6 +316,7 @@ it.each([
   "8dd90ff9e3d41e7ba9ac1c81bceb4f973734314b",
   "245409b7feefd2509b12f2fb7e48e6ec5e8d0b50",
   "47cad979dcb769e511581e6de9e1aa5be99fd461",
+  "4608edef6a51733b275a6ccfb5d7bb5f028c78ed",
 ])(
   "releases producer %s only after durable proof, preserving native effects and identity",
   async (installedSource) =>
