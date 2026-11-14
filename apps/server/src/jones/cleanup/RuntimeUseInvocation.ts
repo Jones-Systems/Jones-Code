@@ -31,6 +31,8 @@ export const prepareRuntimeUseInvocation = Effect.fn("RuntimeUseInvocation.prepa
     // The actual caller's persisted thread/session/target and deletion checks.
     // Called inside each owning transaction, never for filesystem observations.
     readonly validate: Effect.Effect<void, RuntimeUseError>;
+    // Compatibility checks for previous reservation keys run atomically with insertion.
+    readonly validateReservation?: Effect.Effect<void, RuntimeUseError>;
   }) {
     const sql = yield* SqlClient.SqlClient;
     const store = yield* makeRuntimeUseStore;
@@ -46,7 +48,12 @@ export const prepareRuntimeUseInvocation = Effect.fn("RuntimeUseInvocation.prepa
     yield* checkOwner(input.owner);
     yield* input.revalidateWorkspace;
     const reservation = yield* sql
-      .withTransaction(validate.pipe(Effect.andThen(store.reserve(input.binding))))
+      .withTransaction(
+        validate.pipe(
+          Effect.andThen(input.validateReservation ?? Effect.void),
+          Effect.andThen(store.reserve(input.binding)),
+        ),
+      )
       .pipe(Effect.mapError(runtimeUseError));
     if (!reservation.created) return yield* fail("runtime_use_prior_outcome_unknown_no_replay");
     const binding = reservation.record.binding;
