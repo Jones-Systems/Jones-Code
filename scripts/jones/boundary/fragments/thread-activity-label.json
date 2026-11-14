@@ -7,10 +7,8 @@
     "apps/mobile/src/jones/threadActivityLabel.test.ts"
   ],
   "hookPaths": [
-    "apps/web/src/components/chat/MessagesTimeline.tsx",
     "apps/web/src/components/chat/timelineRowContext.ts",
-    "apps/web/src/components/chat/TimelineWorkGroupRows.tsx",
-    "apps/mobile/src/lib/threadActivity.ts"
+    "apps/web/src/components/chat/TimelineWorkGroupRows.tsx"
   ],
   "tombstones": [],
   "allowedImports": [
