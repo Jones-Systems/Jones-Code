@@ -800,7 +800,7 @@ const make = Effect.gen(function* () {
     }
     const settings = withIdleCompaction(decoded.settings, globalIdleCompaction(decoded.settings));
 
-    const providerHistory = yield* sql<{
+    const readProviderHistory = sql<{
       readonly providerName: string;
       readonly providerInstanceId: string | null;
     }>`
@@ -854,7 +854,7 @@ const make = Effect.gen(function* () {
     const loaded = foldProviderInstanceEnabledFlags(
       legacyProviders === undefined
         ? settings
-        : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
+        : migrateLegacyProviderSettings(settings, legacyProviders, yield* readProviderHistory),
     );
     const folded = settingsFileTrusted
       ? foldLegacyProjectSettings(loaded, legacyProjectRows)
