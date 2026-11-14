@@ -1558,6 +1558,7 @@
     "apps/web/src/components/pullRequest/PullRequestsPage.tsx": "hook",
     "apps/web/src/components/settings/AboutVersionTitle.tsx": "accepted-shared",
     "apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx": "accepted-shared",
+    "apps/web/src/components/settings/AcpSessionManagementSection.browser.test.tsx": "accepted-shared",
     "apps/web/src/components/settings/ConnectionsSettings.tsx": "hook",
     "apps/web/src/components/settings/DeviceHostEditor.tsx": "accepted-shared",
     "apps/web/src/components/settings/EnvironmentRow.tsx": "accepted-shared",

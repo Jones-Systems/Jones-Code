@@ -5237,12 +5237,14 @@
         "packages/client-runtime/src/jones/workstreams/personal/controller.test.ts",
         "packages/contracts/src/jones/workstreamsPersonal.test.ts",
         "packages/contracts/src/jones/workstreamsPersonalRpc.test.ts",
-        "apps/mobile/src/features/workstreams/personalStorage.test.ts"
+        "apps/mobile/src/features/workstreams/personalStorage.test.ts",
+        "apps/web/src/jones/workstreams/personalThreadReorder.test.ts"
       ],
       "commands": [
         "vp test run apps/desktop/src/jones/workstreams/personalStartup.test.ts apps/mobile/src/features/workstreams/personalPresentation.test.ts apps/server/src/jones/workstreams/personal/service.test.ts apps/server/src/jones/workstreamsLegacyHttp.test.ts apps/web/src/jones/workstreams/personalNotifications.test.ts packages/client-runtime/src/jones/workstreams/personal/controller.test.ts packages/contracts/src/jones/workstreamsPersonal.test.ts packages/contracts/src/jones/workstreamsPersonalRpc.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --project browser apps/web/src/jones/workstreams/personalNative.browser.test.tsx apps/web/src/jones/workstreams/personalSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
-        "cd apps/mobile && vp test run --project unit src/features/workstreams/personalStorage.test.ts --maxWorkers=1 --no-file-parallelism"
+        "cd apps/mobile && vp test run --project unit src/features/workstreams/personalStorage.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/workstreams/personalThreadReorder.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
