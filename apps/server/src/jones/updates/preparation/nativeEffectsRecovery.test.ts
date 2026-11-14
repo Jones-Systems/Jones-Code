@@ -509,7 +509,7 @@ it("retains lifecycle when full artifact qualification refuses", async () =>
   }));
 
 it.each([
-  "unqualified 47cad979",
+  "unqualified producer",
   "abrupt native kill (missing result)",
   "missing effects",
 ] as const)(
@@ -595,7 +595,7 @@ it.each([
         if (scenario === "missing effects")
           await expect(NodeFSP.lstat(f.effects)).rejects.toMatchObject({ code: "ENOENT" });
       },
-      scenario === "unqualified 47cad979" ? "47cad979dcb769e511581e6de9e1aa5be99fd461" : undefined,
+      scenario === "unqualified producer" ? "0".repeat(40) : undefined,
     ),
 );
 
