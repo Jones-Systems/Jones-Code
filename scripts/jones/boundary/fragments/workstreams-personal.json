@@ -26,12 +26,15 @@
     "apps/server/src/jones/workstreamsLegacyHttp.test.ts",
     "apps/web/src/components/workstreams/WorkstreamNativeSidebar.tsx",
     "apps/web/src/components/workstreams/WorkstreamSidebarSection.tsx",
+    "apps/web/src/jones/workstreams/PersonalSidebarGroupHeader.tsx",
     "apps/web/src/jones/workstreams/personalEnvironmentBinding.ts",
     "apps/web/src/jones/workstreams/personalNative.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalNotifications.test.ts",
     "apps/web/src/jones/workstreams/personalNotifications.tsx",
     "apps/web/src/jones/workstreams/personalPresentation.ts",
     "apps/web/src/jones/workstreams/personalSettings.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalThreadReorder.test.ts",
+    "apps/web/src/jones/workstreams/personalThreadReorder.ts",
     "apps/web/src/jones/workstreams/sidebarThreadDrop.ts",
     "apps/web/src/state/workstreamsPersonal.ts",
     "apps/web/src/test/reactElementTree.ts",
@@ -827,7 +830,7 @@
     },
     {
       "from": "apps/web/src/components/Sidebar.tsx",
-      "to": "apps/web/src/jones/workstreams/personalPresentation.ts"
+      "to": "apps/web/src/jones/workstreams/personalThreadReorder.ts"
     },
     {
       "from": "apps/web/src/components/Sidebar.tsx",

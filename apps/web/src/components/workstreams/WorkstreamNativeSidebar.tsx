@@ -19,6 +19,7 @@ import { SIDEBAR_DRAG_DISTANCE, SidebarPointerSensor } from "../Sidebar.pointer"
 import { WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
 import { WorkstreamPicker } from "../../jones/workstreams/WorkstreamPicker";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
+import { summarizePersonalThreads } from "../../jones/workstreams/personalPresentation";
 export interface NativeThreadAssignmentMenu {
   readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
   readonly onAction: (action: ThreadActionMenuId) => void;
@@ -39,6 +40,7 @@ export interface NativeThreadExternalDrop {
 export function WorkstreamNativeSidebar({
   controller,
   threads,
+  summaryThreads = threads,
   renderThread,
   assignmentMenuRef,
   externalDropRef,
@@ -48,6 +50,7 @@ export function WorkstreamNativeSidebar({
 }: {
   controller: PersonalWorkstreamsController;
   threads: readonly EnvironmentThreadShell[];
+  summaryThreads?: readonly EnvironmentThreadShell[];
   renderThread: (
     thread: EnvironmentThreadShell,
     assignment: NativeThreadAssignmentMenu,
@@ -66,16 +69,25 @@ export function WorkstreamNativeSidebar({
 }) {
   const state = useAtomValue(controller.state);
   const grouping = groupPersonalThreads(state, threads);
+  const summaryGrouping = groupPersonalThreads(state, summaryThreads);
   const [picker, setPicker] = useState<EnvironmentThreadShell | null>(null);
   const [drop, setDrop] = useState<string | null | undefined>();
+  const [dropRow, setDropRow] = useState<{ key: string; after: boolean } | null>(null);
   const root = useRef<HTMLDivElement | null>(null);
   const sensor = useRef<SidebarPointerSensor | null>(null);
+  const busy = useRef(false);
   const canMove = (thread: EnvironmentThreadShell) =>
     canOperate(thread) && controller.canAssign(thread);
   const move = async (thread: EnvironmentThreadShell, id: string | null) => {
-    const result = await controller.assign(thread, id);
-    if (!result.ok) showPersonalFailure(result.failure);
-    return result.ok;
+    if (busy.current || !canMove(thread)) return false;
+    busy.current = true;
+    try {
+      const result = await controller.assign(thread, id);
+      if (!result.ok) showPersonalFailure(result.failure);
+      return result.ok;
+    } finally {
+      busy.current = false;
+    }
   };
   const menu = (thread: EnvironmentThreadShell): NativeThreadAssignmentMenu => ({
     items: [
@@ -109,6 +121,7 @@ export function WorkstreamNativeSidebar({
     },
   });
   const locate = (point: { x: number; y: number }, thread: EnvironmentThreadShell) => {
+    setDropRow(null);
     const element = document.elementFromPoint(point.x, point.y);
     const section = element?.closest<HTMLElement>("[data-native-workstream]");
     if (!section || !root.current?.contains(section) || !canMove(thread)) {
@@ -121,14 +134,25 @@ export function WorkstreamNativeSidebar({
     const neighbor = threads.find(
       (entry) => personalThreadKey(entry) === row?.dataset.personalThread,
     );
-    return {
-      id,
-      neighbor,
-      after: row
-        ? point.y > row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2
-        : false,
-    };
+    const after = row
+      ? point.y > row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2
+      : false;
+    if (
+      neighbor &&
+      personalThreadKey(neighbor) !== personalThreadKey(thread) &&
+      (grouping.workstreamIdByThreadKey.get(personalThreadKey(thread)) ?? null) === id &&
+      canReorder(thread) &&
+      canReorder(neighbor)
+    ) {
+      setDropRow({ key: personalThreadKey(neighbor), after });
+    }
+    return { id, neighbor, after };
   };
+  const pointerActions = useRef({ locate, move, canReorder, reorder, threads, grouping });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- A gesture may span controller updates; release uses the latest committed rows and membership.
+  useLayoutEffect(() => {
+    pointerActions.current = { locate, move, canReorder, reorder, threads, grouping };
+  });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed menu and drop handles for Sidebar's single pointer gesture owner.
   useLayoutEffect(() => {
     if (assignmentMenuRef) assignmentMenuRef.current = menu;
@@ -138,9 +162,13 @@ export function WorkstreamNativeSidebar({
         dropExternal: (point, thread) => {
           const target = locate(point, thread);
           setDrop(undefined);
+          setDropRow(null);
           return target ? move(thread, target.id) : null;
         },
-        clear: () => setDrop(undefined),
+        clear: () => {
+          setDrop(undefined);
+          setDropRow(null);
+        },
       };
     return () => {
       if (assignmentMenuRef) assignmentMenuRef.current = null;
@@ -154,10 +182,18 @@ export function WorkstreamNativeSidebar({
       !event.isPrimary ||
       event.button !== 0 ||
       !canMove(thread) ||
+      busy.current ||
       (event.target as HTMLElement).closest("button,a,input,textarea,select")
     )
       return;
     let target: ReturnType<typeof locate> = null;
+    const key = personalThreadKey(thread);
+    const startedGroup = grouping.workstreamIdByThreadKey.get(key) ?? null;
+    const locateCurrent = (point: { x: number; y: number }) => {
+      const actions = pointerActions.current;
+      const currentThread = actions.threads.find((entry) => personalThreadKey(entry) === key);
+      target = currentThread ? actions.locate(point, currentThread) : null;
+    };
     sensor.current?.cancel();
     sensor.current = new SidebarPointerSensor({
       active: personalThreadKey(thread),
@@ -168,9 +204,10 @@ export function WorkstreamNativeSidebar({
         onFinish: () => {
           sensor.current = null;
           setDrop(undefined);
+          setDropRow(null);
         },
         onDrop: (point) => {
-          target = locate(point, thread);
+          locateCurrent(point);
           return false;
         },
       },
@@ -178,30 +215,46 @@ export function WorkstreamNativeSidebar({
       onAbort: () => {},
       onStart: () => {},
       onMove: (point) => {
-        target = locate(point, thread);
+        locateCurrent(point);
       },
       onCancel: () => {
         target = null;
       },
       onEnd: () => {
         if (!target) return;
-        const current =
-          state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId ?? null;
+        const actions = pointerActions.current;
+        const currentThread = actions.threads.find((entry) => personalThreadKey(entry) === key);
+        if (!currentThread || busy.current) return;
+        const current = actions.grouping.workstreamIdByThreadKey.get(key) ?? null;
+        if (current !== startedGroup) return;
+        if (current !== target.id) {
+          void actions.move(currentThread, target.id);
+          return;
+        }
+        const neighbor = target.neighbor;
         if (
-          current === target.id &&
-          target.neighbor &&
-          canReorder(thread) &&
-          canReorder(target.neighbor)
-        ) {
-          void reorder(thread, target.neighbor, target.after).catch(() =>
+          !neighbor ||
+          personalThreadKey(neighbor) === key ||
+          (actions.grouping.workstreamIdByThreadKey.get(personalThreadKey(neighbor)) ?? null) !==
+            current ||
+          !actions.canReorder(currentThread) ||
+          !actions.canReorder(neighbor)
+        )
+          return;
+        busy.current = true;
+        void actions
+          .reorder(currentThread, neighbor, target.after)
+          .catch(() =>
             showPersonalFailure({
               action: "reorder",
               reason: "failed",
-              environmentId: thread.environmentId,
-              dedupeKey: `reorder:${personalThreadKey(thread)}:failed`,
+              environmentId: currentThread.environmentId,
+              dedupeKey: `reorder:${key}:failed`,
             }),
-          );
-        } else void move(thread, target.id);
+          )
+          .finally(() => {
+            busy.current = false;
+          });
       },
     });
   };
@@ -212,6 +265,15 @@ export function WorkstreamNativeSidebar({
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        summaries={
+          new Map(
+            summaryGrouping.groups.map((group) => [
+              group.workstream.id,
+              summarizePersonalThreads(group.threads),
+            ]),
+          )
+        }
+        unassignedSummary={summarizePersonalThreads(grouping.ungrouped)}
         renderMembers={(id) => {
           const members =
             id === null
@@ -222,12 +284,24 @@ export function WorkstreamNativeSidebar({
               aria-label={id === null ? "Unassigned threads" : "Workstream threads"}
               className={drop === id ? "rounded ring-1 ring-primary" : ""}
             >
+              {members.length === 0 ? (
+                <li className="px-3 pb-3 text-xs text-sidebar-muted-foreground">
+                  No active threads
+                </li>
+              ) : null}
               {members.map((thread) => (
                 <li
                   key={personalThreadKey(thread)}
                   data-personal-thread={personalThreadKey(thread)}
+                  className={`relative ${canMove(thread) ? "cursor-grab active:cursor-grabbing" : ""}`}
                   onPointerDown={(event) => pointerDown(event, thread)}
                 >
+                  {dropRow?.key === personalThreadKey(thread) ? (
+                    <div
+                      aria-hidden
+                      className={`pointer-events-none absolute inset-x-1 z-20 h-0.5 bg-primary ${dropRow.after ? "bottom-0" : "top-0"}`}
+                    />
+                  ) : null}
                   <ul>{renderThread(thread, menu(thread))}</ul>
                 </li>
               ))}

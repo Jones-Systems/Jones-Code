@@ -3288,7 +3288,8 @@
         "packages/client-runtime/src/jones/workstreams/personal/controller.test.ts",
         "packages/contracts/src/jones/workstreamsPersonal.test.ts",
         "packages/contracts/src/jones/workstreamsPersonalRpc.test.ts",
-        "apps/mobile/src/features/workstreams/personalStorage.test.ts"
+        "apps/mobile/src/features/workstreams/personalStorage.test.ts",
+        "apps/web/src/jones/workstreams/personalThreadReorder.test.ts"
       ],
       "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered."
     },
