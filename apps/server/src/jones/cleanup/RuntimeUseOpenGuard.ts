@@ -187,19 +187,54 @@ export const make = Effect.gen(function* () {
     }).pipe(Effect.mapError(runtimeUseError));
     const prepare = Effect.fn("RuntimeUseOpenGuard.prepare")(function* (driver: string) {
       const claim = Option.getOrNull(yield* currentRuntimeUseClaim);
+      const provider = { sessionId: input.providerSessionId, instanceId: input.instanceId, driver };
+      const sessionHash = digest({ providerSessionId: input.providerSessionId });
+      const legacyId = `provider-open:v1:${sessionHash}`;
+      const claimedPrefix = `provider-open:v2:${sessionHash}:`;
+      // The logical session survives process restarts. A durable effect identifies
+      // a particular open, including all subsequent worker claims of that effect.
+      const useId = claim === null ? legacyId : claimedPrefix + digest(claim.effectId);
+      const store = yield* makeRuntimeUseStore;
+      const checkPriorOpen = Effect.gen(function* () {
+        if (claim === null) {
+          // An unclaimed call cannot establish a new intent for this same thread.
+          const prior = yield* sql`SELECT 1 FROM jones_workspace_runtime_uses
+            WHERE use_id GLOB ${claimedPrefix + "*"} AND thread_id=${input.threadId} LIMIT 1`;
+          if (prior.length > 0)
+            return yield* new RuntimeUseError({
+              reason: "runtime_use_prior_outcome_unknown_no_replay",
+            });
+          return;
+        }
+        // Old releases keyed opens only by session. Preserve their original
+        // evidence and refuse a replay across the key format change.
+        const prior = yield* store.read(legacyId);
+        if (prior === null) return;
+        const { actor, original, threadId } = prior.binding;
+        if (actor.kind !== "provider_open" || canonical(actor.provider) !== canonical(provider))
+          return yield* new RuntimeUseError({ reason: "runtime_use_identity_changed" });
+        if (
+          original.claim?.effectId === claim.effectId ||
+          (original.claim === null && threadId === input.threadId)
+        )
+          return yield* new RuntimeUseError({
+            reason: "runtime_use_prior_outcome_unknown_no_replay",
+          });
+      }).pipe(Effect.mapError(runtimeUseError));
       return yield* prepareRuntimeUseInvocation({
         owner,
         revalidateWorkspace,
         validate,
+        validateReservation: checkPriorOpen,
         binding: {
           schema: "jones.workspace-runtime-use/v1",
-          useId: `provider-open:v1:${digest({ providerSessionId: input.providerSessionId })}`,
+          useId,
           canonicalPath: workspace.canonicalPath,
           directoryIdentity: workspace.directoryIdentity,
           threadId: input.threadId,
           actor: {
             kind: "provider_open",
-            provider: { sessionId: input.providerSessionId, instanceId: input.instanceId, driver },
+            provider,
           },
           original: {
             commandId: claim?.commandId ?? null,
@@ -421,9 +456,16 @@ export const make = Effect.gen(function* () {
             return yield* new RuntimeUseError({ reason: "runtime_use_original_coverage_changed" });
         } else {
           const claim = captured.claim;
+          // All coverage belongs to this admitted open; sibling and successor
+          // runtimes cannot inherit an earlier lifetime's attachment evidence.
+          const operation = kind === "attachment" ? "provider-attach" : "provider-invoke";
+          const useId =
+            entry.binding.original.claim === null
+              ? `${operation}:v1:${digest({ sessionId: provider.sessionId, threadId, key })}`
+              : `${operation}:v2:${digest({ openUseId: entry.binding.useId, threadId, key })}`;
           const binding: RuntimeUseBinding = {
             schema: "jones.workspace-runtime-use/v1",
-            useId: `${kind === "attachment" ? "provider-attach" : "provider-invoke"}:v1:${digest({ sessionId: provider.sessionId, threadId, key })}`,
+            useId,
             canonicalPath: captured.workspace.canonicalPath,
             directoryIdentity: captured.workspace.directoryIdentity,
             threadId,
