@@ -295,6 +295,35 @@ describe("personal Workstreams native presentation", () => {
     expect(controller.assign).not.toHaveBeenCalled();
     expect(reorder).not.toHaveBeenCalled();
   });
+  it("reports an unexpected assignment failure and releases the guard for the next drop", async () => {
+    using setup = fixture();
+    const { registry, controller } = setup;
+    vi.mocked(controller.assign).mockRejectedValueOnce(new Error("synthetic assignment failure"));
+    const externalDropRef: { current: NativeThreadExternalDrop | null } = { current: null };
+    await using _screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <WorkstreamNativeSidebar
+          controller={controller}
+          threads={[thread]}
+          externalDropRef={externalDropRef}
+          renderThread={(entry) => <li>{entry.title}</li>}
+          canOperate={() => true}
+          canReorder={() => false}
+          reorder={async () => {}}
+        />
+      </RegistryContext.Provider>,
+    );
+    const section = _screen.container.querySelector<HTMLElement>("[data-native-workstream]")!;
+    const rect = section.getBoundingClientRect();
+    const point = { x: rect.left + 2, y: rect.top + 2 };
+    await act(async () => {
+      expect(await externalDropRef.current!.dropExternal(point, thread)).toBe(false);
+    });
+    await act(async () => {
+      expect(await externalDropRef.current!.dropExternal(point, thread)).toBe(true);
+    });
+    expect(controller.assign).toHaveBeenCalledTimes(2);
+  });
   it("context unassign and external pinned drop confirm assignment before unpin; unpin failure keeps the assignment", async () => {
     using setup = fixture();
     const { registry, controller } = setup;

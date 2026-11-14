@@ -81,13 +81,24 @@ export function WorkstreamNativeSidebar({
   const move = async (thread: EnvironmentThreadShell, id: string | null) => {
     if (busy.current || !canMove(thread)) return false;
     busy.current = true;
-    try {
-      const result = await controller.assign(thread, id);
-      if (!result.ok) showPersonalFailure(result.failure);
-      return result.ok;
-    } finally {
-      busy.current = false;
-    }
+    return controller
+      .assign(thread, id)
+      .then((result) => {
+        if (!result.ok) showPersonalFailure(result.failure);
+        return result.ok;
+      })
+      .catch(() => {
+        showPersonalFailure({
+          action: id === null ? "unassign" : "assign",
+          reason: "failed",
+          environmentId: thread.environmentId,
+          dedupeKey: `assign:${personalThreadKey(thread)}:failed`,
+        });
+        return false;
+      })
+      .finally(() => {
+        busy.current = false;
+      });
   };
   const menu = (thread: EnvironmentThreadShell): NativeThreadAssignmentMenu => ({
     items: [
