@@ -12,8 +12,7 @@
     "apps/desktop/src/window/DesktopApplicationMenu.test.ts",
     "apps/web/src/components/AppSidebarLayout.tsx",
     "apps/web/src/components/RightPanelTabs.tsx",
-    "apps/web/src/components/preview/PreviewPanelShell.tsx",
-    "apps/web/src/components/AppRouteModal.tsx"
+    "apps/web/src/components/preview/PreviewPanelShell.tsx"
   ],
   "tombstones": [],
   "allowedImports": [
