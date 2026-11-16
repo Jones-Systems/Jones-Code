@@ -6,6 +6,8 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { page } from "vite-plus/test/browser";
+import "~/index.css";
 
 const state = vi.hoisted(() => ({
   projection: null as unknown,
@@ -344,4 +346,45 @@ describe("queue header batch action", () => {
       expect(state.row).not.toHaveBeenCalled();
     },
   );
+});
+
+it("keeps queue controls grouped and contained at narrow widths", async () => {
+  setupTest();
+  const projection = queueProjection(2);
+  state.projection = {
+    ...projection,
+    messages: projection.messages.map((message) => ({
+      ...message,
+      text: "A long queued message with an identifier: " + "long-identifier".repeat(30),
+    })),
+  };
+  const originalViewport = { width: window.innerWidth, height: window.innerHeight };
+  try {
+    await page.viewport(800, 700);
+    await using screen = await render();
+    const container = screen.container;
+    container.style.width = "640px";
+    const row = container.querySelector("li")!;
+    const grip = button(row, "Reorder queued message (drag, or press the arrow keys)")!;
+    const edit = button(row, "Edit queued message")!;
+    const remove = button(row, "Remove queued message")!;
+    const center = (node: Element) => {
+      const rect = node.getBoundingClientRect();
+      return rect.top + rect.height / 2;
+    };
+    expect(Math.abs(center(grip) - center(edit))).toBeLessThan(1);
+    expect(Math.abs(center(grip) - center(remove))).toBeLessThan(1);
+    await page.viewport(320, 700);
+    container.style.width = "240px";
+    await vi.waitFor(() => {
+      expect(container.scrollWidth).toBeLessThanOrEqual(container.clientWidth);
+      for (const control of container.querySelectorAll("button")) {
+        const rect = control.getBoundingClientRect();
+        expect(rect.left).toBeGreaterThanOrEqual(container.getBoundingClientRect().left - 1);
+        expect(rect.right).toBeLessThanOrEqual(container.getBoundingClientRect().right + 1);
+      }
+    });
+  } finally {
+    await page.viewport(originalViewport.width, originalViewport.height);
+  }
 });

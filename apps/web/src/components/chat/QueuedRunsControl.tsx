@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { serverEnvironment } from "../../state/server";
-import { GripVerticalIcon } from "lucide-react";
+import { GripVerticalIcon, ListOrderedIcon } from "lucide-react";
 import { PendingSendStatus } from "../../jones/pendingSends/PendingSendStatus";
 import { QueuedClearAction } from "../../jones/queue/QueuedClearAction";
 import { useQueuedRunRemoval } from "../../jones/queue/useQueuedRunRemoval";
@@ -423,7 +423,11 @@ export function QueuedRunsControl({
       <span className="sr-only" aria-live="polite">
         {items.length} queued
       </span>
-      <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
+      <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 border-b border-border/50 pb-1.5 text-xs">
+        <span className="me-auto flex items-center gap-1.5 ps-1 font-medium text-muted-foreground">
+          <ListOrderedIcon aria-hidden className="size-3.5" />
+          Queued <span className="tabular-nums">{items.length}</span>
+        </span>
         <QueuedClearAction
           disabled={
             removalBlocked ||
@@ -497,32 +501,6 @@ export function QueuedRunsControl({
               aria-current={isEditing ? "true" : undefined}
               className="group/queued flex w-full flex-col items-end gap-1"
             >
-              {canReorder && rowRunId !== null && rowServerIndex !== null ? (
-                <Button
-                  size="icon-xs"
-                  variant="ghost-muted"
-                  aria-label="Reorder queued message (drag, or press the arrow keys)"
-                  className="cursor-grab active:cursor-grabbing disabled:cursor-default"
-                  disabled={queueBusy}
-                  onPointerDown={() => {
-                    dragArmedRunIdRef.current = rowRunId;
-                  }}
-                  onKeyDown={(event) => {
-                    if (queueBusy || steerInFlightRef.current || removals.isBusy()) return;
-                    if (event.key === "ArrowUp" && rowServerIndex > 0) {
-                      event.preventDefault();
-                      void move(rowRunId, queued[rowServerIndex - 1]?.run.id ?? null);
-                    }
-                    if (event.key === "ArrowDown" && rowServerIndex < queued.length - 1) {
-                      event.preventDefault();
-                      void move(rowRunId, queued[rowServerIndex + 2]?.run.id ?? null);
-                    }
-                  }}
-                >
-                  <GripVerticalIcon />
-                </Button>
-              ) : null}
-
               <QueuedMessage
                 environmentId={props.environmentId}
                 message={item.message}
@@ -532,6 +510,31 @@ export function QueuedRunsControl({
                 timestampFormat={props.timestampFormat}
                 onOpenThread={props.onOpenThread}
               >
+                {canReorder && rowRunId !== null && rowServerIndex !== null ? (
+                  <Button
+                    size="icon-xs"
+                    variant="ghost-muted"
+                    aria-label="Reorder queued message (drag, or press the arrow keys)"
+                    className="cursor-grab active:cursor-grabbing disabled:cursor-default"
+                    disabled={queueBusy}
+                    onPointerDown={() => {
+                      dragArmedRunIdRef.current = rowRunId;
+                    }}
+                    onKeyDown={(event) => {
+                      if (queueBusy || steerInFlightRef.current || removals.isBusy()) return;
+                      if (event.key === "ArrowUp" && rowServerIndex > 0) {
+                        event.preventDefault();
+                        void move(rowRunId, queued[rowServerIndex - 1]?.run.id ?? null);
+                      }
+                      if (event.key === "ArrowDown" && rowServerIndex < queued.length - 1) {
+                        event.preventDefault();
+                        void move(rowRunId, queued[rowServerIndex + 2]?.run.id ?? null);
+                      }
+                    }}
+                  >
+                    <GripVerticalIcon />
+                  </Button>
+                ) : null}
                 {(workflow?.canSendNow || canSteerRun(item.freshContext)) && !isEditing ? (
                   <>
                     <Tooltip>
@@ -789,7 +792,7 @@ function QueuedMessage(props: {
           </div>
         ) : null}
       </div>
-      <div className="flex items-center gap-0.5 pe-1 text-xs text-muted-foreground">
+      <div className="flex max-w-full flex-wrap items-center justify-end gap-x-0.5 gap-y-1 pe-1 text-xs text-muted-foreground">
         {props.message ? (
           <span className="me-1 flex items-center gap-2 px-1 opacity-0 transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/queued:opacity-100">
             {attribution === "agent" && senderThreadId ? (
