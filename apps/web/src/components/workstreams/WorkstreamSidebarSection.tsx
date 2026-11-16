@@ -15,6 +15,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   EllipsisIcon,
+  GripVerticalIcon,
   ChevronDownIcon,
   PaletteIcon,
   PencilIcon,
@@ -176,12 +177,18 @@ function Group({
       className={`min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""}`}
       style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
     >
-      <div className="flex items-start gap-1 pr-2">
+      <div data-workstream-header className="flex items-start gap-1 pr-2">
         <div
-          className="flex min-w-0 flex-1"
+          className="flex min-w-0 flex-1 items-start cursor-grab active:cursor-grabbing"
           draggable={state.canCreate && !pending && !confirmingDelete && !editing}
           onDragStart={onDragStart}
         >
+          {state.canCreate ? (
+            <GripVerticalIcon
+              aria-hidden
+              className="mt-1.5 ml-1 size-3.5 shrink-0 text-sidebar-muted-foreground/60"
+            />
+          ) : null}
           <PersonalSidebarGroupHeader
             name={item.name}
             collapsed={collapsed}
@@ -429,9 +436,11 @@ export function WorkstreamSidebarSection({
       slot = others.length;
     } else {
       if (targetId === source) return null;
-      const section = event.currentTarget.querySelector("section");
-      if (!section) return null;
-      const rect = section.getBoundingClientRect();
+      const header = event.currentTarget.querySelector("[data-workstream-header]");
+      if (!header) return null;
+      // Rows can make a group very tall. Header halves must remain reachable
+      // drop targets in both directions regardless of the group's member count.
+      const rect = header.getBoundingClientRect();
       const index = others.findIndex((entry) => entry.id === targetId);
       if (index < 0) return null;
       slot = index + (event.clientY >= rect.top + rect.height / 2 ? 1 : 0);

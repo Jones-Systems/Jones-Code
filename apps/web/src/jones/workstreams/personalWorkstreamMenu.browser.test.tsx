@@ -420,18 +420,21 @@ describe("Workstream options and header ordering", () => {
     expect(setup.controller.remove).not.toHaveBeenCalled();
   });
 
-  it("uses the target section midpoint and excludes the source when moving after the next group", async () => {
+  it("uses the header midpoint to move down even when the target group is expanded", async () => {
     using setup = fixture();
     await using screen = await render(setup.ui);
     const transfer = await startDrag(screen.container, "Alpha");
     expect(getComputedStyle(section(screen.container, "Alpha")).opacity).toBe("0.5");
     const beta = section(screen.container, "Beta");
-    const rect = beta.getBoundingClientRect();
+    const rect = beta.querySelector("[data-workstream-header]")!.getBoundingClientRect();
     await act(() => {
       drag(beta, "dragover", transfer, rect.top + rect.height * 0.3);
     });
     expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
     const afterY = rect.top + rect.height * 0.8;
+    expect(afterY).toBeLessThan(
+      beta.getBoundingClientRect().top + beta.getBoundingClientRect().height / 2,
+    );
     await act(() => {
       drag(beta, "dragover", transfer, afterY);
     });
@@ -451,6 +454,26 @@ describe("Workstream options and header ordering", () => {
     expect(order(screen.container)).toEqual(["menu-Beta", "menu-Alpha", "menu-Gamma", null]);
     expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
     expect(getComputedStyle(section(screen.container, "Alpha")).opacity).toBe("1");
+  });
+
+  it("moves a lower workstream above the previous header and clears its indicator", async () => {
+    using setup = fixture();
+    await using screen = await render(setup.ui);
+    const transfer = await startDrag(screen.container, "Beta");
+    const alpha = section(screen.container, "Alpha");
+    const rect = alpha.querySelector("[data-workstream-header]")!.getBoundingClientRect();
+    const beforeY = rect.top + rect.height * 0.2;
+    await act(() => drag(alpha, "dragover", transfer, beforeY));
+    const lines = screen.container.querySelectorAll("[data-workstream-insertion]");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.parentElement).toBe(alpha.parentElement);
+    await act(() => drag(alpha, "drop", transfer, beforeY));
+    expect(setup.controller.reorder).toHaveBeenCalledExactlyOnceWith("menu-Beta", {
+      beforeId: null,
+      afterId: "menu-Alpha",
+    });
+    expect(order(screen.container)).toEqual(["menu-Beta", "menu-Alpha", "menu-Gamma", null]);
+    expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
   });
 
   it("accepts the gap above Unassigned as the tail but rejects its body and clears canceled drags", async () => {

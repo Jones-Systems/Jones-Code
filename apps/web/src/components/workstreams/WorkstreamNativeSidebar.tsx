@@ -171,11 +171,6 @@ export function WorkstreamNativeSidebar({
     const section = element?.closest<HTMLElement>("[data-native-workstream]");
     if (!section || !root.current?.contains(section) || !canMove(thread)) return null;
     const id = JSON.parse(section.dataset.nativeWorkstream!) as string | null;
-    if (id === null) {
-      if (!external && groupId(thread) === null) return null;
-      setDrop(null);
-      return { id: null, neighborKey: null, after: false };
-    }
     const list = section.querySelector<HTMLElement>("[data-personal-thread-list]");
     if (id !== null && !state.workstreams.some((item) => item.id === id)) return null;
     const key = personalThreadKey(thread);
