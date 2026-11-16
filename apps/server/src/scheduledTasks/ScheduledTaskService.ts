@@ -1286,6 +1286,7 @@ export const layer = Layer.effect(
         WHERE enabled = 1 AND next_run_at IS NOT NULL AND last_run_status <> 'running'
       `.pipe(
         NodeSqliteClient.readOnly,
+        backgroundRead,
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
       // Compare as text like listDueTasks: expanded years (`+011533-…`) sort first but parse far ahead.
@@ -1301,6 +1302,7 @@ export const layer = Layer.effect(
         return;
       }
       const tasks = yield* listDueTasks(now).pipe(
+        backgroundRead,
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
       const due = tasks.flatMap((task) =>
