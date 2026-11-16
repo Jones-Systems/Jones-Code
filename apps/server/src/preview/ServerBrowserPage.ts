@@ -640,6 +640,7 @@ type SnapshotInput = {
   /** Headless pages render at the scale the server set; a desktop page at its display's. */
   readonly renderScale: number | "display";
   readonly fullScreenshot?: boolean | undefined;
+  readonly deadlineMs?: number | undefined;
   readonly consoleEntries: ReadonlyArray<PreviewAutomationConsoleEntry>;
   readonly networkEntries: ReadonlyArray<PreviewAutomationNetworkEntry>;
   readonly actionTimeline: PreviewAutomationSnapshot["actionTimeline"];
@@ -782,11 +783,12 @@ const capture = async (
 const snapshotTurns = new WeakMap<Page, number>();
 
 const runSnapshot = async (input: SnapshotInput, metadataOnly: boolean) => {
-  const deadline = Date.now() + SNAPSHOT_TIMEOUT_MS;
+  const deadline = Math.min(input.deadlineMs ?? Infinity, Date.now() + SNAPSHOT_TIMEOUT_MS);
+  if (Date.now() >= deadline) throw snapshotTimedOut();
   const stages: SnapshotStages = { running: new Map(), timedOut: new Set() };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(snapshotTimedOut(stages)), SNAPSHOT_TIMEOUT_MS);
+    timer = setTimeout(() => reject(snapshotTimedOut(stages)), Math.max(0, deadline - Date.now()));
   });
   const turn = (snapshotTurns.get(input.page) ?? 0) + 1;
   snapshotTurns.set(input.page, turn);
@@ -818,13 +820,14 @@ export const click = async (
   page: Page,
   input: PreviewAutomationClickInput,
   pointer: PointerReporter = noPointer,
+  onDispatch: () => void | Promise<void> = constVoid,
 ): Promise<{ readonly x: number; readonly y: number }> => {
   // One deadline across steps keeps the reply inside the broker's grace; Playwright reads 0 as none.
   const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const remaining = () => Math.max(1, deadline - Date.now());
   const locator = targetLocator(page, input);
   try {
-    return await clickTarget(page, locator, input, remaining, pointer);
+    return await clickTarget(page, locator, input, remaining, pointer, onDispatch);
   } catch (cause) {
     throw locator === null ? cause : await namedTargetTimeout(locator, input, cause);
   }
@@ -875,10 +878,12 @@ const clickTarget = async (
   input: PreviewAutomationClickInput,
   timeout: () => number,
   pointer: PointerReporter,
+  onDispatch: () => void | Promise<void>,
 ) => {
   const point = await targetPoint(page, locator, input, timeout);
   await pointer(point, "click");
   const options = { button: input.button ?? "left", clickCount: input.clickCount ?? 1 } as const;
+  await onDispatch();
   const clicked =
     locator === null
       ? page.mouse.click(point.x, point.y, options)
@@ -966,10 +971,15 @@ const focusedTextField = async (page: Page, timeout: number) => {
   );
 };
 
-export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
+export const type = async (
+  page: Page,
+  input: PreviewAutomationTypeInput,
+  onDispatch: () => void | Promise<void> = constVoid,
+) => {
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const locator = targetLocator(page, input);
   if (locator !== null && input.clear) {
+    await onDispatch();
     await locator.fill(input.text, { timeout });
     return;
   }
@@ -983,6 +993,7 @@ export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
       message: "The target is not an enabled text field, so no text was typed.",
     });
   }
+  await onDispatch();
   if (input.clear) {
     await page.keyboard.press("ControlOrMeta+A");
     await page.keyboard.press("Delete");
@@ -1070,13 +1081,23 @@ export const setInputFiles = async (page: Page, input: PreviewAutomationUploadIn
   return true;
 };
 
-export const press = async (page: Page, input: PreviewAutomationPressInput) => {
+export const press = async (
+  page: Page,
+  input: PreviewAutomationPressInput,
+  onDispatch: () => void | Promise<void> = constVoid,
+) => {
+  await onDispatch();
   await page.keyboard.press([...(input.modifiers ?? []), input.key].join("+"));
 };
 
-export const scroll = async (page: Page, input: PreviewAutomationScrollInput) => {
+export const scroll = async (
+  page: Page,
+  input: PreviewAutomationScrollInput,
+  onDispatch: () => void | Promise<void> = constVoid,
+) => {
   const delta = [input.deltaX ?? 0, input.deltaY ?? 0] as const;
   const locator = targetLocator(page, input);
+  await onDispatch();
   if (locator === null) {
     // Page-side code is passed as source: the server compiles without DOM types.
     await page.evaluate(`scrollBy(${delta[0]}, ${delta[1]})`);
@@ -1110,9 +1131,11 @@ export const evaluate = async (
   cdp: CDPSession,
   input: PreviewAutomationEvaluateInput,
   timeoutMs: number,
+  onDispatch: () => void | Promise<void> = constVoid,
 ) => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
+  await onDispatch();
   const expired = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       timedOut = true;
@@ -1134,15 +1157,17 @@ export const evaluate = async (
   // The devtools console's replMode allows top-level await but returns a trailing promise unawaited,
   // so it only retries what the page's parser rejected. A parse error has a scriptId but no stack and
   // ran nothing; a browser-internal rejection has neither.
-  const evaluation = cdp.send("Runtime.evaluate", params).then((classic) => {
+  const evaluation = cdp.send("Runtime.evaluate", params).then(async (classic) => {
     const failure = classic.exceptionDetails;
     const unparsed =
       failure?.exception?.className === "SyntaxError" &&
       failure.scriptId !== undefined &&
       failure.stackTrace === undefined;
-    return unparsed && !timedOut && input.expression.includes("await")
-      ? cdp.send("Runtime.evaluate", { ...params, replMode: true })
-      : classic;
+    if (unparsed && !timedOut && input.expression.includes("await")) {
+      await onDispatch();
+      if (!timedOut) return cdp.send("Runtime.evaluate", { ...params, replMode: true });
+    }
+    return classic;
   });
   void evaluation.catch(constVoid);
   const result = await Promise.race([evaluation, expired]).finally(() => clearTimeout(timer));
