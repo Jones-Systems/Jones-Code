@@ -1250,7 +1250,7 @@ function makeLocalCommandHarness(input: {
           capture: () => Effect.succeed({
             revalidate: revalidateAdmission,
             classifyResume: Effect.succeed(input.resumeDisposition ??
-              (input.sideChat?.unsentResume || input.sideChat?.restartedResume ? "unsent" : "native_resume")),
+              (input.sideChat?.unsentResume && (!input.sideChat.acceptedResume || input.sideChat.restartedResume) ? "unsent" : "native_resume")),
           }),
         }),
         Layer.mock(GoalContinuity.GoalContinuity)({
@@ -2225,6 +2225,13 @@ effectIt.effect.each([
         sideChat,
       });
 
+      if ("repeatedResume" in sideChat) {
+        yield* harness.start.pipe(Effect.exit);
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(harness.startTurn).not.toHaveBeenCalled();
+        expect(harness.projection().contextHandoffs[0]?.delivery).toBeUndefined();
+        return;
+      }
       yield* harness.start;
 
       expect(harness.open).toHaveBeenCalledWith(
@@ -2234,11 +2241,15 @@ effectIt.effect.each([
         "unsentResume" in sideChat &&
         (!("acceptedResume" in sideChat) || "restartedResume" in sideChat);
       expect(harness.startTurn.mock.calls.map(([turn]) => turn.message.text)).toEqual([
-        withInlineContext(context, resendsOriginal ? "Original request" : ""),
+        resendsOriginal ? withInlineContext(context, "Original request") : "",
       ]);
       expect(harness.startTurn.mock.calls[0]?.[0].resume === true).toBe(
-        context === "" && !resendsOriginal,
+        !resendsOriginal,
       );
+      if (!resendsOriginal) {
+        expect(harness.projection().contextHandoffs[0]?.delivery).toBeUndefined();
+        return;
+      }
       expect(harness.projection().contextHandoffs).toMatchObject([
         {
           id: "side-chat-context",

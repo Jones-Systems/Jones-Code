@@ -70,7 +70,6 @@ import { deliverContextHandoffs, withInlineContext } from "./ContextHandoffDeliv
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { unsentManualContinuationSource } from "./manualContinuation.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
@@ -694,8 +693,10 @@ export const layer: Layer.Layer<
       if (resumeDisposition === "held")
         return yield* admissionError("The original native outcome is unknown; Resume is held.");
       const resumeSource = manualResume && resumeDisposition === "unsent"
-        ? unsentManualContinuationSource(run, projection)
+        ? projection.runs.find((source) => source.id === run.manualContinuationOfRunId)
         : undefined;
+      if (resumeSource?.manualContinuationOfRunId !== undefined)
+        return yield* admissionError("A chained Resume requires exact original input certification; replay is held.");
       const unsentResumeMessage =
         resumeSource !== undefined
           ? projection.messages.find((source) => source.id === resumeSource.userMessageId)
