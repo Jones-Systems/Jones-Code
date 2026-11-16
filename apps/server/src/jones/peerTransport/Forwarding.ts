@@ -190,9 +190,8 @@ export const make = Effect.gen(function* () {
         const records = yield* threads
           .getThreadRecords(caller.caller.id, ["runs", "subagents"])
           .pipe(Effect.mapError(unavailable));
-        const parentRun = records.runs.filter(ThreadManagement.isActiveRun).toSorted((a, b) => b.ordinal - a.ordinal)[0];
         if (args.mode !== "steer" && records.subagents.some((task) =>
-          task.origin === "app_owned" && task.runId === parentRun?.id && task.result !== null &&
+          task.origin === "app_owned" && task.result !== null &&
           task.remoteChild?.environmentId === environmentId && task.remoteChild.threadId === args.threadId))
           return yield* new OrchestratorMcpFailure({code: "invalid_request",
             message: "Follow-ups to a finished delegated child return a new task handle. Use task_status instead of awaitResult."});
