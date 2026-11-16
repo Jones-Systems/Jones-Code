@@ -2,6 +2,8 @@
 import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 
+import { inspectMigrationHistory, reconciledV2PreviewHistory } from "../persistence/migrationHistory.ts";
+
 type MigrationIdentity = readonly [id: number, name: string];
 export interface MigrationPlan {
   readonly pendingUpstream: readonly number[];
@@ -10,16 +12,6 @@ export interface MigrationPlan {
 export type MigrationPlanResult =
   | { readonly status: "ready"; readonly migrationPlan: MigrationPlan }
   | { readonly status: "blocked"; readonly reason: string };
-
-const foreignJonesNames = [
-  "V2NativeAcceptance",
-  "DeletionWorktreeAdmission",
-  "OrdinaryCheckoutOwnership",
-  "AttachmentCleanup",
-  "OrdinaryCheckoutExecutionLifetime",
-  "ImportedApplicationAttachments",
-  "CommandNormalizationWitness",
-];
 
 /** Manifests must come from the staged candidate, never the running server. */
 export function readMigrationPlan(input: {
@@ -69,52 +61,22 @@ export function readMigrationPlan(input: {
       [upstream, input.upstream, "upstream"],
       [jones, input.jones, "Jones"],
     ] as const) {
-      const names = new Map(manifest);
-      const maximum = Math.max(0, ...names.keys());
-      const applied = new Set(rows.map((row) => Number(row.migration_id)));
-      const foreign = rows.filter(
-        (row) => Number(row.migration_id) >= 7 && Number(row.migration_id) < 100,
-      );
-      for (const row of rows) {
-        const id = Number(row.migration_id);
-        if (id > maximum)
-          return {
-            status: "blocked",
-            reason: `Candidate older than this database (${owner} migration ${id}).`,
-          };
-        const foreignName =
-          owner === "Jones" && id >= 7 && id < 100
-            ? id === 7 && foreign.length === 1 && row.name === "ThreadCreationLookupIndex"
-              ? "ThreadCreationLookupIndex"
-              : foreignJonesNames[id - 7]
-            : undefined;
-        if (!Number.isSafeInteger(id) || (names.get(id) ?? foreignName) !== row.name) {
-          return { status: "blocked", reason: `Unrecognized ${owner} migration history at ${id}.` };
-        }
-        if (
-          owner === "Jones" &&
-          (id <= 6 || id >= 100) &&
-          manifest.some(([prior]) => prior < id && !applied.has(prior))
-        ) {
-          return { status: "blocked", reason: "Jones migration history has a missing prefix." };
-        }
-      }
-      if (
-        owner === "Jones" &&
-        foreign.length > 0 &&
-        ([1, 2, 3, 4, 5, 6].some((id) => !applied.has(id)) ||
-          foreign.some((row, index) => Number(row.migration_id) !== index + 7))
-      ) {
-        return { status: "blocked", reason: "Jones migration history has a missing prefix." };
-      }
+      const recorded = rows.map((row) => ({ id: Number(row.migration_id), name: String(row.name) }));
+      const reconciled = owner === "upstream" ? reconciledV2PreviewHistory(recorded) : recorded;
+      if (reconciled === null) return { status: "blocked", reason: "Unexpected V2 preview migration history." };
+      const result = inspectMigrationHistory(manifest, reconciled, owner);
+      if (result.error !== undefined) return { status: "blocked", reason: result.error };
     }
     return {
       status: "ready",
       migrationPlan: {
-        pendingUpstream: pending(
-          input.upstream,
-          new Set(upstream.map((row) => Number(row.migration_id))),
-        ),
+        pendingUpstream: [
+          ...upstream.flatMap((row) => row.name === "OrchestrationV2" && Number(row.migration_id) === 53
+            ? [53, 54] : row.name === "OrchestrationV2" && Number(row.migration_id) === 54 ? [54] : []),
+          ...pending(input.upstream, new Set((reconciledV2PreviewHistory(
+            upstream.map((row) => ({ id: Number(row.migration_id), name: String(row.name) })),
+          ) ?? []).map(({ id }) => id))),
+        ],
         pendingJones: pending(input.jones, new Set(jones.map((row) => Number(row.migration_id)))),
       },
     };
@@ -129,10 +91,17 @@ export function readMigrationPlan(input: {
 }
 
 export function decodeMigrationPlan(value: unknown): MigrationPlan | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  const ids = (values: unknown): values is number[] =>
-    Array.isArray(values) && values.every((id) => Number.isSafeInteger(id) && id > 0);
+  const ids = (values: unknown): values is number[] => {
+    if (!Array.isArray(values)) return false;
+    for (let index = 0; index < values.length; index++) {
+      if (!Object.hasOwn(values, index) || !Number.isSafeInteger(values[index]) || values[index] <= 0) {
+        return false;
+      }
+    }
+    return true;
+  };
   return ids(record.pendingUpstream) && ids(record.pendingJones)
     ? { pendingUpstream: record.pendingUpstream, pendingJones: record.pendingJones }
     : undefined;

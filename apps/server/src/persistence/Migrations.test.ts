@@ -3,11 +3,13 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Logger from "effect/Logger";
+import { DATABASE_MIGRATIONS_FINISHED_MESSAGE } from "@t3tools/shared/databaseMigrationLog";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "./Migrations.ts";
+import { hasPendingMigrations, migrationManifest, runMigrations } from "./Migrations.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -79,6 +81,7 @@ describe("runMigrations", () => {
 
       // query_only rejects BEGIN IMMEDIATE, which CLI startup would otherwise take on the live database.
       yield* sql`PRAGMA query_only = ON`;
+      assert.isFalse(yield* hasPendingMigrations());
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* history, migrationManifest);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
@@ -187,7 +190,7 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("still starts after a newer build recorded a later V2 migration", () =>
+  it.effect("refuses a newer build recorded a later V2 migration", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
@@ -196,7 +199,7 @@ describe("runMigrations", () => {
         VALUES (${newerMigrationId}, 'NewerV2Migration')
       `;
 
-      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });
@@ -216,4 +219,43 @@ it.effect("registers every migration file", () =>
       migrationManifest,
     );
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("rolls back late migration 85 effects while retaining 82–84", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 81 });
+    yield* sql`INSERT INTO orchestration_v2_projection_turn_items
+      (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+      VALUES ('s1-backfill', 's1-thread', NULL, 1, 'assistant_message', 'completed', '2026-11-16', '{}')`;
+    // Collide with the final trigger, after populated backfill and two triggers.
+    yield* sql`CREATE TRIGGER orchestration_v2_turn_item_counts_delete
+      AFTER DELETE ON orchestration_v2_projection_turn_items BEGIN SELECT 1; END`;
+    const logs: unknown[] = [];
+    const logger = Logger.make<unknown, void>(({ message }) => { logs.push(...(Array.isArray(message) ? message : [message])); });
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations().pipe(Effect.provide(Logger.layer([logger]))))));
+    assert.notInclude(logs, DATABASE_MIGRATIONS_FINISHED_MESSAGE);
+    assert.deepStrictEqual(yield* history, migrationManifest.filter(([id]) => id <= 84));
+    assert.deepStrictEqual(yield* sql`SELECT name FROM sqlite_master WHERE name IN (
+      'orchestration_v2_projection_turn_item_counts', 'orchestration_v2_turn_item_counts_insert',
+      'orchestration_v2_turn_item_counts_update')`, []);
+    assert.deepStrictEqual(yield* sql`SELECT turn_item_id FROM orchestration_v2_projection_turn_items`, [{ turn_item_id: "s1-backfill" }]);
+    yield* sql`DROP TRIGGER orchestration_v2_turn_item_counts_delete`;
+    yield* runMigrations();
+    assert.deepStrictEqual(yield* sql`SELECT item_count FROM orchestration_v2_projection_turn_item_counts`, [{ item_count: 1 }]);
+    assert.deepStrictEqual(yield* history, migrationManifest);
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
+
+it.effect("bounded replay at this build's head leaves an unknown Jones ledger untouched", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 96 });
+    yield* sql`CREATE TABLE jones_sql_migrations(migration_id INTEGER PRIMARY KEY, name TEXT)`;
+    yield* sql`INSERT INTO jones_sql_migrations VALUES (999, 'UnknownJones')`;
+    yield* sql`PRAGMA query_only = ON`;
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 96 }), []);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM jones_sql_migrations`, [{ migration_id: 999, name: "UnknownJones" }]);
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );

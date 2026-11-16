@@ -20,8 +20,12 @@ export const servicePreflightCommand = Command.make("__service-preflight", {
         runServicePreflight({
           databasePath,
           launcherProtocol,
-          startupGateProtocol: readJonesStartupGateProtocol(),
-          qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL,
+          ...(launcherProtocol === 3
+            ? {}
+            : {
+                startupGateProtocol: readJonesStartupGateProtocol(),
+                qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL,
+              }),
           migrationPlanResult: readMigrationPlan({
             databasePath,
             upstream: migrationManifest,
