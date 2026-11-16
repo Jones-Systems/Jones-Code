@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   AuthAccessReadScope,
+  AuthPreviewOperateScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSessionId,
@@ -102,6 +103,7 @@ import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as PreviewManager from "./preview/Manager.ts";
+import * as PreviewHostSelection from "./jones/previewCompanion/RenderHostSelection.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
@@ -2618,6 +2620,65 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
+    ),
+  ),
+);
+
+// Uses the production WS handler and the same selection instance its publisher consumes.
+it.effect("WS preview opens freeze host selection before later defaults can change it", () =>
+  Effect.gen(function* () {
+    const selection = yield* PreviewHostSelection.RenderHostSelection;
+    const manager = yield* PreviewManager.PreviewManager;
+    const threadId = ThreadId.make("ws-preview-binding");
+    yield* selection.setThread(threadId, { _tag: "companion", hostId: "original-host" });
+    const onlyOpen = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<
+          keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
+          typeof WS_METHODS.previewOpen
+        > => tag !== WS_METHODS.previewOpen,
+      ),
+    );
+    const client = yield* RpcTest.makeClient(onlyOpen).pipe(
+      Effect.provide(
+        layerWsRpc(
+          {
+            sessionId: AuthSessionId.make("preview-binding-test"),
+            subject: "preview-binding-test",
+            method: "browser-session-cookie",
+            scopes: [AuthPreviewOperateScope],
+          },
+          {},
+          yield* ServerBrowser.ServerBrowser,
+          () => Effect.void,
+          { secretReferences: true },
+        ).pipe(Layer.merge(RpcAuthorization.layer([AuthPreviewOperateScope]))),
+      ),
+    );
+    const first = yield* client[WS_METHODS.previewOpen]({ threadId, runtime: "server" });
+    yield* selection.setThread(threadId, { _tag: "server" });
+    const second = yield* client[WS_METHODS.previewOpen]({ threadId, runtime: "server" });
+    assert.deepEqual(yield* selection.binding(first), { _tag: "companion", hostId: "original-host" });
+    assert.deepEqual(yield* selection.binding(second), { _tag: "server" });
+    assert.equal((yield* manager.list({ threadId })).sessions.length, 2);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        PreviewManager.layer,
+        PreviewHostSelection.layer,
+        Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+        Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+        Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+        Layer.mock(ServerBrowser.ServerBrowser)({}),
+      ).pipe(Layer.provideMerge(Layer.fresh(layerConfigSources))),
     ),
   ),
 );

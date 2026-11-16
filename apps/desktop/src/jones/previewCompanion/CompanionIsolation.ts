@@ -51,3 +51,13 @@ export function localBrowserChannel(host: DesktopBrowserHost["Service"]) {
     onDesktopBrowserCommand: (line: string) => host.handleCommandLine(line, isLocal, source),
   };
 }
+
+/** Backend-only view of the shared host. The companion uplink keeps its own source and assignments. */
+export function localBrowserHost(host: DesktopBrowserHost["Service"]): DesktopBrowserHost["Service"] {
+  const channel = localBrowserChannel(host);
+  return {
+    ...host,
+    events: channel.desktopBrowserStream,
+    handleCommandLine: channel.onDesktopBrowserCommand,
+  };
+}
