@@ -3603,7 +3603,8 @@
     "apps/server/src/jones/provider/startFailureMessage.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/start-failure-message.json": "jones-owned",
     ".github/workflows/issue-vouch.yml": "upstream-deleted",
-    ".github/workflows/pr-limits.yml": "upstream-deleted"
+    ".github/workflows/pr-limits.yml": "upstream-deleted",
+    "CONTRIBUTING.md": "policy"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
