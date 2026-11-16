@@ -34,31 +34,43 @@ import { forkParked } from "../serverActivation.ts";
 
 export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
     processLossCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-session.detach"),
     providerSessionId: ProviderSessionId,
     detail: Schema.optional(Schema.String),
     revokeMcpCredential: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-session.apply-model-selection"),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
     modelSelection: ModelSelection,
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-session.apply-thread-title"),
     title: Schema.String,
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-turn.start"),
     runId: RunId,
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-turn.interrupt"),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
@@ -66,6 +78,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     subagent: Schema.optional(Schema.Struct({ id: NodeId, nativeTaskId: Schema.String })),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-turn.steer"),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
@@ -75,6 +89,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-turn.restart"),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
@@ -92,6 +108,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     ),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("runtime-request.respond"),
     providerSessionId: ProviderSessionId,
     requestId: RuntimeRequestId,
@@ -100,6 +118,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     answers: Schema.optional(ProviderUserInputAnswers),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-thread.rollback"),
     restoreFiles: Schema.optional(Schema.Boolean),
     providerThreadId: ProviderThreadId,
@@ -107,25 +127,37 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     scopeId: CheckpointScopeId,
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("checkpoint.capture"),
     runId: RunId,
     scopeId: CheckpointScopeId,
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("scheduled-tasks.cleanup"),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("terminal.cleanup"),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("preview.cleanup"),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("attachment.cleanup"),
     attachmentIds: Schema.Array(Schema.String),
     skipReferenced: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("thread-title.generate"),
     kind: Schema.Union([
       Schema.Struct({ type: Schema.Literal("initial"), messageId: MessageId }),
@@ -133,6 +165,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     ]),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("delegated-tasks.stop"),
     reason: Schema.optional(Schema.String),
   }),
