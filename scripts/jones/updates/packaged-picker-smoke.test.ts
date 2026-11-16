@@ -10,6 +10,7 @@ import {
   expectedPickerChecks,
   verifyPickerManifest,
   locatePickerProducer,
+  pickerProducerApplicable,
   runPickerPhase,
   requirePickerPhaseCleanup,
   pickerErrorDetail,
@@ -443,4 +444,116 @@ it("retains bounded nested aggregate, cause and errno detail", () => {
   cycle.cause = cycle;
   expect(pickerErrorDetail(cycle).cause?.truncated).toBe(true);
   expect(pickerErrorDetail(new Error("x".repeat(9000))).truncated).toBe(true);
+});
+
+it("skips producer lookup only for a complete, current consumer-only PR", async () => {
+  const workflow = await NodeFSP.readFile(".github/workflows/artifact-desktop-mac.yml", "utf8");
+  const head = "a".repeat(40),
+    calls: string[] = [];
+  const files = [
+    { filename: ".github/workflows/jones-packaged-picker.yml" },
+    { filename: "scripts/jones/updates/packaged-picker-smoke.ts" },
+  ];
+  expect(
+    await pickerProducerApplicable({ pr: 1030, head }, workflow, async (endpoint) => {
+      calls.push(endpoint);
+      return endpoint.includes("/files?")
+        ? files
+        : { head: { sha: head }, commits: 1, changed_files: files.length };
+    }),
+  ).toBe(false);
+  expect(calls).toEqual([
+    "repos/Jones-Systems/Jones-Code/pulls/1030",
+    "repos/Jones-Systems/Jones-Code/pulls/1030/files?per_page=100&page=1",
+    "repos/Jones-Systems/Jones-Code/pulls/1030",
+  ]);
+  for (const filename of [
+    "apps/desktop/src/jones/updates/pickerVerificationCore.ts",
+    "apps/desktop/.hidden/file.ts",
+    "apps/desktop/new\nline/file.ts",
+    "scripts/jones/updates/desktop-worker-smoke.ts",
+    ".github/workflows/artifact-desktop-mac.yml",
+  ]) {
+    expect(
+      await pickerProducerApplicable({ pr: 1030, head }, workflow, async (endpoint) =>
+        endpoint.includes("/files?")
+          ? [{ filename }]
+          : { head: { sha: head }, commits: 1, changed_files: 1 },
+      ),
+    ).toBe(true);
+  }
+  expect(
+    await pickerProducerApplicable({ pr: 1030, head }, workflow, async (endpoint) =>
+      endpoint.includes("/files?")
+        ? [{ filename: "docs/moved.ts", previous_filename: "apps/desktop/old.ts" }]
+        : { head: { sha: head }, commits: 1, changed_files: 1 },
+    ),
+  ).toBe(true);
+});
+
+it("does not classify incomplete, changing, large or unsupported producer evidence as a skip", async () => {
+  const workflow = await NodeFSP.readFile(".github/workflows/artifact-desktop-mac.yml", "utf8");
+  const head = "a".repeat(40);
+  await expect(
+    pickerProducerApplicable({ pr: 1030, head }, workflow, async (endpoint) =>
+      endpoint.includes("/files?") ? [] : { head: { sha: head }, commits: 1, changed_files: 1 },
+    ),
+  ).rejects.toThrow("Incomplete");
+  let reads = 0;
+  await expect(
+    pickerProducerApplicable({ pr: 1030, head }, workflow, async (endpoint) =>
+      endpoint.includes("/files?")
+        ? [{ filename: "docs/only.md" }]
+        : { head: { sha: reads++ === 0 ? head : "b".repeat(40) }, commits: 1, changed_files: 1 },
+    ),
+  ).rejects.toThrow("Changed");
+  expect(
+    await pickerProducerApplicable({ pr: 1030, head }, workflow, async () => ({
+      head: { sha: head },
+      commits: 1,
+      changed_files: 301,
+    })),
+  ).toBe(true);
+  await expect(
+    pickerProducerApplicable(
+      { pr: 1030, head },
+      workflow.replace("      - apps/desktop/**", "      - '!apps/desktop/**'"),
+      async () => {
+        throw new Error("must validate workflow first");
+      },
+    ),
+  ).rejects.toThrow("Unsupported");
+});
+
+it("records non-qualification without any producer request or wait", async () => {
+  let calls = 0;
+  const receipt = await locatePickerProducer(
+    { source: "a".repeat(40), tree: "b".repeat(40), event: "pull_request", applicable: false },
+    async () => {
+      calls++;
+      throw new Error("unexpected producer request");
+    },
+    async () => {
+      throw new Error("unexpected producer wait");
+    },
+  );
+  expect(receipt).toMatchObject({
+    verdict: "SKIPPED",
+    reason: expect.stringContaining("No applicable"),
+  });
+  expect(calls).toBe(0);
+});
+
+it("uses every page before ruling out a producer", async () => {
+  const workflow = await NodeFSP.readFile(".github/workflows/artifact-desktop-mac.yml", "utf8");
+  const head = "a".repeat(40);
+  expect(
+    await pickerProducerApplicable({ pr: 1030, head }, workflow, async (endpoint) => {
+      if (!endpoint.includes("/files?"))
+        return { head: { sha: head }, commits: 1, changed_files: 101 };
+      if (endpoint.endsWith("page=1"))
+        return Array.from({ length: 100 }, (_, i) => ({ filename: `docs/${i}.md` }));
+      return [{ filename: "apps/desktop/src/main.ts" }];
+    }),
+  ).toBe(true);
 });
