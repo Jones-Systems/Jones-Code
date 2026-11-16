@@ -492,11 +492,28 @@ it("reconciles late local uncertainty against an already-visible server message"
   await userEvent.keyboard("{Enter}");
   await vi.waitFor(() => expect(delivery.requests).toHaveLength(1));
   const request = delivery.requests[0]!;
+  // Keep this thread's reconciler mounted while the first message becomes authoritative.
+  const otherMessageId = MessageId.make("other-uncertain-send");
+  await act(() => {
+    const key = pendingSends.admit(ENVIRONMENT_ID, thread.id, {
+      id: otherMessageId,
+      role: "user",
+      text: "Another uncertain send",
+      runId: null,
+      createdAt: "2026-03-17T19:12:29.000Z",
+      updatedAt: "2026-03-17T19:12:29.000Z",
+      streaming: false,
+    });
+    pendingSends.issuing(key);
+    pendingSends.finish(key, false);
+  });
   await act(async () => {
     await request.commit();
     request.acknowledge();
   });
-  await vi.waitFor(() => expect(pendingSends.getSnapshot()).toEqual([]));
+  await vi.waitFor(() =>
+    expect(pendingSends.getSnapshot().map((entry) => entry.message.id)).toEqual([otherMessageId]),
+  );
   await expect.element(page.getByText("Unique uncertain send", { exact: true })).toBeVisible();
   if (!("messageId" in request.payload)) throw new Error("Expected message dispatch");
   const messageId = request.payload.messageId;
@@ -513,10 +530,9 @@ it("reconciles late local uncertainty against an already-visible server message"
     pendingSends.issuing(key);
     pendingSends.finish(key, false);
   });
-  await vi.waitFor(() => expect(pendingSends.getSnapshot()).toEqual([]));
-  await expect
-    .element(page.getByText("Waiting for confirmation", { exact: true }))
-    .not.toBeInTheDocument();
+  await vi.waitFor(() =>
+    expect(pendingSends.getSnapshot().map((entry) => entry.message.id)).toEqual([otherMessageId]),
+  );
   expect(page.getByText("Unique uncertain send", { exact: true }).elements()).toHaveLength(1);
   expect(delivery.requests).toHaveLength(1);
 });
