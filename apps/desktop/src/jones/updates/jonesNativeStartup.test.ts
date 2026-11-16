@@ -5,6 +5,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { expect, it } from "vite-plus/test";
 import desktopPackage from "../../../package.json" with { type: "json" };
 import {
@@ -16,6 +17,8 @@ import {
 import { JonesNativeStartupRefusal } from "@t3tools/shared/jones/nativeWriterFence";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { resolveJonesColdBackendPermit } from "./jonesColdBackendCustody.ts";
+
+const nativePlatform = HostProcess.Platform.defaultValue();
 
 it("keeps warm startup unchanged and refuses cold startup before profile access", () => {
   const input = {
@@ -353,7 +356,7 @@ async function interruptedStartupFixture(
       T3CODE_DESKTOP_USER_DATA_DIR: profile,
     };
     const input = {
-      platform: process.platform,
+      platform: nativePlatform,
       env,
       homeDirectory: home,
       appDataDirectory: home,
@@ -427,7 +430,7 @@ raise SystemExit(result.returncode)
   });
 }
 
-it.skipIf(process.platform !== "darwin").each(["intent", "preparing", "quiescent", "intent-only"])(
+it.skipIf(nativePlatform !== "darwin").each(["intent", "preparing", "quiescent", "intent-only"])(
   "joins the real startup fence and default embedded helper for interrupted %s",
   async (phase) =>
     interruptedStartupFixture(phase, async ({ home, journal, run }) => {
@@ -466,7 +469,7 @@ it.skipIf(process.platform !== "darwin").each(["intent", "preparing", "quiescent
     }),
 );
 
-it.skipIf(process.platform !== "darwin").each(["blocked", "pair-present", "activation-lock-held"])(
+it.skipIf(nativePlatform !== "darwin").each(["blocked", "pair-present", "activation-lock-held"])(
   "reports a real startup refusal for %s without opening application state",
   async (fault) =>
     interruptedStartupFixture(
