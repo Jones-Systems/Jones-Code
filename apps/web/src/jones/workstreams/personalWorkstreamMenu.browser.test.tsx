@@ -292,15 +292,24 @@ describe("Workstream options and header ordering", () => {
     await expect.element(page.getByRole("button", { name: "Cancel", exact: true })).toHaveFocus();
     await userEvent.click(page.getByRole("button", { name: "Cancel", exact: true }));
     await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .toHaveFocus();
     await deletion();
     await userEvent.keyboard("{Escape}");
     await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .toHaveFocus();
     await deletion();
     const viewport = document.querySelector('[data-slot="alert-dialog-viewport"]')!;
     await act(() => {
       viewport.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     });
     await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .toHaveFocus();
     expect(setup.controller.remove).not.toHaveBeenCalled();
   });
 
@@ -348,6 +357,11 @@ describe("Workstream options and header ordering", () => {
         }),
       )
       .toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Cancel", exact: true }));
+    await expect
+      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .toHaveFocus();
+    await deletion();
     request.put.mockImplementationOnce(async (_connection, workstream) => ({
       outcome: "applied",
       workstream,

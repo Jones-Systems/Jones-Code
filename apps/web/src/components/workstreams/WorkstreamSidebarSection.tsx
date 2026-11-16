@@ -595,7 +595,18 @@ export function WorkstreamSidebarSection({
         >
           <AlertDialogPopup
             initialFocus={cancelDeleteRef}
-            finalFocus={() => (removedRef.current ? false : undefined)}
+            finalFocus={() => {
+              if (removedRef.current) return false;
+              const section = Array.from(
+                containerRef.current?.querySelectorAll<HTMLElement>("[data-native-workstream]") ??
+                  [],
+              ).find((entry) => entry.dataset.nativeWorkstream === JSON.stringify(deleteTarget.id));
+              return (
+                section?.querySelector<HTMLButtonElement>("[data-workstream-menu] button") ??
+                section?.querySelector<HTMLButtonElement>("button") ??
+                false
+              );
+            }}
           >
             <AlertDialogHeader>
               <AlertDialogTitle>Delete “{deleteTarget.name}”?</AlertDialogTitle>
