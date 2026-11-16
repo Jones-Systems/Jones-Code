@@ -44,35 +44,6 @@ import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 
-it.effect("keeps the two-title cap after default daemon slots detach long executions", () =>
-  Effect.gen(function* () {
-    const initial = yield* Deferred.make<void>();
-    const detached = yield* Deferred.make<void>();
-    const calls: Array<{ lane: string; limit: number | undefined }> = [];
-    const claim = (lane: string) => (input?: { maxRunningTitleGenerations?: number }) =>
-      Effect.gen(function* () {
-        calls.push({ lane, limit: input?.maxRunningTitleGenerations });
-        if (calls.length === 4) yield* Deferred.succeed(initial, undefined);
-        if (calls.length === 8) yield* Deferred.succeed(detached, undefined);
-        return yield* Effect.never;
-      });
-    const worker = Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
-      awaitWork: Effect.never,
-      runOnce: claim("mixed"), runActionOnce: claim("action"), runUrgentOnce: claim("urgent"),
-    });
-    const daemon = yield* EffectWorker.runDaemonWithOptions().pipe(
-      Effect.provide(worker), Effect.forkChild,
-    );
-    yield* Deferred.await(initial);
-    yield* TestClock.adjust(Duration.seconds(30));
-    yield* Deferred.await(detached);
-    assert.equal(calls.length, 8);
-    assert.isTrue(calls.every((call) => call.limit === 2));
-    assert.equal(calls.filter((call) => call.lane === "urgent").length, 2);
-    assert.equal(calls.filter((call) => call.lane === "action").length, 2);
-    yield* Fiber.interrupt(daemon);
-  }),
-);
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
@@ -873,4 +844,34 @@ it.effect.each([3, 4])(
         processLossCount > 3 ? ["recover-child"] : ["dispatch", "recover-child"],
       );
     }),
+);
+
+it.effect("keeps the two-title cap after default daemon slots detach long executions", () =>
+  Effect.gen(function* () {
+    const initial = yield* Deferred.make<void>();
+    const detached = yield* Deferred.make<void>();
+    const calls: Array<{ lane: string; limit: number | undefined }> = [];
+    const claim = (lane: string) => (input?: { maxRunningTitleGenerations?: number }) =>
+      Effect.gen(function* () {
+        calls.push({ lane, limit: input?.maxRunningTitleGenerations });
+        if (calls.length === 4) yield* Deferred.succeed(initial, undefined);
+        if (calls.length === 8) yield* Deferred.succeed(detached, undefined);
+        return yield* Effect.never;
+      });
+    const worker = Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+      awaitWork: Effect.never,
+      runOnce: claim("mixed"), runActionOnce: claim("action"), runUrgentOnce: claim("urgent"),
+    });
+    const daemon = yield* EffectWorker.runDaemonWithOptions().pipe(
+      Effect.provide(worker), Effect.forkChild,
+    );
+    yield* Deferred.await(initial);
+    yield* TestClock.adjust(Duration.seconds(30));
+    yield* Deferred.await(detached);
+    assert.equal(calls.length, 8);
+    assert.isTrue(calls.every((call) => call.limit === 2));
+    assert.equal(calls.filter((call) => call.lane === "urgent").length, 2);
+    assert.equal(calls.filter((call) => call.lane === "action").length, 2);
+    yield* Fiber.interrupt(daemon);
+  }),
 );
