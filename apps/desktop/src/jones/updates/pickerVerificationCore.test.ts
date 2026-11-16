@@ -2,6 +2,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
+import * as NodeVM from "node:vm";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { JonesActionsClient } from "@t3tools/shared/jones/jonesActions";
 import { createPickerVerificationCore } from "./pickerVerificationCore.ts";
@@ -29,7 +30,7 @@ afterEach(async () => {
   }
 });
 it.each(["unchanged", "wrong-latest", "same-id-different-identity"] as const)(
-  "runs the real composition scenario and discriminates dispatched identity: %s",
+  "runs clone-safe renderer startup and discriminates dispatched identity: %s",
   async (mutation) => {
     const latest = await new JonesActionsClient({
       transport: createPickerFixture("1".repeat(40)).transport,
@@ -78,8 +79,7 @@ it.each(["unchanged", "wrong-latest", "same-id-different-identity"] as const)(
             };
           observations.notify();
         }),
-        ipc = createMemoryIpc(),
-        events: unknown[] = [];
+        ipc = createMemoryIpc();
       const core = await createPickerVerificationCore({
         root,
         nonce,
@@ -101,8 +101,19 @@ it.each(["unchanged", "wrong-latest", "same-id-different-identity"] as const)(
       try {
         await core.register(ipc.main);
         const bridge = createDesktopUpdateBridge(ipc.renderer);
-        bridge.onUpdateState((value) => events.push({ kind: "state", value }));
-        bridge.onInstallPlan!((value) => events.push({ kind: "plan", value }));
+        const source = await NodeFSP.readFile(
+          new URL("./pickerVerificationMain.ts", import.meta.url),
+          "utf8",
+        );
+        const script = source.match(
+          /await window\.webContents\.executeJavaScript\(\s*`([^`]+)`,?\s*\)/,
+        )?.[1];
+        if (!script) throw new Error("Picker renderer startup script not found.");
+        const renderer = NodeVM.createContext({ desktopBridge: bridge });
+        const completion: unknown = NodeVM.runInContext(script, renderer);
+        expect(completion).toBeUndefined();
+        expect(structuredClone(completion)).toBeUndefined();
+        const events = NodeVM.runInContext("pickerEvents", renderer) as unknown[];
         const host = {
           ...core,
           installCalls: ipc.installCalls,
