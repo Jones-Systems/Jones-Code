@@ -3632,7 +3632,14 @@
     "apps/desktop/src/window/DesktopApplicationMenu.ts": "accepted-shared",
     "apps/web/src/components/AppSidebarLayout.tsx": "accepted-shared",
     "apps/web/src/components/RightPanelTabs.tsx": "accepted-shared",
-    "apps/web/src/components/preview/PreviewPanelShell.tsx": "accepted-shared"
+    "apps/web/src/components/preview/PreviewPanelShell.tsx": "accepted-shared",
+    "apps/server/src/jones/workspaceRetirement/DutyLifetimeLink.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/DutyRelease.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/SessionDuty.testkit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/SessionDuty.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/156_JonesWorkspaceDutyLifetimes.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/workspace-session-duty.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -364,6 +364,96 @@ async function command(file: string, args: string[], signal?: AbortSignal) {
   ).stdout;
 }
 
+export async function pickerProducerApplicable(
+  input: { pr: number; head: string },
+  workflow: string,
+  api: (endpoint: string) => Promise<unknown>,
+) {
+  const trigger = workflow.match(/^  pull_request:\n([\s\S]*?)(?=^  \S|^\S)/m)?.[1];
+  const pathBlock = trigger?.split(/^    paths:\n/m)[1];
+  proof(pathBlock !== undefined, "Unknown producer pull-request path filter.");
+  const lines = pathBlock
+    .split("\n")
+    .filter((line) => line.trim() && !line.trimStart().startsWith("#"));
+  proof(
+    lines.every((line) => /^      - /.test(line)),
+    "Unknown producer path-filter structure.",
+  );
+  const patterns = lines.map((line) => line.slice(8));
+  proof(
+    patterns.length > 0 && patterns.every((pattern) => /^[\w./*-]+$/.test(pattern)),
+    "Unsupported producer path pattern; applicability is unknown.",
+  );
+  const matchers = patterns.map(
+    (pattern) =>
+      new RegExp(
+        "^" +
+          pattern
+            .split(/(\*\*\/|\*\*|\*)/)
+            .map((part) =>
+              part === "**/"
+                ? "(?:.*/)?"
+                : part === "**"
+                  ? ".*"
+                  : part === "*"
+                    ? "[^/]*"
+                    : part.replaceAll(".", "\\."),
+            )
+            .join("") +
+          "$",
+        "s",
+      ),
+  );
+  const matches = (path: string) => matchers.some((matcher) => matcher.test(path));
+  const endpoint = `repos/${REPO}/pulls/${input.pr}`;
+  const read = async () => {
+    const pr = (await api(endpoint)) as {
+      head: { sha: string };
+      changed_files: number;
+      commits: number;
+    };
+    proof(
+      pr.head?.sha === input.head &&
+        Number.isSafeInteger(pr.commits) &&
+        pr.commits > 0 &&
+        Number.isSafeInteger(pr.changed_files) &&
+        pr.changed_files > 0,
+      "Changed or invalid pull-request evidence.",
+    );
+    return pr;
+  };
+  const before = await read();
+  // GitHub's changed-file and path-filter limits cannot prove non-applicability.
+  if (before.changed_files > 300 || before.commits > 1000) return true;
+  const paths: string[] = [];
+  for (let page = 1; paths.length < before.changed_files; page++) {
+    const files = (await api(`${endpoint}/files?per_page=100&page=${page}`)) as {
+      filename: string;
+      previous_filename?: string;
+    }[];
+    proof(
+      Array.isArray(files) && files.length > 0 && files.length <= 100,
+      "Incomplete pull-request file evidence.",
+    );
+    for (const file of files) {
+      proof(typeof file.filename === "string", "Invalid changed filename.");
+      paths.push(file.filename);
+    }
+    if (
+      files.some(
+        (file) =>
+          file.previous_filename !== undefined &&
+          (typeof file.previous_filename !== "string" || matches(file.previous_filename!)),
+      )
+    )
+      return true;
+    proof(paths.length <= before.changed_files, "Changed pull-request file count.");
+  }
+  const after = await read();
+  proof(after.changed_files === before.changed_files, "Changed pull-request file count.");
+  return paths.some(matches);
+}
+
 export async function locatePickerProducer(
   input: {
     source: string;
@@ -372,6 +462,7 @@ export async function locatePickerProducer(
     pr?: number;
     head?: string;
     runId?: number;
+    applicable?: boolean;
   },
   api: (endpoint: string) => Promise<unknown>,
   wait: () => Promise<void>,
@@ -381,6 +472,12 @@ export async function locatePickerProducer(
     /^[a-f0-9]{40}$/.test(input.source) && /^[a-f0-9]{40}$/.test(input.tree),
     "Invalid exact consumer source/tree.",
   );
+  if (input.applicable === false)
+    return {
+      verdict: "SKIPPED",
+      reason: "No applicable desktop producer for these PR paths.",
+      expected: input,
+    };
   for (let count = 0; count < budget; count++) {
     const list =
       input.runId === undefined
@@ -1048,12 +1145,29 @@ if (
             event: event.workflow_run.event as "push" | "schedule",
             runId: Number(event.workflow_run.id),
           };
+    const api = async (endpoint: string) => JSON.parse(await command("gh", ["api", endpoint]));
+    const applicable =
+      input.event !== "pull_request" ||
+      (await pickerProducerApplicable(
+        { pr: input.pr!, head: input.head! },
+        await NodeFSP.readFile(".github/workflows/artifact-desktop-mac.yml", "utf8"),
+        api,
+      ));
     const producer = await locatePickerProducer(
-      input,
-      async (endpoint) => JSON.parse(await command("gh", ["api", endpoint])),
+      { ...input, applicable },
+      api,
       () => new Promise((resolve) => setTimeout(resolve, 20_000)),
     );
     await NodeFSP.writeFile("picker-producer.json", JSON.stringify(producer, null, 2));
+    if (process.env.GITHUB_OUTPUT)
+      await NodeFSP.appendFile(process.env.GITHUB_OUTPUT, `applicable=${applicable}\n`);
+    if (!applicable) {
+      const summary =
+        "SKIPPED / UNQUALIFIED: PR changes do not trigger the desktop package producer. No artifact was selected or executed.\n";
+      console.log(summary);
+      if (process.env.GITHUB_STEP_SUMMARY)
+        await NodeFSP.appendFile(process.env.GITHUB_STEP_SUMMARY, summary);
+    }
   } else if (mode === "--consume")
     await consume(NodePath.resolve(process.argv[3]!), NodePath.resolve(process.argv[4]!));
   else throw new Error("Expected --scan, --source-graph, --locate or --consume.");

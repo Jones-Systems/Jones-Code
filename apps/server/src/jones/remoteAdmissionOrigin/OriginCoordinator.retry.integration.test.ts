@@ -11,7 +11,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as PeerMcpClient from "../../peer/PeerMcpClient.ts";
 import { DependencyWakeCommit } from "../threadResultDependencies/DependencyCommit.ts";
-import migration from "../persistence/Migrations/156_JonesRemoteAdmissionReview.ts";
+import migration from "../persistence/Migrations/157_JonesRemoteAdmissionReview.ts";
 import * as Coordinator from "./OriginCoordinator.ts";
 import * as Bindings from "./OriginPeerBindings.ts";
 import * as Delivery from "./OriginDelivery.ts";

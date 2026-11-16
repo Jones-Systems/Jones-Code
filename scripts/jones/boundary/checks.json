@@ -2330,6 +2330,7 @@
         "apps/server/src/orchestration-v2/FoundationPersistence.test.ts"
       ],
       "commands": [
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t \"resumes the original conversation with restart input\" --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts apps/server/src/jones/updates/continuationPrompt.test.ts apps/server/src/jones/updates/launcherOperation.test.ts apps/server/src/jones/updates/operationHandoff.test.ts apps/server/src/jones/updates/plannedContinuityPolicy.test.ts apps/server/src/jones/updates/serverCapability.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/jones/updates/desktopInstall.test.ts apps/server/src/jones/cloud/shutdownBudget.test.ts apps/server/src/orchestration-v2/ProjectionRecovery.test.ts",
         "vp test run apps/desktop/src/jones/updates/jonesQuitPreparation.test.ts apps/desktop/src/jones/updates/jonesNativePreparation.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/server/src/jones/updates/http.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
@@ -5548,6 +5549,19 @@
         "vp test run apps/desktop/src/window/DesktopApplicationMenu.test.ts",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/desktop typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workspace-session-duty",
+      "tests": [
+        "apps/server/src/jones/workspaceRetirement/SessionDuty.test.ts",
+        "apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/workspaceRetirement/SessionDuty.test.ts --maxWorkers=1 --no-file-parallelism",
+        "node --test --test-concurrency=1 apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs",
+        "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

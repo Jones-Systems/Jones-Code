@@ -14,7 +14,7 @@ import type {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  EllipsisIcon,
+  EllipsisVerticalIcon,
   ChevronDownIcon,
   PaletteIcon,
   PencilIcon,
@@ -50,6 +50,10 @@ import { Dialog, DialogPopup, DialogHeader, DialogTitle } from "../ui/dialog";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import {
+  PersonalWorkstreamOptionsButton,
+  PersonalWorkstreamVisibleThreads,
+} from "../../jones/workstreams/PersonalWorkstreamDisplayControls";
 import { PersonalSidebarGroupHeader } from "../../jones/workstreams/PersonalSidebarGroupHeader";
 import {
   formatPersonalThreadCount,
@@ -61,7 +65,6 @@ import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalW
 import { usePersonalStatusFilter } from "../../jones/workstreams/personalStatusFilter";
 import { personalGroupCollapsedKey } from "../../jones/workstreams/personalSidebarOrder";
 import {
-  PERSONAL_THREAD_LIMITS,
   usePersonalThreadWindow,
   type PersonalThreadLimit,
 } from "../../jones/workstreams/personalThreadWindow";
@@ -278,9 +281,14 @@ function Group({
               <Menu>
                 <MenuTrigger
                   aria-label={`Options for ${item.name}`}
-                  render={<Button variant="ghost" size="icon-sm" />}
+                  render={<PersonalWorkstreamOptionsButton />}
                 >
-                  <EllipsisIcon aria-hidden />
+                  <EllipsisVerticalIcon
+                    aria-hidden
+                    viewBox="10 0 4 24"
+                    preserveAspectRatio="xMaxYMid meet"
+                    className="size-4 h-4 w-1"
+                  />
                 </MenuTrigger>
                 <MenuPopup align="end">
                   <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
@@ -298,10 +306,11 @@ function Group({
                   <MenuSeparator />
                   <MenuSub>
                     <MenuSubTrigger disabled={!state.canCreate || pending}>
-                      Lifecycle <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
+                      Workstream state{" "}
+                      <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
                     </MenuSubTrigger>
                     <MenuSubPopup>
-                      <MenuRadioGroup value={item.lifecycle} aria-label="Workstream lifecycle">
+                      <MenuRadioGroup value={item.lifecycle} aria-label="Workstream state">
                         {lifecycles.map((lifecycle) => (
                           <MenuRadioItem
                             key={lifecycle}
@@ -340,26 +349,13 @@ function Group({
                         {shownCount} of {memberCount} shown
                       </span>
                     </div>
-                    <MenuRadioGroup
-                      value={String(threadWindow.limit)}
-                      className="flex mr-2"
-                      aria-label="Default visible threads"
-                    >
-                      {PERSONAL_THREAD_LIMITS.map((limit) => (
-                        <MenuRadioItem
-                          key={limit}
-                          value={String(limit)}
-                          closeOnClick={false}
-                          className="text-center"
-                          onClick={() => {
-                            threadWindow.setLimit(limit);
-                            threadWindow.setExpanded(false);
-                          }}
-                        >
-                          {limit}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
+                    <PersonalWorkstreamVisibleThreads
+                      limit={threadWindow.limit}
+                      onChange={(limit) => {
+                        threadWindow.setLimit(limit);
+                        threadWindow.setExpanded(false);
+                      }}
+                    />
                   </MenuGroup>
                   <MenuSeparator />
                   <MenuItem

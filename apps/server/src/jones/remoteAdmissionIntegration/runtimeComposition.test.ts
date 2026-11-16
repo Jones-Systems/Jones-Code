@@ -21,7 +21,7 @@ import * as Config from "../../config.ts";
 import * as Providers from "../../provider/ProviderInstanceRegistry.ts";
 import core from "../persistence/Migrations/116_JonesRemoteAdmission.ts";
 import integration from "../persistence/Migrations/118_JonesRemoteAdmissionIntegration.ts";
-import review from "../persistence/Migrations/156_JonesRemoteAdmissionReview.ts";
+import review from "../persistence/Migrations/157_JonesRemoteAdmissionReview.ts";
 import * as Admission from "../remoteAdmission/RemoteAdmission.ts";
 import * as Changes from "../remoteAdmission/ReviewChanges.ts";
 import { RemoteAdmissionIntake } from "./RemoteAdmissionIntake.ts";
