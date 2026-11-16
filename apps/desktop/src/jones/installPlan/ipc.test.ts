@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
 import type { JonesInstallPlanResult } from "@t3tools/contracts/jones/installPlan";
-import { DesktopUpdates } from "../../updates/DesktopUpdates.ts";
+import { DesktopUpdates } from "../../updates/DesktopUpdatesService.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
 import { installPlan, installPlanAvailable } from "./ipc.ts";
 

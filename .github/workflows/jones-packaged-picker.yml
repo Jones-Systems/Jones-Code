@@ -1,0 +1,132 @@
+name: Jones packaged picker
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/artifact-desktop-mac.yml
+      - .github/workflows/jones-packaged-picker.yml
+      - apps/desktop/**
+      - scripts/build-desktop-artifact.ts
+      - scripts/update-release-package-versions.ts
+      - scripts/stamp-jones-build.ts
+      - scripts/jones/updates/**
+      - packages/shared/src/jones/nativeWriterFence*
+      - apps/server/src/jones/updates/**
+      - apps/server/vite.config.ts
+      - vite.config.ts
+      - apps/server/package.json
+      - apps/server/src/jones/cloud/qualifiedStartup.ts
+      - apps/server/src/jones/cloud/qualifiedBackup*.ts
+      - scripts/lib/**
+      - native/resource-monitor/**
+      - native/browser-secret/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+  workflow_run:
+    workflows: [Mac Desktop Artifact]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: jones-packaged-picker-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  locate:
+    name: Locate current-source producer
+    if: >-
+      github.repository == 'Jones-Systems/Jones-Code' &&
+      ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository &&
+        (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact consumer source
+        env:
+          SOURCE_COMMIT: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Locate producer within a finite budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/jones/updates/packaged-picker-smoke.ts --locate
+      - name: Preserve producer selection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: picker-producer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: picker-producer.json
+          if-no-files-found: error
+          retention-days: 7
+
+  picker:
+    name: Native packaged picker (diagnostic)
+    needs: locate
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact consumer source
+        env:
+          SOURCE_COMMIT: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Read producer selection
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: picker-producer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: picker-input
+      - name: Verify exact artifact and native IPC on its disposable copy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/jones/updates/packaged-picker-smoke.ts --consume picker-input/picker-producer.json picker-evidence
+      - name: Preserve explicit qualification outcome
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: picker-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: picker-evidence
+          if-no-files-found: error
+          retention-days: 14

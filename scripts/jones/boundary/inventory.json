@@ -3602,6 +3602,8 @@
     "apps/server/src/jones/provider/startFailureMessage.ts": "jones-owned",
     "apps/server/src/jones/provider/startFailureMessage.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/start-failure-message.json": "jones-owned",
+    "apps/desktop/src/updates/DesktopUpdatesService.ts": "jones-owned",
+    ".github/workflows/jones-packaged-picker.yml": "policy",
     "apps/server/src/jones/storageCleanup/ReportRead.test.ts": "jones-owned",
     "apps/server/src/jones/storageCleanup/ReportRead.ts": "jones-owned",
     "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts": "jones-owned",
