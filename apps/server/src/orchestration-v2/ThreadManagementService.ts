@@ -1,5 +1,6 @@
 import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import type { RecordedServerCommand as OrchestrationV2ServerCommand } from "./RecordedTypes.ts";
+import * as SendPreparation from "../jones/remoteDelegation/SendPreparation.ts";
 import type { ObservationPorts } from "../jones/remoteDelegation/ObservationHooks.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 import { blockingQuestions, questionsChanged } from "../jones/remoteDelegation/BlockingQuestions.ts";
@@ -624,6 +625,7 @@ const isForceStopThreadError = Schema.is(OrchestrationV2ForceStopThreadError);
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const remoteHooks = orchestrator as typeof orchestrator & ObservationPorts & SendPreparation.SendPreparationPorts;
   const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const layerScope = yield* Effect.scope;
   const agentScope = yield* AgentScope;
@@ -927,21 +929,22 @@ const make = Effect.gen(function* () {
     // Turn start would fail on its own after the send reported success; a replay keeps its answer.
     // A live steer starts no turn, so it needs no workspace.
     if (dispatchMode.type !== "steer_active") {
-      yield* worktreeRestore
-        .restore(target.thread)
-        .pipe(
+      const restoration = hasReceipt(input.commandId).pipe(Effect.flatMap((replay) => replay ? Effect.void :
+        worktreeRestore.restore(target.thread).pipe(
           Effect.catch((cause) =>
             hasReceipt(input.commandId).pipe(
-              Effect.flatMap((replay) =>
-                replay
-                  ? Effect.void
-                  : Effect.fail(
-                      new ThreadManagementWorktreeRestoreError({ threadId: input.threadId, cause }),
-                    ),
-              ),
+              Effect.flatMap((replayed) => replayed ? Effect.void : Effect.fail(
+                new ThreadManagementWorktreeRestoreError({threadId: input.threadId, cause}),
+              )),
             ),
           ),
-        );
+        ),
+      ));
+      yield* SendPreparation.prepare(remoteHooks,
+        input.commandId, restoration).pipe(Effect.mapError((cause) => SendPreparation.isReceiptError(cause)
+          ? new Orchestrator.OrchestratorDispatchError({commandId: input.commandId,
+              commandType: "message.dispatch", cause})
+          : cause));
     }
 
     const dispatched = yield* dispatch({
@@ -1857,17 +1860,17 @@ const make = Effect.gen(function* () {
     awaitBackgroundTasks,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
     // Preserve optionality until the core owner's normal parent merge.
-    ...((orchestrator as ObservationPorts).observeRemoteTask === undefined ? {} : {
-      observeRemoteTask: (orchestrator as ObservationPorts).observeRemoteTask!,
+    ...(remoteHooks.observeRemoteTask === undefined ? {} : {
+      observeRemoteTask: remoteHooks.observeRemoteTask!,
     }),
-    ...((orchestrator as ObservationPorts).readRemoteTaskObservation === undefined ? {} : {
-      readRemoteTaskObservation: (orchestrator as ObservationPorts).readRemoteTaskObservation!,
+    ...(remoteHooks.readRemoteTaskObservation === undefined ? {} : {
+      readRemoteTaskObservation: remoteHooks.readRemoteTaskObservation!,
     }),
-    ...((orchestrator as ObservationPorts).reconcileRemoteTaskQuestions === undefined ? {} : {
-      reconcileRemoteTaskQuestions: (orchestrator as ObservationPorts).reconcileRemoteTaskQuestions!,
+    ...(remoteHooks.reconcileRemoteTaskQuestions === undefined ? {} : {
+      reconcileRemoteTaskQuestions: remoteHooks.reconcileRemoteTaskQuestions!,
     }),
-    ...((orchestrator as ObservationPorts).recoverRemoteTaskQuestions === undefined ? {} : {
-      recoverRemoteTaskQuestions: (orchestrator as ObservationPorts).recoverRemoteTaskQuestions!,
+    ...(remoteHooks.recoverRemoteTaskQuestions === undefined ? {} : {
+      recoverRemoteTaskQuestions: remoteHooks.recoverRemoteTaskQuestions!,
     }),
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
     cancelDelegatedTask: orchestrator.cancelDelegatedTask,

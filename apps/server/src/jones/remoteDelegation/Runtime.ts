@@ -815,7 +815,8 @@ export const make = Effect.gen(function* () {
     );
 
   const runStatus: RemoteDelegation["Service"]["runStatus"] = (scope, task) => Effect.gen(function* () {
-    const refreshed = task.remoteChild === undefined ? yield* durableFollowUps.refresh(task.id) : undefined;
+    const refreshed = task.remoteChild === undefined
+      ? yield* durableFollowUps.refresh(task.id).pipe(Effect.orElseSucceed(() => undefined)) : undefined;
     const remote = (refreshed ?? task).remoteChild;
     if (remote?.runId === undefined) return refreshed?.result === null ? "starting" as const : null;
     if (refreshed !== undefined) yield* followOne(task.threadId, task.id).pipe(Effect.forkIn(followers));
