@@ -7,6 +7,7 @@ import * as SqlError from "effect/sql/SqlError";
 import * as McpSessions from "../../mcp/McpSessionRegistry.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as Projections from "../../orchestration-v2/ProjectionStore.ts";
+import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Executor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import { followUpOwnerRun, isActiveRun } from "../../orchestration-v2/CommandPolicy.ts";
 import type { FollowUpCommandOwner } from "../remoteDelegation/FollowUp.ts";
@@ -18,6 +19,8 @@ const denied = () => new OrchestratorMcpFailure({ code: "capability_denied",
   message: "The original authenticated parent no longer owns this follow-up transaction." });
 const failed = () => new OrchestratorMcpFailure({ code: "orchestration_error",
   message: "The follow-up transaction could not commit; delivery remains held." });
+const attachmentDenied = () => new OrchestratorMcpFailure({ code: "capability_denied",
+  message: "The original MCP caller is not attached to this parent run's native session; the follow-up remains held." });
 
 /** The Orchestrator supplies its private dispatch, which already assumes the lock is held. */
 export const make = Effect.fn("CoreFollowUpCommandOwner.make")(function* <E>(
@@ -31,6 +34,7 @@ export const make = Effect.fn("CoreFollowUpCommandOwner.make")(function* <E>(
   const sql = yield* SqlClient.SqlClient;
   const projections = yield* Projections.ProjectionStoreV2;
   const sessions = yield* Effect.serviceOption(McpSessions.McpSessionRegistry);
+  const providerSessions = yield* Effect.serviceOption(ProviderSessions.ProviderSessionManagerV2);
   const owner: FollowUpCommandOwner["Service"] = {
     inParentTransaction: (threadId, effect) => Effect.gen(function* () {
       if ((yield* ParentTransaction) !== undefined) return yield* denied();
@@ -49,12 +53,26 @@ export const make = Effect.fn("CoreFollowUpCommandOwner.make")(function* <E>(
         current.thread.providerSessionId !== captured.thread.providerSessionId ||
         current.thread.providerInstanceId !== captured.thread.providerInstanceId)
         return yield* denied();
-      const parent = yield* projections.getThreadRecords(captured.thread.threadId, ["runs"]).pipe(Effect.mapError(failed));
+      const parent = yield* projections.getThreadRecords(captured.thread.threadId, ["runs", "providerThreads"]).pipe(Effect.mapError(failed));
       const run = parent.runs.find((run) => run.id === runId);
       if (parent.thread.deletedAt !== null || parent.thread.archivedAt !== null || run === undefined ||
         !isActiveRun(run) || followUpOwnerRun(parent.runs)?.id !== runId ||
         run.providerInstanceId !== captured.thread.providerInstanceId)
         return yield* denied();
+      // Registry credentials authenticate the origin, but may outlive detachment.
+      // Derive the native session only from this run's exact retained active binding.
+      const native = parent.providerThreads.find((provider) => provider.id === parent.thread.activeProviderThreadId);
+      if (native === undefined || native.providerSessionId === null ||
+        native.appThreadId !== parent.thread.id || run.threadId !== parent.thread.id ||
+        run.providerThreadId !== native.id || native.providerInstanceId !== captured.thread.providerInstanceId ||
+        Option.isNone(providerSessions) || typeof providerSessions.value.isMcpCallerAttached !== "function")
+        return yield* attachmentDenied();
+      // S3 repeats this port before reservation and before beginSend in its owning TX.
+      // Do not cache the proof: credentials can be detached between those transactions.
+      if (!(yield* providerSessions.value.isMcpCallerAttached({ threadId: parent.thread.id,
+        providerSessionId: native.providerSessionId, providerInstanceId: captured.thread.providerInstanceId,
+        mcpCredentialId: captured.thread.providerSessionId })))
+        return yield* attachmentDenied();
     }),
     dispatch: (command) => Effect.gen(function* () {
       if ((yield* ParentTransaction) !== threadFor(command)) return yield* denied();
