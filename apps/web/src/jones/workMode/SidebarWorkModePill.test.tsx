@@ -26,8 +26,14 @@ const state = vi.hoisted(() => ({
     } | null;
   }>,
   initialConfigs: new Map<string, unknown>(),
+  showWorkButton: true,
+  subscribeEnvironments: vi.fn(),
   access: vi.fn(),
   update: vi.fn(),
+}));
+vi.mock("../../hooks/useSettings", () => ({
+  useClientSettings: (select: (settings: { showWorkButton: boolean }) => unknown) =>
+    select({ showWorkButton: state.showWorkButton }),
 }));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => state.initialConfigs }));
 vi.mock("../../state/session", () => ({
@@ -35,7 +41,10 @@ vi.mock("../../state/session", () => ({
   readEnvironmentScopeAccess: (...args: unknown[]) => state.access(...args),
 }));
 vi.mock("../../state/environments", () => ({
-  useEnvironments: () => ({ isReady: true, environments: state.environments }),
+  useEnvironments: () => {
+    state.subscribeEnvironments();
+    return { isReady: true, environments: state.environments };
+  },
 }));
 vi.mock("../../state/server", () => ({ serverEnvironment: { updateSettings: "update-settings" } }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.update }));
@@ -46,6 +55,8 @@ vi.mock("../../components/ui/tooltip", () => ({
 }));
 
 beforeEach(() => {
+  state.showWorkButton = true;
+  state.subscribeEnvironments.mockClear();
   state.environment.connection.phase = "connected";
   state.environment.serverConfig.environment.capabilities.workMode = true;
   state.environment.serverConfig.settings.workModeEnabled = false;
@@ -80,6 +91,29 @@ async function dispose(renderer: ReactTestRenderer) {
 }
 
 describe("Work mode sidebar interaction", () => {
+  it("hides and restores enabled Work without backend writes or hidden subscriptions", async () => {
+    state.environment.serverConfig.settings.workModeEnabled = true;
+    state.showWorkButton = false;
+    const renderer = await mount();
+    try {
+      expect(renderer.toJSON()).toBeNull();
+      expect(state.subscribeEnvironments).not.toHaveBeenCalled();
+      state.showWorkButton = true;
+      await act(async () => renderer.update(<SidebarWorkModePill />));
+      expect(renderer.root.findByType("button").props["aria-checked"]).toBe(true);
+      state.showWorkButton = false;
+      await act(async () => renderer.update(<SidebarWorkModePill />));
+      expect(renderer.toJSON()).toBeNull();
+      state.showWorkButton = true;
+      await act(async () => renderer.update(<SidebarWorkModePill />));
+      expect(renderer.root.findByType("button").props["aria-checked"]).toBe(true);
+      expect(state.update).not.toHaveBeenCalled();
+      expect(state.environment.serverConfig.settings.workModeEnabled).toBe(true);
+    } finally {
+      await dispose(renderer);
+    }
+  });
+
   it("changes connected environments and renders their persisted state on remount", async () => {
     const renderer = await mount();
     try {

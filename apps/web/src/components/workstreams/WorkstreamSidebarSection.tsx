@@ -1,4 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
+import { ChevronDownIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
   PersonalWorkstreamsController,
@@ -12,10 +13,20 @@ import { showPersonalFailure } from "../../jones/workstreams/personalNotificatio
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { PersonalSidebarGroupHeader } from "../../jones/workstreams/PersonalSidebarGroupHeader";
-import type { PersonalThreadSummary } from "../../jones/workstreams/personalPresentation";
+import {
+  formatPersonalThreadCount,
+  type PersonalThreadSummary,
+} from "../../jones/workstreams/personalPresentation";
+import { personalWorkstreamRailColor } from "../../jones/workstreams/personalRail";
 
 const collapsedSchema = Schema.Boolean;
-const emptySummary: PersonalThreadSummary = { total: 0, running: 0, attention: 0, failed: 0 };
+const emptySummary: PersonalThreadSummary = {
+  total: 0,
+  running: 0,
+  attention: 0,
+  failed: 0,
+  done: 0,
+};
 export function WorkstreamCreateForm({
   controller,
   open,
@@ -109,11 +120,11 @@ function Group({
   return (
     <section
       data-native-workstream={JSON.stringify(item.id)}
-      className="my-2 overflow-hidden rounded-lg border border-sidebar-border/70 border-l-4 bg-sidebar-control-surface/30"
-      style={{ borderLeftColor: item.color ?? undefined }}
+      className="my-2 min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70"
+      style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
     >
       <div
-        className="flex items-center gap-1 pr-2"
+        className="flex items-start gap-1 pr-2"
         draggable={state.canCreate && !pending}
         onDragStart={(event) => {
           event.dataTransfer.setData("application/x-jones-workstream", item.id);
@@ -143,7 +154,6 @@ function Group({
           collapsed={collapsed}
           onToggle={() => setCollapsed((value) => !value)}
           summary={summary}
-          lifecycle={item.lifecycle}
         />
         <Menu>
           <MenuTrigger aria-label={`Edit ${item.name}`}>…</MenuTrigger>
@@ -310,18 +320,24 @@ export function WorkstreamSidebarSection({
           {renderMembers(item.id)}
         </Group>
       ))}
-      <section
-        data-native-workstream="null"
-        className="my-2 overflow-hidden rounded-lg border border-sidebar-border/70"
-      >
-        <div className="flex">
-          <PersonalSidebarGroupHeader
-            name="Unassigned"
-            collapsed={unassignedCollapsed}
-            onToggle={() => setUnassignedCollapsed((value) => !value)}
-            summary={unassignedSummary}
+      <section data-native-workstream="null" className="my-2 min-w-0">
+        <button
+          type="button"
+          aria-label={`${unassignedCollapsed ? "Expand" : "Collapse"} Unassigned`}
+          aria-description={formatPersonalThreadCount(unassignedSummary.total)}
+          aria-expanded={!unassignedCollapsed}
+          onClick={() => setUnassignedCollapsed((value) => !value)}
+          className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          <ChevronDownIcon
+            aria-hidden
+            className={`size-4 shrink-0 ${unassignedCollapsed ? "-rotate-90" : ""}`}
           />
-        </div>
+          <span className="truncate">Unassigned</span>
+          <span className="ml-auto shrink-0 text-xs tabular-nums">
+            {formatPersonalThreadCount(unassignedSummary.total)}
+          </span>
+        </button>
         {!unassignedCollapsed ? renderMembers(null) : null}
       </section>
     </div>
