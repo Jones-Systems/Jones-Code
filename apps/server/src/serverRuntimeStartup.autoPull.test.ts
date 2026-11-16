@@ -139,6 +139,7 @@ it.effect("parks automatic pull until activation without delaying command readin
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
           recoverCodexFailover: Effect.void,
+          recoverSelfSettlements: Effect.void,
           recoverDelegatedTasks: Effect.void,
           recoverPlannedUpdateQueues: Effect.void,
         }),

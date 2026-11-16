@@ -200,6 +200,7 @@ it.effect.each([
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
           recoverCodexFailover: Effect.void,
+          recoverSelfSettlements: Effect.void,
           recoverDelegatedTasks: Effect.void,
           recoverPlannedUpdateQueues: Effect.void,
         }),
@@ -505,6 +506,7 @@ it.effect("holds recovery, activation and queued commands before the trial grant
         importLegacyShells: record("legacy"),
         recover: record("provider"),
         recoverCodexFailover: record("codex-failover"),
+        recoverSelfSettlements: record("self-settlements"),
         recoverDelegatedTasks: record("delegated"),
         recoverPlannedUpdateQueues: record("planned-queues"),
         startEffectWorker: record("worker"),
@@ -524,6 +526,7 @@ it.effect("holds recovery, activation and queued commands before the trial grant
         "legacy",
         "provider",
         "codex-failover",
+        "self-settlements",
         "delegated",
         "planned-queues",
         "worker",
@@ -552,6 +555,7 @@ it.effect("a failed native trial fails readiness and leaves every recovery step 
         awaitTrialCommit: Effect.fail(failure),
         importLegacyShells: record,
         recover: record,
+        recoverSelfSettlements: record,
         recoverDelegatedTasks: record,
         startEffectWorker: record,
         autoBootstrap: record,
@@ -600,7 +604,7 @@ it.effect(
 );
 
 
-it.effect.each(["trial", "legacy", "provider", "failover", "delegated", "planned-queues"] as const)(
+it.effect.each(["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "planned-queues"] as const)(
   "does not start workers or bootstrap when %s recovery fails",
   (failedPhase) => Effect.gen(function* () {
     const phases: string[] = [];
@@ -612,13 +616,14 @@ it.effect.each(["trial", "legacy", "provider", "failover", "delegated", "planned
       importLegacyShells: phase("legacy"),
       recover: phase("provider"),
       recoverCodexFailover: phase("failover"),
+      recoverSelfSettlements: phase("self-settlements"),
       recoverDelegatedTasks: phase("delegated"),
       recoverPlannedUpdateQueues: phase("planned-queues"),
       startEffectWorker: phase("worker"),
       autoBootstrap: phase("bootstrap"),
     }).pipe(Effect.result);
     assert.equal(result._tag, "Failure");
-    assert.deepEqual(phases, ["trial", "legacy", "provider", "failover", "delegated", "planned-queues"].slice(0,
-      ["trial", "legacy", "provider", "failover", "delegated", "planned-queues"].indexOf(failedPhase) + 1));
+    assert.deepEqual(phases, ["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "planned-queues"].slice(0,
+      ["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "planned-queues"].indexOf(failedPhase) + 1));
   }),
 );

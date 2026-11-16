@@ -467,6 +467,7 @@ export const runOrderedV2StartupPhases = Effect.fn(
   readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
   readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
   readonly recoverCodexFailover?: Effect.Effect<void, DelegationError, DelegationContext>;
+  readonly recoverSelfSettlements: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly recoverPlannedUpdateQueues?: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
@@ -476,6 +477,7 @@ export const runOrderedV2StartupPhases = Effect.fn(
   yield* input.importLegacyShells;
   const recovery = yield* input.recover;
   yield* input.recoverCodexFailover ?? Effect.void;
+  yield* input.recoverSelfSettlements;
   yield* input.recoverDelegatedTasks;
   yield* input.recoverPlannedUpdateQueues ?? Effect.void;
   yield* input.startEffectWorker;
@@ -657,6 +659,10 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       recoverCodexFailover: runStartupPhase(
         "orchestration-v2.codex-failover.recover",
         orchestrator.recoverCodexFailover,
+      ),
+      recoverSelfSettlements: runStartupPhase(
+        "orchestration-v2.self-settlements.recover",
+        orchestrator.recoverSelfSettlements,
       ),
       recoverDelegatedTasks: runStartupPhase(
         "orchestration-v2.delegated-tasks.recover",
