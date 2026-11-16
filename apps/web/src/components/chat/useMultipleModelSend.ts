@@ -1,3 +1,4 @@
+import { withMessageContext } from "../../jones/composer/messageContext";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { pendingNewThread } from "../../jones/pendingSends/newThread";
 import { pendingSends } from "../../jones/pendingSends/store";
@@ -38,7 +39,6 @@ import {
   optimisticMessageAttachments,
   type ComposerSendSnapshot,
   type makeThreadErrorSetter,
-  withMessageContext,
 } from "../ChatView.logic";
 import {
   draftFanoutSelectionsAtom,
@@ -228,6 +228,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                     ...withMessageContext({
                       text: target.text,
                       context,
+                      supportsInlineMessageContext: appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities.inlineMessageContext === true,
                     }),
                   },
                   modelSelection: target.selection,

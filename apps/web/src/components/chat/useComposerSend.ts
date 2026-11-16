@@ -1,3 +1,4 @@
+import { withMessageContext } from "../../jones/composer/messageContext";
 import { resolveFirstSendWorktreePreparation } from "../../jones/composer/firstSendWorktree";
 import type { EnvironmentContextRecord } from "@t3tools/contracts";
 import { pendingSends } from "../../jones/pendingSends/store";
@@ -23,7 +24,6 @@ import {
   planComposerTurn,
   sendTitleFallbackLabels,
   snapshotComposerSend,
-  withMessageContext,
   makeThreadErrorSetter,
 } from "../ChatView.logic";
 import { isUsageLimitsCommand } from "@t3tools/shared/usageLimits";
@@ -1642,6 +1642,7 @@ export function useComposerSend(input: ComposerSendInput) {
             attachments: turnAttachmentsResult.value,
             ...withMessageContext({
               text: outgoingMessageText,
+              supportsInlineMessageContext: appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities.inlineMessageContext === true,
               context: buildOutgoingMessageContext(
                 boundAttachmentIds(turnAttachmentsResult.value, composerAttachmentsSnapshot),
               ),
