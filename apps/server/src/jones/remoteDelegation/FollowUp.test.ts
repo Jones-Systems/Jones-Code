@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { CommandId, EnvironmentId, MessageId, NodeId, OrchestratorMcpFailure, RunId,
+import { CommandId, EnvironmentId, MessageId, NodeId, OrchestratorMcpFailure, ProviderDriverKind, RunId,
   type OrchestrationV2Subagent, type OrchestratorMcpThreadSendResult } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -23,7 +23,7 @@ const fixture = Effect.gen(function* () {
   const store = yield* Store.makeFollowUps;
   const base = parentFixture();
   const destination = EnvironmentId.make("destination");
-  const oldTask: OrchestrationV2Subagent = {...base.task, driver: "remote",
+  const oldTask: OrchestrationV2Subagent = {...base.task, driver: ProviderDriverKind.make("remote"),
     remoteChild: {environmentId: destination, threadId: base.child.thread.id, runId: base.run.id, label: "Peer"}};
   let tasks = [oldTask];
   let runs = [...base.parent.runs];
