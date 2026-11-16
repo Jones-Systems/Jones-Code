@@ -21,7 +21,9 @@
     "packages/provider-core/src/server/jones/providerControlOutcome.test.ts",
     "apps/server/src/jones/provider/claudeRetirement/retirement.ts",
     "apps/server/src/jones/provider/claudeRetirement/retirement.test.ts",
-    "apps/server/src/jones/provider/claudeRetirement/controlOutcome.integration.test.ts"
+    "apps/server/src/jones/provider/claudeRetirement/controlOutcome.integration.test.ts",
+    "apps/server/src/jones/providerRetirement/transferBindings.ts",
+    "apps/server/src/jones/providerRetirement/transferBindings.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -121,6 +123,10 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
       "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/providerRetirement/transferBindings.ts"
     }
   ]
 }
