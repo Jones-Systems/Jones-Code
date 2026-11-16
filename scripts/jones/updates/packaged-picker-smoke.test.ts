@@ -10,8 +10,12 @@ import {
   expectedPickerChecks,
   verifyPickerManifest,
   locatePickerProducer,
+  runPickerPhase,
+  requirePickerPhaseCleanup,
+  pickerErrorDetail,
+  type PickerPhaseObservation,
 } from "./packaged-picker-smoke.ts";
-import { withSmokeScratch } from "./desktop-worker-smoke.ts";
+import { processAbsence, withSmokeScratch } from "./desktop-worker-smoke.ts";
 
 it("accepts only the entry's declared literal external modules", () => {
   expect(
@@ -211,4 +215,229 @@ it("cleans exact concurrent invocation roots on success and failure without losi
       expect.objectContaining({ message: "cleanup" }),
     ],
   });
+});
+
+async function phaseFixture(body: string) {
+  const parent = await NodeFSP.mkdtemp(NodePath.resolve("node_modules/.cache/picker-failure-"));
+  parents.push(parent);
+  const output = NodePath.join(parent, "upload"),
+    executable = NodePath.join(parent, "child.cjs");
+  await NodeFSP.mkdir(output);
+  await NodeFSP.writeFile(
+    executable,
+    `#!${process.execPath}\nconst fs=require("node:fs"),path=require("node:path");const config=JSON.parse(fs.readFileSync(process.argv[2].slice("--jones-picker-config=".length),"utf8"));${body}`,
+    { mode: 0o700 },
+  );
+  const observation: PickerPhaseObservation = {
+    phase: "catalog",
+    processAbsence: "unknown",
+    groupAbsence: "unknown",
+    evidence: [],
+  };
+  let root = "";
+  const run = (ports = {}, signal = new AbortController().signal) =>
+    withSmokeScratch(
+      parent,
+      async (owned) => {
+        root = owned;
+        return runPickerPhase(
+          executable,
+          { root, phase: "catalog", report: NodePath.join(root, "phase-catalog.json") },
+          {},
+          signal,
+          output,
+          observation,
+          ports,
+        );
+      },
+      async (owned) => requirePickerPhaseCleanup(observation, owned),
+    );
+  return { output, executable, observation, run, root: () => root };
+}
+const diagnostics = `fs.writeFileSync(config.report,JSON.stringify({status:"fail",error:"known catalog error"}));fs.writeFileSync(path.join(config.root,"loader-catalog.json"),JSON.stringify({loaded:true}));console.error("known Electron error");`;
+
+it.each([0, 1])(
+  "preserves available diagnostics before exact scratch cleanup for child exit %s",
+  async (exit) => {
+    const fixture = await phaseFixture(`${diagnostics}process.exitCode=${exit};`);
+    if (exit === 1) await expect(fixture.run()).rejects.toThrow("exited 1");
+    else await expect(fixture.run()).resolves.toMatchObject({ status: "fail" });
+    expect(fixture.observation).toMatchObject({
+      exitCode: exit,
+      processAbsence: "pass",
+      groupAbsence: "pass",
+    });
+    await expect(NodeFSP.lstat(fixture.root())).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      NodeFSP.readFile(NodePath.join(fixture.output, "electron-catalog.log"), "utf8"),
+    ).resolves.toContain("known Electron error");
+    await expect(
+      NodeFSP.readFile(NodePath.join(fixture.output, "phase-catalog.json"), "utf8"),
+    ).resolves.toContain("known catalog error");
+    await expect(
+      NodeFSP.readFile(NodePath.join(fixture.output, "loader-catalog.json"), "utf8"),
+    ).resolves.toContain("loaded");
+    // A zero exit with a failed scenario report still cannot satisfy native acceptance.
+    if (exit === 0)
+      expect(() => evaluatePickerReports([{ phase: "catalog", status: "fail" }])).toThrow();
+  },
+);
+it.each(["fail", "unknown"] as const)(
+  "retains the owned root when group absence is %s independently of exit 1",
+  async (groupAbsence) => {
+    const fixture = await phaseFixture(`${diagnostics}process.exitCode=1;`);
+    await expect(
+      fixture.run({ processAbsence: (pid: number) => (pid < 0 ? groupAbsence : "pass") }),
+    ).rejects.toThrow("scratch cleanup failed");
+    expect(fixture.observation).toMatchObject({
+      exitCode: 1,
+      processAbsence: "pass",
+      groupAbsence,
+    });
+    expect(
+      await NodeFSP.readFile(NodePath.join(fixture.output, "electron-catalog.log"), "utf8"),
+    ).toContain("known Electron error");
+    expect((await NodeFSP.lstat(fixture.root())).isDirectory()).toBe(true);
+    // The failed probe is synthetic. Confirm actual child/group exit before test-owned teardown.
+    expect(processAbsence(fixture.observation.pid!)).toBe("pass");
+    expect(processAbsence(-fixture.observation.pid!)).toBe("pass");
+  },
+);
+it.each([0, 1])(
+  "records an absent phase report without passing or hiding child exit %s",
+  async (exit) => {
+    const fixture = await phaseFixture(
+      `console.error("startup failure before report");process.exitCode=${exit};`,
+    );
+    await expect(fixture.run()).rejects.toThrow(exit === 1 ? "exited 1" : "ENOENT");
+    expect(fixture.observation.evidence).toEqual([
+      { file: "phase-catalog.json", status: "absent" },
+      { file: "electron-catalog.log", status: "copied" },
+      { file: "loader-catalog.json", status: "absent" },
+    ]);
+    expect(fixture.observation).toMatchObject({
+      exitCode: exit,
+      processAbsence: "pass",
+      groupAbsence: "pass",
+    });
+    expect(
+      await NodeFSP.readFile(NodePath.join(fixture.output, "electron-catalog.log"), "utf8"),
+    ).toContain("startup failure before report");
+    await expect(NodeFSP.lstat(fixture.root())).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+it.each([
+  { exit: 0, code: "ENOENT" },
+  { exit: 1, code: "EACCES" },
+])(
+  "retains uncopied diagnostics and primary failure for copy error after exit $exit ($code)",
+  async ({ exit, code }) => {
+    const fixture = await phaseFixture(`${diagnostics}process.exitCode=${exit};`);
+    const failure = await fixture
+      .run({
+        copyFile: async (source: string, destination: string) => {
+          if (source.endsWith("phase-catalog.json"))
+            throw Object.assign(new Error("known copy failure"), { code });
+          await NodeFSP.copyFile(source, destination);
+        },
+      })
+      .then(
+        () => {
+          throw new Error("copy failure passed");
+        },
+        (error: unknown) => error,
+      );
+    const detail = pickerErrorDetail(failure);
+    expect(JSON.stringify(detail)).toContain("known copy failure");
+    if (exit === 1) expect(detail.errors?.[0]?.errors?.[0]?.message).toContain("exited 1");
+    expect(fixture.observation).toMatchObject({
+      exitCode: exit,
+      processAbsence: "pass",
+      groupAbsence: "pass",
+    });
+    expect(fixture.observation.evidence).toMatchObject([
+      { file: "phase-catalog.json", status: "error" },
+      { status: "copied" },
+      { status: "copied" },
+    ]);
+    expect(
+      await NodeFSP.readFile(NodePath.join(fixture.root(), "phase-catalog.json"), "utf8"),
+    ).toContain("known catalog error");
+    expect(
+      await NodeFSP.readFile(NodePath.join(fixture.output, "electron-catalog.log"), "utf8"),
+    ).toContain("known Electron error");
+  },
+);
+it("closes a cancelled child before preserving its diagnostics and probing absence", async () => {
+  const fixture = await phaseFixture(
+    `${diagnostics}process.kill(process.ppid,"SIGUSR2");setInterval(()=>{},1000);`,
+  );
+  const controller = new AbortController();
+  const cancel = () => controller.abort(new Error("known cancellation"));
+  process.once("SIGUSR2", cancel);
+  try {
+    await expect(fixture.run({}, controller.signal)).rejects.toThrow("aborted");
+  } finally {
+    process.removeListener("SIGUSR2", cancel);
+  }
+  expect(fixture.observation).toMatchObject({
+    exitCode: null,
+    exitSignal: "SIGTERM",
+    processAbsence: "pass",
+    groupAbsence: "pass",
+  });
+  expect(
+    await NodeFSP.readFile(NodePath.join(fixture.output, "electron-catalog.log"), "utf8"),
+  ).toContain("known Electron error");
+  await expect(NodeFSP.lstat(fixture.root())).rejects.toMatchObject({ code: "ENOENT" });
+});
+it("preserves the startup log and spawn error when no child PID is available", async () => {
+  const fixture = await phaseFixture(diagnostics);
+  await NodeFSP.unlink(fixture.executable);
+  const error = await fixture.run().catch((error: unknown) => error);
+  expect(pickerErrorDetail(error).errors?.[0]?.errors?.[0]?.code).toBe("ENOENT");
+  expect(fixture.observation.pid).toBeUndefined();
+  expect(fixture.observation).toMatchObject({ processAbsence: "unknown", groupAbsence: "unknown" });
+  expect(fixture.observation.evidence).toContainEqual({
+    file: "electron-catalog.log",
+    status: "copied",
+  });
+  expect((await NodeFSP.lstat(fixture.root())).isDirectory()).toBe(true);
+});
+it("keeps a pre-launch cancellation primary and reports unavailable process identity", async () => {
+  const fixture = await phaseFixture(diagnostics),
+    controller = new AbortController();
+  controller.abort(new Error("cancelled before launch"));
+  const error = await fixture.run({}, controller.signal).catch((error: unknown) => error);
+  expect(pickerErrorDetail(error).errors?.[0]?.errors?.[0]?.message).toBe(
+    "cancelled before launch",
+  );
+  expect(fixture.observation.pid).toBeUndefined();
+  expect(fixture.observation.processAbsence).toBe("unknown");
+  expect(fixture.observation.groupAbsence).toBe("unknown");
+  expect(fixture.observation.evidence.every((file) => file.status === "absent")).toBe(true);
+  expect((await NodeFSP.lstat(fixture.root())).isDirectory()).toBe(true);
+});
+it("retains bounded nested aggregate, cause and errno detail", () => {
+  const cause = Object.assign(new Error("underlying loader error"), { code: "EIO" });
+  const detail = pickerErrorDetail(
+    new AggregateError(
+      [
+        new Error("phase failure", { cause }),
+        new AggregateError([new Error("copy failure")], "evidence failure"),
+      ],
+      "qualification failure",
+    ),
+  );
+  expect(detail).toMatchObject({
+    name: "AggregateError",
+    errors: [
+      { message: "phase failure", cause: { message: "underlying loader error", code: "EIO" } },
+      { message: "evidence failure", errors: [{ message: "copy failure" }] },
+    ],
+  });
+  const cycle = new Error("cycle");
+  cycle.cause = cycle;
+  expect(pickerErrorDetail(cycle).cause?.truncated).toBe(true);
+  expect(pickerErrorDetail(new Error("x".repeat(9000))).truncated).toBe(true);
 });
