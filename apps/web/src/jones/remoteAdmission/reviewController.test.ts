@@ -4,6 +4,7 @@ import {
   createActionFreeze,
   createReviewController,
   type Item,
+  type ChangeBatch,
   type Page,
   type ReviewClient,
 } from "@t3tools/client-runtime/jones/remoteAdmission/controller";
@@ -68,9 +69,9 @@ function fixture() {
     }),
     mutate: vi.fn(async () => ({})),
     head: vi.fn(async () => "current-head"),
-    changes: vi.fn(
+    changes: vi.fn<ReviewClient["changes"]>(
       async (_after, signal) =>
-        new Promise((_resolve, reject) =>
+        new Promise<ChangeBatch>((_resolve, reject) =>
           signal.addEventListener("abort", () => reject(new Error("aborted"))),
         ),
     ),
@@ -87,9 +88,9 @@ it("serializes an exact binding but commits an unrelated denial during a slow ap
   const f = fixture();
   await f.controller.load();
   let finish!: () => void;
-  f.client.mutate = vi.fn((input) =>
+  f.client.mutate = vi.fn<ReviewClient["mutate"]>((input) =>
     input.action === "decide" && input.input.id === a.record.id
-      ? new Promise((resolve) => {
+      ? new Promise<Awaited<ReturnType<ReviewClient["mutate"]>>>((resolve) => {
           finish = () => resolve({ item: { ...a, record: { ...a.record, status: "approved" } } });
         })
       : Promise.resolve({ item: { ...b, record: { ...b.record, status: "denied" } } }),
@@ -130,7 +131,7 @@ it("holds policy exclusively and never admits a decision across its barrier", as
   let finish!: () => void;
   const policy = f.controller.withPolicyBarrier(
     () =>
-      new Promise((resolve) => {
+      new Promise<void>((resolve) => {
         finish = resolve;
       }),
   );
@@ -184,15 +185,15 @@ it("prevents a page started before a decision from reviving the held control", a
   await f.controller.load();
   const old = f.controller.getSnapshot().page!;
   const finish: ((page: Page) => void)[] = [];
-  f.client.page = vi.fn((view) =>
+  f.client.page = vi.fn<ReviewClient["page"]>((view) =>
     view === "current"
-      ? new Promise((resolve) => {
+      ? new Promise<Page>((resolve) => {
           finish.push(resolve);
         })
       : Promise.resolve({ ...old, records: [], access: [] }),
   );
   const reading = f.controller.load();
-  f.client.mutate = vi.fn(async () => ({
+  f.client.mutate = vi.fn<ReviewClient["mutate"]>(async () => ({
     item: { ...a, record: { ...a.record, status: "approved" } },
   }));
   const decision = f.controller.mutate({
@@ -279,7 +280,11 @@ it("does not unlock a lost Restore from a revoked predecessor readback", async (
     features: new Set(["reviewV2", "grants", "grantRestore"]),
   });
   await f.controller.load();
-  f.client.lookupAccess = vi.fn(async () => ({ ...grant, state: "revoked", generation: 4 }));
+  f.client.lookupAccess = vi.fn<ReviewClient["lookupAccess"]>(async () => ({
+    ...grant,
+    state: "revoked",
+    generation: 4,
+  }));
   f.client.mutate = vi.fn(async () => {
     throw new Error("lost restore");
   });
@@ -397,9 +402,9 @@ it("does not persist a late reset head after the result subscription stops", asy
     write,
   });
   let finish!: (head: string) => void;
-  f.client.head = vi.fn(
+  f.client.head = vi.fn<ReviewClient["head"]>(
     () =>
-      new Promise((resolve) => {
+      new Promise<string>((resolve) => {
         finish = resolve;
       }),
   );

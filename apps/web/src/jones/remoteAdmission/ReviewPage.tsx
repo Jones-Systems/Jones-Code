@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { randomUUID } from "../../lib/utils";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   bindingKey,
@@ -417,7 +418,7 @@ export function ReviewPage({
                         action: "recheck",
                         id: item.record.id,
                         bindingDigest: item.record.bindingDigest,
-                        commandId: crypto.randomUUID(),
+                        commandId: randomUUID(),
                       })
                     }
                   >
@@ -711,7 +712,7 @@ function AccessDetail({
                 id: access.id,
                 expectedGeneration: access.generation,
                 durationSeconds: Number(duration) as Duration,
-                commandId: crypto.randomUUID(),
+                commandId: randomUUID(),
               })
             }
           >
@@ -754,7 +755,7 @@ function AccessDetail({
               action: "revoke",
               id: access.id,
               expectedGeneration: access.generation,
-              commandId: crypto.randomUUID(),
+              commandId: randomUUID(),
             })
           }
         >
@@ -791,7 +792,7 @@ function RetryControls({
             action: "retry",
             id: item.record.id,
             bindingDigest: item.record.bindingDigest,
-            commandId: crypto.randomUUID(),
+            commandId: randomUUID(),
             ...(grants && item.grantEligible && duration !== "once"
               ? { durationSeconds: Number(duration) as Duration }
               : {}),

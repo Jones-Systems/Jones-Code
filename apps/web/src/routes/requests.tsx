@@ -1,7 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { RequestsPage } from "../jones/remoteAdmission/RequestsPage";
 
-function validateRequestsSearch(raw: Record<string, unknown>) {
+function validateRequestsSearch(raw: Record<string, unknown>): {
+  receiver?: string | undefined;
+  request?: string | undefined;
+  binding?: string | undefined;
+  access?: string | undefined;
+} {
   const bounded = (value: unknown) =>
     typeof value === "string" && value.length > 0 && value.length <= 1024 ? value : undefined;
   return {
