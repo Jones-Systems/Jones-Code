@@ -15,6 +15,7 @@
     "apps/server/src/jones/workspaceRetirement/NativeDutyOwner.ts",
     "apps/server/src/jones/workspaceRetirement/NativeObservations.ts",
     "apps/server/src/jones/workspaceRetirement/Outcome.ts",
+    "apps/server/src/jones/workspaceRetirement/OwnerAction.test.ts",
     "apps/server/src/jones/workspaceRetirement/OwnerAction.ts",
     "apps/server/src/jones/workspaceRetirement/ProjectScriptObservation.node-test.mjs",
     "apps/server/src/jones/workspaceRetirement/ProjectScriptObservation.test.ts",
