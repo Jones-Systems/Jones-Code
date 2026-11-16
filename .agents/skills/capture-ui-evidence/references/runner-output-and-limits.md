@@ -76,6 +76,7 @@ Publish in this order:
    Repeat `--attach` for multiple images or videos. Without a body flag, the
    command preserves the body and appends hosted links. Prefer H.264 MP4 for
    recordings. See the [official CLI manual](https://cli.github.com/manual/gh_pr_edit).
+
 3. Read the complete published body back. To place the media, move the hosted
    links in that raw text, following the
    [published-body edit procedure](../../../../docs/operations/contributor-guidance.md#editing-a-published-description).
