@@ -1,9 +1,8 @@
-import { Maximize2, Minimize2 } from "lucide";
+import { Maximize2Icon, Minimize2Icon } from "lucide-react";
 import { useState, type ReactNode, type RefObject } from "react";
 import { ScrollArea } from "../../components/ui/scroll-area";
 import { getClientSettings } from "../../hooks/useSettings";
 import { observeResize } from "../../lib/observeResize";
-import { MorphIcon } from "../../components/MorphIcon";
 import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import "./markdownTables.css";
@@ -89,7 +88,7 @@ export function MarkdownTableExpansion({
                 />
               }
             >
-              <MorphIcon className="size-3" icon={expanded ? Minimize2 : Maximize2} />
+              {expanded ? <Minimize2Icon className="size-3" /> : <Maximize2Icon className="size-3" />}
             </TooltipTrigger>
             <TooltipPopup side="top">{expandLabel}</TooltipPopup>
           </Tooltip>
