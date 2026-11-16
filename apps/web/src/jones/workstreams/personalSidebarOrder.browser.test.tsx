@@ -51,8 +51,24 @@ vi.mock(import("~/state/server"), async (original) => {
   };
 });
 
-it("traverses displayed workstream groups then Unassigned and skips collapsed groups", async () => {
-  const threads = ["a1", "u1", "b1", "a2", "u2", "a3", "a4", "a5", "a6", "a7"].map((id) => ({
+async function withSidebar(
+  inspect: (fixture: {
+    router: ReturnType<typeof getRouter>;
+    rows: () => string[];
+    visit: (id: string) => Promise<void>;
+    step: (direction: "next" | "previous", expected: string) => Promise<void>;
+    threadIds: readonly string[];
+  }) => Promise<void>,
+) {
+  const threadIds = [
+    "a1",
+    "u1",
+    "b1",
+    "a2",
+    "u2",
+    ...Array.from({ length: 5 }, (_, index) => `a${index + 3}`),
+  ];
+  const threads = threadIds.map((id) => ({
     ...threadWithHistory(id, 1),
     runs: threadWithHistory(id, 1).runs.map((run) => ({
       ...run,
@@ -145,11 +161,9 @@ it("traverses displayed workstream groups then Unassigned and skips collapsed gr
     [...screen.container.querySelectorAll<HTMLElement>("[data-personal-thread]")].map(
       (row) => JSON.parse(row.dataset.personalThread!)[1] as string,
     );
-  await vi.waitFor(() => expect(rows()).toHaveLength(8), { timeout: 8000 });
-  const order = rows();
-  expect(order.slice(0, 5).every((id) => id.startsWith("a"))).toBe(true);
-  expect(order[5]).toBe("b1");
-  expect(order.slice(6).sort()).toEqual(["u1", "u2"]);
+  await vi.waitFor(() => expect(rows()).toHaveLength(8), {
+    timeout: 8000,
+  });
   const visit = async (id: string) =>
     router.navigate({
       to: "/$environmentId/$threadId",
@@ -166,54 +180,77 @@ it("traverses displayed workstream groups then Unassigned and skips collapsed gr
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${expected}`),
     );
   };
-  await visit(order[0]!);
-  for (const id of order.slice(1)) await step("next", id);
-  for (const id of order.slice(0, -1).reverse()) await step("previous", id);
-  const hiddenAlpha = threads.find(
-    (thread) => thread.id.startsWith("a") && !order.includes(thread.id),
-  )!;
-  await visit(hiddenAlpha.id);
-  await step("next", "b1");
-  await visit(hiddenAlpha.id);
-  await step("previous", order[4]!);
-  await userEvent.keyboard("{Meta>}6{/Meta}");
-  await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
-  await userEvent.click(
-    page.getByRole("button", { name: "Show all 7 threads in alpha", exact: true }),
-  );
-  const expandedOrder = rows();
-  expect(expandedOrder).toHaveLength(10);
-  await visit(expandedOrder[4]!);
-  await step("next", expandedOrder[5]!);
-  await step("next", expandedOrder[6]!);
-  await step("next", "b1");
-  await userEvent.keyboard("{Meta>}6{/Meta}");
-  await vi.waitFor(() =>
-    expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${expandedOrder[5]}`),
-  );
-  await userEvent.click(
-    page.getByRole("button", { name: "Show only 5 threads in alpha", exact: true }),
-  );
-  await userEvent.keyboard("{Meta>}6{/Meta}");
-  await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
-  await userEvent.click(page.getByRole("button", { name: "Collapse beta", exact: true }));
-  await visit(order[4]!);
-  await step("next", order[6]!);
-  await step("previous", order[4]!);
-  await visit("child");
-  await step("next", order[6]!);
-  await visit("child");
-  await step("previous", order[4]!);
-  await visit("b1");
-  await step("next", order[6]!);
-  await visit("b1");
-  await step("previous", order[4]!);
-  await userEvent.click(page.getByRole("button", { name: "Expand beta", exact: true }));
-  await step("next", "b1");
-  await userEvent.click(page.getByRole("button", { name: "Collapse Unassigned", exact: true }));
-  await step("next", "b1");
-  await userEvent.keyboard("{Meta>}1{/Meta}");
-  await vi.waitFor(() =>
-    expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[0]}`),
-  );
+  await inspect({ router, rows, visit, step, threadIds });
+}
+
+it("traverses displayed Workstreams then Unassigned and skips collapsed groups", async () => {
+  await withSidebar(async ({ router, rows, visit, step }) => {
+    const order = rows();
+    expect(order.slice(0, 5).every((id) => id.startsWith("a"))).toBe(true);
+    expect(order[5]).toBe("b1");
+    expect(order.slice(6).sort()).toEqual(["u1", "u2"]);
+    await visit(order[0]!);
+    await step("next", order[1]!);
+    await step("previous", order[0]!);
+    await visit(order[4]!);
+    for (const id of order.slice(5)) await step("next", id);
+    for (const id of order.slice(4, -1).reverse()) await step("previous", id);
+    await userEvent.click(page.getByRole("button", { name: "Collapse beta", exact: true }));
+    await visit(order[4]!);
+    await step("next", order[6]!);
+    await step("previous", order[4]!);
+    await visit("child");
+    await step("next", order[6]!);
+    await visit("child");
+    await step("previous", order[4]!);
+    await visit("b1");
+    await step("next", order[6]!);
+    await visit("b1");
+    await step("previous", order[4]!);
+    await userEvent.click(page.getByRole("button", { name: "Expand beta", exact: true }));
+    await step("next", "b1");
+    await userEvent.click(page.getByRole("button", { name: "Collapse Unassigned", exact: true }));
+    await step("next", "b1");
+    await userEvent.keyboard("{Meta>}1{/Meta}");
+    await vi.waitFor(() =>
+      expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[0]}`),
+    );
+  });
+});
+
+it("keeps next, previous and numeric jumps aligned with truncated and expanded rows", async () => {
+  await withSidebar(async ({ router, rows, visit, step, threadIds }) => {
+    const order = rows();
+    expect(order.slice(0, 5).every((id) => id.startsWith("a"))).toBe(true);
+    expect(order[5]).toBe("b1");
+    expect(order.slice(6).sort()).toEqual(["u1", "u2"]);
+    await visit(order[4]!);
+    await step("next", "b1");
+    await step("previous", order[4]!);
+    const hiddenAlpha = threadIds.find((id) => id.startsWith("a") && !order.includes(id))!;
+    await visit(hiddenAlpha);
+    await step("next", "b1");
+    await visit(hiddenAlpha);
+    await step("previous", order[4]!);
+    await userEvent.keyboard("{Meta>}6{/Meta}");
+    await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
+    await userEvent.click(
+      page.getByRole("button", { name: "Show all 7 threads in alpha", exact: true }),
+    );
+    const expandedOrder = rows();
+    expect(expandedOrder).toHaveLength(10);
+    await visit(expandedOrder[4]!);
+    await step("next", expandedOrder[5]!);
+    await step("next", expandedOrder[6]!);
+    await step("next", "b1");
+    await userEvent.keyboard("{Meta>}6{/Meta}");
+    await vi.waitFor(() =>
+      expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${expandedOrder[5]}`),
+    );
+    await userEvent.click(
+      page.getByRole("button", { name: "Show only 5 threads in alpha", exact: true }),
+    );
+    await userEvent.keyboard("{Meta>}6{/Meta}");
+    await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
+  });
 });
