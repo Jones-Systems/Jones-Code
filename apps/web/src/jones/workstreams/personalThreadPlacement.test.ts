@@ -184,18 +184,29 @@ describe("placePersonalThread", () => {
     expect(f.assignmentWrites).toEqual(["a"]);
   });
 
-  it("places a grouped thread into Unassigned and leaves its former group keys intact", async () => {
+  it("unassigns at natural order without honoring a row slot or changing any keys", async () => {
     const f = fixture(undefined, [
       ["moved", "a"],
       ["a1", "a"],
       ["a2", "a"],
       ["b1", "b"],
     ]);
-    expect(await placePersonalThread(f.input(null, "u1", true))).toBe(true);
+    expect(await placePersonalThread(f.input(null, "u1", false, { allowReorder: false }))).toBe(
+      true,
+    );
     expect(f.groupOrder(null)).toEqual(["u1", "moved", "u2"]);
     expect(f.groupOrder("a")).toEqual(["a1", "a2"]);
     expect([f.row("a1").activeOrderKey, f.row("a2").activeOrderKey]).toEqual([null, null]);
     expect(f.assignmentWrites).toEqual([null]);
+    expect(f.orderWrites).toEqual([]);
+  });
+
+  it.each([false, true])("ignores internal Unassigned row drops: after=%s", async (after) => {
+    const f = fixture(["moved", "u1", "u2"], []);
+    expect(await placePersonalThread(f.input(null, "u1", after))).toBe(true);
+    expect(f.groupOrder(null)).toEqual(["moved", "u1", "u2"]);
+    expect(f.assignmentWrites).toEqual([]);
+    expect(f.orderWrites).toEqual([]);
   });
 
   it("plans a pinned arrival as an active writable participant without unpinning it", async () => {

@@ -35,7 +35,9 @@ const shellKey = (thread: EnvironmentThreadShell): string =>
 // Assignment exceptions propagate to the caller: their membership outcome is unknown.
 // Order failures report only membership confirmed by a successful assignment response.
 export async function placePersonalThread(input: PersonalThreadPlacementInput): Promise<boolean> {
-  const { thread, destinationId, neighbor, controller } = input;
+  const { thread, destinationId, controller } = input;
+  // Unassigned retains its natural order; its rows never specify a manual slot.
+  const neighbor = destinationId === null ? null : input.neighbor;
   if (!input.canOperate(neighbor ? [thread, neighbor] : [thread])) return false;
   if (
     destinationId !== null &&

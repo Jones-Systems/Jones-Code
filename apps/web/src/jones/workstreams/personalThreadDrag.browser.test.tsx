@@ -219,6 +219,28 @@ describe("personal thread pointer placement", () => {
     expect(setup.activate).toHaveBeenCalledTimes(1);
   });
 
+  it.each([0.2, 0.8])(
+    "snaps internal Unassigned drops back without any mutation: %s",
+    async (fraction) => {
+      using setup = fixture();
+      setup.registry.set(setup.state, { ...setup.initial, assignmentsByThreadKey: new Map() });
+      await using screen = await render(setup.ui(), { container: container() });
+      const from = row(screen.container, source);
+      const original = from.getBoundingClientRect().top;
+      const at = point(row(screen.container, last), fraction);
+      await start(from, at);
+      expect(document.querySelector("[data-personal-thread-drag]")).not.toBeNull();
+      expect(insertion()).toBeNull();
+      await act(() => pointer(document, "pointerup", at, 0));
+      expect(document.querySelector("[data-personal-thread-drag]")).toBeNull();
+      expect(from.getBoundingClientRect().top).toBe(original);
+      expect(from.style.opacity).toBe("");
+      expect(setup.placeThread).not.toHaveBeenCalled();
+      expect(setup.controller.assign).not.toHaveBeenCalled();
+      expect(setup.reorder).not.toHaveBeenCalled();
+    },
+  );
+
   it("uses exact same-group slots and natural placement on a group header", async () => {
     using setup = fixture();
     await using screen = await render(setup.ui(), { container: container() });
@@ -235,15 +257,15 @@ describe("personal thread pointer placement", () => {
     expect(setup.placeThread).toHaveBeenLastCalledWith(source, "Drag Alpha", null, false);
   });
 
-  it("places a group card into Unassigned and appends at blank destination space", async () => {
+  it("unassigns without a row slot and appends within workstreams at blank space", async () => {
     using setup = fixture();
     await using screen = await render(setup.ui(), { container: container() });
     const unassignedRow = row(screen.container, source);
     const before = point(unassignedRow, 0.2);
     await start(row(screen.container, first), before);
-    expect(insertion()?.parentElement).toBe(unassignedRow);
+    expect(insertion()).toBeNull();
     await act(() => pointer(document, "pointerup", before, 0));
-    expect(setup.placeThread).toHaveBeenLastCalledWith(first, null, source, false);
+    expect(setup.placeThread).toHaveBeenLastCalledWith(first, null, null, false);
     const list = section(screen.container, "Drag Alpha").querySelector<HTMLElement>(
       "[data-personal-thread-list]",
     )!;
@@ -385,7 +407,7 @@ describe("personal thread pointer placement", () => {
   });
 
   it.each(["Drag Alpha", null])(
-    "accepts a pinned arrival before its existing group's first row: %s",
+    "returns a pinned arrival to its existing group with slots only for Workstreams: %s",
     async (destinationId) => {
       using setup = fixture();
       const pinned = { ...source, pinnedAt: "2026-11-12T12:00:00.000Z" };
@@ -408,14 +430,15 @@ describe("personal thread pointer placement", () => {
       await act(() => {
         expect(setup.externalDropRef.current!.locateExternal(at, pinned)).toBe(true);
       });
-      expect(insertion()?.dataset.personalThreadInsertion).toBe("before");
+      if (destinationId === null) expect(insertion()).toBeNull();
+      else expect(insertion()?.dataset.personalThreadInsertion).toBe("before");
       await act(async () => {
         expect(await setup.externalDropRef.current!.dropExternal(at, pinned)).toBe(true);
       });
       expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(
         pinned,
         destinationId,
-        first,
+        destinationId === null ? null : first,
         false,
       );
     },
