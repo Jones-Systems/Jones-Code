@@ -98,6 +98,8 @@ it.effect.each([11, 13])(
           .map(([id, name]) => [id, name] as const),
       );
       assert.deepEqual(yield* snapshotForeign(foreign), before);
+      assert.deepEqual(yield* sql`SELECT * FROM jones_remote_send_receipts`, []);
+      assert.deepEqual(yield* sql`PRAGMA foreign_key_list(jones_remote_send_receipts)`, []);
       assert.deepEqual(
         yield* sql`SELECT payload_json FROM orchestration_v2_projection_messages
           WHERE message_id = 'foreign-history-message'`,
@@ -159,6 +161,7 @@ it.effect("receiving startup preserves the single foreign 007 lookup index", () 
     yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (7, 'ThreadCreationLookupIndex')`;
     const before = yield* snapshotForeign(new Set(["idx_orch_events_thread_creation_lookup"]));
     yield* runMigrations();
+    assert.deepEqual(yield* sql`SELECT * FROM jones_remote_send_receipts`, []);
     assert.deepEqual(
       yield* snapshotForeign(new Set(["idx_orch_events_thread_creation_lookup"])),
       before,
@@ -211,6 +214,8 @@ it.effect.each([
         (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
         VALUES ('s1-needle', 'fixture-thread', 'user', 0, '2026-10-03', '2026-10-03', '{"text":"s1 needle","createdBy":"user"}')`;
       yield* runMigrations();
+      assert.deepEqual(yield* sql`SELECT * FROM jones_remote_send_receipts`, []);
+      assert.deepEqual(yield* sql`PRAGMA foreign_key_list(jones_remote_send_receipts)`, []);
       assert.deepEqual(yield* snapshotForeign(names), before);
       assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
       assert.deepEqual(yield* sql`PRAGMA foreign_keys`, [{ foreign_keys: 1 }]);

@@ -781,3 +781,22 @@ it.each([53, 54])("predicts the exact preview-%i reconciliation effects without 
     expect(NodeFS.readFileSync(databasePath)).toEqual(before);
   });
 });
+
+it("candidate registration predicts only Jones156 pending after the published155 ledger", () => {
+  withDatabase((databasePath) => {
+    const db = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      db.exec("DELETE FROM effect_sql_migrations; DELETE FROM jones_sql_migrations");
+      const upstream = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
+      for (const [id, name] of migrationManifest) upstream.run(id, name);
+      const jones = db.prepare("INSERT INTO jones_sql_migrations VALUES (?, ?)");
+      for (const [id, name] of jonesMigrationEntries.filter(([id]) => id <= 155)) jones.run(id, name);
+    } finally { db.close(); }
+    const before = NodeFS.readFileSync(databasePath);
+    expect(readMigrationPlan({
+      databasePath, upstream: migrationManifest,
+      jones: jonesMigrationEntries.map(([id, name]) => [id, name] as const),
+    })).toEqual({ status: "ready", migrationPlan: { pendingUpstream: [], pendingJones: [156] } });
+    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+  });
+});

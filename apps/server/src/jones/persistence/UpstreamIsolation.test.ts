@@ -10,6 +10,14 @@ import { runJonesMigrations } from "./JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "./JonesMigrations.ts";
 import isolationMigration from "./Migrations/105_JonesUpstreamReferenceIsolation.ts";
 
+const sendReceipt = {
+  command_id: "command", origin_namespace: "authenticated-peer:isolation",
+  client_request_id: "send-request", request_digest: "a".repeat(64), thread_id: "thread",
+  expected_created_at: "2026-11-16T20:00:00.000Z",
+  result_json: '{"threadId":"thread","messageId":"message","runId":"run","status":"running","delivery":"started"}',
+  recorded_at: "2026-11-16T20:14:00.000Z",
+};
+
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const upstreamThrough = migrationManifest.at(-1)![0];
 
@@ -287,6 +295,10 @@ it.effect("Jones migrations leave every upstream row unchanged with Jones links 
 
     // Schema and ledger checks alone let a Jones migration copy rows into upstream tables.
     assert.deepStrictEqual(yield* rows, before);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM jones_remote_send_receipts`, []);
+    yield* sql`INSERT INTO jones_remote_send_receipts ${sql.insert(sendReceipt)}`;
+    assert.deepStrictEqual(yield* rows, before);
+    assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_list(jones_remote_send_receipts)`, []);
   }).pipe(Effect.provide(memory)),
 );
 
@@ -297,11 +309,13 @@ it.effect("upstream pruning and deletes are not blocked by Jones evidence", () =
     yield* seedReferencedRows;
     yield* sql`INSERT INTO jones_workstreams_settlement_proofs VALUES ('command', 'thread', 'settle', '{}')`;
     yield* sql`INSERT INTO jones_queue_holds VALUES ('run', 'thread', 'stop', '2026-11-10T00:00:00.000Z')`;
+    yield* sql`INSERT INTO jones_remote_send_receipts ${sql.insert(sendReceipt)}`;
     const retainedTables = [
       ...rebuiltTables,
       ...rebuiltChildren,
       "jones_workstreams_settlement_proofs",
       "jones_queue_holds",
+      "jones_remote_send_receipts",
     ];
     const jones = yield* Effect.forEach(retainedTables, readTable);
 
