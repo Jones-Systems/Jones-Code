@@ -217,6 +217,7 @@ const hasLargeBinding = (params: ReadonlyArray<unknown>): boolean => {
 
 // A reader refuses a database outside WAL mode with this code; retrying cannot change that.
 const NOT_WAL = "ERR_SQLITE_NOT_WAL";
+const RETIREMENT_UNPROVED = "ERR_SQLITE_READER_RETIREMENT_UNPROVED";
 
 // Inline worker source also runs in bundles and single-executable builds without module files.
 const workerSource = `
@@ -387,6 +388,7 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
   readonly readOnly: boolean;
   readonly onReply?: (inTransaction: boolean | undefined) => void;
   readonly canClose?: () => boolean;
+  readonly onUnprovedRetirement?: () => void;
 }) {
   const label = options.role === "reader" ? "Database reader" : "Database writer";
   const readOnly = options.readOnly;
@@ -400,6 +402,24 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
   let nextRequestId = 0;
   // A replacement writer would lose the pragmas callers set on it, such as foreign_keys.
   let writerStopped: string | undefined;
+  // Retired generations remain owned until termination completes, even after current is cleared.
+  const ownedReaders = new Map<NodeWorkerThreads.Worker, Promise<boolean> | undefined>();
+  let readerRetirementUnproved = false;
+  const retire = (worker: NodeWorkerThreads.Worker): Promise<boolean> => {
+    if (current?.worker === worker) current = undefined;
+    const pending = ownedReaders.get(worker);
+    if (pending !== undefined) return pending;
+    const cleanup = retireReaderWorker(worker).then((proved) => {
+      if (proved) ownedReaders.delete(worker);
+      else {
+        readerRetirementUnproved = true;
+        options.onUnprovedRetirement?.();
+      }
+      return proved;
+    });
+    ownedReaders.set(worker, cleanup);
+    return cleanup;
+  };
 
   const start = () => {
     const worker = new NodeWorkerThreads.Worker(workerSource, {
@@ -412,6 +432,7 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
         prepareCacheSize: 200,
       },
     });
+    if (options.role === "reader") ownedReaders.set(worker, undefined);
     let announce: (startup: WorkerStartup) => void = () => {};
     const started = new Promise<WorkerStartup>((resolve) => {
       announce = resolve;
@@ -427,10 +448,12 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
       }
     >();
     const stop = (message: string) => {
+      if (stoppedMessage !== undefined) return;
       stoppedMessage = message;
       if (options.role === "writer") writerStopped = message;
       announce({ type: "unavailable", message });
       if (current?.worker === worker) current = undefined;
+      if (options.role === "reader") void retire(worker);
       for (const [id, request] of pending) {
         request.resume(
           request.endsTransaction
@@ -539,6 +562,14 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
 
   yield* Effect.addFinalizer(() =>
     Effect.promise(async () => {
+      if (options.role === "reader") {
+        const results = await Promise.all([...ownedReaders.keys()].map(retire));
+        if (readerRetirementUnproved || results.some((proved) => !proved)) {
+          options.onUnprovedRetirement?.();
+          throw new Error("SQLite reader termination remains unproved");
+        }
+        return;
+      }
       const open = current;
       if (open === undefined) return;
       if (options.role === "writer") {
@@ -554,12 +585,16 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
     }),
   );
 
-  const retire = (worker: NodeWorkerThreads.Worker) => {
-    if (current?.worker === worker) current = undefined;
-    void worker.terminate();
-  };
-
-  return Effect.suspend((): Effect.Effect<Connection, SqlError> => {
+  const acquire: Effect.Effect<Connection, SqlError> = Effect.suspend(() => {
+    if (options.role === "reader") {
+      if (readerRetirementUnproved) return Effect.fail(failedWith({
+        message: "Database reader termination remains unproved", code: RETIREMENT_UNPROVED,
+      }, "open"));
+      const pending = [...ownedReaders.values()].filter((entry) => entry !== undefined);
+      if (pending.length > 0) return Effect.withFiber((fiber) =>
+        (Context.get(fiber.context, ReadOnly) ?? identity)(Effect.promise(() => Promise.all(pending))),
+      ).pipe(Effect.andThen(acquire));
+    }
     if (current === undefined && writerStopped !== undefined) {
       return Effect.fail(failedWith({ message: writerStopped }, "execute"));
     }
@@ -600,20 +635,25 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
       },
     );
   });
+  return acquire;
 });
 
 const startFailure = (error: SqlError) => {
   const cause = error.reason.cause;
   return {
     reason: cause instanceof Error ? cause.message : error.message,
-    permanent: Predicate.hasProperty(cause, "code") && cause.code === NOT_WAL,
+    permanent: Predicate.hasProperty(cause, "code") && (cause.code === NOT_WAL || cause.code === RETIREMENT_UNPROVED),
   };
 };
 
 // A reader that cannot start turns off the whole pool, so routing never picks a dead slot, until
 // one background retry starts it again.
-const makeReader = Effect.fnUntraced(function* (filename: string, pool: { unavailable: boolean }) {
-  const acquire = yield* makeWorkerConnection({ filename, role: "reader", readOnly: true });
+const makeReader = Effect.fnUntraced(function* (
+  filename: string,
+  pool: { unavailable: boolean },
+  onUnprovedRetirement: () => void,
+) {
+  const acquire = yield* makeWorkerConnection({ filename, role: "reader", readOnly: true, onUnprovedRetirement });
   const scope = yield* Effect.scope;
   const context = yield* Effect.context<never>();
 
@@ -927,11 +967,10 @@ const makeJonesReader = Effect.fnUntraced(function* (
       current = undefined;
       reader?.stop("Database reader scope closed");
       if (reader !== undefined) {
-        if (options.readerPool) retirementProved = await retireReaderWorker(reader.worker);
-        else await reader.worker.terminate();
+        retirementProved = await retireReaderWorker(reader.worker);
       }
       await retiring;
-      if (options.readerPool && !retirementProved) {
+      if (!retirementProved) {
         onUnprovedRetirement();
         throw new Error("SQLite reader termination remains unproved");
       }
@@ -950,16 +989,7 @@ const makeJonesReader = Effect.fnUntraced(function* (
         retirementProved = false;
         // Retire before terminating: a queued ready/reply cannot revive this connection.
         reader.stop(reason);
-        const cleanup = (
-          options.readerPool
-            ? retireReaderWorker(reader.worker)
-            : Promise.resolve()
-                .then(() => reader.worker.terminate())
-                .then(
-                  () => true,
-                  () => false,
-                )
-        ).then((proved) => {
+        const cleanup = retireReaderWorker(reader.worker).then((proved) => {
           retirementProved = proved;
           // Failed or timed-out cleanup consumes the slot for the rest of this scope.
           if (!proved) {
@@ -1029,14 +1059,12 @@ const makeJonesReader = Effect.fnUntraced(function* (
   });
   const managed = <A>(effect: Effect.Effect<A>) =>
     management === undefined ? effect : management.withPermits(1)(effect);
-  const coldAcquire = managed(
-    options.readerPool
-      ? acquire.pipe(
-          Effect.onInterrupt(() => turnOff(current, "SQLite reader startup interrupted", false)),
-          Effect.ensuring(awaitRetirement),
-        )
-      : acquire,
+  const interruptibleAcquire = acquire.pipe(
+    Effect.onInterrupt(() => turnOff(current, "SQLite reader startup interrupted", false)),
   );
+  const coldAcquire = managed(options.readerPool
+    ? interruptibleAcquire.pipe(Effect.ensuring(awaitRetirement))
+    : interruptibleAcquire);
   const readyConnection = () =>
     current?.ready() && !closed && !unavailable && retiring === undefined
       ? current.connection
@@ -1959,8 +1987,8 @@ const make = Effect.fn("makeWithDatabase")(function* (
           Effect.map(
             Effect.all([
               options.readerStartupTimeout !== undefined || options.readerFailureMode !== undefined
-                ? Effect.map(makeJonesReader(options), (slot) => slot.acquire)
-                : makeReader(options.filename, readerPool),
+                ? Effect.map(makeJonesReader(options, 0, undefined, () => { readerRetirementUncertain = true; }), (slot) => slot.acquire)
+                : makeReader(options.filename, readerPool, () => { readerRetirementUncertain = true; }),
               Semaphore.make(1),
             ]),
             ([acquire, lock]) => ({
