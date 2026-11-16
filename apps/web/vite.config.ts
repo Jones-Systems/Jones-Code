@@ -28,6 +28,7 @@ import { resolveTaggedSourceVersion } from "../../scripts/lib/tagged-source-vers
 import { thirdPartyLicensesPlugin } from "../../scripts/lib/third-party-licenses";
 import { tailwindPlugins } from "./vite/tailwind";
 import { warmBundledDevPlugin } from "./vite/warmBundledDev";
+import { wordCiTraceCommand } from "./src/jones/wordCiTrace";
 import { formatAppDisplayName, resolveWebAppStageLabel } from "./src/branding.logic";
 
 const repoEnv = loadRepoEnv();
@@ -149,6 +150,7 @@ const browserTestProject = {
       instances: [{ browser: "chromium" }],
       screenshotFailures: false,
       commands: {
+        wordCiTrace: wordCiTraceCommand,
         // Playwright's mouse outlives each test, so whatever mounts under its last
         // position starts hovered. test/browserSetup.ts parks it off the page before each test.
         resetPointer: async ({ page }) => {
