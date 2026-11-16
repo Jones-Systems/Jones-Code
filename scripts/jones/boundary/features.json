@@ -187,6 +187,7 @@
     {
       "id": "workspace-retirement-qualification",
       "tests": [
+        "apps/server/src/jones/workspaceRetirement/Qualification.test.ts",
         "apps/server/src/jones/workspaceRetirement/Conformance.test.ts",
         "apps/server/src/jones/workspaceRetirement/Behavior.test.ts",
         "apps/server/src/jones/workspaceRetirement/CompletionObservation.test.ts",

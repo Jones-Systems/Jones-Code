@@ -2,7 +2,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { canonical, exists, git, inside, readBounded, sha256 } from "./Filesystem.ts";
-import { binding, type Binding } from "./OutputAttestation.ts";
+import { binding, incarnation, type Binding } from "./OutputAttestation.ts";
 import {
   classifyIgnored,
   verifyPreservation,
@@ -44,6 +44,82 @@ export interface ReasonDetail {
   lineage: readonly Readonly<Record<string, string>>[];
   nextAction: string;
 }
+type ObservationStage =
+  | "identity"
+  | "registration"
+  | "head"
+  | "tracked_status"
+  | "index_flags"
+  | "operation_state"
+  | "ref_containment"
+  | "candidate_reflog"
+  | "reflog_containment"
+  | "object_dependencies"
+  | "submodules"
+  | "worktree_config"
+  | "ignored_content"
+  | "preservation"
+  | "consumers"
+  | "identity_recheck";
+type ObservationErrorClass =
+  | "timeout"
+  | "bounds"
+  | "malformed"
+  | "permission_denied"
+  | "not_found"
+  | "native_read"
+  | "native_command"
+  | "unexpected";
+class ObservationError extends Error {
+  readonly errorClass: ObservationErrorClass;
+  constructor(errorClass: ObservationErrorClass) {
+    super(errorClass);
+    this.errorClass = errorClass;
+  }
+}
+function errorClass(cause: unknown): ObservationErrorClass {
+  if (cause instanceof ObservationError) return cause.errorClass;
+  const error = cause as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
+  if (error?.code === "ETIMEDOUT" || (error?.killed && error.signal === "SIGTERM"))
+    return "timeout";
+  if (
+    error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+    (cause instanceof Error && cause.message === "bound_exceeded")
+  )
+    return "bounds";
+  if (["EACCES", "EPERM"].includes(error?.code ?? "")) return "permission_denied";
+  if (error?.code === "ENOENT") return "not_found";
+  if (typeof error?.code === "number") return "native_command";
+  if (typeof error?.code === "string" && /^E[A-Z]+$/.test(error.code)) return "native_read";
+  return "unexpected";
+}
+
+// Read only the carrier that Git removes with this checkout. Common branch and
+// other-checkout reflogs survive removal. Keep both ends of every record: an old
+// tip may have no later entry after expiry or a rewritten reflog.
+async function candidateReflog(admin: string): Promise<string[]> {
+  let bytes: Buffer;
+  try {
+    bytes = await readBounded(NodePath.join(admin, "logs/HEAD"), 1024 * 1024);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw cause;
+  }
+  const tips = new Set<string>();
+  for (const line of bytes.toString().split("\n")) {
+    if (!line) continue;
+    const record =
+      /^(?<old>[a-f0-9]{40}|[a-f0-9]{64}) (?<next>[a-f0-9]{40}|[a-f0-9]{64}) [^\0\n\t]+ -?\d+ [+-]\d{4}(?:\t[^\0\n]*)?$/.exec(
+        line,
+      )?.groups;
+    if (!record || record.old!.length !== record.next!.length)
+      throw new ObservationError("malformed");
+    for (const tip of [record.old!, record.next!]) if (!/^0+$/.test(tip)) tips.add(tip);
+    if (tips.size > 1000) throw new ObservationError("bounds");
+  }
+  return [...tips].sort();
+}
+
 export interface QualificationResult {
   schema: "workspace-qualification/v1";
   authority_effect: "none";
@@ -63,6 +139,7 @@ export interface QualificationResult {
   sparsePatterns?: string;
   fingerprint?: string;
   observationMs: number;
+  observationFailure?: { stage: ObservationStage; errorClass: ObservationErrorClass };
   details?: ReasonDetail[];
   lineageObservation?: Awaited<ReturnType<typeof completionLineage>>;
 }
@@ -79,13 +156,18 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     decision: "unknown",
     observationMs: 0,
   };
+  let stage: ObservationStage = "identity";
   const g = async (args: string[]) => {
     const remaining = 60000 - (performance.now() - started);
-    if (remaining <= 0) throw new Error("bound_exceeded");
+    if (remaining <= 0) throw new ObservationError("timeout");
     return git(input.worktree, args, Math.min(10000, remaining));
   };
   const finish = () => {
-    if (performance.now() - started > 60000) unknown.add("bound_exceeded");
+    if (performance.now() - started > 60000) {
+      unknown.add("bound_exceeded");
+      unknown.add("observation_failed");
+      result.observationFailure ??= { stage, errorClass: "timeout" };
+    }
     result.reasons = [...new Set([...reasons, ...unknown])].sort();
     result.outcome = reasons.size ? "hold" : unknown.size ? "unknown" : "retirable";
     if (result.outcome !== "retirable") result.level = null;
@@ -141,18 +223,23 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
                   ? "missing_proof"
                   : "protection",
           fact:
-            reason === "unattested_ignored"
-              ? "Ignored content has no verified producer baseline or applicable coverage."
-              : reason === "attestation_mismatch"
-                ? "Current content differs from the existing producer baseline."
-                : reason,
-          missingFact: missing
-            ? reason === "unattested_ignored"
-              ? "producer_content_baseline_or_exact_coverage_or_preservation"
-              : reason
-            : unavailable
-              ? "fresh_complete_target_observation"
-              : null,
+            reason === "observation_failed" && result.observationFailure
+              ? `Qualification observation failed at ${result.observationFailure.stage} (${result.observationFailure.errorClass}).`
+              : reason === "unattested_ignored"
+                ? "Ignored content has no verified producer baseline or applicable coverage."
+                : reason === "attestation_mismatch"
+                  ? "Current content differs from the existing producer baseline."
+                  : reason,
+          missingFact:
+            reason === "observation_failed" && result.observationFailure
+              ? `fresh_complete_${result.observationFailure.stage}_observation`
+              : missing
+                ? reason === "unattested_ignored"
+                  ? "producer_content_baseline_or_exact_coverage_or_preservation"
+                  : reason
+                : unavailable
+                  ? "fresh_complete_target_observation"
+                  : null,
           lineage,
           nextAction: active
             ? "Resolve the named live consumer or actual producer obligation, then re-observe this target."
@@ -200,6 +287,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       reasons.add("primary_checkout");
       return finish();
     }
+    stage = "registration";
     const registrations = (await g(["worktree", "list", "--porcelain", "-z"]))
       .toString()
       .split("\0\0")
@@ -220,10 +308,18 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     if (own?.locked) reasons.add("locked");
     if (input.projectRoots.some((root) => inside(NodePath.resolve(root), current.path)))
       reasons.add("project_root");
+    stage = "head";
     result.head = (await g(["rev-parse", "HEAD"])).toString().trim();
     result.branch =
-      (await g(["symbolic-ref", "-q", "HEAD"]).catch(() => Buffer.alloc(0))).toString().trim() ||
-      null;
+      (
+        await g(["symbolic-ref", "-q", "HEAD"]).catch((cause: unknown) => {
+          if ((cause as { code?: number }).code === 1) return Buffer.alloc(0);
+          throw cause;
+        })
+      )
+        .toString()
+        .trim() || null;
+    stage = "tracked_status";
     const status = (
       await g([
         "-c",
@@ -259,6 +355,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       )
     )
       reasons.add("untracked");
+    stage = "index_flags";
     const flags = (await g(["ls-files", "-v", "-z"]))
       .toString()
       .split("\0")
@@ -281,6 +378,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
         const content = await readBounded(NodePath.join(current.path, path), 16 * 1024 * 1024);
         if (!content.equals(await g(["cat-file", "blob", object[1]!]))) reasons.add("index_flags");
       }
+    stage = "operation_state";
     for (const file of [
       "MERGE_HEAD",
       "CHERRY_PICK_HEAD",
@@ -298,14 +396,19 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       input.durableRepositories.includes(current.git_common_dir) &&
       !inside(current.git_common_dir, current.path) &&
       !input.temporaryRoots.some((root) => inside(current.git_common_dir, root));
+    stage = "ref_containment";
     const containing = (await g(["for-each-ref", "--contains", result.head, "--format=%(refname)"]))
       .toString()
       .trim()
       .split("\n")
       .filter(Boolean);
+    // The executor creates these after final qualification. They preserve objects
+    // but must not change this candidate's containment comparison during removal.
+    const ownRecovery = `refs/retired-worktrees/${incarnation(current)}/`;
     const other = containing.filter(
       (ref) =>
         ref !== result.branch &&
+        !ref.startsWith(ownRecovery) &&
         !ref.startsWith("refs/worktree/") &&
         !ref.startsWith("refs/bisect/"),
     );
@@ -315,14 +418,9 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       reasons.add("repository_durability_unproven");
     }
     result.level = other.length ? "contained" : "branch-retained";
-    const tips = [
-      ...new Set(
-        (await g(["reflog", "show", "--all", "--format=%H"]))
-          .toString()
-          .split("\n")
-          .filter(Boolean),
-      ),
-    ];
+    stage = "candidate_reflog";
+    const tips = await candidateReflog(current.git_dir);
+    stage = "reflog_containment";
     const orphan: string[] = [];
     for (const tip of tips)
       if (!(await g(["for-each-ref", "--contains", tip, "--format=%(refname)"])).length) {
@@ -333,6 +431,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     result.preservationTips = [
       ...new Set([...orphan, ...(!result.branch && !other.length ? [result.head] : [])]),
     ];
+    stage = "object_dependencies";
     const alternates = NodePath.join(current.git_common_dir, "objects/info/alternates");
     if (await exists(alternates))
       for (const alternate of (await readBounded(alternates, 65536))
@@ -346,6 +445,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
         )
           reasons.add("object_dependency");
       }
+    stage = "submodules";
     const index = (await g(["ls-files", "--stage", "-z"])).toString().split("\0").filter(Boolean);
     if (index.length > 1000000) unknown.add("bound_exceeded");
     for (const line of index)
@@ -363,6 +463,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     ])
       if ((await exists(modules)) && (await NodeFSP.readdir(modules)).length)
         reasons.add("submodule_gitdirs");
+    stage = "worktree_config";
     result.capturedConfig = {};
     const config = NodePath.join(current.git_dir, "config.worktree");
     if (await exists(config)) {
@@ -386,6 +487,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     }
     if (input.nativeRecreation === "unsupported") reasons.add("native_recreation_unsupported");
     if (input.nativeRecreation === "unknown") unknown.add("native_evidence_unavailable");
+    stage = "ignored_content";
     const ignoredRaw = (
       await g(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])
     )
@@ -412,6 +514,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       if (classified.reason)
         (classified.outcome === "unknown" ? unknown : reasons).add(classified.reason);
     }
+    stage = "preservation";
     for (const record of input.preservations ?? [])
       if (
         !(await verifyPreservation(
@@ -422,6 +525,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
         ))
       )
         reasons.add("preservation_unverified");
+    stage = "consumers";
     const running = NodePath.join(current.path, ".t3/setup-running");
     if (await exists(running)) reasons.add("setup_unfinalized");
     if (await exists(NodePath.join(current.path, ".t3/setup-unfinalized")))
@@ -430,10 +534,13 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     result.consumers = consumerDecision(current.path, input.consumers);
     result.consumers.holds.forEach((reason) => reasons.add(reason));
     result.consumers.unknown.forEach((reason) => unknown.add(reason));
+    stage = "identity_recheck";
     if (canonical(await binding(current.path)) !== canonical(current))
       reasons.add("identity_mismatch");
     return finish();
   } catch (cause) {
+    result.observationFailure = { stage, errorClass: errorClass(cause) };
+    unknown.add("observation_failed");
     unknown.add(
       cause instanceof Error && cause.message === "bound_exceeded"
         ? "bound_exceeded"
