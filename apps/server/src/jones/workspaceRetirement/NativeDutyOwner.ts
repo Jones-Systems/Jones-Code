@@ -16,7 +16,13 @@ export type NativeDutyOwner =
       start: string;
       session: string;
     }
-  | { schema: "workspace-duty-owner/v1"; type: "unresolved"; reason: string; nextAction: string };
+  | {
+      schema: "workspace-duty-owner/v1";
+      type: "unresolved";
+      host?: Host;
+      reason: string;
+      nextAction: string;
+    };
 export interface NativeOwnerIO {
   host: () => Promise<Host>;
   processes: () => Promise<string>;
@@ -61,13 +67,24 @@ function processes(value: string) {
     return { pid: Number(match[1]), session: match[2]!, start: match[3]! };
   });
 }
-export const unresolvedOwner = (reason: string): NativeDutyOwner => ({
+export const unresolvedOwner = (reason: string, host?: Host): NativeDutyOwner => ({
+  ...(host === undefined ? {} : { host }),
   schema: "workspace-duty-owner/v1",
   type: "unresolved",
   reason,
   nextAction:
     "Use the named native session/terminal owner to observe its process incarnation and isolated session, or record actual completion/drain. Server PID absence does not resolve this child duty.",
 });
+export async function captureUnresolvedOwner(
+  reason: string,
+  io: NativeOwnerIO = nativeIO,
+): Promise<NativeDutyOwner> {
+  try {
+    return unresolvedOwner(reason, await io.host());
+  } catch {
+    return unresolvedOwner(reason);
+  }
+}
 export async function inProcessOwner(nonce: string): Promise<NativeDutyOwner> {
   try {
     return {
@@ -125,7 +142,7 @@ export async function observeNativeOwner(
   io: NativeOwnerIO = nativeIO,
 ): Promise<"verified_absent" | "present" | "unknown"> {
   try {
-    if (owner.schema !== "workspace-duty-owner/v1" || owner.type === "unresolved") return "unknown";
+    if (owner.schema !== "workspace-duty-owner/v1" || owner.host === undefined) return "unknown";
     if (
       ![owner.host.host, owner.host.boot_id, owner.host.process_start].every(
         (v) => typeof v === "string" && v.length > 0,
@@ -154,6 +171,7 @@ export async function observeNativeOwner(
       return "unknown";
     // A verified different boot on the same host excludes all prior-boot children.
     if (host.boot_id !== owner.host.boot_id) return "verified_absent";
+    if (owner.type === "unresolved") return "unknown";
     const rows = processes(await io.processes());
     // An in-process job may be awaiting a spawned Git/setup child. Its server's
     // disappearance cannot establish child drain. Actual completion releases it;

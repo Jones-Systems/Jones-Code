@@ -5490,6 +5490,19 @@
         "vp run --filter @t3tools/desktop typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-workspace-session-duty",
+      "tests": [
+        "apps/server/src/jones/workspaceRetirement/SessionDuty.test.ts",
+        "apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/workspaceRetirement/SessionDuty.test.ts --maxWorkers=1 --no-file-parallelism",
+        "node --test --test-concurrency=1 apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
