@@ -1,15 +1,22 @@
 import { ComposerEffortColumn } from "../../components/chat/ComposerModelEffort";
 import "~/index.css";
 import { act, render as renderTest, type Screen } from "../../../test/render";
-import { createRef, type ComponentProps } from "react";
+import { createRef, useRef, useState, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderOptionDescriptor,
+  type ServerProvider,
 } from "@t3tools/contracts";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
+import { deriveProviderInstanceEntries } from "../../providerInstances";
+import { ComposerShortcutRails } from "./ComposerShortcutPlate";
+import { ProviderInstanceShortcuts } from "./ProviderInstanceShortcuts";
 import { ReasoningEffortShortcuts } from "./ReasoningEffortShortcuts";
+import { useComposerShortcutRails } from "./composerShortcutRails";
 import {
   useTraitsSelection,
   readPromptUltrathink,
@@ -549,3 +556,213 @@ it("preserves Claude body locks and strips the prefix on same- and cross-model e
   await act(() => familyButton("Claude sonnet, High reasoning").click());
   expect(onProviderModelSelect).toHaveBeenCalledTimes(1);
 });
+
+const wrappingEffort = {
+  ...effort,
+  options: [
+    ...effort.options,
+    { id: "adaptive", label: "Adaptive model supplied effort with an unusuallylongunbrokenlabel" },
+  ],
+};
+const genericModels = [
+  {
+    slug: "test-model",
+    name: "Test",
+    isCustom: false,
+    capabilities: { optionDescriptors: [wrappingEffort, fast] },
+  },
+];
+
+function ShortcutRailsFixture({
+  width,
+  height,
+  codex,
+  onAccountSelect,
+  onProviderModelSelect,
+}: {
+  width: number;
+  height: number;
+  codex: boolean;
+  onAccountSelect: ComponentProps<typeof ProviderInstanceShortcuts>["onSelect"];
+  onProviderModelSelect: ComponentProps<typeof ReasoningEffortShortcuts>["onProviderModelSelect"];
+}) {
+  const [workspace, setWorkspace] = useState<HTMLDivElement | null>(null);
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const bandRef = useRef<HTMLDivElement>(null);
+  const accountGroupRef = useRef<HTMLDivElement>(null);
+  const effortGroupRef = useRef<HTMLDivElement>(null);
+  const rails = useComposerShortcutRails({
+    host,
+    workspace,
+    formRef,
+    bandRef,
+    accountGroupRef,
+    effortGroupRef,
+    eligible: true,
+    contentKey: codex,
+  });
+  const provider = ProviderDriverKind.make(codex ? "codex" : "opencode");
+  const models = codex ? familyModels : genericModels;
+  const model = models[0]!.slug;
+  const entries = deriveProviderInstanceEntries(
+    Array.from(
+      { length: 9 },
+      (_, index) =>
+        ({
+          instanceId: index === 0 ? instanceId : ProviderInstanceId.make(`account-${index + 1}`),
+          driver: provider,
+          displayName: `Account ${index + 1}`,
+          enabled: true,
+          installed: true,
+          status: "ready",
+          version: null,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-11-16T00:00:00.000Z",
+          models,
+          slashCommands: [],
+          skills: [],
+        }) satisfies ServerProvider,
+    ),
+  );
+  return (
+    <div ref={setWorkspace} style={{ width, height, position: "relative" }}>
+      <div data-chat-composer-overlay style={{ position: "absolute", bottom: 0, width: "100%" }}>
+        <form ref={formRef} style={{ height: 80 }}>
+          <textarea aria-label="Draft" />
+        </form>
+        <div ref={setHost}>
+          <ComposerShortcutRails
+            bandRef={bandRef}
+            {...rails}
+            accounts={
+              <ProviderInstanceShortcuts
+                instanceEntries={entries}
+                settings={DEFAULT_UNIFIED_SETTINGS}
+                activeInstanceId={instanceId}
+                model={model}
+                lockedProvider={null}
+                lockedContinuationGroupKey={null}
+                disabled={false}
+                visible={rails.visible}
+                groupRef={accountGroupRef}
+                getModelDisabledReason={() => null}
+                onSelect={onAccountSelect}
+              />
+            }
+            effort={
+              <ReasoningEffortShortcuts
+                provider={provider}
+                instanceId={instanceId}
+                draftId={draftId}
+                model={model}
+                models={models}
+                visible={rails.visible}
+                groupRef={effortGroupRef}
+                onProviderModelSelect={onProviderModelSelect}
+              />
+            }
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function expectContained(inner: DOMRect, outer: DOMRect) {
+  // Browser layout rounds scroll dimensions to whole pixels but retains fractional text bounds.
+  expect(inner.left).toBeGreaterThanOrEqual(outer.left - 1);
+  expect(inner.right).toBeLessThanOrEqual(outer.right + 1);
+  expect(inner.top).toBeGreaterThanOrEqual(outer.top - 1);
+  expect(inner.bottom).toBeLessThanOrEqual(outer.bottom + 1);
+}
+
+it.each([320, 380, 620, 900])(
+  "keeps all nine accounts and wrapped Codex/generic efforts visible without scrolling at lane width %i",
+  async (width) => {
+    await using _fixture = await setupTest();
+    const originalViewport = { width: innerWidth, height: innerHeight };
+    try {
+      await page.viewport(width + 32, 1000);
+      await document.fonts.ready;
+      for (const codex of [true, false]) {
+        const onAccountSelect = vi.fn();
+        const onProviderModelSelect = vi.fn();
+        for (const height of [240, 800]) {
+          await act(async () =>
+            await root.rerender(
+              <ShortcutRailsFixture
+                width={width}
+                height={height}
+                codex={codex}
+                onAccountSelect={onAccountSelect}
+                onProviderModelSelect={onProviderModelSelect}
+              />,
+            ),
+          );
+          const band = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-rails]")!;
+          const content = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-content]")!;
+          await expect.poll(() => band.getBoundingClientRect().height).toBeGreaterThan(0);
+          await expect
+            .poll(() => band.getBoundingClientRect().height)
+            .toBe(content.getBoundingClientRect().height);
+          const bounds = band.getBoundingClientRect();
+          expect(bounds.width).toBe(width);
+          expect(getComputedStyle(band).overflowX).toBe("visible");
+          expect(getComputedStyle(band).overflowY).toBe("visible");
+          const elements = [
+            band,
+            ...band.querySelectorAll<HTMLElement>(
+              "[data-chat-composer-shortcut-content], [data-composer-shortcut-group], [data-composer-shortcut-plate], button",
+            ),
+          ];
+          for (const element of elements) {
+            expect(element.getBoundingClientRect().height).toBeGreaterThan(0);
+            expectContained(element.getBoundingClientRect(), bounds);
+            expect(element.scrollWidth).toBeLessThanOrEqual(element.clientWidth + 1);
+            expect(element.scrollHeight).toBeLessThanOrEqual(element.clientHeight + 1);
+          }
+          const accounts = band.querySelectorAll<HTMLButtonElement>(
+            '[aria-label="Provider accounts"] button',
+          );
+          const efforts = band.querySelectorAll<HTMLButtonElement>(
+            '[data-composer-shortcut-group="effort"] button',
+          );
+          expect(accounts).toHaveLength(9);
+          expect(efforts).toHaveLength(codex ? 6 : 4);
+          for (const button of efforts) {
+            const text = document.createRange();
+            text.selectNodeContents(button);
+            for (const rect of text.getClientRects()) {
+              expectContained(rect, button.getBoundingClientRect());
+            }
+          }
+          for (const button of [accounts[8]!, efforts[efforts.length - 1]!]) {
+            const rect = button.getBoundingClientRect();
+            const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+            expect(hit === button || button.contains(hit)).toBe(true);
+            await userEvent.click(button);
+          }
+          expect(onAccountSelect).toHaveBeenLastCalledWith(
+            ProviderInstanceId.make("account-9"),
+            codex ? "gpt-6.1-sol" : "test-model",
+          );
+          if (codex) {
+            expect(onProviderModelSelect).toHaveBeenLastCalledWith(instanceId, "gpt-6-astra", {
+              effort: { id: "reasoningEffort", value: "xhigh" },
+            });
+          } else {
+            expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "adaptive" });
+          }
+          const high = Array.from(efforts).find((button) => button.textContent === "High")!;
+          high.focus();
+          expect(document.activeElement).toBe(high);
+          await userEvent.keyboard("{Enter}");
+          expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "high" });
+        }
+      }
+    } finally {
+      await page.viewport(originalViewport.width, originalViewport.height);
+    }
+  },
+);
