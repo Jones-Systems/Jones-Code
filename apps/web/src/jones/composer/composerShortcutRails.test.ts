@@ -11,7 +11,7 @@ const roomy = {
 };
 
 describe("composer shortcut rails availability", () => {
-  it.each([620, 619, 536, 320])(
+  it.each([900, 620, 380, 320])(
     "keeps the external controls at compact form width %i",
     (formWidth) => {
       expect(resolveComposerShortcutRailsVisibility({ ...roomy, formWidth })).toBe(true);
@@ -19,7 +19,7 @@ describe("composer shortcut rails availability", () => {
   );
 
   it.each([332, 331, 200, 116])(
-    "keeps groups available for wrapping or scrolling at host width %i",
+    "keeps groups available for wrapping at host width %i",
     (hostWidth) => {
       expect(resolveComposerShortcutRailsVisibility({ ...roomy, hostWidth })).toBe(true);
     },

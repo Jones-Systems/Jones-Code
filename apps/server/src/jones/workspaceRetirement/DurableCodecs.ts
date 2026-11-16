@@ -65,6 +65,7 @@ export const NativeDutyOwnerJson = Schema.fromJsonString(
     Schema.Struct({
       schema: Schema.Literal("workspace-duty-owner/v1"),
       type: Schema.Literal("unresolved"),
+      host: Schema.optionalKey(host),
       reason: Schema.String,
       nextAction: Schema.String,
     }),

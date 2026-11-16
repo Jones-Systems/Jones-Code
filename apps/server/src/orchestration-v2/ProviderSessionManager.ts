@@ -9,6 +9,8 @@ import {
   unobservedRuntimeIdentity,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
+import * as DutyRelease from "../jones/workspaceRetirement/DutyRelease.ts";
+import { OpenDutyClaim } from "../jones/workspaceRetirement/DutyLifetimeLink.ts";
 import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import { makeProviderRecoveryRetirements } from "../jones/providerRetirement/providerRecoveryRetirement.ts";
@@ -500,6 +502,7 @@ export const layerWithOptions = (
       const agentScope = yield* AgentScope;
       yield* WorkspaceDuty.startup;
       const workspaceDuty = yield* WorkspaceDuty.hooks;
+      const dutyRelease = yield* DutyRelease.make;
       const workspaceDuties = new Map<
         Scope.Closeable,
         Effect.Success<ReturnType<typeof workspaceDuty.hold>>
@@ -532,6 +535,7 @@ export const layerWithOptions = (
         instanceId: ProviderInstanceId,
         driver: ProviderAdapterV2SessionRuntime["driver"],
         owner: { runtime: ProviderAdapterV2SessionRuntime | undefined },
+        dutyHandle: Effect.Success<ReturnType<typeof workspaceDuty.hold>>,
         nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard,
       ): ProviderRuntimeLifecycle => {
         const reservations = new Map<
@@ -576,11 +580,7 @@ export const layerWithOptions = (
                 .pipe(
                   Effect.tap(() =>
                     workspaceDuty
-                      .bindSession(
-                        providerSessionId,
-                        binding.providerThreadId,
-                        binding.runtimeGeneration,
-                      )
+                      .bindSession(dutyHandle, binding.providerThreadId, binding.runtimeGeneration)
                       .pipe(
                         Effect.catch((cause) =>
                           Effect.logDebug("Native session duty binding unavailable", { cause }),
@@ -1558,23 +1558,13 @@ export const layerWithOptions = (
             const existing = scopeClosures.get(scope);
             if (existing !== undefined) return existing;
             const completion = Deferred.makeUnsafe<Exit.Exit<void>>();
+            const closed = scope === sessionScopes ? [...workspaceDuties.keys()] : [scope];
+            const ownedHandles = closed.filter((owned) => workspaceDuties.has(owned));
             scopeClosures.set(scope, completion);
             yield* Scope.close(scope, Exit.void).pipe(
               Effect.tap(() => retirements.completeScope(scope)),
-              // Scope finalizers can run in parallel or fail. Release only after the
-              // complete native scope close succeeds; a timed-out close retains duty.
-              Effect.tap(() =>
-                Effect.gen(function* () {
-                  const closed = scope === sessionScopes ? [...workspaceDuties.keys()] : [scope];
-                  for (const ownedScope of closed) {
-                    const release = workspaceDuties.get(ownedScope);
-                    if (release) {
-                      yield* release.pipe(Effect.orDie);
-                      workspaceDuties.delete(ownedScope);
-                    }
-                  }
-                }),
-              ),
+              // Late successful native completion drains the captured handles only.
+              Effect.tap(() => dutyRelease.drained(ownedHandles)),
               Effect.exit,
               Effect.flatMap((exit) => Deferred.succeed(completion, exit)),
               Effect.forkDetach({ startImmediately: true }),
@@ -1582,6 +1572,7 @@ export const layerWithOptions = (
             return completion;
           }),
         );
+        yield* dutyRelease.retry;
         const closeExit = yield* Deferred.await(closeCompletion).pipe(
           Effect.timeoutOption(PROVIDER_SCOPE_CLOSE_TIMEOUT_MS),
         );
@@ -4496,9 +4487,11 @@ export const layerWithOptions = (
                   }
                 });
                 const sessionScope = yield* Scope.fork(sessionScopes);
-                const releaseWorkspaceDuty = yield* workspaceDuty
-                  .hold(cwd, "session", input.providerSessionId)
-                  .pipe(
+                const runtimeOwner: { runtime: ProviderAdapterV2SessionRuntime | undefined } = {
+                  runtime: undefined,
+                };
+                const runtime = yield* DutyRelease.withRegisteredOpen(
+                  workspaceDuty.hold(cwd, "session", input.providerSessionId).pipe(
                     Effect.mapError(
                       (cause) =>
                         new ProviderSessionOpenError({
@@ -4507,45 +4500,88 @@ export const layerWithOptions = (
                           cause,
                         }),
                     ),
-                  );
-                workspaceDuties.set(sessionScope, releaseWorkspaceDuty);
-                yield* agentScope.clear(input.threadId);
-                const runtimeOwner: { runtime: ProviderAdapterV2SessionRuntime | undefined } = {
-                  runtime: undefined,
-                };
-                const runtime = yield* adapter
-                  .openSession({
-                    threadId: input.threadId,
-                    providerSessionId: input.providerSessionId,
-                    ...(input.nativeCreationGuard === undefined
-                      ? {}
-                      : { nativeCreationGuard: input.nativeCreationGuard }),
-                    runtimeLifecycle: makeRuntimeLifecycle(
-                      input.providerSessionId,
-                      input.modelSelection.instanceId,
-                      adapter.driver,
-                      runtimeOwner,
-                      input.nativeCreationGuard,
-                    ),
-                    modelSelection: input.modelSelection,
-                    runtimePolicy: input.runtimePolicy,
-                    promptSuggestions: promptSuggestionsEnabled,
-                    ...(input.resumeFromSession === undefined
-                      ? {}
-                      : { resumeFromSession: input.resumeFromSession }),
-                    ...(input.initialNativeThreadId === undefined
-                      ? {}
-                      : { initialNativeThreadId: input.initialNativeThreadId }),
-                    ...(input.initialProviderItemIdentityVersion === undefined
-                      ? {}
-                      : {
-                          initialProviderItemIdentityVersion:
-                            input.initialProviderItemIdentityVersion,
-                        }),
-                  })
-                  .pipe(
-                    (effect) =>
-                      beforeOpen.pipe(
+                  ),
+                  (releaseWorkspaceDuty) => {
+                    workspaceDuties.set(sessionScope, releaseWorkspaceDuty);
+                    dutyRelease.register(
+                      sessionScope,
+                      releaseWorkspaceDuty.pipe(
+                        Effect.tap(() => Effect.sync(() => workspaceDuties.delete(sessionScope))),
+                      ),
+                    );
+                    return adapter
+                      .openSession({
+                        threadId: input.threadId,
+                        providerSessionId: input.providerSessionId,
+                        ...(input.nativeCreationGuard === undefined
+                          ? {}
+                          : { nativeCreationGuard: input.nativeCreationGuard }),
+                        runtimeLifecycle: makeRuntimeLifecycle(
+                          input.providerSessionId,
+                          input.modelSelection.instanceId,
+                          adapter.driver,
+                          runtimeOwner,
+                          releaseWorkspaceDuty,
+                          input.nativeCreationGuard,
+                        ),
+                        modelSelection: input.modelSelection,
+                        runtimePolicy: input.runtimePolicy,
+                        promptSuggestions: promptSuggestionsEnabled,
+                        ...(input.resumeFromSession === undefined
+                          ? {}
+                          : { resumeFromSession: input.resumeFromSession }),
+                        ...(input.initialNativeThreadId === undefined
+                          ? {}
+                          : { initialNativeThreadId: input.initialNativeThreadId }),
+                        ...(input.initialProviderItemIdentityVersion === undefined
+                          ? {}
+                          : {
+                              initialProviderItemIdentityVersion:
+                                input.initialProviderItemIdentityVersion,
+                            }),
+                      })
+                      .pipe(
+                        (effect) => agentScope.clear(input.threadId).pipe(Effect.andThen(effect)),
+                        (effect) =>
+                          beforeOpen.pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new ProviderSessionOpenError({
+                                  instanceId: input.modelSelection.instanceId,
+                                  providerSessionId: input.providerSessionId,
+                                  cause,
+                                }),
+                            ),
+                            Effect.andThen(effect),
+                          ),
+                        (effect) =>
+                          runtimeUseGuard
+                            .guardOpen(
+                              {
+                                threadId: input.threadId,
+                                providerSessionId: input.providerSessionId,
+                                instanceId: input.modelSelection.instanceId,
+                                cwd: input.runtimePolicy.cwd,
+                              },
+                              adapter.driver,
+                              effect,
+                            )
+                            .pipe(
+                              Effect.mapError((cause) =>
+                                isRuntimeUseError(cause)
+                                  ? new ProviderSessionOpenError({
+                                      instanceId: input.modelSelection.instanceId,
+                                      providerSessionId: input.providerSessionId,
+                                      cause,
+                                    })
+                                  : cause,
+                              ),
+                            ),
+                        Effect.provideService(
+                          OpenDutyClaim,
+                          workspaceDuty.openClaim(releaseWorkspaceDuty),
+                        ),
+                        Effect.provideService(Scope.Scope, sessionScope),
                         Effect.mapError(
                           (cause) =>
                             new ProviderSessionOpenError({
@@ -4554,72 +4590,38 @@ export const layerWithOptions = (
                               cause,
                             }),
                         ),
-                        Effect.andThen(effect),
-                      ),
-                    (effect) =>
-                      runtimeUseGuard
-                        .guardOpen(
-                          {
-                            threadId: input.threadId,
-                            providerSessionId: input.providerSessionId,
-                            instanceId: input.modelSelection.instanceId,
-                            cwd: input.runtimePolicy.cwd,
-                          },
-                          adapter.driver,
-                          effect,
-                        )
-                        .pipe(
-                          Effect.mapError((cause) =>
-                            isRuntimeUseError(cause)
-                              ? new ProviderSessionOpenError({
-                                  instanceId: input.modelSelection.instanceId,
-                                  providerSessionId: input.providerSessionId,
-                                  cause,
-                                })
-                              : cause,
-                          ),
-                        ),
-                    Effect.provideService(Scope.Scope, sessionScope),
-                    // Bound scope close after cleanup; a wedged finalizer must not hold the open lock or interrupter.
-                    Effect.onError(() =>
-                      Effect.gen(function* () {
-                        retirements.retain({
-                          source: sessionScope,
-                          scope: sessionScope,
-                          providerSessionId: input.providerSessionId,
-                          threadIds: new Set([input.threadId]),
-                          kind: "opening",
-                          sessionWide: true,
-                          bindings: [],
-                        });
-                        yield* dropReservation.pipe(
-                          Effect.andThen(
-                            prepared.issued
-                              ? clearMcpSession(input.threadId, mcpCredentialId)
-                              : Effect.void,
-                          ),
-                          Effect.ensuring(
-                            closeScopeWithin(sessionScope, {
-                              providerSessionId: input.providerSessionId,
-                              reason: "open_failed",
-                            }),
-                          ),
-                        );
-                      }),
-                    ),
-                    Effect.mapError(
-                      (cause) =>
-                        new ProviderSessionOpenError({
-                          instanceId: input.modelSelection.instanceId,
-                          providerSessionId: input.providerSessionId,
-                          cause,
+                        withMetrics({
+                          counter: providerSessionsTotal,
+                          attributes: { provider: adapter.driver, operation: "open" },
                         }),
-                    ),
-                    withMetrics({
-                      counter: providerSessionsTotal,
-                      attributes: { provider: adapter.driver, operation: "open" },
+                      );
+                  },
+                  () =>
+                    Effect.gen(function* () {
+                      retirements.retain({
+                        source: sessionScope,
+                        scope: sessionScope,
+                        providerSessionId: input.providerSessionId,
+                        threadIds: new Set([input.threadId]),
+                        kind: "opening",
+                        sessionWide: true,
+                        bindings: [],
+                      });
+                      yield* dropReservation.pipe(
+                        Effect.andThen(
+                          prepared.issued
+                            ? clearMcpSession(input.threadId, mcpCredentialId)
+                            : Effect.void,
+                        ),
+                        Effect.ensuring(
+                          closeScopeWithin(sessionScope, {
+                            providerSessionId: input.providerSessionId,
+                            reason: "open_failed",
+                          }),
+                        ),
+                      );
                     }),
-                  );
+                );
                 runtimeOwner.runtime = runtime;
                 const eventSubscribers = yield* Ref.make<
                   ReadonlyMap<number, ProviderSessionEventSubscriber>
