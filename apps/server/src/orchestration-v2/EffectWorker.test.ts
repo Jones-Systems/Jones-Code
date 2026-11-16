@@ -34,6 +34,8 @@ import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -41,6 +43,7 @@ import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
+
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
@@ -175,6 +178,10 @@ function layerExecutorFor(input: {
         layerDependencies,
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({ getByCommandId: () => Effect.succeedNone }),
+        // Lifecycle custody is covered through its real owner integration suite.
+        // These executor cases exercise interrupt/rollback/respond/continuation ports.
+        Layer.mock(RestartPreparation.RestartPreparation)({ recordSteerFailure: () => Effect.void }),
         ServerSettings.layerTest(
           input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},
         ),
@@ -837,4 +844,34 @@ it.effect.each([3, 4])(
         processLossCount > 3 ? ["recover-child"] : ["dispatch", "recover-child"],
       );
     }),
+);
+
+it.effect("keeps the two-title cap after default daemon slots detach long executions", () =>
+  Effect.gen(function* () {
+    const initial = yield* Deferred.make<void>();
+    const detached = yield* Deferred.make<void>();
+    const calls: Array<{ lane: string; limit: number | undefined }> = [];
+    const claim = (lane: string) => (input?: { maxRunningTitleGenerations?: number }) =>
+      Effect.gen(function* () {
+        calls.push({ lane, limit: input?.maxRunningTitleGenerations });
+        if (calls.length === 4) yield* Deferred.succeed(initial, undefined);
+        if (calls.length === 8) yield* Deferred.succeed(detached, undefined);
+        return yield* Effect.never;
+      });
+    const worker = Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+      awaitWork: Effect.never,
+      runOnce: claim("mixed"), runActionOnce: claim("action"), runUrgentOnce: claim("urgent"),
+    });
+    const daemon = yield* EffectWorker.runDaemonWithOptions().pipe(
+      Effect.provide(worker), Effect.forkChild,
+    );
+    yield* Deferred.await(initial);
+    yield* TestClock.adjust(Duration.seconds(30));
+    yield* Deferred.await(detached);
+    assert.equal(calls.length, 8);
+    assert.isTrue(calls.every((call) => call.limit === 2));
+    assert.equal(calls.filter((call) => call.lane === "urgent").length, 2);
+    assert.equal(calls.filter((call) => call.lane === "action").length, 2);
+    yield* Fiber.interrupt(daemon);
+  }),
 );

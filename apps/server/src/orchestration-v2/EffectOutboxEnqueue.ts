@@ -7,6 +7,8 @@ import {
   CommandId,
   MessageId,
   NodeId,
+  ModelSelection,
+  NonNegativeInt,
   ProviderSessionId,
   RunAttemptId,
   ProviderApprovalDecision,
@@ -28,6 +30,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
+    processLossCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
     preparedForRestart: Schema.optional(Schema.Boolean),
     continueWithoutPreference: Schema.optional(Schema.Boolean),
   }),
@@ -40,6 +43,20 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     detail: Schema.optional(Schema.String),
     /** Set on terminal detaches (thread archive/delete): revoke the thread's MCP credentials. */
     revokeMcpCredential: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
+    type: Schema.Literal("provider-session.apply-model-selection"),
+    providerSessionId: ProviderSessionId,
+    providerThreadId: ProviderThreadId,
+    modelSelection: ModelSelection,
+  }),
+  Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
+    type: Schema.Literal("provider-session.apply-thread-title"),
+    title: Schema.String,
   }),
   Schema.Struct({
     request: Schema.optional(Schema.Never),
@@ -64,6 +81,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     messageId: MessageId,
+    modelSelection: Schema.optional(ModelSelection),
+    steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
   }),
   // A distinct tag makes older workers fail closed instead of dropping batch members.
   // Drain these effects with a capable worker before downgrading.
@@ -76,6 +95,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerTurnId: ProviderTurnId,
     messageId: MessageId,
     messageIds: Schema.Array(MessageId).check(Schema.isMinLength(1)),
+    modelSelection: Schema.optional(ModelSelection),
+    steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
   }),
   Schema.Struct({
     request: Schema.optional(Schema.Never),
@@ -144,6 +165,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("attachment.cleanup"),
     attachmentIds: Schema.Array(Schema.String),
+    skipReferenced: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     request: Schema.optional(Schema.Never),

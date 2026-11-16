@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as Authority from "./NativeCreationAuthority.ts";
 import * as Repository from "./NativeCreationRepository.ts";
 import type { NativeCreationWholeOperationEvidence } from "./NativeCreationExecutionTypes.ts";
@@ -80,6 +81,11 @@ export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffec
           }),
         ),
   );
+  const sink = yield* Effect.serviceOption(EventSink.EventSinkV2);
+  if (Option.isNone(sink)) return yield* new NativeCreationProviderExecutionError({
+    message: "Durable native Stop admission is unavailable",
+  });
+  yield* sink.value.assertRuntimeStopStartAllowed({ threadId: effect.threadId, runId: requestRunId });
   yield* Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
       const context = yield* issue({

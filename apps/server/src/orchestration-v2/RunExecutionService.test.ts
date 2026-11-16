@@ -63,6 +63,14 @@ import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
+// Consumer tests replace ingestion as an external port; retained publication uses
+// that same fixture implementation, while real retry behavior has paired ingestor tests.
+const mockIngestor = (implementation: Partial<ProviderEventIngestor.ProviderEventIngestorV2["Service"]>) =>
+  Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+    ...implementation,
+    captureTerminal: (input) => Effect.succeed({ publish: implementation.ingestNormalized!(input) }),
+  });
+
 const mockEventSink = (implementation: Partial<EventSink.EventSinkV2["Service"]>) =>
   Layer.mock(EventSink.EventSinkV2)({
     consumeProviderEvents: (source, process, after) =>
@@ -95,7 +103,7 @@ const layerRunExecutionTest = RunExecutionService.layer.pipe(
       mockEventSink({}),
       IdAllocator.layer,
       ThreadCommandExecutor.layer,
-      Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+      mockIngestor({
         ingestNormalized: () => Effect.succeed([]),
       }),
       ServerSettings.layerTest(),
@@ -990,7 +998,7 @@ it.effect("passes the thread's MCP app context to the provider under a safe key"
             mockEventSink({}),
             IdAllocator.layer,
             ThreadCommandExecutor.layer,
-            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+            mockIngestor({
               ingestNormalized: () => Effect.succeed([]),
             }),
             ServerSettings.layerTest(),
@@ -1025,7 +1033,7 @@ it.effect("fails the run when its ownership check cannot be read before calling 
           }),
           IdAllocator.layer,
           ThreadCommandExecutor.layer,
-          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          mockIngestor({
             ingestNormalized: () => Effect.succeed([]),
           }),
           ServerSettings.layerTest(),
@@ -1238,7 +1246,7 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
           }),
           IdAllocator.layer,
           ThreadCommandExecutor.layer,
-          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          mockIngestor({
             ingestNormalized: () => Effect.succeed([]),
           }),
           ServerSettings.layerTest(),
@@ -1340,7 +1348,7 @@ it.effect("prompts the provider only after a forked baseline capture finishes", 
           mockEventSink({}),
           IdAllocator.layer,
           ThreadCommandExecutor.layer,
-          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          mockIngestor({
             ingestNormalized: () => Effect.succeed([]),
           }),
           ServerSettings.layerTest(),
@@ -1453,7 +1461,7 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
             }),
             IdAllocator.layer,
             ThreadCommandExecutor.layer,
-            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+            mockIngestor({
               ingestNormalized: () => Effect.succeed([]),
             }),
             scenario === "start-guard"
@@ -1634,7 +1642,7 @@ it.effect("ingests new member threads of an owned child after the root turn term
           }),
           IdAllocator.layer,
           ThreadCommandExecutor.layer,
-          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          mockIngestor({
             ingestNormalized: (input) =>
               Effect.gen(function* () {
                 const eventType = input.event.type;
@@ -1890,7 +1898,7 @@ it.effect("ends a nested native subagent and its thread when the root run is int
           }),
           IdAllocator.layer,
           ThreadCommandExecutor.layer,
-          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          mockIngestor({
             ingestNormalized: () => Effect.succeed([]),
           }),
           ServerSettings.layerTest(),
@@ -2507,7 +2515,7 @@ it.effect(
             }),
             IdAllocator.layer,
             ThreadCommandExecutor.layer,
-            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+            mockIngestor({
               ingestNormalized: (input) =>
                 Ref.update(ingested, (current) => [...current, input.event]).pipe(Effect.as([])),
             }),
@@ -2944,7 +2952,7 @@ it.effect("settles native subagents when a workspace handoff completes the root 
           }),
           IdAllocator.layer,
           ThreadCommandExecutor.layer,
-          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          mockIngestor({
             ingestNormalized: () => Effect.succeed([]),
           }),
           ServerSettings.layerTest(),
@@ -4059,7 +4067,7 @@ function captureRootRunTermination(input: {
           }),
           IdAllocator.layer,
           ThreadCommandExecutor.layer,
-          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          mockIngestor({
             ingestNormalized: (request) =>
               store(request.event).pipe(
                 Effect.andThen(input.ingestNormalized?.(request) ?? Effect.succeed([])),
@@ -4604,7 +4612,7 @@ function runBackgroundItemScenario(
           }),
           IdAllocator.layer,
           ThreadCommandExecutor.layer,
-          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          mockIngestor({
             ingestNormalized: (input) => {
               const write = Effect.gen(function* () {
                 const event = input.event;

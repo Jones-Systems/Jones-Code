@@ -112,7 +112,7 @@ export const layer = Layer.effect(
                 threadId: effect.threadId,
                 runId: effect.request.runId,
                 guard,
-              }),
+              }).pipe(Effect.provideService(Guard.CurrentNativeGuard, guard)),
             );
             const acknowledgement = Guard.readNativeProviderAcknowledgement(guard);
             if (
