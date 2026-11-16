@@ -1,8 +1,15 @@
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as StartAdmission from "../jones/provider/StartAdmission.ts";
+import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
+  EnvironmentId,
   CheckpointScopeId,
   CommandId,
   ContextHandoffId,
@@ -389,6 +396,8 @@ it.each([
 });
 
 function makeLocalCommandHarness(input: {
+  readonly resumeDisposition?: "unsent" | "native_resume" | "held";
+
   readonly text: string;
   readonly manualContinuation?: boolean;
   readonly nativeResumeUnsupported?: boolean;
@@ -1226,9 +1235,35 @@ function makeLocalCommandHarness(input: {
       projection.runs.find((candidate) => candidate.id === id),
     ),
   );
+  let admissionOpen = true;
+  const revalidateAdmission = Effect.suspend(() => admissionOpen ? Effect.void : Effect.fail(
+    new ProviderAdapter.ProviderRuntimeBindingError({
+      driver: providerThread.driver, detail: "Original Stop receipt withdrew this start.",
+    }),
+  ));
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(StartRefusals.StartRefusals)({ cross: () => Effect.void }),
+        Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
+        Layer.succeed(StartAdmission.StartAdmission, {
+          capture: () => Effect.succeed({
+            revalidate: revalidateAdmission,
+            classifyResume: Effect.succeed(input.resumeDisposition ??
+              (input.sideChat?.unsentResume || input.sideChat?.restartedResume ? "unsent" : "native_resume")),
+          }),
+        }),
+        Layer.mock(GoalContinuity.GoalContinuity)({
+          requirementFor: () => Effect.succeed({
+            outcome: "absent", gate: { outcome: "clear", fenceRevision: "0" },
+          }),
+          context: (capability) => ({ capability } as never),
+        }),
+        Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("start-admission-test")),
+        }),
+        ControlAdmission.layer,
+
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: (handoff) =>
             input.sideChat?.nativeForkFrom === undefined
@@ -1244,6 +1279,7 @@ function makeLocalCommandHarness(input: {
                 }),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          ...{ assertRuntimeStopStartAllowed: () => revalidateAdmission },
           writeIfRunCurrent,
           write: ({ events: incoming }) =>
             Effect.sync(() => {
@@ -1319,6 +1355,7 @@ function makeLocalCommandHarness(input: {
   );
   return {
     layer,
+    withdrawAdmission: () => { admissionOpen = false; },
     interruptRun,
     settledRuns,
     getThreadRecords,
@@ -2997,3 +3034,70 @@ for (const cause of [new Error("native resume failed"), new Error("")]) {
     }),
   );
 }
+
+effectIt.effect("production start carries original admission through Resume and refuses Stop after an adapter wait", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "", manualContinuation: true,
+      sideChat: { contextRun: "delivered", acceptedResume: true }, resumeDisposition: "native_resume" });
+    let dispatched = 0;
+    harness.startTurn.mockImplementation((input) => Effect.gen(function* () {
+      expect(input.revalidateStartAdmission).toBeDefined();
+      expect(input.goalContinuityContext).toBeDefined();
+      harness.withdrawAdmission();
+      yield* input.revalidateStartAdmission!;
+      dispatched++;
+    }));
+    yield* harness.start.pipe(Effect.exit);
+    expect(harness.startRootRun).toHaveBeenCalledTimes(1);
+    expect(harness.startTurn).toHaveBeenCalledTimes(1);
+    expect(dispatched).toBe(0);
+  }),
+);
+
+effectIt.effect("production Resume holds an unknown original prefix before opening or resending", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "", manualContinuation: true,
+      sideChat: { contextRun: "failed", unsentResume: true }, resumeDisposition: "held" });
+    yield* harness.start.pipe(Effect.exit);
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startTurn).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+  }),
+);
+
+effectIt.effect("captured native failure settles the original prepared attempt without claiming unsent proof", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue" });
+    yield* Effect.gen(function* () {
+      const start = yield* ProviderTurnStart.ProviderTurnStartServiceV2;
+      const original = harness.projection().runs.at(-1)!;
+      const fail = yield* start.captureStartFailure!({ threadId: original.threadId, runId: original.id });
+      yield* fail("Original native execution lost authority.");
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(expect.objectContaining({
+        activeAttemptId: original.activeAttemptId, expectedStatus: "starting",
+      }));
+      expect(harness.writeIfRunCurrent.mock.calls.at(-1)?.[0]).not.toHaveProperty("startRefusalReason");
+      expect(harness.open).not.toHaveBeenCalled();
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+effectIt.effect("captured native failure cannot settle a replacement attempt after an authority await", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue" });
+    yield* Effect.gen(function* () {
+      const start = yield* ProviderTurnStart.ProviderTurnStartServiceV2;
+      const projection = harness.projection();
+      const original = projection.runs.at(-1)!;
+      const fail = yield* start.captureStartFailure!({ threadId: original.threadId, runId: original.id });
+      const successor = RunAttemptId.make("replacement-native-attempt");
+      harness.setProjection({ ...projection, runs: projection.runs.map((run) =>
+        run.id === original.id ? { ...run, activeAttemptId: successor } : run) });
+      yield* fail("Old authority failed late.");
+      expect(harness.projection().runs.at(-1)?.activeAttemptId).toBe(successor);
+      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+      expect(harness.events).toEqual([]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);

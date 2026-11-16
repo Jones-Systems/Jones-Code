@@ -1,3 +1,10 @@
+import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
+import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as StartAdmission from "../jones/provider/StartAdmission.ts";
+import { continuityRecoveryCapability } from "../jones/goals/continuity/admission.ts";
+import { RequiredNativeSession } from "../jones/taskContinuation/requiredNativeSession.ts";
 import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
 import { continuityAdmissionRefusal } from "../jones/goals/continuity/admission.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -197,6 +204,16 @@ export const probeStartAdmission = Effect.fn("ProviderTurnStartService.probeStar
 );
 
 export interface ProviderTurnStartServiceV2Shape {
+  readonly captureStartFailure?: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+  }) => Effect.Effect<(cause: unknown) => Effect.Effect<void, ProviderTurnStartError>, ProviderTurnStartError>;
+  readonly startNative?: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly guard: NativeProvider.NativeProviderExecutionGuard;
+  }) => Effect.Effect<NativeCreationWholeOperationEvidence, ProviderTurnStartError>;
+
   readonly start: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
@@ -397,6 +414,7 @@ export const layer: Layer.Layer<
               Extract<OrchestrationV2TurnItem, { type: "command_execution" }>,
               "type" | "title" | "input" | "output" | "exitCode"
             >;
+        readonly startRefusalReason?: "restart_admission" | "continuity_unavailable" | "continuity_held" | "control_held";
         readonly providerThreadUpdate?: OrchestrationV2ProviderThread;
       }) {
         const { run, rootNode, attempt, turnItems, now, status } = input;
@@ -461,6 +479,9 @@ export const layer: Layer.Layer<
           activeAttemptId: attempt.id,
           expectedStatus: "starting",
           events,
+          ...(input.startRefusalReason === undefined ? {} : {
+            startRefusalReason: input.startRefusalReason, effects: [],
+          }),
         });
         // A steering restart that cannot start still ends a run whose earlier turns counted.
         if (written.committed) {
@@ -479,6 +500,7 @@ export const layer: Layer.Layer<
         readonly threadId: ThreadId;
         readonly runId: RunId;
         readonly willRetry?: boolean;
+        readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
       },
       captureStartingRun: (run: OrchestrationV2Run) => void,
     ) {
@@ -564,15 +586,122 @@ export const layer: Layer.Layer<
           cause: `Run ${runId} is missing its execution projection state.`,
         });
       }
+      const admissionService = yield* Effect.serviceOption(StartAdmission.StartAdmission);
+      const continuityService = yield* Effect.serviceOption(GoalContinuity.GoalContinuity);
+      const environmentService = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironmentIdentity);
+      const controlService = yield* Effect.serviceOption(ControlAdmission.ControlAdmission);
+      const admissionError = (cause: unknown) => new ProviderAdapter.ProviderAdapterTurnStartError({
+        driver: providerThread.driver, threadId: input.threadId,
+        providerThreadId: providerThread.id, runId, cause,
+      });
+      type AdmissionRefusal = "restart_admission" | "continuity_unavailable" | "continuity_held" | "control_held";
+      const refuseAdmission = (reason: AdmissionRefusal, cause: unknown) => DateTime.now.pipe(Effect.flatMap((now) => settleRunBeforeStart({
+        run, rootNode, attempt, turnItems: projection.turnItems,
+        signal: "start-admission-refused", status: "failed", now,
+        startRefusalReason: reason, providerInstanceId: run.providerInstanceId,
+        itemProviderThreadId: providerThread.id,
+        item: { type: "error", title: "Provider start admission refused",
+          failure: makeProviderFailure({ cause, message: "Provider start admission is held." }) },
+      })));
+      const restartPreparation = yield* Effect.serviceOption(RestartPreparation.RestartPreparation);
+      const startRefusals = yield* Effect.serviceOption(StartRefusals.StartRefusals);
+      if (Option.isNone(restartPreparation) || Option.isNone(startRefusals))
+        return yield* refuseAdmission("restart_admission", "Original restart admission services are unavailable.");
+      const restartAdmission = yield* restartPreparation.value.assertThreadOpen(input.threadId).pipe(Effect.result);
+      if (restartAdmission._tag === "Failure")
+        return yield* refuseAdmission("restart_admission", restartAdmission.failure);
+      if (Option.isNone(admissionService) || Option.isNone(continuityService) ||
+          Option.isNone(environmentService) || Option.isNone(controlService))
+        return yield* refuseAdmission("continuity_unavailable", "Original durable start admission services are unavailable.");
+      const capturedAdmission = yield* admissionService.value.capture({
+        threadId: input.threadId, run, attemptId: attempt.id, providerThread,
+      });
+      if (input.nativeCreationGuard !== undefined &&
+          capturedAdmission.nativeCreationGuard !== input.nativeCreationGuard)
+        return yield* admissionError("Native admission did not retain the original executor-issued guard.");
+      const goalContinuity = continuityService.value;
+      const controlAdmission = controlService.value;
+      const environmentId = yield* environmentService.value.getEnvironmentId;
+      let admissionRefusal: AdmissionRefusal | undefined;
+      const stopAdmission = eventSink as typeof eventSink & {
+        readonly assertRuntimeStopStartAllowed?: (input: { readonly threadId: ThreadId; readonly runId: RunId }) => Effect.Effect<void, unknown>;
+      };
+      const assertAdmission = (expected: OrchestrationV2ProviderThread) => Effect.gen(function* () {
+        yield* capturedAdmission.revalidate;
+        if (input.nativeCreationGuard !== undefined)
+          yield* NativeProvider.assertNativeProviderStartOperation(input.nativeCreationGuard, input.threadId, runId);
+        yield* restartPreparation.value.assertThreadOpen(input.threadId);
+        if (stopAdmission.assertRuntimeStopStartAllowed === undefined)
+          return yield* admissionError("Durable runtime Stop start admission is unavailable.");
+        yield* stopAdmission.assertRuntimeStopStartAllowed({ threadId: input.threadId, runId });
+        const fresh = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+        const currentRun = fresh.runs.find((candidate) => candidate.id === runId);
+        const current = fresh.providerThreads.find((candidate) => candidate.id === expected.id);
+        if (currentRun?.activeAttemptId !== attempt.id ||
+            !["starting", "running"].includes(currentRun.status) ||
+            currentRun.providerThreadId !== expected.id ||
+            !modelSelectionsEqual(currentRun.modelSelection, run.modelSelection) ||
+            current?.providerSessionId !== expected.providerSessionId ||
+            current?.providerInstanceId !== expected.providerInstanceId ||
+            current?.nativeThreadRef?.nativeId !== expected.nativeThreadRef?.nativeId ||
+            current?.runtimeIdentity?.runtimeGeneration !== expected.runtimeIdentity?.runtimeGeneration ||
+            fresh.thread.archivedAt !== null || fresh.thread.deletedAt !== null ||
+            fresh.thread.settledAt !== null)
+          return yield* admissionError("The original attempt or native binding changed.");
+        const requiredNative = yield* RequiredNativeSession;
+        if (requiredNative !== undefined &&
+            (requiredNative.runId !== runId || requiredNative.attemptId !== attempt.id ||
+             expected.nativeThreadRef?.nativeId !== requiredNative.nativeSessionId))
+          return yield* admissionError("Required native session does not match the original admission.");
+        const requirementResult = yield* goalContinuity.requirementFor(environmentId, input.threadId).pipe(Effect.result);
+        if (requirementResult._tag === "Failure") {
+          admissionRefusal = "continuity_unavailable";
+          return yield* requirementResult.failure;
+        }
+        const requirement = requirementResult.success;
+        const owner = expected.nativeThreadRef?.nativeId == null ? null : {
+          environmentId, threadId: input.threadId, providerInstanceId: expected.providerInstanceId,
+          providerThreadId: expected.id, driver: expected.nativeThreadRef.driver,
+          nativeThreadId: expected.nativeThreadRef.nativeId,
+        };
+        if (continuityAdmissionRefusal(requirement, owner) !== undefined) {
+          admissionRefusal = "continuity_held";
+          return yield* admissionError("Goal continuity delivery or native ownership is held.");
+        }
+        const controlResult = yield* controlAdmission.assertOpen({
+          instanceId: expected.providerInstanceId, threadId: input.threadId,
+          nativeThreadId: expected.nativeThreadRef?.nativeId ?? null,
+          producer: expected.runtimeIdentity === undefined ? null : {
+            instanceId: expected.providerInstanceId,
+            providerSessionId: expected.providerSessionId!,
+            runtimeGeneration: expected.runtimeIdentity.runtimeGeneration,
+          },
+        }).pipe(Effect.result);
+        if (controlResult._tag === "Failure") {
+          admissionRefusal = "control_held";
+          return yield* controlResult.failure;
+        }
+        yield* capturedAdmission.revalidate;
+      }).pipe(Effect.mapError(admissionError));
+      const initialAdmission = yield* assertAdmission(providerThread).pipe(Effect.result);
+      if (initialAdmission._tag === "Failure") {
+        if (admissionRefusal !== undefined) return yield* refuseAdmission(admissionRefusal, initialAdmission.failure);
+        return yield* initialAdmission.failure;
+      }
       const manualResume =
         run.manualContinuationOfRunId !== undefined && attempt.reason !== "steering_restart";
-      const resumeSource = manualResume
+      const resumeDisposition = manualResume ? yield* capturedAdmission.classifyResume : undefined;
+      if (resumeDisposition === "held")
+        return yield* admissionError("The original native outcome is unknown; Resume is held.");
+      const resumeSource = manualResume && resumeDisposition === "unsent"
         ? unsentManualContinuationSource(run, projection)
         : undefined;
       const unsentResumeMessage =
         resumeSource !== undefined
           ? projection.messages.find((source) => source.id === resumeSource.userMessageId)
           : undefined;
+      if (resumeDisposition === "unsent" && unsentResumeMessage === undefined)
+        return yield* admissionError("Original unsent input is unavailable; replay is refused.");
       const providerMessage = unsentResumeMessage ?? message;
       const preserveNativeConversation =
         nativeForkTransfer === undefined &&
@@ -606,6 +735,7 @@ export const layer: Layer.Layer<
           });
         },
       );
+      yield* startRefusals.value.cross({ threadId: input.threadId, runId, attemptId: attempt.id });
       if (
         providerMessage.attachments.length === 0 &&
         providerMessage.text.trimStart().startsWith("/")
@@ -847,10 +977,15 @@ export const layer: Layer.Layer<
         run,
         checkpointScope,
       });
+      yield* assertAdmission(providerThread);
       const sessionResult = yield* Effect.result(
         providerSessions.open({
           threadId: projection.thread.id,
           providerSessionId,
+          revalidateStartAdmission: assertAdmission(providerThread),
+          ...(capturedAdmission.nativeCreationGuard === undefined ? {} : {
+            nativeCreationGuard: capturedAdmission.nativeCreationGuard,
+          }),
           modelSelection: run.modelSelection,
           runtimePolicy: resolvedRuntimePolicy,
           ...(existingSessionProjection === undefined
@@ -881,7 +1016,21 @@ export const layer: Layer.Layer<
         });
         return;
       }
-      const session = sessionResult.success;
+      const rawSession = sessionResult.success;
+      const session = {
+        ...rawSession,
+        get providerSession() { return rawSession.providerSession; },
+        ensureThread: (value: Parameters<typeof rawSession.ensureThread>[0]) =>
+          assertAdmission(providerThread).pipe(Effect.andThen(rawSession.ensureThread({
+            ...value, ...(capturedAdmission.nativeCreationGuard === undefined ? {} : {
+              nativeCreationGuard: capturedAdmission.nativeCreationGuard,
+            }),
+          }))),
+        resumeThread: (value: Parameters<typeof rawSession.resumeThread>[0]) =>
+          assertAdmission(providerThread).pipe(Effect.andThen(rawSession.resumeThread(value))),
+        forkThread: (value: Parameters<typeof rawSession.forkThread>[0]) =>
+          assertAdmission(providerThread).pipe(Effect.andThen(rawSession.forkThread(value))),
+      };
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const loadFromProvider = Effect.fn("ProviderTurnStartService.loadFromProvider")(function* (
         load: Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapter.ProviderAdapterV2Error>,
@@ -1822,6 +1971,14 @@ export const layer: Layer.Layer<
       });
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
+          if (turnInput.resume === true) {
+            yield* assertAdmission(runningProviderThread);
+            if (session.resumeTurn === undefined)
+              return yield* admissionError("Native Resume is unavailable; prompt replay is refused.");
+            const { message: resumeMessage, resume: _resume, ...rest } = turnInput;
+            // Pending context stays pending; Resume never becomes a synthetic prompted start.
+            return yield* session.resumeTurn({ ...rest, messageId: resumeMessage.messageId });
+          }
           const delivery = yield* deliverContextHandoffs({
             handoffs: [...effectiveHandoffs, ...retryHandoff],
             deferInline: compact || goalCommand,
@@ -1867,6 +2024,7 @@ export const layer: Layer.Layer<
                     ? {}
                     : { inlineContextLength: text.length - userText.length }),
                 });
+          yield* assertAdmission(runningProviderThread);
           yield* operation.pipe(
             // Clear pending handoff markers for refused prompts so the next turn retains the native session.
             Effect.tapError((error) =>
@@ -1920,14 +2078,28 @@ export const layer: Layer.Layer<
               }),
         ),
       );
+      const admittedSession = StartAdmission.withStartAdmission(
+        session, assertAdmission(runningProviderThread),
+        goalContinuity.context(continuityRecoveryCapability(session.driver,
+          runningProviderThread.nativeThreadRef?.strength === "strong" &&
+          runningProviderThread.runtimeIdentity?.evidenceRevision !== undefined)),
+        capturedAdmission.nativeCreationGuard,
+      );
       const deliverySession =
         effectiveHandoffs.length === 0 &&
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
         restartNote === "" &&
         !noteContinuation
-          ? session
-          : makeDeliverySession(session, startWithHandoffs);
+          ? admittedSession
+          : StartAdmission.withStartAdmission(
+              makeDeliverySession(admittedSession, startWithHandoffs),
+              assertAdmission(runningProviderThread),
+              goalContinuity.context(continuityRecoveryCapability(session.driver,
+                runningProviderThread.nativeThreadRef?.strength === "strong" &&
+                runningProviderThread.runtimeIdentity?.evidenceRevision !== undefined)),
+              capturedAdmission.nativeCreationGuard,
+            );
       return runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
@@ -1984,9 +2156,11 @@ export const layer: Layer.Layer<
       });
     });
 
-    return ProviderTurnStartServiceV2.of({
-      start: Effect.fn("ProviderTurnStartService.start")(
-        function* (input) {
+    const runStart = Effect.fn("ProviderTurnStartService.start")(
+        function* (input: {
+          readonly threadId: ThreadId; readonly runId: RunId; readonly willRetry?: boolean;
+          readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
+        }) {
           let startingRun: OrchestrationV2Run | undefined;
           const captureStartingRun = (run: OrchestrationV2Run) => {
             startingRun = run;
@@ -2055,6 +2229,49 @@ export const layer: Layer.Layer<
                 : new ProviderTurnStartError({ runId: input.runId, cause }),
             ),
           ),
+      );
+
+    const captureStartFailure = Effect.fn("ProviderTurnStartService.captureStartFailure")(
+      function* (input: { readonly threadId: ThreadId; readonly runId: RunId }) {
+        const projection = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+        const run = projection.runs.find((row) => row.id === input.runId);
+        if (run !== undefined && run.status !== "starting") return (_cause: unknown) => Effect.void;
+        const attempt = projection.attempts.find((row) => row.id === run?.activeAttemptId);
+        const rootNode = projection.nodes.find((row) => row.id === run?.rootNodeId);
+        if (run === undefined || attempt === undefined || rootNode === undefined || run.providerThreadId === null)
+          return yield* new ProviderTurnStartError({ runId: input.runId,
+            cause: "Prepared run failure ownership is unavailable." });
+        return (cause: unknown) => Effect.gen(function* () {
+          yield* settleRunBeforeStart({
+            run, attempt, rootNode, turnItems: projection.turnItems,
+            signal: "provider-start-execution-failure", status: "failed", now: yield* DateTime.now,
+            providerInstanceId: run.providerInstanceId, itemProviderThreadId: run.providerThreadId,
+            item: { type: "error", title: "Provider turn failed to start", failure: makeProviderFailure({
+              cause, class: "provider_error",
+              message: "Provider start could not retain its original execution authority.",
+            }) },
+          });
+        }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId: input.runId, cause })));
+      },
+      (effect, input) => effect.pipe(Effect.mapError((cause) =>
+        isProviderTurnStartError(cause) ? cause : new ProviderTurnStartError({ runId: input.runId, cause }))),
+    );
+
+    return ProviderTurnStartServiceV2.of({
+      captureStartFailure,
+      start: runStart,
+      startNative: Effect.fn("ProviderTurnStartService.startNative")(
+        function* (input) {
+          yield* NativeProvider.assertNativeProviderStartOperation(input.guard, input.threadId, input.runId);
+          yield* runStart({ threadId: input.threadId, runId: input.runId, nativeCreationGuard: input.guard });
+          const evidence = NativeProvider.readNativeProviderAcknowledgement(input.guard);
+          if (evidence === undefined)
+            return yield* new ProviderTurnStartError({ runId: input.runId,
+              cause: "Native start did not receive its direct whole-operation acknowledgement." });
+          return evidence;
+        },
+        (effect, input) => effect.pipe(Effect.mapError((cause) =>
+          isProviderTurnStartError(cause) ? cause : new ProviderTurnStartError({ runId: input.runId, cause }))),
       ),
       failStartingRun: Effect.fn("ProviderTurnStartService.failStartingRun")(
         function* ({ threadId, runId, attemptId, rootNodeId }) {

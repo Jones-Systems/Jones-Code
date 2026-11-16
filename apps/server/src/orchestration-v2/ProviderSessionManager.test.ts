@@ -5729,3 +5729,99 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
     assert.isTrue(child?.capabilities?.has("device"));
   }),
 );
+
+it.effect("managed open refuses missing original admission before any native launch", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const threadId = ThreadId.make("missing-original-admission");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        threadId, providerInstanceId: modelSelection.instanceId,
+      });
+      const result = yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy }).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(result));
+      assert.equal((yield* Ref.get(state)).openCount, 0);
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+  }),
+);
+
+it.effect("managed open revalidates Stop after the installation gate wait", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    let admitted = true;
+    let revalidations = 0;
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("stop-during-installation-gate");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        threadId, providerInstanceId: modelSelection.instanceId,
+      });
+      yield* sink.write({ events: [yield* makeThreadCreatedEvent({
+        idAllocator, threadId, now: yield* DateTime.now,
+      })] });
+      const revalidateStartAdmission = Effect.suspend(() => {
+        revalidations++;
+        return admitted ? Effect.void : Effect.fail(new ProviderAdapter.ProviderRuntimeBindingError({
+          driver: CODEX_DRIVER, detail: "Original Stop receipt withdrew admission.",
+        }));
+      });
+      const result = yield* manager.open({
+        threadId, providerSessionId, modelSelection, runtimePolicy, revalidateStartAdmission,
+      }).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(result));
+      assert.equal(revalidations, 2);
+      assert.equal((yield* Ref.get(state)).openCount, 0);
+    }).pipe(Effect.provide(layerTest({
+      state, idleTimeoutMs: 60_000,
+      installationGateLayer: Layer.succeed(ProviderInstallationGate.ProviderInstallationGate, {
+        execute: (_instanceId, gated) => Effect.sync(() => { admitted = false; }).pipe(Effect.andThen(gated)),
+        update: () => Effect.die("unused"),
+      }),
+    })));
+  }),
+);
+
+it.effect("MCP caller proof requires the original credential on the actual live attachment", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const mcpConfigs = yield* Ref.make<ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>>([]);
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const registry = yield* McpSessionRegistry.McpSessionRegistry;
+      const threadId = ThreadId.make("mcp-original-attachment");
+      const providerSessionId = yield* ids.allocate.providerSession({
+        threadId, providerInstanceId: modelSelection.instanceId,
+      });
+      yield* sink.write({ events: [yield* makeThreadCreatedEvent({
+        idAllocator: ids, threadId, now: yield* DateTime.now,
+      })] });
+      let admissionValid = true;
+      const revalidateStartAdmission = Effect.suspend(() => admissionValid ? Effect.void :
+        Effect.fail(new ProviderAdapter.ProviderRuntimeBindingError({
+          driver: CODEX_DRIVER, detail: "Synthetic original admission was withdrawn.",
+        })));
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy,
+        revalidateStartAdmission,
+      });
+      const credential = (yield* Ref.get(mcpConfigs)).at(-1)!;
+      assert.isDefined(credential);
+      const caller = { threadId, providerSessionId,
+        providerInstanceId: modelSelection.instanceId, mcpCredentialId: credential.providerSessionId };
+      assert.isTrue(yield* manager.isMcpCallerAttached(caller));
+      assert.isFalse(yield* manager.isMcpCallerAttached({ ...caller, threadId: ThreadId.make("other-thread") }));
+      assert.isFalse(yield* manager.isMcpCallerAttached({ ...caller, providerInstanceId: ProviderInstanceId.make("other-account") }));
+      // A valid separately issued credential is not evidence of attachment to this process.
+      const unrelated = yield* registry.issue({ threadId, providerInstanceId: modelSelection.instanceId });
+      assert.isFalse(yield* manager.isMcpCallerAttached({ ...caller, mcpCredentialId: unrelated.config.providerSessionId }));
+      admissionValid = false;
+      yield* manager.close(providerSessionId);
+      assert.isFalse(yield* manager.isMcpCallerAttached(caller));
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, mcpConfigs })));
+  }),
+);
