@@ -330,27 +330,27 @@ const cleanupRows = (container: HTMLElement) =>
     heading.textContent?.startsWith("/cleanup-test/"),
   );
 
-it("shows five results total across hosts, adds ten, handles the short final page and shows all", async () => {
+it("pages each device independently, adds ten and shows all", async () => {
   setup();
   state.reports = { "env-a": cleanupReport("env-a", 3, 7), "env-b": cleanupReport("env-b", 20) };
   await using screen = await render(panel());
   await screen.getByRole("button", { name: /Last run/ }).click();
-  expect(cleanupRows(screen.container)).toHaveLength(5);
+  expect(cleanupRows(screen.container)).toHaveLength(8);
   expect(screen.container.textContent).toContain("env-a: 0 removed, 10 kept");
   expect(screen.container.textContent).toContain("env-b: 0 removed, 20 kept");
   expect(screen.container.textContent).toContain(
-    "env-a: 7 additional results omitted from this report.",
+    "env-a: 7 additional results omitted from this report. These were not classified here.",
   );
   await expect
-    .element(screen.getByRole("heading", { name: "/cleanup-test/env-b/worktree-1", exact: true }))
+    .element(screen.getByRole("heading", { name: "/cleanup-test/env-b/worktree-4", exact: true }))
     .toBeInTheDocument();
-  expect(screen.container.textContent).not.toContain("Preserved evidence env-b-2");
-  expect(screen.container.textContent).not.toContain("Retirement evidence env-b-2");
-  expect(screen.container.querySelectorAll("details")).toHaveLength(5);
+  expect(screen.container.textContent).not.toContain("Preserved evidence env-b-5");
+  expect(screen.container.textContent).not.toContain("Retirement evidence env-b-5");
+  expect(screen.container.querySelectorAll("details")).toHaveLength(8);
 
   await screen.getByRole("button", { name: "Show more", exact: true }).click();
-  expect(cleanupRows(screen.container)).toHaveLength(15);
-  expect(screen.container.textContent).toContain("Showing 15 of 23 results.");
+  expect(cleanupRows(screen.container)).toHaveLength(18);
+  expect(screen.container.textContent).toContain("Showing 15 of 20 results.");
   await screen.getByRole("button", { name: "Show more", exact: true }).click();
   expect(cleanupRows(screen.container)).toHaveLength(23);
   await expect
@@ -361,11 +361,11 @@ it("shows five results total across hosts, adds ten, handles the short final pag
     .not.toBeInTheDocument();
 
   await screen.getByRole("button", { name: "Show less", exact: true }).click();
-  expect(cleanupRows(screen.container)).toHaveLength(5);
-  expect(screen.container.querySelectorAll("details")).toHaveLength(5);
+  expect(cleanupRows(screen.container)).toHaveLength(8);
+  expect(screen.container.querySelectorAll("details")).toHaveLength(8);
   await screen.getByRole("button", { name: "Show all", exact: true }).click();
   expect(cleanupRows(screen.container)).toHaveLength(23);
-  expect(screen.container.textContent).toContain("Showing 23 of 23 results.");
+  expect(screen.container.textContent).toContain("Showing 20 of 20 results.");
 });
 
 it("preserves expansion on query rerenders and resets it for a new report or selected hosts", async () => {
@@ -393,11 +393,11 @@ it("preserves expansion on query rerenders and resets it for a new report or sel
   state.reports["env-b"] = cleanupReport("env-b", 20);
   await refreshReport();
   await screen.rerender(view());
-  expect(cleanupRows(screen.container)).toHaveLength(15);
+  expect(cleanupRows(screen.container)).toHaveLength(18);
 
   state.reports["env-b"] = { ...state.reports["env-b"]!, finishedAt: "2026-11-16T12:02:00.000Z" };
   await refreshReport();
-  expect(cleanupRows(screen.container)).toHaveLength(5);
+  expect(cleanupRows(screen.container)).toHaveLength(8);
   await screen.getByRole("button", { name: "Show all", exact: true }).click();
   await act(() => {
     state.targets = state.targets.filter(({ environmentId }) => environmentId === "env-b");
@@ -409,13 +409,13 @@ it("preserves expansion on query rerenders and resets it for a new report or sel
   );
 });
 
-it("mounts only five rows for a report with more than a thousand entries", async () => {
+it("mounts only five rows per device for a report with more than a thousand entries", async () => {
   setup();
   state.reports = { "env-a": cleanupReport("env-a", 3), "env-b": cleanupReport("env-b", 1001) };
   await using screen = await render(panel());
   await screen.getByRole("button", { name: /Last run/ }).click();
-  expect(cleanupRows(screen.container)).toHaveLength(5);
-  expect(screen.container.querySelectorAll("details")).toHaveLength(5);
+  expect(cleanupRows(screen.container)).toHaveLength(8);
+  expect(screen.container.querySelectorAll("details")).toHaveLength(8);
   expect(screen.container.textContent).not.toContain("Retirement evidence env-b-1000");
 });
 
@@ -429,6 +429,44 @@ it("has no expansion controls for five or fewer available entries, including ser
     .element(screen.getByRole("button", { name: /^Show (more|all|less)$/ }))
     .not.toBeInTheDocument();
   expect(screen.container.textContent).toContain(
-    "env-a: 9 additional results omitted from this report.",
+    "env-a: 9 additional results omitted from this report. These were not classified here.",
   );
+});
+
+
+it("unmounts a device and its evidence when collapsed without hiding other devices", async () => {
+  setup();
+  state.reports = { "env-a": cleanupReport("env-a", 7), "env-b": cleanupReport("env-b", 2) };
+  await using screen = await render(panel());
+  await screen.getByRole("button", { name: /Last run/ }).click();
+  await screen.getByRole("button", { name: /env-a 7 results/ }).click();
+  expect(cleanupRows(screen.container)).toHaveLength(2);
+  expect(screen.container.textContent).not.toContain("Preserved evidence env-a-0");
+  await screen.getByRole("button", { name: /env-a 7 results/ }).click();
+  expect(cleanupRows(screen.container)).toHaveLength(7);
+});
+
+import { CleanupResults } from "../../jones/storageCleanupResults/CleanupResults";
+
+it("prioritizes actionable entries, preserves guarded actions and collapses categories independently", async () => {
+  const base = cleanupReport("grouped", 1).entries[0]!;
+  const ready = { ...base, path: "/ready", threadId: "synthetic-thread" as NonNullable<typeof base.threadId>, retirement: { ...base.retirement!, state: "proposed" as const, fingerprint: "synthetic", reasonCodes: [] } };
+  const entries = [
+    { ...base, path: "/kept", retirement: undefined },
+    { ...base, path: "/removed", outcome: "removed" as const },
+    { ...base, path: "/failed", outcome: "failed" as const },
+    ready,
+  ];
+  const onRetire = vi.fn();
+  await using screen = await render(<CleanupResults selectedEnvironmentIds={["grouped"]} reports={[{ environmentId: "grouped", environmentLabel: "Laptop", report: { ...cleanupReport("grouped", 0), entries }, onRetire }]} />);
+  const headers = [...screen.container.querySelectorAll('button[aria-expanded]')].map((button) => button.textContent);
+  expect(headers).toEqual(["▾Laptop4 results", "▾Ready to retire 1", "▸Needs attention 1", "▸Kept 1", "▸Removed 1"]);
+  expect(screen.container.textContent).not.toContain("/failed");
+  await screen.getByRole("button", { name: "Retire", exact: true }).click();
+  expect(onRetire).toHaveBeenCalledWith(ready);
+  await screen.getByRole("button", { name: /Ready to retire 1/ }).click();
+  expect(screen.container.textContent).not.toContain("/ready");
+  await screen.getByRole("button", { name: /Needs attention 1/ }).click();
+  expect(screen.container.textContent).toContain("/failed");
+  expect(screen.container.querySelectorAll('button')).not.toContainEqual(expect.objectContaining({ textContent: "Retire" }));
 });
