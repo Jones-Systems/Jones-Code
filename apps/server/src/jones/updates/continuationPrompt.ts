@@ -1,6 +1,6 @@
 import type { ProviderAdapterV2TurnInput } from "@t3tools/provider-core/server/ProviderAdapter";
 
-/** Native resume may omit input only when the original thread needs no new context. */
+/** Codex requires input even after resuming the original native conversation. */
 export function continuationPrompt(
   input: ProviderAdapterV2TurnInput,
   options: {
@@ -12,7 +12,10 @@ export function continuationPrompt(
 ): ProviderAdapterV2TurnInput {
   const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = input;
   const needsPrompt =
-    !options.sameNativeThread || options.noteContinuation || options.context !== "";
+    input.providerThread.driver === "codex" ||
+    !options.sameNativeThread ||
+    options.noteContinuation ||
+    options.context !== "";
   return {
     ...(needsPrompt ? promptedInput : input),
     message: {

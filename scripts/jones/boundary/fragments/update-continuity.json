@@ -27,6 +27,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/updates/continuationPrompt.ts"
+    },
+    {
       "from": "apps/server/src/serviceLauncher.ts",
       "to": "apps/server/src/jones/updates/launcherOperation.ts"
     },

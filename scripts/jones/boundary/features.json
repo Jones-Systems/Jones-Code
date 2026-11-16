@@ -1351,6 +1351,7 @@
         "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
         "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
         "apps/server/src/jones/updates/continuationPrompt.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/jones/updates/launcherOperation.test.ts",
         "apps/server/src/jones/updates/operationHandoff.test.ts",
         "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
@@ -1367,7 +1368,8 @@
         "apps/server/src/jones/updates/http.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/orchestration-v2/FoundationPersistence.test.ts"
-      ]
+      ],
+      "scope": "Codex restart recovery delivers its reconciliation prompt to the original native conversation because turn/start rejects empty input. Other adapters retain promptless native continuation where supported. Accepted shared test edit: the real Codex replay harness verifies nonempty wire input, original conversation identity and terminal attribution, including a native turn started during resume; moving that case would duplicate its existing adapter harness. All clients and server-side entry points share ProviderTurnStartService. Persisted restart provenance and schemas are unchanged."
     },
     {
       "id": "qualified-updates",
