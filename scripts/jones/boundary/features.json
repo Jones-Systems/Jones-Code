@@ -3375,6 +3375,15 @@
         "packages/shared/src/jones/threadAttention.test.ts"
       ],
       "scope": "Shared client presentation distinguishes local message dispatch from accepted provider startup and confirmed active work, preserving runless activity, Zen answer previews, compaction and workspace preparation. Web/desktop and mobile use small renderer hooks; the existing full timeline browser harness retains a Jones regression because it owns virtualization and projection updates. Mobile reuses its existing optional activity label and cache. The shared ChatView busy-state edit preserves the activity slot during server startup; the small mobile icon edit distinguishes startup from thinking without duplicating the work-log renderer. No wire, persistence, provider execution or transport changes. Run scheduling becomes running before provider dispatch, so the current-attempt summary separately records native output/work evidence. Shell-only summaries retain unknown activity as startup. Existing execution-summary and mobile visibility fixtures retain integration coverage to prove production propagation and confirmed Zen previews."
+    },
+    {
+      "id": "storage-cleanup-results",
+      "tests": [
+        "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
+        "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+      ],
+      "scope": "Storage cleanup results initially render five rows total across selected environments, expand by ten, and preserve retirement guards. A read-only MCP adapter pages the same session report with exact filters, snapshot consistency, explicit omissions and a serialized response budget; it cannot evaluate or execute cleanup."
     }
   ]
 }

@@ -5362,6 +5362,24 @@
         "vp run --filter @t3tools/shared --filter @t3tools/client-runtime --filter @t3tools/web --filter @t3tools/mobile --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-storage-cleanup-results",
+      "tests": [
+        "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
+        "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/storageCleanup/ReportRead.test.ts apps/server/src/jones/mcp/storageCleanup/handlers.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project browser src/components/settings/StorageSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp lint apps/server/src/jones/storageCleanup apps/server/src/jones/mcp/storageCleanup apps/web/src/jones/storageCleanupResults apps/web/src/components/settings/StorageSettings.tsx apps/web/src/components/settings/StorageSettings.browser.test.tsx packages/contracts/src/jones/storageCleanupReport.ts apps/server/src/mcp/McpHttpServer.ts packages/contracts/src/index.ts",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
     }
   ]
 }

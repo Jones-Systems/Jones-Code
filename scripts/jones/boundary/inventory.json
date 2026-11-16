@@ -3594,7 +3594,15 @@
     "apps/web/src/jones/workMode/WorkButtonSettings.browser.test.tsx": "jones-owned",
     "apps/web/src/jones/workstreams/personalRail.ts": "jones-owned",
     "apps/web/src/jones/workstreams/personalRail.test.ts": "jones-owned",
-    "apps/web/src/hooks/useSettings.test.ts": "jones-tests-in-upstream"
+    "apps/web/src/hooks/useSettings.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/storageCleanup/ReportRead.test.ts": "jones-owned",
+    "apps/server/src/jones/storageCleanup/ReportRead.ts": "jones-owned",
+    "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts": "jones-owned",
+    "apps/server/src/jones/mcp/storageCleanup/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/storageCleanup/tools.ts": "jones-owned",
+    "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx": "jones-owned",
+    "packages/contracts/src/jones/storageCleanupReport.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/storage-cleanup-results.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
