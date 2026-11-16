@@ -117,7 +117,13 @@ it.effect("production registration reads the supplied live report without mutati
       expect(finished.structuredContent).toMatchObject({ report: emptyReport });
       const refused = yield* call({ cursor: 1 });
       expect(refused.isError).toBe(true);
-      expect(refused.structuredContent).toMatchObject({ reason: "snapshot_required" });
+      expect(refused.content).toHaveLength(1);
+      const refusal = refused.content[0];
+      if (refusal?.type !== "text") throw new Error("Expected a JSON-text MCP refusal.");
+      expect(JSON.parse(refusal.text)).toEqual({
+        _tag: "StorageCleanupReportReadError",
+        reason: "snapshot_required",
+      });
       const linked = yield* call(
         {},
         {

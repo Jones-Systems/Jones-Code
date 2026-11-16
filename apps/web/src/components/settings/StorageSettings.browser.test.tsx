@@ -12,6 +12,7 @@ import { expect, it, vi } from "vite-plus/test";
 const state = vi.hoisted(() => ({
   settings: {} as typeof DEFAULT_SERVER_SETTINGS,
   targets: [] as Array<{ environmentId: string; settings: typeof DEFAULT_SERVER_SETTINGS }>,
+  scopeListeners: new Set<() => void>(),
   run: vi.fn(),
   report: null as StorageCleanupReport | null,
   reports: {} as Record<string, StorageCleanupReport>,
@@ -46,33 +47,41 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
   ...(await original()),
   useAtomCommand: (() => state.run) as never,
 }));
-vi.mock(import("./SettingsScopeContext"), async (original) => ({
-  ...(await original()),
-  useSettingsScope: (() => {
-    const environments = state.targets.map(({ environmentId, settings }) => ({
-      environmentId,
-      label: environmentId,
-      serverConfig: {
-        settings,
-        environment: {
-          capabilities: {
-            storageCleanup: true,
-            installRetention: state.installRetentionSupported,
-            storageCleanupRun: true,
-            settledWorktreeCleanup: true,
+vi.mock(import("./SettingsScopeContext"), async (original) => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    state.scopeListeners.add(listener);
+    return () => state.scopeListeners.delete(listener);
+  };
+  return {
+    ...(await original()),
+    useSettingsScope: (() => {
+      const targets = useSyncExternalStore(subscribe, () => state.targets);
+      const environments = targets.map(({ environmentId, settings }) => ({
+        environmentId,
+        label: environmentId,
+        serverConfig: {
+          settings,
+          environment: {
+            capabilities: {
+              storageCleanup: true,
+              installRetention: state.installRetentionSupported,
+              storageCleanupRun: true,
+              settledWorktreeCleanup: true,
+            },
           },
         },
-      },
-    }));
-    return {
-      scope: { kind: "all" },
-      environments,
-      connectedEnvironments: environments,
-      targets: state.targets,
-      target: null,
-    };
-  }) as never,
-}));
+      }));
+      return {
+        scope: { kind: "all" },
+        environments,
+        connectedEnvironments: environments,
+        targets,
+        target: null,
+      };
+    }) as never,
+  };
+});
 vi.mock(import("./useScopedSettings"), async (original) => ({
   ...(await original()),
   useScopedSettings: (() => state.settings) as never,
@@ -390,8 +399,10 @@ it("preserves expansion on query rerenders and resets it for a new report or sel
   await refreshReport();
   expect(cleanupRows(screen.container)).toHaveLength(5);
   await screen.getByRole("button", { name: "Show all", exact: true }).click();
-  state.targets = state.targets.filter(({ environmentId }) => environmentId === "env-b");
-  await screen.rerender(view());
+  await act(() => {
+    state.targets = state.targets.filter(({ environmentId }) => environmentId === "env-b");
+    for (const listener of state.scopeListeners) listener();
+  });
   expect(cleanupRows(screen.container)).toHaveLength(5);
   expect(cleanupRows(screen.container).every((row) => row.textContent?.includes("env-b"))).toBe(
     true,
