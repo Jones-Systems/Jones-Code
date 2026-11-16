@@ -47,7 +47,10 @@ export function PanelFindProvider({ children }: { children: ReactNode }) {
       const dialog = [
         ...document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]'),
       ]
-        .filter((element) => element.getClientRects().length > 0)
+        .filter(
+          (element) =>
+            element.getAttribute("aria-modal") !== "false" && element.getClientRects().length > 0,
+        )
         .at(-1);
       const available = (scope: HTMLElement) =>
         scope.isConnected &&

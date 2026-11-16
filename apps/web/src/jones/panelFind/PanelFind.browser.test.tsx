@@ -56,6 +56,26 @@ it("searches the active panel, navigates matches, restores focus, and keeps butt
   await expect.element(page.getByRole("search")).not.toBeInTheDocument();
 });
 
+it("keeps the focused panel searchable while a nonmodal notification is visible", async () => {
+  await using screen = await render(
+    <PanelFindProvider>
+      <PanelFindScope label="page" data-find-default>
+        <button>Page content</button>
+        <p>needle</p>
+      </PanelFindScope>
+      <div role="dialog" aria-modal="false" aria-label="Provider notification">
+        Provider updates available
+      </div>
+    </PanelFindProvider>,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Page content" }));
+  await find();
+  await expect.element(page.getByRole("textbox", { name: "Find in page" })).toBeVisible();
+  await userEvent.fill(page.getByRole("textbox", { name: "Find in page" }), "needle");
+  await expect.element(page.getByRole("status")).toHaveTextContent("1 of 1");
+  await expect.element(screen.getByRole("dialog", { name: "Provider notification" })).toBeVisible();
+});
+
 it("routes a focused side thread into full-history search and returns to the page when removed", async () => {
   let current: string | null = null;
   function ui(side = true) {
