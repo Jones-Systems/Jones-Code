@@ -1,3 +1,4 @@
+import { makeCompactVisitCompatibility } from "./jones/compactThreadVisits/compatibility.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
@@ -904,9 +905,11 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
     readonly acceptCompactTurnItems?: boolean;
     readonly acceptDedupedBodies?: boolean;
     readonly acceptCompactIds?: boolean;
+    readonly acceptCompactThreadVisits?: boolean;
   }) {
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const dedupeBodies = input.acceptDedupedBodies === true;
+    const visits = makeCompactVisitCompatibility(input.acceptCompactThreadVisits === true);
     // Replay, snapshot, and live tail share one deduper: it must see every delivered record.
     const withLiveDedupe = <E, R>(stream: Stream.Stream<OrchestrationV2ThreadStreamItem, E, R>) =>
       dedupeBodies ? Stream.suspend(() => Stream.map(stream, makeLiveBodyDeduper())) : stream;
@@ -934,6 +937,11 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
         })
         .pipe(
           Stream.map(threadStreamEventItem),
+          Stream.mapEffect((item) => Effect.try({
+            try: () => ({ ...item, event: visits.project(item.event) }),
+            catch: (cause) => new OrchestrationV2GetThreadProjectionError({ threadId: input.threadId,
+              message: "Failed to adapt orchestration V2 thread visit", cause }),
+          })),
           coalesceThreadLiveStream,
           Stream.mapError(
             (cause) =>
@@ -1014,12 +1022,17 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
               projection: dedupeBodies ? dedupeSnapshotBodies(projection) : projection,
             };
           })();
+      visits.seed(snapshotItem.projection.thread);
       return rpcInitialItems([snapshotItem]).pipe(
         Stream.concat(completionMarker),
         Stream.concat(eventStreamFrom(snapshotSequence)),
         withLiveDedupe,
       );
     });
+
+    // A resumed legacy subscriber has no delivered baseline in this generation.
+    // Reuse coherent snapshot-and-tail; never attach today's row to an old cursor.
+    if (input.acceptCompactThreadVisits !== true) return yield* snapshotThenLive();
 
     // Subscribe before reading persisted events to retain concurrent publishes; clients dedupe overlap by sequence.
     if (input.afterSequence !== undefined) {
