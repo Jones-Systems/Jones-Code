@@ -759,7 +759,7 @@ it.effect.each([false, true])(
             });
           }),
           captureRetirement: () =>
-            Effect.succeed(
+            Effect.sync(() =>
               detaching
                 ? {
                     binding: f.binding,
