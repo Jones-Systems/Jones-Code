@@ -144,6 +144,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const lastRequestCompletionMarker = yield* Ref.make(false);
   const lastAcceptBoundedSnapshot = yield* Ref.make<true | undefined>(undefined);
   const lastAcceptCompactTurnItems = yield* Ref.make<true | undefined>(undefined);
+  const lastAcceptCompactThreadVisits = yield* Ref.make<true | undefined>(undefined);
   const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationV2ThreadDetailSnapshot>>([]);
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
@@ -166,6 +167,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       readonly requestCompletionMarker?: true;
       readonly acceptBoundedSnapshot?: true;
       readonly acceptCompactTurnItems?: true;
+      readonly acceptCompactThreadVisits?: true;
     }) =>
       Stream.unwrap(
         Ref.set(lastSubscribeAfterSequence, input.afterSequence).pipe(
@@ -174,6 +176,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
           ),
           Effect.andThen(Ref.set(lastAcceptBoundedSnapshot, input.acceptBoundedSnapshot)),
           Effect.andThen(Ref.set(lastAcceptCompactTurnItems, input.acceptCompactTurnItems)),
+          Effect.andThen(Ref.set(lastAcceptCompactThreadVisits, input.acceptCompactThreadVisits)),
           Effect.andThen(SubscriptionRef.update(subscriptionCount, (count) => count + 1)),
           Effect.as(
             options?.completionMarker === true
@@ -304,6 +307,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     lastRequestCompletionMarker,
     lastAcceptBoundedSnapshot,
     lastAcceptCompactTurnItems,
+    lastAcceptCompactThreadVisits,
     supervisorState,
     supervisorSession,
     savedThreads,
@@ -408,6 +412,33 @@ const deleted = (sequence = 3): OrchestrationV2ThreadStreamItem => {
 };
 
 describe("EnvironmentThreads", () => {
+  it.effect("opts into compact visits and applies them without replacing newer detail metadata", () =>
+    Effect.gen(function* () {
+      const projection = {
+        ...BASE_PROJECTION,
+        thread: { ...BASE_PROJECTION.thread, title: "newer metadata", threadMessagesBlocked: true },
+      };
+      const h = yield* makeHarness({ cached: projection });
+      yield* awaitThreadState(h.observed, (state) => state.status === "live");
+      expect(yield* Ref.get(h.lastAcceptCompactThreadVisits)).toBe(true);
+      const visitedAt = DateTime.add(v2Now, { seconds: 10 });
+      yield* Queue.offer(h.inputs, {
+        kind: "event",
+        sequence: 8,
+        event: {
+          id: EventId.make("compact-visit:client"),
+          threadId: THREAD_ID,
+          occurredAt: visitedAt,
+          type: "thread.visit-recorded",
+          payload: { lastVisitedAt: visitedAt },
+        },
+      });
+      const next = yield* awaitThreadState(h.observed, (state) => state.appliedSequence === 8);
+      expect(Option.getOrThrow(next.data).thread).toEqual({ ...projection.thread, lastVisitedAt: visitedAt });
+      expect(Option.getOrThrow(next.data).updatedAt).toEqual(projection.updatedAt);
+    }),
+  );
+
   it.effect.each([
     ["disk", false],
     ["retained", false],

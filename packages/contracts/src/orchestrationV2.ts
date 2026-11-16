@@ -4280,6 +4280,8 @@ export type OrchestrationV2WorktreeThreadIds = typeof OrchestrationV2WorktreeThr
 
 export const OrchestrationV2SubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
+  /** Accept compact read marks; absent or false requests legacy full visits. */
+  acceptCompactThreadVisits: Schema.optionalKey(Schema.Boolean),
   afterSequence: Schema.optionalKey(NonNegativeInt),
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
   acceptBoundedSnapshot: Schema.optionalKey(Schema.Boolean),
