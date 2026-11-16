@@ -36,7 +36,7 @@ export const withFiniteProduction = Effect.fn("DirectProducer.finiteProduction")
   R,
 >(
   input: {
-    producer: "jones-server-build" | "jones-server-build-exe";
+    producer: "jones-server-build" | "jones-server-build-exe" | "jones-server-bundle";
     worktree: string;
     root: string;
   },

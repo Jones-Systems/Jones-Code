@@ -66,7 +66,7 @@
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "e42503772bcbbfa6dc661f405f1875b9a52f43b43dc46ac0041752cd5f0bbcdc"
+          "sha256": "337e2973c0046906c86cfa1e05b1e08a4cf9ede652a538ab151de3397ae6838a"
         }
       ],
       "targets": []
@@ -201,7 +201,7 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "1cdc2bd97cf2fbed68ce3324363ac87fde5cd8961aaa0d2b184ccca53efce9fe"
+          "sha256": "437c36994a2bd1a87ed26184e40b2857beef89e8424a3ebaa2c5daf0cd46d652"
         },
         {
           "path": "apps/server/src/binCli.ts",
@@ -238,7 +238,7 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "1cdc2bd97cf2fbed68ce3324363ac87fde5cd8961aaa0d2b184ccca53efce9fe"
+          "sha256": "437c36994a2bd1a87ed26184e40b2857beef89e8424a3ebaa2c5daf0cd46d652"
         },
         {
           "path": "apps/server/src/server.ts",
@@ -259,7 +259,7 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "1cdc2bd97cf2fbed68ce3324363ac87fde5cd8961aaa0d2b184ccca53efce9fe"
+          "sha256": "437c36994a2bd1a87ed26184e40b2857beef89e8424a3ebaa2c5daf0cd46d652"
         }
       ],
       "targets": ["apps/server/src/binMain.ts"]

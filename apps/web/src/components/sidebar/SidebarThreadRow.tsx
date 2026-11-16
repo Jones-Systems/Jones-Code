@@ -390,6 +390,7 @@ function SnoozeMenuButton(props: {
                 <button
                   type="button"
                   aria-label="Snooze thread"
+                  onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => event.stopPropagation()}
                   onDoubleClick={(event) => event.stopPropagation()}
                   className="inline-flex h-full cursor-pointer items-center gap-0.5 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
@@ -402,7 +403,7 @@ function SnoozeMenuButton(props: {
         </TooltipTrigger>
         <TooltipPopup>Snooze thread</TooltipPopup>
       </Tooltip>
-      <MenuPopup side="bottom" align="end">
+      <MenuPopup side="bottom" align="end" onPointerDown={(event) => event.stopPropagation()}>
         {presets.map((preset) => (
           <MenuItem
             key={preset.id}

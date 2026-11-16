@@ -423,7 +423,9 @@ it("explains missing remote evaluation support without inferring an integration 
   await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
   const disclosure = button(screen.container, "1 provider unavailable for remote evaluation");
   await act(async () => disclosure.click());
-  expect(screen.container.textContent).toContain("Not supported.");
+  expect(screen.container.textContent).toContain(
+    "Not supported. This instance does not advertise evaluation without tools. Selecting a model for ordinary threads does not enable evaluator support.",
+  );
   expect(screen.container.textContent).not.toContain("This Codex CLI integration");
   expect(screen.container.textContent).not.toContain("Managed Codex (ChatGPT authorization)");
   expect(screen.container.textContent).not.toContain("qualified Claude integrations");
@@ -445,14 +447,18 @@ it("lists only rejected instances with their first snapshot-supported reason onc
         enabled: false,
         installed: false,
       },
-      "Not supported.",
+      "Not supported. This instance does not advertise evaluation without tools. Selecting a model for ordinary threads does not enable evaluator support.",
     ],
     [
       "Unqualified Claude",
       { driver: ProviderDriverKind.make("claudeAgent"), supportsRemoteRequestEvaluation: false },
-      "Not supported.",
+      "Not supported. This instance does not advertise evaluation without tools. Selecting a model for ordinary threads does not enable evaluator support.",
     ],
-    ["Older instance", { supportsRemoteRequestEvaluation: undefined }, "Not supported."],
+    [
+      "Older instance",
+      { supportsRemoteRequestEvaluation: undefined },
+      "Not supported. This instance does not advertise evaluation without tools. Selecting a model for ordinary threads does not enable evaluator support.",
+    ],
     [
       "Unavailable instance",
       {

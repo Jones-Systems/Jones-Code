@@ -1,27 +1,41 @@
 import { act, fakeTimers, render } from "../../../test/render";
-import { RegistryProvider } from "@effect/atom-react";
-import { DEFAULT_SERVER_SETTINGS, type StorageCleanupReport } from "@t3tools/contracts";
+import { RegistryContext, RegistryProvider } from "@effect/atom-react";
+import { AtomRegistry } from "effect/reactivity";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type EnvironmentId,
+  type StorageCleanupReport,
+} from "@t3tools/contracts";
 import { type ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   settings: {} as typeof DEFAULT_SERVER_SETTINGS,
   targets: [] as Array<{ environmentId: string; settings: typeof DEFAULT_SERVER_SETTINGS }>,
+  scopeListeners: new Set<() => void>(),
   run: vi.fn(),
   report: null as StorageCleanupReport | null,
+  reports: {} as Record<string, StorageCleanupReport>,
   installRetentionSupported: true,
 }));
 
 vi.mock(import("../../state/server"), async (original) => {
   const actual = await original();
   const { Atom } = await import("effect/reactivity");
-  const report = Atom.make(() => ({ _tag: "Success", value: state.report, waiting: false }));
+  const report = Atom.family((environmentId: string) =>
+    Atom.make(() => ({
+      _tag: "Success",
+      value: state.reports[environmentId] ?? state.report,
+      waiting: false,
+    })),
+  );
   const allowed = Atom.make(true);
   return {
     ...actual,
     serverEnvironment: {
       ...actual.serverEnvironment,
-      storageCleanupReport: (() => report) as never,
+      storageCleanupReport: (({ environmentId }: { environmentId: string }) =>
+        report(environmentId)) as never,
       runStorageCleanup: {
         ...actual.serverEnvironment.runStorageCleanup,
         permissionAtom: () => allowed,
@@ -33,33 +47,41 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
   ...(await original()),
   useAtomCommand: (() => state.run) as never,
 }));
-vi.mock(import("./SettingsScopeContext"), async (original) => ({
-  ...(await original()),
-  useSettingsScope: (() => {
-    const environments = state.targets.map(({ environmentId, settings }) => ({
-      environmentId,
-      label: environmentId,
-      serverConfig: {
-        settings,
-        environment: {
-          capabilities: {
-            storageCleanup: true,
-            installRetention: state.installRetentionSupported,
-            storageCleanupRun: true,
-            settledWorktreeCleanup: true,
+vi.mock(import("./SettingsScopeContext"), async (original) => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    state.scopeListeners.add(listener);
+    return () => state.scopeListeners.delete(listener);
+  };
+  return {
+    ...(await original()),
+    useSettingsScope: (() => {
+      const targets = useSyncExternalStore(subscribe, () => state.targets);
+      const environments = targets.map(({ environmentId, settings }) => ({
+        environmentId,
+        label: environmentId,
+        serverConfig: {
+          settings,
+          environment: {
+            capabilities: {
+              storageCleanup: true,
+              installRetention: state.installRetentionSupported,
+              storageCleanupRun: true,
+              settledWorktreeCleanup: true,
+            },
           },
         },
-      },
-    }));
-    return {
-      scope: { kind: "all" },
-      environments,
-      connectedEnvironments: environments,
-      targets: state.targets,
-      target: null,
-    };
-  }) as never,
-}));
+      }));
+      return {
+        scope: { kind: "all" },
+        environments,
+        connectedEnvironments: environments,
+        targets,
+        target: null,
+      };
+    }) as never,
+  };
+});
 vi.mock(import("./useScopedSettings"), async (original) => ({
   ...(await original()),
   useScopedSettings: (() => state.settings) as never,
@@ -93,6 +115,7 @@ vi.mock(import("../ui/toast"), async (original) => {
 });
 
 import { StorageCleanupSections } from "./StorageSettings";
+import { serverEnvironment } from "../../state/server";
 
 function setup() {
   state.installRetentionSupported = true;
@@ -118,6 +141,7 @@ function setup() {
     settings: state.settings,
   }));
   state.report = null;
+  state.reports = {};
   state.run.mockReset();
 }
 
@@ -254,4 +278,157 @@ it("hides install retention for a server without the additive capability", async
   state.installRetentionSupported = false;
   await using screen = await render(panel());
   expect(screen.container.querySelector('[aria-label="Install retention"]')).toBeNull();
+});
+
+function cleanupReport(
+  environmentId: string,
+  count: number,
+  omittedCount = 0,
+): StorageCleanupReport {
+  return {
+    trigger: "manual",
+    startedAt: "2026-11-16T12:00:00.000Z",
+    finishedAt: "2026-11-16T12:01:00.000Z",
+    counts: { removed: 0, kept: count + omittedCount, failed: 0 },
+    bytesFreed: 0,
+    omittedCount,
+    entries: Array.from({ length: count }, (_, index) => ({
+      kind: "worktree",
+      outcome: "kept",
+      reason: `Preserved evidence ${environmentId}-${index}`,
+      path: `/cleanup-test/${environmentId}/worktree-${index}`,
+      projectPath: "/project",
+      threadId: null,
+      threadTitle: null,
+      bytes: null,
+      files: null,
+      retirement: {
+        state: "held",
+        reasonCodes: ["live_consumer"],
+        receiptId: `${environmentId}-receipt-${index}`,
+        fingerprint: null,
+        paths: [],
+        details: [
+          {
+            reason: "live_consumer",
+            target: "checkout",
+            root: "/project",
+            fact: `Retirement evidence ${environmentId}-${index}`,
+            missingFact: null,
+            lineage: [{ owner: "synthetic" }],
+            nextAction: "Keep the checkout.",
+          },
+        ],
+        outputObligations: [],
+      },
+    })),
+  };
+}
+
+const cleanupRows = (container: HTMLElement) =>
+  [...container.querySelectorAll("h3")].filter((heading) =>
+    heading.textContent?.startsWith("/cleanup-test/"),
+  );
+
+it("shows five results total across hosts, adds ten, handles the short final page and shows all", async () => {
+  setup();
+  state.reports = { "env-a": cleanupReport("env-a", 3, 7), "env-b": cleanupReport("env-b", 20) };
+  await using screen = await render(panel());
+  await screen.getByRole("button", { name: /Last run/ }).click();
+  expect(cleanupRows(screen.container)).toHaveLength(5);
+  expect(screen.container.textContent).toContain("env-a: 0 removed, 10 kept");
+  expect(screen.container.textContent).toContain("env-b: 0 removed, 20 kept");
+  expect(screen.container.textContent).toContain(
+    "env-a: 7 additional results omitted from this report.",
+  );
+  await expect
+    .element(screen.getByRole("heading", { name: "/cleanup-test/env-b/worktree-1", exact: true }))
+    .toBeInTheDocument();
+  expect(screen.container.textContent).not.toContain("Preserved evidence env-b-2");
+  expect(screen.container.textContent).not.toContain("Retirement evidence env-b-2");
+  expect(screen.container.querySelectorAll("details")).toHaveLength(5);
+
+  await screen.getByRole("button", { name: "Show more", exact: true }).click();
+  expect(cleanupRows(screen.container)).toHaveLength(15);
+  expect(screen.container.textContent).toContain("Showing 15 of 23 results.");
+  await screen.getByRole("button", { name: "Show more", exact: true }).click();
+  expect(cleanupRows(screen.container)).toHaveLength(23);
+  await expect
+    .element(screen.getByRole("button", { name: "Show more", exact: true }))
+    .not.toBeInTheDocument();
+  await expect
+    .element(screen.getByRole("button", { name: "Show all", exact: true }))
+    .not.toBeInTheDocument();
+
+  await screen.getByRole("button", { name: "Show less", exact: true }).click();
+  expect(cleanupRows(screen.container)).toHaveLength(5);
+  expect(screen.container.querySelectorAll("details")).toHaveLength(5);
+  await screen.getByRole("button", { name: "Show all", exact: true }).click();
+  expect(cleanupRows(screen.container)).toHaveLength(23);
+  expect(screen.container.textContent).toContain("Showing 23 of 23 results.");
+});
+
+it("preserves expansion on query rerenders and resets it for a new report or selected hosts", async () => {
+  setup();
+  state.reports = { "env-a": cleanupReport("env-a", 3), "env-b": cleanupReport("env-b", 20) };
+  const registry = AtomRegistry.make();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  const view = () => (
+    <RegistryContext.Provider value={registry}>
+      <StorageCleanupSections />
+    </RegistryContext.Provider>
+  );
+  const refreshReport = () =>
+    act(() =>
+      registry.refresh(
+        serverEnvironment.storageCleanupReport({
+          environmentId: "env-b" as EnvironmentId,
+          input: {},
+        }),
+      ),
+    );
+  await using screen = await render(view());
+  await screen.getByRole("button", { name: /Last run/ }).click();
+  await screen.getByRole("button", { name: "Show more", exact: true }).click();
+  state.reports["env-b"] = cleanupReport("env-b", 20);
+  await refreshReport();
+  await screen.rerender(view());
+  expect(cleanupRows(screen.container)).toHaveLength(15);
+
+  state.reports["env-b"] = { ...state.reports["env-b"]!, finishedAt: "2026-11-16T12:02:00.000Z" };
+  await refreshReport();
+  expect(cleanupRows(screen.container)).toHaveLength(5);
+  await screen.getByRole("button", { name: "Show all", exact: true }).click();
+  await act(() => {
+    state.targets = state.targets.filter(({ environmentId }) => environmentId === "env-b");
+    for (const listener of state.scopeListeners) listener();
+  });
+  expect(cleanupRows(screen.container)).toHaveLength(5);
+  expect(cleanupRows(screen.container).every((row) => row.textContent?.includes("env-b"))).toBe(
+    true,
+  );
+});
+
+it("mounts only five rows for a report with more than a thousand entries", async () => {
+  setup();
+  state.reports = { "env-a": cleanupReport("env-a", 3), "env-b": cleanupReport("env-b", 1001) };
+  await using screen = await render(panel());
+  await screen.getByRole("button", { name: /Last run/ }).click();
+  expect(cleanupRows(screen.container)).toHaveLength(5);
+  expect(screen.container.querySelectorAll("details")).toHaveLength(5);
+  expect(screen.container.textContent).not.toContain("Retirement evidence env-b-1000");
+});
+
+it("has no expansion controls for five or fewer available entries, including server omissions", async () => {
+  setup();
+  state.reports = { "env-a": cleanupReport("env-a", 2, 9), "env-b": cleanupReport("env-b", 3) };
+  await using screen = await render(panel());
+  await screen.getByRole("button", { name: /Last run/ }).click();
+  expect(cleanupRows(screen.container)).toHaveLength(5);
+  await expect
+    .element(screen.getByRole("button", { name: /^Show (more|all|less)$/ }))
+    .not.toBeInTheDocument();
+  expect(screen.container.textContent).toContain(
+    "env-a: 9 additional results omitted from this report.",
+  );
 });

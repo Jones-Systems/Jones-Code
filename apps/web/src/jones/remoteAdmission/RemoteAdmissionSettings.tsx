@@ -132,7 +132,8 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
     const provider = entry.snapshot;
     let reason: string;
     if (provider.supportsRemoteRequestEvaluation !== true) {
-      reason = "Not supported.";
+      reason =
+        "Not supported. This instance does not advertise evaluation without tools. Selecting a model for ordinary threads does not enable evaluator support.";
     } else if (provider.availability === "unavailable") {
       reason = `Unavailable.${provider.unavailableReason ? ` ${provider.unavailableReason}` : ""}`;
     } else if (!entry.enabled) {
