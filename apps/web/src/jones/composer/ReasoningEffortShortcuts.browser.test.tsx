@@ -812,6 +812,16 @@ function expectProductionComposerLayout() {
       form.getBoundingClientRect().top,
     );
   }
+  for (const label of band.querySelectorAll<HTMLElement>(
+    '[data-composer-shortcut-group="effort"] > [role="group"] > span',
+  )) {
+    const text = document.createRange();
+    text.selectNodeContents(label);
+    for (const rect of text.getClientRects()) {
+      expectContained(rect, label.getBoundingClientRect());
+      expectContained(rect, band.getBoundingClientRect());
+    }
+  }
   for (const element of [canvas, band, ...band.querySelectorAll<HTMLElement>("button"), editor]) {
     const rect = element.getBoundingClientRect();
     if (element === canvas || element === band) {
