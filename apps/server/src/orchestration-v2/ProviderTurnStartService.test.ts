@@ -1,3 +1,4 @@
+import { RuntimeUseError } from "../jones/cleanup/RuntimeUseProtocol.ts";
 import * as StartRefusal from "../jones/startRefusal/Store.ts";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
 import { SqliteReaderAdmissionError } from "@t3tools/shared/jones/sqliteReaders/admissionFailure";
@@ -2613,6 +2614,43 @@ effectIt.effect.each([false, true])(
       }
     }),
 );
+
+for (const [reason, code] of [
+  ["runtime_use_prior_outcome_unknown_no_replay", "runtime_use_prior_outcome_unknown_no_replay"],
+  ["runtime_use_PRIVATE_DIAGNOSTIC_MARKER", "runtime_use_unclassified"],
+] as const) {
+  effectIt.effect(`retains safe start diagnostics for ${code}`, () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        openFailure: new RuntimeUseError({
+          reason,
+          cause: { detail: "PRIVATE_DIAGNOSTIC_MARKER", reason },
+        }),
+      });
+
+      yield* harness.start;
+
+      expect(harness.open).toHaveBeenCalledOnce();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      const projection = harness.projection();
+      expect(projection.runs.at(-1)?.status).toBe("failed");
+      expect(projection.attempts[0]?.status).toBe("failed");
+      expect(projection.turnItems).toHaveLength(1);
+      expect(projection.turnItems[0]).toMatchObject({
+        type: "error",
+        status: "failed",
+        title: "Provider session failed to open",
+        failure: {
+          class: "provider_error",
+          message: "Failed to open provider instance codex-personal session new-provider-session.",
+          code,
+        },
+      });
+      expect(JSON.stringify(projection.turnItems)).not.toContain("PRIVATE_DIAGNOSTIC_MARKER");
+    }),
+  );
+}
 
 effectIt.effect("leaves the run starting when a session-open failure will be retried", () =>
   Effect.gen(function* () {

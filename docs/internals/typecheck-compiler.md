@@ -175,6 +175,15 @@ The native TSRS invocation pins `--checkerAssignment go --checkers 2`.
 Do not infer reproducibility or performance from the defaults of another build.
 The existing TypeScript library/editor alias remains the incumbent.
 
+Local macOS compiler admission is a separate cross-worktree lease shared with
+web cache warming. An abandoned admission or native-closed generation can be
+recovered after its owner is absent; reclamation is exclusive and revalidates
+the exact inode and owner bytes. A dead launcher alone cannot prove its native
+producer stopped. Legacy records, unknown producer exits and interrupted
+reclamation therefore remain protected and report the exact hold. Audit owner
+and native completion evidence before any separately authorized recovery; age,
+an absent PID, and another worktree's successful test are insufficient.
+
 ## Installation safety and recovery
 
 Patching requires this worktree's literal, nonsymlinked
