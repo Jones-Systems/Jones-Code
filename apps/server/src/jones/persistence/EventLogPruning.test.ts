@@ -34,6 +34,14 @@ interface Reader {
 }
 const readers: ReadonlyArray<Reader> = [
   {
+    file: "startRefusal/Store.ts",
+    classification: "tolerate",
+    after:
+      "A persistent refusal certificate with a missing settlement event is unknown: recovery retains the unread claim and current delivery without reserving or offering a successor. Missing attempt-birth evidence denies arming an existing hold.",
+    proof:
+      "startRefusal/Orchestrator.integration.test.ts (upstream-like pruning after crash before reservation); startRefusal/Store.test.ts (missing settlement proof)",
+  },
+  {
     file: "goals/GoalControl.ts",
     classification: "tolerate",
     after:
@@ -181,6 +189,14 @@ const readers: ReadonlyArray<Reader> = [
     classification: "unaffected",
     after: "Reads `thread.created` (and ApplicationBirth), which the pruner always keeps.",
     proof: "persistence/EventLogPruning.test.ts (ApplicationBirth)",
+  },
+  {
+    file: "threadResultDependencies/WakeObligations.ts",
+    classification: "tolerate",
+    after:
+      "A missing run-attempt.created event denies accepted-start release even when its matching attempt projection survives. The persistent hold retains the answer and outgoing duty across restart; it remains ineligible for wake admission.",
+    proof:
+      "threadResultDependencies/WakeObligations.test.ts (pruned attempt birth before accepted start)",
   },
   {
     file: "threadResultDependencies/DependencyStore.ts",

@@ -1,3 +1,5 @@
+import * as StartRefusal from "../jones/startRefusal/Store.ts";
+import type { HoldReservation, RefusalReason } from "../jones/startRefusal/model.ts";
 import {
   validateRuntimeUseAttachmentPublication,
   revalidateRuntimeUseAttachmentBeforePublication,
@@ -299,6 +301,7 @@ export interface EventSinkV2Shape {
   >;
 
   readonly write: (input: {
+    readonly startRefusalHold?: HoldReservation;
     readonly skipUnchangedProviderNodes?: boolean;
     readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
@@ -328,6 +331,7 @@ export interface EventSinkV2Shape {
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeWithEffects: (input: {
+    readonly startRefusalHold?: HoldReservation;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
@@ -362,6 +366,7 @@ export interface EventSinkV2Shape {
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeIfRunCurrent: (input: {
+    readonly startRefusalReason?: RefusalReason;
     readonly skipUnchangedProviderNodes?: boolean;
     readonly checkoutRecreation?: ExpectedCheckout;
     readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
@@ -671,8 +676,13 @@ const layerBase: Layer.Layer<
     // Commit order can differ from publication order if a writer is descheduled; clients discard older sequences.
     // Take this lane last inside the transaction and hold it through publication to preserve that order.
     // Publication never waits, so a transaction waiting for the lane blocks only briefly.
+    const startRefusals = yield* Effect.serviceOption(StartRefusal.StartRefusals);
     const jonesTables = makeJonesTablePresence(sql);
-    const dependencies = makeDependencyStore(sql, jonesTables);
+    const dependencies = makeDependencyStore(
+      sql,
+      jonesTables,
+      Option.isSome(startRefusals) ? startRefusals.value.establish : undefined,
+    );
     const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
     const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);
@@ -1054,6 +1064,9 @@ const layerBase: Layer.Layer<
         const publicEvents = storedEvents
           .filter(isPublicStoredOrchestrationEvent)
           .map((stored) => stored.event);
+        if (Option.isSome(startRefusals))
+          yield* startRefusals.value.events(storedEvents.filter(isPublicStoredOrchestrationEvent));
+        yield* dependencies.wakes.events(storedEvents.filter(isPublicStoredOrchestrationEvent));
         yield* acceptDependencyEvents(dependencies, publicEvents);
         // Jones: hold reasons live in a sparse Jones table, written in this transaction.
         yield* acceptQueueHoldEvents(queueHolds, publicEvents, queueHoldOrigin);
@@ -1107,6 +1120,12 @@ const layerBase: Layer.Layer<
       if (batch !== undefined) batch.eventCount += input.events.length;
       const { committed } = yield* commitThenPublish(
         Effect.gen(function* () {
+          if (
+            input.startRefusalHold !== undefined &&
+            (Option.isNone(startRefusals) ||
+              !(yield* startRefusals.value.validateReservation(input.startRefusalHold)))
+          )
+            return { committed: [], outcomes: [] };
           // Check ownership in the same transaction that claims the native session.
           const imported = input.unlessNativeThreadOwned;
           if (imported?.nativeThreadRef != null) {
@@ -1143,6 +1162,8 @@ const layerBase: Layer.Layer<
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           const outcomes = yield* applyStoredEvents(committed, { queueHold: input.queueHold });
+          if (input.startRefusalHold !== undefined && Option.isSome(startRefusals))
+            yield* startRefusals.value.reserve(input.startRefusalHold, committed.at(-1)!.sequence);
           if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           if (Option.isSome(checkoutIntent))
@@ -1228,6 +1249,17 @@ const layerBase: Layer.Layer<
               })
               .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
             const outcomes = yield* applyStoredEvents(storedEvents);
+            if (
+              input.startRefusalReason !== undefined &&
+              input.expectedStatus === "starting" &&
+              Option.isSome(startRefusals)
+            )
+              yield* startRefusals.value.certify(
+                { threadId: input.threadId, runId: input.runId, attemptId: input.activeAttemptId },
+                input.startRefusalReason,
+                storedEvents,
+                { certified: dependencies.wakes.certified },
+              );
             yield* effectOutbox.enqueue(input.effects ?? []);
             if (Option.isSome(checkoutIntent))
               yield* checkoutIntent.value.linkEffects({
@@ -1560,6 +1592,8 @@ const layerBase: Layer.Layer<
           if (ordinary !== undefined && Option.isSome(checkoutIntent))
             yield* checkoutIntent.value.validate(ordinary);
           yield* WorkspaceLifecycle.validateCommand(input.ordinaryCheckoutCommand, input.events);
+          if (input.commandType === "message.dispatch" && Option.isSome(startRefusals))
+            yield* startRefusals.value.admit(input.events);
           const runId = input.updateDelegatedCompletionOnlyRunId;
           const normalized = yield* normalizeEvents(
             runId === undefined

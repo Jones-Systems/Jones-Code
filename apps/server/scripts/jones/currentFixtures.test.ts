@@ -212,6 +212,8 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 151, name: "WorkspaceRuntimeUses" },
           { id: 152, name: "PeerLinksAdoption" },
           { id: 153, name: "PersonalWorkstreams" },
+          { id: 154, name: "StartRefusals" },
+          { id: 155, name: "PeerWakeObligations" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

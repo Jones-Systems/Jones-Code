@@ -1,4 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
+import { ChevronDownIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
   PersonalWorkstreamsController,
@@ -9,6 +10,23 @@ import { Input } from "../ui/input";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Dialog, DialogPopup, DialogHeader, DialogTitle } from "../ui/dialog";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
+import * as Schema from "effect/Schema";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { PersonalSidebarGroupHeader } from "../../jones/workstreams/PersonalSidebarGroupHeader";
+import {
+  formatPersonalThreadCount,
+  type PersonalThreadSummary,
+} from "../../jones/workstreams/personalPresentation";
+import { personalWorkstreamRailColor } from "../../jones/workstreams/personalRail";
+
+const collapsedSchema = Schema.Boolean;
+const emptySummary: PersonalThreadSummary = {
+  total: 0,
+  running: 0,
+  attention: 0,
+  failed: 0,
+  done: 0,
+};
 export function WorkstreamCreateForm({
   controller,
   open,
@@ -70,13 +88,19 @@ function Group({
   item,
   controller,
   children,
+  summary,
 }: {
   item: PersonalWorkstreamView;
   controller: PersonalWorkstreamsController;
   children: ReactNode;
+  summary: PersonalThreadSummary;
 }) {
   const state = useAtomValue(controller.state);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useLocalStorage(
+    `jones:workstreams:collapsed:${item.id}`,
+    false,
+    collapsedSchema,
+  );
   const [editing, setEditing] = useState<"name" | "color" | null>(null);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
@@ -96,11 +120,11 @@ function Group({
   return (
     <section
       data-native-workstream={JSON.stringify(item.id)}
-      className="my-1 rounded-md border-l-2"
-      style={{ borderLeftColor: item.color ?? undefined }}
+      className="my-2 min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70"
+      style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
     >
       <div
-        className="flex items-center px-2"
+        className="flex items-start gap-1 pr-2"
         draggable={state.canCreate && !pending}
         onDragStart={(event) => {
           event.dataTransfer.setData("application/x-jones-workstream", item.id);
@@ -125,14 +149,12 @@ function Group({
           });
         }}
       >
-        <button
-          type="button"
-          className="flex-1 truncate text-left text-sm font-medium"
-          aria-expanded={!collapsed}
-          onClick={() => setCollapsed(!collapsed)}
-        >
-          {item.name}
-        </button>
+        <PersonalSidebarGroupHeader
+          name={item.name}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed((value) => !value)}
+          summary={summary}
+        />
         <Menu>
           <MenuTrigger aria-label={`Edit ${item.name}`}>…</MenuTrigger>
           <MenuPopup>
@@ -272,21 +294,51 @@ function Group({
 export function WorkstreamSidebarSection({
   controller,
   renderMembers,
+  summaries,
+  unassignedSummary = emptySummary,
 }: {
   controller: PersonalWorkstreamsController;
   renderMembers: (id: string | null) => ReactNode;
+  summaries?: ReadonlyMap<string, PersonalThreadSummary>;
+  unassignedSummary?: PersonalThreadSummary;
 }) {
   const state = useAtomValue(controller.state);
+  const [unassignedCollapsed, setUnassignedCollapsed] = useLocalStorage(
+    "jones:workstreams:unassigned-collapsed",
+    false,
+    collapsedSchema,
+  );
   return (
     <div aria-label="Workstreams">
       {state.workstreams.map((item) => (
-        <Group key={item.id} item={item} controller={controller}>
+        <Group
+          key={item.id}
+          item={item}
+          controller={controller}
+          summary={summaries?.get(item.id) ?? emptySummary}
+        >
           {renderMembers(item.id)}
         </Group>
       ))}
-      <section data-native-workstream="null">
-        <h3 className="px-2 text-xs text-muted-foreground">Unassigned</h3>
-        {renderMembers(null)}
+      <section data-native-workstream="null" className="my-2 min-w-0">
+        <button
+          type="button"
+          aria-label={`${unassignedCollapsed ? "Expand" : "Collapse"} Unassigned`}
+          aria-description={formatPersonalThreadCount(unassignedSummary.total)}
+          aria-expanded={!unassignedCollapsed}
+          onClick={() => setUnassignedCollapsed((value) => !value)}
+          className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          <ChevronDownIcon
+            aria-hidden
+            className={`size-4 shrink-0 ${unassignedCollapsed ? "-rotate-90" : ""}`}
+          />
+          <span className="truncate">Unassigned</span>
+          <span className="ml-auto shrink-0 text-xs tabular-nums">
+            {formatPersonalThreadCount(unassignedSummary.total)}
+          </span>
+        </button>
+        {!unassignedCollapsed ? renderMembers(null) : null}
       </section>
     </div>
   );

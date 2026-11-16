@@ -127,7 +127,7 @@ export const admissionScheduler = (afterResume = false) => {
   };
 };
 
-const scratchDirectory = () => {
+export const scratchDirectory = () => {
   // GitHub's job-owned root is already provisioned; local qualification supplies
   // an explicit task-owned root. Both still pass the same placement checks.
   const configured =
@@ -184,7 +184,7 @@ const requireCapabilities = () => {
   }
 };
 
-const observeWorker = (worker: NodeWorkerThreads.Worker) => {
+export const observeWorker = (worker: NodeWorkerThreads.Worker) => {
   const messages: unknown[] = [];
   const waiters = new Set<() => void>();
   let terminal: Error | undefined;
@@ -240,7 +240,7 @@ const observeWorker = (worker: NodeWorkerThreads.Worker) => {
   };
 };
 
-const checkpointTraffic = (worker: NodeWorkerThreads.Worker) => {
+export const checkpointTraffic = (worker: NodeWorkerThreads.Worker) => {
   const send = worker.postMessage.bind(worker);
   const queued: Array<Parameters<typeof worker.postMessage>> = [];
   const requests: Message[] = [];

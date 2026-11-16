@@ -20,11 +20,12 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import { makeDependencyStore } from "./DependencyStore.ts";
 import * as Changes from "./DependencyChanges.ts";
+import * as StartRefusals from "../startRefusal/Store.ts";
 import type { OpenRequest } from "./DependencyCommit.ts";
 
 const database = Sqlite.layerMemory;
 const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
-  Layer.provideMerge(database),
+  Layer.provideMerge(StartRefusals.layer.pipe(Layer.provideMerge(database))),
 );
 export const layer = Layer.merge(stores, EventSink.layer.pipe(Layer.provide(stores))).pipe(
   Layer.provideMerge(Changes.layer),

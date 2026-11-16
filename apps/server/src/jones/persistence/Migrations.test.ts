@@ -482,6 +482,8 @@ it.effect(
           [151, "WorkspaceRuntimeUses"],
           [152, "PeerLinksAdoption"],
           [153, "PersonalWorkstreams"],
+          [154, "StartRefusals"],
+          [155, "PeerWakeObligations"],
         ],
       );
       assert.deepStrictEqual(
@@ -717,6 +719,8 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [151, "WorkspaceRuntimeUses"],
       [152, "PeerLinksAdoption"],
       [153, "PersonalWorkstreams"],
+      [154, "StartRefusals"],
+      [155, "PeerWakeObligations"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

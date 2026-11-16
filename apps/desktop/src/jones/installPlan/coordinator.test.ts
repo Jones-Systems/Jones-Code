@@ -74,6 +74,7 @@ function fixture() {
           sourceSha: source,
           sourceTree: tree,
           artifactId: 1,
+          version: target.version,
         },
       },
     } as DesktopUpdateState,
@@ -613,6 +614,49 @@ describe("native client command reservations", () => {
   });
 });
 describe("native install plan coordinator", () => {
+  it("leaves no plan or download when the reviewed artifact changed", async () => {
+    const f = fixture();
+    const result = await f.coordinator.request({
+      type: "start",
+      origin: "update-everything",
+      target: { ...target, laptopArtifactId: 2 },
+      select: [],
+      laptop: { action: "download" },
+    });
+    expect(result.refused?.code).toBe("not-selectable");
+    expect(f.snapshot().document.current).toBeNull();
+    expect(f.controller.download).not.toHaveBeenCalled();
+  });
+
+  it("retains the reviewed artifact in the plan so a retry cannot select a rebuild", async () => {
+    const f = fixture();
+    const result = await f.coordinator.request({
+      type: "start",
+      origin: "update-everything",
+      target: { ...target, laptopArtifactId: 1 },
+      select: [],
+      laptop: { action: "download" },
+    });
+    expect(result.state.current?.target.laptopArtifactId).toBe(1);
+    await vi.waitFor(() =>
+      expect(f.snapshot().document.current?.laptop.operations.at(-1)?.result?.status).toBe(
+        "completed",
+      ),
+    );
+    const jones = f.controller.state.jones!;
+    f.controller.state = {
+      ...f.controller.state,
+      jones: { ...jones, provenance: { ...jones.provenance!, artifactId: 2 } },
+    };
+    const retry = await f.coordinator.request({
+      type: "laptop",
+      planId: result.state.current!.planId,
+      action: "download",
+    });
+    expect(retry.refused?.code).toBe("not-selectable");
+    expect(f.controller.download).toHaveBeenCalledTimes(1);
+  });
+
   it("requires native committed evidence; renderer reports and source equality cannot open the Laptop gate", async () => {
     const f = fixture();
     f.setEvidence({ committedTransactionId: undefined });

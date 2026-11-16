@@ -35,10 +35,14 @@ export const sourcePins = {
   },
   compiler: {
     "tsconfig.base.json": "68c74b9c2b2295b28221b027a457f3837da638b59d89ee8a88a745cd1c981fe3",
-    "apps/web/tsconfig.json": "dcdfe8c878e340d4b93d678908b86825cb261ce887e3f024fbd826f799cc3995",
+    "apps/web/tsconfig.json": "f2e28fdde25617023b6a1f08da01e53a4671db41a56acc2bfd8310275b53acd6",
     "apps/web/vite.config.ts": "1cf367544816d5f36a39a467817c5da8365bdaae5ec1cb36da1c44ac31daed45",
     "scripts/jones/tsrs/typecheck.ts":
-      "45e85cdc032d5bcd132b96472bcefd7de1137449042f54c84d87e21f79dc01b6",
+      "bd567db55d72ffd8fd1c30f50f4453ba27ae744b76927a98ed9d0f0196fc5aad",
+    "scripts/jones/tsrs/local-mac-capacity.ts":
+      "10ef5a526fb9ab7c2e31d75bd171edb4aff12adaf110f321f468410ce450eccc",
+    "scripts/jones/worktree-setup/local-mac-admission.ts":
+      "b7dda78d068d2c460e21eb1eff45d4481e0470fd12ad12301e0b3132fc4e3596",
     "scripts/jones/tsrs/identity.ts":
       "88331f048d91498f9710332b1f1e9a839cdcdf86fdbbb4ec930346a67c3f94b9",
     "scripts/jones/tsrs/task-cache.ts":

@@ -4,6 +4,11 @@
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "features": [
     {
+      "id": "linux-runtime-library-layout",
+      "tests": ["scripts/jones/packaging/linuxRuntimeLibraries.test.ts"],
+      "scope": "Linux CLI packaging and archive smoke checks share a bundled libatomic path beneath the established node_modules root. The actual qualified archive extractor and payload digest accept a synthetic distribution containing the library and license without broadening installed updater payload roots. Hosted Linux artifact smoke verifies the ELF RUNPATH resolves the bundled library; macOS and Windows packaging are unchanged."
+    },
+    {
       "id": "workspace-preparation-reads",
       "tests": ["apps/server/src/jones/orchestration/WorkspacePreparationRead.test.ts"],
       "scope": "Workspace preparation progress, release, failure and retry snapshot reads retry tagged SQLite reader-admission failures at most twice before deciding events. Other commands and permanent read errors retain single-attempt behavior. The Orchestrator hook preserves the original cause and never retries command dispatch, setup, commits or provider effects. The integration test releases a real deferred run after injected read congestion and verifies same-command replay produces exactly one provider start outbox entry. No reader-pool limits, schema, wire, provider or client behavior changes."
@@ -194,7 +199,7 @@
         "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs",
         "scripts/jones/updates/packaged-desktop-pair.node-test.mjs"
       ],
-      "scope": "Unchanged packaged macOS app-pair identity binding, external one-shot helper preparation faults, captured-PID startup/dialog and protected-mutation refusal orchestration. Optional normal-Install controller custody holds the original helper after real process capture at first storage entry, binds parent/controller/kernel identities and input hashes, requires an exclusive acknowledgment plus writer exit and real quiescence before a quiet baseline, and retains an independent missed-fault pair/swap/trial guard. Portable controls exercise all four fault points, timeout/controller loss, stale parent, drift, symlink and replay refusals; native scheduling, escaped-launch custody and package correspondence remain unqualified. Executable source controls do not prove Apple interpreter, native dialog, packaged matrix, process descendants outside the captured group or installed continuity; those remain separately admitted acceptance."
+      "scope": "Unchanged packaged macOS app-pair identity binding, external one-shot helper preparation faults, captured-PID startup/dialog and protected-mutation refusal orchestration. Optional normal-Install controller custody holds the original helper after real process capture at first storage entry, binds parent/controller/kernel identities and input hashes, requires an exclusive acknowledgment plus writer exit and real quiescence before a quiet baseline, and retains an independent missed-fault pair/swap/trial guard. Optional fixture launch context pins the LaunchServices script transformation, preserves helper bytes and URL/selector/options, limits home/temp paths and mock-Keychain/CDP arguments, and links effective-request receipts. Deferred before-pair/exit-wait relaunch requires a fresh artifact-equal previous-app copy and a pre-effect injected native custody controller bound to helper, merged candidate and synthetic startup inputs; outer holds survive unknown birth, inventory and closure through all descendants/resources and bridge settlement. Portable controls cover the seam only; the native controller, scheduling, isolation effectiveness, escaped-launch custody and package correspondence remain unqualified. Executable source controls do not prove Apple interpreter, native dialog, packaged matrix, process descendants outside the captured group or installed continuity; those remain separately admitted acceptance."
     },
     {
       "id": "dev-proxy-cookie-auth",
@@ -460,9 +465,10 @@
         "packages/shared/src/nodeSqliteClient.test.ts",
         "apps/server/src/persistence/Sqlite.test.ts",
         "packages/shared/src/jones/checkpointContention.test.ts",
-        "packages/shared/src/jones/sqliteWriterAdmission.test.ts"
+        "packages/shared/src/jones/sqliteWriterAdmission.test.ts",
+        "apps/server/src/jones/persistence/ReaderCheckpointPressure.test.ts"
       ],
-      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."
+      "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions. Real server persistence with a two-reader pool discriminates retained-snapshot admission at the current 128 MiB WAL limit versus a test-local 32 MiB override, with native checkpoint and recovery receipts."
     },
     {
       "id": "usage",
@@ -754,9 +760,11 @@
         "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
         "packages/contracts/src/jones/workMode.test.ts",
         "packages/shared/src/jones/workMode.test.ts",
-        "packages/shared/src/serverSettings.test.ts"
+        "packages/shared/src/serverSettings.test.ts",
+        "apps/web/src/jones/workMode/WorkButtonSettings.browser.test.tsx",
+        "apps/web/src/hooks/useSettings.test.ts"
       ],
-      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers. Timing uses persisted inference counters from the current root provider conversation, skips first refreshes older than 90 minutes, and preserves established 55-minute cadence. Sweep timing is cached per shell generation; residency uses the real clock. Restart continuation reuses the Jones keep-warm identity guard so interrupted refreshes never resume ordinary work. The existing upstream restart harness retains this regression to exercise real continuation dispatch and the ordinary-user control. Enabled sweeps cache full shells by the global V2 thread-event watermark, refresh changed state on the next admitted tick, evaluate clock conditions every tick, retry failed reads, and suppress dispatched or acknowledged admission generations."
+      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers. Timing uses persisted inference counters from the current root provider conversation, skips first refreshes older than 90 minutes, and preserves established 55-minute cadence. Sweep timing is cached per shell generation; residency uses the real clock. Restart continuation reuses the Jones keep-warm identity guard so interrupted refreshes never resume ordinary work. The existing upstream restart harness retains this regression to exercise real continuation dispatch and the ordinary-user control. Enabled sweeps cache full shells by the global V2 thread-event watermark, refresh changed state on the next admitted tick, evaluate clock conditions every tick, retry failed reads, and suppress dispatched or acknowledged admission generations. Jones Code settings independently persist sidebar Work-button visibility without changing server Work mode. The existing settings persistence harness retains default/patch decoding and hydration regressions to exercise the real client storage boundary."
     },
     {
       "id": "persistent-host-connections",
@@ -1390,7 +1398,9 @@
         "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
         "apps/server/src/jones/updates/recoverQualifiedStage.test.ts",
         "scripts/jones/updates/recover-qualified-stage.test.ts",
-        "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts"
+        "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts",
+        "apps/web/src/jones/updates/qualifiedBuildReview.browser.test.tsx",
+        "packages/contracts/src/jones/jonesUpdates.catalog.test.ts"
       ],
       "scope": "The standalone launcher shares the server lifetime SQLite ownership lock before snapshot and restore, releases it before spawning, and retains captured-child exit and commit uncertainty barriers. Current-attempt recovery payload and transient advanced state are removed after a durable terminal result; the directory, resume guard and timing receipts remain compatible with existing candidates. Cleanup failure preserves the durable result and remaining files. Captured process transport remains shared with the system adoption worker. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held. Owned extraction scratch uses the Electron-aware raw bundle filesystem; cleanup diagnostics preserve successful durable staging and primary failures. Native Electron ASAR coverage complements plain Node lifecycle tests. Connections independently labels installed and candidate sources relative to the same verified laptop receipt; equality and exact-pair ancestry order commits rather than artifact display suffixes, with unknown/stale comparisons kept explicit. The read-scoped fixed-repository relation endpoint is additive, binds full commit pairs, bounds GitHub lookup lifetime/cache/concurrency, and degrades to an unknown ordering on old servers or lookup failure; no install action is used to establish ancestry. Desktop manual preparation uses explicitly withdrawable claims, with helper-locked withdrawal proof before retry; legacy uncertain claims remain held. Successful activation releases only its owned recovery reserves. Failed Mac app attempts are reclaimed only after owned mount and copier exit proof; uncertain attempts block allocation. Darwin preparation cancellation has independent bounded detach cleanup. The hosted Mac artifact job exercises the packaged desktop worker separately from the server worker; it does not qualify automatic activation, signing trust or the held supervisor cancellation behavior. Every full runtime digest emits bounded process-local timing evidence without changing its hash or integrity decision. A read-only benchmark reports idle and synthetic-load throughput; these measurements do not consolidate or skip verification."
     },
@@ -1423,7 +1433,7 @@
         "apps/web/src/jones/updates/providerUpdateController.test.ts",
         "apps/web/src/jones/updates/ProviderUpdateNotice.browser.test.tsx"
       ],
-      "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code. Local Codex detection caches successful probes while allowing unchanged installations to recover from transient probe failures. Its small accepted-shared cache fix and tests retain the existing installation harness instead of duplicating it. Shared maintenance actions retain the instance environment used for ownership resolution, including native override precedence, runner command selection and pnpm candidate-cache provenance. The small accepted-shared resolver changes retain existing synthetic resolver and runner harnesses."
+      "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code. Local Codex detection caches successful probes while allowing unchanged installations to recover from transient probe failures. Its small accepted-shared cache fix and tests retain the existing installation harness instead of duplicating it. Shared maintenance actions retain the instance environment used for ownership resolution, including native override precedence, runner command selection and pnpm candidate-cache provenance. The small accepted-shared resolver changes retain existing synthetic resolver and runner harnesses. The collapsible provider notice exposes the existing multi-environment Update All action at the right of its footer and one global Settings button at the left, retaining per-device outcomes, manual update instructions, permission gates and busy-state protection without repeated per-device Settings links."
     },
     {
       "id": "startup-access-logging",
@@ -1638,7 +1648,7 @@
         "packages/contracts/src/jones/orchestrationCompatibility.test.ts",
         "apps/server/src/jones/orchestration/TransientSteer.test.ts"
       ],
-      "scope": "Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. Explicit manual promotion uses the unchanged active configuration even for messages queued before account or model changes; automatic tool-boundary delivery retains historical configuration matching. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup. Ordinary web/mobile explicit follow-ups with unchanged effective steer configuration queue across preparing, starting, waiting and missing-native-turn gaps. Inherited owner steers use the active selection for gap eligibility; queued runs retain the saved selection for their eventual next turn, preserving the durable Stop barrier, separate-turn commands, legacy direct modes and selection rejection paths. A narrow Orchestrator hook applies the Jones pure decision after existing late-completion recovery; queued births inherit safe-boundary eligibility while preserving an explicit opt-out. Jones runtime integration verifies accepted receipts, idempotence and original-message promotion; no wire or persisted schema changes."
+      "scope": "The shared queue presentation keeps its counted heading and bulk controls together, with the drag grip in each message action row and wrapping controls. The small shared-file layout edit avoids duplicating upstream attribution, folding and queue rendering; its Jones browser regression covers aligned controls and narrow containment with long content. Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. Explicit manual promotion uses the unchanged active configuration even for messages queued before account or model changes; automatic tool-boundary delivery retains historical configuration matching. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup. Ordinary web/mobile explicit follow-ups with unchanged effective steer configuration queue across preparing, starting, waiting and missing-native-turn gaps. Inherited owner steers use the active selection for gap eligibility; queued runs retain the saved selection for their eventual next turn, preserving the durable Stop barrier, separate-turn commands, legacy direct modes and selection rejection paths. A narrow Orchestrator hook applies the Jones pure decision after existing late-completion recovery; queued births inherit safe-boundary eligibility while preserving an explicit opt-out. Jones runtime integration verifies accepted receipts, idempotence and original-message promotion; no wire or persisted schema changes."
     },
     {
       "id": "client-launch",
@@ -2017,9 +2027,10 @@
       "id": "worktree-setup",
       "tests": [
         "scripts/jones/worktree-setup/entrypoint.node-test.mjs",
-        "scripts/jones/worktree-setup/setup.node-test.mjs"
+        "scripts/jones/worktree-setup/setup.node-test.mjs",
+        "scripts/jones/tsrs/local-mac-capacity.node-test.mjs"
       ],
-      "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests. Darwin producers additionally require fresh one-shot same-process CPU/native memory admission, bounded utility closure, cancellation and freshness checks, and child-only pnpm/Rolldown controls. Synthetic refusal tests preserve non-Darwin and link-only behavior; actual native descendant qualification remains separate."
+      "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests. Darwin producers additionally require fresh one-shot same-process CPU/native memory admission, bounded utility closure, cancellation and freshness checks, and child-only pnpm/Rolldown controls. Synthetic refusal tests preserve non-Darwin and link-only behavior; actual native descendant qualification remains separate. Local Darwin compiler entrypoints additionally serialize participating user builds across worktrees and require fresh30s/final5s adaptive CPU, native-memory and output-storage admission. Unknown producer closure retains its lease; Linux/hosted policies and patch-lock identity remain separate."
     },
     {
       "id": "native-self-configuration-harness",
@@ -2577,9 +2588,10 @@
         "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
         "packages/client-runtime/src/state/fileMetadata.test.ts",
         "packages/client-runtime/src/state/projectCommands.test.ts",
-        "packages/client-runtime/src/state/threadCommands.test.ts"
+        "packages/client-runtime/src/state/threadCommands.test.ts",
+        "scripts/jones/tsrs/local-mac-capacity.node-test.mjs"
       ],
-      "scope": "Pinned official Effect-TS TSRS identity, private-install patch recovery, verified launcher on all33 CLI surfaces and uncached CI admission. Pure task-cache helper retains automatic input/output tracking and excludes only buildinfo and exact patch lock/reclaim metadata;31 public aliases retain exact native commands. Five complete ConnectionTarget fixture values preserve existing tests. Unsupported local fallback has the explicit Q2-R1 TS377049 limitation; full adoption qualification is required before main integration. One-shot CLI grammar refuses unqualified modes before candidate/fallback lookup. Shared finite raw-config and bounded seed utilities preserve retained v2 identity; Ordinary native state uses configuration-bound logical-form envelopes, same-parent private working files, self-reference-only conversion and bounded external/raw accounting. Native cache metadata stays excluded from task restoration; complete adoption qualification remains required."
+      "scope": "Pinned official Effect-TS TSRS identity, private-install patch recovery, verified launcher on all33 CLI surfaces and uncached CI admission. Pure task-cache helper retains automatic input/output tracking and excludes only buildinfo and exact patch lock/reclaim metadata;31 public aliases retain exact native commands. Five complete ConnectionTarget fixture values preserve existing tests. Unsupported local fallback has the explicit Q2-R1 TS377049 limitation; full adoption qualification is required before main integration. One-shot CLI grammar refuses unqualified modes before candidate/fallback lookup. Shared finite raw-config and bounded seed utilities preserve retained v2 identity; Ordinary native state uses configuration-bound logical-form envelopes, same-parent private working files, self-reference-only conversion and bounded external/raw accounting. Native cache metadata stays excluded from task restoration; complete adoption qualification remains required. Local Darwin compiler entrypoints additionally serialize participating user builds across worktrees and require fresh30s/final5s adaptive CPU, native-memory and output-storage admission. Unknown producer closure retains its lease; Linux/hosted policies and patch-lock identity remain separate."
     },
     {
       "id": "shell-publication-batching",
@@ -3279,9 +3291,11 @@
         "packages/client-runtime/src/jones/workstreams/personal/controller.test.ts",
         "packages/contracts/src/jones/workstreamsPersonal.test.ts",
         "packages/contracts/src/jones/workstreamsPersonalRpc.test.ts",
-        "apps/mobile/src/features/workstreams/personalStorage.test.ts"
+        "apps/mobile/src/features/workstreams/personalStorage.test.ts",
+        "apps/web/src/jones/workstreams/personalThreadReorder.test.ts",
+        "apps/web/src/jones/workstreams/personalRail.test.ts"
       ],
-      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered."
+      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Native compact headers retain status counts, failure summaries and persisted collapse controls; deterministic muted rails preserve workstream identity."
     },
     {
       "id": "active-workspace-handoff",
@@ -3302,6 +3316,42 @@
       "scope": "Reservation and launch remain under the existing job lock; immutable owner-controlled released evidence bypasses historical SQLite locks. Coalesced cleanup demand bounds failure retries, follows underlying worker settlement, and quiesces for expected retention and standing holds. History files are retained and still scanned linearly. Scale, race, cancellation and refusal cases are synthetic source coverage, not measured VPS latency."
     },
     {
+      "id": "start-refusal-retention",
+      "tests": [
+        "apps/server/src/jones/startRefusal/Store.test.ts",
+        "apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts",
+        "apps/server/src/jones/startRefusal/Probe.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+        "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
+      ],
+      "scope": "ETS-B v4 retains complete positively certified delegated-result refusals in sparse Jones attempt and successor-hold tables. Atomic EventSink hooks bind attempt eligibility and closed refusal reasons to settlement, enforce admission, reserve successors, void superseded holds and arm only source-proved Codex acceptance. An irreversible prefix crossing covers repeated outbox execution of an attempt. All five offer callers and restart recovery share the held/armed guard. Fresh accepted starts supply single-use retry eligibility; the read-only continuity/control probe and authoritative start prefix preserve existing fences. Silent gate clearance stays a visible manual hold. Small shared service and runtime/harness edits preserve the upstream transaction/lock owners; the four-site assertions in ProviderTurnStartService.test.ts are a harness-bound test exception. No wire/adapters/upstream schema or history-policy changes."
+    },
+    {
+      "id": "peer-wake-obligations",
+      "tests": [
+        "apps/server/src/jones/threadResultDependencies/WakeObligations.test.ts",
+        "apps/server/src/jones/threadResultDependencies/WakeObligations.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/DependencyStore.test.ts",
+        "apps/server/src/jones/threadResultDependencies/DependencyReactor.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Orchestrator.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Settlement.test.ts",
+        "apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/orchestration-v2/ContextHandoffService.test.ts",
+        "packages/provider-core/src/server/notification.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "scope": "ETS-P v5: immutable notification wake/attempt/epoch binding, atomic post-certification peer hold, query-level retention, single-use accepted Codex witness/probe release, lifecycle fences and counted held duty. Shared EventSink and B certification edits only connect the Jones consumer. No wire enum, provider-start or linked-origin ownership changes. The runtime composition exports its existing memoized admission probe to the dependency reactor; the shared runtimeLayer.test.ts case reuses its production runtime harness to prove closed-gate retention and one open-gate successor without a synthetic probe."
+    },
+    {
       "id": "server-swap-cli",
       "tests": [
         "apps/server-swap-cli/core.test.cjs",
@@ -3314,6 +3364,18 @@
         "apps/server-swap-cli/build.test.cjs"
       ],
       "scope": "Standalone maintainer CLI for digest-bound server-swap preparation and finalization, journaled intent and recovery, native configuration/runtime identity validation, and ordered SSH fleet control. The original 79 synthetic tests and focused canonical HostProcess/compiled-bridge parity tests cover rollback fences, reverse states, resume/reconciliation, current runtime readback, and CLI/transport seams. This feature does not change application runtime/updater/shared modules, expose MCP or scheduled-task entry points, or establish live host, client, provider-session, or exact-version data compatibility qualification. Operator guidance is docs/operations/server-swap-cli.md."
+    },
+    {
+      "id": "thread-activity-label",
+      "tests": [
+        "packages/client-runtime/src/jones/threadActivityLabel.test.ts",
+        "apps/mobile/src/jones/threadActivityLabel.test.ts",
+        "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx",
+        "apps/mobile/src/lib/threadActivity.test.ts",
+        "packages/client-runtime/src/state/threadExecution.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts"
+      ],
+      "scope": "Shared client presentation distinguishes local message dispatch from accepted provider startup and confirmed active work, preserving runless activity, Zen answer previews, compaction and workspace preparation. Web/desktop and mobile use small renderer hooks; the existing full timeline browser harness retains a Jones regression because it owns virtualization and projection updates. Mobile reuses its existing optional activity label and cache. The shared ChatView busy-state edit preserves the activity slot during server startup; the small mobile icon edit distinguishes startup from thinking without duplicating the work-log renderer. No wire, persistence, provider execution or transport changes. Run scheduling becomes running before provider dispatch, so the current-attempt summary separately records native output/work evidence. Shell-only summaries retain unknown activity as startup. Existing execution-summary and mobile visibility fixtures retain integration coverage to prove production propagation and confirmed Zen previews."
     }
   ]
 }

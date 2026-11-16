@@ -22,11 +22,8 @@ import {
 } from "./chat/threadContextDrag";
 import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
-import {
-  planWritableSidebarReorder,
-  dropPinnedThreadOnWorkstream,
-} from "../jones/workstreams/sidebarThreadDrop";
-import { moveNativeThreadOrder } from "../jones/workstreams/personalPresentation";
+import { dropPinnedThreadOnWorkstream } from "../jones/workstreams/sidebarThreadDrop";
+import { planWorkstreamThreadReorder } from "../jones/workstreams/personalThreadReorder";
 import { usePersonalWorkstreams } from "../state/workstreamsPersonal";
 import {
   groupPersonalThreads,
@@ -632,6 +629,7 @@ function useSidebarThreads(input: {
     delegatedUnderParent,
     threads,
     environmentThreads,
+    workstreamSummaryThreads: scopedThreads,
     statusFilter,
     cycleStatusFilter,
     hideWorkingThreads,
@@ -1385,6 +1383,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     settledThreads,
     snoozeNow,
     searchableThreads,
+    workstreamSummaryThreads,
     settledVisibleCount,
     settledCount,
     olderSettledShelf,
@@ -2227,7 +2226,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         !activeKeys.includes(neighborId)
       )
         return;
-      const orderedIds = moveNativeThreadOrder(activeKeys, movedId, neighborId, after);
       const writable = new Set(
         [...activeReorderableThreadKeys].filter((key) => {
           const candidate = threadByKey.get(key);
@@ -2238,7 +2236,25 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         }),
       );
       if (!writable.has(neighborId)) return;
-      const assignments = planWritableSidebarReorder(orderedIds, activeKeysById, movedId, writable);
+      const assignments = planWorkstreamThreadReorder({
+        activeOrder: activeKeys,
+        keysById: activeKeysById,
+        movedId,
+        neighborId,
+        after,
+        writableKeys: writable,
+        groupIdByKey: new Map(
+          workstreamGrouping.groups.flatMap((group) =>
+            group.threads.map(
+              (member) =>
+                [
+                  scopedThreadKey(scopeThreadRef(member.environmentId, member.id)),
+                  group.workstream.id,
+                ] as const,
+            ),
+          ),
+        ),
+      });
       if (assignments === null) return;
       for (const assignment of assignments) {
         const target = threadByKey.get(assignment.id);
@@ -3776,7 +3792,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         ) : null,
                       ];
                       if (workstreamsEnabled) {
-                        items.unshift(
+                        items.push(
                           <li key="native-workstream-groups" className="list-none">
                             <WorkstreamNativeSidebar
                               controller={workstreamController.controller}
@@ -3789,6 +3805,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 )
                               }
                               threads={activeThreads}
+                              summaryThreads={workstreamSummaryThreads}
                               renderThread={(thread, assignment) =>
                                 renderThreadRow(thread, "active", undefined, assignment)
                               }

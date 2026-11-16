@@ -1758,6 +1758,235 @@ assert launch_services_available() is False and len(calls) == 1
     }
   });
 
+  it("preserves nested bundle modes, files and internal links under umask 077", async () => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+source, copied = root / 'stage.app', root / 'copied.app'
+bin_dir = source / 'Contents' / 'MacOS'
+bin_dir.mkdir(parents=True)
+(source / 'Contents').chmod(0o755)
+bin_dir.chmod(0o751)
+binary = bin_dir / 'Jones'
+binary.write_bytes(b'synthetic executable')
+binary.chmod(0o755)
+(source / 'entry').symlink_to('Contents/MacOS/Jones')
+before = app_digest(source)
+mask = os.umask(0o077)
+try: clone_tree(source, copied)
+finally: os.umask(mask)
+assert app_digest(source) == before == app_digest(copied)
+assert os.readlink(copied / 'entry') == 'Contents/MacOS/Jones'
+`;
+      runPython(definitions + "\n" + scenario, [f.directory], { encoding: "utf8", timeout: 10000 });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "response-lost",
+    "interrupted-witness",
+    "full-retry",
+    "receipt-phase",
+    "changed-plan-bytes",
+    "replaced-plan-inode",
+    "stable-drift",
+    "manifest-drift",
+    "symlink-witness",
+    "foreign-witness",
+    "forged-marker",
+    "pair-sidecar",
+    "pair-mtime",
+    "reserve-inode",
+    "swapped-generation",
+    "incoming-content",
+    "incoming-executable-mode",
+    "writer-active",
+    "writer-inspection-failed",
+    "stale-proof",
+  ])("validates held manual settlement with %s", async (fault) => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+import errno
+expected = dict(installed)
+durable(manifest_path, expected)
+plan['expectedManifestSha256'] = digest(manifest_path)
+(candidate_app / 'Contents').chmod(0o755)
+candidate['appDigest'] = app_digest(candidate_app)
+captured = {'pid': 123, 'startSec': 100, 'startUsec': 42, 'executable': expected['executablePath']}
+plan.update(stateRecovery='clone-required', processes=[captured])
+durable(plan_path, plan, True)
+wal = pathlib.Path(str(database) + '-wal')
+wal.write_bytes(b'previous-wal')
+def exited(pid):
+    assert pid == captured['pid']
+    raise KernelProcessError('process-exited', 'proc_pidinfo', errno.ESRCH)
+kernel_process_identity = exited
+stop_exact = lambda proofs: None
+prove_quiescence = lambda active: None
+def fixture_clone(source, target, flags):
+    assert flags == 1
+    shutil.copy2(os.fsdecode(source), os.fsdecode(target))
+    return 0
+darwin_clonefile = lambda: fixture_clone
+def historical_umask_copy(source, target):
+    shutil.copytree(source, target, symlinks=True)
+    (target / 'Contents').chmod(0o700)
+qualified_copy, qualified_swap = clone_tree, swap_bundle
+clone_tree = historical_umask_copy
+def forbidden(*args): raise AssertionError('Settlement crossed the bundle-swap boundary')
+swap_bundle = launch = forbidden
+activation_lock = manifest_path.with_name('jones-activation.lock').open('x+')
+activation_lock.write('jones-activation-lock-v1\n')
+activation_lock.flush()
+fcntl.flock(activation_lock, fcntl.LOCK_EX)
+retention_exclusion_descriptor, retention_exclusion_held = activation_lock.fileno(), True
+try: manual_install(plan_path, digest(plan_path), apply=True, clone_required=True)
+except RuntimeError as error: assert str(error) == 'Staged app integrity changed during bundle preparation.', str(error)
+else: raise AssertionError('Historical copy should have failed before swap')
+directory, = (manifest_path.parent / 'jones-manual-installs').iterdir()
+identifier = directory.name
+receipt_path, marker = directory / 'receipt.json', directory / 'aborted-before-swap.json'
+pair = directory / 'previous-pair'
+incoming = previous_app.with_name(previous_app.name + '.jones-incoming-' + identifier)
+retained = previous_app.with_name(previous_app.name + '.jones-previous-' + expected['generation'])
+reserve = directory / 'recovery-reserve.bin'
+receipt = read(receipt_path)
+assert receipt['phase'] == 'held' and receipt['stoppedAt'] == 'paired'
+assert reserve.is_file() and not (directory / 'recovery-journal-reserve.bin').exists()
+assert (pair / 'state.sqlite-wal').read_bytes() == wal.read_bytes()
+assert not (pair / 'state.sqlite-shm').exists() and not retained.exists()
+evidence = {p: digest(p) for p in [manifest_path, receipt_path, database, wal, pair / 'pair.json',
+            pair / 'state.sqlite', pair / 'state.sqlite-wal', home / 'settings.json', pair / 'settings.json']}
+bundle_digests = [app_digest(path) for path in (previous_app, candidate_app, incoming)]
+reserve_id = retention_identity(directory), reserve.stat().st_ino
+def inspect(): return manual_settlement(identifier, plan_path)
+def refused(action):
+    try: action()
+    except (RuntimeError, SelectionRefused, OSError): return
+    raise AssertionError('Accepted changed settlement evidence: ' + manual_fault)
+result = inspect()
+proof = result['proofSha256']
+witness = directory / ('manual-settlement-proof-' + proof + '.json')
+assert result['status'] == 'ready' and len(proof) == 64 and not marker.exists()
+if manual_fault in ('response-lost', 'interrupted-witness', 'full-retry'):
+    if manual_fault == 'interrupted-witness':
+        link = os.link
+        def crash_before_commit(source, target, **kwargs):
+            if target == marker: raise OSError('Synthetic interruption before the commit link')
+            return link(source, target, **kwargs)
+        os.link = crash_before_commit
+        try: refused(lambda: manual_settlement(identifier, plan_path, proof))
+        finally: os.link = link
+        assert not marker.exists() and witness.is_file() and not manual_aborted_before_swap(directory)
+        # A crash while writing a witness may leave an exact short prefix.
+        with witness.open('r+b') as stream: stream.truncate(witness.stat().st_size // 2)
+        refused(lambda: manual_install(plan_path, digest(plan_path), clone_required=True))
+    if manual_fault == 'response-lost':
+        sync = sync_parent
+        def lose_response(path):
+            sync(path)
+            if path == marker: raise OSError('Synthetic interruption after durable commit')
+        sync_parent = lose_response
+        try: refused(lambda: manual_settlement(identifier, plan_path, proof))
+        finally: sync_parent = sync
+    else: assert manual_settlement(identifier, plan_path, proof)['status'] == 'settled'
+    assert marker.is_file() and marker.samefile(witness) and marker.stat().st_nlink == 2
+    assert manual_aborted_before_swap(directory)
+    committed_marker = marker.read_bytes()
+    assert manual_settlement(identifier, plan_path, proof)['status'] == 'settled'
+    assert marker.read_bytes() == committed_marker
+    assert all(digest(path) == sha for path, sha in evidence.items())
+    assert [app_digest(path) for path in (previous_app, candidate_app, incoming)] == bundle_digests
+    assert (retention_identity(directory), reserve.stat().st_ino) == reserve_id and not retained.exists()
+    assert manual_install(plan_path, digest(plan_path), clone_required=True)['status'] == 'ready'
+    if manual_fault == 'full-retry':
+        clone_tree, swap_bundle = qualified_copy, qualified_swap
+        launches = []
+        def launch(active):
+            assert active['sourceSha'] == candidate['sourceSha'] and active['generation'] != identifier
+            launches.append(dict(active))
+            return dict(captured, pid=456)
+        mask = os.umask(0o077)
+        try: outcome = manual_install(plan_path, digest(plan_path), apply=True, clone_required=True)
+        finally: os.umask(mask)
+        assert outcome['status'] == 'launched' and launches == [read(manifest_path)]
+        new_receipt = pathlib.Path(outcome['receiptPath'])
+        assert new_receipt.parent != directory and read(new_receipt)['phase'] == 'launched'
+        assert new_receipt.parent.name == launches[0]['generation']
+        assert app_digest(previous_app) == candidate['appDigest'] and app_digest(retained) == installed['appDigest']
+        assert manual_aborted_before_swap(directory) and inspect()['status'] == 'settled'
+        assert marker.read_bytes() == committed_marker and digest(receipt_path) == evidence[receipt_path]
+    elif manual_fault == 'response-lost':
+        durable(receipt_path, dict(receipt, phase='launched'))
+        try: trusted = manual_aborted_before_swap(directory)
+        except (RuntimeError, SelectionRefused, OSError): trusted = False
+        assert not trusted, 'Terminal marker still trusted a replaced held receipt'
+        refused(lambda: manual_install(plan_path, digest(plan_path), clone_required=True))
+else:
+    if manual_fault == 'receipt-phase': durable(receipt_path, dict(receipt, stoppedAt='swap-intent'))
+    if manual_fault == 'changed-plan-bytes': plan_path.write_bytes(plan_path.read_bytes() + b'\n')
+    if manual_fault == 'replaced-plan-inode':
+        original_plan = root / 'first-plan-inode'
+        plan_path.rename(original_plan)
+        shutil.copy2(original_plan, plan_path)
+        assert digest(plan_path) == receipt['planSha256']
+    if manual_fault == 'stable-drift': (previous_app / 'Contents/MacOS/Jones').write_bytes(b'changed installed executable')
+    if manual_fault == 'manifest-drift': durable(manifest_path, dict(expected, generation='other'))
+    if manual_fault == 'symlink-witness': witness.symlink_to(root / 'absent-witness-target')
+    if manual_fault == 'foreign-witness':
+        (directory / ('manual-settlement-proof-' + 'f' * 64 + '.json')).write_bytes(b'foreign proof')
+    if manual_fault == 'forged-marker':
+        # A byte-identical regular second copy cannot substitute for the atomic commit link.
+        def separate_marker(source, target, **kwargs):
+            if target == marker: return shutil.copyfile(source, target)
+            return link(source, target, **kwargs)
+        link = os.link
+        os.link = separate_marker
+        try: refused(lambda: manual_settlement(identifier, plan_path, proof))
+        finally: os.link = link
+        assert marker.read_bytes() == witness.read_bytes() and not marker.samefile(witness)
+    if manual_fault == 'pair-sidecar': (pair / 'state.sqlite-shm').write_bytes(b'unexpected')
+    if manual_fault == 'pair-mtime':
+        paired_db = pair / 'state.sqlite'
+        info = paired_db.stat()
+        os.utime(paired_db, ns=(info.st_atime_ns, info.st_mtime_ns - 2_000_000_000))
+    if manual_fault == 'reserve-inode':
+        reserve.rename(root / 'original-reserve')
+        shutil.copy2(root / 'original-reserve', reserve)
+    if manual_fault == 'swapped-generation': retained.mkdir()
+    if manual_fault == 'incoming-content': (incoming / 'Contents/MacOS/Jones').write_text('tampered payload')
+    if manual_fault == 'incoming-executable-mode':
+        executable = incoming / 'Contents/MacOS/Jones'
+        executable.chmod(stat.S_IMODE(executable.stat().st_mode) ^ 0o100)
+    if manual_fault == 'writer-active': kernel_process_identity = lambda pid: captured
+    if manual_fault == 'writer-inspection-failed':
+        def kernel_process_identity(pid): raise KernelProcessError('process-inspection-failed', 'proc_pidpath', errno.EPERM)
+    if manual_fault == 'stale-proof': proof = '0' * 64
+    elif manual_fault == 'replaced-plan-inode': assert inspect()['proofSha256'] != proof
+    else: refused(inspect)
+    refused(lambda: manual_settlement(identifier, plan_path, proof))
+    assert marker.exists() == (manual_fault == 'forged-marker')
+    if manual_fault != 'manifest-drift': assert digest(manifest_path) == evidence[manifest_path]
+    assert not (root / 'absent-witness-target').exists()
+activation_lock.close()
+`;
+      runPython(
+        definitions + "\n" + setup + "\n" + manualInstallSetup + "\n" + scenario,
+        [f.directory, "success", fault],
+        { encoding: "utf8", timeout: 10000 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it.each([
     "success",
     "stale-admission",

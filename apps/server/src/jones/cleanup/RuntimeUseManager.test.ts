@@ -28,12 +28,14 @@ import * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
@@ -57,10 +59,16 @@ import {
   bindHeldDatabaseOwner,
 } from "./CheckedRuntimeOwner.ts";
 import { captureRuntimeUseSession } from "./RuntimeUseSession.ts";
-import { runtimeUseError, type RuntimeUseError } from "./RuntimeUseProtocol.ts";
+import {
+  digest,
+  runtimeUseError,
+  type RuntimeUseError,
+  type RuntimeUseOutboxClaim,
+} from "./RuntimeUseProtocol.ts";
+import { captureRuntimeUseWorkspace } from "./RuntimeUseWorkspace.ts";
 import { RuntimeUseLifetime } from "./RuntimeUseLifetime.ts";
 import { makeRuntimeUseStore } from "./RuntimeUseStore.ts";
-import { withRuntimeUseClaim } from "./RuntimeUseClaim.ts";
+import { currentRuntimeUseClaim, withRuntimeUseClaim } from "./RuntimeUseClaim.ts";
 
 const platform = ProcessRunner.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
@@ -76,9 +84,66 @@ const refused = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     assert.isTrue(Exit.isFailure(yield* Effect.exit(effect)));
   });
 
+const claimOpening = Effect.fn("RuntimeUseManager.testClaimOpening")(function* (
+  effectId: string,
+  openingThread: ThreadId,
+  workerId: string,
+) {
+  const outbox = yield* EffectOutbox.EffectOutboxV2;
+  yield* outbox.enqueue([
+    {
+      id: effectId,
+      threadId: openingThread,
+      commandId: CommandId.make(`${effectId}-command`),
+      request: { type: "provider-turn.start", runId: RunId.make(`${effectId}-run`) },
+    },
+  ]);
+  const claimed = yield* outbox.claimNext({ workerId });
+  if (Option.isNone(claimed) || claimed.value.id !== effectId)
+    return yield* Effect.die("Expected the synthetic opening effect");
+  return claimed.value;
+});
+
+const reserveLegacyOpen = Effect.fn("RuntimeUseManager.testReserveLegacyOpen")(function* (
+  workspace: string,
+  originalThread: ThreadId,
+  claim: RuntimeUseOutboxClaim | null,
+  priorInstance: string = instanceId,
+) {
+  const physical = yield* captureRuntimeUseWorkspace(workspace);
+  const store = yield* makeRuntimeUseStore;
+  const { record } = yield* store.reserve({
+    schema: "jones.workspace-runtime-use/v1",
+    useId: `provider-open:v1:${digest({ providerSessionId: sessionId })}`,
+    canonicalPath: physical.canonicalPath,
+    directoryIdentity: physical.directoryIdentity,
+    threadId: originalThread,
+    actor: {
+      kind: "provider_open",
+      provider: { sessionId, instanceId: priorInstance, driver: "codex" },
+    },
+    original: {
+      commandId: claim?.commandId ?? null,
+      runId: claim?.runId ?? null,
+      attemptId: claim?.attemptId ?? null,
+      outboxReference: claim?.effectId ?? null,
+      nativeReference: null,
+      claim,
+    },
+  });
+  return record;
+});
+
 const fixture = <A, E>(
   test: (input: {
     readonly open: ReturnType<Manager.ProviderSessionManagerV2["Service"]["open"]>;
+    readonly openFor: (
+      id: ThreadId,
+      cwd?: string,
+    ) => ReturnType<Manager.ProviderSessionManagerV2["Service"]["open"]>;
+    readonly close: ReturnType<Manager.ProviderSessionManagerV2["Service"]["close"]>;
+    readonly restartManager: Effect.Effect<void, RuntimeUseError>;
+    readonly addThread: (id: ThreadId) => Effect.Effect<void, RuntimeUseError>;
     readonly reopenAt: (
       cwd: string,
     ) => ReturnType<Manager.ProviderSessionManagerV2["Service"]["open"]>;
@@ -98,7 +163,7 @@ const fixture = <A, E>(
       EventSink.EventSinkV2Error
     >;
     readonly setBeforeProducer: (hook: Effect.Effect<void, RuntimeUseError>) => void;
-    readonly updateWorkspace: (path: string) => Effect.Effect<void, RuntimeUseError>;
+    readonly updateWorkspace: (path: string, id?: ThreadId) => Effect.Effect<void, RuntimeUseError>;
     readonly dbPath: string;
     readonly workspace: string;
     readonly loseOwner: Effect.Effect<void>;
@@ -197,13 +262,20 @@ const fixture = <A, E>(
                       }),
                   ),
                 );
+                const caller = Option.getOrNull(yield* currentRuntimeUseClaim);
+                const matching = pending.filter(
+                  (binding) =>
+                    binding.actor.kind === "provider_open" &&
+                    binding.actor.provider.sessionId === input.providerSessionId &&
+                    binding.threadId === input.threadId &&
+                    binding.canonicalPath === input.runtimePolicy.cwd &&
+                    binding.original.claim?.effectId === caller?.effectId,
+                );
                 assert.strictEqual(
-                  pending.length,
+                  matching.length,
                   1,
                   "durable pending precedes the actual adapter boundary",
                 );
-                assert.strictEqual(pending[0]?.threadId, threadId);
-                assert.strictEqual(pending[0]?.canonicalPath, workspace);
                 calls++;
                 if (openSucceeds) {
                   const now = yield* DateTime.now;
@@ -368,7 +440,9 @@ const fixture = <A, E>(
           const projects = yield* ProjectStore.ProjectStoreV2;
           const projections = yield* ProjectionStore.ProjectionStoreV2;
           const eventSink = yield* EventSink.EventSinkV2;
-          const sessions = yield* Manager.ProviderSessionManagerV2;
+          let sessions = yield* Manager.ProviderSessionManagerV2;
+          const scope = yield* Scope.Scope;
+          const managerDependencies = yield* Effect.context<Layer.Services<typeof manager>>();
           const attachmentOutbox = yield* EffectOutbox.EffectOutboxV2;
           const now = yield* DateTime.now;
           const iso = DateTime.formatIso(now);
@@ -442,6 +516,13 @@ const fixture = <A, E>(
               baseRef: "main",
             })).path;
           }
+          const openFor = (id: ThreadId, cwd = workspace) =>
+            sessions.open({
+              threadId: id,
+              providerSessionId: sessionId,
+              modelSelection,
+              runtimePolicy: { cwd, runtimeMode: "full-access", interactionMode: "default" },
+            });
           return yield* test({
             attachmentPublicationRace: Effect.fn("RuntimeUseManager.testAttachmentPublication")(
               function* (drift: "target" | "claim" | "none" | "owner" | "directory") {
@@ -559,23 +640,36 @@ const fixture = <A, E>(
               },
               Effect.mapError(runtimeUseError),
             ),
-            reopenAt: (cwd) =>
-              sessions.open({
-                threadId,
-                providerSessionId: sessionId,
-                modelSelection,
-                runtimePolicy: { cwd, runtimeMode: "full-access", interactionMode: "default" },
-              }),
-            open: sessions.open({
-              threadId,
-              providerSessionId: sessionId,
-              modelSelection,
-              runtimePolicy: {
-                cwd: workspace,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-              },
+            openFor,
+            reopenAt: (cwd) => openFor(threadId, cwd),
+            open: openFor(threadId),
+            close: Effect.suspend(() => sessions.close(sessionId)),
+            restartManager: Effect.gen(function* () {
+              const rebuilt = yield* Layer.buildWithScope(Layer.fresh(manager), scope).pipe(
+                Effect.provide(managerDependencies),
+                Effect.mapError(runtimeUseError),
+              );
+              const replacement = Context.get(rebuilt, Manager.ProviderSessionManagerV2);
+              assert.notStrictEqual(replacement, sessions);
+              assert.isFalse(yield* replacement.isLive(sessionId));
+              sessions = replacement;
             }),
+            addThread: Effect.fn("RuntimeUseManager.testAddThread")(function* (id: ThreadId) {
+              const parent = yield* projections.getThread(threadId);
+              if (parent === undefined)
+                return yield* Effect.die("Expected the original app thread");
+              yield* eventSink.write({
+                events: [
+                  {
+                    id: EventId.make(`runtime-use-birth-${++sessionEvent}`),
+                    type: "thread.created",
+                    threadId: id,
+                    occurredAt: now,
+                    payload: { ...parent, id, lineage: { ...parent.lineage, rootThreadId: id } },
+                  },
+                ],
+              });
+            }, Effect.mapError(runtimeUseError)),
             calls: () => calls,
             nativeCalls: () => nativeCalls,
             nativeTargets: () => [...nativeTargets],
@@ -629,17 +723,18 @@ const fixture = <A, E>(
             },
             updateWorkspace: Effect.fn("RuntimeUseManager.testUpdateWorkspace")(function* (
               path: string,
+              id: ThreadId = threadId,
             ) {
               assert.strictEqual(NodePath.dirname(path), root);
-              yield* fs.makeDirectory(path);
-              const current = yield* projections.getThread(threadId);
+              yield* fs.makeDirectory(path, { recursive: true });
+              const current = yield* projections.getThread(id);
               if (current === undefined) return yield* Effect.die("Expected original app thread");
               yield* eventSink.write({
                 events: [
                   {
                     id: EventId.make(`runtime-use-workspace-${++sessionEvent}`),
                     type: "thread.metadata-updated",
-                    threadId,
+                    threadId: id,
                     occurredAt: now,
                     payload: { ...current, worktreePath: path, updatedAt: now },
                   },
@@ -1290,6 +1385,246 @@ describe("actual raw manager durable pre-effect open", () => {
       }),
     ),
   );
+  it.effect(
+    "reconstructing one logical session keeps open, attachment and invocation custody with each physical lifetime",
+    () =>
+      fixture(
+        (input) =>
+          Effect.gen(function* () {
+            const nextThread = ThreadId.make("next-opening-thread");
+            const sharedThread = ThreadId.make("same-attached-thread");
+            const invokeWorkspace = input.workspace + "-invoke";
+            yield* input.addThread(nextThread);
+            yield* input.addThread(sharedThread);
+            const store = yield* makeRuntimeUseStore;
+            const outbox = yield* EffectOutbox.EffectOutboxV2;
+
+            const exercise = Effect.fn("RuntimeUseManager.testExerciseLifetime")(function* (
+              openingThread: ThreadId,
+              effectId: string,
+            ) {
+              const workerId = effectId + "-worker";
+              const claim = yield* claimOpening(effectId, openingThread, workerId);
+              const runtime = yield* withRuntimeUseClaim(
+                claim,
+                workerId,
+                input.openFor(openingThread),
+              );
+              assert.isTrue(yield* outbox.succeed({ effectId, workerId, claim }));
+              yield* input.openFor(sharedThread);
+              yield* input.updateWorkspace(invokeWorkspace, sharedThread);
+              yield* refused(
+                runtime.ensureThread({
+                  threadId: sharedThread,
+                  modelSelection,
+                  runtimePolicy: {
+                    cwd: invokeWorkspace,
+                    runtimeMode: "full-access",
+                    interactionMode: "default",
+                  },
+                }),
+              );
+              yield* input.close;
+            });
+
+            yield* exercise(threadId, "first-opening");
+            assert.strictEqual(input.calls(), 1);
+            assert.strictEqual(input.nativeCalls(), 1);
+            const firstLifetime = yield* store.inventory();
+            assert.strictEqual(firstLifetime.length, 3);
+            for (const record of firstLifetime) {
+              assert.strictEqual(record.state, "pending");
+              assert.deepStrictEqual(
+                record.producers.map((producer) => producer.generation),
+                ["synthetic-producer-1"],
+              );
+            }
+            for (const kind of ["open", "attach", "invoke"])
+              assert.isTrue(
+                firstLifetime.some(({ binding }) =>
+                  binding.useId.startsWith(`provider-${kind}:v2:`),
+                ),
+              );
+
+            yield* input.restartManager;
+            yield* refused(input.openFor(threadId));
+            assert.strictEqual(input.calls(), 1);
+            assert.deepStrictEqual(yield* store.inventory(), firstLifetime);
+            yield* input.updateWorkspace(input.workspace, sharedThread);
+            yield* exercise(nextThread, "second-opening");
+            assert.strictEqual(input.calls(), 2);
+            assert.strictEqual(input.nativeCalls(), 2);
+            for (const previous of firstLifetime)
+              assert.deepStrictEqual(yield* store.read(previous.binding.useId), previous);
+            const previousIds = new Set(firstLifetime.map(({ binding }) => binding.useId));
+            const secondLifetime = (yield* store.inventory()).filter(
+              ({ binding }) => !previousIds.has(binding.useId),
+            );
+            assert.strictEqual(secondLifetime.length, 3);
+            for (const record of secondLifetime) {
+              assert.strictEqual(record.state, "pending");
+              assert.deepStrictEqual(
+                record.producers.map((producer) => producer.generation),
+                ["synthetic-producer-2"],
+              );
+            }
+            for (const kind of ["open", "attach", "invoke"])
+              assert.isTrue(
+                secondLifetime.some(({ binding }) =>
+                  binding.useId.startsWith(`provider-${kind}:v2:`),
+                ),
+              );
+          }),
+        true,
+      ),
+  );
+
+  it.effect(
+    "a replacement worker cannot reopen a claimed effect at a different target but new intent on that thread can",
+    () =>
+      fixture((input) =>
+        Effect.gen(function* () {
+          const effectId = "possibly-entered-v2-open";
+          const originalWorker = "first-worker";
+          const first = yield* claimOpening(effectId, threadId, originalWorker);
+          yield* refused(withRuntimeUseClaim(first, originalWorker, input.open));
+          assert.strictEqual(input.calls(), 1);
+          const store = yield* makeRuntimeUseStore;
+          const [previous] = yield* store.inventory();
+          assert.isDefined(previous);
+          const newTarget = input.workspace + "-replacement";
+          yield* input.updateWorkspace(newTarget);
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          assert.isTrue(
+            yield* outbox.retry({
+              effectId,
+              workerId: originalWorker,
+              claim: first,
+              error: "synthetic reclaim",
+              delayMs: 0,
+            }),
+          );
+          const replacementWorker = "replacement-worker";
+          const next = yield* outbox.claimNext({ workerId: replacementWorker });
+          if (Option.isNone(next) || next.value.id !== effectId)
+            return yield* Effect.die("Expected a new claim on the same effect");
+          assert.strictEqual(next.value.attemptCount, first.attemptCount + 1);
+          yield* refused(
+            withRuntimeUseClaim(next.value, replacementWorker, input.reopenAt(newTarget)),
+          );
+          assert.strictEqual(input.calls(), 1);
+          assert.deepStrictEqual(yield* store.inventory(), [previous]);
+          assert.isTrue(
+            yield* outbox.fail({
+              effectId,
+              workerId: replacementWorker,
+              claim: next.value,
+              error: "unresolved prior open",
+            }),
+          );
+
+          const distinct = yield* claimOpening(
+            "new-intent-on-same-thread",
+            threadId,
+            replacementWorker,
+          );
+          yield* refused(
+            withRuntimeUseClaim(distinct, replacementWorker, input.reopenAt(newTarget)),
+          );
+          assert.strictEqual(input.calls(), 2);
+          assert.strictEqual((yield* store.inventory()).length, 2);
+          assert.deepStrictEqual(yield* store.read(previous!.binding.useId), previous);
+        }),
+      ),
+  );
+
+  it.effect.each(["pending", "retired"] as const)(
+    "a reclaimed effect cannot reopen from a %s legacy v1 reservation",
+    (state) =>
+      fixture((input) =>
+        Effect.gen(function* () {
+          const effectId = "legacy-opening-effect";
+          const originalWorker = "legacy-worker";
+          const claim = yield* claimOpening(effectId, threadId, originalWorker);
+          const captured = yield* withRuntimeUseClaim(
+            claim,
+            originalWorker,
+            currentRuntimeUseClaim,
+          );
+          if (Option.isNone(captured)) return yield* Effect.die("Expected the legacy outbox claim");
+          const store = yield* makeRuntimeUseStore;
+          const { binding } = yield* reserveLegacyOpen(input.workspace, threadId, captured.value);
+          if (state === "retired")
+            yield* store.recordRetirement({
+              schema: "jones.workspace-runtime-retirement/v1",
+              useId: binding.useId,
+              bindingSha256: digest(binding),
+              outcome: "not_invoked",
+              observationCount: 0,
+            });
+          const before = yield* store.inventory();
+          yield* refused(withRuntimeUseClaim(claim, originalWorker, input.open));
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          assert.isTrue(
+            yield* outbox.retry({
+              effectId,
+              workerId: originalWorker,
+              error: "synthetic recovery",
+              delayMs: 0,
+              claim,
+            }),
+          );
+          const reclaimed = yield* outbox.claimNext({ workerId: "replacement-worker" });
+          if (Option.isNone(reclaimed)) return yield* Effect.die("Expected reclaimed opening");
+          assert.strictEqual(reclaimed.value.attemptCount, claim.attemptCount + 1);
+          yield* refused(withRuntimeUseClaim(reclaimed.value, "replacement-worker", input.open));
+          assert.strictEqual(input.calls(), 0);
+          assert.deepStrictEqual(yield* store.inventory(), before);
+        }),
+      ),
+  );
+
+  it.effect.each(["same thread", "different thread", "different provider"] as const)(
+    "a claimed open respects an unclaimed legacy reservation with %s",
+    (scenario) =>
+      fixture(
+        (input) =>
+          Effect.gen(function* () {
+            const otherThread = ThreadId.make("legacy-original-thread");
+            yield* input.addThread(otherThread);
+            const prior = yield* reserveLegacyOpen(
+              input.workspace,
+              scenario === "same thread" ? threadId : otherThread,
+              null,
+              scenario === "different provider" ? "other-codex" : instanceId,
+            );
+            const store = yield* makeRuntimeUseStore;
+            const worker = "new-opening-worker";
+            const claim = yield* claimOpening("new-opening-effect", threadId, worker);
+            const opening = withRuntimeUseClaim(claim, worker, input.open);
+            if (scenario === "different thread") {
+              yield* opening;
+              assert.strictEqual(input.calls(), 1);
+              const uses = yield* store.pending();
+              assert.strictEqual(uses.length, 2);
+              assert.isTrue(
+                uses.some(
+                  (use) =>
+                    use.useId.startsWith("provider-open:v2:") &&
+                    use.original.claim?.effectId === claim.id,
+                ),
+              );
+            } else {
+              yield* refused(opening);
+              assert.strictEqual(input.calls(), 0);
+              assert.deepStrictEqual(yield* store.inventory(), [prior]);
+            }
+            assert.deepStrictEqual(yield* store.read(prior.binding.useId), prior);
+          }),
+        true,
+      ),
+  );
+
   it.effect(
     "records the actual worker generation and original request before the raw adapter boundary",
     () =>

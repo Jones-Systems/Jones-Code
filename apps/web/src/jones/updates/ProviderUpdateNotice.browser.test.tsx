@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   updates: null as ReturnType<typeof useJonesProviderUpdates> | null,
   navigate: vi.fn(),
   updateEnvironment: vi.fn(async () => []),
+  updateAll: vi.fn(async (_options?: { quiet?: boolean }) => []),
 }));
 vi.mock(import("./useProviderUpdates"), () => ({ useJonesProviderUpdates: () => state.updates! }));
 vi.mock("@tanstack/react-router", async (original) => ({
@@ -25,17 +26,59 @@ vi.mock("@tanstack/react-router", async (original) => ({
 }));
 import { ProviderUpdateEnvironmentRows, ProviderUpdateNotice } from "./ProviderUpdateNotice";
 import { UpdateEverythingDialog } from "~/components/sidebar/UpdateEverythingDialog";
+import { JonesBuildReview } from "~/components/sidebar/SidebarUpdatePill";
 import { describeUpdateEverything } from "~/components/sidebar/updateEverything.logic";
 
 const wsl = EnvironmentId.make("ui-update-wsl");
 const laptop = EnvironmentId.make("ui-update-laptop");
 
 describe("Jones install handoff in the composed update dialog", () => {
+  it("passes the exact chosen artifact from the build picker", async () => {
+    const choose = vi.fn();
+    const build = {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: "1".repeat(40),
+      sourceTree: "a".repeat(40),
+      workflow: "artifact-desktop-mac.yml",
+      runId: 101,
+      runAttempt: 1,
+      artifactId: 201,
+      artifactDigest: "sha256:" + "a".repeat(64),
+      platform: "darwin",
+      architecture: "arm64",
+      version: "0.1.2-preview.20261106.101.1",
+    } as const;
+    const other = {
+      ...build,
+      sourceSha: "2".repeat(40),
+      sourceTree: "b".repeat(40),
+      runId: 100,
+      artifactId: 200,
+      version: "0.1.2-preview.20261106.100.1",
+    };
+    await using _screen = await render(
+      <JonesBuildReview
+        build={build}
+        list={{ builds: [build, other], unavailable: false }}
+        onSelect={choose}
+      />,
+    );
+    const picker = page.getByRole("combobox", { name: "Jones Code build" });
+    await expect.element(picker).toHaveValue("201");
+    const select = picker.element() as HTMLSelectElement;
+    await act(async () => {
+      select.value = "200";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(choose).toHaveBeenCalledExactlyOnceWith(other);
+  });
+
   it.each([
     { mixed: false, label: "Jones-only" },
     { mixed: true, label: "mixed provider and Jones" },
   ])("keeps $label rows visible without starting an install", async ({ mixed }) => {
     const confirm = vi.fn();
+    const updateProviders = vi.fn();
     const description = describeUpdateEverything({
       localVersion: null,
       localMachines: [],
@@ -53,6 +96,7 @@ describe("Jones install handoff in the composed update dialog", () => {
         {...description}
         restarts={[]}
         onConfirm={confirm}
+        {...(mixed ? { onProvidersOnly: updateProviders } : {})}
       />,
     );
     const dialog = page.getByRole("alertdialog");
@@ -67,9 +111,14 @@ describe("Jones install handoff in the composed update dialog", () => {
     if (mixed) {
       await expect.element(dialog.getByText("Codex · personal", { exact: true })).toBeVisible();
       await expect.element(dialog.getByText("1 provider update", { exact: true })).toBeVisible();
+      await dialog.getByRole("button", { name: "Update providers only" }).click();
+      expect(updateProviders).toHaveBeenCalledOnce();
     } else {
       await expect
         .element(dialog.getByText("Codex · personal", { exact: true }))
+        .not.toBeInTheDocument();
+      await expect
+        .element(dialog.getByRole("button", { name: "Update providers only" }))
         .not.toBeInTheDocument();
     }
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -121,7 +170,7 @@ function updates() {
     machines: groups.filter((group) => group.candidates.length > 0),
     noticeKey: "ui-fixture",
     isAnySettling: false,
-    updateAll: async () => [],
+    updateAll: state.updateAll,
     updateEnvironment: state.updateEnvironment,
     attempts: new Map(),
     completed: [],
@@ -140,7 +189,131 @@ function publishGroups(group: ReturnType<typeof useJonesProviderUpdates>["groups
 }
 
 describe("current provider update notice rows", () => {
-  it("collapses devices independently and keeps update, retry and settings actions separate", async () => {
+  it("keeps Update All in the footer, retains progress through collapse, and permits retry", async () => {
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+    state.updates = { ...updates(), noticeKey: "update-all-footer" };
+    const notice = () => (
+      <ToastProvider>
+        <ProviderUpdateNotice />
+      </ToastProvider>
+    );
+    let finish = () => {};
+    const finished = new Promise<[]>((resolve) => {
+      finish = () => resolve([]);
+    });
+    state.updateAll.mockReset();
+    state.updateAll.mockReturnValueOnce(finished);
+    await using screen = await render(<ToastProvider />);
+    await screen.rerender(notice());
+    const all = page.getByRole("button", { name: "Update All", exact: true });
+    await expect.element(all).toBeVisible();
+    const footer = all.element().parentElement!;
+    const settings = page.getByRole("button", { name: "Settings", exact: true });
+    await expect.element(settings).toBeVisible();
+    const settingsBounds = settings.element().getBoundingClientRect();
+    const updateBounds = all.element().getBoundingClientRect();
+    const footerBounds = footer.getBoundingClientRect();
+    expect(settingsBounds.left).toBeCloseTo(footerBounds.left, 0);
+    expect(updateBounds.right).toBeCloseTo(footerBounds.right, 0);
+    expect(settingsBounds.top + settingsBounds.height / 2).toBeCloseTo(
+      updateBounds.top + updateBounds.height / 2,
+      0,
+    );
+    expect(document.querySelectorAll('button[data-slot="toast-action"]')).toHaveLength(1);
+    for (const row of document.querySelectorAll('section[aria-label^="Provider updates on "]')) {
+      expect(row.textContent).not.toContain("Settings");
+    }
+    await all.click();
+    const pending = page.getByRole("button", { name: "Updating…", exact: true });
+    await expect.element(pending).toBeDisabled();
+    expect(state.updateAll).toHaveBeenCalledExactlyOnceWith({ quiet: true });
+    const toggle = page.getByRole("button", { name: "Provider updates available", exact: true });
+    await toggle.click();
+    await expect.element(pending).not.toBeInTheDocument();
+    await toggle.click();
+    await expect.element(pending).toBeDisabled();
+    const group = state.updates.groups[0]!;
+    publishGroups({
+      ...group,
+      attempt: {
+        generation: 1,
+        machine: group,
+        phase: "failed",
+        runs: [],
+        message: "Synthetic update failed.",
+      },
+    });
+    state.updates = { ...state.updates!, noticeKey: "update-all-footer-failed" };
+    await screen.rerender(notice());
+    await act(async () => {
+      finish();
+      await finished;
+    });
+    await expect.element(page.getByText("Synthetic update failed.", { exact: true })).toBeVisible();
+    await expect.element(all).toBeEnabled();
+    state.updateAll.mockResolvedValueOnce([]);
+    await all.click();
+    expect(state.updateAll).toHaveBeenCalledTimes(2);
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+  });
+
+  it.each(["manual", "disconnected", "permission", "running"])(
+    "disables the footer bulk action for %s updates while preserving Settings",
+    async (reason) => {
+      localStorage.removeItem("t3code:provider-update-dismissals:v1");
+      state.updates = { ...updates(), noticeKey: `update-all-${reason}` };
+      state.updates.machines = [];
+      if (reason === "manual") state.updates.groups = state.updates.groups.slice(1);
+      if (reason === "disconnected") {
+        state.updates.groups = state.updates.groups.map((group) => ({
+          ...group,
+          connected: false,
+          candidates: [],
+        }));
+      }
+      if (reason === "permission") {
+        state.updates.canManage = false;
+        state.updates.groups = state.updates.groups.map((group) => ({
+          ...group,
+          canManage: false,
+        }));
+      }
+      if (reason === "running") {
+        state.updates.machines = updates().machines;
+        const group = state.updates.groups[0]!;
+        publishGroups({
+          ...group,
+          attempt: {
+            generation: 1,
+            machine: group,
+            phase: "running",
+            runs: [],
+            message: "Updating providers…",
+          },
+        });
+      }
+      state.navigate.mockReset();
+      await using screen = await render(<ToastProvider />);
+      await screen.rerender(
+        <ToastProvider>
+          <ProviderUpdateNotice />
+        </ToastProvider>,
+      );
+      await expect
+        .element(
+          page.getByRole("button", {
+            name: reason === "running" ? "Updating…" : "Update All",
+            exact: true,
+          }),
+        )
+        .toBeDisabled();
+      await page.elementLocator(document.querySelector('[data-slot="toast-action"]')!).click();
+      expect(state.navigate).toHaveBeenCalledWith({ to: "/settings/providers" });
+      localStorage.removeItem("t3code:provider-update-dismissals:v1");
+    },
+  );
+
+  it("collapses devices independently and keeps update and retry actions available", async () => {
     state.updates = updates();
     state.updateEnvironment.mockClear();
     state.navigate.mockReset();
@@ -185,11 +358,9 @@ describe("current provider update notice rows", () => {
         row.getByText("Long diagnostic that should stay hidden when this device is collapsed."),
       )
       .toBeVisible();
-    await row.getByRole("button", { name: "Settings", exact: true }).click();
-    expect(state.navigate).toHaveBeenCalledWith({
-      to: "/settings/providers",
-      search: { machine: wsl },
-    });
+    await expect
+      .element(row.getByRole("button", { name: "Settings", exact: true }))
+      .not.toBeInTheDocument();
   });
 
   it("fully collapses the toast while retaining device choices through progress and refreshed targets", async () => {
@@ -370,7 +541,7 @@ describe("current provider update notice rows", () => {
     },
   );
 
-  it("groups every instance, exposes manual settings, and retains retry and diagnostic feedback", async () => {
+  it("groups every instance, exposes manual instructions, and retains retry and diagnostic feedback", async () => {
     state.navigate.mockReset();
     state.updateEnvironment.mockClear();
     state.updates = updates();
@@ -393,11 +564,9 @@ describe("current provider update notice rows", () => {
     const wslRow = page.getByRole("region", { name: "Provider updates on WSL" });
     await wslRow.getByRole("button", { name: "Update", exact: true }).click();
     expect(state.updateEnvironment).toHaveBeenCalledWith(wsl);
-    await wslRow.getByRole("button", { name: "Settings", exact: true }).click();
-    expect(state.navigate).toHaveBeenCalledWith({
-      to: "/settings/providers",
-      search: { machine: wsl },
-    });
+    await expect
+      .element(wslRow.getByRole("button", { name: "Settings", exact: true }))
+      .not.toBeInTheDocument();
     const group = state.updates.groups[0]!;
     group.attempt = {
       generation: 1,

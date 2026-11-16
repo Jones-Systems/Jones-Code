@@ -75,7 +75,8 @@
     "packages/tailscale/package.json",
     "packages/tailscale/vite.config.ts",
     "scripts/vite.config.ts",
-    "tsconfig.base.json"
+    "tsconfig.base.json",
+    "apps/web/scripts/warm-dep-cache.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -234,6 +235,10 @@
     {
       "from": "scripts/vite.config.ts",
       "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "apps/web/scripts/warm-dep-cache.ts",
+      "to": "scripts/jones/tsrs/local-mac-capacity.ts"
     }
   ]
 }

@@ -6,6 +6,8 @@ import * as Identity from "./identity.ts";
 import { classifyArguments, runWithBuildInfo } from "./build-info.ts";
 import { acquireLock, runChild, CommandCancelled } from "./patch.ts";
 
+import { withLocalMacCapacity } from "./local-mac-capacity.ts";
+
 const FALLBACK_LIMITATION =
   "The pinned fallback misses configured deterministicKeys ERROR TS377049; local or cached success requires authoritative supported-platform CI.";
 
@@ -91,26 +93,28 @@ export async function typecheck(
   const target = Identity.hostTarget();
   if (target) {
     const installed = await Identity.resolveInstalled(root, target);
-    return runWithBuildInfo({
-      root: installed.root,
-      cwd,
-      args,
-      compiler: installed,
-      signal,
-      run: (effectiveArgs, seen) =>
-        launchVerified(installed, signal, (compiler, spawned) =>
-          runChild({
-            executable: compiler.executable,
-            args: [...effectiveArgs, ...Identity.CHECKER_OPTIONS],
-            cwd,
-            signal,
-            spawned: async () => {
-              seen();
-              await spawned();
-            },
-          }),
-        ),
-    });
+    return withLocalMacCapacity({ root, signal, jobs: 2 }, () =>
+      runWithBuildInfo({
+        root: installed.root,
+        cwd,
+        args,
+        compiler: installed,
+        signal,
+        run: (effectiveArgs, seen) =>
+          launchVerified(installed, signal, (compiler, spawned) =>
+            runChild({
+              executable: compiler.executable,
+              args: [...effectiveArgs, ...Identity.CHECKER_OPTIONS],
+              cwd,
+              signal,
+              spawned: async () => {
+                seen();
+                await spawned();
+              },
+            }),
+          ),
+      }),
+    );
   }
   return runFallback(root, cwd, args, signal);
 }

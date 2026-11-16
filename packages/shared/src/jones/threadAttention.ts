@@ -37,6 +37,7 @@ export interface ThreadRunSummary {
     | (Omit<OrchestrationV2ProviderSettlement, "completedAt"> & { readonly completedAt: string })
     | null;
   readonly assistantMessageId: MessageId | null;
+  readonly providerActivityStarted?: boolean;
   /** The provider turn ended while the run remains open for settlement. */
   readonly turnEnded?: boolean;
   readonly sourcePlanRef?: {
@@ -133,6 +134,7 @@ function shellLatestRun(thread: OrchestrationV2ThreadShell): ThreadRunSummary | 
                       },
               }),
           assistantMessageId: null,
+          providerActivityStarted: false,
         } satisfies ThreadRunSummary);
   return latestRun;
 }

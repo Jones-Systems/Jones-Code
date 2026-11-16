@@ -102,6 +102,9 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 151, name: "WorkspaceRuntimeUses" },
         { migration_id: 152, name: "PeerLinksAdoption" },
         { migration_id: 153, name: "PersonalWorkstreams" },
+        ...jonesMigrationEntries
+          .filter(([id]) => id > 153)
+          .map(([migration_id, name]) => ({ migration_id, name })),
       ],
     );
     assert.deepEqual(

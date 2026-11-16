@@ -1,3 +1,5 @@
+import * as StartRefusal from "../jones/startRefusal/Store.ts";
+import type { RefusalReason } from "../jones/startRefusal/model.ts";
 import { ContextHandoffDeliveryUncertainError } from "./ContextHandoffDelivery.ts";
 import { promptWasNotApplied } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import * as CheckoutRecreation from "../jones/workspaceRecreation/Runtime.ts";
@@ -156,6 +158,58 @@ const terminalStartFailure = (error: unknown): boolean =>
   findEffectClaimLost(error) !== undefined ||
   findProviderControlOutcomeUnknown(error) !== undefined;
 
+export const probeStartAdmission = Effect.fn("ProviderTurnStartService.probeStartAdmission")(
+  function* (threadId: ThreadId) {
+    const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const goalContinuity = yield* GoalContinuity.GoalContinuity;
+    const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
+    const controlAdmission = yield* ControlAdmission.ControlAdmission;
+    const projection = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+    const provider = projection.providerThreads.find(
+      (candidate) =>
+        candidate.id === projection.thread.activeProviderThreadId &&
+        candidate.providerInstanceId === projection.thread.providerInstanceId,
+    );
+    if (
+      provider === undefined ||
+      projection.thread.archivedAt !== null ||
+      projection.thread.deletedAt !== null ||
+      projection.thread.settledAt !== null
+    )
+      return false;
+    const environmentId = yield* environment.getEnvironmentId;
+    const requirement = yield* goalContinuity.requirementFor(environmentId, threadId);
+    const owner =
+      provider.nativeThreadRef?.nativeId == null
+        ? null
+        : {
+            environmentId,
+            threadId,
+            providerInstanceId: provider.providerInstanceId,
+            providerThreadId: provider.id,
+            driver: provider.nativeThreadRef.driver,
+            nativeThreadId: provider.nativeThreadRef.nativeId,
+          };
+    if (continuityAdmissionRefusal(requirement, owner, false) !== undefined) return false;
+    yield* controlAdmission.assertOpen({
+      instanceId: provider.providerInstanceId,
+      threadId,
+      nativeThreadId: provider.nativeThreadRef?.nativeId ?? null,
+      producer:
+        provider.providerSessionId === null ||
+        provider.runtimeIdentity?.runtimeGeneration === undefined
+          ? null
+          : {
+              instanceId: provider.providerInstanceId,
+              providerSessionId: provider.providerSessionId,
+              runtimeGeneration: provider.runtimeIdentity.runtimeGeneration,
+            },
+    });
+    return true;
+  },
+  Effect.catchCause(() => Effect.succeed(false)),
+);
+
 export interface ProviderTurnStartServiceV2Shape {
   /** Capture the prepared attempt before native authority validation or issue can await. */
   readonly captureStartFailure?: (input: {
@@ -212,6 +266,7 @@ export const layer: Layer.Layer<
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
+    const startRefusals = yield* Effect.serviceOption(StartRefusal.StartRefusals);
     const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
     const eventSink = yield* EventSink.EventSinkV2;
     const goalContinuity = yield* GoalContinuity.GoalContinuity;
@@ -357,6 +412,7 @@ export const layer: Layer.Layer<
       readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
     }) =>
       Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(function* (input: {
+        readonly startRefusalReason?: RefusalReason;
         readonly signal: string;
         readonly status: "completed" | "failed";
         readonly now: DateTime.Utc;
@@ -424,6 +480,9 @@ export const layer: Layer.Layer<
           runId: run.id,
           activeAttemptId: attempt.id,
           expectedStatus: "starting",
+          ...(input.startRefusalReason === undefined
+            ? {}
+            : { startRefusalReason: input.startRefusalReason }),
           events,
         });
         // Preserve the original analytics receipt only after this exact captured attempt commits.
@@ -757,6 +816,7 @@ export const layer: Layer.Layer<
             ? restartAdmission.failure
             : undefined;
         yield* settleRunBeforeStart({
+          startRefusalReason: "restart_admission",
           signal:
             held === undefined
               ? "provider-restart-admission-failure"
@@ -805,6 +865,7 @@ export const layer: Layer.Layer<
             });
           yield* settleRunBeforeStart({
             signal: "goal-continuity-unavailable",
+            startRefusalReason: "continuity_unavailable",
             status: "failed",
             now: yield* DateTime.now,
             providerInstanceId: run.providerInstanceId,
@@ -834,6 +895,7 @@ export const layer: Layer.Layer<
       if (continuityRefusal !== undefined) {
         yield* settleRunBeforeStart({
           signal: "goal-continuity-held",
+          startRefusalReason: "continuity_held",
           status: "failed",
           now: yield* DateTime.now,
           providerInstanceId: run.providerInstanceId,
@@ -900,6 +962,7 @@ export const layer: Layer.Layer<
       if (admission._tag === "Failure") {
         yield* settleRunBeforeStart({
           signal: "provider-control-held",
+          startRefusalReason: "control_held",
           status: "failed",
           now: yield* DateTime.now,
           providerInstanceId: run.providerInstanceId,
@@ -918,6 +981,12 @@ export const layer: Layer.Layer<
         });
         return yield* new ProviderTurnStartError({ runId, cause: admission.failure });
       }
+      if (Option.isSome(startRefusals))
+        yield* startRefusals.value.cross({
+          threadId: input.threadId,
+          runId,
+          attemptId: attempt.id,
+        });
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
         const isEmptyCompaction =
           message.text.trim().toLowerCase() === "/compact" && !projection.hasConversation;

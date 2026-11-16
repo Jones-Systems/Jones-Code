@@ -52,14 +52,14 @@ def _install():
         plan = json.loads(read_file(plan_path, 16384))
         common = {"protocol", "fixtureRoot", "rootDevice", "rootInode", "helper", "helperSha256",
                   "manifest", "manifestSha256", "point", "observeRelaunch"}
-        assert set(plan) - {"controller"} == common | ({"selection", "selectionSha256"} if deferred else {"intent", "intentSha256", "transactionId"})
+        assert set(plan) - {"controller", "launchContext"} == common | ({"selection", "selectionSha256"} if deferred else {"intent", "intentSha256", "transactionId"})
         assert type(plan["protocol"]) is int and plan["protocol"] == (2 if deferred else 1)
         controller = plan.get("controller")
         if controller is not None:
             assert deferred and plan["observeRelaunch"] is True and set(controller) == {"identity", "main", "timeoutMs"}
             assert type(controller["timeoutMs"]) is int and 100 <= controller["timeoutMs"] <= 60000
         if deferred:
-            assert plan["observeRelaunch"] is False or plan["point"] == "before-pair" or controller is not None
+            assert plan["observeRelaunch"] is False or plan["point"] in ("before-pair", "exit-wait") or controller is not None
             assert sys.argv[2] == plan["manifest"]
             raw = read_file(sys.argv[4], 65536)
             actual = json.loads(raw)
@@ -97,6 +97,22 @@ def _install():
         assert sys.argv == [str(helper), "--manifest", plan["manifest"], "--activate", plan["intent"]]
         assert helper.name == "activate-v1-" + plan["helperSha256"] + ".py"
         assert hashlib.sha256(read_file(helper, 2 * 1024 * 1024)).hexdigest() == plan["helperSha256"]
+        context = plan.get("launchContext")
+        script_sha = "c5b834de0ac6135465260188eb0aa5047399b3be7a42618b69f202cf0c4a9595"
+        if "launchContext" in plan:
+            assert type(context) is dict
+            assert deferred and plan["observeRelaunch"] and plan["point"] in ("before-pair", "exit-wait")
+            assert set(context) == {"protocol", "originalScriptSha256", "arguments", "environment"}
+            assert type(context["protocol"]) is int and context["protocol"] == 1
+            assert context["originalScriptSha256"] == script_sha
+            assert context["arguments"] == ["--use-mock-keychain", "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1"]
+            assert set(context["environment"]) == {"HOME", "CFFIXED_USER_HOME", "TMPDIR"}
+            assert context["environment"]["HOME"] == context["environment"]["CFFIXED_USER_HOME"]
+            for value in context["environment"].values():
+                path = confined(value)
+                assert path != root and path.is_dir() and path.stat().st_mode & 0o077 == 0
+            scripts = re.findall(r"^LAUNCH_SERVICES_SCRIPT = r'''([\s\S]*?)'''", read_file(helper, 2 * 1024 * 1024).decode(), re.M)
+            assert len(scripts) == 1 and hashlib.sha256(scripts[0].encode()).hexdigest() == script_sha
         manifest_raw = read_file(plan["manifest"], 65536)
         intent_raw = read_file(plan["intent"], 65536)
         assert hashlib.sha256(manifest_raw).hexdigest() == plan["manifestSha256"]
@@ -123,7 +139,7 @@ def _install():
         assert not os.path.lexists(receipt_path)
         assert not os.path.lexists(plan_path.with_name("before-relaunch.json"))
         assert not os.path.lexists(plan_path.with_name("before-pair-state.json"))
-        for name in ("launch-services.json", "launch-return.json", "launch-observation-failure.json"):
+        for name in ("launch-context.json", "launch-services.json", "launch-return.json", "launch-observation-failure.json"):
             assert not os.path.lexists(plan_path.with_name(name))
         plan_sha = hashlib.sha256(read_file(plan_path, 16384)).hexdigest()
 
@@ -264,9 +280,13 @@ def _install():
         services_sha = None
         services_returned = False
         before_relaunch_sha = None
+        context_sha = None
+        original_script = None
 
         def launch_record(name, kind, **fields):
             record = dict(fault_record, kind=kind, beforeRelaunchSha256=before_relaunch_sha, **fields)
+            if context_sha is not None:
+                record["launchContextSha256"] = context_sha
             raw = json.dumps(record, sort_keys=True).encode()
             assert len(raw) <= 16384
             fd = os.open(plan_path.with_name(name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -299,7 +319,12 @@ def _install():
             return json.loads(raw) if len(raw) <= 8192 else None
 
         def observe_relaunch(frame, event, arg):
-            nonlocal launch_frame, services_frame, services_sha, services_returned, before_relaunch_sha
+            nonlocal launch_frame, services_frame, services_sha, services_returned, before_relaunch_sha, context_sha, original_script
+            # A Python return profile event also occurs when the call unwinds an
+            # exception/cancellation. Restore before receipt I/O can itself fail.
+            if event == "return" and frame is services_frame and original_script is not None:
+                frame.f_globals["LAUNCH_SERVICES_SCRIPT"] = original_script
+                original_script = None
             if controller is not None and event == "call" and frame.f_code.co_filename == str(helper):
                 name = frame.f_code.co_name
                 try:
@@ -326,9 +351,35 @@ def _install():
                     if (event == "call" and frame.f_code.co_filename == str(helper)
                             and frame.f_code.co_name == "launch_services" and frame.f_back is launch_frame):
                         if services_frame is not None:
+                            if context is not None:
+                                refuse()
                             observation_failed("duplicate-observation")
                         else:
                             services_frame = frame
+                            if context is not None:
+                                unchanged()
+                                request = frame.f_locals["request"]
+                                assert set(request) == {"appPath", "environment"} and request["appPath"] == manifest["appPath"]
+                                environment = request["environment"]
+                                assert type(environment) is dict and not set(environment) & set(context["environment"])
+                                script = frame.f_globals["LAUNCH_SERVICES_SCRIPT"]
+                                assert hashlib.sha256(script.encode()).hexdigest() == script_sha
+                                needle = "$.NSDictionary.dictionaryWithObjectForKey($(request.environment), key)"
+                                replacement = "$.NSDictionary.dictionaryWithObjectsForKeys($([request.environment, request.arguments]), $([key, $.NSWorkspaceLaunchConfigurationArguments]))"
+                                assert script.count(needle) == 1
+                                transformed = script.replace(needle, replacement)
+                                for value in context["environment"].values():
+                                    path = confined(value)
+                                    assert path != root and path.is_dir() and path.stat().st_mode & 0o077 == 0
+                                environment.update(context["environment"])
+                                request["arguments"] = list(context["arguments"])
+                                context_sha = launch_record("launch-context.json", "packaged-desktop-launch-context",
+                                    sequence=0, originalScriptSha256=script_sha,
+                                    transformedScriptSha256=hashlib.sha256(transformed.encode()).hexdigest(),
+                                    effectiveRequest=request,
+                                    selector="launchApplicationAtURLOptionsConfigurationError", options=0x80000 | 0x10000 | 0x100)
+                                original_script = script
+                                frame.f_globals["LAUNCH_SERVICES_SCRIPT"] = transformed
                         return
                     if event == "return" and frame is services_frame:
                         reply = bounded_result(arg, {"protocol", "status", "pid", "bundlePath", "executablePath", "domain", "code"})
@@ -344,6 +395,8 @@ def _install():
                                 "launch-validation-unproved" if services_returned else "launch-services-unproved"))
                         return
                 except BaseException:
+                    if context is not None and event == "call":
+                        refuse()
                     observation_failed("observation-failed")
                     return
             if (not plan["observeRelaunch"] or fault_record is None or event != "call"
@@ -377,8 +430,9 @@ def _install():
                 assert json.loads(fault_raw) == fault_record
                 state = snapshot_state()
                 if deferred:
-                    assert (point == "before-pair" or controller is not None) and quiet_state is not None
-                    assert state == quiet_state
+                    if point != "exit-wait" or controller is not None:
+                        assert (point == "before-pair" or controller is not None) and quiet_state is not None
+                        assert state == quiet_state
                 receipt = dict(fault_record, kind="packaged-desktop-before-relaunch",
                                faultReceiptSha256=hashlib.sha256(fault_raw).hexdigest(),
                                journalSha256=hashlib.sha256(journal_raw).hexdigest(), state=state)
@@ -444,7 +498,7 @@ def _install():
                        "helperSha256": plan["helperSha256"], "manifestSha256": plan["manifestSha256"],
                        "intentSha256": plan["intentSha256"],
                        "journalSha256": hashlib.sha256(journal_raw).hexdigest()}
-            if deferred and plan["observeRelaunch"]:
+            if deferred and plan["observeRelaunch"] and (point != "exit-wait" or controller is not None):
                 try:
                     # The initial app was live. Only this helper's stopped-process boundary
                     # supplies a quiet baseline; never compare with a live-home snapshot.

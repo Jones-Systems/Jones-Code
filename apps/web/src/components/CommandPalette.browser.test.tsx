@@ -1,4 +1,5 @@
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { EnvironmentId, ProjectId, ThreadId, type ScopedProjectRef } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -12,6 +13,7 @@ import { CommandPalette } from "./CommandPalette";
 const entities = vi.hoisted(() => ({
   projects: [] as ReadonlyArray<Project>,
   threads: [] as ReadonlyArray<Thread>,
+  defaultProjectRef: undefined as ScopedProjectRef | undefined,
 }));
 vi.mock("../state/entities", async (original) => ({
   ...(await original<typeof import("../state/entities")>()),
@@ -19,10 +21,31 @@ vi.mock("../state/entities", async (original) => ({
   useVisibleThreadShells: () => entities.threads,
 }));
 
-function setup(state: { projects?: ReadonlyArray<Project>; threads?: ReadonlyArray<Thread> } = {}) {
+vi.mock("../hooks/useHandleNewThread", async (original) => {
+  const actual = await original<typeof import("../hooks/useHandleNewThread")>();
+  return {
+    ...actual,
+    useHandleNewThread: () => {
+      const result = actual.useHandleNewThread();
+      return {
+        ...result,
+        defaultProjectRef: entities.defaultProjectRef ?? result.defaultProjectRef,
+      };
+    },
+  };
+});
+
+function setup(
+  state: {
+    projects?: ReadonlyArray<Project>;
+    threads?: ReadonlyArray<Thread>;
+    defaultProjectRef?: ScopedProjectRef;
+  } = {},
+) {
   useCommandPaletteStore.setState(useCommandPaletteStore.getInitialState(), true);
   entities.projects = state.projects ?? [];
   entities.threads = state.threads ?? [];
+  entities.defaultProjectRef = state.defaultProjectRef;
 }
 
 describe("CommandPalette open intents", () => {
@@ -50,6 +73,8 @@ describe("CommandPalette open intents", () => {
     });
     setup({
       projects: [project("acme", "Acme"), project("beta", "Beta"), project("gamma", "Gamma")],
+      // This keyboard fixture needs a current project independently of environment discovery.
+      defaultProjectRef: scopeProjectRef(environmentId, ProjectId.make("acme")),
     });
     await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
 

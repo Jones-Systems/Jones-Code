@@ -1,3 +1,5 @@
+import * as StartRefusal from "../jones/startRefusal/Store.ts";
+import * as StartRefusalProbe from "../jones/startRefusal/Probe.ts";
 import * as WorktreeMcpService from "../mcp/WorktreeMcpService.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
@@ -110,7 +112,10 @@ const layerStores = Layer.mergeAll(
   TurnItemPositionStore.layer,
 );
 
-export const layerEventSink = EventSink.layerFromStores.pipe(Layer.provide(layerStores));
+export const layerEventSink = EventSink.layerFromStores.pipe(
+  Layer.provide(StartRefusal.layer),
+  Layer.provide(layerStores),
+);
 const layerEventSinkProvided = layerEventSink;
 const layerProviderAdapterRegistryProvided =
   ProviderAdapterRegistry.layerFromProviderInstanceRegistry;
@@ -236,6 +241,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
 const layerGoalContinuity = GoalContinuityRuntime.layer;
 
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+  Layer.provide(StartRefusal.layer),
   Layer.provide(layerGoalContinuity),
   Layer.provide(TaskContinuationStore.layer),
   Layer.provide(layerProviderSwitchServiceProvided),
@@ -302,6 +308,15 @@ const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
 );
 
 const layerOrchestratorProvided = Orchestrator.layer.pipe(
+  Layer.provide(StartRefusal.layer),
+  // Export this same memoized probe for the separately composed dependency reactor.
+  Layer.provideMerge(
+    StartRefusalProbe.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(layerGoalContinuity, ProjectionStore.layer, ControlAdmission.layer),
+      ),
+    ),
+  ),
   Layer.provide(layerPlannedUpdateContinuityProvided),
   Layer.provide(nativeCreationOwnersProvided),
   Layer.provide(

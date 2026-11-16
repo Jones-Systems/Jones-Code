@@ -17,6 +17,8 @@
     "apps/server/src/jones/workMode/WorkMode.ts",
     "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
     "apps/web/src/jones/workMode/SidebarWorkModePill.tsx",
+    "apps/web/src/jones/workMode/WorkButtonSettings.browser.test.tsx",
+    "apps/web/src/jones/workMode/WorkButtonSettings.tsx",
     "docs/user/work-mode.md",
     "packages/shared/src/jones/workMode.test.ts",
     "packages/shared/src/jones/workMode.ts"
@@ -31,6 +33,7 @@
     "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
     "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
     "apps/web/src/components/chat/MessagesTimeline.logic.ts",
+    "apps/web/src/hooks/useSettings.test.ts",
     "packages/contracts/src/settings.ts",
     "packages/shared/src/KeyedLock.test.ts",
     "packages/shared/src/KeyedLock.ts"
@@ -92,6 +95,10 @@
     {
       "from": "apps/server/src/orchestration-v2/RestartContinuation.ts",
       "to": "apps/server/src/jones/provider/workModePrompt.ts"
+    },
+    {
+      "from": "apps/web/src/routes/_chat.settings.jones-code.tsx",
+      "to": "apps/web/src/jones/workMode/WorkButtonSettings.tsx"
     }
   ]
 }

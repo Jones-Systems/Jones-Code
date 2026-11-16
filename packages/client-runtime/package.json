@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/thread-activity-label": {
+      "types": "./src/jones/threadActivityLabel.ts",
+      "default": "./src/jones/threadActivityLabel.ts"
+    },
     "./jones/workstreams/personal": {
       "types": "./src/jones/workstreams/personal/index.ts",
       "default": "./src/jones/workstreams/personal/index.ts"

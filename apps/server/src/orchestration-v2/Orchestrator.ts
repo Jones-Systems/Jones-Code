@@ -1,3 +1,6 @@
+import * as StartRefusal from "../jones/startRefusal/Store.ts";
+import * as StartRefusalProbe from "../jones/startRefusal/Probe.ts";
+import { acceptedStartWitness, type HoldReservation } from "../jones/startRefusal/model.ts";
 import { readAutomaticQueueHolds } from "../jones/orchestration/QueueHoldProvenance.ts";
 import { EventId } from "@t3tools/contracts";
 import { queuedToolBoundaryTarget } from "./QueuedToolBoundary.ts";
@@ -1485,6 +1488,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const providerAdapters = yield* ProviderAdapterRegistryV2;
+  const startRefusals = yield* Effect.serviceOption(StartRefusal.StartRefusals);
+  const startRefusalProbe = yield* Effect.serviceOption(StartRefusalProbe.Probe);
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
   const plannedContinuity = yield* Effect.serviceOption(
@@ -1837,6 +1842,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       options: {
         readonly updateDelegatedCompletionOnly?: boolean;
         readonly queueHold?: QueueHoldIntent;
+        readonly startRefusalHold?: HoldReservation;
       } = {},
     ) {
       const withIds = yield* Effect.forEach(events, (event) => makeSystemEvent(event));
@@ -1923,6 +1929,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         delivery.taskIds.length === 0 ||
         controls.thread.archivedAt !== null ||
         controls.thread.deletedAt !== null
+      )
+        return;
+      if (
+        Option.isSome(startRefusals) &&
+        (yield* startRefusals.value.blocked({
+          threadId,
+          parentRunId,
+          generation: delivery.generation,
+          messageId: delivery.messageId,
+        }))
       )
         return;
       const messages = yield* projectionStore.getThreadRecords(threadId, ["messages"], {
@@ -3409,15 +3425,75 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const clearDelivery =
       remainingTaskIds.length === 0 &&
       (deliveryRun === undefined || deliveryRun.status === "queued");
+    const retainedDelivery =
+      deliveryRun === undefined &&
+      Option.isSome(startRefusals) &&
+      (yield* startRefusals.value
+        .canRekey({
+          threadId: command.parentThreadId,
+          parentRunId: parentRun.id,
+          generation: delivery.generation,
+          messageId: delivery.messageId,
+        })
+        .pipe(mapDispatchError(command)));
+    const rekey = !clearDelivery && remainingTaskIds.length > 0 && retainedDelivery;
+    // Unrefused siblings need their own delivery when the last held result is read or disposed.
+    const pendingTaskIds =
+      clearDelivery &&
+      retainedDelivery &&
+      cohort.disposition === "open" &&
+      projection.thread.archivedAt === null &&
+      projection.thread.deletedAt === null &&
+      projection.thread.settledAt === null
+        ? projection.subagents
+            .filter(
+              (candidate) =>
+                candidate.id !== task.id &&
+                candidate.origin === "app_owned" &&
+                candidate.runId === parentRun.id &&
+                isTerminalDelegatedTaskStatus(candidate.status) &&
+                candidate.completionDelivery?.state === "pending",
+            )
+            .map((candidate) => candidate.id)
+        : [];
+    const freshDelivery = rekey || pendingTaskIds.length > 0;
+    const remainder = freshDelivery
+      ? {
+          generation: cohort.nextGeneration,
+          messageId: yield* idAllocator.allocate
+            .message({
+              threadId: command.parentThreadId,
+              ordinal:
+                (yield* projectionStore
+                  .getMessageCount(command.parentThreadId)
+                  .pipe(mapDispatchError(command))) + 1,
+            })
+            .pipe(mapDispatchError(command)),
+          taskIds: rekey ? remainingTaskIds : pendingTaskIds,
+        }
+      : { ...delivery, taskIds: remainingTaskIds };
     const updatedCohort: OrchestrationV2DelegatedCompletionCohort = {
       ...cohort,
-      delivery: clearDelivery
-        ? null
-        : {
-            ...delivery,
-            taskIds: remainingTaskIds,
-          },
+      nextGeneration: freshDelivery ? remainder.generation + 1 : cohort.nextGeneration,
+      delivery: clearDelivery && !freshDelivery ? null : remainder,
     };
+    for (const sibling of projection.subagents) {
+      if (!pendingTaskIds.includes(sibling.id)) continue;
+      yield* emitEvent({
+        type: "subagent.updated",
+        threadId: command.parentThreadId,
+        runId: parentRun.id,
+        nodeId: sibling.id,
+        driver: sibling.driver,
+        providerInstanceId: sibling.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...sibling,
+          completionDelivery: { state: "claimed", observedByRunId: null },
+          updatedAt: now,
+        },
+      });
+    }
     yield* emitEvent({
       type: "run.updated",
       threadId: command.parentThreadId,
@@ -14913,6 +14989,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           offer: false,
         };
       }
+      if (
+        Option.isSome(startRefusals) &&
+        (yield* startRefusals.value
+          .owns({
+            threadId: input.parentRun.threadId,
+            parentRunId: input.parentRun.id,
+            generation: delivery.generation,
+            messageId: delivery.messageId,
+          })
+          .pipe(mapDelegatedCompletionError))
+      ) {
+        return {
+          task: delivery.taskIds.includes(input.task.id)
+            ? input.updatedTask
+            : {
+                ...input.updatedTask,
+                completionDelivery: { state: "pending" as const, observedByRunId: null },
+              },
+          parentRun: undefined,
+          message: undefined,
+          offer: false,
+        };
+      }
       const taskIds = Array.from(new Set([...delivery.taskIds, input.task.id]));
       const nextCohort = {
         ...cohort!,
@@ -15398,6 +15497,62 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       delivery.messageId !== deliveryRun.userMessageId ||
       delivery.generation !== messageOwnership.generation
     ) {
+      return;
+    }
+
+    const hasClaims = projection.subagents.some(
+      (task) =>
+        task.origin === "app_owned" &&
+        task.runId === parentRun.id &&
+        delivery.taskIds.includes(task.id) &&
+        task.completionDelivery?.state === "claimed",
+    );
+    // With no claims at stake, ordinary finalization can reserve pending siblings
+    // even when refusal evidence is unavailable.
+    const refusal =
+      hasClaims && Option.isSome(startRefusals)
+        ? yield* startRefusals.value.classify(threadId, runId)
+        : "ordinary";
+    if (refusal === "unknown") return;
+    if (refusal === "qualified") {
+      const successor = {
+        generation: cohort.nextGeneration,
+        messageId: yield* idAllocator.allocate.message({
+          threadId,
+          ordinal: (yield* projectionStore.getMessageCount(threadId)) + 1,
+        }),
+        taskIds: delivery.taskIds,
+      };
+      yield* writeSystemEvents(
+        [
+          {
+            type: "run.updated",
+            threadId,
+            runId: parentRun.id,
+            providerInstanceId: parentRun.providerInstanceId,
+            occurredAt: yield* DateTime.now,
+            payload: {
+              ...parentRun,
+              delegatedCompletion: {
+                ...cohort,
+                nextGeneration: successor.generation + 1,
+                delivery: successor,
+              },
+            },
+          },
+        ],
+        [],
+        {
+          updateDelegatedCompletionOnly: true,
+          startRefusalHold: {
+            threadId,
+            parentRunId: parentRun.id,
+            refusedRunId: runId,
+            source: delivery,
+            successor,
+          },
+        },
+      );
       return;
     }
 
@@ -16788,6 +16943,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
+    // Prefinalization serializes only already-certified refusals. During starting,
+    // disposition subtracts in place; survivors reserve when refusal is certified.
+    if (
+      (command.type === "delegated_task.completion-delivery.acknowledge" ||
+        command.type === "delegated_task.completion-delivery.dispose") &&
+      !isUnobservedAcknowledgement(command) &&
+      Option.isSome(startRefusals)
+    ) {
+      const current = yield* projectionStore
+        .getThreadRecords(command.parentThreadId, ["runs", "subagents"])
+        .pipe(mapDispatchError(command));
+      const task = current.subagents.find(
+        (candidate) => candidate.id === command.taskId && candidate.origin === "app_owned",
+      );
+      const cohort = current.runs.find((run) => run.id === task?.runId)?.delegatedCompletion;
+      const deliveryRun = current.runs.find(
+        (run) => run.userMessageId === cohort?.delivery?.messageId,
+      );
+      if (
+        task?.completionDelivery?.state === "claimed" &&
+        cohort?.disposition === "open" &&
+        cohort.delivery?.taskIds.includes(task.id) &&
+        deliveryRun !== undefined &&
+        (yield* startRefusals.value
+          .qualifies(command.parentThreadId, deliveryRun.id)
+          .pipe(mapDispatchError(command)))
+      )
+        yield* finalizeDelegatedCompletionDelivery(command.parentThreadId, deliveryRun.id).pipe(
+          mapDispatchError(command),
+        );
+    }
+
     let plan = yield* (
       command.type === "message.dispatch"
         ? validateDispatchGuard(command).pipe(
@@ -17152,6 +17339,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       isUnobservedAcknowledgement(command)
     ) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.parentThreadId));
+    } else if (
+      (command.type === "delegated_task.completion-delivery.acknowledge" ||
+        command.type === "delegated_task.completion-delivery.dispose") &&
+      committed.committed &&
+      plan.updateDelegatedCompletionOnlyRunId !== undefined &&
+      committed.storedEvents.some(
+        ({ event }) =>
+          event.type === "run.updated" &&
+          event.payload.id === plan.updateDelegatedCompletionOnlyRunId,
+      )
+    ) {
+      yield* mapDispatchError(command)(
+        offerDelegatedCompletionDelivery(
+          command.parentThreadId,
+          plan.updateDelegatedCompletionOnlyRunId,
+        ),
+      );
     }
 
     return {
@@ -17912,6 +18116,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Stream.runForEach(handleQueuedToolBoundary),
       Effect.forkDetach,
     );
+  if (Option.isSome(startRefusals) && Option.isSome(startRefusalProbe)) {
+    const refusals = startRefusals.value;
+    const probe = startRefusalProbe.value;
+    yield* eventSink
+      .stream({ afterSequence: terminalEventsAfterSequence, eventType: "provider-turn.updated" })
+      .pipe(
+        Stream.filter((stored) => acceptedStartWitness(stored) !== undefined),
+        Stream.runForEach((stored) =>
+          threadDispatch
+            .withLock(
+              stored.event.threadId,
+              Effect.gen(function* () {
+                for (const hold of yield* refusals.armedBy(stored)) {
+                  const open = yield* probe.open(hold.threadId);
+                  if (yield* refusals.finishArming(hold, open))
+                    yield* offerDelegatedCompletionDelivery(hold.threadId, hold.parentRunId);
+                }
+              }),
+            )
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Refused delivery remains held", {
+                  threadId: stored.event.threadId,
+                  cause,
+                }),
+              ),
+            ),
+        ),
+        Effect.forkScoped,
+      );
+  }
   // Queue promotion can wait on a provider or a thread lock. Subscribe to run
   // updates before buffering so that wait never retains unrelated tool bodies.
   yield* eventSink

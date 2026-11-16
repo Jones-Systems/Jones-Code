@@ -995,6 +995,25 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect("loads modern provider instances when legacy session history is unavailable", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const sql = yield* SqlClient.SqlClient;
+      const settings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fs.writeFileString(
+        config.settingsPath,
+        JSON.stringify({ providerInstances: { cursor_work: { driver: "cursor", config: {} } } }),
+      );
+      yield* sql`DROP TABLE projection_thread_sessions`;
+
+      const instance = (yield* settings.getSettings).providerInstances[
+        ProviderInstanceId.make("cursor_work")
+      ];
+      assert.deepEqual(instance, { driver: ProviderDriverKind.make("cursor"), config: {} });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("enables previously used optional providers while migrating legacy settings", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;

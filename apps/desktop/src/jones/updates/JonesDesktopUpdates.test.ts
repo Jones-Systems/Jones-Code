@@ -413,6 +413,74 @@ function planControllerFixture(
 }
 
 describe("Jones desktop updates", () => {
+  it("lists qualified artifact provenance without staging and supports an older client", async () => {
+    const f = await fixture();
+    const controller = new JonesDesktopUpdateController({
+      ...f.options,
+      client: {
+        ...f.options.client!,
+        listQualifiedBuilds: async () => ({
+          builds: [{ candidate, buildStartedAt: candidateBuildStartedAt }],
+          unavailable: false,
+        }),
+      },
+    });
+    await controller.configure();
+    expect(await controller.listBuilds()).toMatchObject({
+      unavailable: false,
+      builds: [
+        {
+          artifactId: candidate.artifactId,
+          artifactDigest: candidate.artifactDigest,
+          sourceSha: candidate.source,
+          sourceTree: candidate.tree,
+          version: candidate.version,
+          runId: candidate.runId,
+          runAttempt: candidate.runAttempt,
+          workflow: candidate.workflow,
+          platform: candidate.platform,
+          architecture: candidate.architecture,
+        },
+      ],
+    });
+    await f.controller.configure();
+    expect(await f.controller.listBuilds()).toEqual({ builds: [], unavailable: true });
+    expect(f.stages()).toBe(0);
+  });
+
+  it("refuses every changed reviewed artifact identity before admitting the exact selection", async () => {
+    const f = await fixture();
+    const check = vi.fn(async () => ({ state: "available" as const, candidate }));
+    const controller = new JonesDesktopUpdateController({
+      ...f.options,
+      client: { ...f.options.client!, check },
+    });
+    await controller.configure();
+    await controller.check();
+    const reviewed = controller.state.jones!.provenance!;
+    const patches = [
+      { artifactId: reviewed.artifactId + 1 },
+      { artifactDigest: "0".repeat(64) },
+      { sourceSha: "0".repeat(40) },
+      { sourceTree: "0".repeat(40) },
+      { version: "rebuilt" },
+      { runId: reviewed.runId + 1 },
+      { runAttempt: reviewed.runAttempt + 1 },
+      { workflow: "another-workflow" },
+      { platform: "linux" as const },
+      { architecture: "x64" as const },
+    ];
+    for (const patch of patches) {
+      expect(await controller.selectBuild({ ...reviewed, ...patch })).toBe(false);
+      expect(controller.state.jones!.provenance).toEqual(reviewed);
+    }
+    expect(await controller.selectBuild(reviewed)).toBe(true);
+    expect(check).toHaveBeenLastCalledWith(
+      expect.objectContaining({ targetSource: reviewed.sourceSha }),
+    );
+    expect(f.stages()).toBe(0);
+  });
+
   it.each([
     { metadata: { jonesBuildStartedAt: "2026-10-20T20:13:43Z" }, expected: "2026-10-20T20:13:43Z" },
     { metadata: {}, expected: undefined },

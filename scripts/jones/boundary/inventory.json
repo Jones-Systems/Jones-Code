@@ -7,6 +7,14 @@
   },
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "paths": {
+    "scripts/jones/packaging/linuxRuntimeLibraries.ts": "jones-owned",
+    "scripts/jones/packaging/linuxRuntimeLibraries.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/linux-runtime-library-layout.json": "jones-owned",
+    "apps/server/src/jones/threadResultDependencies/WakeObligations.ts": "jones-owned",
+    "apps/server/src/jones/threadResultDependencies/WakeObligations.test.ts": "jones-owned",
+    "apps/server/src/jones/threadResultDependencies/WakeObligations.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/155_JonesPeerWakeObligations.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/peer-wake-obligations.json": "jones-owned",
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
     ".agents/skills/capture-ui-evidence/references/native-self-configuration.md": "policy",
     ".agents/skills/capture-ui-evidence/references/runner-output-and-limits.md": "policy",
@@ -1549,6 +1557,7 @@
     "apps/web/src/components/pullRequest/PullRequestsPage.tsx": "hook",
     "apps/web/src/components/settings/AboutVersionTitle.tsx": "accepted-shared",
     "apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx": "accepted-shared",
+    "apps/web/src/components/settings/AcpSessionManagementSection.browser.test.tsx": "accepted-shared",
     "apps/web/src/components/settings/ConnectionsSettings.tsx": "hook",
     "apps/web/src/components/settings/DeviceHostEditor.tsx": "accepted-shared",
     "apps/web/src/components/settings/EnvironmentRow.tsx": "accepted-shared",
@@ -2433,6 +2442,7 @@
     "packages/shared/src/jones/sqliteReaders/lifecycle.test.ts": "jones-owned",
     "packages/shared/src/jones/sqliteReaders/lifecycle.ts": "jones-owned",
     "packages/shared/src/jones/sqliteWriterAdmission.fixture.ts": "jones-owned",
+    "apps/server/src/jones/persistence/ReaderCheckpointPressure.test.ts": "jones-owned",
     "packages/shared/src/jones/sqliteWriterAdmission.test.ts": "jones-owned",
     "packages/shared/src/jones/threadAttention.test.ts": "jones-owned",
     "packages/shared/src/jones/threadAttention.ts": "jones-owned",
@@ -2576,6 +2586,7 @@
     "scripts/jones/boundary/fragments/shell-publication-batching.json": "jones-owned",
     "scripts/jones/boundary/fragments/sqlite-checkpoint-lifecycle.json": "jones-owned",
     "scripts/jones/boundary/fragments/staged-selection-recovery.json": "jones-owned",
+    "scripts/jones/boundary/fragments/start-refusal-retention.json": "jones-owned",
     "scripts/jones/boundary/fragments/startup-access-logging.json": "jones-owned",
     "scripts/jones/boundary/fragments/task-continuation.json": "jones-owned",
     "scripts/jones/boundary/fragments/terminal-history-urgent-flush.json": "jones-owned",
@@ -3548,6 +3559,7 @@
     "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts": "jones-owned",
     "apps/server/src/orchestration-v2/ContextHandoffBudget.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/ContextHandoffDelivery.ts": "hook",
+    "apps/web/scripts/warm-dep-cache.ts": "hook",
     "apps/server/src/jones/workstreams/deferredShellActivation.ts": "jones-owned",
     "apps/server/src/jones/workstreams/deferredShellActivation.test.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamShellActivation.ts": "jones-owned",
@@ -3573,7 +3585,19 @@
     "apps/server-swap-cli/build.test.cjs": "jones-owned",
     "scripts/jones/direct-producers/server-bundle.ts": "jones-owned",
     "scripts/jones/direct-producers/server-pack-profile.ts": "jones-owned",
-    "scripts/jones/direct-producers/server-bundle.node-test.mjs": "jones-owned"
+    "scripts/jones/direct-producers/server-bundle.node-test.mjs": "jones-owned",
+    "packages/client-runtime/src/jones/threadActivityLabel.ts": "jones-owned",
+    "packages/client-runtime/src/jones/threadActivityLabel.test.ts": "jones-owned",
+    "apps/mobile/src/jones/threadActivityLabel.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/thread-activity-label.json": "jones-owned",
+    "apps/web/src/components/chat/TimelineWorkGroupRows.tsx": "hook",
+    "apps/web/src/components/chat/timelineRowContext.ts": "hook",
+    "apps/mobile/src/features/threads/thread-work-log.tsx": "accepted-shared",
+    "apps/web/src/jones/workMode/WorkButtonSettings.tsx": "jones-owned",
+    "apps/web/src/jones/workMode/WorkButtonSettings.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/personalRail.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/personalRail.test.ts": "jones-owned",
+    "apps/web/src/hooks/useSettings.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -4532,12 +4556,20 @@
       "to": "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts"
     },
     {
+      "from": "apps/web/scripts/warm-dep-cache.ts",
+      "to": "scripts/jones/tsrs/local-mac-capacity.ts"
+    },
+    {
       "from": "apps/server/src/auth/SessionStore.ts",
       "to": "apps/server/src/jones/auth/SessionPresentation.ts"
     },
     {
       "from": "apps/server/src/provider/AgentContextBudget.test.ts",
       "to": "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts"
+    },
+    {
+      "from": "apps/web/src/routes/_chat.settings.jones-code.tsx",
+      "to": "apps/web/src/jones/workMode/WorkButtonSettings.tsx"
     }
   ]
 }

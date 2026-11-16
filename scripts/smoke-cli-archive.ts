@@ -16,6 +16,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { linuxLibatomicLayout } from "./jones/packaging/linuxRuntimeLibraries.ts";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
@@ -99,7 +100,7 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   }
   const contentDir = path.join(scratch, root);
   const executable = path.join(contentDir, platform === "win32" ? "t3.exe" : "t3");
-  const bundledLibatomic = path.join(contentDir, "lib/libatomic.so.1");
+  const bundledLibatomic = path.join(contentDir, linuxLibatomicLayout.file);
   for (const required of [
     executable,
     path.join(contentDir, "client/index.html"),

@@ -14,6 +14,9 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Probe from "../startRefusal/Probe.ts";
+import { wakeEligible } from "./WakeObligations.ts";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -49,6 +52,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const crypto = yield* SecureRandom.SecureRandom;
   const store = makeDependencyStore(sql, makeJonesTablePresence(sql));
+  const probe = yield* Effect.serviceOption(Probe.Probe);
   const changes = yield* Changes.DependencyChanges;
   const watcher = yield* RequestWatch.RequestWatch;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -94,6 +98,7 @@ const make = Effect.gen(function* () {
       )
         return;
       if (current.state === "resolved") {
+        if (!wakeEligible(current)) return;
         yield* wake(current);
         return;
       }
@@ -214,6 +219,7 @@ const make = Effect.gen(function* () {
         if (
           dependency.state === "released" ||
           dependency.state === "delivered" ||
+          (dependency.state === "resolved" && !wakeEligible(dependency)) ||
           (previous?.generation !== undefined && previous.generation !== dependency.generation)
         ) {
           if (previous) {
@@ -223,6 +229,7 @@ const make = Effect.gen(function* () {
         }
         if (
           ["released", "delivered"].includes(dependency.state) ||
+          (dependency.state === "resolved" && !wakeEligible(dependency)) ||
           running.has(dependency.dependencyId) ||
           changes.isSending(dependency.dependencyId)
         )
@@ -297,12 +304,21 @@ const make = Effect.gen(function* () {
       source.pipe(
         Stream.filter(
           (event) =>
+            event.type === "provider-turn.updated" ||
             event.type === "run.updated" ||
             event.type === "thread.unarchived" ||
             event.type === "thread.unsettled",
         ),
         Stream.runForEach((event) =>
-          reconcile([event.threadId]).pipe(
+          Effect.gen(function* () {
+            if (event.type === "provider-turn.updated") {
+              for (const hold of yield* store.wakes.armedBy(event.id)) {
+                const open = Option.isSome(probe) ? yield* probe.value.open(event.threadId) : false;
+                yield* mutate(store.wakes.finishArming(hold, open));
+              }
+            }
+            yield* reconcile([event.threadId]);
+          }).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("Dependency event reconciliation failed", { cause }),
             ),

@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import type { EnvironmentId } from "@t3tools/contracts";
+import type { JonesUpdateProvenance } from "@t3tools/contracts/jones/jonesUpdates";
 import type { UpdateEverythingMachine } from "../../components/sidebar/updateEverything.logic";
 import { jonesUpdates } from "../updates/jonesUpdates";
 import { useInstallPlan } from "./useInstallPlan";
@@ -46,11 +47,13 @@ export function useJonesBulkUpdates(
           (observations.get(machine.environmentId)?.state?.installedSource?.sha ??
             machine.serverConfig?.environment.jonesSource?.sha) !== targetSource),
     ),
-    handOff: () =>
-      targets.length === 0 &&
-      (typeof window === "undefined" ||
-        window.desktopBridge?.installPlan === undefined ||
-        localVersion === null)
+    handOff: (reviewedBuild?: JonesUpdateProvenance) => {
+      if (reviewedBuild !== undefined)
+        return handOffJonesTargets(targets, undefined, reviewedBuild);
+      return targets.length === 0 &&
+        (typeof window === "undefined" ||
+          window.desktopBridge?.installPlan === undefined ||
+          localVersion === null)
         ? Promise.resolve([])
         : handOffJonesTargets(
             targets.map(({ environmentId, label }) => ({ environmentId, label })),
@@ -62,6 +65,7 @@ export function useJonesBulkUpdates(
               message:
                 "Native plan handoff not confirmed. Open Install status; no Jones self-update was sent.",
             })),
-          ),
+          );
+    },
   };
 }
