@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { expect, it } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
@@ -167,4 +168,42 @@ it("searches portaled Settings, then Escape closes find before the Settings dial
   await userEvent.keyboard("{Escape}");
   await expect.element(page.getByRole("search")).not.toBeInTheDocument();
   await expect.element(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+});
+
+it("dismisses embedded full-history find with Escape and restores its composer", async () => {
+  function SideThread() {
+    const [active, setActive] = useState(false);
+    return (
+      <PanelFindScope
+        label="side thread"
+        data-find-default
+        nativeFind={{
+          active,
+          open: () => setActive(true),
+          close: () => setActive(false),
+          dismiss: () => {
+            setActive(false);
+            document.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+          },
+        }}
+      >
+        <textarea aria-label="Side composer" />
+        {active && <input aria-label="Native thread query" />}
+      </PanelFindScope>
+    );
+  }
+  await using screen = await render(
+    <PanelFindProvider>
+      <SideThread />
+    </PanelFindProvider>,
+  );
+  await userEvent.click(screen.getByRole("textbox", { name: "Side composer" }));
+  await find();
+  await expect.element(screen.getByRole("textbox", { name: "Native thread query" })).toBeVisible();
+  await userEvent.click(screen.getByRole("textbox", { name: "Native thread query" }));
+  await userEvent.keyboard("{Escape}");
+  await expect
+    .element(screen.getByRole("textbox", { name: "Native thread query" }))
+    .not.toBeInTheDocument();
+  await expect.element(screen.getByRole("textbox", { name: "Side composer" })).toHaveFocus();
 });

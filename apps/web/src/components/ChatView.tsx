@@ -3317,6 +3317,11 @@ export default function ChatView(props: ChatViewProps) {
           threadFindEnabled && activeThreadKey
             ? {
                 open: () => openThreadFind(activeThreadKey),
+                active: isThreadFindActive,
+                dismiss: () => {
+                  closeThreadFind();
+                  focusComposerStable();
+                },
                 close: () => {
                   if (isThreadFindActive) closeThreadFind();
                 },

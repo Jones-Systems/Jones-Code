@@ -119,7 +119,9 @@ export function PanelFindScope({
   label: string;
   resetKey?: string | undefined;
   enabled?: boolean;
-  nativeFind?: { open: () => void; close: () => void } | undefined;
+  nativeFind?:
+    | { open: () => void; close: () => void; active?: boolean; dismiss?: () => void }
+    | undefined;
 }) {
   const coordinator = use(FindCoordinator);
   const root = useRef<HTMLDivElement>(null);
@@ -223,13 +225,21 @@ export function PanelFindScope({
   const move = (direction: number) =>
     setIndex(count ? (activeIndex + direction + count) % count : 0);
   const onFindKey = useEffectEvent((event: KeyboardEvent) => {
-    if (!open || event.isComposing || event.altKey) return;
+    if ((!open && !nativeFind?.active) || event.isComposing || event.altKey) return;
     if (
       event.target instanceof Element &&
       event.target.closest('[role="dialog"], [role="alertdialog"]') &&
       !root.current?.contains(event.target)
     )
       return;
+    if (nativeFind) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        (nativeFind.dismiss ?? nativeFind.close)();
+      }
+      return;
+    }
     const modifier = isMacPlatform(navigator.platform) ? event.metaKey : event.ctrlKey;
     if (
       event.key === "Escape" ||
