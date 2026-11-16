@@ -35,6 +35,7 @@ import { appFailureCodeFromCause } from "../jones/orchestration/appFailureReason
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
+import { startFailureCauseMessage } from "../jones/provider/startFailureMessage.ts";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
@@ -798,11 +799,7 @@ export const layer: Layer.Layer<
                       message:
                         failed.message ??
                         knownProviderFailureMessage(failed.error) ??
-                        (nestedCause instanceof Error
-                          ? nestedCause.message
-                          : typeof nestedCause === "string"
-                            ? nestedCause
-                            : failed.error.message),
+                        startFailureCauseMessage(failed.error, nestedCause),
                       class: "provider_error",
                     }),
             },
