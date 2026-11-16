@@ -116,13 +116,15 @@ const reviewServicesLayer = Layer.mergeAll(
         | ThreadManagement.ThreadManagementService
       >();
       return {
-        status: Effect.fn("ReceiverInspection.status")(function* (input: Parameters<ReceiverInspection["Service"]["status"]>[0]) {
-            const scope = yield* Invocation.McpInvocationContext;
-            return yield* inspectionStatus(input).pipe(
-              Effect.provideService(Invocation.McpInvocationContext, scope),
-              Effect.provide(context),
-            );
-          }),
+        status: Effect.fn("ReceiverInspection.status")(function* (
+          input: Parameters<ReceiverInspection["Service"]["status"]>[0],
+        ) {
+          const scope = yield* Invocation.McpInvocationContext;
+          return yield* inspectionStatus(input).pipe(
+            Effect.provideService(Invocation.McpInvocationContext, scope),
+            Effect.provide(context),
+          );
+        }),
       };
     }),
   ),

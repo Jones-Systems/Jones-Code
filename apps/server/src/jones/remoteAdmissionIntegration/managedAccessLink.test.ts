@@ -56,7 +56,9 @@ it.effect.each(["revoked", "expired"] as const)(
       // A later unrelated grant with the same destination must never win scope selection.
       const original = (yield* admissions.access.getGrant(grant.grant_id))!;
       const otherBinding = {
-        ...(yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(original.binding_json)),
+        ...(yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(
+          original.binding_json,
+        )),
         originThreadId: "unrelated-origin",
       };
       yield* sql.withTransaction(
@@ -177,7 +179,9 @@ it.effect("the latest restored head wins even when its root predates another sco
     yield* sql.withTransaction(
       admissions.access.createGrantInTransaction({
         admissionId: "newer-independent-root",
-        binding: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(original.binding_json),
+        binding: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(
+          original.binding_json,
+        ),
         durationSeconds: 86400,
         now: DateTime.formatIso(yield* DateTime.now),
       }),

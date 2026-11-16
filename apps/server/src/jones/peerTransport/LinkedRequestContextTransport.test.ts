@@ -64,7 +64,8 @@ it.effect(
         }> = [];
         const headers: Array<Readonly<Record<string, string>>> = [];
         const registrations: Array<string> = [];
-        const intake = Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ isLiveClaim: () => false,
+        const intake = Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({
+          isLiveClaim: () => false,
           register: (operation) => {
             registrations.push(operation);
           },

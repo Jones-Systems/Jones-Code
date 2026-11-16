@@ -12,14 +12,14 @@ import {
 import { SqlError, UnknownError } from "effect/sql/SqlError";
 import { canonicalJsonStrict } from "../remoteDelegation/shared.ts";
 
-export class ReceiverAccessConflict extends Schema.TaggedError<ReceiverAccessConflict, { readonly brand: unique symbol }>()(
-  "ReceiverAccessConflict",
-  { current: Schema.Unknown },
-) {}
-export class ReceiverAccessUnavailable extends Schema.TaggedError<ReceiverAccessUnavailable, { readonly brand: unique symbol }>()(
-  "ReceiverAccessUnavailable",
-  {},
-) {}
+export class ReceiverAccessConflict extends Schema.TaggedError<
+  ReceiverAccessConflict,
+  { readonly brand: unique symbol }
+>()("ReceiverAccessConflict", { current: Schema.Unknown }) {}
+export class ReceiverAccessUnavailable extends Schema.TaggedError<
+  ReceiverAccessUnavailable,
+  { readonly brand: unique symbol }
+>()("ReceiverAccessUnavailable", {}) {}
 export type BlockReason = RemoteAdmissionBlockedReason;
 export type AccessBinding = RemoteAdmissionAccessBinding;
 export interface Grant {

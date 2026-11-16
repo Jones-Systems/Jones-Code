@@ -16,10 +16,10 @@ import type { Grant } from "./ReceiverAccess.ts";
 import type { SqlError } from "effect/sql/SqlError";
 import type * as SqlClient from "effect/sql/SqlClient";
 
-export class ReviewHistoryUnavailable extends Schema.TaggedError<ReviewHistoryUnavailable, { readonly brand: unique symbol }>()(
-  "ReviewHistoryUnavailable",
-  {},
-) {}
+export class ReviewHistoryUnavailable extends Schema.TaggedError<
+  ReviewHistoryUnavailable,
+  { readonly brand: unique symbol }
+>()("ReviewHistoryUnavailable", {}) {}
 export type ReviewView = Exclude<RemoteAdmissionReviewView, "access">;
 export type ReviewCounts = RemoteAdmissionReviewCounts;
 interface ProjectionRow {

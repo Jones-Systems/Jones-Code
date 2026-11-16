@@ -40,38 +40,38 @@ import {
   type EvaluationFailureKind,
 } from "./evaluationDiagnostic.ts";
 
-export class RemoteAdmissionInvalidRequest extends Schema.TaggedError<RemoteAdmissionInvalidRequest, { readonly brand: unique symbol }>()(
-  "RemoteAdmissionInvalidRequest",
-  { cause: Schema.Defect() },
-) {}
-export class RemoteAdmissionPersistenceError extends Schema.TaggedError<RemoteAdmissionPersistenceError, { readonly brand: unique symbol }>()(
-  "RemoteAdmissionPersistenceError",
-  { cause: Schema.Defect() },
-) {}
-export class RemoteAdmissionKeyConflict extends Schema.TaggedError<RemoteAdmissionKeyConflict, { readonly brand: unique symbol }>()(
-  "RemoteAdmissionKeyConflict",
-  {},
-) {}
-export class RemoteAdmissionNotFound extends Schema.TaggedError<RemoteAdmissionNotFound, { readonly brand: unique symbol }>()(
-  "RemoteAdmissionNotFound",
-  {},
-) {}
-export class RemoteAdmissionBindingMismatch extends Schema.TaggedError<RemoteAdmissionBindingMismatch, { readonly brand: unique symbol }>()(
-  "RemoteAdmissionBindingMismatch",
-  {},
-) {}
-export class RemoteAdmissionForbidden extends Schema.TaggedError<RemoteAdmissionForbidden, { readonly brand: unique symbol }>()(
-  "RemoteAdmissionForbidden",
-  {},
-) {}
-export class RemoteAdmissionStateConflict extends Schema.TaggedError<RemoteAdmissionStateConflict, { readonly brand: unique symbol }>()(
-  "RemoteAdmissionStateConflict",
-  { status: Schema.String },
-) {}
-export class RemoteAdmissionPolicyChanged extends Schema.TaggedError<RemoteAdmissionPolicyChanged, { readonly brand: unique symbol }>()(
-  "RemoteAdmissionPolicyChanged",
-  {},
-) {}
+export class RemoteAdmissionInvalidRequest extends Schema.TaggedError<
+  RemoteAdmissionInvalidRequest,
+  { readonly brand: unique symbol }
+>()("RemoteAdmissionInvalidRequest", { cause: Schema.Defect() }) {}
+export class RemoteAdmissionPersistenceError extends Schema.TaggedError<
+  RemoteAdmissionPersistenceError,
+  { readonly brand: unique symbol }
+>()("RemoteAdmissionPersistenceError", { cause: Schema.Defect() }) {}
+export class RemoteAdmissionKeyConflict extends Schema.TaggedError<
+  RemoteAdmissionKeyConflict,
+  { readonly brand: unique symbol }
+>()("RemoteAdmissionKeyConflict", {}) {}
+export class RemoteAdmissionNotFound extends Schema.TaggedError<
+  RemoteAdmissionNotFound,
+  { readonly brand: unique symbol }
+>()("RemoteAdmissionNotFound", {}) {}
+export class RemoteAdmissionBindingMismatch extends Schema.TaggedError<
+  RemoteAdmissionBindingMismatch,
+  { readonly brand: unique symbol }
+>()("RemoteAdmissionBindingMismatch", {}) {}
+export class RemoteAdmissionForbidden extends Schema.TaggedError<
+  RemoteAdmissionForbidden,
+  { readonly brand: unique symbol }
+>()("RemoteAdmissionForbidden", {}) {}
+export class RemoteAdmissionStateConflict extends Schema.TaggedError<
+  RemoteAdmissionStateConflict,
+  { readonly brand: unique symbol }
+>()("RemoteAdmissionStateConflict", { status: Schema.String }) {}
+export class RemoteAdmissionPolicyChanged extends Schema.TaggedError<
+  RemoteAdmissionPolicyChanged,
+  { readonly brand: unique symbol }
+>()("RemoteAdmissionPolicyChanged", {}) {}
 
 export type AdmissionError =
   | ReceiverAccessConflict
@@ -200,10 +200,11 @@ const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(
 );
 const decodeRemoteAdmissionRequest = Schema.decodeEffect(RemoteAdmissionRequest);
 const decodeRemoteAdmissionReceiverPolicy = Schema.decodeEffect(RemoteAdmissionReceiverPolicy);
-const decodeStoredAccessBinding = Effect.fn("RemoteAdmission.decodeStoredAccessBinding")((json: string) =>
-  Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(json).pipe(
-    Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })),
-  ),
+const decodeStoredAccessBinding = Effect.fn("RemoteAdmission.decodeStoredAccessBinding")(
+  (json: string) =>
+    Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(json).pipe(
+      Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })),
+    ),
 );
 
 const make = Effect.fn("RemoteAdmission.make")(function* <E>(

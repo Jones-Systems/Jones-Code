@@ -276,7 +276,9 @@ export function makeReviewService(
         const projected = yield* admissions.review.page({
           ...shared,
           view: query.view === "access" ? "current" : query.view,
-          ...(query.view === "access" || query.cursor === undefined ? {} : { cursor: query.cursor }),
+          ...(query.view === "access" || query.cursor === undefined
+            ? {}
+            : { cursor: query.cursor }),
           ...(query.limit === undefined ? {} : { limit: query.limit }),
         });
         const access =
@@ -338,9 +340,13 @@ export function makeReviewService(
     p: EnvironmentSessionPrincipalShape,
   ) {
     yield* owner(p);
-    const cursorCodec = Schema.fromJsonString(Schema.Struct({ scope: Schema.String, revision: Schema.Int }));
+    const cursorCodec = Schema.fromJsonString(
+      Schema.Struct({ scope: Schema.String, revision: Schema.Int }),
+    );
     const encode = (revision: number) =>
-      Buffer.Buffer.from(Schema.encodeSync(cursorCodec)({ scope: p.sessionId, revision })).toString("base64url");
+      Buffer.Buffer.from(Schema.encodeSync(cursorCodec)({ scope: p.sessionId, revision })).toString(
+        "base64url",
+      );
     let after: number;
     if (input.after) {
       const cursor = yield* Schema.decodeEffect(cursorCodec)(
@@ -358,9 +364,9 @@ export function makeReviewService(
             }>`SELECT scopes FROM auth_sessions WHERE session_id=${p.sessionId} AND subject=${p.subject}
           AND method=${p.method} AND revoked_at IS NULL AND expires_at>${yield* nowIso}`;
             const scopes = active[0]
-              ? yield* Schema.decodeEffect(
-                  Schema.fromJsonString(Schema.Array(Schema.String)),
-                )(active[0].scopes)
+              ? yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)))(
+                  active[0].scopes,
+                )
               : [];
             if (!scopes.includes("access:write") || !scopes.includes("settings:write"))
               return yield* Effect.fail({
@@ -409,7 +415,9 @@ export function makeReviewService(
       : read;
   });
   return {
-    capabilities: (principal: EnvironmentSessionPrincipalShape): Effect.Effect<DTO.RemoteAdmissionReviewCapabilities> =>
+    capabilities: (
+      principal: EnvironmentSessionPrincipalShape,
+    ): Effect.Effect<DTO.RemoteAdmissionReviewCapabilities> =>
       Effect.succeed({
         version: DTO.REMOTE_ADMISSION_REVIEW_VERSION,
         features: {
@@ -565,7 +573,8 @@ export function makeReviewService(
                     Schema.fromJsonString(DTO.RemoteAdmissionAccessBinding),
                   )(old.binding_json),
                   now,
-                  authorize: Effect.fn("AdmissionReview.restore.authorize")(function* (binding: DTO.RemoteAdmissionAccessBinding) {
+                  authorize: Effect.fn("AdmissionReview.restore.authorize")(
+                    function* (binding: DTO.RemoteAdmissionAccessBinding) {
                       const record = yield* findGrantSourceAdmission(sql, admissions, old);
                       if (!record || !binding.destinationThreadId) return false;
                       const current = {
@@ -586,7 +595,9 @@ export function makeReviewService(
                           binding.destinationThreadId,
                         )
                       );
-                    }, Effect.mapError(() => new ReceiverAccessUnavailable({}))),
+                    },
+                    Effect.mapError(() => new ReceiverAccessUnavailable({})),
+                  ),
                 });
                 return {
                   predecessorGrantId: input.grantId,

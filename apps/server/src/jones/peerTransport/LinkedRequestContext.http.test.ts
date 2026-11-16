@@ -67,7 +67,8 @@ const recordingIntake = (
   registered: Array<string>,
   beforeRead: (invocation: McpInvocationScope) => Effect.Effect<void> = () => Effect.void,
 ) =>
-  Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ isLiveClaim: () => false,
+  Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({
+    isLiveClaim: () => false,
     register: (operation) => {
       registered.push(operation);
     },

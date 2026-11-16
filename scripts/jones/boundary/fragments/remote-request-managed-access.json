@@ -9,6 +9,14 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/Inspection.ts"
+    },
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/protocolTools.ts"
+    },
+    {
       "from": "apps/server/src/peer/PeerForwarding.test.ts",
       "to": "apps/server/src/jones/remoteAdmissionOrigin/capabilities.testkit.ts"
     },

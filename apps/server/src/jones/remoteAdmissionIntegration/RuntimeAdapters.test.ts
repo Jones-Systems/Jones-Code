@@ -63,18 +63,27 @@ const setup = Effect.gen(function* () {
   };
   let shell: OrchestrationV2ThreadShell | null = baseShell;
   const project = yield* Schema.decodeEffect(Schema.toCodecJson(ProjectRow))({
-    projectId: "project", title: "Synthetic project", workspaceRoot: "/synthetic/project",
-    defaultModelSelection: null, defaultThreadEnvMode: null, autoPull: false,
-    faviconPath: null, projectIcon: null, scripts: [], pinnedAt: null, archivedAt: null,
-    createdAt: "2026-11-16T00:00:00.000Z", updatedAt: "2026-11-16T00:00:00.000Z", deletedAt: null,
+    projectId: "project",
+    title: "Synthetic project",
+    workspaceRoot: "/synthetic/project",
+    defaultModelSelection: null,
+    defaultThreadEnvMode: null,
+    autoPull: false,
+    faviconPath: null,
+    projectIcon: null,
+    scripts: [],
+    pinnedAt: null,
+    archivedAt: null,
+    createdAt: "2026-11-16T00:00:00.000Z",
+    updatedAt: "2026-11-16T00:00:00.000Z",
+    deletedAt: null,
   });
   let document: ManagedPolicyDocument | undefined;
   const authorize = makeCurrentAuthority(
     sql,
     { getThreadShell: () => Effect.succeed(shell) },
     {
-      get: () =>
-        Effect.succeedSome(project),
+      get: () => Effect.succeedSome(project),
     },
     {
       get document() {

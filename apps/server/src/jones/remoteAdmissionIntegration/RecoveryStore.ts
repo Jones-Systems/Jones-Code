@@ -106,8 +106,12 @@ export const makeRecoveryStore = (
       ? yield* Schema.decodeEffect(RecoveredSchema)({
           admissionId: id,
           revision: rows[0].revision,
-          result: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionLaunchResult))(rows[0].result_json),
-          evidence: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionRecoveryEvidence))(rows[0].evidence_json),
+          result: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionLaunchResult))(
+            rows[0].result_json,
+          ),
+          evidence: yield* Schema.decodeEffect(
+            Schema.fromJsonString(RemoteAdmissionRecoveryEvidence),
+          )(rows[0].evidence_json),
         })
       : null;
   });
@@ -139,8 +143,12 @@ export const makeRecoveryStore = (
           return yield* Schema.decodeEffect(RecoveredSchema)({
             admissionId: record.id,
             revision: existing[0].revision,
-            result: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionLaunchResult))(existing[0].result_json),
-            evidence: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionRecoveryEvidence))(existing[0].evidence_json),
+            result: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionLaunchResult))(
+              existing[0].result_json,
+            ),
+            evidence: yield* Schema.decodeEffect(
+              Schema.fromJsonString(RemoteAdmissionRecoveryEvidence),
+            )(existing[0].evidence_json),
           });
         const result: DTO.RemoteAdmissionRecoveredResult = {
           admissionId: record.id,
@@ -262,7 +270,9 @@ export const makeRecoveryStore = (
           if (!binding) return yield* new RecoveryConflict({ reason: "grant_ineligible" });
           yield* admissions.access.createGrantInTransaction({
             admissionId: childId,
-            binding: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(binding),
+            binding: yield* Schema.decodeEffect(
+              Schema.fromJsonString(RemoteAdmissionAccessBinding),
+            )(binding),
             durationSeconds: input.grant.durationSeconds,
             now,
           });

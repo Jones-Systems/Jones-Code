@@ -32,15 +32,13 @@ const linkSnapshot = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const listed = yield* links.list;
   const generations = yield* Effect.forEach(listed, (link) =>
-    links
-      .currentGeneration(link.environmentId)
-      .pipe(
-        Effect.map((generation) => ({
-          environmentId: link.environmentId,
-          generation: Option.getOrNull(generation),
-          status: link.status,
-        })),
-      ),
+    links.currentGeneration(link.environmentId).pipe(
+      Effect.map((generation) => ({
+        environmentId: link.environmentId,
+        generation: Option.getOrNull(generation),
+        status: link.status,
+      })),
+    ),
   );
   return encodeLinkSnapshot(
     generations.toSorted((a, b) => a.environmentId.localeCompare(b.environmentId)),

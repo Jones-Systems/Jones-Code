@@ -50,8 +50,7 @@ const dependencies = Layer.mergeAll(
   Settings.ServerSettingsService.layerTest(),
   Layer.mock(Projections.ProjectionStoreV2)({ getThreadShell: () => Effect.succeed(shell) }),
   Layer.mock(Projects.ProjectStoreV2)({
-    get: () =>
-      Effect.succeedSome({ projectId: "project", deletedAt: null } as Projects.ProjectRow),
+    get: () => Effect.succeedSome({ projectId: "project", deletedAt: null } as Projects.ProjectRow),
   }),
   Layer.mock(Receipts.CommandReceiptStoreV2)({
     getByCommandId: () => Effect.succeedNone,
@@ -61,7 +60,9 @@ const dependencies = Layer.mergeAll(
     getEnvironmentId: Effect.succeed(EnvironmentId.make("receiver")),
   }),
   Managed.layerTest(),
-  Config.layerTest("/synthetic/receiver", { prefix: "admission-runtime-" }).pipe(Layer.provide(NodeServices.layer)),
+  Config.layerTest("/synthetic/receiver", { prefix: "admission-runtime-" }).pipe(
+    Layer.provide(NodeServices.layer),
+  ),
   Layer.mock(Providers.ProviderInstanceRegistry)({ getCatalogSource: () => undefined }),
   Layer.mock(Generation.TextGeneration)({
     evaluateRemoteRequest: () =>
