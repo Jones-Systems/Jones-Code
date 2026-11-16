@@ -27,6 +27,10 @@
     {
       "from": "apps/web/src/components/settings/StorageSettings.tsx",
       "to": "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/StorageSettings.browser.test.tsx",
+      "to": "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx"
     }
   ]
 }

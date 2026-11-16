@@ -32,13 +32,13 @@ type CleanupEntry = StorageCleanupReport["entries"][number];
 function canRetire(entry: CleanupEntry) {
   return Boolean(
     entry.threadId &&
-      entry.path &&
-      entry.retirement?.fingerprint &&
-      entry.retirement.paths.length <= 200 &&
-      entry.retirement.reasonCodes.every((reason) =>
-        ["unattested_ignored", "sensitive_ignored", "untracked"].includes(reason),
-      ) &&
-      entry.retirement.state !== "retired",
+    entry.path &&
+    entry.retirement?.fingerprint &&
+    entry.retirement.paths.length <= 200 &&
+    entry.retirement.reasonCodes.every((reason) =>
+      ["unattested_ignored", "sensitive_ignored", "untracked"].includes(reason),
+    ) &&
+    entry.retirement.state !== "retired",
   );
 }
 
@@ -47,7 +47,12 @@ const categories = ["Ready to retire", "Needs attention", "Kept", "Removed"] as 
 function categoryFor(entry: CleanupEntry, actionable: boolean) {
   if (entry.outcome === "removed" || entry.retirement?.state === "retired") return "Removed";
   if (actionable && canRetire(entry)) return "Ready to retire";
-  if (entry.outcome === "failed" || (entry.retirement && ["held", "partial", "unknown", "not_retired"].includes(entry.retirement.state))) return "Needs attention";
+  if (
+    entry.outcome === "failed" ||
+    (entry.retirement &&
+      ["held", "partial", "unknown", "not_retired"].includes(entry.retirement.state))
+  )
+    return "Needs attention";
   return "Kept";
 }
 
@@ -57,12 +62,14 @@ function CleanupResultList({ reports }: { reports: readonly CleanupReport[] }) {
 
 function DeviceResults(props: CleanupReport) {
   const [expanded, setExpanded] = useState(true);
-  const groups = categories.map((category) => ({
-    category,
-    entries: props.report.entries.filter(
-      (entry) => categoryFor(entry, Boolean(props.onRetire)) === category,
-    ),
-  })).filter(({ entries }) => entries.length > 0);
+  const groups = categories
+    .map((category) => ({
+      category,
+      entries: props.report.entries.filter(
+        (entry) => categoryFor(entry, Boolean(props.onRetire)) === category,
+      ),
+    }))
+    .filter(({ entries }) => entries.length > 0);
   return (
     <section aria-label={`${props.environmentLabel} cleanup results`}>
       <button
@@ -73,20 +80,31 @@ function DeviceResults(props: CleanupReport) {
       >
         <span aria-hidden="true">{expanded ? "▾" : "▸"}</span>
         <span className="min-w-0 wrap-anywhere">{props.environmentLabel}</span>
-        <span className="text-xs text-muted-foreground">{props.report.entries.length.toLocaleString()} results</span>
+        <span className="text-xs text-muted-foreground">
+          {props.report.entries.length.toLocaleString()} results
+        </span>
       </button>
       {expanded && (
         <div className="ml-3 border-l border-border/60 sm:ml-4">
           {groups.map(({ category, entries }, index) => (
-            <ResultCategory key={category} {...props} category={category} entries={entries} initiallyOpen={index === 0} />
+            <ResultCategory
+              key={category}
+              {...props}
+              category={category}
+              entries={entries}
+              initiallyOpen={index === 0}
+            />
           ))}
           {props.report.omittedCount > 0 && (
             <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-              {props.environmentLabel}: {props.report.omittedCount.toLocaleString()} additional results omitted from this report. These were not classified here.
+              {props.environmentLabel}: {props.report.omittedCount.toLocaleString()} additional
+              results omitted from this report. These were not classified here.
             </p>
           )}
           {props.report.entries.length === 0 && props.report.omittedCount === 0 && (
-            <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">{props.environmentLabel}: Nothing needed cleanup.</p>
+            <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
+              {props.environmentLabel}: Nothing needed cleanup.
+            </p>
           )}
         </div>
       )}
@@ -95,7 +113,10 @@ function DeviceResults(props: CleanupReport) {
 }
 
 function ResultCategory({
-  category, entries, initiallyOpen, ...props
+  category,
+  entries,
+  initiallyOpen,
+  ...props
 }: CleanupReport & {
   category: (typeof categories)[number];
   entries: StorageCleanupReport["entries"];
@@ -120,14 +141,27 @@ function ResultCategory({
           <CleanupReportRows {...props} entries={entries.slice(0, shown)} />
           {entries.length > 5 && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-              <span>Showing {shown.toLocaleString()} of {entries.length.toLocaleString()} results.</span>
+              <span>
+                Showing {shown.toLocaleString()} of {entries.length.toLocaleString()} results.
+              </span>
               {shown < entries.length && (
                 <>
-                  <InlineButton tone="muted" onClick={() => setVisibleCount((count) => Math.min(count + 10, entries.length))}>Show more</InlineButton>
-                  <InlineButton tone="muted" onClick={() => setVisibleCount(entries.length)}>Show all</InlineButton>
+                  <InlineButton
+                    tone="muted"
+                    onClick={() => setVisibleCount((count) => Math.min(count + 10, entries.length))}
+                  >
+                    Show more
+                  </InlineButton>
+                  <InlineButton tone="muted" onClick={() => setVisibleCount(entries.length)}>
+                    Show all
+                  </InlineButton>
                 </>
               )}
-              {shown > 5 && <InlineButton tone="muted" onClick={() => setVisibleCount(5)}>Show less</InlineButton>}
+              {shown > 5 && (
+                <InlineButton tone="muted" onClick={() => setVisibleCount(5)}>
+                  Show less
+                </InlineButton>
+              )}
             </div>
           )}
         </>
@@ -209,10 +243,10 @@ function CleanupReportRows({
             control={
               <>
                 {onRetire && canRetire(entry) && (
-                    <Button variant="outline" size="sm" onClick={() => onRetire(entry)}>
-                      Retire
-                    </Button>
-                  )}
+                  <Button variant="outline" size="sm" onClick={() => onRetire(entry)}>
+                    Retire
+                  </Button>
+                )}
                 {(entry.outcome === "removed" ||
                   (entry.outcome === "kept" && entry.bytes !== null)) && (
                   <span className="text-xs text-muted-foreground">

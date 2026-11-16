@@ -114,6 +114,7 @@ vi.mock(import("../ui/toast"), async (original) => {
   return { ...actual, toastManager: { ...actual.toastManager, add: vi.fn() } };
 });
 
+import { CleanupResults } from "../../jones/storageCleanupResults/CleanupResults";
 import { StorageCleanupSections } from "./StorageSettings";
 import { serverEnvironment } from "../../state/server";
 
@@ -433,34 +434,63 @@ it("has no expansion controls for five or fewer available entries, including ser
   );
 });
 
-
 it("unmounts a device and its evidence when collapsed without hiding other devices", async () => {
   setup();
   state.reports = { "env-a": cleanupReport("env-a", 7), "env-b": cleanupReport("env-b", 2) };
   await using screen = await render(panel());
   await screen.getByRole("button", { name: /Last run/ }).click();
-  await screen.getByRole("button", { name: /env-a 7 results/ }).click();
+  await screen.getByRole("button", { name: /env-a.*7 results/ }).click();
   expect(cleanupRows(screen.container)).toHaveLength(2);
   expect(screen.container.textContent).not.toContain("Preserved evidence env-a-0");
-  await screen.getByRole("button", { name: /env-a 7 results/ }).click();
+  await screen.getByRole("button", { name: /env-a.*7 results/ }).click();
   expect(cleanupRows(screen.container)).toHaveLength(7);
 });
 
-import { CleanupResults } from "../../jones/storageCleanupResults/CleanupResults";
-
 it("prioritizes actionable entries, preserves guarded actions and collapses categories independently", async () => {
   const base = cleanupReport("grouped", 1).entries[0]!;
-  const ready = { ...base, path: "/ready", threadId: "synthetic-thread" as NonNullable<typeof base.threadId>, retirement: { ...base.retirement!, state: "proposed" as const, fingerprint: "synthetic", reasonCodes: [] } };
+  const ready = {
+    ...base,
+    path: "/ready",
+    threadId: "synthetic-thread" as NonNullable<typeof base.threadId>,
+    retirement: {
+      ...base.retirement!,
+      state: "proposed" as const,
+      fingerprint: "synthetic",
+      reasonCodes: [],
+    },
+  };
+  const kept = { ...base, path: "/kept" };
+  delete kept.retirement;
   const entries = [
-    { ...base, path: "/kept", retirement: undefined },
+    kept,
     { ...base, path: "/removed", outcome: "removed" as const },
     { ...base, path: "/failed", outcome: "failed" as const },
     ready,
   ];
   const onRetire = vi.fn();
-  await using screen = await render(<CleanupResults selectedEnvironmentIds={["grouped"]} reports={[{ environmentId: "grouped", environmentLabel: "Laptop", report: { ...cleanupReport("grouped", 0), entries }, onRetire }]} />);
-  const headers = [...screen.container.querySelectorAll('button[aria-expanded]')].map((button) => button.textContent);
-  expect(headers).toEqual(["▾Laptop4 results", "▾Ready to retire 1", "▸Needs attention 1", "▸Kept 1", "▸Removed 1"]);
+  await using screen = await render(
+    <CleanupResults
+      selectedEnvironmentIds={["grouped"]}
+      reports={[
+        {
+          environmentId: "grouped",
+          environmentLabel: "Laptop",
+          report: { ...cleanupReport("grouped", 0), entries },
+          onRetire,
+        },
+      ]}
+    />,
+  );
+  const headers = [...screen.container.querySelectorAll("button[aria-expanded]")].map(
+    (button) => button.textContent,
+  );
+  expect(headers).toEqual([
+    "▾Laptop4 results",
+    "▾Ready to retire 1",
+    "▸Needs attention 1",
+    "▸Kept 1",
+    "▸Removed 1",
+  ]);
   expect(screen.container.textContent).not.toContain("/failed");
   await screen.getByRole("button", { name: "Retire", exact: true }).click();
   expect(onRetire).toHaveBeenCalledWith(ready);
@@ -468,5 +498,7 @@ it("prioritizes actionable entries, preserves guarded actions and collapses cate
   expect(screen.container.textContent).not.toContain("/ready");
   await screen.getByRole("button", { name: /Needs attention 1/ }).click();
   expect(screen.container.textContent).toContain("/failed");
-  expect(screen.container.querySelectorAll('button')).not.toContainEqual(expect.objectContaining({ textContent: "Retire" }));
+  await expect
+    .element(screen.getByRole("button", { name: "Retire", exact: true }))
+    .not.toBeInTheDocument();
 });
