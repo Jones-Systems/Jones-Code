@@ -1,3 +1,8 @@
+import * as Outbox from "./EffectOutbox.ts";
+import * as Receipts from "./CommandReceiptStore.ts";
+import * as EventSink from "./EventSink.ts";
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
+import { makeUnsentStartProof } from "../jones/provider/UnsentStartProof.ts";
 import {
   executionProjection,
 } from "../jones/threadConfiguration/executionSelection.ts";
@@ -77,6 +82,10 @@ export const layer: Layer.Layer<
   ProviderSwitchServiceV2,
   Effect.gen(function* () {
     const adapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
+    const outbox = yield* Effect.serviceOption(Outbox.EffectOutboxV2);
+    const receipts = yield* Effect.serviceOption(Receipts.CommandReceiptStoreV2);
+    const sink = yield* Effect.serviceOption(EventSink.EventSinkV2);
+    const refusals = yield* Effect.serviceOption(StartRefusals.StartRefusals);
     return ProviderSwitchServiceV2.of({
       plan: Effect.fn("ProviderSwitchService.plan")(
         function* ({ projection, targetModelSelection, beforeStartEvidence, rebindPreparing }) {
@@ -136,6 +145,16 @@ export const layer: Layer.Layer<
                   thread.ownerNodeId === null &&
                   thread.providerInstanceId === current.instanceId,
               )?.driver ?? currentSessions[0]?.driver);
+          const certifiedUnsent = new Set<string>();
+          if (beforeStartEvidence !== undefined && Option.isSome(outbox) && Option.isSome(receipts) &&
+              Option.isSome(sink) && Option.isSome(refusals)) {
+            const proveUnsent = makeUnsentStartProof({ outbox: outbox.value, receipts: receipts.value,
+              sink: sink.value, refusals: refusals.value });
+            for (const run of beforeStartEvidence.runs) {
+              if (run.activeAttemptId !== null && (yield* proveUnsent(run, beforeStartEvidence.attempts)))
+                certifiedUnsent.add(run.activeAttemptId);
+            }
+          }
           const rebindPendingProviderThread =
             instanceChanged &&
             Option.isSome(currentInstance) &&
@@ -143,11 +162,11 @@ export const layer: Layer.Layer<
             currentInstance.value.driver === targetInstance.value.driver &&
             targetInstance.value.enabled
               ? ((currentInstance.value.driver === "codex"
-                  ? interruptedPendingProviderThread(projection, beforeStartEvidence)
+                  ? interruptedPendingProviderThread(projection, beforeStartEvidence, certifiedUnsent)
                   : undefined) ??
                 (rebindPreparing === true &&
                 beforeStartEvidence?.providerThreads[0]?.driver === targetInstance.value.driver
-                  ? preparingPendingProviderThread(projection, beforeStartEvidence)
+                  ? preparingPendingProviderThread(projection, beforeStartEvidence, certifiedUnsent)
                   : undefined))
               : undefined;
           const hasCurrentHistory =

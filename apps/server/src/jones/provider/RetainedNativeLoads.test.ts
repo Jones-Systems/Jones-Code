@@ -54,3 +54,51 @@ it.effect("unknown native failures stay retained while unrelated threads load in
     expect(independent.value).toBe(1);
   })),
 );
+
+it.effect("publication recovery uses retained local proof without repeating failed native work", () =>
+  Effect.scoped(Effect.gen(function* () {
+    const retain = makeRetainedNativeLoads<number, string>(yield* Scope.Scope, () => "conflict");
+    const thread = ThreadId.make("publication-only-recovery");
+    let nativeCalls = 0;
+    let publicationCalls = 0;
+    let proofAvailable = false;
+    const native = Effect.sync(() => { nativeCalls++; }).pipe(Effect.andThen(Effect.fail("publication")));
+    const publish = () => Effect.suspend(() => {
+      publicationCalls++;
+      return proofAvailable ? Effect.succeed(7) : Effect.fail("held");
+    });
+    yield* retain(thread, "original", native, publish).pipe(Effect.exit);
+    proofAvailable = true;
+    const completed = yield* retain(thread, "original", native, publish);
+    expect(completed.value).toBe(7);
+    expect(nativeCalls).toBe(1);
+    expect(publicationCalls).toBe(1);
+    yield* completed.complete;
+  })),
+);
+
+it.effect("concurrent subscribers share the original native load before its first result", () =>
+  Effect.scoped(Effect.gen(function* () {
+    const retain = makeRetainedNativeLoads<number, string>(yield* Scope.Scope, () => "conflict");
+    const release = yield* Deferred.make<void>();
+    const entered = yield* Deferred.make<void>();
+    let calls = 0;
+    const load = Effect.gen(function* () {
+      calls++;
+      yield* Deferred.succeed(entered, undefined);
+      yield* Deferred.await(release);
+      return 42;
+    });
+    const thread = ThreadId.make("concurrent-original");
+    const first = yield* retain(thread, "same", load).pipe(Effect.forkChild);
+    const second = yield* retain(thread, "same", load).pipe(Effect.forkChild);
+    yield* Deferred.await(entered);
+    const unrelated = yield* retain(ThreadId.make("unrelated"), "new", Effect.succeed(7));
+    expect(unrelated.value).toBe(7);
+    yield* Deferred.succeed(release, undefined);
+    const results = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
+    expect(results.map((result) => result.value)).toEqual([42, 42]);
+    expect(calls).toBe(1);
+    yield* results[0]!.complete;
+  })),
+);

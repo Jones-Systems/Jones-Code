@@ -7,7 +7,7 @@ import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
-  type ModelSelection,
+  ModelSelection,
   type NodeId,
   ProviderSessionId,
   ProviderThreadId,
@@ -26,7 +26,6 @@ import * as Stream from "effect/Stream";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 
 const yieldToRuntime = Effect.yieldNow.pipe(
@@ -289,9 +288,7 @@ export const layer: Layer.Layer<
       interrupt: Effect.fn("ProviderTurnControlService.interrupt")(
         function* (input) {
           const loaded = yield* load({ ...input, operation: "interrupt" });
-          const session = Option.isSome(loaded.session)
-            ? loaded.session
-            : yield* sessions.get(input.providerSessionId);
+          const session = loaded.session;
           if (Option.isNone(session)) {
             if (input.subagent !== undefined) {
               return yield* new ProviderTurnControlError({
@@ -518,12 +515,20 @@ export const layer: Layer.Layer<
             capturedMessages = messages.map((row) => row!);
           }
           const fresh = yield* projections.getProviderControlContext(input.threadId, input);
-          const live = yield* sessions.get(input.providerSessionId);
+          const live = yield* sessions.get(input.providerSessionId, { touchActivity: false });
+          const stopped = message.notification === undefined ? undefined :
+            yield* projections.getThreadRecords(input.threadId, ["turnItems"], {
+              turnItemTypes: ["run_interrupt_request"], turnItemRunIds: [run.id],
+            });
           const persisted = yield* projections.getThreadRecords(input.threadId, ["messages"], {
             messageIds: capturedMessages.map((row) => row.id),
           });
-          if (fresh.run?.id !== run.id || fresh.run.activeAttemptId !== run.activeAttemptId ||
+          if ((message.notification !== undefined &&
+                (message.createdBy !== "agent" || message.creationSource !== "server" ||
+                  fresh.providerThread?.goal?.status !== "active" || (stopped?.turnItems.length ?? 0) > 0)) ||
+              fresh.run?.id !== run.id || fresh.run.activeAttemptId !== run.activeAttemptId ||
               fresh.run.status !== "running" ||
+              !Schema.toEquivalence(ModelSelection)(fresh.run.modelSelection, run.modelSelection) ||
               fresh.providerTurn?.id !== loaded.providerTurn.id ||
               fresh.providerThread?.providerSessionId !== loaded.providerThread.providerSessionId ||
               fresh.providerThread?.runtimeIdentity?.runtimeGeneration !== loaded.providerThread.runtimeIdentity?.runtimeGeneration ||
@@ -533,7 +538,9 @@ export const layer: Layer.Layer<
               capturedMessages.some((row) => JSON.stringify(persisted.messages.find((next) => next.id === row.id)) !== JSON.stringify(row)))
             return yield* new ProviderTurnControlError({
               threadId: input.threadId, operation: "steer", providerTurnId: input.providerTurnId,
-              cause: "The captured steering target or persisted batch changed before dispatch.",
+              cause: message.notification === undefined
+                ? "The captured steering target or persisted batch changed before dispatch."
+                : new GoalNotificationNotDelivered(),
             });
           yield* loaded.session.value
             .steerTurn({
@@ -579,20 +586,8 @@ export const layer: Layer.Layer<
               Effect.catch((cause) =>
                 Effect.gen(function* () {
                   if (isProviderTurnControlError(cause)) return yield* cause;
-                  const current = yield* projections.getProviderControlContext(
-                    input.threadId,
-                    input,
-                  );
-                  // A plain rejection from a turn the projection shows completed took nothing in.
-                  // Typed outcomes and every other notification failure stay unknown.
-                  const rejectedByCompletedTurn =
-                    findSteerFailure(cause) === undefined &&
-                    current.providerTurn?.status === "completed";
-                  if (
-                    message.notification !== undefined &&
-                    !isGoalNotificationNotDelivered(cause) &&
-                    !rejectedByCompletedTurn
-                  ) {
+                  // Only the provider's explicit not-delivered result proves no delivery.
+                  if (message.notification !== undefined && !isGoalNotificationNotDelivered(cause)) {
                     return yield* new ProviderTurnControlError({
                       threadId: input.threadId,
                       operation: "steer",
@@ -604,7 +599,7 @@ export const layer: Layer.Layer<
                     threadId: input.threadId,
                     operation: "steer",
                     providerTurnId: input.providerTurnId,
-                    turnCompleted: isGoalNotificationNotDelivered(cause) || rejectedByCompletedTurn,
+                    turnCompleted: isGoalNotificationNotDelivered(cause),
                     cause,
                   });
                 }),

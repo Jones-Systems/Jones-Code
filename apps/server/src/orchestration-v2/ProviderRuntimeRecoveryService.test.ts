@@ -531,15 +531,10 @@ it.effect.each([
     : scenario.startsWith("running")
       ? "running"
       : scenario;
-  const resent = scenario === "starting-scheduled" || scenario === "running-delegated";
-  const terminalized =
-    status === "preparing" ||
-    scenario === "starting-own-request" ||
-    scenario === "starting-steered" ||
-    scenario === "running-delegated-capped" ||
-    scenario === "running-delegated-snoozed" ||
-    scenario === "running-delegated-stopped" ||
-    scenario === "running-resume";
+  // These fixtures carry no original durable no-effect evidence. Missing
+  // provider turns and null startedAt must not make them replayable.
+  const resent = false;
+  const terminalized = status !== "queued";
   const startedAt =
     status === "running" || scenario === "starting-steered"
       ? DateTime.makeUnsafe("2026-11-01T19:34:40.403Z")
@@ -778,14 +773,14 @@ it.effect.each([
         assert.isUndefined(nodeEvent);
       }
     }
-    // The unsent auto-resume gets a fresh request id so the limit worker sends it again.
+    // Unknown native delivery must not mint another usage-limit Resume.
     if (scenario === "running-resume") {
       const rearmed = command.events.find((event) => event.type === "thread.metadata-updated");
       assert.equal(
         rearmed?.type === "thread.metadata-updated"
           ? rearmed.payload.limitRecovery?.requestId
           : null,
-        command.commandId,
+        null,
       );
     }
   }).pipe(Effect.provide(layer));

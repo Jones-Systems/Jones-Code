@@ -1,3 +1,4 @@
+import { withStartFailureDiagnostic } from "../jones/provider/startFailureDiagnostics.ts";
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import * as StartRefusals from "../jones/startRefusal/Store.ts";
@@ -15,6 +16,7 @@ import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
+  ProviderRuntimeBinding,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
@@ -625,6 +627,8 @@ export const layer: Layer.Layer<
       const stopAdmission = eventSink as typeof eventSink & {
         readonly assertRuntimeStopStartAllowed?: (input: { readonly threadId: ThreadId; readonly runId: RunId }) => Effect.Effect<void, unknown>;
       };
+      const admittedSuccessors = new Map<string, typeof ProviderRuntimeBinding.Type>();
+      const equivalentAdmissionBinding = Schema.toEquivalence(ProviderRuntimeBinding);
       const assertAdmission = (expected: OrchestrationV2ProviderThread) => Effect.gen(function* () {
         yield* capturedAdmission.revalidate;
         if (input.nativeCreationGuard !== undefined)
@@ -636,21 +640,32 @@ export const layer: Layer.Layer<
         const fresh = yield* projectionStore.getTurnStartContext(input.threadId, runId);
         const currentRun = fresh.runs.find((candidate) => candidate.id === runId);
         const current = fresh.providerThreads.find((candidate) => candidate.id === expected.id);
+        const publication = yield* StartAdmission.CurrentBindingPublication;
+        const currentBinding = current?.runtimeIdentity === undefined ? undefined :
+          ProviderAdapter.runtimeBinding(current, current.runtimeIdentity.runtimeGeneration);
+        const retainedSuccessor = admittedSuccessors.get(expected.id);
+        const fromPublication = currentBinding !== undefined && publication !== undefined &&
+          publication.previousGeneration === (expected.runtimeIdentity?.runtimeGeneration ?? null) &&
+          equivalentAdmissionBinding(currentBinding, publication.binding) &&
+          (expected.nativeThreadRef == null || expected.nativeThreadRef.nativeId === currentBinding.nativeThreadId);
+        const isSuccessor = fromPublication || (currentBinding !== undefined && retainedSuccessor !== undefined &&
+          equivalentAdmissionBinding(currentBinding, retainedSuccessor));
         if (currentRun?.activeAttemptId !== attempt.id ||
             !["starting", "running"].includes(currentRun.status) ||
             currentRun.providerThreadId !== expected.id ||
             !modelSelectionsEqual(currentRun.modelSelection, run.modelSelection) ||
             current?.providerSessionId !== expected.providerSessionId ||
             current?.providerInstanceId !== expected.providerInstanceId ||
-            current?.nativeThreadRef?.nativeId !== expected.nativeThreadRef?.nativeId ||
-            current?.runtimeIdentity?.runtimeGeneration !== expected.runtimeIdentity?.runtimeGeneration ||
+            (!isSuccessor && (current?.nativeThreadRef?.nativeId !== expected.nativeThreadRef?.nativeId ||
+              current?.runtimeIdentity?.runtimeGeneration !== expected.runtimeIdentity?.runtimeGeneration)) ||
             fresh.thread.archivedAt !== null || fresh.thread.deletedAt !== null ||
             fresh.thread.settledAt !== null)
           return yield* admissionError("The original attempt or native binding changed.");
+        const admittedProvider = isSuccessor ? current! : expected;
         const requiredNative = yield* RequiredNativeSession;
         if (requiredNative !== undefined &&
             (requiredNative.runId !== runId || requiredNative.attemptId !== attempt.id ||
-             expected.nativeThreadRef?.nativeId !== requiredNative.nativeSessionId))
+             admittedProvider.nativeThreadRef?.nativeId !== requiredNative.nativeSessionId))
           return yield* admissionError("Required native session does not match the original admission.");
         const requirementResult = yield* goalContinuity.requirementFor(environmentId, input.threadId).pipe(Effect.result);
         if (requirementResult._tag === "Failure") {
@@ -658,22 +673,24 @@ export const layer: Layer.Layer<
           return yield* requirementResult.failure;
         }
         const requirement = requirementResult.success;
-        const owner = expected.nativeThreadRef?.nativeId == null ? null : {
-          environmentId, threadId: input.threadId, providerInstanceId: expected.providerInstanceId,
-          providerThreadId: expected.id, driver: expected.nativeThreadRef.driver,
-          nativeThreadId: expected.nativeThreadRef.nativeId,
+        const owner = admittedProvider.nativeThreadRef?.nativeId == null ? null : {
+          environmentId, threadId: input.threadId, providerInstanceId: admittedProvider.providerInstanceId,
+          providerThreadId: admittedProvider.id, driver: admittedProvider.nativeThreadRef.driver,
+          nativeThreadId: admittedProvider.nativeThreadRef.nativeId,
         };
-        if (continuityAdmissionRefusal(requirement, owner) !== undefined) {
+        if (continuityAdmissionRefusal(requirement, owner) !== undefined ||
+            (requirement.outcome === "required" && continuityRecoveryCapability(admittedProvider.driver,
+              admittedProvider.nativeThreadRef?.strength === "strong").turnStart === "unsupported")) {
           admissionRefusal = "continuity_held";
           return yield* admissionError("Goal continuity delivery or native ownership is held.");
         }
         const controlResult = yield* controlAdmission.assertOpen({
-          instanceId: expected.providerInstanceId, threadId: input.threadId,
-          nativeThreadId: expected.nativeThreadRef?.nativeId ?? null,
-          producer: expected.runtimeIdentity === undefined ? null : {
-            instanceId: expected.providerInstanceId,
-            providerSessionId: expected.providerSessionId!,
-            runtimeGeneration: expected.runtimeIdentity.runtimeGeneration,
+          instanceId: admittedProvider.providerInstanceId, threadId: input.threadId,
+          nativeThreadId: admittedProvider.nativeThreadRef?.nativeId ?? null,
+          producer: admittedProvider.runtimeIdentity === undefined ? null : {
+            instanceId: admittedProvider.providerInstanceId,
+            providerSessionId: admittedProvider.providerSessionId!,
+            runtimeGeneration: admittedProvider.runtimeIdentity.runtimeGeneration,
           },
         }).pipe(Effect.result);
         if (controlResult._tag === "Failure") {
@@ -681,6 +698,7 @@ export const layer: Layer.Layer<
           return yield* controlResult.failure;
         }
         yield* capturedAdmission.revalidate;
+        if (fromPublication && currentBinding !== undefined) admittedSuccessors.set(expected.id, currentBinding);
       }).pipe(Effect.mapError(admissionError));
       const initialAdmission = yield* assertAdmission(providerThread).pipe(Effect.result);
       if (initialAdmission._tag === "Failure") {
@@ -727,11 +745,11 @@ export const layer: Layer.Layer<
             item: {
               type: "error",
               title: failed.title,
-              failure: makeProviderFailure({
+              failure: withStartFailureDiagnostic(makeProviderFailure({
                 cause: failed.error,
                 message: failed.message ?? startFailureMessage(failed.error),
                 class: "provider_error",
-              }),
+              }), failed.error),
             },
           });
         },
@@ -1026,11 +1044,13 @@ export const layer: Layer.Layer<
             ...value, ...(capturedAdmission.nativeCreationGuard === undefined ? {} : {
               nativeCreationGuard: capturedAdmission.nativeCreationGuard,
             }),
-          }))),
+          }))).pipe(Effect.provideService(StartAdmission.CurrentRevalidation, assertAdmission(providerThread))),
         resumeThread: (value: Parameters<typeof rawSession.resumeThread>[0]) =>
-          assertAdmission(providerThread).pipe(Effect.andThen(rawSession.resumeThread(value))),
+          assertAdmission(providerThread).pipe(Effect.andThen(rawSession.resumeThread(value)),
+            Effect.provideService(StartAdmission.CurrentRevalidation, assertAdmission(providerThread))),
         forkThread: (value: Parameters<typeof rawSession.forkThread>[0]) =>
-          assertAdmission(providerThread).pipe(Effect.andThen(rawSession.forkThread(value))),
+          assertAdmission(providerThread).pipe(Effect.andThen(rawSession.forkThread(value)),
+            Effect.provideService(StartAdmission.CurrentRevalidation, assertAdmission(providerThread))),
       };
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const loadFromProvider = Effect.fn("ProviderTurnStartService.loadFromProvider")(function* (
@@ -2102,6 +2122,15 @@ export const layer: Layer.Layer<
               capturedAdmission.nativeCreationGuard,
             );
       return runExecution.startRootRun({
+        goalContinuityContext: goalContinuity.context(continuityRecoveryCapability(session.driver,
+          runningProviderThread.nativeThreadRef?.strength === "strong" &&
+          runningProviderThread.runtimeIdentity?.evidenceRevision !== undefined)),
+        checkContinuity: () => assertAdmission(runningProviderThread).pipe(Effect.mapError((cause) =>
+          new ProviderAdapter.ProviderAdapterTurnStartError({ driver: session.driver,
+            threadId: projection.thread.id, providerThreadId: runningProviderThread.id, runId, cause }))),
+        ...(capturedAdmission.nativeCreationGuard === undefined ? {} : {
+          nativeCreationGuard: capturedAdmission.nativeCreationGuard,
+        }),
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
         providerSessionId,

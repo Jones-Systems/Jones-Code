@@ -1,3 +1,4 @@
+import { isWorkModeKeepWarm } from "../jones/provider/workModePrompt.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -238,10 +239,11 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     readonly threadId: ThreadId;
     readonly sourceRunId: RunId;
     readonly processLossCount?: number;
+    readonly continueWithoutPreference?: boolean;
   }) {
     const settings = yield* ServerSettings.ServerSettingsService;
     const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
-    if (!enabled) return;
+    if (!enabled && !input.continueWithoutPreference) return;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const messageId = MessageId.make(`message:restart-continuation:${input.sourceRunId}`);
     const projection = yield* threads.getThreadRecords(
@@ -250,7 +252,8 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       { messageIds: [messageId], turnItemTypes: ["secret_request"] },
     );
     if (
-      !resolveProjectSettings(enabled, projection.thread.projectId).settings
+      !input.continueWithoutPreference &&
+      !resolveProjectSettings(enabled!, projection.thread.projectId).settings
         .continueThreadsAfterServerUpdate
     )
       return;
@@ -309,7 +312,8 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     const sourceMessage = (yield* threads.getThreadRecords(input.threadId, ["messages"], {
       messageIds: [source.userMessageId],
     })).messages.find((message) => message.id === source.userMessageId);
-    if (sourceMessage !== undefined && isNativeMaintenanceCommand(sourceMessage)) return;
+    if (sourceMessage !== undefined &&
+        (isNativeMaintenanceCommand(sourceMessage) || isWorkModeKeepWarm(sourceMessage))) return;
     const note = restartContinuationNote(
       source,
       projection.runs,

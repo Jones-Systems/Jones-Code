@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   type ModelSelection,
+  MessageId,
   NodeId,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ThreadProjection,
@@ -25,9 +26,10 @@ import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
+import { GoalNotificationNotDelivered, GoalNotificationDeliveryUnknown } from "../jones/goals/GoalNotificationDelivery.ts";
 
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -289,6 +291,7 @@ it.effect(
         ProviderSessionManager.ProviderSessionManagerV2,
         ProviderSessionManager.ProviderSessionManagerV2.of({
           shutdown: Effect.void,
+          isMcpCallerAttached: () => Effect.die("unused MCP attachment proof"),
           open: () => Effect.die("unused open"),
           get: (providerSessionId) =>
             Effect.succeed(
@@ -358,5 +361,88 @@ it.effect(
       assert.equal(interrupted?.providerSessionId, oldSessionId);
       assert.equal(interrupted?.id, providerThreadId);
       assert.equal(interrupted?.nativeThreadRef?.nativeId, "native-thread:restart-session");
+    }),
+);
+
+it.effect.each(["current", "binding_changed", "model_changed", "batch_changed", "runtime_replaced",
+  "stop_during_reads", "goal_changed", "delivery_unknown", "not_delivered"] as const)(
+  "steer retains original target and notification delivery evidence: %s", (scenario) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("steer-original");
+      const sessionId = ProviderSessionId.make("steer-original-session");
+      const providerThreadId = ProviderThreadId.make("steer-original-provider-thread");
+      const providerTurnId = ProviderTurnId.make("steer-original-turn");
+      const attemptId = RunAttemptId.make("steer-original-attempt");
+      const runId = RunId.make("steer-original-run");
+      const messageId = MessageId.make("steer-original-notification");
+      const providerThread = { id: providerThreadId, appThreadId: threadId, providerSessionId: sessionId,
+        providerInstanceId, driver, nativeThreadRef: { driver, nativeId: "original-native", strength: "strong" },
+        goal: { status: "active" }, runtimeIdentity: { runtimeGeneration: "original-generation", evidenceRevision: 1 },
+      } as OrchestrationV2ProviderThread;
+      const projection = makeProjection({ now, threadId, providerThread, providerTurnId, attemptId });
+      const run = { id: runId, status: "running", activeAttemptId: attemptId, modelSelection,
+        providerThreadId } as OrchestrationV2ThreadProjection["runs"][number];
+      const message = { id: messageId, threadId, runId, text: "Captured notification", attachments: [],
+        createdBy: "agent", creationSource: "server", notification: { type: "goal" },
+      } as unknown as OrchestrationV2ThreadProjection["messages"][number];
+      const turn = { ...projection.providerTurns[0]!, runAttemptId: attemptId };
+      let reads = 0;
+      let runtimeReads = 0;
+      let stopReads = 0;
+      let sent = 0;
+      const runtime = {
+        steerTurn: (input: ProviderAdapter.ProviderAdapterV2SteerInput) => Effect.gen(function* () {
+          sent++;
+          assert.equal(input.providerThread.nativeThreadRef?.nativeId, "original-native");
+          assert.equal(input.message.text, message.text);
+          if (scenario === "delivery_unknown" || scenario === "not_delivered")
+            return yield* new ProviderAdapter.ProviderAdapterSteerRunError({ driver,
+              providerThreadId, providerTurnId, cause: scenario === "not_delivered"
+                ? new GoalNotificationNotDelivered() : new Error("native delivery unknown") });
+        }),
+      } as ProviderAdapter.ProviderAdapterV2SessionRuntime;
+      const layer = ProviderTurnControlService.layer.pipe(Layer.provide(Layer.mergeAll(
+          Layer.mock(EventSink.EventSinkV2)({}),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            get: () => Effect.sync(() => Option.some(scenario === "runtime_replaced" && ++runtimeReads > 1
+              ? { ...runtime } : runtime)),
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getProviderControlContext: () => Effect.sync(() => {
+              const changed = ++reads > 2;
+              return { providerThread: changed && scenario === "binding_changed"
+                ? { ...providerThread, nativeThreadRef: { driver, nativeId: "replacement", strength: "strong" as const } }
+                : changed && scenario === "goal_changed" ? { ...providerThread, goal: { status: "paused" } as never }
+                : providerThread,
+                providerTurn: turn, attempt: projection.attempts[0], message,
+                run: changed && scenario === "model_changed" ? { ...run, modelSelection: { ...modelSelection, model: "other" } } : run };
+            }),
+            getThreadRecords: (_id, sections) => Effect.succeed({ ...projection,
+              messages: sections?.includes("messages") && scenario === "batch_changed"
+                ? [{ ...message, text: "Changed after capture" }] : [message],
+              turnItems: sections?.includes("turnItems") && ++stopReads > 1 && scenario === "stop_during_reads"
+                ? [{ type: "run_interrupt_request" } as never] : [],
+            }),
+          }),
+      )));
+      const result = yield* Effect.gen(function* () {
+        const controls = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+        return yield* controls.steer({ threadId, providerSessionId: sessionId, providerThreadId,
+          providerTurnId, messageId }).pipe(Effect.result);
+      }).pipe(Effect.provide(layer));
+      const attempted = ["current", "delivery_unknown", "not_delivered"].includes(scenario);
+      assert.equal(sent, attempted ? 1 : 0);
+      if (scenario === "current") assert.equal(result._tag, "Success");
+      else {
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") {
+          if (scenario === "delivery_unknown") {
+            assert.instanceOf(result.failure.cause, GoalNotificationDeliveryUnknown);
+            assert.isFalse(result.failure.turnCompleted === true);
+          }
+          if (scenario === "not_delivered") assert.isTrue(result.failure.turnCompleted);
+        }
+      }
     }),
 );

@@ -1,4 +1,6 @@
+import { resumeTurnInput } from "@t3tools/provider-core/server/ProviderAdapter";
 import type {
+  ProviderRuntimeBinding,
   OrchestrationV2Run,
   OrchestrationV2ProviderThread,
   RunAttemptId,
@@ -13,6 +15,17 @@ import type { GoalContinuityContext } from "@t3tools/provider-core/server/jones/
 import type { NativeProviderExecutionGuard } from "@t3tools/provider-core/server/jones/runtimeTypes";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+
+export const CurrentRevalidation = Context.Reference<Effect.Effect<void, ProviderAdapterV2Error> | undefined>(
+  "jones/provider/CurrentStartRevalidation", { defaultValue: () => undefined },
+);
+
+// Issued only by the manager's original lifecycle reservation while publishing
+// its actual native result. It permits one exact predecessor-bound successor.
+export const CurrentBindingPublication = Context.Reference<{
+  readonly previousGeneration: string | null;
+  readonly binding: ProviderRuntimeBinding;
+} | undefined>("jones/provider/CurrentBindingPublication", { defaultValue: () => undefined });
 
 export interface CapturedStartAdmission {
   readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;
@@ -54,10 +67,7 @@ export function withStartAdmission(
     startTurn: (value) => revalidate.pipe(Effect.andThen(session.startTurn(input(value)))),
     ...(session.resumeTurn === undefined ? {} : {
       resumeTurn: (value) => {
-        const guarded = input({ ...value, message: {
-          messageId: value.messageId, text: "", attachments: [],
-          createdBy: "user", creationSource: "server",
-        } });
+        const guarded = input(resumeTurnInput(value));
         const { message: _message, resume: _resume, ...rest } = guarded;
         return revalidate.pipe(Effect.andThen(session.resumeTurn!({
           ...rest, messageId: value.messageId,
