@@ -1,6 +1,7 @@
 import { Toast } from "@base-ui/react/toast";
 import { useNavigate } from "@tanstack/react-router";
 import { providerUpdateNotificationKey } from "@t3tools/client-runtime/jones/provider-updates";
+import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { PROVIDER_DISPLAY_NAMES, type EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { ChevronDownIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
@@ -179,12 +180,9 @@ function ProviderUpdateToastBody() {
     if (inFlight.current || pending || !canUpdate) return;
     inFlight.current = true;
     setSubmitting(true);
-    try {
-      await updates.updateAll({ quiet: true });
-    } finally {
-      inFlight.current = false;
-      setSubmitting(false);
-    }
+    await settlePromise(() => updates.updateAll({ quiet: true }));
+    inFlight.current = false;
+    setSubmitting(false);
   };
   return (
     <div className="min-w-0 w-full">
