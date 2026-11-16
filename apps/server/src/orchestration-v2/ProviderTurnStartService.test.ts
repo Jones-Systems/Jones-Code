@@ -2225,11 +2225,12 @@ effectIt.effect.each([
         sideChat,
       });
 
+      const originalDelivery = harness.projection().contextHandoffs[0]?.delivery;
       if ("repeatedResume" in sideChat) {
         yield* harness.start.pipe(Effect.exit);
         expect(harness.open).not.toHaveBeenCalled();
         expect(harness.startTurn).not.toHaveBeenCalled();
-        expect(harness.projection().contextHandoffs[0]?.delivery).toBeUndefined();
+        expect(harness.projection().contextHandoffs[0]?.delivery).toEqual(originalDelivery);
         return;
       }
       yield* harness.start;
@@ -2247,7 +2248,7 @@ effectIt.effect.each([
         !resendsOriginal,
       );
       if (!resendsOriginal) {
-        expect(harness.projection().contextHandoffs[0]?.delivery).toBeUndefined();
+        expect(harness.projection().contextHandoffs[0]?.delivery).toEqual(originalDelivery);
         return;
       }
       expect(harness.projection().contextHandoffs).toMatchObject([
