@@ -127,6 +127,14 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
       } as unknown as RpcSession),
     ),
   } as EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+  const historyController = yield* Effect.service(
+    ThreadHistoryController.ThreadHistoryController,
+  ).pipe(Effect.provide(ThreadHistoryController.layer));
+  yield* historyController.register(ENVIRONMENT_ID, THREAD_ID, {
+    loadEarlier: () => options?.loadEarlier?.() ?? Effect.die("unused"),
+    reconcilePendingWork: () =>
+      options?.reconcilePendingWork?.(THREAD_ID) ?? Queue.offer(reconciled, THREAD_ID),
+  });
   const runtime = Atom.runtime(
     Layer.mergeAll(
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, {
@@ -143,16 +151,7 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
         SecureRandom.SecureRandom,
         SecureRandom.make((size) => new Uint8Array(size)),
       ),
-      Layer.succeed(
-        ThreadHistoryController.ThreadHistoryController,
-        ThreadHistoryController.ThreadHistoryController.of({
-          register: () => Effect.die("unused"),
-          unregister: () => Effect.void,
-          loadEarlier: () => options?.loadEarlier?.() ?? Effect.die("unused"),
-          reconcilePendingWork: (_environmentId, threadId) =>
-            options?.reconcilePendingWork?.(threadId) ?? Queue.offer(reconciled, threadId),
-        }),
-      ),
+      Layer.succeed(ThreadHistoryController.ThreadHistoryController, historyController),
     ),
   );
   const snapshotAtom = Atom.family((_environmentId: EnvironmentId) =>
@@ -163,16 +162,67 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
   yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
   const visibleAtom = commands.snapshotAtom(ENVIRONMENT_ID);
   registry.mount(visibleAtom);
-  return {
-    registry,
-    commands,
-    snapshotAtom,
-    visibleAtom,
-    requests,
-    reconciled,
-    connection,
-    connectionFollowed,
-  };
+  return { registry, commands, snapshotAtom, visibleAtom, requests, reconciled, historyController, connection, connectionFollowed };
+});
+
+describe("prepared turn commands", () => {
+  it.effect(
+    "prepares without sending and shares the thread scheduler with lifecycle commands",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const preparation = yield* Effect.promise(() =>
+          h.commands.prepareTurn.run(h.registry, {
+            environmentId: ENVIRONMENT_ID,
+            input: {
+              threadId: THREAD_ID,
+              commandId: CommandId.make("prepared-send"),
+              message: {
+                messageId: MessageId.make("prepared-message"),
+                role: "user",
+                text: "Continue",
+                attachments: [],
+              },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              dispatchMode: "start",
+            },
+          }),
+        );
+        if (preparation._tag !== "Success") throw new Error("Expected successful preparation");
+        expect(yield* Queue.poll(h.requests)).toEqual(Option.none());
+        const prepared = preparation.value;
+        const send = h.commands.dispatchPreparedTurn.run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: prepared,
+        });
+        const first = yield* Queue.take(h.requests);
+        const stop = h.commands.interruptTurn.run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: {
+            threadId: THREAD_ID,
+            commandId: CommandId.make("stop-after-prepared"),
+            runId: RunId.make("run"),
+          },
+        });
+        expect(yield* Queue.poll(h.requests)).toEqual(Option.none());
+        yield* Deferred.fail(first.reply, new Error("Response lost"));
+        expect((yield* Effect.promise(() => send))._tag).toBe("Failure");
+        const stopRequest = yield* Queue.take(h.requests);
+        expect(stopRequest.command.type).toBe("run.interrupt");
+        yield* Deferred.succeed(stopRequest.reply, { sequence: 2 });
+        expect((yield* Effect.promise(() => stop))._tag).toBe("Success");
+        const retry = h.commands.dispatchPreparedTurn.run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: prepared,
+        });
+        const second = yield* Queue.take(h.requests);
+        expect(JSON.stringify(second.command)).toBe(JSON.stringify(first.command));
+        yield* Deferred.succeed(second.reply, { sequence: 3 });
+        expect((yield* Effect.promise(() => retry))._tag).toBe("Success");
+      }),
+  );
+});
 });
 
 describe("history loading", () => {
@@ -662,6 +712,83 @@ describe("remote thread lifecycle commands", () => {
       expect(snoozed?.pendingRuntimeRequest).toEqual(USER_INPUT);
       yield* Deferred.succeed(request.reply, { sequence: 2 });
       expect((yield* Effect.promise(() => result))._tag).toBe("Success");
+    }),
+  );
+});
+
+describe("earlier thread history loads", () => {
+  it.effect("let Send and Stop through while a page loads and still run one at a time", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const historyLoads = yield* Queue.unbounded<{
+        readonly throughEntryId: string | undefined;
+        readonly reply: Deferred.Deferred<ThreadHistoryController.ThreadHistoryLoadEarlierResult>;
+      }>();
+      yield* h.historyController.register(ENVIRONMENT_ID, THREAD_ID, {
+        reconcilePendingWork: () => Effect.void,
+        loadEarlier: (throughEntryId) =>
+          Effect.gen(function* () {
+            const reply =
+              yield* Deferred.make<ThreadHistoryController.ThreadHistoryLoadEarlierResult>();
+            yield* Queue.offer(historyLoads, { throughEntryId, reply });
+            return yield* Deferred.await(reply);
+          }),
+      });
+
+      const firstLoad = h.commands.loadEarlierHistory.run(h.registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: { threadId: THREAD_ID },
+      });
+      const first = yield* Queue.take(historyLoads);
+      const secondLoad = h.commands.loadEarlierHistory.run(h.registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: { threadId: THREAD_ID, throughEntryId: "entry" },
+      });
+
+      const send = h.commands.startTurn.run(h.registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: {
+          threadId: THREAD_ID,
+          commandId: CommandId.make("send"),
+          message: {
+            messageId: MessageId.make("message"),
+            role: "user",
+            text: "Continue",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          dispatchMode: "start",
+        },
+      });
+      const sendRequest = yield* Queue.take(h.requests);
+      expect(sendRequest.command.type).toBe("message.dispatch");
+      yield* Deferred.succeed(sendRequest.reply, { sequence: 2 });
+      expect((yield* Effect.promise(() => send))._tag).toBe("Success");
+
+      const stop = h.commands.interruptTurn.run(h.registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: { threadId: THREAD_ID, commandId: CommandId.make("stop"), runId: RunId.make("run") },
+      });
+      const stopRequest = yield* Queue.take(h.requests);
+      expect(stopRequest.command.type).toBe("run.interrupt");
+      yield* Deferred.succeed(stopRequest.reply, { sequence: 3 });
+      expect((yield* Effect.promise(() => stop))._tag).toBe("Success");
+
+      // The second page has not started: it waits for the first, not for Send or Stop.
+      expect(yield* Queue.poll(historyLoads)).toEqual(Option.none());
+      yield* Deferred.succeed(first.reply, { _tag: "loaded" });
+      expect(yield* Effect.promise(() => firstLoad)).toMatchObject({
+        _tag: "Success",
+        value: { _tag: "loaded" },
+      });
+      const second = yield* Queue.take(historyLoads);
+      expect(second.throughEntryId).toBe("entry");
+      yield* Deferred.succeed(second.reply, { _tag: "loaded" });
+      expect(yield* Effect.promise(() => secondLoad)).toMatchObject({
+        _tag: "Success",
+        value: { _tag: "loaded" },
+      });
     }),
   );
 });
