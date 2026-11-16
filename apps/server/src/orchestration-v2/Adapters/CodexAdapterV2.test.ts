@@ -1687,6 +1687,33 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ))),
   );
 
+  it.effect("holds managed dispatch when the external admission owner has not supplied its guard", () =>
+    Effect.gen(function* () {
+      let sends = 0;
+      const lifecycle: ProviderAdapter.ProviderRuntimeLifecycle = {
+        reserve: () => Effect.succeed("missing-guard-generation"),
+        admit: () => Effect.void, abandon: () => Effect.void, invalidate: () => Effect.void,
+        bind: (input) => Effect.succeed({ ...input.providerThread, runtimeIdentity: {
+          runtimeGeneration: input.runtimeGeneration, evidenceRevision: 1,
+          requested: input.requested, observed: input.observed,
+        } }),
+      };
+      const harness = yield* makeCodexReplayHarness(makeCodexReplayTranscript({
+        scenario: "managed-missing-guard", entries: producerPreamble("missing-guard-native", "unused").slice(0, 5),
+      }), undefined, (method) => Effect.sync(() => { if (method === "turn/start") sends++; }),
+      undefined, undefined, undefined, undefined, undefined, undefined, { runtimeLifecycle: lifecycle });
+      const failure = yield* harness.runtime.startTurn(makeCodexTestTurnInput({
+        threadId: harness.threadId, providerThread: harness.providerThread,
+        now: yield* DateTime.now, attemptId: RunAttemptId.make("missing-guard-attempt"), text: "Work",
+      })).pipe(Effect.flip);
+      assert.equal(failure._tag, "ProviderAdapterTurnStartError");
+      assert.equal(sends, 0);
+      assert.lengthOf(harness.terminalEvents(), 0);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(
+      IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer, NodeCrypto.layer,
+    ))),
+  );
+
   it.effect("refuses unsupported required-session proof through promptless Resume", () =>
     Effect.gen(function* () {
       let sends = 0;

@@ -12450,6 +12450,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     "start",
                     providerThreadTarget(value.providerThread, value.threadId),
                     Effect.gen(function* () {
+                      if (input.runtimeLifecycle !== undefined && value.revalidateStartAdmission === undefined)
+                        return yield* toProtocolError("Managed Codex start requires its captured admission guard.");
                       // Codex has no implementation of the Claude SDK init-before-output proof.
                       // Preserve the captured requirement across Resume and refuse visibly.
                       if ((yield* RequiredNativeSession) !== undefined)
