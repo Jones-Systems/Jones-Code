@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   updates: null as ReturnType<typeof useJonesProviderUpdates> | null,
   navigate: vi.fn(),
   updateEnvironment: vi.fn(async () => []),
+  updateAll: vi.fn(async (_options?: { quiet?: boolean }) => []),
 }));
 vi.mock(import("./useProviderUpdates"), () => ({ useJonesProviderUpdates: () => state.updates! }));
 vi.mock("@tanstack/react-router", async (original) => ({
@@ -169,7 +170,7 @@ function updates() {
     machines: groups.filter((group) => group.candidates.length > 0),
     noticeKey: "ui-fixture",
     isAnySettling: false,
-    updateAll: async () => [],
+    updateAll: state.updateAll,
     updateEnvironment: state.updateEnvironment,
     attempts: new Map(),
     completed: [],
@@ -188,6 +189,116 @@ function publishGroups(group: ReturnType<typeof useJonesProviderUpdates>["groups
 }
 
 describe("current provider update notice rows", () => {
+  it("keeps Update All in the footer, retains progress through collapse, and permits retry", async () => {
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+    state.updates = { ...updates(), noticeKey: "update-all-footer" };
+    const notice = () => (
+      <ToastProvider>
+        <ProviderUpdateNotice />
+      </ToastProvider>
+    );
+    let finish = () => {};
+    const finished = new Promise<[]>((resolve) => {
+      finish = () => resolve([]);
+    });
+    state.updateAll.mockReset();
+    state.updateAll.mockReturnValueOnce(finished);
+    await using screen = await render(<ToastProvider />);
+    await screen.rerender(notice());
+    const all = page.getByRole("button", { name: "Update All", exact: true });
+    await expect.element(all).toBeVisible();
+    const footer = all.element().parentElement!;
+    expect(footer.querySelector('[data-slot="toast-action"]')?.textContent).toBe("Settings");
+    await all.click();
+    const pending = page.getByRole("button", { name: "Updating…", exact: true });
+    await expect.element(pending).toBeDisabled();
+    expect(state.updateAll).toHaveBeenCalledExactlyOnceWith({ quiet: true });
+    const toggle = page.getByRole("button", { name: "Provider updates available", exact: true });
+    await toggle.click();
+    await expect.element(pending).not.toBeInTheDocument();
+    await toggle.click();
+    await expect.element(pending).toBeDisabled();
+    const group = state.updates.groups[0]!;
+    publishGroups({
+      ...group,
+      attempt: {
+        generation: 1,
+        machine: group,
+        phase: "failed",
+        runs: [],
+        message: "Synthetic update failed.",
+      },
+    });
+    state.updates = { ...state.updates!, noticeKey: "update-all-footer-failed" };
+    await screen.rerender(notice());
+    await act(async () => {
+      finish();
+      await finished;
+    });
+    await expect.element(page.getByText("Synthetic update failed.", { exact: true })).toBeVisible();
+    await expect.element(all).toBeEnabled();
+    state.updateAll.mockResolvedValueOnce([]);
+    await all.click();
+    expect(state.updateAll).toHaveBeenCalledTimes(2);
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+  });
+
+  it.each(["manual", "disconnected", "permission", "running"])(
+    "disables the footer bulk action for %s updates while preserving Settings",
+    async (reason) => {
+      localStorage.removeItem("t3code:provider-update-dismissals:v1");
+      state.updates = { ...updates(), noticeKey: `update-all-${reason}` };
+      state.updates.machines = [];
+      if (reason === "manual") state.updates.groups = state.updates.groups.slice(1);
+      if (reason === "disconnected") {
+        state.updates.groups = state.updates.groups.map((group) => ({
+          ...group,
+          connected: false,
+          candidates: [],
+        }));
+      }
+      if (reason === "permission") {
+        state.updates.canManage = false;
+        state.updates.groups = state.updates.groups.map((group) => ({
+          ...group,
+          canManage: false,
+        }));
+      }
+      if (reason === "running") {
+        state.updates.machines = updates().machines;
+        const group = state.updates.groups[0]!;
+        publishGroups({
+          ...group,
+          attempt: {
+            generation: 1,
+            machine: group,
+            phase: "running",
+            runs: [],
+            message: "Updating providers…",
+          },
+        });
+      }
+      state.navigate.mockReset();
+      await using screen = await render(<ToastProvider />);
+      await screen.rerender(
+        <ToastProvider>
+          <ProviderUpdateNotice />
+        </ToastProvider>,
+      );
+      await expect
+        .element(
+          page.getByRole("button", {
+            name: reason === "running" ? "Updating…" : "Update All",
+            exact: true,
+          }),
+        )
+        .toBeDisabled();
+      await page.elementLocator(document.querySelector('[data-slot="toast-action"]')!).click();
+      expect(state.navigate).toHaveBeenCalledWith({ to: "/settings/providers" });
+      localStorage.removeItem("t3code:provider-update-dismissals:v1");
+    },
+  );
+
   it("collapses devices independently and keeps update, retry and settings actions separate", async () => {
     state.updates = updates();
     state.updateEnvironment.mockClear();
