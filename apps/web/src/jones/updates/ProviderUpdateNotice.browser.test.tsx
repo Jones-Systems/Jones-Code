@@ -197,9 +197,12 @@ describe("current provider update notice rows", () => {
         <ProviderUpdateNotice />
       </ToastProvider>
     );
-    const finished = Promise.withResolvers<[]>();
+    let finish = () => {};
+    const finished = new Promise<[]>((resolve) => {
+      finish = () => resolve([]);
+    });
     state.updateAll.mockReset();
-    state.updateAll.mockReturnValueOnce(finished.promise);
+    state.updateAll.mockReturnValueOnce(finished);
     await using screen = await render(<ToastProvider />);
     await screen.rerender(notice());
     const all = page.getByRole("button", { name: "Update All", exact: true });
@@ -229,8 +232,8 @@ describe("current provider update notice rows", () => {
     state.updates = { ...state.updates!, noticeKey: "update-all-footer-failed" };
     await screen.rerender(notice());
     await act(async () => {
-      finished.resolve([]);
-      await finished.promise;
+      finish();
+      await finished;
     });
     await expect.element(page.getByText("Synthetic update failed.", { exact: true })).toBeVisible();
     await expect.element(all).toBeEnabled();
