@@ -52,16 +52,65 @@ Pass its absolute path through `--build-receipt`. The command rejects changed so
 
 ## Sharing evidence
 
-The default `.t3/ui-evidence/runs/` output is task-local and untracked. Attach screenshots or video through the repository's authorized GitHub workflow and verify that each attachment can be retrieved and renders in the PR. The runner does not upload evidence or commit generated captures. Keep the manifest with the PR evidence record so reviewers can identify the exact build, fixture, route, and coverage.
+The default `.t3/ui-evidence/runs/` output is task-local and untracked. The runner
+does not upload or commit captures. Never commit PR-only media in Jones Code;
+there is no committed-media fallback. Keep the manifest and the detailed
+per-evidence-set record with one author-written PR evidence comment. Publish
+that comment and open its link before moving detail out of the body; otherwise
+keep it in a collapsed block. The body retains one capture identity line stating
+its relation to the PR head, claim-critical identities and numbers, and limits.
 
-Prefer the official GitHub CLI attachment support using existing CLI authentication. Check `gh pr edit --help` for `--attach` before concluding that browser sign-in is needed. A signed-out Browser profile does not establish that the CLI cannot upload. For an existing PR:
+Use the official GitHub CLI attachment support with existing authentication.
+Check `gh pr edit --help` for `--attach` before concluding browser sign-in is
+needed; a signed-out Browser profile does not establish that CLI upload fails.
+Publish in this order:
 
-```bash
-gh pr edit 123 --repo OWNER/REPO --attach './before.png#Before the change' --attach './after.png#After the change'
-```
+1. Prepare the body without any local media path. Do not put local image or
+   video references in a body file, even when attaching those files separately.
+2. Upload with `gh pr create … --attach 'file#caption'` or, for an existing PR:
 
-Repeating `--attach` uploads multiple images or videos. Without a body flag, the command preserves the existing PR body and appends the attachments. If updating the description too, use `--body-file`; references to attached local paths are replaced with uploaded URLs. See the [official CLI manual](https://cli.github.com/manual/gh_pr_edit). No extension or browser session is required when the installed CLI and its authentication support the operation.
+   ```bash
+   gh pr edit 123 --repo OWNER/REPO --attach './before.png#Before the change' --attach './after.png#After the change'
+   ```
 
-Read the PR body back and check the uploaded images in the rendered PR. A command can upload some attachments and return a nonzero exit status for others; inspect the saved URLs before retrying so successful uploads are not duplicated. If the local CLI lacks the flag or GitHub rejects the upload, report the actual limitation and use an authorized fallback.
+   Repeat `--attach` for multiple images or videos. Without a body flag, the
+   command preserves the body and appends hosted links. Prefer H.264 MP4 for
+   recordings. See the [official CLI manual](https://cli.github.com/manual/gh_pr_edit).
 
-For every evidence set, identify the comparison and candidate revisions, build identity when available, route and platform, actual viewport, scale and theme, fixture and scenario, observable action/readback, and coverage limits. A combined preview must name its integration revision and constituent heads. Refresh any exact-current-head claim after the PR head changes.
+3. Read the complete published body back. To place the media, move the hosted
+   links in that raw text, following the
+   [published-body edit procedure](../../../../docs/operations/contributor-guidance.md#editing-a-published-description).
+   Never write from an older local body draft; preserve comments, footers and
+   existing media. Use `--body-file` only with text derived from that readback.
+4. Confirm no local media path remains. Open every image and play every recording
+   in the reader's rendered PR view, signed in for private evidence. A Markdown
+   link or HTTP success alone does not prove visibility.
+5. Repeat the rendering and protected-content checks after the last body edit
+   and immediately before merge. Refresh captures after a head change affecting
+   the UI, or label them historical rather than current.
+
+An upload can succeed for some files and return nonzero for others. Retain the
+command result and printed URLs; read the body back to identify what arrived
+before retrying only missing files. A timeout is unknown until reconciled; never
+blindly repeat it. If the CLI lacks the flag or GitHub rejects the upload,
+report the actual limitation and use only an authorized fallback. No extension
+or browser session is required when the installed CLI and authentication support
+upload; this procedure does not claim that a particular upload has been qualified.
+
+For every evidence set, identify the comparison and candidate revisions (base
+and patch identity for dirty source), build identity when available, route and
+platform, actual viewport, scale and theme, fixture and scenario, observable
+action/readback, coverage limits, and whether images show interaction states in
+one build or separately built source revisions. A combined preview names its
+integration revision and constituent heads. Preserve the source-to-build limits
+above. Stills never prove motion: a timing or sequence claim needs a recording
+and an explanation of what to watch for.
+
+Use only synthetic or example data on a public PR. A private capture needs
+separate publication authority. A chat attachment, local path, localhost link,
+expiring artifact alone or private link as the only public record is not PR
+evidence. **Captured** means published, visibly rendered and current. If blocked,
+state the exact gap, evidence location and blocker owner; missing tooling is not
+"not applicable". Follow the
+[PR evidence outcomes](../../../../docs/operations/contributor-guidance.md#pull-requests)
+when deciding whether there is rendered output to show.

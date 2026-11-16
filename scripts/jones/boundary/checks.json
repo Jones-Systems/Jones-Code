@@ -5473,6 +5473,22 @@
       ]
     },
     {
+      "id": "jones-panel-find",
+      "tests": [
+        "apps/web/src/jones/panelFind/PanelFind.browser.test.tsx",
+        "apps/desktop/src/window/DesktopApplicationMenu.test.ts",
+        "apps/web/src/components/AppRouteModal.browser.test.tsx",
+        "apps/web/src/components/usage/UsagePage.jones.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/panelFind/PanelFind.browser.test.tsx src/components/AppRouteModal.browser.test.tsx src/components/usage/UsagePage.jones.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/desktop/src/window/DesktopApplicationMenu.test.ts",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/desktop typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-workspace-session-duty",
       "tests": [
         "apps/server/src/jones/workspaceRetirement/SessionDuty.test.ts",

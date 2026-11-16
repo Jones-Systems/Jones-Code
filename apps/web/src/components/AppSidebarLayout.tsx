@@ -1,3 +1,4 @@
+import { PanelFindProvider, PanelFindScope } from "../jones/panelFind/PanelFind";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
@@ -453,44 +454,53 @@ export function AppSidebarLayout({
   } as CSSProperties;
 
   return (
-    <PanelAnimationSuppressionProvider value={panelAnimationsSuppressed}>
-      <SidebarProvider
-        className="h-dvh! min-h-0!"
-        data-panel-animations={routePanelAnimationsActive ? "true" : "false"}
-        storageKey="chat_thread_sidebar_open"
-        style={sidebarProviderStyle}
-      >
-        {showSidebar ? (
-          <>
-            <SidebarBrandWidthProbe isElectron={isElectron} onWidthChange={setBrandWidth} />
-            <Sidebar
-              side="left"
-              collapsible="offcanvas"
-              data-app-sidebar=""
-              {...sidebarArea}
-              role="navigation"
-              aria-label="Threads"
-              resizable={{
-                maxWidth: sidebarMaximumWidth,
-                minWidth: sidebarMinimumWidth,
-                shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }) =>
-                  nextWidth <= currentWidth ||
-                  wrapper.clientWidth - nextWidth >= THREAD_MAIN_CONTENT_MIN_WIDTH,
-                storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
-                onResize: setSidebarWidth,
-              }}
-              style={windowControlsInsetStyle}
-            >
-              <ThreadSidebar routeReveal={sidebarRouteReveal} />
-              <SidebarRail onDoubleClick={resetSidebarWidth} />
-            </Sidebar>
-          </>
-        ) : null}
-        {children}
-        <BackgroundThreadAnnouncer />
-        <SidebarControl showSidebar={showSidebar} />
-        {isElectron ? <HistorySwipeNavigation /> : null}
-      </SidebarProvider>
-    </PanelAnimationSuppressionProvider>
+    <PanelFindProvider>
+      <PanelAnimationSuppressionProvider value={panelAnimationsSuppressed}>
+        <SidebarProvider
+          className="h-dvh! min-h-0!"
+          data-panel-animations={routePanelAnimationsActive ? "true" : "false"}
+          storageKey="chat_thread_sidebar_open"
+          style={sidebarProviderStyle}
+        >
+          {showSidebar ? (
+            <>
+              <SidebarBrandWidthProbe isElectron={isElectron} onWidthChange={setBrandWidth} />
+              <Sidebar
+                side="left"
+                collapsible="offcanvas"
+                data-app-sidebar=""
+                {...sidebarArea}
+                role="navigation"
+                aria-label="Threads"
+                resizable={{
+                  maxWidth: sidebarMaximumWidth,
+                  minWidth: sidebarMinimumWidth,
+                  shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }) =>
+                    nextWidth <= currentWidth ||
+                    wrapper.clientWidth - nextWidth >= THREAD_MAIN_CONTENT_MIN_WIDTH,
+                  storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
+                  onResize: setSidebarWidth,
+                }}
+                style={windowControlsInsetStyle}
+              >
+                <ThreadSidebar routeReveal={sidebarRouteReveal} />
+                <SidebarRail onDoubleClick={resetSidebarWidth} />
+              </Sidebar>
+            </>
+          ) : null}
+          <PanelFindScope
+            label="page"
+            resetKey={pathname}
+            data-find-default
+            className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+          >
+            {children}
+          </PanelFindScope>
+          <BackgroundThreadAnnouncer />
+          <SidebarControl showSidebar={showSidebar} />
+          {isElectron ? <HistorySwipeNavigation /> : null}
+        </SidebarProvider>
+      </PanelAnimationSuppressionProvider>
+    </PanelFindProvider>
   );
 }

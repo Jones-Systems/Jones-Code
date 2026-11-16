@@ -1,0 +1,36 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "panel-find",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/panelFind/PanelFind.tsx",
+    "apps/web/src/jones/panelFind/panelFind.css",
+    "apps/web/src/jones/panelFind/PanelFind.browser.test.tsx",
+    "apps/web/src/jones/panelFind/findRanges.ts"
+  ],
+  "hookPaths": [
+    "apps/desktop/src/window/DesktopApplicationMenu.ts",
+    "apps/desktop/src/window/DesktopApplicationMenu.test.ts",
+    "apps/web/src/components/AppSidebarLayout.tsx",
+    "apps/web/src/components/RightPanelTabs.tsx",
+    "apps/web/src/components/preview/PreviewPanelShell.tsx"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/AppSidebarLayout.tsx",
+      "to": "apps/web/src/jones/panelFind/PanelFind.tsx"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/panelFind/PanelFind.tsx"
+    },
+    {
+      "from": "apps/web/src/components/preview/PreviewPanelShell.tsx",
+      "to": "apps/web/src/jones/panelFind/PanelFind.tsx"
+    },
+    {
+      "from": "apps/web/src/components/AppRouteModal.tsx",
+      "to": "apps/web/src/jones/panelFind/PanelFind.tsx"
+    }
+  ]
+}

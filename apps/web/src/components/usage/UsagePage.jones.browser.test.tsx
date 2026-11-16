@@ -186,7 +186,7 @@ async function usageDialog(): Promise<HTMLElement> {
 describe("UsagePage Jones exact ranges", () => {
   it("selects an exact three-hour range from the overflow panel", async () => {
     using _state = setupUsage();
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     const trigger = container.querySelector<HTMLButtonElement>(
       '[aria-label="Additional usage ranges"]',
@@ -208,7 +208,7 @@ describe("UsagePage Jones exact ranges", () => {
   it("applies and clears an exact multi-day custom range", async () => {
     using _state = setupUsage();
     await using _timezone = await browserTimeZone("UTC");
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     const trigger = container.querySelector<HTMLButtonElement>(
       '[aria-label="Additional usage ranges"]',
@@ -254,7 +254,7 @@ describe("UsagePage Jones exact ranges", () => {
   it("preserves repeated-hour bounds when applying an unchanged rolling prefill", async () => {
     using _state = setupUsage();
     await using _timezone = await browserTimeZone("America/New_York");
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     using _clock = fixedTime(new Date("2026-11-01T06:30:00.000Z"));
     const trigger = container.querySelector<HTMLButtonElement>(
@@ -288,7 +288,7 @@ describe("UsagePage Jones exact ranges", () => {
   it("explains an edited repeated local time instead of applying an arbitrary offset", async () => {
     using _state = setupUsage();
     await using _timezone = await browserTimeZone("America/New_York");
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     using _clock = fixedTime(new Date("2026-11-01T08:00:00.000Z"));
     const trigger = container.querySelector<HTMLButtonElement>(
@@ -456,7 +456,7 @@ describe("UsagePage provider and model details", () => {
 
   it("shows a compact all-token cache percentage and reported cache writes", async () => {
     using _state = setupUsage(usageFixture());
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     const totals = [...container.querySelectorAll("section")].find(
       (section) => section.querySelector("h2")?.textContent === "Totals",
@@ -477,7 +477,7 @@ describe("UsagePage provider and model details", () => {
 
   it("keeps cost and token shares separate across metric changes and provider focus", async () => {
     using _state = setupUsage(usageFixture());
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     const percentages = () =>
       [...container.querySelectorAll("thead th[aria-label]")].map((cell) =>
@@ -500,7 +500,7 @@ describe("UsagePage provider and model details", () => {
 
   it("uses an empty cache percentage when no tokens were reported", async () => {
     using _state = setupUsage(usageFixture());
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     mockAnsweredUsage({ ...usageFixture(), merged: mergeUsage([], USAGE_CONTRACT_VERSION) });
     await _screen.rerender(<UsagePage />);
@@ -513,7 +513,7 @@ describe("UsagePage provider and model details", () => {
 
   it("opens one provider, scopes its details and shares, and keeps summary/chart aggregate", async () => {
     using _state = setupUsage(usageFixture());
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     const summary = container.querySelector(".text-4xl")?.textContent;
     const chart = container.querySelector('[data-testid="usage-chart"]')!.outerHTML;
@@ -556,7 +556,7 @@ describe("UsagePage provider and model details", () => {
 
   it("closes from the disclosure and close button, restoring aggregate rows and focus", async () => {
     using _state = setupUsage(usageFixture());
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     await clickLabel(container, "Codex usage details");
     await clickLabel(container, "Codex usage details");
@@ -572,7 +572,7 @@ describe("UsagePage provider and model details", () => {
 
   it("filters daily and hourly totals and restores the complete time breakdown", async () => {
     using _state = setupUsage(usageFixture());
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     await clickLabel(container, "Codex usage details");
     await clickText(container, "Day");
@@ -608,7 +608,7 @@ describe("UsagePage provider and model details", () => {
 
   it("expands model counters and retains unpriced versus known zero-dollar costs", async () => {
     using _state = setupUsage(usageFixture());
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     await clickLabel(container, "Codex usage details");
     await clickLabel(container, "codex-unpriced token details");
@@ -643,7 +643,7 @@ describe("UsagePage provider and model details", () => {
 
   it("recomputes from new environment data and clears a provider that disappears", async () => {
     using _state = setupUsage(usageFixture());
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     await clickLabel(container, "Codex usage details");
     const next = usageFixture(true, "other-environment");
@@ -671,7 +671,7 @@ describe("UsagePage provider and model details", () => {
 
   it("resets provider and model focus when the environment selection changes", async () => {
     using _state = setupUsage(usageFixture());
-    await using _screen = await render(<UsagePage />, { router: false });
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
     const container = await usageDialog();
     await clickLabel(container, "Codex usage details");
     await clickLabel(container, "codex-known token details");
