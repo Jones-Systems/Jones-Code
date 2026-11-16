@@ -14,6 +14,7 @@ import {
   isDelegatedTaskShownUnderParent,
   type PendingSubagentRequest,
   pendingSubagentRequestsByThread,
+  pendingSubagentRequestRollupsByThread,
   pendingSubagentGuestAttentionByThread,
   hasPendingGuestMessages,
   resolveThreadAttentionPill,
@@ -90,6 +91,19 @@ const completed = () =>
   );
 
 describe("shared native thread attention", () => {
+  it.each([
+    { kind: "user_input" as const, userOnly: false, jones: "user_input", restricted: undefined },
+    { kind: "user_input" as const, userOnly: true, jones: "user_input", restricted: "user_only_input" },
+    { kind: "command" as const, userOnly: false, jones: "approval", restricted: "approval" },
+  ])("keeps Jones propagation independent of explicit user-only rollups for $kind/$userOnly", ({ kind, userOnly, jones, restricted }) => {
+    const parent = shell();
+    const live = child("policy-child", kind);
+    const asking = { ...live, pendingRuntimeRequest: { ...live.pendingRuntimeRequest!, userOnly } };
+    expect(pendingSubagentRequestsByThread([parent, asking]).get(parent.id)).toBe(jones);
+    expect(pendingSubagentRequestRollupsByThread([parent, asking]).get(parent.id)).toBe(restricted);
+    expect(pendingSubagentRequestsByThread([parent, { ...asking, pendingRuntimeRequest: null }]).size).toBe(0);
+  });
+
   it.each([
     "preparing",
     "queued",

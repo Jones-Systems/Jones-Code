@@ -1,8 +1,6 @@
 import {
   isDelegatedTaskShownUnderParent,
-  pendingSubagentRequestRollupsByThread as pendingSubagentRequestsByThread,
-  rolledUpRequest,
-  type RolledUpRequest,
+  pendingSubagentRequestsByThread,
   subagentRequest,
 } from "@t3tools/shared/jones/threadAttention";
 import type {
@@ -102,8 +100,8 @@ function sideChatRequest(thread: OrchestrationV2ThreadShell): PendingSubagentReq
 }
 
 const sameRequests = (
-  left: ReadonlyMap<ThreadId, RolledUpRequest>,
-  right: ReadonlyMap<ThreadId, RolledUpRequest>,
+  left: ReadonlyMap<ThreadId, PendingSubagentRequest>,
+  right: ReadonlyMap<ThreadId, PendingSubagentRequest>,
 ) =>
   left.size === right.size &&
   [...right].every(([threadId, request]) => left.get(threadId) === request);
@@ -230,7 +228,7 @@ export function createEnvironmentThreadShellAtoms(input: {
   // environments run for it, so two environments delegating to each other
   // never read each other's totals.
   const localSubagentRequestsAtom = Atom.family((environmentId: EnvironmentId) => {
-    let previous: ReadonlyMap<ThreadId, RolledUpRequest> = EMPTY_SUBAGENT_REQUESTS;
+    let previous: ReadonlyMap<ThreadId, PendingSubagentRequest> = EMPTY_SUBAGENT_REQUESTS;
     return Atom.make((get) => {
       const next = pendingSubagentRequestsByThread(get(environmentThreadsAtom(environmentId)));
       if (sameRequests(previous, next)) return previous;
@@ -261,7 +259,7 @@ export function createEnvironmentThreadShellAtoms(input: {
         else tasks.push(task);
       }
     }
-    let flags = new Map<EnvironmentId, ReadonlyMap<ThreadId, RolledUpRequest>>();
+    let flags = new Map<EnvironmentId, ReadonlyMap<ThreadId, PendingSubagentRequest>>();
     const requestsOf = (environmentId: EnvironmentId) =>
       flags.get(environmentId) ?? get(localSubagentRequestsAtom(environmentId));
     for (let changed = tasksByDelegator.size > 0; changed;) {
@@ -269,7 +267,7 @@ export function createEnvironmentThreadShellAtoms(input: {
       const next = new Map(flags);
       for (const [environmentId, tasks] of tasksByDelegator) {
         const delegated = tasks.flatMap(({ runsIn, thread, parentThreadId }) => {
-          const own = rolledUpRequest(thread, subagentRequest(thread));
+          const own = subagentRequest(thread);
           const nested = requestsOf(runsIn).get(thread.id);
           const request = own === "approval" ? own : (nested ?? own);
           return request === null ? [] : [{ parentThreadId, request }];
@@ -296,7 +294,7 @@ export function createEnvironmentThreadShellAtoms(input: {
         get(localSubagentRequestsAtom(environmentId));
       const next = new Map<ThreadId, PendingSubagentRequest>();
       for (const [threadId, request] of rolledUp) {
-        next.set(threadId, request === "user_only_input" ? "user_input" : request);
+        next.set(threadId, request);
       }
       if (sameRequests(previous, next)) return previous;
       previous = next;
