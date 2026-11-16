@@ -371,7 +371,17 @@ unrelated additions. Write the description in this order:
   threads; model and harness. Copy thread names, IDs and roles as recorded;
   publish names and IDs only when public-safe, otherwise use the role alone.
   Use one line for up to two contributors, a collapsed block for more, and
-  list threads used only as sources separately. There is no word or sentence limit.
+  list threads used only as sources separately.
+
+Keep each bullet to one short thought, usually a brief phrase on one visual
+line at desktop width. Narrow screens and essential qualifications may wrap.
+Use a short top-level bullet with supporting sub-bullets for related facts;
+never bundle several sentences into one bullet. Split or shorten long bullets
+and link supporting detail from the evidence comment. Bold key statuses,
+decisions or important words sparingly, rather than every line. Use descriptive
+Markdown hyperlinks for PRs, issues, documents, evidence and available thread
+references; avoid bare URLs and unlinked numbers. Preserve machine-consumed
+reference syntax where required.
 
 Keep the effect, reason, material trade-offs, checks, material limits, holds and
 owner decisions in the body. Keep the few numbers and identities that make a
