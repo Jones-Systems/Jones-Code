@@ -7,8 +7,7 @@
     "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
     "apps/server/src/jones/mcp/storageCleanup/handlers.ts",
     "apps/server/src/jones/mcp/storageCleanup/tools.ts",
-    "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx",
-    "packages/contracts/src/jones/storageCleanupReport.ts"
+    "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx"
   ],
   "hookPaths": [],
   "tombstones": [],
