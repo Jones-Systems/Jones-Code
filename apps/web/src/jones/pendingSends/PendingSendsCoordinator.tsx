@@ -21,7 +21,13 @@ function ReconcileThread(props: { environmentId: EnvironmentId; threadId: Thread
   usePendingPreviewRelease(props.environmentId, props.threadId, projection);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile delivery lifetime with authoritative subscriptions, including inactive routes.
   useEffect(() => {
-    if (projection && state.status === "live")
+    if (
+      projection &&
+      state.status === "live" &&
+      entries.some(
+        (entry) => entry.environmentId === props.environmentId && entry.threadId === props.threadId,
+      )
+    )
       pendingSends.reconcile(props.environmentId, props.threadId, projection, shell?.source);
   }, [props.environmentId, props.threadId, projection, state.status, shell, entries]);
   return null;
