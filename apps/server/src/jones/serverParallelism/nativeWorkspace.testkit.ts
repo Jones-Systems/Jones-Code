@@ -2,8 +2,34 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { ServerCompute } from "../serverCompute/ServerCompute.ts";
 import { ComputeFailure, computeFailure } from "../serverCompute/failure.ts";
+import { WorkspaceSearchProbe } from "../serverCompute/searchProbeClient.ts";
+import { probeCommand } from "../workspace/SearchGitProbe.ts";
+import { probeFailure } from "../serverCompute/searchProbeProtocol.ts";
+import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as NativeSearchRuntime from "../workspace/nativeSearchRuntime.ts";
 import type { WorkspaceJobs } from "./computeContract.ts";
+
+/** In-process algorithm fixture only. It uses fixed real Git operations but
+ * supplies no FD4/native-custody evidence; those gates use the actual worker. */
+export const nativeSearchProbeTestLayer = (cwd: string) => Layer.effect(
+  WorkspaceSearchProbe,
+  Effect.gen(function* () {
+    const vcs = yield* VcsProcess.VcsProcess;
+    let epoch = 0;
+    return WorkspaceSearchProbe.of({
+      run: (input) => vcs.run(probeCommand(input,
+        input.kind === "ignoredCandidates" || input.kind === "repositoryPresence"
+          ? `${cwd}${input.repository ? `/${input.repository}` : ""}` : cwd,
+        30_000,
+      )).pipe(
+        Effect.map((output) => ({ ...output, stdoutInvalidUtf8: output.stdoutInvalidUtf8 ?? false,
+          stderrInvalidUtf8: output.stderrInvalidUtf8 ?? false })),
+        Effect.mapError((cause) => probeFailure("process-failed", cause)),
+      ),
+      beginScan: Effect.sync(() => ({ owner: { kind: "scan" as const, epoch: ++epoch }, end: Effect.void })),
+    });
+  }),
+);
 
 /** Existing domain tests exercise real finder behavior without depending on
  * Vitest's argv being an application bin entry. Process isolation is qualified
@@ -28,6 +54,7 @@ export const nativeWorkspaceTestLayer = Layer.effect(
       acquireLogical: (key) =>
         Effect.gen(function* () {
           const index = yield* NativeSearchRuntime.make(key.cwd, key.variant).pipe(
+            Effect.provide(nativeSearchProbeTestLayer(key.cwd).pipe(Layer.provide(VcsProcess.layer))),
             Effect.mapError(
               (cause) =>
                 new ComputeFailure({

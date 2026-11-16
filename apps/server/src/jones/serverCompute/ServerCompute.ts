@@ -15,6 +15,8 @@ import type {
 import type { ComputeObservation } from "../serverParallelism/observations.ts";
 import { ComputeFailure, computeFailure, isComputeFailure } from "./failure.ts";
 import { GenerationJournal } from "./journal.ts";
+import { SearchGitProbe } from "../workspace/SearchGitProbe.ts";
+import { searchProbePort } from "./searchProbeBinding.ts";
 import { ProcessSlot } from "./processSlot.ts";
 import { ComputeSupervisor } from "./supervisor.ts";
 import { resolveWorkerCommand } from "./workerCommand.ts";
@@ -46,6 +48,7 @@ const make = Effect.gen(function* () {
   const agentScope = yield* AgentScope;
   const observe = yield* ComputeObserver;
   const platform = yield* HostProcess.Platform;
+  const probes = searchProbePort(yield* SearchGitProbe);
   const command = yield* Effect.tryPromise({
     try: () => resolveWorkerCommand(platform),
     catch: failure,
@@ -79,7 +82,7 @@ const make = Effect.gen(function* () {
           journal,
           ...(observe === undefined ? {} : { observe }),
           start: (boot, register, onExit) =>
-            ProcessSlot.start(commands[boot.slotId]!, boot, register, onExit, observe),
+            ProcessSlot.start(commands[boot.slotId]!, boot, register, onExit, observe, undefined, undefined, probes),
         });
       },
       catch: failure,

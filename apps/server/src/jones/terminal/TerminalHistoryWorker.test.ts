@@ -11,11 +11,13 @@ describe("terminal history persistence", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const writes: string[] = [];
+        const modes: boolean[] = [];
         const worker = yield* makeTerminalHistoryWorker<string>({
           debounceMs: 250,
-          process: (key) =>
+          process: (key, _history, immediate) =>
             Effect.sync(() => {
               writes.push(key);
+              modes.push(immediate);
             }),
         });
         for (const key of ["a", "b", "c"])
@@ -40,6 +42,7 @@ describe("terminal history persistence", () => {
         yield* TestClock.adjust(500);
         yield* worker.drainKey("c");
         expect(writes).toEqual(["clear", "a", "b", "c"]);
+        expect(modes).toEqual([true, false, false, false]);
       }),
     ),
   );
