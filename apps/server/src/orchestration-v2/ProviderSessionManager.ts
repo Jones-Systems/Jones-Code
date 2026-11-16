@@ -3114,6 +3114,11 @@ export const layerWithOptions = (
               return Effect.fail(new ProviderAdapter.ProviderRuntimeBindingError({
                 driver: entry.runtime.driver, detail: "Retirement did not match the captured runtime.",
               }));
+            if (receipt.evidence === "thread_closed" && entry.supportsMultipleProviderThreads)
+              return Effect.fail(new ProviderAdapter.ProviderRuntimeBindingError({
+                driver: entry.runtime.driver,
+                detail: "Shared runtime retirement requires exact per-thread cleanup; sibling runtimes must remain live.",
+              }));
             return releaseEntry({
               providerSessionId: captured.binding.providerSessionId,
               onlyIfRuntime: entry.runtime, reason: "manual_shutdown", detachedThreadId: threadId,
