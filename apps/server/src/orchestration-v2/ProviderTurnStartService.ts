@@ -1,3 +1,5 @@
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as StartAdmission from "../jones/provider/StartAdmission.ts";
 import { continuityRecoveryCapability } from "../jones/goals/continuity/admission.ts";
 import { RequiredNativeSession } from "../jones/taskContinuation/requiredNativeSession.ts";
@@ -400,6 +402,7 @@ export const layer: Layer.Layer<
               Extract<OrchestrationV2TurnItem, { type: "command_execution" }>,
               "type" | "title" | "input" | "output" | "exitCode"
             >;
+        readonly startRefusalReason?: "restart_admission" | "continuity_unavailable" | "continuity_held" | "control_held";
         readonly providerThreadUpdate?: OrchestrationV2ProviderThread;
       }) {
         const { run, rootNode, attempt, turnItems, now, status } = input;
@@ -464,6 +467,9 @@ export const layer: Layer.Layer<
           activeAttemptId: attempt.id,
           expectedStatus: "starting",
           events,
+          ...(input.startRefusalReason === undefined ? {} : {
+            startRefusalReason: input.startRefusalReason, effects: [],
+          }),
         });
         // A steering restart that cannot start still ends a run whose earlier turns counted.
         if (written.committed) {
@@ -575,17 +581,41 @@ export const layer: Layer.Layer<
         driver: providerThread.driver, threadId: input.threadId,
         providerThreadId: providerThread.id, runId, cause,
       });
+      type AdmissionRefusal = "restart_admission" | "continuity_unavailable" | "continuity_held" | "control_held";
+      const refuseAdmission = (reason: AdmissionRefusal, cause: unknown) => DateTime.now.pipe(Effect.flatMap((now) => settleRunBeforeStart({
+        run, rootNode, attempt, turnItems: projection.turnItems,
+        signal: "start-admission-refused", status: "failed", now,
+        startRefusalReason: reason, providerInstanceId: run.providerInstanceId,
+        itemProviderThreadId: providerThread.id,
+        item: { type: "error", title: "Provider start admission refused",
+          failure: makeProviderFailure({ cause, message: "Provider start admission is held." }) },
+      })));
+      const restartPreparation = yield* Effect.serviceOption(RestartPreparation.RestartPreparation);
+      const startRefusals = yield* Effect.serviceOption(StartRefusals.StartRefusals);
+      if (Option.isNone(restartPreparation) || Option.isNone(startRefusals))
+        return yield* refuseAdmission("restart_admission", "Original restart admission services are unavailable.");
+      const restartAdmission = yield* restartPreparation.value.assertThreadOpen(input.threadId).pipe(Effect.result);
+      if (restartAdmission._tag === "Failure")
+        return yield* refuseAdmission("restart_admission", restartAdmission.failure);
       if (Option.isNone(admissionService) || Option.isNone(continuityService) ||
           Option.isNone(environmentService) || Option.isNone(controlService))
-        return yield* admissionError("Original durable start admission services are unavailable.");
+        return yield* refuseAdmission("continuity_unavailable", "Original durable start admission services are unavailable.");
       const capturedAdmission = yield* admissionService.value.capture({
         threadId: input.threadId, run, attemptId: attempt.id, providerThread,
       });
       const goalContinuity = continuityService.value;
       const controlAdmission = controlService.value;
       const environmentId = yield* environmentService.value.getEnvironmentId;
+      let admissionRefusal: AdmissionRefusal | undefined;
+      const stopAdmission = eventSink as typeof eventSink & {
+        readonly assertRuntimeStopStartAllowed?: (input: { readonly threadId: ThreadId; readonly runId: RunId }) => Effect.Effect<void, unknown>;
+      };
       const assertAdmission = (expected: OrchestrationV2ProviderThread) => Effect.gen(function* () {
         yield* capturedAdmission.revalidate;
+        yield* restartPreparation.value.assertThreadOpen(input.threadId);
+        if (stopAdmission.assertRuntimeStopStartAllowed === undefined)
+          return yield* admissionError("Durable runtime Stop start admission is unavailable.");
+        yield* stopAdmission.assertRuntimeStopStartAllowed({ threadId: input.threadId, runId });
         const fresh = yield* projectionStore.getTurnStartContext(input.threadId, runId);
         const currentRun = fresh.runs.find((candidate) => candidate.id === runId);
         const current = fresh.providerThreads.find((candidate) => candidate.id === expected.id);
@@ -605,15 +635,22 @@ export const layer: Layer.Layer<
             (requiredNative.runId !== runId || requiredNative.attemptId !== attempt.id ||
              expected.nativeThreadRef?.nativeId !== requiredNative.nativeSessionId))
           return yield* admissionError("Required native session does not match the original admission.");
-        const requirement = yield* goalContinuity.requirementFor(environmentId, input.threadId);
+        const requirementResult = yield* goalContinuity.requirementFor(environmentId, input.threadId).pipe(Effect.result);
+        if (requirementResult._tag === "Failure") {
+          admissionRefusal = "continuity_unavailable";
+          return yield* requirementResult.failure;
+        }
+        const requirement = requirementResult.success;
         const owner = expected.nativeThreadRef?.nativeId == null ? null : {
           environmentId, threadId: input.threadId, providerInstanceId: expected.providerInstanceId,
           providerThreadId: expected.id, driver: expected.nativeThreadRef.driver,
           nativeThreadId: expected.nativeThreadRef.nativeId,
         };
-        if (continuityAdmissionRefusal(requirement, owner) !== undefined)
+        if (continuityAdmissionRefusal(requirement, owner) !== undefined) {
+          admissionRefusal = "continuity_held";
           return yield* admissionError("Goal continuity delivery or native ownership is held.");
-        yield* controlAdmission.assertOpen({
+        }
+        const controlResult = yield* controlAdmission.assertOpen({
           instanceId: expected.providerInstanceId, threadId: input.threadId,
           nativeThreadId: expected.nativeThreadRef?.nativeId ?? null,
           producer: expected.runtimeIdentity === undefined ? null : {
@@ -621,10 +658,18 @@ export const layer: Layer.Layer<
             providerSessionId: expected.providerSessionId!,
             runtimeGeneration: expected.runtimeIdentity.runtimeGeneration,
           },
-        });
+        }).pipe(Effect.result);
+        if (controlResult._tag === "Failure") {
+          admissionRefusal = "control_held";
+          return yield* controlResult.failure;
+        }
         yield* capturedAdmission.revalidate;
       }).pipe(Effect.mapError(admissionError));
-      yield* assertAdmission(providerThread);
+      const initialAdmission = yield* assertAdmission(providerThread).pipe(Effect.result);
+      if (initialAdmission._tag === "Failure") {
+        if (admissionRefusal !== undefined) return yield* refuseAdmission(admissionRefusal, initialAdmission.failure);
+        return yield* initialAdmission.failure;
+      }
       const manualResume =
         run.manualContinuationOfRunId !== undefined && attempt.reason !== "steering_restart";
       const resumeDisposition = manualResume ? yield* capturedAdmission.classifyResume : undefined;
@@ -672,6 +717,7 @@ export const layer: Layer.Layer<
           });
         },
       );
+      yield* startRefusals.value.cross({ threadId: input.threadId, runId, attemptId: attempt.id });
       if (
         providerMessage.attachments.length === 0 &&
         providerMessage.text.trimStart().startsWith("/")

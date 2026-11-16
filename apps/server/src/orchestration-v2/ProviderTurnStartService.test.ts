@@ -1,3 +1,5 @@
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as StartAdmission from "../jones/provider/StartAdmission.ts";
 import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
@@ -1242,6 +1244,8 @@ function makeLocalCommandHarness(input: {
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(StartRefusals.StartRefusals)({ cross: () => Effect.void }),
+        Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
         Layer.succeed(StartAdmission.StartAdmission, {
           capture: () => Effect.succeed({
             revalidate: revalidateAdmission,
@@ -1275,6 +1279,7 @@ function makeLocalCommandHarness(input: {
                 }),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          ...{ assertRuntimeStopStartAllowed: () => revalidateAdmission },
           writeIfRunCurrent,
           write: ({ events: incoming }) =>
             Effect.sync(() => {
