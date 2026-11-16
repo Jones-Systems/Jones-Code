@@ -1,3 +1,4 @@
+import { providerInstanceEntriesFor } from "../../providerInstances";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -80,6 +81,11 @@ function Picker(props: {
   model?: string;
 }) {
   const { onProviderModelSelectStable } = useComposerSelection({
+    providerInstanceEntries: providerInstanceEntriesFor(providers, DEFAULT_UNIFIED_SETTINGS, null),
+    lockedContinuationGroupKey: null,
+    isEnvironmentChanging: false,
+    activeEnvironmentUnavailable: false,
+    isRevertingCheckpoint: false,
     environmentId,
     composerDraftTarget: scopeThreadRef(environmentId, props.thread.id),
     draftThread: null,
