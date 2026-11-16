@@ -75,9 +75,7 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
     );
     if (thread.pinnedAt != null) writable.add(movedId);
     const plan = planWorkstreamThreadReorder({
-      activeOrder: input.activeKeys.includes(movedId)
-        ? input.activeKeys
-        : [...input.activeKeys, movedId],
+      activeOrder: input.activeKeys,
       keysById: input.activeKeysById,
       movedId,
       neighborId,

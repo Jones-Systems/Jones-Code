@@ -81,11 +81,12 @@ function fixture() {
   const externalDropRef: { current: NativeThreadExternalDrop | null } = { current: null };
   let canOperate = () => true;
   let canReorder = (_thread: EnvironmentThreadShell) => true;
-  const ui = (threads = [source, first, last]) => (
+  const ui = (threads = [source, first, last], summaryThreads = threads) => (
     <RegistryContext.Provider value={registry}>
       <WorkstreamNativeSidebar
         controller={controller}
         threads={threads}
+        summaryThreads={summaryThreads}
         externalDropRef={externalDropRef}
         renderThread={(thread) => (
           <li className="h-12 rounded-md border p-2" onClick={activate}>
@@ -382,6 +383,43 @@ describe("personal thread pointer placement", () => {
     });
     expect(unpin).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["Drag Alpha", null])(
+    "accepts a pinned arrival before its existing group's first row: %s",
+    async (destinationId) => {
+      using setup = fixture();
+      const pinned = { ...source, pinnedAt: "2026-11-12T12:00:00.000Z" };
+      setup.registry.set(setup.state, {
+        ...setup.initial,
+        assignmentsByThreadKey: new Map(
+          destinationId === null
+            ? []
+            : [
+                assignment(source, destinationId),
+                assignment(first, destinationId),
+                assignment(last, destinationId),
+              ],
+        ),
+      });
+      await using screen = await render(setup.ui([first, last], [pinned, first, last]), {
+        container: container(),
+      });
+      const at = point(row(screen.container, first), 0.2);
+      await act(() => {
+        expect(setup.externalDropRef.current!.locateExternal(at, pinned)).toBe(true);
+      });
+      expect(insertion()?.dataset.personalThreadInsertion).toBe("before");
+      await act(async () => {
+        expect(await setup.externalDropRef.current!.dropExternal(at, pinned)).toBe(true);
+      });
+      expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(
+        pinned,
+        destinationId,
+        first,
+        false,
+      );
+    },
+  );
 
   it.each(["source", "neighbor", "destination"])(
     "rejects external placement after stale %s",

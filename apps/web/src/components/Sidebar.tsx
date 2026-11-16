@@ -1482,11 +1482,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useStableCallback(() => setWorkstreamCreateOpen(false));
   const workstreamGrouping = groupPersonalThreads(workstreamController.state, activeThreads);
+  const workstreamRouteThread = routeRowThreadKey ? parseScopedThreadKey(routeRowThreadKey) : null;
   const workstreamActiveThreads = usePersonalSidebarActiveThreads(
     workstreamGrouping,
-    routeThreadRef === null
+    workstreamRouteThread === null
       ? null
-      : { environmentId: routeThreadRef.environmentId, id: routeThreadRef.threadId },
+      : { environmentId: workstreamRouteThread.environmentId, id: workstreamRouteThread.threadId },
   );
   const orderedThreads = workstreamsEnabled
     ? [

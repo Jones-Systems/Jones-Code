@@ -3,10 +3,13 @@ import { RegistryContext } from "@effect/atom-react";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
-import type {
-  PersonalWorkstreamsController,
-  PersonalWorkstreamsState,
+import {
+  createPersonalWorkstreamsController,
+  type PersonalWorkstreamsController,
+  type PersonalWorkstreamsState,
+  type PersonalWorkstreamsTransport,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { act, render } from "../../../test/render";
 import { WorkstreamSidebarSection } from "../../components/workstreams/WorkstreamSidebarSection";
 import { ToastProvider, toastManager } from "../../components/ui/toast";
@@ -24,7 +27,7 @@ const group = (name: string) => ({
 });
 const groups = [group("Alpha"), group("Beta"), group("Gamma")];
 
-function fixture() {
+function fixture(put?: PersonalWorkstreamsTransport["put"]) {
   const registry = AtomRegistry.make();
   const initial: PersonalWorkstreamsState = {
     workstreams: groups,
@@ -34,7 +37,7 @@ function fixture() {
     canCreate: true,
   };
   const state = Atom.make(initial);
-  const controller: PersonalWorkstreamsController = {
+  const mockController: PersonalWorkstreamsController = {
     state,
     canAssign: () => true,
     create: vi.fn(),
@@ -78,6 +81,43 @@ function fixture() {
     assign: vi.fn(),
     createAndAssign: vi.fn(),
   };
+  const realController = put
+    ? createPersonalWorkstreamsController({
+        registry,
+        origin: "menu-test",
+        now: () => "2026-11-12T13:00:00.000Z",
+        transport: {
+          subscribe: (connection, onSnapshot) => {
+            onSnapshot({
+              environmentId: connection.environmentId,
+              sequence: 0,
+              workstreams: groups.map((entry, index) => ({
+                ...entry,
+                orderKey: ["b", "c", "d"][index]!,
+                deletedAt: null,
+                rev: 1,
+                origin: "menu-test",
+              })),
+              assignments: [],
+              importIssue: null,
+            });
+            return () => {};
+          },
+          put,
+          assign: vi.fn(),
+        },
+      })
+    : null;
+  realController?.setEnvironments([
+    {
+      environmentId: "menu-environment" as EnvironmentId,
+      generation: 1,
+      connected: true,
+      capable: true,
+      writable: true,
+    },
+  ]);
+  const controller = realController ?? mockController;
   const ui = (
     <RegistryContext.Provider value={registry}>
       <ToastProvider>
@@ -97,12 +137,26 @@ function fixture() {
     controller,
     ui,
     [Symbol.dispose]() {
+      realController?.dispose();
       registry.dispose();
       toastManager.close();
       for (const entry of groups) localStorage.removeItem(personalGroupCollapsedKey(entry.id));
       localStorage.removeItem(personalGroupCollapsedKey(null));
     },
   };
+}
+function deferredDelete() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  const put = vi.fn<PersonalWorkstreamsTransport["put"]>(async (_connection, workstream) => {
+    await promise;
+    return { outcome: "applied", workstream, sequence: 1 };
+  });
+  return { put, resolve, reject };
 }
 async function options(name = "Alpha") {
   await userEvent.click(page.getByRole("button", { name: `Options for ${name}`, exact: true }));
@@ -250,18 +304,19 @@ describe("Workstream options and header ordering", () => {
     expect(setup.controller.remove).not.toHaveBeenCalled();
   });
 
-  it("blocks dismissal and repeat submission while deleting, retaining the dialog and toast on failure", async () => {
-    using setup = fixture();
-    let resolve!: (value: Awaited<ReturnType<PersonalWorkstreamsController["remove"]>>) => void;
-    const promise = new Promise<Awaited<ReturnType<PersonalWorkstreamsController["remove"]>>>(
-      (done) => {
-        resolve = done;
-      },
-    );
-    vi.mocked(setup.controller.remove).mockReturnValueOnce(promise);
-    await using _screen = await render(setup.ui);
+  it("retains confirmation through optimistic removal and rollback after a rejected delete", async () => {
+    const request = deferredDelete();
+    using setup = fixture(request.put);
+    await using screen = await render(setup.ui);
     await deletion();
     await userEvent.click(page.getByRole("button", { name: "Delete Workstream", exact: true }));
+    expect(setup.registry.get(setup.controller.state).workstreams.map((entry) => entry.id)).toEqual(
+      ["menu-Beta", "menu-Gamma"],
+    );
+    expect(order(screen.container)).toEqual(["menu-Beta", "menu-Gamma", null]);
+    await expect
+      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .not.toBeInTheDocument();
     await expect
       .element(page.getByRole("button", { name: "Deleting…", exact: true }))
       .toBeDisabled();
@@ -276,33 +331,50 @@ describe("Workstream options and header ordering", () => {
         .click();
     });
     await expect.element(page.getByRole("alertdialog")).toBeVisible();
-    expect(setup.controller.remove).toHaveBeenCalledTimes(1);
-    await act(() =>
-      resolve({
-        ok: false,
-        failure: {
-          action: "delete",
-          reason: "failed",
-          environmentId: null,
-          dedupeKey: "menu-delete-failure",
-        },
-      }),
-    );
+    expect(request.put).toHaveBeenCalledTimes(1);
+    await act(() => request.reject(new Error("Delete transport failed")));
     await expect.element(page.getByRole("alertdialog")).toBeVisible();
+    await expect.element(page.getByRole("alertdialog")).toHaveAccessibleName("Delete “Alpha”?");
+    expect(order(screen.container)).toEqual(["menu-Alpha", "menu-Beta", "menu-Gamma", null]);
+    await expect.element(page.getByRole("button", { name: "Cancel", exact: true })).toBeEnabled();
+    await expect.element(page.getByRole("button", { name: "Cancel", exact: true })).toHaveFocus();
     await expect
       .element(page.getByRole("button", { name: "Delete Workstream", exact: true }))
       .toBeEnabled();
     await expect
-      .element(page.getByText("Couldn't delete the Workstream. Try again.", { exact: true }))
+      .element(
+        page.getByText("Couldn't confirm that change. Check the Workstream and try again.", {
+          exact: true,
+        }),
+      )
       .toBeVisible();
+    request.put.mockImplementationOnce(async (_connection, workstream) => ({
+      outcome: "applied",
+      workstream,
+      sequence: 1,
+    }));
+    await userEvent.click(page.getByRole("button", { name: "Delete Workstream", exact: true }));
+    await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Collapse Beta", exact: true }))
+      .toHaveFocus();
+    expect(request.put).toHaveBeenCalledTimes(2);
   });
 
-  it("deletes only after confirmation and focuses the next header or Unassigned", async () => {
-    using setup = fixture();
+  it("waits for delete confirmation after optimistic removal, then focuses the next header or Unassigned", async () => {
+    const request = deferredDelete();
+    using setup = fixture(request.put);
     await using screen = await render(setup.ui);
     await deletion();
-    expect(setup.controller.remove).not.toHaveBeenCalled();
+    expect(request.put).not.toHaveBeenCalled();
     await userEvent.click(page.getByRole("button", { name: "Delete Workstream", exact: true }));
+    expect(order(screen.container)).toEqual(["menu-Beta", "menu-Gamma", null]);
+    await expect.element(page.getByRole("alertdialog")).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Deleting…", exact: true }))
+      .toBeDisabled();
+    await expect.element(page.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
+    await act(() => request.resolve());
     await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
     await expect
       .element(page.getByRole("button", { name: "Collapse Beta", exact: true }))
@@ -313,8 +385,14 @@ describe("Workstream options and header ordering", () => {
     await expect
       .element(page.getByRole("button", { name: "Collapse Unassigned", exact: true }))
       .toHaveFocus();
-    expect(setup.controller.remove).toHaveBeenNthCalledWith(1, "menu-Alpha");
-    expect(setup.controller.remove).toHaveBeenNthCalledWith(2, "menu-Gamma");
+    expect(request.put).toHaveBeenCalledTimes(2);
+    expect(request.put.mock.calls.map(([, workstream]) => workstream.id)).toEqual([
+      "menu-Alpha",
+      "menu-Gamma",
+    ]);
+    expect(request.put.mock.calls.every(([, workstream]) => workstream.deletedAt !== null)).toBe(
+      true,
+    );
   });
 
   it("unmounts a remotely removed group's confirmation without sending a delete", async () => {

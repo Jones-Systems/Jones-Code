@@ -12,7 +12,7 @@ export function planWorkstreamThreadReorder(input: {
 }): ReturnType<typeof planWritableSidebarReorder> {
   const { activeOrder, keysById, movedId, neighborId, after, writableKeys, groupIdByKey } = input;
   if (
-    !activeOrder.includes(movedId) ||
+    (!activeOrder.includes(movedId) && input.destinationGroupId === undefined) ||
     !activeOrder.includes(neighborId) ||
     !writableKeys.has(movedId) ||
     !writableKeys.has(neighborId)

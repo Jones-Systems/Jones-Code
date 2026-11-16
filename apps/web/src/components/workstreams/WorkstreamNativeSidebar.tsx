@@ -203,7 +203,7 @@ export function WorkstreamNativeSidebar({
         (entry) => personalThreadKey(entry) === personalThreadKey(neighbor),
       );
       const slot = targetIndex + (after ? 1 : 0);
-      if (slot === sourceIndex || slot === sourceIndex + 1) return null;
+      if (sourceIndex >= 0 && (slot === sourceIndex || slot === sourceIndex + 1)) return null;
     }
     const target = {
       id,

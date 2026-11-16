@@ -62,7 +62,10 @@ it("traverses displayed workstream groups then Unassigned and skips collapsed gr
       completedAt: null,
     })),
   }));
-  using _environment = installFakeEnvironment(threads);
+  using _environment = installFakeEnvironment([
+    ...threads,
+    { ...threadWithHistory("child", 1), sideChatOf: threads[2]!.id },
+  ]);
   using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
   const at = "2026-11-16T12:00:00.000Z";
   const state: PersonalWorkstreamsState = {
@@ -153,6 +156,10 @@ it("traverses displayed workstream groups then Unassigned and skips collapsed gr
   await userEvent.click(page.getByRole("button", { name: "Collapse beta", exact: true }));
   await visit(order[1]!);
   await step("next", order[3]!);
+  await step("previous", order[1]!);
+  await visit("child");
+  await step("next", order[3]!);
+  await visit("child");
   await step("previous", order[1]!);
   await visit("b1");
   await step("next", order[3]!);

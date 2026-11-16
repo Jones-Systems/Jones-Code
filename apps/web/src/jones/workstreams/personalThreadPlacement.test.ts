@@ -159,6 +159,9 @@ function fixture(
     throwOrderAt: (count: number) => (throwOrderAt = count),
     revokeAfterWrites: (count: number) => (revokeAfterWrites = count),
     revokeAfterAssignment: () => (revokeAfterAssignment = true),
+    setOrderKey: (id: string, key: string) => {
+      rows = rows.map((thread) => (thread.id === id ? { ...thread, activeOrderKey: key } : thread));
+    },
     unpin: () => {
       rows = rows.map((thread) => (thread.id === "moved" ? { ...thread, pinnedAt: null } : thread));
     },
@@ -204,6 +207,28 @@ describe("placePersonalThread", () => {
     expect(f.groupOrder("a")).toEqual(["a1", "moved", "a2"]);
     expect(f.groupOrder(null)).toEqual(["u1", "u2"]);
   });
+
+  it.each([false, true])(
+    "positions a pinned arrival at a keyed group's edge: after=%s",
+    async (after) => {
+      const f = fixture(
+        undefined,
+        [
+          ["a1", "a"],
+          ["a2", "a"],
+          ["moved", "a"],
+        ],
+        "moved",
+      );
+      f.setOrderKey("a1", "a0");
+      f.setOrderKey("a2", "a1");
+      expect(await placePersonalThread(f.input("a", after ? "a2" : "a1", after))).toBe(true);
+      expect(f.assignmentWrites).toEqual([]);
+      expect(f.orderWrites.some((write) => write.id === "moved")).toBe(true);
+      f.unpin();
+      expect(f.groupOrder("a")).toEqual(after ? ["a1", "a2", "moved"] : ["moved", "a1", "a2"]);
+    },
+  );
 
   it.each([true, false])(
     "uses natural group-drop order with allowReorder=%s",

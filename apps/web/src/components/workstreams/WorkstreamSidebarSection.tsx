@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
   PersonalWorkstreamsController,
@@ -115,7 +115,8 @@ function Group({
   summary,
   dragging,
   onDragStart,
-  onDeleted,
+  confirmingDelete,
+  onDeleteRequested,
 }: {
   item: PersonalWorkstreamView;
   controller: PersonalWorkstreamsController;
@@ -123,7 +124,8 @@ function Group({
   summary: PersonalThreadSummary;
   dragging: boolean;
   onDragStart: (event: DragEvent<HTMLDivElement>) => void;
-  onDeleted: () => void;
+  confirmingDelete: boolean;
+  onDeleteRequested: () => void;
 }) {
   const state = useAtomValue(controller.state);
   const [collapsed, setCollapsed] = useLocalStorage(
@@ -135,9 +137,6 @@ function Group({
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const cancelRef = useRef<HTMLButtonElement>(null);
-  const removedRef = useRef(false);
   const run = async (operation: () => ReturnType<typeof controller.remove>) => {
     if (pendingRef.current) return;
     pendingRef.current = true;
@@ -156,25 +155,11 @@ function Group({
       data-native-workstream={JSON.stringify(item.id)}
       className={`overflow-hidden rounded-lg border border-sidebar-border/70 border-l-4 bg-sidebar-control-surface/30 ${dragging ? "opacity-50" : ""}`}
       style={{ borderLeftColor: item.color ?? undefined }}
-      onPointerDownCapture={(event) => {
-        // Alert dialogs ignore outside presses by default; this flow allows cancel until submitted.
-        const target = event.target;
-        if (
-          confirmDelete &&
-          !pendingRef.current &&
-          target instanceof Element &&
-          target.closest(
-            '[data-slot="alert-dialog-viewport"], [data-slot="alert-dialog-backdrop"]',
-          ) &&
-          !target.closest('[data-slot="alert-dialog-popup"]')
-        )
-          setConfirmDelete(false);
-      }}
     >
       <div className="flex items-start gap-1 pr-2">
         <div
           className="flex min-w-0 flex-1"
-          draggable={state.canCreate && !pending && !confirmDelete && !editing}
+          draggable={state.canCreate && !pending && !confirmingDelete && !editing}
           onDragStart={onDragStart}
         >
           <PersonalSidebarGroupHeader
@@ -283,7 +268,7 @@ function Group({
               <MenuItem
                 variant="destructive"
                 disabled={!state.canCreate || pending}
-                onClick={() => setConfirmDelete(true)}
+                onClick={onDeleteRequested}
               >
                 <TrashIcon aria-hidden /> Delete Workstream…
               </MenuItem>
@@ -291,54 +276,6 @@ function Group({
           </Menu>
         </div>
       </div>
-      {confirmDelete ? (
-        <AlertDialog
-          open
-          onOpenChange={(open, details) => {
-            if (!open && pendingRef.current) details.cancel();
-            else if (!open) setConfirmDelete(false);
-          }}
-        >
-          <AlertDialogPopup
-            initialFocus={cancelRef}
-            finalFocus={() => (removedRef.current ? false : undefined)}
-          >
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete “{item.name}”?</AlertDialogTitle>
-              <AlertDialogDescription>
-                Threads move to Unassigned. No threads are deleted. This cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <Button
-                ref={cancelRef}
-                variant="outline"
-                disabled={pending}
-                onClick={() => setConfirmDelete(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                disabled={pending || !state.canCreate}
-                onClick={() =>
-                  void run(async () => {
-                    const result = await controller.remove(item.id);
-                    if (result.ok) {
-                      removedRef.current = true;
-                      setConfirmDelete(false);
-                      onDeleted();
-                    }
-                    return result;
-                  })
-                }
-              >
-                {pending ? "Deleting…" : "Delete Workstream"}
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogPopup>
-        </AlertDialog>
-      ) : null}
       {!collapsed ? children : null}
       {editing ? (
         <Dialog
@@ -419,6 +356,23 @@ export function WorkstreamSidebarSection({
     collapsedSchema,
   );
   const containerRef = useRef<HTMLDivElement>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const deletePendingRef = useRef(false);
+  const cancelDeleteRef = useRef<HTMLButtonElement>(null);
+  const removedRef = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Dismiss an idle confirmation when its live target disappears; pending optimistic removal retains ownership here.
+  useEffect(() => {
+    if (
+      deleteTarget &&
+      !deletePending &&
+      !state.workstreams.some((entry) => entry.id === deleteTarget.id)
+    ) {
+      removedRef.current = true;
+      // oxlint-disable-next-line react/set-state-in-effect -- External controller removal invalidates the independent confirmation target.
+      setDeleteTarget(null);
+    }
+  }, [deleteTarget, deletePending, state.workstreams]);
   const draggedRef = useRef<string | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [insertion, setInsertion] = useState<{
@@ -510,6 +464,31 @@ export function WorkstreamSidebarSection({
       target?.querySelector<HTMLButtonElement>("button")?.focus();
     });
   };
+  const confirmDeletion = async () => {
+    if (
+      !deleteTarget ||
+      deletePendingRef.current ||
+      !state.canCreate ||
+      !state.workstreams.some((entry) => entry.id === deleteTarget.id)
+    )
+      return;
+    deletePendingRef.current = true;
+    setDeletePending(true);
+    try {
+      const result = await controller.remove(deleteTarget.id);
+      if (result.ok) {
+        removedRef.current = true;
+        setDeleteTarget(null);
+        focusAfterRemoval(deleteTarget.id);
+      } else {
+        showPersonalFailure(result.failure);
+        requestAnimationFrame(() => cancelDeleteRef.current?.focus());
+      }
+    } finally {
+      deletePendingRef.current = false;
+      setDeletePending(false);
+    }
+  };
   const insertionLine = (
     <div
       aria-hidden
@@ -525,6 +504,20 @@ export function WorkstreamSidebarSection({
       onDrop={clearDrag}
       onKeyDown={(event) => {
         if (event.key === "Escape") clearDrag();
+      }}
+      onPointerDownCapture={(event) => {
+        // Alert dialogs ignore outside presses by default; this flow allows cancel until submitted.
+        const target = event.target;
+        if (
+          deleteTarget &&
+          !deletePendingRef.current &&
+          target instanceof Element &&
+          target.closest(
+            '[data-slot="alert-dialog-viewport"], [data-slot="alert-dialog-backdrop"]',
+          ) &&
+          !target.closest('[data-slot="alert-dialog-popup"]')
+        )
+          setDeleteTarget(null);
       }}
       onDragLeave={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInsertion(null);
@@ -543,7 +536,11 @@ export function WorkstreamSidebarSection({
             controller={controller}
             summary={summaries?.get(item.id) ?? emptySummary}
             dragging={draggedId === item.id}
-            onDeleted={() => focusAfterRemoval(item.id)}
+            confirmingDelete={deleteTarget?.id === item.id}
+            onDeleteRequested={() => {
+              removedRef.current = false;
+              setDeleteTarget({ id: item.id, name: item.name });
+            }}
             onDragStart={(event) => {
               if (
                 event.target instanceof Element &&
@@ -588,6 +585,48 @@ export function WorkstreamSidebarSection({
           {!unassignedCollapsed ? renderMembers(null) : null}
         </section>
       </div>
+      {deleteTarget ? (
+        <AlertDialog
+          open
+          onOpenChange={(open, details) => {
+            if (!open && deletePendingRef.current) details.cancel();
+            else if (!open) setDeleteTarget(null);
+          }}
+        >
+          <AlertDialogPopup
+            initialFocus={cancelDeleteRef}
+            finalFocus={() => (removedRef.current ? false : undefined)}
+          >
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete “{deleteTarget.name}”?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Threads move to Unassigned. No threads are deleted. This cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <Button
+                ref={cancelDeleteRef}
+                variant="outline"
+                disabled={deletePending}
+                onClick={() => setDeleteTarget(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={
+                  deletePending ||
+                  !state.canCreate ||
+                  !state.workstreams.some((entry) => entry.id === deleteTarget.id)
+                }
+                onClick={() => void confirmDeletion()}
+              >
+                {deletePending ? "Deleting…" : "Delete Workstream"}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
+      ) : null}
     </div>
   );
 }
