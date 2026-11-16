@@ -1,3 +1,4 @@
+import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
@@ -17,8 +18,6 @@ import {
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   type DraftId,
-  composerFileMatchesReattachMarker,
-  composerFileNeedsReattach,
   useComposerDraftStore,
 } from "../../composerDraftStore";
 import { type PendingUserInput } from "../../session-logic";
@@ -41,7 +40,6 @@ import { copiedComposerAttachmentFile } from "~/lib/copiedComposerAttachments";
 import { countQuestionAttachments, questionAttachmentDraftId } from "../../questionAttachments";
 import { collectInlineContextIds } from "../../lib/composerContextReferences";
 import { elementContextToPreviewAnnotation } from "../../lib/elementContext";
-import { orchestrationEnvironment } from "~/state/orchestration";
 import { pendingDraftWork } from "./pendingDraftWork";
 import { readComposerImageBytes } from "./composerAttachmentFiles";
 import { randomUUID } from "~/lib/utils";
@@ -53,7 +51,6 @@ import {
   type ComposerDraftContextRecords,
   uploadedContextRecordFromDraft,
 } from "../composerContextPresentation";
-import { useAtomCommand } from "../../state/use-atom-command";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { countPreparingComposerImages } from "./preparingComposerImages";
@@ -90,12 +87,10 @@ export function useComposerContextImport(input: {
   readonly composerImages: ReadonlyArray<ComposerImageAttachment>;
   readonly composerFilesRef: ChatComposerProps["composerFilesRef"];
   readonly promptRef: RefObject<string>;
-  readonly pendingThreadImportsRef: RefObject<Map<string, number>>;
   readonly addComposerFilesToDraft: (files: ComposerFileAttachment[]) => string[];
 }) {
   const {
     environmentId,
-    linkedEnvironments,
     activeThread,
     activeThreadId,
     composerDraftTarget,
@@ -106,9 +101,7 @@ export function useComposerContextImport(input: {
     pendingUserInputs,
     composerContextRecords,
     composerImages,
-    composerFilesRef,
     promptRef,
-    pendingThreadImportsRef,
     addComposerFilesToDraft,
   } = input;
   const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
@@ -120,14 +113,12 @@ export function useComposerContextImport(input: {
   const addComposerDraftPreviewAnnotation = useComposerDraftStore(
     (store) => store.addPreviewAnnotation,
   );
-  const addComposerDraftThreadContexts = useComposerDraftStore((store) => store.addThreadContexts);
+  const captureThreadContexts = useThreadReferenceCapture(attachmentDraftTarget, questionAttachmentTarget);
+  const captureComposerThreadContexts = useThreadReferenceCapture(composerDraftTarget);
   const addComposerDraftEnvironmentContexts = useComposerDraftStore(
     (store) => store.addEnvironmentContexts,
   );
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, { reportFailure: false });
-  const loadThreadTranscript = useAtomCommand(orchestrationEnvironment.threadTranscript, {
-    reportFailure: false,
-  });
   const countReservedAttachments = () => {
     const questionRequest = pendingUserInputs[0];
     const otherQuestionKeys =
@@ -148,11 +139,9 @@ export function useComposerContextImport(input: {
       (draft?.images.length ?? 0) +
       (draft?.files.length ?? 0) +
       countPreparingComposerImages(attachmentTargetKey) +
-      (pendingThreadImportsRef.current.get(attachmentTargetKey) ?? 0) +
       countQuestionAttachments(otherQuestionKeys)
     );
   };
-  const countReservedAttachmentsStable = useStableCallback(countReservedAttachments);
   const runAttachmentImport = async (
     record: Extract<ComposerContextRecord, { kind: "image" | "file" }>,
     localId: string,
@@ -215,25 +204,6 @@ export function useComposerContextImport(input: {
     // The draft these bytes belong to may have been sent or switched away from while they
     // downloaded. Dropping them here keeps them out of whatever draft is open now.
     if (attachmentTargetKeyRef.current !== importTargetKey) return;
-    const replacesFileMarker =
-      record.kind === "file" &&
-      composerFilesRef.current.some(
-        (candidate) =>
-          composerFileNeedsReattach(candidate) &&
-          composerFileMatchesReattachMarker(candidate, {
-            name: record.name,
-            mimeType: file.type,
-            sizeBytes: file.size,
-          }),
-      );
-    if (
-      !replacesFileMarker &&
-      (pendingThreadImportsRef.current.get(importTargetKey) ?? 0) > 0 &&
-      countReservedAttachments() >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS
-    ) {
-      fail("The attachment limit has been reached.");
-      return;
-    }
     if (record.kind === "image") {
       const accepted = addComposerDraftImages(
         attachmentDraftTarget,
@@ -393,13 +363,6 @@ export function useComposerContextImport(input: {
           break;
         }
         case "thread": {
-          // The agent reads threads on its own server and the machines it links to; a pasted
-          // thread from any other machine is dropped.
-          if (
-            record.environmentId !== environmentId &&
-            !linkedEnvironments.has(record.environmentId)
-          )
-            break;
           // Threads reuse their destination record by identity, reminting only on an ID collision.
           const threads = getComposerDraft(threadDraftTarget)?.threadContexts ?? [];
           const attached = threads.find(
@@ -411,7 +374,8 @@ export function useComposerContextImport(input: {
             (threads.some((thread) => thread.contextId === record.contextId)
               ? { ...record, contextId: toKindScopedComposerContextId("thread", randomUUID()) }
               : record);
-          addComposerDraftThreadContexts(threadDraftTarget, [imported], {
+          const capture = threadDraftTarget === attachmentDraftTarget ? captureThreadContexts : captureComposerThreadContexts;
+          capture([imported], {
             appendReference: false,
           });
           rewritten.set(record.contextId, imported.contextId);
@@ -453,9 +417,7 @@ export function useComposerContextImport(input: {
   const importContextFragmentStable = useStableCallback(importContextFragment);
 
   return {
-    loadThreadTranscript,
     countReservedAttachments,
-    countReservedAttachmentsStable,
     importContextRecords,
     importContextFragment,
     importContextFragmentStable,
