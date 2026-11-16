@@ -36,9 +36,7 @@ const fixture = (failure?: ServerSettingsError | Projections.ProjectionStoreRead
               Effect.sync(() => {
                 threadReads++;
               }).pipe(
-                Effect.andThen(
-                  Effect.fail(new Projections.ProjectionStoreReadError({ threadId })),
-                ),
+                Effect.andThen(Effect.fail(new Projections.ProjectionStoreReadError({ threadId }))),
               ),
           }),
         ),
@@ -55,29 +53,31 @@ const runTest = <A, E>(program: Effect.Effect<A, E, Config.ServerConfig | SqlCli
   program.pipe(Effect.provide(testLayer), Effect.scoped);
 
 describe("owner retirement proposal failures", () => {
-  it.effect("reports unavailable thread metadata with the known target and an actionable hold", () =>
-    runTest(
-      Effect.gen(function* () {
-        const f = yield* fixture();
-        const report = yield* f.action({ action: "propose" });
-        expect(report.counts).toEqual({ removed: 0, kept: 0, failed: 1 });
-        expect(report.entries).toMatchObject([
-          {
-            outcome: "failed",
-            threadId,
-            path: worktreePath,
-            threadTitle: null,
-            projectPath: null,
-            retirement: {
-              state: "held",
-              fingerprint: null,
-              reasonCodes: ["thread_metadata_unavailable"],
-              details: [{ nextAction: expect.stringContaining("thread's metadata lookup") }],
+  it.effect(
+    "reports unavailable thread metadata with the known target and an actionable hold",
+    () =>
+      runTest(
+        Effect.gen(function* () {
+          const f = yield* fixture();
+          const report = yield* f.action({ action: "propose" });
+          expect(report.counts).toEqual({ removed: 0, kept: 0, failed: 1 });
+          expect(report.entries).toMatchObject([
+            {
+              outcome: "failed",
+              threadId,
+              path: worktreePath,
+              threadTitle: null,
+              projectPath: null,
+              retirement: {
+                state: "held",
+                fingerprint: null,
+                reasonCodes: ["thread_metadata_unavailable"],
+                details: [{ nextAction: expect.stringContaining("thread's metadata lookup") }],
+              },
             },
-          },
-        ]);
-      }),
-    ),
+          ]);
+        }),
+      ),
   );
 
   it.effect("preserves the settings error before candidate metadata or evaluation", () =>

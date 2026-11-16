@@ -669,7 +669,9 @@ const cleanupFixture = (
             if (threadId === threadReadFailure)
               return Effect.fail(new ProjectionStore.ProjectionStoreReadError({ threadId }));
             return Effect.sync(() => {
-              const thread = [...threads, ...deletedThreads].find((thread) => thread.id === threadId);
+              const thread = [...threads, ...deletedThreads].find(
+                (thread) => thread.id === threadId,
+              );
               if (!thread) throw new Error(`Missing synthetic thread ${threadId}`);
               return thread;
             });
@@ -2345,7 +2347,9 @@ describe("storage cleanup reports and local file policies", () => {
           },
         ]);
         expect(fixture.settingsReads() - reads).toBe(1);
-        expect(yield* fixture.fs.readFileString(`${fixture.worktree}/tracked.txt`)).toBe("original\n");
+        expect(yield* fixture.fs.readFileString(`${fixture.worktree}/tracked.txt`)).toBe(
+          "original\n",
+        );
         expect(
           (yield* fixture.command(fixture.repo, ["branch", "--list", "feature"])).stdout,
         ).toContain("feature");
@@ -2407,7 +2411,10 @@ describe("storage cleanup reports and local file policies", () => {
           ]);
           expect(fixture.settingsReads() - reads).toBe(1);
           if (failure === "missing-project") {
-            const sole = yield* fixture.service.retirement({ action: "propose", threadId: brokenId });
+            const sole = yield* fixture.service.retirement({
+              action: "propose",
+              threadId: brokenId,
+            });
             expect(sole.counts).toEqual({ removed: 0, kept: 0, failed: 1 });
             expect(sole.entries[0]?.retirement?.reasonCodes).toEqual(["project_metadata_missing"]);
           }
