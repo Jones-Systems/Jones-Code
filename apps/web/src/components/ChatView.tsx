@@ -1,3 +1,4 @@
+import { PanelFindScope, openFocusedPanelFind } from "../jones/panelFind/PanelFind";
 import { useThreadFamily } from "../state/threads";
 import type { EnvironmentContextRecord } from "@t3tools/contracts";
 import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
@@ -2728,6 +2729,7 @@ export default function ChatView(props: ChatViewProps) {
         if (!event.repeat) copyActiveThreadReference();
       },
       "chat.find": () => {
+        if (openFocusedPanelFind()) return;
         if (!isServerThread || serverConfig?.threadFind !== true || activeThreadKey === null)
           return false;
         openThreadFind(activeThreadKey);
@@ -3306,9 +3308,28 @@ export default function ChatView(props: ChatViewProps) {
         />
       )}
       {rightPanelControlsAtRoot && !embedded ? panelLayoutControls : null}
-      <div
+      <PanelFindScope
+        label="thread"
+        resetKey={activeThreadKey ?? "draft"}
+        enabled={!rightPanelMaximized}
+        data-find-default
+        nativeFind={
+          threadFindEnabled && activeThreadKey
+            ? {
+                open: () => openThreadFind(activeThreadKey),
+                active: isThreadFindActive,
+                dismiss: () => {
+                  closeThreadFind();
+                  focusComposerStable();
+                },
+                close: () => {
+                  if (isThreadFindActive) closeThreadFind();
+                },
+              }
+            : undefined
+        }
         className={cn(
-          "flex min-h-0 min-w-0 flex-col overflow-x-hidden",
+          "relative flex min-h-0 min-w-0 flex-col overflow-x-hidden",
           rightPanelMaximized ? "w-0 flex-none" : "flex-1",
         )}
         data-chat-column-maximized-away={rightPanelMaximized ? "true" : "false"}
@@ -4013,7 +4034,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddTerminalContext={addTerminalContextToDraftStable}
           />
         )}
-      </div>
+      </PanelFindScope>
 
       {rightPanelPresent && activeThreadRef && !embedded ? (
         <ChatRightPanel

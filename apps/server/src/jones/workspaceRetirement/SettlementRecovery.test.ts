@@ -139,7 +139,9 @@ it.effect.each(["unsettled", "time", "branch", "replacement", "legacy"] as const
               outcome_json: string;
             }>`SELECT outcome_json FROM jones_workspace_retirement_intents`;
             expect(JSON.parse(rows[0]!.outcome_json).reasonCodes).toEqual([
-              "settlement_incarnation_unverified",
+              mode === "replacement"
+                ? "target_incarnation_changed"
+                : "settlement_incarnation_unverified",
             ]);
           }
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);

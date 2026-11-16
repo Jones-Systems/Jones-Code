@@ -21,3 +21,15 @@ export function settlementAdmission(input: {
     ? ({ decision: "evaluate", reason: null } as const)
     : ({ decision: "propose", reason: "settlement_retirement_disabled" } as const);
 }
+
+// Missing historical metadata cannot issue a script or grant automatic removal.
+export function legacySettlementAdmission(input: {
+  settledAt: number;
+  now: number;
+  execute: boolean;
+  ownerConfirmed: boolean;
+}): string | null {
+  if (!Number.isFinite(input.settledAt) || input.now - input.settledAt < SETTLE_SCRIPT_TIMEOUT_MS)
+    return "settlement_intent_missing";
+  return input.execute && !input.ownerConfirmed ? "legacy_settlement_confirmation_required" : null;
+}

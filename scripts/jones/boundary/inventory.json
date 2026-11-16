@@ -3621,7 +3621,18 @@
     "apps/web/src/components/BranchToolbarEnvironmentSelector.tsx": "accepted-shared",
     "apps/web/src/hooks/useAddProjectTargets.ts": "accepted-shared",
     "apps/web/src/components/settings/EnvironmentRoutesList.browser.test.tsx": "jones-tests-in-upstream",
-    "apps/web/src/components/ui/select.tsx": "accepted-shared"
+    "apps/web/src/components/ui/select.tsx": "accepted-shared",
+    "apps/server/src/jones/workspaceRetirement/NativeObservation.node-test.mjs": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/NativeObservation.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/NativeObservation.testkit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/ProcessCoverage.node-test.mjs": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/ProcessCoverage.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/ProcessCoverage.testkit.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/panel-find.json": "jones-owned",
+    "apps/desktop/src/window/DesktopApplicationMenu.ts": "accepted-shared",
+    "apps/web/src/components/AppSidebarLayout.tsx": "accepted-shared",
+    "apps/web/src/components/RightPanelTabs.tsx": "accepted-shared",
+    "apps/web/src/components/preview/PreviewPanelShell.tsx": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
