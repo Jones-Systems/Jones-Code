@@ -262,7 +262,7 @@ describe("Workstream options and header ordering", () => {
       .element(page.getByRole("menuitem", { name: "Move up", exact: true }))
       .toHaveAttribute("aria-disabled", "true");
     await expect
-      .element(page.getByRole("menuitem", { name: "Lifecycle Active", exact: true }))
+      .element(page.getByRole("menuitem", { name: "Workstream state Active", exact: true }))
       .toBeVisible();
     await userEvent.click(page.getByRole("menuitem", { name: "Rename", exact: true }));
     await userEvent.fill(page.getByRole("textbox", { name: "Workstream name" }), "Renamed");
@@ -305,6 +305,14 @@ describe("Workstream options and header ordering", () => {
     await expect.element(page.getByText("5 of 12 shown", { exact: true })).toBeVisible();
     await userEvent.click(page.getByRole("menuitemradio", { name: "10", exact: true }));
     await expect.element(page.getByRole("menu")).toBeVisible();
+    const choices = document.querySelector('[aria-label="Default visible threads"]')!;
+    expect(choices.textContent?.replace(/\s/g, "")).toBe("5·10·15");
+    const selected = choices.querySelector('[aria-checked="true"]')!;
+    const unselected = choices.querySelector('[aria-checked="false"]')!;
+    expect(getComputedStyle(selected).backgroundColor).not.toBe(
+      getComputedStyle(unselected).backgroundColor,
+    );
+    expect(selected.getBoundingClientRect().width).toBeGreaterThanOrEqual(24);
     await expect.element(page.getByText("10 of 12 shown", { exact: true })).toBeVisible();
     expect(alpha.querySelectorAll("[data-menu-member]")).toHaveLength(10);
     await userEvent.click(page.getByRole("menuitemradio", { name: "15", exact: true }));
@@ -447,25 +455,29 @@ describe("Workstream options and header ordering", () => {
     using setup = fixture();
     await using _screen = await render(setup.ui);
     await options();
-    await userEvent.click(page.getByRole("menuitem", { name: "Lifecycle Active", exact: true }));
+    await userEvent.click(
+      page.getByRole("menuitem", { name: "Workstream state Active", exact: true }),
+    );
     await expect
       .element(page.getByRole("menuitemradio", { name: "Active", exact: true }))
       .toHaveAttribute("aria-checked", "true");
     expect(
-      [
-        ...document.querySelectorAll('[aria-label="Workstream lifecycle"] [role="menuitemradio"]'),
-      ].map((element) => element.textContent),
+      [...document.querySelectorAll('[aria-label="Workstream state"] [role="menuitemradio"]')].map(
+        (element) => element.textContent,
+      ),
     ).toEqual(["Planned", "Active", "Paused", "Completed", "Deferred", "Abandoned"]);
     await userEvent.click(page.getByRole("menuitemradio", { name: "Active", exact: true }));
     await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
     expect(setup.controller.setLifecycle).not.toHaveBeenCalled();
     await options();
-    await userEvent.click(page.getByRole("menuitem", { name: "Lifecycle Active", exact: true }));
+    await userEvent.click(
+      page.getByRole("menuitem", { name: "Workstream state Active", exact: true }),
+    );
     await userEvent.click(page.getByRole("menuitemradio", { name: "Paused", exact: true }));
     expect(setup.controller.setLifecycle).toHaveBeenCalledWith("menu-Alpha", "paused");
     await options();
     await expect
-      .element(page.getByRole("menuitem", { name: "Lifecycle Paused", exact: true }))
+      .element(page.getByRole("menuitem", { name: "Workstream state Paused", exact: true }))
       .toBeVisible();
   });
 
