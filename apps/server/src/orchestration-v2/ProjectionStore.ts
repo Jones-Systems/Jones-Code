@@ -1,3 +1,6 @@
+import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
+import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
+import { byThread as dependencyRosterByThread } from "../jones/threadResultDependencies/Projection.ts";
 import type { ProjectThreadAwarenessV2Input } from "@t3tools/shared/agentAwareness";
 import { applyOrchestrationV2ThreadVisit, pendingGuestMessageCount } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
@@ -1957,7 +1960,14 @@ function isActivityRunForShell(
   return isInterruptibleRunForShell(run) || run.status === "waiting";
 }
 
+function runtimeIdentityForShell(thread: OrchestrationV2ThreadProjection["thread"],
+  providerThreads: ReadonlyArray<OrchestrationV2ProviderThread>) {
+  return providerThreads.find((provider) => provider.id === thread.activeProviderThreadId &&
+    provider.appThreadId === thread.id && provider.providerInstanceId === thread.providerInstanceId)?.runtimeIdentity;
+}
+
 type ShellThreadState = {
+  readonly runtimeIdentity: OrchestrationV2ThreadShell["runtimeIdentity"];
   readonly thread: OrchestrationV2ThreadProjection["thread"];
   readonly latestRunId: RunId | null;
   readonly latestRunStatus: OrchestrationV2ShellThreadStatus;
@@ -2152,6 +2162,7 @@ function shellFromState(input: {
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
     hasActionableProposedPlan: input.state.hasActionableProposedPlan,
     pendingBackgroundTasks: input.state.pendingBackgroundTasks,
+    ...(input.state.runtimeIdentity === undefined ? {} : { runtimeIdentity: input.state.runtimeIdentity }),
     providerInstanceHistory: input.state.providerInstanceHistory,
     goal: input.state.goal,
     itemCount: input.state.itemCount,
@@ -2202,6 +2213,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
   ProjectionStoreV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const resultDependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
 
     // SQLite uses the partial conversation index of migration 082 only for this exact predicate.
     const CONVERSATION_INDEX_EXCLUDED_TYPES = sql.literal(
@@ -8354,6 +8366,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           `;
             if (rows.length === 0) return [];
             const threadIds = rows.map((row) => ThreadId.make(row.thread_id));
+            const dependenciesByThreadId = dependencyRosterByThread(yield* resultDependencies.dependencies(threadId));
             const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
               yield* pendingBackgroundDataByThreadId({
                 providerThreadRows: yield* selectShellProviderThreadRows(threadIds),
@@ -8403,6 +8416,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       latestRunId === null || status === "idle"
                         ? null
                         : { id: latestRunId, ordinal: 0, status },
+                    dependencies: dependenciesByThreadId.get(thread.id),
                     providerThreads: providerThreadsByThreadId.get(thread.id) ?? [],
                     turnItems: pendingTurnItemsByThreadId.get(thread.id) ?? [],
                     activeProviderThreadId: thread.activeProviderThreadId,
@@ -8490,6 +8504,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       /* Runs once per shell row; the enclosing snapshot or thread read owns the span. */
       Effect.fnUntraced(function* (input: {
         readonly row: ShellThreadRow;
+        readonly dependenciesByThreadId: ReturnType<typeof dependencyRosterByThread>;
         readonly runsByThreadId: ReadonlyMap<ThreadId, Map<RunId, ShellRun>>;
         readonly itemCountsByThreadId: ReadonlyMap<ThreadId, Map<RunId, number>>;
         readonly shellItemCountsByThreadId: ReadonlyMap<
@@ -8615,6 +8630,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     ordinal: 0,
                     status: latestRunStatus,
                   },
+            dependencies: input.dependenciesByThreadId.get(thread.id),
             providerThreads: providerThreadsByThreadId.get(thread.id) ?? [],
             turnItems: pendingTurnItemsByThreadId.get(thread.id) ?? [],
             activeProviderThreadId: thread.activeProviderThreadId,
@@ -8662,6 +8678,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           latestUserAuthoredMessageAt,
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
           pendingBackgroundTasks,
+          runtimeIdentity: runtimeIdentityForShell(thread, providerThreadsByThreadId.get(thread.id) ?? []),
           providerInstanceHistory: providerInstanceHistoryForShell({
             threadId: thread.id,
             providerThreads: providerThreadsByThreadId.get(thread.id) ?? [],
@@ -8740,7 +8757,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ),
         ),
       ]);
+      const dependencyRows = yield* resultDependencies.dependencies();
       return {
+        dependencyRows,
         targetThreadIds,
         threadRows,
         runRows,
@@ -8753,6 +8772,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     });
 
     const decodeShellSnapshot = Effect.fn("ProjectionStore.decodeShellSnapshot")(function* ({
+      dependencyRows,
       targetThreadIds,
       threadRows,
       runRows,
@@ -8769,9 +8789,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       const shellItemCountsByThreadId = shellItemCountMap(shellItemCountRows);
       const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
         yield* pendingBackgroundDataByThreadId({ providerThreadRows, pendingTurnItemRows });
+      const dependenciesByThreadId = dependencyRosterByThread(dependencyRows);
       const states = yield* Effect.forEach(threadRows, (row) =>
         shellThreadStateFromRow({
           row,
+          dependenciesByThreadId,
           runsByThreadId,
           itemCountsByThreadId,
           shellItemCountsByThreadId,
@@ -8844,7 +8866,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
 
     const getAgentAwarenessSnapshot = Effect.fn("ProjectionStore.getAgentAwarenessSnapshot")(
       function* (threadId?: ThreadId) {
-        const { threadRows, providerThreadRows, pendingTurnItemRows, sequenceRows } =
+        const { threadRows, providerThreadRows, pendingTurnItemRows, sequenceRows, dependencyRows } =
           yield* sql.withTransaction(
             Effect.gen(function* () {
               const threadRows = yield* selectShellThreadRows(
@@ -8869,14 +8891,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT MAX(sequence) AS snapshot_sequence FROM orchestration_events
               WHERE application_event_version = 2 AND aggregate_kind = 'thread'
             `;
-              return { threadRows, providerThreadRows, pendingTurnItemRows, sequenceRows };
+              const dependencyRows = yield* resultDependencies.dependencies(threadId);
+              return { threadRows, providerThreadRows, pendingTurnItemRows, sequenceRows, dependencyRows };
             }),
           );
         const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
           yield* pendingBackgroundDataByThreadId({ providerThreadRows, pendingTurnItemRows });
+        const dependenciesByThreadId = dependencyRosterByThread(dependencyRows);
         const threads = yield* Effect.forEach(threadRows, (row) =>
           shellThreadStateFromRow({
             row,
+            dependenciesByThreadId,
             // Awareness never consumes timeline counts or inherited fork history.
             runsByThreadId: new Map(),
             itemCountsByThreadId: new Map(),
@@ -9248,9 +9273,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
               yield* pendingBackgroundDataByThreadId({ providerThreadRows, pendingTurnItemRows });
 
+            const dependenciesByThreadId = dependencyRosterByThread(yield* resultDependencies.dependencies(threadId));
             const states = yield* Effect.forEach([...rowsByThreadId.values()], (row) =>
               shellThreadStateFromRow({
                 row,
+                dependenciesByThreadId,
                 runsByThreadId,
                 itemCountsByThreadId,
                 shellItemCountsByThreadId,

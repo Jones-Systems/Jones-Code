@@ -1,3 +1,4 @@
+import { buildAppIdentityInstructions } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import { pipe } from "effect/Function";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
@@ -855,7 +856,12 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
               device: input.deviceToolsAvailable ?? false,
             },
           )
-        : undefined;
+        : {
+            jones_code_identity: {
+              kind: "application" as const,
+              value: buildAppIdentityInstructions(),
+            },
+          };
     const additionalContext =
       t3Context === undefined && Object.keys(appContext).length === 0
         ? undefined

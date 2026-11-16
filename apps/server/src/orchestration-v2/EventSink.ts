@@ -1,8 +1,39 @@
+import type { HoldReservation, RefusalReason } from "../jones/startRefusal/model.ts";
+import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
+import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
+import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
+import { ChangedThreads } from "../jones/threadResultDependencies/ChangeTracking.ts";
+import { acceptEvents as acceptDependencyEvents } from "../jones/threadResultDependencies/TransactionHooks.ts";
+import type { OpenRequest, WakeCommit } from "../jones/threadResultDependencies/DependencyCommit.ts";
+import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
+import type { CodexFailoverCommitContext } from "../jones/codexFailover/CodexFailover.ts";
+import { makeSettlementRestoreStore } from "../jones/settlementRestore/store.ts";
+import { makeQueueHoldStore, acceptQueueHoldEvents, type QueueHoldOrigin, type QueueHoldIntent } from "../jones/orchestration/QueueHoldStore.ts";
+import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
+import * as StartRefusal from "../jones/startRefusal/Store.ts";
+import * as RemoteSendReceipts from "../jones/orchestration/RemoteSendReceiptStore.ts";
+import { recordSelfSettlementProjectRemaining, type SelfSettlementProjectRemaining } from "../jones/settlementOrigins/projectRemaining.ts";
+import * as RuntimeEvidenceGuard from "../jones/orchestration/RuntimeEvidenceGuard.ts";
+import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
+import {
+  revalidateRuntimeUseAttachmentBeforePublication,
+  validateRuntimeUseAttachmentPublication,
+} from "../jones/cleanup/RuntimeUseAttachment.ts";
+import * as RetirementEvents from "../jones/workspaceRetirement/EventIntegration.ts";
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
+import * as WorkspaceProvenanceStore from "../jones/workspaceLifecycle/TransitionStore.ts";
+import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
+import * as NativeCreationRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
+import { identityForRequest } from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   CommandId,
   type OrchestrationV2Run,
   OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
+  OrchestrationV2ProviderRef,
+  type ProviderRuntimeEvidenceCapture,
+  type RequestedRuntimeIdentity,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   OrchestrationV2StoredEvent,
@@ -29,7 +60,7 @@ import * as SqlError from "effect/sql/SqlError";
 
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventStore.ts";
-import { projectStoredEventForWire } from "./WireProjection.ts";
+import { isPublicStoredOrchestrationEvent, projectStoredEventForWire } from "./WireProjection.ts";
 import { makeRunOutcomeRecorder, type RunOutcome } from "./RunMetrics.ts";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
@@ -78,9 +109,37 @@ const CurrentProviderBatch = Context.Reference<ProviderBatchPublication | undefi
   "t3/orchestration-v2/EventSink/CurrentProviderBatch",
   { defaultValue: () => undefined },
 );
+interface RuntimeWriteContext {
+  readonly skipUnchangedProviderNodes?: boolean;
+  readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
+  readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
+  readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
+  readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
+  readonly runtimeIdentityObservation?: RequestedRuntimeIdentity;
+  readonly runtimeIdentityBoundary?: {
+    readonly expectedGeneration: string | null;
+    readonly expectedActiveProviderThreadId?: ProviderThreadId;
+    readonly expectedProviderThreadIdentity?: Pick<OrchestrationV2ProviderThread,
+      "id" | "appThreadId" | "driver" | "providerInstanceId" | "providerSessionId" | "nativeThreadRef">;
+  };
+  readonly settleRunOnLostRuntimeEvidence?: boolean;
+}
 
 export interface EventSinkV2Shape {
+  readonly readStoppedRuntime: (provider: OrchestrationV2ProviderThread) =>
+    Effect.Effect<import("@t3tools/contracts").ProviderRuntimeBinding | null, EventSinkV2Error>;
+  readonly hasStoppedRuntime: (binding: import("@t3tools/contracts").ProviderRuntimeBinding) =>
+    Effect.Effect<boolean, EventSinkV2Error>;
+  readonly supersededTerminalTrace: ReturnType<typeof SupersededTerminalTrace.make>;
+  readonly writeHistoricalTerminal: (input: HistoricalTerminalHistory.HistoricalTerminalInput) => Effect.Effect<{
+    readonly handled: boolean; readonly persisted?: boolean; readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
+  }, EventSinkV2Error>;
   /** Items that are not provider snapshots, such as a consumer's own control items, never batch. */
+  readonly assertRuntimeStopStartAllowed: (input: Parameters<ReturnType<typeof RuntimeStop.makeRuntimeStopMethods>["assertStartAllowed"]>[0]) => Effect.Effect<void, EventSinkV2Error>;
+  readonly readRuntimeStop: (commandId: CommandId) => Effect.Effect<Effect.Success<ReturnType<ReturnType<typeof RuntimeStop.makeRuntimeStopMethods>["readState"]>>, EventSinkV2Error>;
+  readonly startRuntimeStop: (commandId: CommandId, target: import("@t3tools/contracts").CurrentRuntimeStopTarget,
+    revalidate: Effect.Effect<void, RuntimeStop.RuntimeStopError>) => Effect.Effect<boolean, EventSinkV2Error>;
+  readonly completeRuntimeStop: (commandId: CommandId, result: "stopped" | "unknown") => Effect.Effect<void, EventSinkV2Error>;
   readonly consumeProviderEvents: <A extends { readonly type: string }, E, R, E2, R2>(
     source: Stream.Stream<A, E, R>,
     process: (event: A) => Effect.Effect<void, E2, R2>,
@@ -97,7 +156,8 @@ export interface EventSinkV2Shape {
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | EventSinkV2Error, R>;
 
-  readonly write: (input: {
+  readonly write: (input: RuntimeWriteContext & {
+    readonly startRefusalHold?: HoldReservation;
     /** Return no events if another thread owns this native session at commit time. */
     readonly unlessNativeThreadOwned?: Pick<
       OrchestrationV2ProviderThread,
@@ -107,7 +167,9 @@ export interface EventSinkV2Shape {
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
-  readonly writeWithEffects: (input: {
+  readonly writeWithEffects: (input: RuntimeWriteContext & {
+    readonly startRefusalHold?: HoldReservation;
+    readonly queueHold?: QueueHoldIntent;
     /**
      * Rebuilds each run.updated from the stored row with only its delegatedCompletion replaced.
      * The batch must not also change that run's lifecycle.
@@ -122,7 +184,8 @@ export interface EventSinkV2Shape {
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
-  readonly writeIfRunCurrent: (input: {
+  readonly writeIfRunCurrent: (input: RuntimeWriteContext & {
+    readonly startRefusalReason?: RefusalReason;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly threadId: ThreadId;
@@ -144,7 +207,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   /** Commits only if the expected attempt and ordinal still own the provider thread, protecting newer attempts. */
-  readonly writeIfProviderThreadOwner: (input: {
+  readonly writeIfProviderThreadOwner: (input: RuntimeWriteContext & {
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly providerThreadId: ProviderThreadId;
@@ -193,6 +256,19 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly nativeCreation?: {
+      readonly claimId: string;
+      readonly command: import("@t3tools/contracts").OrchestrationV2Command;
+    };
+    readonly selfSettlementRevalidate?: Effect.Effect<void, unknown>;
+    readonly selfSettlementProjectRemaining?: SelfSettlementProjectRemaining;
+    readonly remoteSend?: RemoteSendReceipts.SendCommitContext;
+    readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
+    readonly resultRequest?: OpenRequest;
+    readonly dependencyWake?: WakeCommit;
+    readonly threadTitle?: ThreadTitleCommitContext;
+    readonly codexFailover?: CodexFailoverCommitContext;
+    readonly settlementRestore?: { readonly settleCommandId: CommandId };
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
@@ -271,12 +347,38 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const captureCommittedProvenance = yield* WorkspaceProvenance.optionalCommittedCapture;
+    const provenance = yield* Effect.serviceOption(WorkspaceProvenanceStore.ProvenanceStore);
+    const admission = yield* Effect.serviceOption(UpdateAdmissionFence.UpdateAdmissionFence);
+    if (Option.isSome(admission)) yield* admission.value.attach;
+    const nativeCreation = yield* Effect.serviceOption(NativeCreationRepository.NativeCreationRepository);
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const historicalTerminals = yield* HistoricalTerminalHistory.make;
+    const supersededTerminalTrace = SupersededTerminalTrace.make();
+    const runtimeEvidenceGuard = RuntimeEvidenceGuard.makeRuntimeEvidenceGuard(sql);
+    const startRefusals = yield* Effect.serviceOption(StartRefusal.StartRefusals);
+    const tables = makeJonesTablePresence(sql);
+    const dependencies = makeDependencyStore(sql, tables,
+      Option.isSome(startRefusals) ? startRefusals.value.establish : undefined);
+    const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
+    const settlementRestores = makeSettlementRestoreStore(sql, tables);
+    const queueHolds = makeQueueHoldStore(sql, tables);
+    const remoteSendReceipts = RemoteSendReceipts.makeRemoteSendReceiptStore(sql, tables);
+    const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, tables);
+    const stopError = (cause: unknown) => new EventSinkWriteError({ eventCount: 0, cause });
     const projectStore = yield* ProjectStore.ProjectStoreV2;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
+    const enqueueEffects = Effect.fnUntraced(function* (effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>,
+      events: ReadonlyArray<OrchestrationV2DomainEvent>) {
+      if (Option.isSome(admission)) yield* admission.value.admit(effects, events);
+      for (const effect of effects)
+        if (effect.request.type === "provider-turn.start")
+          yield* runtimeStops.assertStartAllowed({ threadId: effect.threadId, runId: effect.request.runId });
+      yield* effectOutbox.enqueue(effects);
+    });
     const liveEvents = yield* PubSub.unbounded<OrchestrationV2StoredEvent>();
     const liveEventsByType = new Map<
       OrchestrationV2DomainEvent["type"],
@@ -318,6 +420,8 @@ const layerBase: Layer.Layer<
       publish: (committed: A) => Effect.Effect<void>,
     ) =>
       Effect.uninterruptibleMask((restore) => {
+        const changedThreadIds = new Set<ThreadId>();
+        let dependencySequence = 0;
         let holdsLane = false;
         const takeLane = publishLane.take(1).pipe(
           Effect.andThen(
@@ -331,9 +435,16 @@ const layerBase: Layer.Layer<
         // every subscriber must hear about it before this writer can exit.
         // Otherwise a failed child run can leave its parent's task running.
         return sql
-          .withTransaction(Effect.tap(restore(transaction), () => takeLane))
+          .withTransaction(restore(transaction).pipe(
+            Effect.provideService(ChangedThreads, changedThreadIds),
+            Effect.tap(() => changedThreadIds.size === 0 ? Effect.void : dependencies.sequence.pipe(
+              Effect.tap((sequence) => Effect.sync(() => { dependencySequence = sequence; })))),
+            Effect.tap(() => takeLane)))
           .pipe(
             Effect.tap(publish),
+            Effect.tap(() => changedThreadIds.size > 0 && Option.isSome(dependencyChanges)
+              ? dependencyChanges.value.publish({ threadIds: [...changedThreadIds], sequence: dependencySequence })
+              : Effect.void),
             Effect.ensuring(
               Effect.suspend(() => (holdsLane ? publishLane.release(1) : Effect.void)),
             ),
@@ -386,6 +497,194 @@ const layerBase: Layer.Layer<
         });
       });
 
+    const guardRuntimeIdentity = Effect.fn("EventSink.guardRuntimeIdentity")(function* (
+      input: Pick<
+        Parameters<EventSinkV2Shape["write"]>[0],
+        | "events"
+        | "historicalTerminal"
+        | "runtimeEvidence"
+        | "runtimeIdentityObservation"
+        | "runtimeIdentityBoundary"
+        | "runtimeIdentityRequest"
+        | "runtimeIdentityPreviousRequest"
+      > & {
+        readonly effects?: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
+        readonly settleRunOnLostRuntimeEvidence?: boolean;
+      },
+    ) {
+      if (input.historicalTerminal !== undefined) {
+        if (
+          input.runtimeIdentityBoundary !== undefined ||
+          input.runtimeIdentityObservation !== undefined ||
+          input.runtimeIdentityRequest !== undefined ||
+          input.runtimeIdentityPreviousRequest !== undefined ||
+          (input.effects?.length ?? 0) > 0
+        )
+          return null;
+        const historical = yield* historicalTerminals.select(input.historicalTerminal);
+        if (HistoricalTerminalHistory.isHistoricalTerminalRejection(historical)) {
+          yield* SupersededTerminalTrace.recordTerminalRejection(
+            supersededTerminalTrace,
+            input.historicalTerminal.event,
+            historical.reason,
+          );
+          return null;
+        }
+        if (historical !== "ordinary") return [historical];
+      }
+      const capture = input.runtimeEvidence;
+      const update = input.events.find((event) => event.type === "provider-thread.updated");
+      if (input.runtimeIdentityBoundary !== undefined) {
+        if (update?.type !== "provider-thread.updated") return null;
+        const records = yield* projectionStore.getThreadRecords(update.threadId, [
+          "providerThreads",
+        ]);
+        const current =
+          records.providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
+        const expectedIdentity = input.runtimeIdentityBoundary.expectedProviderThreadIdentity;
+        if (
+          expectedIdentity !== undefined &&
+          (expectedIdentity.id !== update.payload.id ||
+            expectedIdentity.appThreadId !== update.threadId ||
+            current === null ||
+            current.id !== expectedIdentity.id ||
+            current.appThreadId !== expectedIdentity.appThreadId ||
+            current.driver !== expectedIdentity.driver ||
+            current.providerInstanceId !== expectedIdentity.providerInstanceId ||
+            current.providerSessionId !== expectedIdentity.providerSessionId ||
+            (current.nativeThreadRef === null || expectedIdentity.nativeThreadRef === null
+              ? current.nativeThreadRef !== expectedIdentity.nativeThreadRef
+              : !Schema.toEquivalence(OrchestrationV2ProviderRef)(
+                  current.nativeThreadRef,
+                  expectedIdentity.nativeThreadRef,
+                )))
+        )
+          return null;
+        if (
+          (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== undefined &&
+            (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== update.payload.id ||
+              records.thread.activeProviderThreadId !==
+                input.runtimeIdentityBoundary.expectedActiveProviderThreadId)) ||
+          (capture !== undefined && RuntimeEvidenceGuard.runtimeEvidenceMismatch(current, capture) !== undefined) ||
+          (current?.runtimeIdentity?.runtimeGeneration ?? null) !==
+            input.runtimeIdentityBoundary.expectedGeneration ||
+          (current !== null &&
+            (current.appThreadId !== update.payload.appThreadId ||
+              current.providerInstanceId !== update.payload.providerInstanceId ||
+              current.driver !== update.payload.driver))
+        )
+          return null;
+        return input.events.map((event) =>
+          event.type === "provider-thread.updated" && event.payload.id === update.payload.id
+            ? {
+                ...event,
+                payload: {
+                  ...event.payload,
+                  runtimeIdentity:
+                    event.payload.runtimeIdentity === undefined
+                      ? undefined
+                      : {
+                          ...event.payload.runtimeIdentity,
+                          evidenceRevision: (current?.runtimeIdentity?.evidenceRevision ?? 0) + 1,
+                        },
+                },
+              }
+            : event,
+        );
+      }
+      if (capture === undefined)
+        return yield* runtimeEvidenceGuard.retainStoredIdentity(input.events);
+      const current =
+        (yield* projectionStore.getThreadRecords(capture.threadId, [
+          "providerThreads",
+        ])).providerThreads.find((thread) => thread.id === capture.providerThreadId) ?? null;
+      const mismatch = RuntimeEvidenceGuard.runtimeEvidenceMismatch(current, capture);
+      if (mismatch !== undefined || current === null)
+        return yield* runtimeEvidenceGuard.rejected({
+          capture,
+          current,
+          reason: mismatch ?? "provider_thread_missing",
+          events: input.events,
+          settleRunOnLostEvidence:
+            input.settleRunOnLostRuntimeEvidence === true &&
+            input.runtimeIdentityRequest === undefined &&
+            input.runtimeIdentityObservation === undefined,
+        });
+      const identity = current.runtimeIdentity!;
+      if (
+        input.runtimeIdentityRequest !== undefined &&
+        capture.evidenceRevision !== identity.evidenceRevision
+      ) {
+        const previous = input.runtimeIdentityPreviousRequest;
+        if (
+          previous === undefined ||
+          identity.requested.providerInstanceId !== previous.providerInstanceId ||
+          identity.requested.providerDriver !== previous.providerDriver ||
+          identity.requested.model !== previous.model ||
+          identity.requested.serviceTier !== previous.serviceTier
+        ) {
+          yield* runtimeEvidenceGuard.reportRejection({
+            capture,
+            reason: "requested_identity_changed",
+            events: input.events,
+          });
+          return null;
+        }
+      }
+      if (input.runtimeIdentityObservation !== undefined) {
+        const requested = input.runtimeIdentityObservation;
+        if (
+          identity.requested.providerInstanceId !== requested.providerInstanceId ||
+          identity.requested.providerDriver !== requested.providerDriver ||
+          identity.requested.model !== requested.model ||
+          identity.requested.serviceTier !== requested.serviceTier ||
+          identity.evidenceRevision !== capture.evidenceRevision
+        ) {
+          yield* runtimeEvidenceGuard.reportRejection({
+            capture,
+            reason: "observation_stale",
+            events: input.events,
+          });
+          return null;
+        }
+      }
+      return input.events.map((event) =>
+        event.type === "provider-thread.updated" && event.payload.id === current.id
+          ? {
+              ...event,
+              payload: {
+                ...event.payload,
+                runtimeIdentity:
+                  input.runtimeIdentityObservation === undefined
+                    ? input.runtimeIdentityRequest === undefined
+                      ? identity
+                      : {
+                          ...identityForRequest(input.runtimeIdentityRequest, identity),
+                          evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
+                        }
+                    : {
+                        ...identity,
+                        observed: event.payload.runtimeIdentity!.observed,
+                        evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
+                      },
+              },
+            }
+          : event,
+      );
+    });
+
+    // Compare inside the guarded writer transaction, after runtime evidence validation.
+    const filterUnchangedProviderNodes = Effect.fnUntraced(function* (
+      events: ReadonlyArray<OrchestrationV2DomainEvent>,
+    ) {
+      const changed: Array<OrchestrationV2DomainEvent> = [];
+      for (const event of events) {
+        if (event.type !== "node.updated" || !(yield* projectionStore.isNodeStored(event.payload)))
+          changed.push(event);
+      }
+      return changed;
+    });
+
     const normalizeEvents = (events: ReadonlyArray<OrchestrationV2DomainEvent>) => {
       const runOrdinals = new Map(
         events.flatMap((event) =>
@@ -411,10 +710,37 @@ const layerBase: Layer.Layer<
 
     const applyStoredEvents =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
-      Effect.fnUntraced(function* (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) {
+      Effect.fnUntraced(function* (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>, origin?: QueueHoldOrigin) {
+        for (const { event } of storedEvents) {
+          if (event.type === "provider-session.attached")
+            yield* validateRuntimeUseAttachmentPublication(event.threadId, event.payload.id).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+        }
+        yield* RetirementEvents.events(sql, storedEvents.map((stored) => stored.event));
+        yield* settlementRestores.capture(storedEvents, projectionStore.getThread);
         yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
           concurrency: 1,
         });
+        if (Option.isSome(provenance))
+          yield* provenance.value.events(storedEvents.map((stored) => stored.event)).pipe(
+            Effect.catch((cause) => Effect.logWarning("Workspace provenance facts held", { reason: cause.reason })),
+          );
+        if (Option.isSome(startRefusals)) {
+          for (const stored of storedEvents) {
+            const event = stored.event;
+            if ((event.type !== "run.created" && event.type !== "run.updated") || event.payload.activeAttemptId === null ||
+              (event.payload.status !== "starting" && event.payload.status !== "preparing")) continue;
+            const message = yield* projectionStore.getRunMessage(event.threadId, event.payload.id);
+            if (message?.delegatedCompletion !== undefined)
+              yield* startRefusals.value.establish({ threadId: event.threadId, runId: event.payload.id,
+                attemptId: event.payload.activeAttemptId }, "delegated_completion", stored.sequence);
+          }
+          yield* startRefusals.value.events(storedEvents);
+        }
+        yield* dependencies.wakes.events(storedEvents);
+        yield* acceptDependencyEvents(dependencies, storedEvents.map((stored) => stored.event));
+        yield* acceptQueueHoldEvents(queueHolds, storedEvents.map((stored) => stored.event), origin);
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const now = DateTime.formatIso(yield* DateTime.now);
@@ -473,10 +799,20 @@ const layerBase: Layer.Layer<
         "orchestration_v2.thread_id": input.events[0]?.threadId ?? null,
       });
 
+      for (const event of input.events) {
+        if (event.type === "provider-session.attached")
+          yield* revalidateRuntimeUseAttachmentBeforePublication(event.threadId, event.payload.id).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+      }
+
       const batch = yield* CurrentProviderBatch;
       if (batch !== undefined) batch.eventCount += input.events.length;
       const { committed } = yield* commitThenPublish(
         Effect.gen(function* () {
+          if (input.startRefusalHold !== undefined &&
+            (Option.isNone(startRefusals) || !(yield* startRefusals.value.validateReservation(input.startRefusalHold))))
+            return { accepted: false, committed: [], outcomes: [] };
           // Check ownership in the same transaction that claims the native session.
           const imported = input.unlessNativeThreadOwned;
           if (imported?.nativeThreadRef != null) {
@@ -489,28 +825,35 @@ const layerBase: Layer.Layer<
                 AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${imported.nativeThreadRef.nativeId}
               LIMIT 1
             `;
-            if (owners.length > 0) return { committed: [], outcomes: [] };
+            if (owners.length > 0) return { accepted: false, committed: [], outcomes: [] };
           }
           // Checkpoint capture can finish after a cohort writer reads its parent run.
           // Merge in this transaction so the event log and projection keep that completion.
           const events = input.updateDelegatedCompletionOnly
             ? yield* updateDelegatedCompletionOnly(input.events, () => true)
             : input.events;
+          const identityEvents = yield* guardRuntimeIdentity({ ...input, events });
+          if (identityEvents === null) return { accepted: false, committed: [], outcomes: [] };
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
-              ? yield* guardUserInputCancellations(events)
-              : events,
+              ? yield* guardUserInputCancellations(identityEvents)
+              : identityEvents,
           );
           const committed = yield* eventStore.append({
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-            events: normalized,
-          });
-          const outcomes = yield* applyStoredEvents(committed);
-          yield* effectOutbox.enqueue(input.effects);
-          return { committed, outcomes };
+            events: input.skipUnchangedProviderNodes === true
+              ? yield* filterUnchangedProviderNodes(normalized) : normalized,
+          }).pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
+          const outcomes = yield* applyStoredEvents(committed, { queueHold: input.queueHold });
+          if (input.startRefusalHold !== undefined && Option.isSome(startRefusals))
+            yield* startRefusals.value.reserve(input.startRefusalHold, committed.at(-1)!.sequence);
+          yield* enqueueEffects(input.effects, committed.map((stored) => stored.event));
+          return { accepted: true, committed, outcomes };
         }).pipe(Effect.withTracerEnabled(false)),
-        ({ committed, outcomes }) =>
+        ({ accepted, committed, outcomes }) =>
           Effect.gen(function* () {
+            if (!accepted) return;
+            historicalTerminals.rememberCommitted(input.effects, committed);
             if (input.effects.length > 0) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
@@ -573,22 +916,31 @@ const layerBase: Layer.Layer<
               }
             }
 
+            const identityEvents = yield* guardRuntimeIdentity(input);
+            if (identityEvents === null) return { committed: false as const,
+              storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent> };
             const normalized = yield* normalizeEvents(
               input.guardPendingUserInputCancellations === true
-                ? yield* guardUserInputCancellations(input.events)
-                : input.events,
+                ? yield* guardUserInputCancellations(identityEvents)
+                : identityEvents,
             );
             const storedEvents = yield* eventStore.append({
               ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-              events: normalized,
-            });
+              events: input.skipUnchangedProviderNodes === true
+                ? yield* filterUnchangedProviderNodes(normalized) : normalized,
+            }).pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
             const outcomes = yield* applyStoredEvents(storedEvents);
-            yield* effectOutbox.enqueue(input.effects ?? []);
+            if (input.startRefusalReason !== undefined && input.expectedStatus === "starting" && Option.isSome(startRefusals))
+              yield* startRefusals.value.certify({ threadId: input.threadId, runId: input.runId,
+                attemptId: input.activeAttemptId }, input.startRefusalReason, storedEvents,
+                { certified: dependencies.wakes.certified });
+            yield* enqueueEffects(input.effects ?? [], storedEvents.map((stored) => stored.event));
             return { committed: true as const, storedEvents, outcomes };
           }),
           (result) =>
             Effect.gen(function* () {
               if (!result.committed) return;
+              historicalTerminals.rememberCommitted(input.effects ?? [], result.storedEvents);
               if (input.effects !== undefined && input.effects.length > 0) {
                 yield* effectOutbox.notifyAvailable(input.effects.length);
               }
@@ -638,15 +990,19 @@ const layerBase: Layer.Layer<
             };
           }
 
+          const identityEvents = yield* guardRuntimeIdentity(input);
+          if (identityEvents === null) return { committed: false as const,
+            storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent> };
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
-              ? yield* guardUserInputCancellations(input.events)
-              : input.events,
+              ? yield* guardUserInputCancellations(identityEvents)
+              : identityEvents,
           );
           const storedEvents = yield* eventStore.append({
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-            events: normalized,
-          });
+            events: input.skipUnchangedProviderNodes === true
+              ? yield* filterUnchangedProviderNodes(normalized) : normalized,
+          }).pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           const outcomes = yield* applyStoredEvents(storedEvents);
           return { committed: true as const, storedEvents, outcomes };
         }),
@@ -674,7 +1030,7 @@ const layerBase: Layer.Layer<
           }
 
           const normalized = yield* normalizeEvents(events);
-          const storedEvents = yield* eventStore.append({ events: normalized });
+          const storedEvents = yield* eventStore.append({ events: normalized }).pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           const outcomes = yield* applyStoredEvents(storedEvents);
           return { committed: true as const, storedEvents, outcomes };
         }),
@@ -754,6 +1110,7 @@ const layerBase: Layer.Layer<
           );
         }
         const storedEvents = yield* eventStore.readByCommandId({ commandId }).pipe(
+          Stream.filter(isPublicStoredOrchestrationEvent),
           Stream.runCollect,
           Effect.map((events): ReadonlyArray<OrchestrationV2StoredEvent> => Array.from(events)),
         );
@@ -765,6 +1122,32 @@ const layerBase: Layer.Layer<
     ) {
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
+          let originalRemoteSend: Effect.Success<ReturnType<typeof remoteSendReceipts.forCommit>>;
+          if (input.remoteSend !== undefined) {
+            const capture = input.remoteSend;
+            if (input.commandType !== "message.dispatch" || capture.commandId !== input.commandId || capture.threadId !== input.threadId)
+              return yield* new RemoteSendReceipts.RemoteSendReceiptError({ reason: "acceptance_envelope_conflict" });
+            originalRemoteSend = yield* remoteSendReceipts.forCommit(capture);
+            const target = yield* projectionStore.getThread(input.threadId);
+            yield* RemoteSendReceipts.assertTargetBirth(capture, target.createdAt);
+          }
+          yield* runtimeStops.assertIdentity(input.commandId, input.runtimeStop);
+          if (input.runtimeStop !== undefined) {
+            if (input.commandType !== "provider-session.detach" || input.threadId !== input.runtimeStop.identity.request.threadId ||
+              input.effects.length !== 1 || input.effects[0]?.request.type !== "provider-session.detach" ||
+              input.effects[0].request.runtimeStopCommandId !== input.commandId)
+              return yield* new RuntimeStop.RuntimeStopError({ reason: "stop_acceptance_envelope_conflict" });
+            yield* input.runtimeStop.revalidate;
+          }
+          if (input.effects.some((effect) => effect.nativeCreationExecutionReference !== undefined &&
+            (input.nativeCreation === undefined || effect.commandId !== input.commandId || effect.threadId !== input.threadId ||
+              effect.nativeCreationExecutionReference.claimId !== input.nativeCreation.claimId ||
+              effect.nativeCreationExecutionReference.stageCommandId !== input.commandId ||
+              effect.nativeCreationExecutionReference.effectId !== effect.id)) ||
+            (input.nativeCreation !== undefined && input.effects.some((effect) =>
+              effect.request.type === "provider-turn.start" && effect.nativeCreationExecutionReference === undefined)))
+            return yield* new NativeCreationRepository.NativeCreationRepositoryError({ code: "unresolved_claim",
+              message: "Native queued effect differs from its acceptance envelope." });
           const reserved = yield* commandReceipts.insertIfAbsent({
             commandId: input.commandId,
             threadId: input.threadId,
@@ -775,9 +1158,24 @@ const layerBase: Layer.Layer<
             error: null,
           });
           if (!reserved) {
+            if (input.remoteSend !== undefined && originalRemoteSend === undefined)
+              return yield* new RemoteSendReceipts.RemoteSendReceiptError({ reason: "accepted_receipt_unavailable" });
             const existing = yield* existingCommandResult(input.commandId);
+            if (input.nativeCreation !== undefined) {
+              const boundary = existing.storedEvents.at(-1);
+              if (Option.isNone(nativeCreation) || nativeCreation.value.recordExecutionAcceptance === undefined ||
+                boundary === undefined || existing.receipt.threadId !== input.threadId ||
+                existing.receipt.commandType !== input.commandType || existing.receipt.status !== "accepted")
+                return yield* new NativeCreationRepository.NativeCreationRepositoryError({ code: "unresolved_claim",
+                  message: "Native receipt retry has no original native acceptance owner." });
+              yield* nativeCreation.value.recordExecutionAcceptance({ ...input.nativeCreation,
+                eventId: boundary.event.id, sequence: boundary.sequence });
+            }
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
+          if (originalRemoteSend !== undefined)
+            return yield* new RemoteSendReceipts.RemoteSendReceiptError({ reason: "accepted_receipt_replay_required" });
+          if (input.selfSettlementRevalidate !== undefined) yield* input.selfSettlementRevalidate;
 
           // Planning does not lock the source. Once deletion commits, maintenance
           // can remove its checkpoints, so a new fork must not revive that history.
@@ -811,6 +1209,10 @@ const layerBase: Layer.Layer<
             }
           }
 
+          if (input.codexFailover?.revalidate)
+            input = { ...input, events: yield* input.codexFailover.revalidate(input) };
+          if ((input.commandType === "message.dispatch" || input.commandType === "thread.create") && Option.isSome(startRefusals))
+            yield* startRefusals.value.admit(input.events);
           const runId = input.updateDelegatedCompletionOnlyRunId;
           const normalized = yield* normalizeEvents(
             runId === undefined
@@ -820,20 +1222,48 @@ const layerBase: Layer.Layer<
           const storedEvents = yield* eventStore.append({
             commandId: input.commandId,
             events: normalized,
-          });
+          }).pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           // A Stop that changes nothing can still queue the stop of its delegated tasks.
           const sequence =
             storedEvents.at(-1)?.sequence ??
-            (input.effects.length === 0
-              ? undefined
-              : yield* eventStore.latestSequence({ threadId: input.threadId }));
+            (yield* eventStore.latestSequence({ threadId: input.threadId }));
           if (sequence === undefined) {
             return yield* Effect.die(
               new Error(`Command ${input.commandId} produced no orchestration events.`),
             );
           }
-          const outcomes = yield* applyStoredEvents(storedEvents);
-          yield* effectOutbox.enqueue(input.effects);
+          const outcomes = yield* applyStoredEvents(storedEvents, { commandType: input.commandType });
+          if (input.resultRequest !== undefined && ((input.commandType !== "message.dispatch" && input.commandType !== "thread.create") ||
+            input.resultRequest.commandId !== input.commandId || input.resultRequest.targetThreadId !== input.threadId ||
+            !storedEvents.some(({ event }) => event.type === "message.updated" && event.payload.id === input.resultRequest!.messageId)))
+            return yield* Effect.fail(new Error("Result request does not belong to this accepted message."));
+          if (input.dependencyWake !== undefined && ((input.commandType !== "message.dispatch" && input.commandType !== "thread.create") ||
+            input.dependencyWake.waiterThreadId !== input.threadId ||
+            !storedEvents.some(({ event }) => event.type === "message.updated" && event.payload.id === input.dependencyWake!.messageId)))
+            return yield* Effect.fail(new Error("Dependency wake does not belong to this accepted message."));
+          if (input.resultRequest !== undefined) yield* dependencies.open(input.resultRequest);
+          if (input.dependencyWake !== undefined) yield* dependencies.admitWake(input.dependencyWake);
+          yield* acceptDependencyEvents(dependencies, storedEvents.map((stored) => stored.event), input, false);
+          if (input.threadTitle !== undefined) yield* input.threadTitle.accept;
+          if (input.codexFailover?.accept) yield* input.codexFailover.accept(input);
+          if (input.selfSettlementProjectRemaining !== undefined)
+            yield* recordSelfSettlementProjectRemaining(sql, tables, input, input.selfSettlementProjectRemaining);
+          if (input.remoteSend !== undefined) {
+            const records = yield* projectionStore.getThreadRecords(input.threadId, ["runs", "turnItems"],
+              { turnItemTypes: ["user_message"] });
+            let sent = yield* RemoteSendReceipts.acceptedResult(input.remoteSend,
+              { events: storedEvents.map(({ event }) => event), ...records });
+            const dependency = input.resultRequest?.localDependency === undefined ? undefined
+              : yield* dependencies.get(input.resultRequest.localDependency.dependencyId);
+            if (input.remoteSend.dependency !== undefined && (dependency === undefined ||
+              input.remoteSend.dependency.dependencyId !== dependency.dependencyId ||
+              input.remoteSend.dependency.requestId !== dependency.requestId || input.remoteSend.dependency.state !== dependency.state))
+              return yield* new RemoteSendReceipts.RemoteSendReceiptError({ reason: "accepted_dependency_binding_conflict" });
+            if (dependency !== undefined) sent = { ...sent, dependency: { dependencyId: dependency.dependencyId,
+              requestId: dependency.requestId, state: dependency.state } };
+            yield* remoteSendReceipts.record(input.remoteSend, sent);
+          }
+          yield* enqueueEffects(input.effects, storedEvents.map((stored) => stored.event));
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
             commandId: input.commandId,
             threadId: input.threadId,
@@ -844,6 +1274,22 @@ const layerBase: Layer.Layer<
             error: null,
           };
           yield* commandReceipts.upsert(receipt);
+          if (input.nativeCreation !== undefined) {
+            const boundary = storedEvents.at(-1);
+            if (Option.isNone(nativeCreation) || nativeCreation.value.recordExecutionAcceptance === undefined ||
+              input.nativeCreation.command.commandId !== input.commandId ||
+              !("threadId" in input.nativeCreation.command) || input.nativeCreation.command.threadId !== input.threadId ||
+              input.nativeCreation.command.type !== input.commandType || boundary === undefined)
+              return yield* new NativeCreationRepository.NativeCreationRepositoryError({ code: "unresolved_claim",
+                message: "Native acceptance owner is unavailable or differs from the accepted command." });
+            yield* nativeCreation.value.recordExecutionAcceptance({ ...input.nativeCreation,
+              eventId: boundary.event.id, sequence });
+          }
+          if (input.runtimeStop !== undefined) yield* runtimeStops.record(input.runtimeStop);
+          if (input.settlementRestore !== undefined)
+            yield* settlementRestores.recordRestore({ threadId: input.threadId,
+              settleCommandId: input.settlementRestore.settleCommandId, restoreCommandId: input.commandId,
+              restoredAt: input.acceptedAt, sequence });
           const cancelledEffectIds =
             input.cancelUnsettledEffects === undefined
               ? []
@@ -855,11 +1301,15 @@ const layerBase: Layer.Layer<
         }),
         (result) =>
           Effect.gen(function* () {
+            if (result.committed) historicalTerminals.rememberCommitted(input.effects, result.storedEvents);
             yield* effectOutbox.signalCancellations(result.cancelledEffectIds);
             if (result.committed && input.effects.length > 0) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
-            if (result.committed) yield* publishStoredEvents(result.storedEvents, result.outcomes);
+            if (result.committed) {
+              yield* publishStoredEvents(result.storedEvents, result.outcomes);
+              yield* captureCommittedProvenance(result.storedEvents.map((stored) => stored.event));
+            }
           }),
       );
       return {
@@ -980,7 +1430,7 @@ const layerBase: Layer.Layer<
                 if (events.length === 0) {
                   return Stream.empty;
                 }
-                const current = Stream.fromIterable(events);
+                const current = Stream.fromIterable(events.filter(isPublicStoredOrchestrationEvent));
                 const last = events.at(-1)?.sequence ?? input.throughSequence;
                 return events.length < pageSize || last >= input.throughSequence
                   ? current
@@ -1124,6 +1574,77 @@ const layerBase: Layer.Layer<
     );
 
     return EventSinkV2.of({
+      supersededTerminalTrace,
+      writeHistoricalTerminal: (input) => {
+        const attempt = commitThenPublish(
+          Effect.gen(function* () {
+            const committed = yield* historicalTerminals.readCommitted(input);
+            if (committed === "unavailable")
+              return yield* new EventSinkWriteError({ eventCount: 1 });
+            // Return durable proof for the exact-object terminal drain without
+            // publishing the original writer's committed event a second time.
+            if (committed !== undefined)
+              return {
+                handled: true,
+                persisted: true,
+                deferred: false,
+                readback: true,
+                storedEvents: [committed].filter(isPublicStoredOrchestrationEvent),
+                outcomes: [],
+              };
+            const selected = yield* historicalTerminals.select(input);
+            if (selected === "ordinary")
+              return { handled: false, deferred: false, storedEvents: [], outcomes: [] };
+            if (HistoricalTerminalHistory.isHistoricalTerminalRejection(selected)) {
+              yield* SupersededTerminalTrace.recordTerminalRejection(
+                supersededTerminalTrace,
+                input.event,
+                selected.reason,
+              );
+              return {
+                handled: true,
+                deferred: selected.type === "deferred",
+                storedEvents: [],
+                outcomes: [],
+              };
+            }
+            const storedEvents = (yield* eventStore.append({ events: [selected] })).filter(
+              isPublicStoredOrchestrationEvent,
+            );
+            const outcomes = yield* applyStoredEvents(storedEvents);
+            const key = SupersededTerminalTrace.terminalKey(input.event);
+            if (key !== undefined) supersededTerminalTrace.clear(key);
+            return { handled: true, persisted: true, deferred: false, storedEvents, outcomes };
+          }),
+          (result) =>
+            "readback" in result
+              ? Effect.void
+              : publishStoredEvents(result.storedEvents, result.outcomes),
+        );
+        // Even a no-write commit traverses the publication lane. Retry the DB
+        // admission once after an earlier commit has installed its locator.
+        return attempt.pipe(
+          Effect.filterOrElse(
+            (result) => !result.deferred,
+            () => attempt,
+          ),
+          Effect.tapError(() =>
+            SupersededTerminalTrace.recordTerminalRejection(
+              supersededTerminalTrace,
+              input.event,
+              "write_error",
+            ),
+          ),
+          Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 1, cause })),
+        );
+      },
+
+      readStoppedRuntime: (provider) => runtimeStops.readStoppedRuntime(provider).pipe(Effect.mapError(stopError)),
+      hasStoppedRuntime: (binding) => runtimeStops.hasStoppedRuntime(binding).pipe(Effect.mapError(stopError)),
+      assertRuntimeStopStartAllowed: (input) => runtimeStops.assertStartAllowed(input).pipe(Effect.mapError(stopError)),
+      readRuntimeStop: (commandId) => runtimeStops.readState(commandId).pipe(Effect.mapError(stopError)),
+      startRuntimeStop: (commandId, target, revalidate) => runtimeStops.start(commandId, target, revalidate).pipe(Effect.mapError(stopError)),
+      completeRuntimeStop: (commandId, result) => runtimeStops.complete(commandId, result).pipe(Effect.mapError(stopError)),
       consumeProviderEvents: coordinator.consume,
       withProviderBatch,
       write: (input) =>
@@ -1249,6 +1770,7 @@ const layerBase: Layer.Layer<
         ),
       readByCommandId: (input) =>
         eventStore.readByCommandId(input).pipe(
+          Stream.filter(isPublicStoredOrchestrationEvent),
           Stream.mapError(
             (cause) =>
               new EventSinkStreamError({

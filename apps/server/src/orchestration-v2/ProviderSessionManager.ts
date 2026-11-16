@@ -1,3 +1,4 @@
+import * as WorkModeRetention from "../jones/workMode/Retention.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -1240,6 +1241,7 @@ export const layerWithOptions = (
         function* (input: {
           readonly providerSessionId: ProviderSessionId;
           readonly onlyIfIdleGeneration?: number;
+          readonly onlyIfRuntime?: ProviderAdapterV2SessionRuntime;
           readonly keepIfBusyOtherThan?: OwnBusyTurns;
           readonly keepIf?: Effect.Effect<boolean>;
         }): Effect.fn.Return<readonly [Option.Option<LiveSessionEntry>, DateTime.Utc]> {
@@ -1256,9 +1258,10 @@ export const layerWithOptions = (
                   return [existing === undefined ? "gone" : "changed", current] as const;
                 }
                 if (
-                  input.onlyIfIdleGeneration !== undefined &&
+                  (input.onlyIfIdleGeneration !== undefined &&
                   (existing.busyTurns.size > 0 ||
-                    existing.idleGeneration !== input.onlyIfIdleGeneration)
+                    existing.idleGeneration !== input.onlyIfIdleGeneration)) ||
+                  (input.onlyIfRuntime !== undefined && existing.runtime !== input.onlyIfRuntime)
                 ) {
                   return ["kept", current] as const;
                 }
@@ -1341,6 +1344,7 @@ export const layerWithOptions = (
         readonly detachedThreadId?: ThreadId;
         readonly cancelIdleFiber?: boolean;
         readonly onlyIfIdleGeneration?: number;
+          readonly onlyIfRuntime?: ProviderAdapterV2SessionRuntime;
         readonly keepIfBusyOtherThan?: OwnBusyTurns;
         readonly keepIf?: Effect.Effect<boolean>;
         readonly gracefulSubscribers?: boolean;
@@ -1460,6 +1464,12 @@ export const layerWithOptions = (
           ),
         );
 
+      const retainThreadForWorkMode = WorkModeRetention.makeWorkModeRetentionProbe({
+        enabled: Option.isNone(serverSettings) ? Effect.succeed(false) :
+          serverSettings.value.getSettings.pipe(Effect.map((settings) => settings.workModeEnabled)),
+        projection: (threadId) => projectionStore.getThreadProjection(threadId),
+      });
+
       const releaseIfStillIdle = Effect.fn("ProviderSessionManager.releaseIfStillIdle")(
         function* (input: {
           readonly providerSessionId: ProviderSessionId;
@@ -1525,6 +1535,15 @@ export const layerWithOptions = (
               pinnedForMs: now - pinnedSinceMs,
             });
           }
+          const retainForWorkMode = yield* Effect.findFirst(entry.attachedThreadIds, (threadId) =>
+            retainThreadForWorkMode(threadId, input.providerSessionId, probedRuntime.instanceId));
+          if (Option.isSome(retainForWorkMode)) {
+            const latest = (yield* Ref.get(sessions)).get(key);
+            if (latest?.runtime !== probedRuntime || latest.busyTurns.size > 0 ||
+                latest.idleGeneration !== input.generation) return;
+            yield* Effect.sleep(Duration.millis(WorkModeRetention.WORK_MODE_RETENTION_RECHECK_MS));
+            return yield* releaseIfStillIdle(input);
+          }
           // Closing skips the threads' own idle unloads, so archive delivered children first.
           yield* Effect.forEach(
             entry.idleThreadUnloads,
@@ -1543,6 +1562,7 @@ export const layerWithOptions = (
             reason: "idle_timeout",
             cancelIdleFiber: false,
             onlyIfIdleGeneration: input.generation,
+            onlyIfRuntime: probedRuntime,
           }).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.driver-session.idle-release-failed", {
@@ -2036,6 +2056,9 @@ export const layerWithOptions = (
                   : yield* entry.runtime
                       .hasPendingBackgroundWorkForThread(pending.providerThread)
                       .pipe(Effect.catchCause(() => Effect.succeed(false)));
+              if (yield* retainThreadForWorkMode(
+                input.threadId, input.providerSessionId, entry.runtime.instanceId,
+              )) return "work-mode-deferred" as const;
               if (hasPendingWork) return "deferred" as const;
               const child = yield* delegatedChildArchive(input.threadId);
               // Unloading now would miss the archive once the parent takes the result.
@@ -2104,8 +2127,9 @@ export const layerWithOptions = (
             }),
           );
           // Wait outside the lock so the next attach is not blocked.
-          if (outcome === "deferred" && input.archiveOnly !== true) {
-            yield* Effect.sleep(Duration.millis(idleTimeoutMs));
+          if ((outcome === "deferred" || outcome === "work-mode-deferred") && input.archiveOnly !== true) {
+            yield* Effect.sleep(Duration.millis(outcome === "work-mode-deferred"
+              ? WorkModeRetention.WORK_MODE_RETENTION_RECHECK_MS : idleTimeoutMs));
             return yield* unloadIdleThread(input);
           }
         },
@@ -2915,6 +2939,7 @@ export const layerWithOptions = (
               if (stoppedByProvider && Exit.isSuccess(exit)) {
                 yield* releaseEntry({
                   providerSessionId: entry.runtime.providerSessionId,
+                  onlyIfRuntime: entry.runtime,
                   reason: "manual_shutdown",
                   gracefulSubscribers: true,
                 }).pipe(logReleaseFailure(entry.runtime.providerSessionId));
@@ -2940,6 +2965,7 @@ export const layerWithOptions = (
               });
               yield* releaseEntry({
                 providerSessionId: entry.runtime.providerSessionId,
+                onlyIfRuntime: entry.runtime,
                 reason: "runtime_error",
                 detail: makeProviderFailure({ cause }).message,
                 eventStreamCause: cause,
@@ -3206,6 +3232,7 @@ export const layerWithOptions = (
               (entry) =>
                 releaseEntry({
                   providerSessionId: entry.runtime.providerSessionId,
+                  onlyIfRuntime: entry.runtime,
                   reason: "manual_shutdown",
                   detail: `Provider instance ${instanceId} logged out.`,
                 }).pipe(Effect.exit),

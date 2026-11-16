@@ -1,3 +1,4 @@
+import { buildAppIdentityInstructions } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
@@ -186,7 +187,13 @@ describe("CodexAdapterV2 runtime policy", () => {
             assert.equal(params.effort, reasoningEffort);
             // Some Responses providers reject `detailed`; `auto` is the most detailed a model supports.
             assert.equal(params.summary, "auto");
-            assert.equal(params.additionalContext !== undefined, hasT3Mcp === true);
+            assert.isDefined(params.additionalContext);
+            if (hasT3Mcp !== true) {
+              assert.deepEqual(params.additionalContext, {
+                jones_code_identity: { kind: "application", value: buildAppIdentityInstructions() },
+              });
+              assert.notProperty(params.additionalContext, "t3_code_tools");
+            }
           }
         }
       }),
@@ -280,6 +287,7 @@ describe("CodexAdapterV2 runtime policy", () => {
         appContext,
       });
       assert.deepEqual(alone.additionalContext, {
+        jones_code_identity: { kind: "application", value: buildAppIdentityInstructions() },
         "mcp_app_todos_list_todos_item-1": { kind: "untrusted", value: "Filtered to overdue" },
       });
       const withT3 = yield* CodexAdapterV2.buildCodexTurnStartParams({

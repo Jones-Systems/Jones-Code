@@ -1,3 +1,9 @@
+import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
+import { continuityAdmissionRefusal } from "../jones/goals/continuity/admission.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
+import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
+import { startFailureCauseMessage } from "../jones/provider/startFailureMessage.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -135,15 +141,60 @@ const START_GAVE_UP_MESSAGE =
 
 const startFailureMessage = (error: Error): string => {
   const nestedCause = "cause" in error ? error.cause : undefined;
-  return (
-    knownProviderFailureMessage(error) ??
-    (nestedCause instanceof Error
-      ? nestedCause.message
-      : typeof nestedCause === "string"
-        ? nestedCause
-        : error.message)
-  );
+  return knownProviderFailureMessage(error) ?? startFailureCauseMessage(error, nestedCause);
 };
+
+export const probeStartAdmission = Effect.fn("ProviderTurnStartService.probeStartAdmission")(
+  function* (threadId: ThreadId) {
+    const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const goalContinuity = yield* GoalContinuity.GoalContinuity;
+    const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
+    const controlAdmission = yield* ControlAdmission.ControlAdmission;
+    const projection = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+    const provider = projection.providerThreads.find(
+      (candidate) =>
+        candidate.id === projection.thread.activeProviderThreadId &&
+        candidate.providerInstanceId === projection.thread.providerInstanceId,
+    );
+    if (
+      provider === undefined ||
+      projection.thread.archivedAt !== null ||
+      projection.thread.deletedAt !== null ||
+      projection.thread.settledAt !== null
+    )
+      return false;
+    const environmentId = yield* environment.getEnvironmentId;
+    const requirement = yield* goalContinuity.requirementFor(environmentId, threadId);
+    const owner =
+      provider.nativeThreadRef?.nativeId == null
+        ? null
+        : {
+            environmentId,
+            threadId,
+            providerInstanceId: provider.providerInstanceId,
+            providerThreadId: provider.id,
+            driver: provider.nativeThreadRef.driver,
+            nativeThreadId: provider.nativeThreadRef.nativeId,
+          };
+    if (continuityAdmissionRefusal(requirement, owner, false) !== undefined) return false;
+    yield* controlAdmission.assertOpen({
+      instanceId: provider.providerInstanceId,
+      threadId,
+      nativeThreadId: provider.nativeThreadRef?.nativeId ?? null,
+      producer:
+        provider.providerSessionId === null ||
+        provider.runtimeIdentity?.runtimeGeneration === undefined
+          ? null
+          : {
+              instanceId: provider.providerInstanceId,
+              providerSessionId: provider.providerSessionId,
+              runtimeGeneration: provider.runtimeIdentity.runtimeGeneration,
+            },
+    });
+    return true;
+  },
+  Effect.catchCause(() => Effect.succeed(false)),
+);
 
 export interface ProviderTurnStartServiceV2Shape {
   readonly start: (input: {
@@ -523,6 +574,9 @@ export const layer: Layer.Layer<
           ? projection.messages.find((source) => source.id === resumeSource.userMessageId)
           : undefined;
       const providerMessage = unsentResumeMessage ?? message;
+      const preserveNativeConversation =
+        nativeForkTransfer === undefined &&
+        nativeConversationMustBePreserved(providerThread, providerMessage);
       const settleStartFailure = Effect.fn("ProviderTurnStartService.settleStartFailure")(
         function* (failed: {
           readonly signal: string;
@@ -844,10 +898,12 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const userText = projectComposerContextForProvider({
-        text: providerMessage.text,
-        records: providerMessage.context?.records ?? [],
-      });
+      const userText = manualResume && unsentResumeMessage === undefined
+        ? ""
+        : projectComposerContextForProvider({
+            text: providerMessage.text,
+            records: providerMessage.context?.records ?? [],
+          });
       // Native goal commands go verbatim; handoff history waits a turn.
       const goalDriver =
         session.driver === "codex" ||
@@ -1310,6 +1366,17 @@ export const layer: Layer.Layer<
           return loaded;
         }
         if (providerThread.nativeThreadRef === null) {
+          if (preserveNativeConversation || manualResume) {
+            return yield* loadFromProvider(Effect.fail(
+              new ProviderAdapter.ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                providerThreadId: providerThread.id,
+                runId,
+                cause: "The required native conversation is unavailable; a new conversation cannot replace it.",
+              }),
+            ));
+          }
           // Pass the stored provider row for adoption; adapter-minted duplicates make activeProviderThreadId flap.
           return yield* loadFromProvider(
             session.ensureThread({
@@ -1347,6 +1414,16 @@ export const layer: Layer.Layer<
               }),
         );
         if (resumed._tag === "Success") {
+          if ((preserveNativeConversation || manualResume) &&
+              (resumed.success.nativeThreadRef?.nativeId !== providerThread.nativeThreadRef.nativeId ||
+               resumed.success.nativeThreadRef?.driver !== providerThread.nativeThreadRef.driver)) {
+            return yield* loadFromProvider(Effect.fail(
+              new ProviderAdapter.ProviderRuntimeBindingError({
+                driver: session.driver,
+                detail: "The loaded native conversation differs from the required conversation",
+              }),
+            ));
+          }
           const context = handoffContextForThread(resumed.success);
           context.budget = yield* Effect.cached(context.budget);
           resumedHandoffContext = context;
@@ -1363,6 +1440,17 @@ export const layer: Layer.Layer<
             Effect.catchTags({ ContextHandoffBudgetError: () => Effect.succeed(false) }),
           );
           if (fits) return resumed.success;
+          if (preserveNativeConversation || manualResume) {
+            return yield* loadFromProvider(Effect.fail(
+              new ProviderAdapter.ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                providerThreadId: providerThread.id,
+                runId,
+                cause: "The native conversation must be retained; its handoff exceeds the available budget.",
+              }),
+            ));
+          }
           const freshThread = { ...resumed.success, nativeThreadRef: null };
           const freshContext = handoffContextForThread(freshThread);
           const { handoff } = yield* recoveryHandoff;
@@ -1397,6 +1485,19 @@ export const layer: Layer.Layer<
               ),
             );
           }
+        }
+        if (preserveNativeConversation || manualResume ||
+            (resumed._tag === "Failure" && ProviderAdapter.hasUnknownRuntimeBinding(resumed.failure))) {
+          return yield* loadFromProvider(Effect.fail(
+            resumed._tag === "Failure" ? resumed.failure :
+              new ProviderAdapter.ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                providerThreadId: providerThread.id,
+                runId,
+                cause: "Native conversation recovery cannot create a replacement conversation.",
+              }),
+          ));
         }
         resumedHandoffContext = undefined;
         resumedRetryHandoff = [];

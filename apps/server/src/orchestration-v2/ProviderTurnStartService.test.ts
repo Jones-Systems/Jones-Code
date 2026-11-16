@@ -2973,3 +2973,27 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+// A missing projected goal does not establish that the native conversation is disposable.
+for (const cause of [new Error("native resume failed"), new Error("")]) {
+  effectIt.effect(`retains the Codex native identity after resume failure: ${cause.message}`, () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        resumeFailure: new ProviderAdapter.ProviderAdapterResumeThreadError({
+          driver: ProviderDriverKind.make("codex"),
+          providerSessionId: ProviderSessionId.make("new-provider-session"),
+          providerThreadId: ProviderThreadId.make("new-provider-thread"),
+          cause,
+        }),
+      });
+      yield* harness.start;
+      expect(harness.fallbackEnsureThread).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().providerThreads.at(-1)?.nativeThreadRef?.nativeId)
+        .toBe("native-resume-thread");
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().contextHandoffs).toEqual([]);
+    }),
+  );
+}
