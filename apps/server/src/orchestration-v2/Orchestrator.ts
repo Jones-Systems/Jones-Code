@@ -1,3 +1,6 @@
+import * as StartRefusal from "../jones/startRefusal/Store.ts";
+import * as StartRefusalProbe from "../jones/startRefusal/Probe.ts";
+import { acceptedStartWitness } from "../jones/startRefusal/model.ts";
 import type {
   OrchestrationV2ThreadLinkMetadata,
   GuestShareId,
@@ -1555,6 +1558,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
+  const startRefusals = yield* Effect.serviceOption(StartRefusal.StartRefusals);
+  const startRefusalProbe = yield* Effect.serviceOption(StartRefusalProbe.Probe);
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
   const nextTurnItemOrdinal = (
     projection: Pick<OrchestrationV2ThreadProjection, "thread"> &
@@ -2024,6 +2029,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         controls.thread.deletedAt !== null
       )
         return;
+      if (Option.isSome(startRefusals) &&
+          (yield* startRefusals.value.blocked({
+            threadId, parentRunId, generation: delivery.generation, messageId: delivery.messageId,
+          }))) return;
       const messages = yield* projectionStore.getThreadRecords(threadId, ["messages"], {
         messageIds: [delivery.messageId],
       });
@@ -15797,6 +15806,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // Projections already contain historical terminals; replaying them delays startup queue promotion with database size.
   const terminalEventsAfterSequence = yield* eventSink.latestSequence().pipe(Effect.orDie);
+  if (Option.isSome(startRefusals) && Option.isSome(startRefusalProbe)) {
+    const refusals = startRefusals.value;
+    const probe = startRefusalProbe.value;
+    yield* eventSink
+      .stream({ afterSequence: terminalEventsAfterSequence, eventType: "provider-turn.updated" })
+      .pipe(
+        Stream.filter((stored) => acceptedStartWitness(stored) !== undefined),
+        Stream.runForEach((stored) =>
+          threadDispatch
+            .withLock(
+              stored.event.threadId,
+              Effect.gen(function* () {
+                for (const hold of yield* refusals.armedBy(stored)) {
+                  const open = yield* probe.open(hold.threadId);
+                  if (yield* refusals.finishArming(hold, open))
+                    yield* offerDelegatedCompletionDelivery(hold.threadId, hold.parentRunId);
+                }
+              }),
+            )
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Refused delivery remains held", {
+                  threadId: stored.event.threadId,
+                  cause,
+                }),
+              ),
+            ),
+        ),
+        Effect.forkScoped,
+      );
+  }
   // Filter run updates before buffering so blocked queue promotion does not retain unrelated tool bodies.
   yield* eventSink
     .stream({ afterSequence: terminalEventsAfterSequence, eventType: "run.updated" })

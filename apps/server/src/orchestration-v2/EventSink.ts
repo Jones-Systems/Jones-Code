@@ -1,3 +1,4 @@
+import * as StartRefusal from "../jones/startRefusal/Store.ts";
 import {
   CommandId,
   type OrchestrationV2Run,
@@ -275,6 +276,7 @@ const layerBase: Layer.Layer<
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const startRefusals = yield* Effect.serviceOption(StartRefusal.StartRefusals);
     const projectStore = yield* ProjectStore.ProjectStoreV2;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const liveEvents = yield* PubSub.unbounded<OrchestrationV2StoredEvent>();
@@ -415,6 +417,7 @@ const layerBase: Layer.Layer<
         yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
           concurrency: 1,
         });
+        if (Option.isSome(startRefusals)) yield* startRefusals.value.events(storedEvents);
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const now = DateTime.formatIso(yield* DateTime.now);
