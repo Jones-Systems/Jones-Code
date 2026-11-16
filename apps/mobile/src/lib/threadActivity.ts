@@ -1,3 +1,4 @@
+import { threadActivityLabel } from "@t3tools/client-runtime/jones/thread-activity-label";
 import { isWorkModeSentinelMessage } from "@t3tools/shared/jones/workMode";
 import type {
   ThreadPendingApproval,
@@ -242,6 +243,7 @@ type ThreadFeedEntryContent =
     };
 
 export interface ThreadFeedLatestRun {
+  readonly providerActivityStarted?: boolean;
   readonly runId: RunId;
   readonly status: OrchestrationV2RunStatus;
   readonly startedAt: string | null;
@@ -1711,8 +1713,17 @@ export function deriveThreadFeedPresentation(
           row.activities[0]?.projectedItem.item.status === "running"),
     )
   ) {
+    const activityLabel = threadActivityLabel(
+      latestRun?.status,
+      runlessWorkActive,
+      latestRun?.providerActivityStarted,
+    );
     result.push(
-      thinkingRow(activeWorkStartedAt, activeRunId, zen ? liveAnswerPreview(feed) : null),
+      thinkingRow(
+        activeWorkStartedAt,
+        activeRunId,
+        activityLabel === "Thinking" ? (zen ? liveAnswerPreview(feed) : null) : activityLabel,
+      ),
     );
   }
   const checkpointByRunId = new Map<RunId, ThreadCheckpointSummary>();
