@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off -- Captured child callbacks and independent deadline/control transport require Node primitives.
+import { SearchProbeBinding, type SearchProbePort } from "./searchProbeBinding.ts";
 import type {
   DiagnosticEvent,
   DiagnosticSink,
@@ -122,6 +123,7 @@ export class ProcessSlot implements ComputeChild {
   private controlWrites = 0;
   private controlTail: Promise<void> = Promise.resolve();
   private readonly child: NodeChildProcess.ChildProcess;
+  private readonly probes: SearchProbeBinding | undefined;
   readonly bootstrap: Bootstrap;
   private readonly onExit: (cause: unknown) => void;
   private readonly observe: (event: ComputeObservation) => void;
@@ -155,6 +157,7 @@ export class ProcessSlot implements ComputeChild {
     onExit: (cause: unknown) => void,
     observe?: (event: ComputeObservation) => void,
     diagnostic?: DiagnosticSink,
+    probePort?: SearchProbePort,
   ) {
     this.diagnostic = diagnostic;
     this.child = child;
@@ -167,6 +170,11 @@ export class ProcessSlot implements ComputeChild {
     this.input = child.stdin;
     this.output = child.stdout;
     this.control = child.stdio[3] as NodeStream.Duplex;
+    if (probePort) {
+      if (!child.stdio[4]) throw computeFailure("unavailable");
+      this.probes = new SearchProbeBinding(bootstrap, child.stdio[4] as NodeStream.Duplex,
+        probePort, (cause) => this.fail(computeFailure("protocol", cause)));
+    }
     this.exited = new Promise<void>((resolve) => {
       child.once("exit", () => {
         this.exitObserved = true;
@@ -194,12 +202,13 @@ export class ProcessSlot implements ComputeChild {
     observe?: (event: ComputeObservation) => void,
     capture?: (child: ComputeChild) => void,
     diagnostic?: DiagnosticSink,
+    probePort?: SearchProbePort,
   ): Promise<ProcessSlot> {
     const child = NodeChildProcess.spawn(
       command.file,
       [...command.args, bootstrapArgument(bootstrap)],
       {
-        stdio: ["pipe", "pipe", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
         env: command.env,
         windowsHide: true,
       },
@@ -240,7 +249,7 @@ export class ProcessSlot implements ComputeChild {
     }
     let slot: ProcessSlot;
     try {
-      slot = new ProcessSlot(child, bootstrap, onExit, observe, diagnostic);
+      slot = new ProcessSlot(child, bootstrap, onExit, observe, diagnostic, probePort);
     } catch (cause) {
       // Even an unsupported stdio route retains and reaps the exact spawned handle.
       const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
@@ -275,6 +284,7 @@ export class ProcessSlot implements ComputeChild {
   private fail(cause: unknown): void {
     if (this.fault !== undefined) return;
     this.fault = cause;
+    this.probes?.revoke();
     this.pending?.reject(cause);
     for (const ack of this.acknowledgements.values()) ack.reject(cause);
     this.acknowledgements.clear();
@@ -474,12 +484,16 @@ export class ProcessSlot implements ComputeChild {
       if (this.pending?.request.requestId !== request.requestId || this.pending.terminal) return;
       void this.send("cancel", { requestId: request.requestId }).catch((cause) => this.fail(cause));
     };
+    let succeeded = false;
     try {
+      const duration = request.operation === "close" ? LIMITS.destroyMs : LIMITS.jobMs;
+      const deadline = Date.now() + duration;
+      await this.probes?.foregroundBegin(request, performance.now() + duration);
       await this.command(
         "arm",
         {
           requestId: request.requestId,
-          deadline: Date.now() + (request.operation === "close" ? LIMITS.destroyMs : LIMITS.jobMs),
+          deadline,
         },
         `armed:${request.requestId}`,
       );
@@ -511,11 +525,19 @@ export class ProcessSlot implements ComputeChild {
       if (failure !== undefined) throw failure;
       if (!result) throw computeFailure("protocol");
       if (signal?.aborted) throw computeFailure("cancelled");
+      succeeded = true;
       return result;
     } catch (cause) {
       if (!this.pending?.terminal) this.fail(cause);
       throw cause;
     } finally {
+      let probeEndFailure: unknown;
+      try {
+        await this.probes?.foregroundEnd(request, succeeded);
+      } catch (cause) {
+        probeEndFailure = cause;
+        this.fail(cause);
+      }
       const pending = this.pending;
       signal?.removeEventListener("abort", cancel);
       this.pending = undefined;
@@ -532,10 +554,12 @@ export class ProcessSlot implements ComputeChild {
           ? {}
           : { parentContinuationMs: performance.now() - pending.receivedMs }),
       });
+      if (succeeded && probeEndFailure !== undefined) throw probeEndFailure;
     }
   }
   async retire(): Promise<void> {
     this.trace("terminate-request");
+    this.probes?.revoke();
     // Do not infer exit from signal-send success or child.killed. Wait for this captured child's event.
     if (!this.exitObserved) {
       try {

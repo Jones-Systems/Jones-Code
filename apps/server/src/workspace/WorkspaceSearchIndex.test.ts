@@ -21,7 +21,21 @@ import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
-import * as WorkspaceSearchIndex from "./WorkspaceSearchIndex.ts";
+import * as NodeFS from "node:fs";
+import * as NativeRuntime from "../jones/workspace/nativeSearchRuntime.ts";
+import { nativeSearchProbeTestLayer } from "../jones/serverParallelism/nativeWorkspace.testkit.ts";
+import { WorkspaceSearchProbe } from "../jones/serverCompute/searchProbeClient.ts";
+const WorkspaceSearchIndex = {
+  ...NativeRuntime,
+  make: (...args: Parameters<typeof NativeRuntime.make>) => NativeRuntime.make(...args).pipe(
+    Effect.provide(NodeFS.existsSync(args[0]) ? nativeSearchProbeTestLayer(args[0]) :
+      Layer.succeed(WorkspaceSearchProbe, {
+        run: () => Effect.succeed({ exitCode: 128, stdout: "", stderr: "fatal: not a git repository",
+          stdoutTruncated: false, stderrTruncated: false, stdoutInvalidUtf8: false, stderrInvalidUtf8: false }),
+        beginScan: Effect.succeed({ owner: { kind: "scan", epoch: 1 }, end: Effect.void }),
+      })),
+  ),
+};
 
 const testLayer = VcsProcess.layer.pipe(Layer.provideMerge(NodeServices.layer));
 
@@ -542,7 +556,7 @@ function fakeSymlinkFinder(
   };
 }
 
-const listedPaths = (searchIndex: WorkspaceSearchIndex.WorkspaceSearchIndex["Service"]) =>
+const listedPaths = (searchIndex: NativeRuntime.WorkspaceSearchIndex["Service"]) =>
   searchIndex.list().pipe(Effect.map((result) => result.entries.map((entry) => entry.path)));
 
 it.effect("reads symlinks again after the watcher reports a change", () =>

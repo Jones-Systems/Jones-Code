@@ -1,8 +1,5 @@
-import * as StartRefusals from "./jones/startRefusal/Store.ts";
-import * as StartAdmissionProbe from "./jones/startRefusal/Probe.ts";
-import * as GoalContinuity from "./jones/goals/continuity/GoalContinuity.ts";
-import * as GoalContinuityStore from "./jones/goals/continuity/GoalContinuityStore.ts";
-import * as ControlAdmission from "./jones/orchestration/ControlAdmission.ts";
+import * as SearchGitProbe from "./jones/workspace/SearchGitProbe.ts";
+import * as CoreFollowUpOwner from "./jones/orchestration/FollowUpCommandOwnerLayer.ts";
 import * as Scheduler from "./scheduling/Scheduler.ts";
 import * as WorkMode from "./jones/workMode/WorkMode.ts";
 import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
@@ -582,6 +579,7 @@ const layerDevice = DeviceService.layer.pipe(
 // One layer identity for every HTTP/RPC/MCP/scheduled workspace consumer. Placement
 // comes from the same outer ProcessPlacementRuntime context as provider processes.
 const layerServerCompute = ServerCompute.layer.pipe(
+  Layer.provide(SearchGitProbe.layer),
   Layer.provide(
     Layer.effect(
       ServerCompute.ComputeObserver,
@@ -661,17 +659,11 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
   }),
 );
 
-const layerStartAdmission = StartAdmissionProbe.layer.pipe(
-  Layer.provideMerge(StartRefusals.layer),
-  Layer.provideMerge(ControlAdmission.layer),
-  Layer.provide(GoalContinuity.layer.pipe(Layer.provide(GoalContinuityStore.layer))),
-  Layer.provide(ProjectionStoreV2.layer),
-  Layer.provide(ServerEnvironment.layerIdentity),
-);
+const layerStartAdmission = RuntimeLayer.layerStartAdmission;
 
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
   Layer.provide(layerStartAdmission),
-  Layer.provide(layerThreadResultDependencies),
+  Layer.provide(DependencyChanges.layer),
   Layer.provide(UsageLimitSources.layerResetFallback),
   Layer.provide(layerScheduledTaskWebhookOrigin),
   Layer.provide(ProviderUsageAnalytics.layer),
@@ -807,7 +799,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure.pipe(
-    Layer.provide(layerThreadResultDependencies),
+    Layer.provide(DependencyChanges.layer),
   )),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(SecretCheck.layer),
@@ -978,7 +970,10 @@ const layerMakeRoutes = Layer.mergeAll(
       PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
     ),
     // delegate_task to a linked environment, from /mcp and the follower above.
-    Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+    Layer.provide(RemoteDelegation.layer.pipe(
+      Layer.provide(CoreFollowUpOwner.layer),
+      Layer.provide(ProjectionStoreV2.layer),
+    )),
     // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
     Layer.provide(PeerLinkRequests.layer),
     // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
