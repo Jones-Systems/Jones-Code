@@ -92,8 +92,10 @@ export function withNativeSearchProbePort<A>(run: (port: SearchProbePort) => Pro
     return yield* Effect.tryPromise({ try: () => run(searchProbePort(service)), catch: (cause) => cause });
   })).pipe(Effect.provide(VcsProcess.layer), Effect.provide(NodeServices.layer)));
 }
-export function runNativeQualification(options: NativeQualificationOptions) {
-  return withNativeSearchProbePort((probes) => runWithSearchProbe(options, probes));
+export function runNativeQualification(options: NativeQualificationOptions, probes?: SearchProbePort) {
+  return probes === undefined
+    ? withNativeSearchProbePort((captured) => runWithSearchProbe(options, captured))
+    : runWithSearchProbe(options, probes);
 }
 async function runWithSearchProbe(options: NativeQualificationOptions, probes: SearchProbePort) {
   const { count, directory, command } = options;

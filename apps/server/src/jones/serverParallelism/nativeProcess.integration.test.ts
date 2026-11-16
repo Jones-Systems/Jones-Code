@@ -78,7 +78,7 @@ for (const count of [2, 3] as const)
               manifest.runtimeForm === "electron",
             ),
           },
-        });
+        }, probes);
         retired = report.shutdownProved;
         await writeNativeCaseReport(count, report);
         expect(report.productiveOverlapSamples).toBeGreaterThan(0);
@@ -100,7 +100,7 @@ for (const count of [2, 3] as const)
 
 native(
   "guardian retires productive native children after captured parent SIGKILL",
-  async (probes) => {
+  async (_probes) => {
     const scratch = await NodeFSP.realpath(
       await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-parent-loss-")),
     );
@@ -637,7 +637,7 @@ native(
 
 native(
   "private dispatch fails closed for wrong-build",
-  async (probes) => {
+  async (_probes) => {
     const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
     const boot = {
       version: 1,
@@ -664,7 +664,7 @@ native(
 for (const invalid of ["bootstrap", "missing-fd3"] as const)
   native(
     `private dispatch fails closed for ${invalid}`,
-    async (probes) => {
+    async (_probes) => {
       const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
       const boot =
         invalid === "bootstrap"
