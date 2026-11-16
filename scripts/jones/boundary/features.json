@@ -759,9 +759,11 @@
         "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
         "packages/contracts/src/jones/workMode.test.ts",
         "packages/shared/src/jones/workMode.test.ts",
-        "packages/shared/src/serverSettings.test.ts"
+        "packages/shared/src/serverSettings.test.ts",
+        "apps/web/src/jones/workMode/WorkButtonSettings.browser.test.tsx",
+        "apps/web/src/hooks/useSettings.test.ts"
       ],
-      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers. Timing uses persisted inference counters from the current root provider conversation, skips first refreshes older than 90 minutes, and preserves established 55-minute cadence. Sweep timing is cached per shell generation; residency uses the real clock. Restart continuation reuses the Jones keep-warm identity guard so interrupted refreshes never resume ordinary work. The existing upstream restart harness retains this regression to exercise real continuation dispatch and the ordinary-user control. Enabled sweeps cache full shells by the global V2 thread-event watermark, refresh changed state on the next admitted tick, evaluate clock conditions every tick, retry failed reads, and suppress dispatched or acknowledged admission generations."
+      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers. Timing uses persisted inference counters from the current root provider conversation, skips first refreshes older than 90 minutes, and preserves established 55-minute cadence. Sweep timing is cached per shell generation; residency uses the real clock. Restart continuation reuses the Jones keep-warm identity guard so interrupted refreshes never resume ordinary work. The existing upstream restart harness retains this regression to exercise real continuation dispatch and the ordinary-user control. Enabled sweeps cache full shells by the global V2 thread-event watermark, refresh changed state on the next admitted tick, evaluate clock conditions every tick, retry failed reads, and suppress dispatched or acknowledged admission generations. Jones Code settings independently persist sidebar Work-button visibility without changing server Work mode. The existing settings persistence harness retains default/patch decoding and hydration regressions to exercise the real client storage boundary."
     },
     {
       "id": "persistent-host-connections",
@@ -3293,9 +3295,10 @@
         "apps/web/src/jones/workstreams/personalSidebarOrder.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadDrag.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx",
-        "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts"
+        "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
+        "apps/web/src/jones/workstreams/personalRail.test.ts"
       ],
-      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Sidebar navigation follows visible pinned, Workstream and Unassigned order, including collapsed-group route anchors. Thread drop placement plans prospective membership before assignment and preserves other groups. Shared Sidebar edits integrate ordering and placement; Jones presentation owns lifted drag feedback, exact insertion slots, segmented lifecycle options and confirmed deletion."
+      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Sidebar navigation follows visible pinned, Workstream and Unassigned order, including collapsed-group route anchors. Thread drop placement plans prospective membership before assignment and preserves other groups. Shared Sidebar edits integrate ordering and placement; Jones presentation owns lifted drag feedback, exact insertion slots, segmented lifecycle options and confirmed deletion. Native compact headers retain status counts, failure summaries and persisted collapse controls; deterministic muted rails preserve workstream identity."
     },
     {
       "id": "active-workspace-handoff",

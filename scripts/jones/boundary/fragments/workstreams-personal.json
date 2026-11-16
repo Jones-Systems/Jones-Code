@@ -32,6 +32,8 @@
     "apps/web/src/jones/workstreams/personalNotifications.test.ts",
     "apps/web/src/jones/workstreams/personalNotifications.tsx",
     "apps/web/src/jones/workstreams/personalPresentation.ts",
+    "apps/web/src/jones/workstreams/personalRail.test.ts",
+    "apps/web/src/jones/workstreams/personalRail.ts",
     "apps/web/src/jones/workstreams/personalSettings.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalSidebarOrder.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalSidebarOrder.ts",

@@ -396,6 +396,7 @@ export type VoiceTranscriptionDestination = typeof VoiceTranscriptionDestination
 
 export const ClientSettingsSchema = Schema.Struct({
   ...threadActivitySettingsFields,
+  showWorkButton: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   promptsDefaultStage: Schema.Literals(["pending", "queued", "sent"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("pending" as const)),
   ),
@@ -2028,6 +2029,7 @@ export function requiredScopesForProjectMutation(
 
 export const ClientSettingsPatch = Schema.Struct({
   ...threadActivitySettingsPatchFields,
+  showWorkButton: Schema.optionalKey(Schema.Boolean),
   promptsDefaultStage: Schema.optionalKey(Schema.Literals(["pending", "queued", "sent"])),
   notificationMode: Schema.optionalKey(NotificationMode),
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),

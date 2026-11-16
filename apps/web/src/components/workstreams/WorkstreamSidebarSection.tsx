@@ -15,6 +15,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   EllipsisIcon,
+  ChevronDownIcon,
   PaletteIcon,
   PencilIcon,
   TrashIcon,
@@ -48,7 +49,11 @@ import { showPersonalFailure } from "../../jones/workstreams/personalNotificatio
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { PersonalSidebarGroupHeader } from "../../jones/workstreams/PersonalSidebarGroupHeader";
-import type { PersonalThreadSummary } from "../../jones/workstreams/personalPresentation";
+import {
+  formatPersonalThreadCount,
+  type PersonalThreadSummary,
+} from "../../jones/workstreams/personalPresentation";
+import { personalWorkstreamRailColor } from "../../jones/workstreams/personalRail";
 
 import { personalGroupCollapsedKey } from "../../jones/workstreams/personalSidebarOrder";
 
@@ -57,7 +62,13 @@ const lifecycles = ["planned", "active", "paused", "completed", "deferred", "aba
 const lifecycleLabel = (value: string) => value[0]!.toUpperCase() + value.slice(1);
 
 const collapsedSchema = Schema.Boolean;
-const emptySummary: PersonalThreadSummary = { total: 0, running: 0, attention: 0, failed: 0 };
+const emptySummary: PersonalThreadSummary = {
+  total: 0,
+  running: 0,
+  attention: 0,
+  failed: 0,
+  done: 0,
+};
 export function WorkstreamCreateForm({
   controller,
   open,
@@ -162,8 +173,8 @@ function Group({
   return (
     <section
       data-native-workstream={JSON.stringify(item.id)}
-      className={`overflow-hidden rounded-lg border border-sidebar-border/70 border-l-4 bg-sidebar-control-surface/30 ${dragging ? "opacity-50" : ""}`}
-      style={{ borderLeftColor: item.color ?? undefined }}
+      className={`min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""}`}
+      style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
     >
       <div className="flex items-start gap-1 pr-2">
         <div
@@ -176,11 +187,10 @@ function Group({
             collapsed={collapsed}
             onToggle={() => setCollapsed((value) => !value)}
             summary={summary}
-            lifecycle={item.lifecycle}
           />
         </div>
         <div
-          className="mt-1.5 shrink-0"
+          className="shrink-0"
           data-workstream-menu
           draggable={false}
           onDragStart={(event) => {
@@ -587,18 +597,24 @@ export function WorkstreamSidebarSection({
         onDrop={(event) => drop(event, null)}
       >
         {insertion?.afterId === null ? insertionLine : null}
-        <section
-          data-native-workstream="null"
-          className="overflow-hidden rounded-lg border border-sidebar-border/70"
-        >
-          <div className="flex">
-            <PersonalSidebarGroupHeader
-              name="Unassigned"
-              collapsed={unassignedCollapsed}
-              onToggle={() => setUnassignedCollapsed((value) => !value)}
-              summary={unassignedSummary}
+        <section data-native-workstream="null" className="min-w-0">
+          <button
+            type="button"
+            aria-label={`${unassignedCollapsed ? "Expand" : "Collapse"} Unassigned`}
+            aria-description={formatPersonalThreadCount(unassignedSummary.total)}
+            aria-expanded={!unassignedCollapsed}
+            onClick={() => setUnassignedCollapsed((value) => !value)}
+            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          >
+            <ChevronDownIcon
+              aria-hidden
+              className={`size-4 shrink-0 ${unassignedCollapsed ? "-rotate-90" : ""}`}
             />
-          </div>
+            <span className="truncate">Unassigned</span>
+            <span className="ml-auto shrink-0 text-xs tabular-nums">
+              {formatPersonalThreadCount(unassignedSummary.total)}
+            </span>
+          </button>
           {!unassignedCollapsed ? renderMembers(null) : null}
         </section>
       </div>

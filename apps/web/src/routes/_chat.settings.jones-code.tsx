@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { SettingsPageContainer } from "../components/settings/settingsLayout";
+import { WorkButtonSettings } from "../jones/workMode/WorkButtonSettings";
 import { PromptsSettings } from "../jones/workQueue/PromptsSettings";
 
 import { WorkstreamsSetupStatus } from "../jones/workstreams/WorkstreamsSetupStatus";
@@ -7,6 +8,7 @@ import { WorkstreamsSetupStatus } from "../jones/workstreams/WorkstreamsSetupSta
 function JonesCodeSettings() {
   return (
     <SettingsPageContainer>
+      <WorkButtonSettings />
       <PromptsSettings />
       <WorkstreamsSetupStatus />
     </SettingsPageContainer>
