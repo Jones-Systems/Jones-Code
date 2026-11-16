@@ -71,6 +71,7 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as MacPermissions from "../permissions/MacPermissions.ts";
 import * as PreviewManager from "../preview/Manager.ts";
+import * as CompanionConfig from "../jones/previewCompanion/CompanionConfig.ts";
 
 it.effect.each([false, true])(
   "stops backends together before flushing history and cancels Linux registration, stop defect=%s",
@@ -95,6 +96,16 @@ it.effect.each([false, true])(
       const runApp = DesktopApp.program
         .pipe(
           Effect.provide(NodeCrypto.layer),
+          Effect.provideService(CompanionConfig.CompanionConfig, {
+            get: Effect.succeed({
+              enabled: false,
+              environmentId: null,
+              hostId: "startup-fixture",
+              label: "Startup fixture",
+              browserOnly: false,
+            }),
+            set: () => Effect.die("Unexpected companion configuration write"),
+          }),
           Effect.provideService(DesktopAppIdentity.DesktopAppIdentity, {
             resolveUserDataPath: Effect.succeed("/isolated/userdata"),
             configure: record("identity"),
