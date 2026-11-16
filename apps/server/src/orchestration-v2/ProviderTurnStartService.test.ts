@@ -3064,3 +3064,40 @@ effectIt.effect("production Resume holds an unknown original prefix before openi
     expect(harness.startRootRun).not.toHaveBeenCalled();
   }),
 );
+
+effectIt.effect("captured native failure settles the original prepared attempt without claiming unsent proof", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue" });
+    yield* Effect.gen(function* () {
+      const start = yield* ProviderTurnStart.ProviderTurnStartServiceV2;
+      const original = harness.projection().runs.at(-1)!;
+      const fail = yield* start.captureStartFailure!({ threadId: original.threadId, runId: original.id });
+      yield* fail("Original native execution lost authority.");
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(expect.objectContaining({
+        activeAttemptId: original.activeAttemptId, expectedStatus: "starting",
+      }));
+      expect(harness.writeIfRunCurrent.mock.calls.at(-1)?.[0]).not.toHaveProperty("startRefusalReason");
+      expect(harness.open).not.toHaveBeenCalled();
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+effectIt.effect("captured native failure cannot settle a replacement attempt after an authority await", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue" });
+    yield* Effect.gen(function* () {
+      const start = yield* ProviderTurnStart.ProviderTurnStartServiceV2;
+      const projection = harness.projection();
+      const original = projection.runs.at(-1)!;
+      const fail = yield* start.captureStartFailure!({ threadId: original.threadId, runId: original.id });
+      const successor = RunAttemptId.make("replacement-native-attempt");
+      harness.setProjection({ ...projection, runs: projection.runs.map((run) =>
+        run.id === original.id ? { ...run, activeAttemptId: successor } : run) });
+      yield* fail("Old authority failed late.");
+      expect(harness.projection().runs.at(-1)?.activeAttemptId).toBe(successor);
+      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+      expect(harness.events).toEqual([]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);

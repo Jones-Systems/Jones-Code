@@ -1,3 +1,5 @@
+import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
+import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import * as StartRefusals from "../jones/startRefusal/Store.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as StartAdmission from "../jones/provider/StartAdmission.ts";
@@ -202,6 +204,16 @@ export const probeStartAdmission = Effect.fn("ProviderTurnStartService.probeStar
 );
 
 export interface ProviderTurnStartServiceV2Shape {
+  readonly captureStartFailure?: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+  }) => Effect.Effect<(cause: unknown) => Effect.Effect<void, ProviderTurnStartError>, ProviderTurnStartError>;
+  readonly startNative?: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly guard: NativeProvider.NativeProviderExecutionGuard;
+  }) => Effect.Effect<NativeCreationWholeOperationEvidence, ProviderTurnStartError>;
+
   readonly start: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
@@ -488,6 +500,7 @@ export const layer: Layer.Layer<
         readonly threadId: ThreadId;
         readonly runId: RunId;
         readonly willRetry?: boolean;
+        readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
       },
       captureStartingRun: (run: OrchestrationV2Run) => void,
     ) {
@@ -603,6 +616,9 @@ export const layer: Layer.Layer<
       const capturedAdmission = yield* admissionService.value.capture({
         threadId: input.threadId, run, attemptId: attempt.id, providerThread,
       });
+      if (input.nativeCreationGuard !== undefined &&
+          capturedAdmission.nativeCreationGuard !== input.nativeCreationGuard)
+        return yield* admissionError("Native admission did not retain the original executor-issued guard.");
       const goalContinuity = continuityService.value;
       const controlAdmission = controlService.value;
       const environmentId = yield* environmentService.value.getEnvironmentId;
@@ -612,6 +628,8 @@ export const layer: Layer.Layer<
       };
       const assertAdmission = (expected: OrchestrationV2ProviderThread) => Effect.gen(function* () {
         yield* capturedAdmission.revalidate;
+        if (input.nativeCreationGuard !== undefined)
+          yield* NativeProvider.assertNativeProviderStartOperation(input.nativeCreationGuard, input.threadId, runId);
         yield* restartPreparation.value.assertThreadOpen(input.threadId);
         if (stopAdmission.assertRuntimeStopStartAllowed === undefined)
           return yield* admissionError("Durable runtime Stop start admission is unavailable.");
@@ -2138,9 +2156,11 @@ export const layer: Layer.Layer<
       });
     });
 
-    return ProviderTurnStartServiceV2.of({
-      start: Effect.fn("ProviderTurnStartService.start")(
-        function* (input) {
+    const runStart = Effect.fn("ProviderTurnStartService.start")(
+        function* (input: {
+          readonly threadId: ThreadId; readonly runId: RunId; readonly willRetry?: boolean;
+          readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
+        }) {
           let startingRun: OrchestrationV2Run | undefined;
           const captureStartingRun = (run: OrchestrationV2Run) => {
             startingRun = run;
@@ -2209,6 +2229,49 @@ export const layer: Layer.Layer<
                 : new ProviderTurnStartError({ runId: input.runId, cause }),
             ),
           ),
+      );
+
+    const captureStartFailure = Effect.fn("ProviderTurnStartService.captureStartFailure")(
+      function* (input: { readonly threadId: ThreadId; readonly runId: RunId }) {
+        const projection = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+        const run = projection.runs.find((row) => row.id === input.runId);
+        if (run !== undefined && run.status !== "starting") return (_cause: unknown) => Effect.void;
+        const attempt = projection.attempts.find((row) => row.id === run?.activeAttemptId);
+        const rootNode = projection.nodes.find((row) => row.id === run?.rootNodeId);
+        if (run === undefined || attempt === undefined || rootNode === undefined || run.providerThreadId === null)
+          return yield* new ProviderTurnStartError({ runId: input.runId,
+            cause: "Prepared run failure ownership is unavailable." });
+        return (cause: unknown) => Effect.gen(function* () {
+          yield* settleRunBeforeStart({
+            run, attempt, rootNode, turnItems: projection.turnItems,
+            signal: "provider-start-execution-failure", status: "failed", now: yield* DateTime.now,
+            providerInstanceId: run.providerInstanceId, itemProviderThreadId: run.providerThreadId,
+            item: { type: "error", title: "Provider turn failed to start", failure: makeProviderFailure({
+              cause, class: "provider_error",
+              message: "Provider start could not retain its original execution authority.",
+            }) },
+          });
+        }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId: input.runId, cause })));
+      },
+      (effect, input) => effect.pipe(Effect.mapError((cause) =>
+        isProviderTurnStartError(cause) ? cause : new ProviderTurnStartError({ runId: input.runId, cause }))),
+    );
+
+    return ProviderTurnStartServiceV2.of({
+      captureStartFailure,
+      start: runStart,
+      startNative: Effect.fn("ProviderTurnStartService.startNative")(
+        function* (input) {
+          yield* NativeProvider.assertNativeProviderStartOperation(input.guard, input.threadId, input.runId);
+          yield* runStart({ threadId: input.threadId, runId: input.runId, nativeCreationGuard: input.guard });
+          const evidence = NativeProvider.readNativeProviderAcknowledgement(input.guard);
+          if (evidence === undefined)
+            return yield* new ProviderTurnStartError({ runId: input.runId,
+              cause: "Native start did not receive its direct whole-operation acknowledgement." });
+          return evidence;
+        },
+        (effect, input) => effect.pipe(Effect.mapError((cause) =>
+          isProviderTurnStartError(cause) ? cause : new ProviderTurnStartError({ runId: input.runId, cause }))),
       ),
       failStartingRun: Effect.fn("ProviderTurnStartService.failStartingRun")(
         function* ({ threadId, runId, attemptId, rootNodeId }) {
