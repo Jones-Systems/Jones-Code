@@ -24,7 +24,10 @@ it("captures only the parent's binding from a projection containing native child
   const result = selectTransferBindings(input, source, [parent, child]);
   assert.isTrue(result.complete);
   assert.deepEqual(result.providerThreads, [parent]);
-  assert.deepEqual(result.bindings.map((binding) => binding.nativeThreadId), ["native-parent"]);
+  assert.deepEqual(
+    result.bindings.map((binding) => binding.nativeThreadId),
+    ["native-parent"],
+  );
   assert.isFalse(selectTransferBindings(input, source, [child]).complete);
 });
 
@@ -49,11 +52,10 @@ it("accepts a committed replacement session only with its exact provider-thread 
   };
   const selected = { ...input, replacementProviderSessionId: replacement.providerSessionId! };
   assert.isFalse(selectTransferBindings(selected, source, [replacement, child]).complete);
-  const result = selectTransferBindings(
-    { ...selected, providerThreadId: parent.id },
-    source,
-    [replacement, child],
-  );
+  const result = selectTransferBindings({ ...selected, providerThreadId: parent.id }, source, [
+    replacement,
+    child,
+  ]);
   assert.isTrue(result.complete);
   assert.equal(result.bindings[0]!.providerSessionId, parent.providerSessionId);
 });
