@@ -36,6 +36,7 @@
     "apps/web/src/jones/workstreams/personalNative.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalNotifications.test.ts",
     "apps/web/src/jones/workstreams/personalNotifications.tsx",
+    "apps/web/src/jones/workstreams/personalPresentation.test.ts",
     "apps/web/src/jones/workstreams/personalPresentation.ts",
     "apps/web/src/jones/workstreams/personalRail.test.ts",
     "apps/web/src/jones/workstreams/personalRail.ts",

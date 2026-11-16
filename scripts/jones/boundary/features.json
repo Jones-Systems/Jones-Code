@@ -3308,6 +3308,7 @@
         "apps/web/src/jones/workstreams/personalInlineRename.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadWindow.test.ts",
         "apps/web/src/jones/workstreams/personalThreadWindow.browser.test.tsx",
+        "apps/web/src/jones/workstreams/personalPresentation.test.ts",
         "apps/web/src/jones/workstreams/personalStatusFilter.test.ts",
         "apps/web/src/jones/workstreams/personalStatusFilter.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx"
