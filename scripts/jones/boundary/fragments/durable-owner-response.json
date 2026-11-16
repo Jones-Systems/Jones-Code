@@ -7,9 +7,11 @@
     "apps/server/src/jones/mcp/userResponseRequest/handlers.ts",
     "apps/server/src/jones/mcp/userResponseRequest/tools.ts",
     "apps/server/src/jones/mcp/userResponseRequest/questions.ts",
-    "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts"
+    "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts",
+    "packages/client-runtime/src/jones/approvalChoices.ts",
+    "packages/client-runtime/src/jones/approvalChoices.test.ts"
   ],
-  "hookPaths": [],
+  "hookPaths": ["packages/client-runtime/src/state/threadRequests.ts"],
   "tombstones": [],
   "allowedImports": [
     {
@@ -27,6 +29,10 @@
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",
       "to": "apps/server/src/jones/mcp/userResponseRequest/tools.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/state/threadRequests.ts",
+      "to": "packages/client-runtime/src/jones/approvalChoices.ts"
     }
   ]
 }
