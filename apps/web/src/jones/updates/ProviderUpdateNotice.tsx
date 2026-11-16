@@ -19,7 +19,6 @@ const providerUpdateDismissalsSchema = Schema.Struct({ keys: Schema.Array(Schema
 
 export function ProviderUpdateEnvironmentRows() {
   const updates = useJonesProviderUpdates();
-  const navigate = useNavigate();
   const detailsId = useId();
   const [collapsedEnvironments, setCollapsedEnvironments] = useState<ReadonlySet<EnvironmentId>>(
     () => new Set(),
@@ -148,18 +147,6 @@ export function ProviderUpdateEnvironmentRows() {
                   settings for details.
                 </p>
               ) : null}
-              <Button
-                size="xs"
-                variant="ghost-muted"
-                onClick={() => {
-                  void navigate({
-                    to: "/settings/providers",
-                    search: { machine: group.environmentId },
-                  });
-                }}
-              >
-                Settings
-              </Button>
             </div>
           </section>
         );
@@ -211,7 +198,7 @@ function ProviderUpdateToastBody() {
           className="min-w-0 pt-0.5 pr-5 select-text wrap-break-word text-muted-foreground"
           data-slot="toast-description"
         />
-        <div className="mt-2 flex justify-end gap-2">
+        <div className="mt-2 flex items-center justify-between gap-2">
           <Toast.Action render={<Button size="xs" variant="outline" />} data-slot="toast-action">
             Settings
           </Toast.Action>
