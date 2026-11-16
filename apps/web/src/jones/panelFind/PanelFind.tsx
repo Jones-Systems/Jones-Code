@@ -44,17 +44,24 @@ export function PanelFindProvider({ children }: { children: ReactNode }) {
       if (root && scopes.current.has(root)) lastScope.current = root;
     };
     const open = () => {
+      const dialog = [
+        ...document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]'),
+      ]
+        .filter((element) => element.getClientRects().length > 0)
+        .at(-1);
+      const available = (scope: HTMLElement) =>
+        scope.isConnected &&
+        scope.getClientRects().length > 0 &&
+        !scope.closest('[inert], [aria-hidden="true"]') &&
+        (!dialog || dialog.contains(scope));
       const focused = document.activeElement?.closest<HTMLElement>("[data-find-scope]");
       let root =
-        lastScope.current?.isConnected &&
-        scopes.current.has(lastScope.current) &&
-        lastScope.current.getClientRects().length > 0
+        lastScope.current && scopes.current.has(lastScope.current) && available(lastScope.current)
           ? lastScope.current
-          : focused && scopes.current.has(focused)
+          : focused && scopes.current.has(focused) && available(focused)
             ? focused
             : [...scopes.current.keys()].find(
-                (scope) =>
-                  scope.hasAttribute("data-find-default") && scope.getClientRects().length > 0,
+                (scope) => scope.hasAttribute("data-find-default") && available(scope),
               );
       if (!root) return false;
       const parent = root;
@@ -64,7 +71,7 @@ export function PanelFindProvider({ children }: { children: ReactNode }) {
             scope !== parent &&
             parent.contains(scope) &&
             scope.hasAttribute("data-find-default") &&
-            scope.getClientRects().length > 0,
+            available(scope),
         ) ?? root;
       for (const [scope, toggle] of scopes.current) if (scope !== root) toggle(false);
       scopes.current.get(root)?.(true);
@@ -217,7 +224,12 @@ export function PanelFindScope({
     setIndex(count ? (activeIndex + direction + count) % count : 0);
   const onFindKey = useEffectEvent((event: KeyboardEvent) => {
     if (!open || event.isComposing || event.altKey) return;
-    if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
+    if (
+      event.target instanceof Element &&
+      event.target.closest('[role="dialog"], [role="alertdialog"]') &&
+      !root.current?.contains(event.target)
+    )
+      return;
     const modifier = isMacPlatform(navigator.platform) ? event.metaKey : event.ctrlKey;
     if (
       event.key === "Escape" ||

@@ -134,3 +134,37 @@ it("matches formatted text without searching hidden content, inputs, or adjacent
     { start: 7, end: 11 },
   ]);
 });
+
+it("searches portaled Settings, then Escape closes find before the Settings dialog", async () => {
+  const { AppRouteModal } = await import("../../components/AppRouteModal");
+  let backgroundSearch = false;
+  await using _screen = await render(
+    <PanelFindProvider>
+      <PanelFindScope
+        label="thread"
+        data-find-default
+        nativeFind={{
+          open: () => {
+            backgroundSearch = true;
+          },
+          close: () => {
+            backgroundSearch = false;
+          },
+        }}
+      >
+        <p>Background thread</p>
+      </PanelFindScope>
+      <AppRouteModal label="Settings">
+        <p>Worktree needle</p>
+      </AppRouteModal>
+    </PanelFindProvider>,
+  );
+  await expect.element(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await find();
+  await userEvent.fill(page.getByRole("textbox", { name: "Find in settings" }), "needle");
+  await expect.element(page.getByRole("search").getByRole("status")).toHaveTextContent("1 of 1");
+  expect(backgroundSearch).toBe(false);
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("search")).not.toBeInTheDocument();
+  await expect.element(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+});
