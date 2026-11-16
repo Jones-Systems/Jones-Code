@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Admission runs before compiler dependencies.
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -92,7 +94,7 @@ function recover(lock: string) {
         throw missing;
       }
       // Age only ends the initialization grace period; it never permits recovery.
-      if (Date.now() - info.mtimeMs > 2000)
+      if (Effect.runSync(Clock.currentTimeMillis) - info.mtimeMs > 2000)
         throw new Error(
           `Compiler lock owner record unavailable; preserved: ${lock}. Reconcile interrupted initialization/recovery.`,
           { cause: error },
