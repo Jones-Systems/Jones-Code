@@ -5375,12 +5375,14 @@
     {
       "id": "jones-storage-cleanup-results",
       "tests": [
+        "apps/server/src/provider/AgentContextBudget.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
         "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
         "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/storageCleanup/ReportRead.test.ts apps/server/src/jones/mcp/storageCleanup/handlers.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/storageCleanup/ReportRead.test.ts apps/server/src/jones/mcp/storageCleanup/handlers.test.ts apps/server/src/provider/AgentContextBudget.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run --project browser src/components/settings/StorageSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter t3 typecheck",

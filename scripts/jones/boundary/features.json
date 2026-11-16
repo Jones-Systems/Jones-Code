@@ -3384,6 +3384,8 @@
     {
       "id": "storage-cleanup-results",
       "tests": [
+        "apps/server/src/provider/AgentContextBudget.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
         "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
         "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
