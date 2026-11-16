@@ -24,6 +24,7 @@ import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
 import { dropPinnedThreadOnWorkstream } from "../jones/workstreams/sidebarThreadDrop";
 import { usePersonalSidebarActiveThreads } from "../jones/workstreams/personalSidebarOrder";
+import { usePersonalStatusSelection } from "../jones/workstreams/personalStatusFilter";
 import { placePersonalThread } from "../jones/workstreams/personalThreadPlacement";
 import { usePersonalWorkstreams } from "../state/workstreamsPersonal";
 import {
@@ -456,6 +457,8 @@ function useSidebarThreads(input: {
   readonly threads: readonly EnvironmentThreadShell[];
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly routeRowThreadKey: string | null;
+  readonly personalWorkstreams: ReturnType<typeof usePersonalWorkstreams>["state"];
+  readonly workstreamsEnabled: boolean;
   // Set in boring mode: the project groups to fold active threads into, in order.
   readonly folderGroups: readonly SidebarProjectSnapshot[] | null;
   // Keeps folders with no active threads, so a project the user filtered to or pinned can start one.
@@ -497,8 +500,16 @@ function useSidebarThreads(input: {
     cycleStatusFilter,
     hideWorkingThreads,
     counts: statusCounts,
-    threads: visibleThreads,
+    threads: globallyVisibleThreads,
   } = useThreadStatusFilter(scopedThreads, "current", statusWakeAt, routeRowThreadKey);
+  const personalVisibleThreads = usePersonalStatusSelection(
+    scopedThreads,
+    input.personalWorkstreams,
+    globallyVisibleThreads,
+    statusWakeAt,
+    routeRowThreadKey,
+  );
+  const visibleThreads = input.workstreamsEnabled ? personalVisibleThreads : globallyVisibleThreads;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- schedules the status roster's precise snooze wake, including filtered rows
   useEffect(() => {
     const next = nextThreadStatusWakeAt(
@@ -1376,6 +1387,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     },
   );
 
+  const workstreamController = usePersonalWorkstreams();
+  const workstreamsEnabled = workstreamController.state.environments.some(
+    (entry) => entry.status !== "update_required",
+  );
   const {
     workingShelfEnabled,
     pinnedThreads,
@@ -1428,6 +1443,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     threads,
     delegatedUnderParent,
     routeRowThreadKey,
+    personalWorkstreams: workstreamController.state,
+    workstreamsEnabled,
     folderGroups: boringSidebarEnabled
       ? scopedProjectGroups.length === 0
         ? // An archived project keeps a folder for its active threads, below the rest.
@@ -1459,10 +1476,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     return count;
   });
 
-  const workstreamController = usePersonalWorkstreams();
-  const workstreamsEnabled = workstreamController.state.environments.some(
-    (entry) => entry.status !== "update_required",
-  );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publishes personal definition labels while Sidebar owns the work-queue label publisher.
   useEffect(() => {
     if (!primaryEnvironmentId) return;

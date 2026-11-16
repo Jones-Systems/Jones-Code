@@ -70,7 +70,11 @@
     "packages/contracts/test-fixtures/queue-dispatch-capability.json",
     "packages/contracts/test-fixtures/thread-corpus-capability.json",
     "packages/shared/src/jones/desktopNativeOwner.test.ts",
-    "packages/shared/src/jones/desktopNativeOwner.ts"
+    "packages/shared/src/jones/desktopNativeOwner.ts",
+    "apps/web/src/jones/workstreams/personalStatusFilter.ts",
+    "apps/web/src/jones/workstreams/personalStatusFilter.test.ts",
+    "apps/web/src/jones/workstreams/personalStatusFilter.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx"
   ],
   "hookPaths": [
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
@@ -901,6 +905,10 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/jones/workstreams/personalThreadPlacement.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalStatusFilter.ts"
     }
   ]
 }

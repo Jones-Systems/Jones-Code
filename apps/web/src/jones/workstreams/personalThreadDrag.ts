@@ -1,3 +1,22 @@
+import {
+  parseScopedThreadKey,
+  scopeThreadRef,
+  scopedThreadKey,
+} from "@t3tools/client-runtime/environment";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { useThreadSelectionStore } from "../../threadSelectionStore";
+
+export function personalThreadContextRefs(thread: EnvironmentThreadShell) {
+  const ref = scopeThreadRef(thread.environmentId, thread.id);
+  const key = scopedThreadKey(ref);
+  const selected = useThreadSelectionStore.getState().selectedThreadKeys;
+  const keys = selected.has(key) ? [...selected] : [key];
+  return keys.flatMap((candidate) => {
+    const selectedRef = parseScopedThreadKey(candidate);
+    return selectedRef ? [selectedRef] : [];
+  });
+}
+
 export function liftPersonalThreadCard(source: HTMLElement, origin: { x: number; y: number }) {
   const rect = source.getBoundingClientRect();
   const view = document.createElement("div");
@@ -25,6 +44,9 @@ export function liftPersonalThreadCard(source: HTMLElement, origin: { x: number;
   move(origin);
   return {
     move,
+    setVisible: (visible: boolean) => {
+      view.hidden = !visible;
+    },
     dispose: () => {
       view.remove();
       source.style.opacity = opacity;

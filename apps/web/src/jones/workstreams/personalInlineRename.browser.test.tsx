@@ -113,6 +113,26 @@ describe("inline Workstream title editing", () => {
     await expect.element(page.getByText("Unsaved title", { exact: true })).not.toBeInTheDocument();
   });
 
+  it("retains the native title-click reversal across a slow double-click sequence", async () => {
+    await using screen = await render(<HeaderFixture />);
+    const target = () => screen.container.querySelector(".line-clamp-2")!;
+    await act(() => target().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+    await expect
+      .element(page.getByRole("button", { name: "Expand Alpha", exact: true }))
+      .toBeVisible();
+    await act(() => {
+      target().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+      target().dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+    });
+    await expect.element(title()).toHaveFocus();
+    expect(screen.container.querySelector("button input")).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    await expect
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
+      .toBeVisible();
+    await expect.element(page.getByText("Members of Alpha", { exact: true })).toBeVisible();
+  });
+
   it("rejects blank names on Enter and blur, then saves a trimmed 160-character name", async () => {
     const save = vi.fn();
     await using _screen = await render(

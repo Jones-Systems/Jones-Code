@@ -16,11 +16,19 @@ import type { ContextMenuItem } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import type { ThreadActionMenuId } from "../threadActionMenu.logic";
 import { SIDEBAR_DRAG_DISTANCE, SidebarPointerSensor } from "../Sidebar.pointer";
+import {
+  dropThreadContext,
+  endThreadContextDrag,
+  moveThreadContextDrag as moveThreadContextDragGhost,
+} from "../chat/threadContextDrag";
 import { WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
 import { WorkstreamPicker } from "../../jones/workstreams/WorkstreamPicker";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
 import { summarizePersonalThreads } from "../../jones/workstreams/personalPresentation";
-import { liftPersonalThreadCard } from "../../jones/workstreams/personalThreadDrag";
+import {
+  liftPersonalThreadCard,
+  personalThreadContextRefs,
+} from "../../jones/workstreams/personalThreadDrag";
 import { windowPersonalThreads } from "../../jones/workstreams/personalThreadWindow";
 export interface NativeThreadAssignmentMenu {
   readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
@@ -326,8 +334,6 @@ export function WorkstreamNativeSidebar({
     if (
       !event.isPrimary ||
       event.button !== 0 ||
-      !canMove(thread) ||
-      busy.current ||
       (event.target as HTMLElement).closest("button,a,input,textarea,select")
     )
       return;
@@ -335,6 +341,12 @@ export function WorkstreamNativeSidebar({
     const source = event.currentTarget as HTMLElement;
     const key = personalThreadKey(thread);
     const startedGroup = groupId(thread);
+    const currentThread = () =>
+      pointerActions.current.threads.find((entry) => personalThreadKey(entry) === key);
+    const outsideSidebar = (point: { x: number; y: number }) => {
+      const bounds = root.current?.getBoundingClientRect();
+      return bounds !== undefined && (point.x < bounds.left || point.x > bounds.right);
+    };
     const locateCurrent = (point: { x: number; y: number }) => {
       const actions = pointerActions.current;
       const currentThread = actions.threads.find((entry) => personalThreadKey(entry) === key);
@@ -354,9 +366,16 @@ export function WorkstreamNativeSidebar({
           sensor.current = null;
           lifted.current?.dispose();
           lifted.current = null;
+          endThreadContextDrag();
           clearDrop();
         },
         onDrop: (point) => {
+          if (outsideSidebar(point)) {
+            target = null;
+            const current = currentThread();
+            if (current) dropThreadContext(point, personalThreadContextRefs(current));
+            return true;
+          }
           if (target && !pointerActions.current.validTarget(target)) target = null;
           else locateCurrent(point);
           return false;
@@ -365,9 +384,25 @@ export function WorkstreamNativeSidebar({
       onPending: () => {},
       onAbort: () => {},
       onStart: (point) => {
-        lifted.current = liftPersonalThreadCard(source, point);
+        if (canMove(thread) && !busy.current)
+          lifted.current = liftPersonalThreadCard(source, point);
       },
       onMove: (point) => {
+        const outside = outsideSidebar(point);
+        lifted.current?.setVisible(!outside);
+        if (outside) {
+          target = null;
+          clearDrop();
+          const current = currentThread();
+          if (current)
+            moveThreadContextDragGhost(point, {
+              title: current.title.trim() || "Thread",
+              count: personalThreadContextRefs(current).length,
+            });
+          else endThreadContextDrag();
+          return;
+        }
+        endThreadContextDrag();
         lifted.current?.move(point);
         locateCurrent(point);
       },
@@ -429,7 +464,7 @@ export function WorkstreamNativeSidebar({
                 <li
                   key={personalThreadKey(thread)}
                   data-personal-thread={personalThreadKey(thread)}
-                  className={`relative ${canMove(thread) ? "cursor-grab active:cursor-grabbing" : ""}`}
+                  className="relative cursor-grab active:cursor-grabbing"
                   onPointerDown={(event) => pointerDown(event, thread)}
                 >
                   {dropRow?.key === personalThreadKey(thread) ? (

@@ -14,6 +14,8 @@ import { act, render } from "../../../test/render";
 import { WorkstreamSidebarSection } from "../../components/workstreams/WorkstreamSidebarSection";
 import { ToastProvider, toastManager } from "../../components/ui/toast";
 import { personalGroupCollapsedKey } from "./personalSidebarOrder";
+import { personalStatusFilterKey, readPersonalStatusFilter } from "./personalStatusFilter";
+import { personalThreadExpandedKey, personalThreadLimitKey } from "./personalThreadWindow";
 
 const dragType = "application/x-jones-workstream";
 const group = (name: string) => ({
@@ -27,7 +29,18 @@ const group = (name: string) => ({
 });
 const groups = [group("Alpha"), group("Beta"), group("Gamma")];
 
-function fixture(put?: PersonalWorkstreamsTransport["put"]) {
+function fixture(put?: PersonalWorkstreamsTransport["put"], memberCount = 0) {
+  const keys = [
+    personalGroupCollapsedKey(null),
+    ...groups.flatMap((entry) => [
+      personalGroupCollapsedKey(entry.id),
+      personalStatusFilterKey(entry.id),
+      personalThreadLimitKey(entry.id),
+      personalThreadExpandedKey(entry.id),
+    ]),
+  ];
+  const previous = new Map(keys.map((key) => [key, localStorage.getItem(key)]));
+  for (const key of keys) localStorage.removeItem(key);
   const registry = AtomRegistry.make();
   const initial: PersonalWorkstreamsState = {
     workstreams: groups,
@@ -124,7 +137,40 @@ function fixture(put?: PersonalWorkstreamsTransport["put"]) {
         <div style={{ width: 360 }}>
           <WorkstreamSidebarSection
             controller={controller}
-            renderMembers={(id) => <div className="h-24">Members of {id ?? "Unassigned"}</div>}
+            memberCounts={new Map([["menu-Alpha", memberCount]])}
+            summaries={
+              new Map([
+                [
+                  "menu-Alpha",
+                  {
+                    total: memberCount,
+                    running: memberCount ? 3 : 0,
+                    attention: memberCount ? 2 : 0,
+                    done: memberCount ? 6 : 0,
+                    failed: memberCount ? 1 : 0,
+                  },
+                ],
+              ])
+            }
+            renderMembers={(id, window) => (
+              <div className="min-h-24">
+                Members of {id ?? "Unassigned"}
+                {id === "menu-Alpha"
+                  ? Array.from(
+                      {
+                        length: window?.expanded
+                          ? memberCount
+                          : Math.min(memberCount, window?.limit ?? memberCount),
+                      },
+                      (_, index) => (
+                        <div key={index} data-menu-member>
+                          Conversation {index + 1}
+                        </div>
+                      ),
+                    )
+                  : null}
+              </div>
+            )}
           />
         </div>
       </ToastProvider>
@@ -140,8 +186,10 @@ function fixture(put?: PersonalWorkstreamsTransport["put"]) {
       realController?.dispose();
       registry.dispose();
       toastManager.close();
-      for (const entry of groups) localStorage.removeItem(personalGroupCollapsedKey(entry.id));
-      localStorage.removeItem(personalGroupCollapsedKey(null));
+      for (const [key, value] of previous) {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      }
     },
   };
 }
@@ -209,7 +257,7 @@ describe("Workstream options and header ordering", () => {
     await expect
       .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .toBeVisible();
-    expect(document.querySelectorAll('[data-slot="menu-separator"]')).toHaveLength(4);
+    expect(document.querySelectorAll('[data-slot="menu-separator"]')).toHaveLength(5);
     await expect
       .element(page.getByRole("menuitem", { name: "Move up", exact: true }))
       .toHaveAttribute("aria-disabled", "true");
@@ -234,6 +282,87 @@ describe("Workstream options and header ordering", () => {
     await expect
       .poll(() => section(screen.container, "Alpha").textContent)
       .not.toContain("Members of menu-Alpha");
+  });
+
+  it("uses the Divider footer and updates the visible count while the window menu stays open", async () => {
+    using setup = fixture(undefined, 12);
+    await using screen = await render(setup.ui);
+    const alpha = section(screen.container, "Alpha");
+    expect(alpha.querySelectorAll("[data-menu-member]")).toHaveLength(5);
+    const footer = alpha.querySelector("[data-workstream-window-footer]")!;
+    const lines = footer.querySelectorAll("span[aria-hidden]");
+    expect(lines).toHaveLength(2);
+    const button = footer.querySelector("button")!;
+    expect(button.textContent).toBe("Show all 12");
+    const footerRect = footer.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    expect(
+      Math.abs((buttonRect.left + buttonRect.right) / 2 - (footerRect.left + footerRect.right) / 2),
+    ).toBeLessThan(1);
+    expect(lines[0]!.getBoundingClientRect().right).toBeLessThan(buttonRect.left);
+    expect(lines[1]!.getBoundingClientRect().left).toBeGreaterThan(buttonRect.right);
+    await options();
+    await expect.element(page.getByText("5 of 12 shown", { exact: true })).toBeVisible();
+    await userEvent.click(page.getByRole("menuitemradio", { name: "10", exact: true }));
+    await expect.element(page.getByRole("menu")).toBeVisible();
+    await expect.element(page.getByText("10 of 12 shown", { exact: true })).toBeVisible();
+    expect(alpha.querySelectorAll("[data-menu-member]")).toHaveLength(10);
+    await userEvent.click(page.getByRole("menuitemradio", { name: "15", exact: true }));
+    await expect.element(page.getByRole("menu")).toBeVisible();
+    await expect.element(page.getByText("12 of 12 shown", { exact: true })).toBeVisible();
+    expect(alpha.querySelector("[data-workstream-window-footer]")).toBeNull();
+    await userEvent.click(page.getByRole("menuitemradio", { name: "5", exact: true }));
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(
+      page.getByRole("button", { name: "Show all 12 threads in Alpha", exact: true }),
+    );
+    expect(alpha.querySelectorAll("[data-menu-member]")).toHaveLength(12);
+    await expect
+      .element(page.getByRole("button", { name: "Show only 5 threads in Alpha", exact: true }))
+      .toHaveTextContent("Show fewer");
+    await options();
+    await expect.element(page.getByText("12 of 12 shown", { exact: true })).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(
+      page.getByRole("button", { name: "Show only 5 threads in Alpha", exact: true }),
+    );
+    expect(alpha.querySelectorAll("[data-menu-member]")).toHaveLength(5);
+    expect(
+      section(screen.container, null).querySelector("[data-workstream-window-footer]"),
+    ).toBeNull();
+  });
+
+  it("resets a local exclusion from the menu without collapsing or changing the full summary", async () => {
+    using setup = fixture(undefined, 12);
+    await using screen = await render(setup.ui);
+    const alpha = section(screen.container, "Alpha");
+    const counter = alpha.querySelector<HTMLButtonElement>('button[aria-label^="Working:"]')!;
+    expect(alpha.querySelector("button button")).toBeNull();
+    for (const at of [1000, 1250]) {
+      await act(() => {
+        const event = new MouseEvent("click", { bubbles: true, detail: 1 });
+        Object.defineProperty(event, "timeStamp", { value: at });
+        counter.dispatchEvent(event);
+      });
+    }
+    expect(readPersonalStatusFilter("menu-Alpha")).toBe("hide-working");
+    await expect
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
+      .toHaveAttribute("aria-expanded", "true");
+    await expect.element(page.getByText("12 threads", { exact: true })).toBeVisible();
+    await options();
+    await userEvent.click(
+      page.getByRole("menuitem", { name: "Use global status filter", exact: true }),
+    );
+    expect(readPersonalStatusFilter("menu-Alpha")).toBeNull();
+    expect(counter.getAttribute("aria-pressed")).toBe("false");
+    expect(counter.getAttribute("aria-label")).toContain("using global status filter");
+    await expect
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
+      .toHaveAttribute("aria-expanded", "true");
+    expect(alpha.querySelector("input")).toBeNull();
+    expect(setup.controller.rename).not.toHaveBeenCalled();
+    expect(setup.controller.reorder).not.toHaveBeenCalled();
   });
 
   it("moves a group down and back up through the menu", async () => {

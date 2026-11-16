@@ -15,7 +15,6 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   EllipsisIcon,
-  GripVerticalIcon,
   ChevronDownIcon,
   PaletteIcon,
   PencilIcon,
@@ -59,6 +58,7 @@ import {
 import { personalWorkstreamRailColor } from "../../jones/workstreams/personalRail";
 import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalWorkstreamTitleEditor";
 
+import { usePersonalStatusFilter } from "../../jones/workstreams/personalStatusFilter";
 import { personalGroupCollapsedKey } from "../../jones/workstreams/personalSidebarOrder";
 import {
   PERSONAL_THREAD_LIMITS,
@@ -164,6 +164,10 @@ function Group({
   );
   const [editing, setEditing] = useState<"name" | "color" | null>(null);
   const threadWindow = usePersonalThreadWindow(item.id);
+  const { filter: statusFilter, setFilter: setStatusFilter } = usePersonalStatusFilter(item.id);
+  const shownCount = threadWindow.expanded
+    ? memberCount
+    : Math.min(memberCount, threadWindow.limit);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
@@ -224,192 +228,208 @@ function Group({
       className={`min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""}`}
       style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
     >
-      <div data-workstream-header className="flex items-start gap-1 pr-2">
-        <div
-          className="flex min-w-0 flex-1 items-start cursor-grab active:cursor-grabbing"
-          draggable={state.canCreate && !pending && !confirmingDelete && !editing}
-          onDragStart={onDragStart}
-        >
-          {state.canCreate ? (
-            <GripVerticalIcon
-              aria-hidden
-              className="mt-1.5 ml-1 size-3.5 shrink-0 text-sidebar-muted-foreground/60"
-            />
-          ) : null}
-          <PersonalSidebarGroupHeader
-            name={item.name}
-            collapsed={collapsed}
-            onToggle={() => {
-              threadWindow.setExpanded(false);
-              setCollapsed((value) => !value);
-              return () => {
-                setCollapsed(collapsed);
-                threadWindow.setExpanded(threadWindow.expanded);
-              };
-            }}
-            summary={summary}
-            {...(state.canCreate && !pending && !confirmingDelete
-              ? { onRenameRequested: startRename }
-              : {})}
-            nameEditor={
-              editing === "name" ? (
-                <PersonalWorkstreamTitleEditor
-                  name={item.name}
-                  pending={pending}
-                  onSave={saveRename}
-                  onCancel={finishRename}
-                />
-              ) : null
-            }
-          />
-        </div>
-        <div
-          className="shrink-0"
-          data-workstream-menu
-          draggable={false}
-          onDragStart={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
+      <div
+        data-workstream-header
+        className="flex min-w-0 cursor-grab active:cursor-grabbing"
+        draggable={state.canCreate && !pending && !confirmingDelete && !editing}
+        onDragStart={onDragStart}
+      >
+        <PersonalSidebarGroupHeader
+          name={item.name}
+          collapsed={collapsed}
+          onToggle={() => {
+            threadWindow.setExpanded(false);
+            setCollapsed((value) => !value);
+            return () => {
+              setCollapsed(collapsed);
+              threadWindow.setExpanded(threadWindow.expanded);
+            };
           }}
-        >
-          <Menu>
-            <MenuTrigger
-              aria-label={`Options for ${item.name}`}
-              render={<Button variant="ghost" size="icon-sm" />}
+          summary={summary}
+          statusFilter={statusFilter}
+          onStatusFilterChange={setStatusFilter}
+          {...(state.canCreate && !pending && !confirmingDelete
+            ? { onRenameRequested: startRename }
+            : {})}
+          nameEditor={
+            editing === "name" ? (
+              <PersonalWorkstreamTitleEditor
+                name={item.name}
+                pending={pending}
+                onSave={saveRename}
+                onCancel={finishRename}
+              />
+            ) : null
+          }
+          actions={
+            <div
+              className="shrink-0"
+              data-workstream-menu
+              data-workstream-header-control
+              draggable={false}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => event.stopPropagation()}
+              onDragStart={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
             >
-              <EllipsisIcon aria-hidden />
-            </MenuTrigger>
-            <MenuPopup align="end">
-              <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
-                <PencilIcon aria-hidden /> Rename
-              </MenuItem>
-              <MenuItem
-                disabled={!state.canCreate || pending}
-                onClick={() => {
-                  setDraft(item.color ?? "");
-                  setEditing("color");
-                }}
-              >
-                <PaletteIcon aria-hidden /> Change color
-              </MenuItem>
-              <MenuSeparator />
-              <MenuSub>
-                <MenuSubTrigger disabled={!state.canCreate || pending}>
-                  Lifecycle <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
-                </MenuSubTrigger>
-                <MenuSubPopup>
-                  <MenuRadioGroup value={item.lifecycle} aria-label="Workstream lifecycle">
-                    {lifecycles.map((lifecycle) => (
-                      <MenuRadioItem
-                        key={lifecycle}
-                        value={lifecycle}
-                        disabled={!state.canCreate || pending}
-                        closeOnClick
-                        onClick={() => {
-                          if (item.lifecycle === lifecycle) return;
-                          void run(async () => {
-                            const result = await controller.setLifecycle(item.id, lifecycle);
-                            return result.ok ? { ok: true, value: undefined } : result;
-                          });
-                        }}
-                      >
-                        <span className="flex items-center justify-between gap-4">
-                          {lifecycleLabel(lifecycle)}
-                          <MenuRadioItemIndicator />
-                        </span>
-                      </MenuRadioItem>
-                    ))}
-                  </MenuRadioGroup>
-                </MenuSubPopup>
-              </MenuSub>
-              <MenuSeparator />
-              <MenuGroup className="flex items-center justify-between">
-                <MenuGroupLabel>Visible threads</MenuGroupLabel>
-                <MenuRadioGroup
-                  value={String(threadWindow.limit)}
-                  className="flex mr-2"
-                  aria-label="Default visible threads"
+              <Menu>
+                <MenuTrigger
+                  aria-label={`Options for ${item.name}`}
+                  render={<Button variant="ghost" size="icon-sm" />}
                 >
-                  {PERSONAL_THREAD_LIMITS.map((limit) => (
-                    <MenuRadioItem
-                      key={limit}
-                      value={String(limit)}
-                      closeOnClick={false}
-                      className="text-center"
-                      onClick={() => {
-                        threadWindow.setLimit(limit);
-                        threadWindow.setExpanded(false);
-                      }}
+                  <EllipsisIcon aria-hidden />
+                </MenuTrigger>
+                <MenuPopup align="end">
+                  <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
+                    <PencilIcon aria-hidden /> Rename
+                  </MenuItem>
+                  <MenuItem
+                    disabled={!state.canCreate || pending}
+                    onClick={() => {
+                      setDraft(item.color ?? "");
+                      setEditing("color");
+                    }}
+                  >
+                    <PaletteIcon aria-hidden /> Change color
+                  </MenuItem>
+                  <MenuSeparator />
+                  <MenuSub>
+                    <MenuSubTrigger disabled={!state.canCreate || pending}>
+                      Lifecycle <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
+                    </MenuSubTrigger>
+                    <MenuSubPopup>
+                      <MenuRadioGroup value={item.lifecycle} aria-label="Workstream lifecycle">
+                        {lifecycles.map((lifecycle) => (
+                          <MenuRadioItem
+                            key={lifecycle}
+                            value={lifecycle}
+                            disabled={!state.canCreate || pending}
+                            closeOnClick
+                            onClick={() => {
+                              if (item.lifecycle === lifecycle) return;
+                              void run(async () => {
+                                const result = await controller.setLifecycle(item.id, lifecycle);
+                                return result.ok ? { ok: true, value: undefined } : result;
+                              });
+                            }}
+                          >
+                            <span className="flex items-center justify-between gap-4">
+                              {lifecycleLabel(lifecycle)}
+                              <MenuRadioItemIndicator />
+                            </span>
+                          </MenuRadioItem>
+                        ))}
+                      </MenuRadioGroup>
+                    </MenuSubPopup>
+                  </MenuSub>
+                  <MenuSeparator />
+                  <MenuItem onClick={() => setStatusFilter(null)}>
+                    Use global status filter
+                  </MenuItem>
+                  <MenuSeparator />
+                  <MenuGroup className="flex items-center justify-between">
+                    <div className="flex min-w-0 flex-wrap items-baseline">
+                      <MenuGroupLabel>Visible threads</MenuGroupLabel>
+                      <span
+                        className="pr-2 text-xs text-muted-foreground tabular-nums"
+                        aria-live="polite"
+                      >
+                        {shownCount} of {memberCount} shown
+                      </span>
+                    </div>
+                    <MenuRadioGroup
+                      value={String(threadWindow.limit)}
+                      className="flex mr-2"
+                      aria-label="Default visible threads"
                     >
-                      {limit}
-                    </MenuRadioItem>
-                  ))}
-                </MenuRadioGroup>
-              </MenuGroup>
-              <MenuSeparator />
-              <MenuItem
-                disabled={!state.canCreate || pending || index === 0}
-                onClick={() =>
-                  void run(async () => {
-                    const result = await controller.reorder(item.id, {
-                      afterId: state.workstreams[index - 1]!.id,
-                      beforeId: state.workstreams[index - 2]?.id ?? null,
-                    });
-                    return result.ok ? { ok: true, value: undefined } : result;
-                  })
-                }
-              >
-                <ArrowUpIcon aria-hidden /> Move up
-              </MenuItem>
-              <MenuItem
-                disabled={!state.canCreate || pending || index === state.workstreams.length - 1}
-                onClick={() =>
-                  void run(async () => {
-                    const result = await controller.reorder(item.id, {
-                      beforeId: state.workstreams[index + 1]!.id,
-                      afterId: state.workstreams[index + 2]?.id ?? null,
-                    });
-                    return result.ok ? { ok: true, value: undefined } : result;
-                  })
-                }
-              >
-                <ArrowDownIcon aria-hidden /> Move down
-              </MenuItem>
-              <MenuSeparator />
-              <MenuItem
-                variant="destructive"
-                disabled={!state.canCreate || pending}
-                onClick={onDeleteRequested}
-              >
-                <TrashIcon aria-hidden /> Delete Workstream…
-              </MenuItem>
-            </MenuPopup>
-          </Menu>
-        </div>
+                      {PERSONAL_THREAD_LIMITS.map((limit) => (
+                        <MenuRadioItem
+                          key={limit}
+                          value={String(limit)}
+                          closeOnClick={false}
+                          className="text-center"
+                          onClick={() => {
+                            threadWindow.setLimit(limit);
+                            threadWindow.setExpanded(false);
+                          }}
+                        >
+                          {limit}
+                        </MenuRadioItem>
+                      ))}
+                    </MenuRadioGroup>
+                  </MenuGroup>
+                  <MenuSeparator />
+                  <MenuItem
+                    disabled={!state.canCreate || pending || index === 0}
+                    onClick={() =>
+                      void run(async () => {
+                        const result = await controller.reorder(item.id, {
+                          afterId: state.workstreams[index - 1]!.id,
+                          beforeId: state.workstreams[index - 2]?.id ?? null,
+                        });
+                        return result.ok ? { ok: true, value: undefined } : result;
+                      })
+                    }
+                  >
+                    <ArrowUpIcon aria-hidden /> Move up
+                  </MenuItem>
+                  <MenuItem
+                    disabled={!state.canCreate || pending || index === state.workstreams.length - 1}
+                    onClick={() =>
+                      void run(async () => {
+                        const result = await controller.reorder(item.id, {
+                          beforeId: state.workstreams[index + 1]!.id,
+                          afterId: state.workstreams[index + 2]?.id ?? null,
+                        });
+                        return result.ok ? { ok: true, value: undefined } : result;
+                      })
+                    }
+                  >
+                    <ArrowDownIcon aria-hidden /> Move down
+                  </MenuItem>
+                  <MenuSeparator />
+                  <MenuItem
+                    variant="destructive"
+                    disabled={!state.canCreate || pending}
+                    onClick={onDeleteRequested}
+                  >
+                    <TrashIcon aria-hidden /> Delete Workstream…
+                  </MenuItem>
+                </MenuPopup>
+              </Menu>
+            </div>
+          }
+        />
       </div>
       {!collapsed ? (
         <>
           {children(threadWindow)}
           {memberCount > threadWindow.limit ? (
-            <Button
-              type="button"
-              variant="ghost-muted"
-              size="sm"
-              className="w-full justify-start"
-              aria-expanded={threadWindow.expanded}
-              aria-label={
-                threadWindow.expanded
-                  ? `Show only ${threadWindow.limit} threads in ${item.name}`
-                  : `Show all ${memberCount} threads in ${item.name}`
-              }
-              onClick={() => threadWindow.setExpanded((value) => !value)}
-            >
-              <ChevronDownIcon
-                aria-hidden
-                className={`size-3.5 ${threadWindow.expanded ? "rotate-180" : ""}`}
-              />
-              {threadWindow.expanded ? "Show fewer" : `Show all ${memberCount} threads`}
-            </Button>
+            <div data-workstream-window-footer className="flex items-center gap-2 px-2 py-1">
+              <span aria-hidden className="h-px min-w-0 flex-1 bg-sidebar-border/70" />
+              <Button
+                type="button"
+                variant="ghost-muted"
+                size="sm-pill"
+                aria-expanded={threadWindow.expanded}
+                aria-label={
+                  threadWindow.expanded
+                    ? `Show only ${threadWindow.limit} threads in ${item.name}`
+                    : `Show all ${memberCount} threads in ${item.name}`
+                }
+                onClick={() => threadWindow.setExpanded((value) => !value)}
+              >
+                <ChevronDownIcon
+                  aria-hidden
+                  className={`size-3.5 ${threadWindow.expanded ? "rotate-180" : ""}`}
+                />
+                {threadWindow.expanded ? "Show fewer" : `Show all ${memberCount}`}
+              </Button>
+              <span aria-hidden className="h-px min-w-0 flex-1 bg-sidebar-border/70" />
+            </div>
           ) : null}
         </>
       ) : null}
@@ -689,7 +709,7 @@ export function WorkstreamSidebarSection({
             onDragStart={(event) => {
               if (
                 event.target instanceof Element &&
-                event.target.closest("[data-workstream-menu]")
+                event.target.closest("[data-workstream-header-control]")
               ) {
                 event.preventDefault();
                 return;

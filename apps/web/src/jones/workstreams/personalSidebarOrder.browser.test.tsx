@@ -6,10 +6,13 @@ import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import type { PersonalWorkstreamsState } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { personalThreadKey } from "@t3tools/client-runtime/jones/workstreams/personal";
+import * as Schema from "effect/Schema";
 import { AppRoot } from "~/AppRoot";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
 import { usePersonalWorkstreams } from "~/state/workstreamsPersonal";
+import { writeLocalStorageValue } from "~/hooks/useLocalStorage";
+import { personalStatusFilterKey } from "./personalStatusFilter";
 import {
   ENVIRONMENT_ID,
   installFakeEnvironment,
@@ -146,6 +149,8 @@ async function withSidebar(
         "jones:workstreams:thread-expanded:alpha",
         "jones:workstreams:thread-limit:beta",
         "jones:workstreams:thread-expanded:beta",
+        personalStatusFilterKey("alpha"),
+        personalStatusFilterKey("beta"),
       ])
         localStorage.removeItem(key);
     },
@@ -220,6 +225,36 @@ it("traverses displayed Workstreams then Unassigned and skips collapsed groups",
     await vi.waitFor(() =>
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[0]}`),
     );
+  });
+});
+
+it("uses local Workstream status overrides for rendered rows, traversal and numeric jumps", async () => {
+  await withSidebar(async ({ router, rows, visit, step }) => {
+    const setWorking = (id: string) =>
+      writeLocalStorageValue(
+        personalStatusFilterKey(id),
+        "working",
+        "working",
+        Schema.Literals(["working"]),
+      );
+    setWorking("alpha");
+    const globalFilter = page.getByRole("button", { name: /Showing all threads\. Next:/ });
+    await userEvent.click(globalFilter);
+    await userEvent.keyboard("{Enter}{Enter}");
+    await vi.waitFor(() => {
+      expect(rows()).toHaveLength(5);
+      expect(rows().every((id) => id.startsWith("a"))).toBe(true);
+    });
+    const alphaOrder = rows();
+    await visit(alphaOrder[0]!);
+    await step("next", alphaOrder[1]!);
+    setWorking("beta");
+    await vi.waitFor(() => expect(rows()).toEqual([...alphaOrder, "b1"]));
+    await visit(alphaOrder[4]!);
+    await step("next", "b1");
+    await step("previous", alphaOrder[4]!);
+    await userEvent.keyboard("{Meta>}6{/Meta}");
+    await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
   });
 });
 

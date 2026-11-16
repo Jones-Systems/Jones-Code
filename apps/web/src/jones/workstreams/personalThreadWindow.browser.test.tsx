@@ -228,8 +228,8 @@ describe("personal Workstream thread windows", () => {
     expect(rowIds(unassigned)).toEqual(ids(setup.unassigned));
     await expect
       .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
-      .toMatchTextContent(/13 threads/);
-    await expect.element(showAll("Alpha")).toHaveTextContent("Show all 13 threads");
+      .toHaveAccessibleDescription(/13 threads/);
+    await expect.element(showAll("Alpha")).toHaveTextContent("Show all 13");
     await expect.element(showAll("Alpha")).toHaveAttribute("aria-expanded", "false");
     await expect
       .element(page.getByRole("button", { name: "Show all 5 threads in Beta", exact: true }))
