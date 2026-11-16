@@ -257,3 +257,18 @@ it.effect("does not recapture a completed live conversation after a preexisting 
     expect(yield* continuity.hasWork(state.projection.thread.id)).toBe(false);
   }).pipe(Effect.provide(state.layer));
 });
+
+it.effect(
+  "does not recapture a completed live conversation after a preexisting run.interrupt",
+  () => {
+    const state = harness();
+    return Effect.gen(function* () {
+      // `run.interrupt` is the real accepted command type (packages/contracts orchestrationV2).
+      yield* receipt("previous-interrupt", "run.interrupt", state.projection.thread.id);
+      const continuity = yield* Planned.make;
+      yield* continuity.capture({ operationId, binding, continueRunningThreads: true });
+      yield* continuity.activate(proof());
+      expect(yield* continuity.hasWork(state.projection.thread.id)).toBe(false);
+    }).pipe(Effect.provide(state.layer));
+  },
+);

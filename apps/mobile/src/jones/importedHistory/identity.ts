@@ -10,7 +10,7 @@ export class MobileImportedHistoryIdentityUnavailable extends Schema.TaggedError
 ) {}
 export const mobileImportedHistoryIdentity = Effect.fn("mobile.importedHistory.identity")(
   function* (command: ImportedHistoryStart) {
-    const encoded = yield* Schema.encodeEffect(ImportedHistoryStart)(command);
+    const encoded = yield* encodeEffectImportedHistoryStart(command);
     const digest = (value: unknown) =>
       Effect.tryPromise({
         try: () =>
@@ -27,3 +27,5 @@ export const mobileImportedHistoryIdentity = Effect.fn("mobile.importedHistory.i
     };
   },
 );
+
+const encodeEffectImportedHistoryStart = Schema.encodeEffect(ImportedHistoryStart);

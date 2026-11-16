@@ -29,6 +29,11 @@ packaged OS notifications.
 The [usage metrics entry](usage.md) covers totals, model percentages, cache-write
 details, and their focused shared-renderer verification.
 
+The [desktop thread monitor entry](desktop-thread-monitor.md) covers the separate
+right-edge native window, scoped actions, retained drafts and removal cleanup.
+Its native journeys require feature-revision qualification with a real window
+manager; renderer-only checks do not prove minimize or stacking.
+
 The [host-status companion entry](host-status.md) covers telemetry continuity
 across thread, draft, panel and Settings navigation, with focused runtime evidence.
 
@@ -76,8 +81,8 @@ inside chat also need the appropriate host capability.
 ## Evidence and upkeep
 
 The [Workstreams sidebar](workstreams.md) records its bounded assignment and
-details journeys. Its synthetic renderer checks do not qualify a live registry
-connection or native enrollment.
+personal grouping journeys. Its synthetic renderer checks do not qualify
+cross-environment propagation or an installed client.
 
 The source/link review above passed only as documentation inspection. Runtime
 journeys in both entries were **not run**: this docs-only lane has no launched

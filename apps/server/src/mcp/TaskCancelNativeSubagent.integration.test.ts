@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -50,9 +51,6 @@ const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
 const driver = ProviderDriverKind.make("claudeAgent");
 const instanceId = ProviderInstanceId.make("claudeAgent");
 const modelSelection = { instanceId, model: "claude-test" };
-
-// A delegated Claude child ends its turn while a background native subagent it
-// started keeps running (#17154).
 
 it.effect("task_cancel ends a delegated child's background native subagent", () =>
   Effect.scoped(
@@ -163,6 +161,7 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
             ServerSettings.layerTest(),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
             NodeServices.layer,
+            NodeCrypto.layer,
           ),
         ),
       );

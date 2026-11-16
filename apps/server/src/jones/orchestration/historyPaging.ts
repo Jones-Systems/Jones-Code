@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import {
@@ -60,12 +61,9 @@ export const readLocalHistoryPage = Effect.fn("ProjectionStore.readLocalHistoryP
   snapshotSequence: number,
   policy: ThreadHistoryPagePolicy,
 ) {
-  let decoded: ReturnType<typeof decodeThreadHistoryCursor>;
-  try {
-    decoded = decodeThreadHistoryCursor(cursor);
-  } catch {
-    return null;
-  }
+  const parsed = yield* Effect.try(() => decodeThreadHistoryCursor(cursor)).pipe(Effect.option);
+  if (Option.isNone(parsed)) return null;
+  const decoded = parsed.value;
   if (decoded.st !== String(threadId)) return null;
   const sql = yield* SqlClient.SqlClient;
   const columns = sql`turn_item_id, ordinal, run_id, node_id, type,

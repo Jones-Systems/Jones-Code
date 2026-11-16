@@ -1,3 +1,7 @@
+import { environmentServerConfigsAtom } from "../../state/server";
+import { pendingNewThread } from "../../jones/pendingSends/newThread";
+import { pendingSends } from "../../jones/pendingSends/store";
+import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
 import { clearSubmittedComposer } from "./composerSendRecovery";
 import type { ComposerThreadDraftState } from "../../composerDraftStore";
 import {
@@ -9,9 +13,12 @@ import {
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import type {
+  EnvironmentThreadShell,
+  EnvironmentProject,
+} from "@t3tools/client-runtime/state/shell";
 import { useNavigate } from "@tanstack/react-router";
-import { newMessageId } from "~/lib/utils";
+import { newMessageId, newThreadId } from "~/lib/utils";
 import { collapseExpandedComposerCursor } from "../../composer-logic";
 import {
   type ComposerThreadTarget,
@@ -23,13 +30,12 @@ import type { ComposerHandleRef } from "../../composerHandleContext";
 import { releaseDraftAttachments } from "../../lib/attachmentUploadQueue";
 import type { buildMessageContext } from "../../lib/composerContextRecords";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
-import { environmentServerConfigsAtom } from "../../state/server";
-import { threadEnvironment } from "../../state/threads";
-import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
+import { DEFAULT_INTERACTION_MODE } from "../../types";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   boundAttachmentIds,
+  optimisticMessageAttachments,
   type ComposerSendSnapshot,
   type makeThreadErrorSetter,
   withMessageContext,
@@ -46,6 +52,7 @@ import type { useLocalDispatchState } from "./useLocalDispatchState";
 
 interface MultipleModelSendInput {
   readonly environmentId: EnvironmentId;
+  readonly activeThread: EnvironmentThreadShell | undefined;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
   readonly draftId: DraftId | null;
@@ -78,9 +85,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     setThreadError,
   } = input;
   const navigate = useNavigate();
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = usePendingTurn();
   const fanoutSelectionsAtom = draftFanoutSelectionsAtom(routeThreadKey);
   const { sendInFlight: sendInFlightRef, uncertainSubmissions: uncertainSubmissionsRef } =
     draftSendState(routeThreadKey);
@@ -118,6 +123,41 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     readonly isCurrentSend: () => boolean;
   }) => {
     const { attachments: attachmentsSnapshot, messageText } = sendSnapshot;
+    const planned = targets.map((target) => {
+      const retryKey = JSON.stringify([
+        routeThreadKey,
+        target.selection.instanceId,
+        target.selection.model,
+      ]);
+      const uncertainThreadId = uncertainSubmissionsRef.current.get(retryKey);
+      const targetThreadId = uncertainThreadId ?? newThreadId();
+      const messageId = newMessageId();
+      if (!uncertainThreadId) {
+        pendingSends.admit(environmentId, targetThreadId, {
+          id: messageId,
+          role: "user",
+          text: target.text,
+          runId: null,
+          createdAt,
+          updatedAt: createdAt,
+          streaming: false,
+          attachments: optimisticMessageAttachments(attachmentsSnapshot),
+        });
+        if (input.activeThread)
+          pendingSends.attachThread(
+            environmentId,
+            targetThreadId,
+            pendingNewThread(
+              input.activeThread,
+              targetThreadId,
+              target.text.slice(0, 80),
+              target.selection,
+              createdAt,
+            ),
+          );
+      }
+      return { target, retryKey, targetThreadId, messageId };
+    });
     const failedSelections: ModelSelection[] = [];
     let clearedDraft = false;
     let releasedComposer = false;
@@ -159,19 +199,17 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
         appAtomRegistry.get(fanoutSelectionsAtom) === submittedSelections;
       setThreadError(threadId, null);
       const starts = Promise.all(
-        targets.map(async (target) => {
+        planned.map(async ({ target, retryKey, targetThreadId, messageId }) => {
           const started = await startFanoutThread({
-            retryKey: JSON.stringify([
-              routeThreadKey,
-              target.selection.instanceId,
-              target.selection.model,
-            ]),
+            retryKey,
+            targetThreadId,
+            whenAccepted: (callback) =>
+              pendingSends.whenAccepted(environmentId, targetThreadId, messageId, callback),
+            failureKnownUnsent: () =>
+              pendingSends.get(environmentId, targetThreadId, messageId)?.delivery === "failed",
             model: target.selection.model,
             uncertainSubmissions: uncertainSubmissionsRef.current,
             start: (targetThreadId) => {
-              const supportsInlineMessageContext =
-                appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
-                  .capabilities.inlineMessageContext === true;
               return startThreadTurn({
                 environmentId,
                 input: {
@@ -180,26 +218,25 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                     appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)
                       ?.environment.capabilities.worktreeDefaultBase === true,
                   message: {
-                    messageId: newMessageId(),
+                    messageId,
                     role: "user",
                     attachments,
                     ...withMessageContext({
                       text: target.text,
                       context,
-                      supportsInlineMessageContext,
                     }),
                   },
                   modelSelection: target.selection,
                   titleSeed: title,
                   runtimeMode,
-                  interactionMode: target.interactionMode,
+                  interactionMode: DEFAULT_INTERACTION_MODE,
                   bootstrap: {
                     createThread: {
                       projectId: project.id,
                       title,
                       modelSelection: target.selection,
                       runtimeMode,
-                      interactionMode: target.interactionMode,
+                      interactionMode: DEFAULT_INTERACTION_MODE,
                       branch,
                       worktreePath: null,
                       createdAt: createdAt,
@@ -244,6 +281,12 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     });
     if (sendResult._tag === "Failure") {
       const error = squashAtomCommandFailure(sendResult);
+      for (const plannedTarget of planned)
+        pendingSends.failBeforeDispatch(
+          environmentId,
+          plannedTarget.targetThreadId,
+          plannedTarget.messageId,
+        );
       failedSelections.push(...selections);
       setThreadError(threadId, error instanceof Error ? error.message : "Failed to send messages.");
     }

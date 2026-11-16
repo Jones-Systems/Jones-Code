@@ -4,6 +4,7 @@ import { Command, Flag } from "effect/cli";
 
 import { readJonesStartupGateProtocol } from "../jones/updates/trialStartup.ts";
 import { runServicePreflight } from "../cloud/servicePreflight.ts";
+import { QUALIFIED_RECOVERY_PROTOCOL } from "../jones/cloud/qualifiedRuntime.ts";
 import { migrationManifest } from "../persistence/Migrations.ts";
 import { jonesMigrationEntries } from "../jones/persistence/JonesMigrations.ts";
 import { readMigrationPlan } from "../jones/updates/migrationPlan.ts";
@@ -20,6 +21,7 @@ export const servicePreflightCommand = Command.make("__service-preflight", {
           databasePath,
           launcherProtocol,
           startupGateProtocol: readJonesStartupGateProtocol(),
+          qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL,
           migrationPlanResult: readMigrationPlan({
             databasePath,
             upstream: migrationManifest,

@@ -80,7 +80,6 @@ const markUnread = async () => await act(async () => container.querySelector("bu
 async function setupTest(): Promise<AsyncDisposable> {
   let testTimers: Disposable | undefined;
   let initialized = false;
-  let ownedContainer: HTMLDivElement | undefined;
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
@@ -105,7 +104,7 @@ async function setupTest(): Promise<AsyncDisposable> {
     state.visit.mockClear();
     state.unread.mockClear();
     useUiStateStore.setState({ threadLastVisitedAtById: {} });
-    ownedContainer = container = document.createElement("div");
+    container = document.createElement("div");
     root = await renderTest(null, { container: container, router: false });
     initialized = true;
 

@@ -15,19 +15,28 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import {
+  ProviderControlDeadline,
+  ProviderControlOutcomeUnknown,
+  findProviderControlOutcomeUnknown,
+} from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
+import { STOP_CHILD_BUDGET_MS } from "../jones/provider/stopBudgets.ts";
 
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -169,6 +178,7 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         makeProjection({ now, threadId, providerThread, providerTurnId, attemptId }),
       );
       const interruptedThread = yield* Ref.make<OrchestrationV2ProviderThread | null>(null);
+      let unknownControl: ProviderControlOutcomeUnknown | undefined;
       const providerSession = {
         id: oldSessionId,
         driver,
@@ -193,6 +203,15 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         steerTurn: () => Effect.die("unused steerTurn"),
         interruptTurn: ({ providerThread: target, providerTurnId: targetTurnId, preserveGoal }) =>
           Effect.gen(function* () {
+            if (unknownControl !== undefined) {
+              assert.isNumber(yield* ProviderControlDeadline);
+              return yield* new ProviderAdapter.ProviderAdapterInterruptError({
+                driver,
+                providerThreadId: target.id,
+                providerTurnId: targetTurnId,
+                cause: unknownControl,
+              });
+            }
             assert.isTrue(preserveGoal);
             assert.equal(target.providerInstanceId, runtime.instanceId);
             assert.equal(target.providerSessionId, runtime.providerSessionId);
@@ -227,11 +246,22 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         ProjectionStore.ProjectionStoreV2,
         ProjectionStore.ProjectionStoreV2.of({
           apply: () => Effect.void,
+          hasQueuedToolBoundaryWork: () => Effect.die("unused hasQueuedToolBoundaryWork"),
+          getQueuedToolBoundaryContext: () => Effect.die("unused getQueuedToolBoundaryContext"),
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
+          getLimitRecoveryWakeAt: () => Effect.die("unused getLimitRecoveryWakeAt"),
           getOpenRemoteDelegatedTasks: Effect.die("unused getOpenRemoteDelegatedTasks"),
+          getAgentAwarenessSnapshot: () => Effect.die("unused awareness snapshot"),
           getShellSnapshot: () => Effect.die("unused getShellSnapshot"),
+          listActiveSubagentThreadIds: () => Effect.die("unused listActiveSubagentThreadIds"),
+          countThreads: () => Effect.die("unused countThreads"),
+          listActiveShellIndex: () => Effect.die("unused listActiveShellIndex"),
+          listOlderSettledThreads: () => Effect.die("unused listOlderSettledThreads"),
           readShellSnapshot: () => Effect.die("unused readShellSnapshot"),
           getThreadShell: () => Effect.die("unused getThreadShell"),
+          getThreadTitles: () => Effect.die("unused getThreadTitles"),
+          getThreadLinkMetadata: () => Effect.die("unused getThreadLinkMetadata"),
+          findGuestShareThreadId: () => Effect.die("unused findGuestShareThreadId"),
           getThread: () => Ref.get(projection).pipe(Effect.map((state) => state.thread)),
           getSettlementCandidates: () => Effect.die("unused getSettlementCandidates"),
           getThreadsWithPullRequests: () => Effect.die("unused getThreadsWithPullRequests"),
@@ -249,8 +279,11 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
           getTimelinePage: () => Effect.die("Unused timeline read"),
           getTimelinePages: () => Effect.die("Unused timeline read"),
           getMessageCount: () => Effect.die("unused message count"),
+          getSubagentCount: () => Effect.die("unused subagent count"),
+          listAppOwnedChildThreadIds: () => Effect.die("unused listAppOwnedChildThreadIds"),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
           getTurnItem: () => Effect.die("unused turn item read"),
+          getMessagesById: () => Effect.die("unused getMessagesById"),
           getThreadRecords: () => Effect.die("unused record read"),
           getRuntimeRequest: () => Effect.die("unused getRuntimeRequest"),
           getRunningTurnContext: () => Effect.die("unused getRunningTurnContext"),
@@ -277,12 +310,12 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
           getRunMessage: () => Effect.die("not used"),
           isNodeStored: () => Effect.die("not used"),
           canStartQueuedRun: () => Effect.die("not used"),
-          hasQueuedToolBoundaryWork: () => Effect.die("unused tool boundary preflight"),
-          getQueuedToolBoundaryContext: () => Effect.die("unused tool boundary context"),
+          getHeldQueuedRuns: () => Effect.die("not used"),
           getRecoveryThreadIds: () => Effect.die("unused getRecoveryThreadIds"),
           getUnreadableThreadIds: () => Effect.die("unused getUnreadableThreadIds"),
           getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
           getThreadSnapshotWindow: () => Effect.die("unused getThreadSnapshotWindow"),
+          getPullRequestSnapshot: () => Effect.die("unused getPullRequestSnapshot"),
         }),
       );
       const layerSessionManager = Layer.succeed(
@@ -300,6 +333,9 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
           closeInstance: () => Effect.void,
           release: () => Effect.void,
           detach: () => Effect.void,
+          otherWorkingThreads: () => Effect.succeed([]),
+          releaseUnlessBusy: () => Effect.succeed(true),
+          subscribePromptSuggestion: () => Stream.empty,
         }),
       );
       const layerControl = ProviderTurnControlService.layer.pipe(
@@ -377,5 +413,193 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
       assert.deepEqual(current.providerThreads[0], providerThread);
       assert.equal(interrupted?.id, providerThreadId);
       assert.equal(interrupted?.nativeThreadRef?.nativeId, "native-thread:restart-session");
+      unknownControl = new ProviderControlOutcomeUnknown({
+        driver,
+        providerSessionId: oldSessionId,
+        nativeThreadId: "native-thread:restart-session",
+        operation: "interrupt",
+      });
+      yield* Ref.update(projection, (current) => ({
+        ...current,
+        providerThreads: current.providerThreads.map((row) => ({
+          ...row,
+          providerSessionId: oldSessionId,
+        })),
+        providerTurns: current.providerTurns.map((row) => ({
+          ...row,
+          status: "running" as const,
+          completedAt: null,
+        })),
+      }));
+      yield* Effect.gen(function* () {
+        const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+        const result = yield* Effect.exit(
+          control.interrupt({
+            threadId,
+            providerSessionId: oldSessionId,
+            providerThreadId,
+            providerTurnId,
+          }),
+        );
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result)) {
+          assert.strictEqual(findProviderControlOutcomeUnknown(result.cause), unknownControl);
+        }
+      }).pipe(Effect.provide(layerControl));
     }),
+);
+
+const makeStopFixture = (
+  interruptTurn: ProviderAdapter.ProviderAdapterV2SessionRuntime["interruptTurn"],
+) =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:stop-budget");
+    const sessionId = ProviderSessionId.make("provider-session:stop-budget");
+    const providerThreadId = ProviderThreadId.make("provider-thread:stop-budget");
+    const providerTurnId = ProviderTurnId.make("provider-turn:stop-budget");
+    const attemptId = RunAttemptId.make("run-attempt:stop-budget");
+    const providerThread: OrchestrationV2ProviderThread = {
+      id: providerThreadId,
+      driver,
+      providerInstanceId,
+      providerSessionId: sessionId,
+      appThreadId: threadId,
+      ownerNodeId: null,
+      nativeThreadRef: { driver, nativeId: "native-thread:stop-budget", strength: "strong" },
+      nativeConversationHeadRef: {
+        driver,
+        nativeId: "native-head:stop-budget",
+        strength: "strong",
+      },
+      status: "not_loaded",
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const projection = makeProjection({ now, threadId, providerThread, providerTurnId, attemptId });
+    const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+      instanceId: providerInstanceId,
+      driver,
+      providerSessionId: sessionId,
+      providerSession: {
+        id: sessionId,
+        driver,
+        providerInstanceId,
+        status: "running" as const,
+        cwd: "/workspace",
+        model: modelSelection.model,
+        capabilities: CodexProviderCapabilitiesV2,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      },
+      events: Stream.empty,
+      ensureThread: () => Effect.die("unused ensureThread"),
+      resumeThread: () => Effect.die("unused resumeThread"),
+      startTurn: () => Effect.die("unused startTurn"),
+      steerTurn: () => Effect.die("unused steerTurn"),
+      interruptTurn,
+      respondToRuntimeRequest: () => Effect.die("unused respondToRuntimeRequest"),
+      readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
+      rollbackThread: () => Effect.die("unused rollbackThread"),
+      forkThread: () => Effect.die("unused forkThread"),
+    };
+    const layer = ProviderTurnControlService.layer.pipe(
+      Layer.provide(
+        Layer.mock(EventSink.EventSinkV2)({
+          latestSequence: () => Effect.succeed(0),
+          stream: () => Stream.never,
+        }),
+      ),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getProviderControlContext: (_threadId, target) =>
+              Effect.succeed({
+                providerThread: projection.providerThreads.find(
+                  (thread) => thread.id === target.providerThreadId,
+                ),
+                providerTurn: projection.providerTurns.find(
+                  (turn) => turn.id === target.providerTurnId,
+                ),
+                attempt: projection.attempts.find((attempt) => attempt.id === target.attemptId),
+                message: undefined,
+                run: undefined,
+              }),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            get: (providerSessionId) =>
+              Effect.succeed(
+                providerSessionId === sessionId ? Option.some(runtime) : Option.none(),
+              ),
+          }),
+        ),
+      ),
+    );
+    return { layer, threadId, sessionId, providerThreadId, providerTurnId, attemptId };
+  });
+
+it.effect(
+  "hands the adapter the child budget and reports an adapter stop timeout as unresponsive",
+  () =>
+    Effect.gen(function* () {
+      let adapterDeadline: number | undefined;
+      const fixture = yield* makeStopFixture(({ providerThread, providerTurnId }) =>
+        Effect.gen(function* () {
+          adapterDeadline = yield* ProviderControlDeadline;
+          return yield* new ProviderAdapter.ProviderAdapterInterruptTimeoutError({
+            driver,
+            providerThreadId: providerThread.id,
+            providerTurnId,
+            timeoutMs: ProviderSessionManager.PROVIDER_INTERRUPT_TIMEOUT_MS,
+          });
+        }),
+      );
+      const startedAt = yield* Clock.currentTimeMillis;
+      const error = yield* Effect.gen(function* () {
+        const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+        return yield* control
+          .interrupt({
+            threadId: fixture.threadId,
+            providerSessionId: fixture.sessionId,
+            providerThreadId: fixture.providerThreadId,
+            providerTurnId: fixture.providerTurnId,
+          })
+          .pipe(Effect.flip);
+      }).pipe(Effect.provide(fixture.layer));
+
+      assert.equal(adapterDeadline, startedAt + STOP_CHILD_BUDGET_MS);
+      assert.equal(error._tag, "ProviderTurnControlError");
+      assert.nestedPropertyVal(error, "operation", "interrupt");
+      assert.nestedPropertyVal(error, "unresponsive", true);
+    }),
+);
+
+it.effect("fails a restart interrupt that never answers before the session manager's timeout", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeStopFixture(() => Effect.never);
+    yield* Effect.gen(function* () {
+      const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+      const restarting = yield* control
+        .interruptAndAwaitTerminal({
+          threadId: fixture.threadId,
+          providerSessionId: fixture.sessionId,
+          replacementProviderSessionId: ProviderSessionId.make(
+            "provider-session:stop-budget:replacement",
+          ),
+          providerThreadId: fixture.providerThreadId,
+          providerTurnId: fixture.providerTurnId,
+          interruptedAttemptId: fixture.attemptId,
+        })
+        .pipe(Effect.flip, Effect.forkScoped);
+      yield* TestClock.adjust(ProviderSessionManager.PROVIDER_INTERRUPT_TIMEOUT_MS - 1);
+      const error = yield* Fiber.join(restarting);
+      assert.equal(error._tag, "ProviderTurnControlError");
+      assert.nestedPropertyVal(error, "operation", "restart");
+    }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+  }),
 );

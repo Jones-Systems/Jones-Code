@@ -1,4 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Canonical binding hashes and opaque IDs are synchronous server-local primitives.
+import { admissionOperation } from "../threadResultDependencies/RemoteRequestProtocol.ts";
+import { makeDependencyStore } from "../threadResultDependencies/DependencyStore.ts";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
+import * as DependencyChanges from "../threadResultDependencies/DependencyChanges.ts";
+import { canonicalJsonStrict as canonicalJson } from "../remoteDelegation/shared.ts";
+import * as Option from "effect/Option";
 import * as NodeCrypto from "node:crypto";
 import {
   RemoteAdmissionEnvelope,
@@ -113,21 +119,7 @@ export class RemoteAdmission extends Context.Service<
   }
 >()("t3/jones/remoteAdmission/RemoteAdmission") {}
 
-const canonicalJson = (value: unknown): string => {
-  if (value === null || typeof value === "string" || typeof value === "boolean")
-    return JSON.stringify(value);
-  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    return `{${Object.keys(value)
-      .sort()
-      .map(
-        (key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`,
-      )
-      .join(",")}}`;
-  }
-  throw new Error("Admission input must be JSON");
-};
+// Digests use the strict canonical form: input JSON cannot represent is rejected, not dropped.
 const digest = (value: unknown) =>
   NodeCrypto.createHash("sha256").update(canonicalJson(value)).digest("hex");
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -152,12 +144,15 @@ interface Row {
   readonly created_at: string;
   readonly updated_at: string;
 }
+const decodeRemoteAdmissionEnvelopeJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionEnvelope),
+);
+const decodeRemoteAdmissionRecord = Schema.decodeUnknownEffect(RemoteAdmissionRecord);
+
 const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(
   function* (row: Row) {
-    const envelope = yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionEnvelope))(
-      row.envelope_json,
-    );
-    const record = yield* Schema.decodeUnknownEffect(RemoteAdmissionRecord)({
+    const envelope = yield* decodeRemoteAdmissionEnvelopeJson(row.envelope_json);
+    const record = yield* decodeRemoteAdmissionRecord({
       id: row.id,
       idempotencyKey: row.idempotency_key,
       requestDigest: row.request_digest,
@@ -173,18 +168,28 @@ const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(
       updatedAt: row.updated_at,
     });
     if (digest({ version: 1, envelope }) !== record.bindingDigest) {
-      return yield* Effect.fail(new RemoteAdmissionBindingMismatch({}));
+      return yield* new RemoteAdmissionBindingMismatch({});
     }
     return record;
   },
   Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })),
 );
+const decodeRemoteAdmissionRequest = Schema.decodeEffect(RemoteAdmissionRequest);
+const decodeRemoteAdmissionReceiverPolicy = Schema.decodeEffect(RemoteAdmissionReceiverPolicy);
 
 const make = Effect.fn("RemoteAdmission.make")(function* <E>(
   evaluate: RemoteAdmissionEvaluator<E>,
   timeoutMs: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const dependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
+  const changes = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
+  const publishDependencyChanges = Option.isNone(changes)
+    ? Effect.void
+    : dependencies.sequence.pipe(
+        Effect.orDie,
+        Effect.flatMap((sequence) => changes.value.publish({ threadIds: [], sequence })),
+      );
   const database = <A>(effect: Effect.Effect<A, AdmissionError | SqlError>) =>
     effect.pipe(
       Effect.catchTags({
@@ -219,7 +224,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
 
   const request: RemoteAdmission["Service"]["request"] = Effect.fn("RemoteAdmission.request")(
     function* (input) {
-      const decoded = yield* Schema.decodeEffect(RemoteAdmissionRequest)(input).pipe(
+      const decoded = yield* decodeRemoteAdmissionRequest(input).pipe(
         Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })),
       );
       const snapshot = yield* Effect.try({
@@ -249,6 +254,14 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
                     return yield* new RemoteAdmissionKeyConflict({});
                   return { record, fresh: false };
                 }
+                const resultOperation = admissionOperation(decoded.envelope);
+                const resultTables =
+                  resultOperation !== undefined && (yield* dependencies.available);
+                if (
+                  resultTables &&
+                  (yield* dependencies.fenced(resultOperation!.origin, resultOperation!.operation))
+                )
+                  return yield* new RemoteAdmissionStateConflict({ status: "fenced" });
                 const id = NodeCrypto.randomUUID();
                 const now = yield* nowIso;
                 const status = decoded.envelope.receiverPolicy.enabled ? "evaluating" : "passed";
@@ -256,6 +269,8 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
         (id,client_id,idempotency_key,request_digest,binding_digest,envelope_json,status,created_at,updated_at)
         VALUES (${id},${decoded.envelope.identity.clientId},${decoded.idempotencyKey},${snapshot.requestDigest},
           ${snapshot.bindingDigest},${snapshot.envelopeJson},${status},${now},${now})`;
+                if (resultTables)
+                  yield* sql`UPDATE jones_remote_admissions SET origin_environment_id = ${resultOperation!.origin}, operation_id = ${resultOperation!.operation} WHERE id = ${id}`;
                 return { record: yield* required(id), fresh: true };
               }),
             ),
@@ -371,7 +386,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
       sql.withTransaction(
         Effect.gen(function* () {
           yield* validateIdentity(input.commandId);
-          const currentPolicy = yield* Schema.decodeEffect(RemoteAdmissionReceiverPolicy)(
+          const currentPolicy = yield* decodeRemoteAdmissionReceiverPolicy(
             input.currentPolicy,
           ).pipe(Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })));
           const record = yield* bound(input);
@@ -412,13 +427,23 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
     );
 
   return RemoteAdmission.of({
-    request,
+    request: Effect.fn("RemoteAdmission.request")((input) =>
+      request(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    ),
     get,
-    resolve,
-    withdraw,
-    claimDispatch,
-    markDispatched,
-    listPending: () =>
+    resolve: Effect.fn("RemoteAdmission.resolve")((input) =>
+      resolve(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    ),
+    withdraw: Effect.fn("RemoteAdmission.withdraw")((input) =>
+      withdraw(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    ),
+    claimDispatch: Effect.fn("RemoteAdmission.claimDispatch")((input) =>
+      claimDispatch(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    ),
+    markDispatched: Effect.fn("RemoteAdmission.markDispatched")((input) =>
+      markDispatched(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    ),
+    listPending: Effect.fn("RemoteAdmission.listPending")(() =>
       database(
         Effect.gen(function* () {
           const rows = yield* sql<Row>`SELECT * FROM jones_remote_admissions
@@ -426,6 +451,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
           return yield* Effect.forEach(rows, decodeRow);
         }),
       ),
+    ),
   });
 });
 

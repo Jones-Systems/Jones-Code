@@ -86,3 +86,30 @@ it.effect("fails closed when an existing selection file cannot be read", () =>
     ),
   ),
 );
+
+it.effect("popup inheritance is authoritative and rejects a conflicting generic prebind", () =>
+  Effect.gen(function* () {
+    const selection = yield* Selection.RenderHostSelection;
+    yield* selection.setDefault({ _tag: "companion", hostId: "later-default" });
+    const key = { threadId: "thread", tabId: "popup" };
+    expect(yield* selection.bind(key, { _tag: "server" })).toEqual({ _tag: "server" });
+    expect(yield* selection.bind(key, { _tag: "server" })).toEqual({ _tag: "server" });
+    yield* selection.release(key);
+    yield* selection.bind(key);
+    expect(yield* Effect.exit(selection.bind(key, { _tag: "server" }))).toMatchObject({
+      _tag: "Failure",
+    });
+    expect(yield* selection.binding(key)).toEqual({ _tag: "companion", hostId: "later-default" });
+    expect(
+      yield* Effect.exit(selection.bind(key, { _tag: "companion", hostId: "different" })),
+    ).toMatchObject({ _tag: "Failure" });
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Selection.layer.pipe(
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "popup-selection-" })),
+        Layer.provide(NodeServices.layer),
+      ),
+    ),
+  ),
+);

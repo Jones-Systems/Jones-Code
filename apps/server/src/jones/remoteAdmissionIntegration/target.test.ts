@@ -7,7 +7,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ScheduledTasks from "../../scheduledTasks/ScheduledTaskService.ts";
@@ -20,15 +19,13 @@ it.effect(
     let root = "/synthetic/reviewed";
     const projects = Layer.succeed(ProjectService.ProjectService, {
       getById: () =>
-        Effect.succeed(
-          Option.some({
-            id: "project",
-            workspaceRoot: root,
-            defaultModelSelection: { instanceId: "claude", model },
-            scripts: [],
-            deletedAt: null,
-          } as unknown as Project),
-        ),
+        Effect.succeedSome({
+          id: "project",
+          workspaceRoot: root,
+          defaultModelSelection: { instanceId: "claude", model },
+          scripts: [],
+          deletedAt: null,
+        } as unknown as Project),
     } as unknown as ProjectService.ProjectService["Service"]);
     const projections = Layer.succeed(ProjectionStore.ProjectionStoreV2, {
       getThreadShell: () =>
@@ -75,15 +72,13 @@ it.effect(
     let workspaceRoot = "/synthetic/scheduled";
     const projects = Layer.succeed(ProjectService.ProjectService, {
       getById: () =>
-        Effect.succeed(
-          Option.some({
-            id: "scheduled-project",
-            workspaceRoot,
-            defaultModelSelection: { instanceId: "claude", model: "default" },
-            scripts: [],
-            deletedAt: null,
-          } as unknown as Project),
-        ),
+        Effect.succeedSome({
+          id: "scheduled-project",
+          workspaceRoot,
+          defaultModelSelection: { instanceId: "claude", model: "default" },
+          scripts: [],
+          deletedAt: null,
+        } as unknown as Project),
     } as unknown as ProjectService.ProjectService["Service"]);
     const projections = Layer.succeed(ProjectionStore.ProjectionStoreV2, {
       getThreadShell: () =>

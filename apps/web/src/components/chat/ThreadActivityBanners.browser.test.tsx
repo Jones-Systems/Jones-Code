@@ -2,7 +2,7 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
 import { render } from "../../../test/render";
 import { makeThreadFixture } from "../../test-fixtures";
-import { childInputBannerItem } from "./ThreadActivityBanners";
+import { childInputNowItem as childInputBannerItem } from "./ThreadActivityBanners";
 
 it("opens each remote child's owning environment from its title and question or approval action", async () => {
   const question = makeThreadFixture({
@@ -24,7 +24,7 @@ it("opens each remote child's owning environment from its title and question or 
     const item = childInputBannerItem({
       childThreadInputs: children,
       parentAwaitingUser: false,
-      onOpenThread: openThread,
+      onOpenThread: (threadId, environmentId) => openThread({ environmentId, threadId }),
     });
     return (
       <>
@@ -47,4 +47,25 @@ it("opens each remote child's owning environment from its title and question or 
     [{ environmentId: "remote-question-environment", threadId: "question-child" }],
     [{ environmentId: "remote-approval-environment", threadId: "approval-child" }],
   ]);
+});
+
+it("keeps a child approval visible while its parent awaits an answer", async () => {
+  const child = makeThreadFixture({
+    id: ThreadId.make("approval-during-parent-question"),
+    title: "Blocked planner",
+    hasPendingApprovals: true,
+  });
+  const item = childInputBannerItem({
+    childThreadInputs: [child],
+    parentAwaitingUser: true,
+    onOpenThread: vi.fn(),
+  });
+  await using screen = await render(
+    <>
+      {item?.title}
+      {item?.actions}
+    </>,
+    { router: false },
+  );
+  await expect.element(screen.getByRole("button", { name: "Open approval" })).toBeVisible();
 });

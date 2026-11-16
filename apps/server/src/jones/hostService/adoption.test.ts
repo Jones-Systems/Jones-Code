@@ -217,6 +217,9 @@ async function populateFixture(root: string, options: FixtureOptions) {
   await NodeFSP.writeFile(NodePath.join(active, "t3"), runtimeExecutable(oldVersion), {
     mode: 0o755,
   });
+  // Ordinary fixtures match the authenticated archive's executable bits regardless of umask.
+  // The historical private-mode case explicitly changes this file to 0700 below.
+  await NodeFSP.chmod(NodePath.join(active, "t3"), 0o755);
   await NodeFSP.writeFile(NodePath.join(active, ".install-complete"), oldVersion, { mode: 0o600 });
   if (options.privateSetup) {
     for (const name of ["client", "node_modules", "resource-monitor"])
@@ -819,6 +822,55 @@ it("archives authenticated private setup evidence before qualification and retai
     },
     { privateSetup: true },
   ));
+it.each([0o077, 0o022])(
+  "adopts the authenticated historical private runtime through its actual hook under umask %s",
+  (umask) =>
+    fixture(
+      async (f) => {
+        const active = NodePath.join(f.runtime, "versions", oldVersion);
+        const provenance = NodePath.join(active, ".jones-provenance.json");
+        for (const directory of [
+          active,
+          ...["client", "node_modules", "resource-monitor"].map((name) =>
+            NodePath.join(active, name),
+          ),
+        ])
+          await NodeFSP.chmod(directory, 0o700);
+        await NodeFSP.chmod(NodePath.join(active, "t3"), 0o700);
+        const before = await NodeFSP.lstat(provenance);
+        const original = await NodeFSP.readFile(provenance, "utf8");
+        const previousUmask = NodeProcess.umask(umask);
+        try {
+          const result = await adoptHost(f.input, f.host);
+          expect((await NodeFSP.stat(NodePath.join(active, "t3"))).mode & 0o777).toBe(0o700);
+          const saved = await readQualifiedRuntimeReceipt(f.base, oldVersion, {
+            platform: "linux",
+            architecture: "x64",
+          });
+          expect(saved.payloadSha256).toBe(
+            result.plan.privateSetupProvenance!.preimage.payloadSha256,
+          );
+          expect(saved.sourceSha).toBe(privateSetupSource);
+          const archived = NodePath.join(
+            result.plan.privateSetupProvenance!.archiveDirectory,
+            ".jones-provenance.json",
+          );
+          const after = await NodeFSP.lstat(archived);
+          expect([after.dev, after.ino, after.uid, after.mode]).toEqual([
+            before.dev,
+            before.ino,
+            before.uid,
+            before.mode,
+          ]);
+          expect(await NodeFSP.readFile(archived, "utf8")).toBe(original);
+          expect(f.commands.some((command) => command.args.includes("restart"))).toBe(true);
+        } finally {
+          NodeProcess.umask(previousUmask);
+        }
+      },
+      { privateSetup: true },
+    ),
+);
 it("enrolls genuine private modes with authenticated 0755 archive extraction under isolated umask 0077", () =>
   fixture(
     async (f) => {
@@ -849,13 +901,19 @@ it("enrolls genuine private modes with authenticated 0755 archive extraction und
         const path = await import("node:path");
         const { extractQualifiedLinuxArchive } = await import(${JSON.stringify(new URL("../cloud/qualifiedArchive.ts", import.meta.url).href)});
         const { enrollQualifiedRuntime, qualifiedPayloadDigest } = await import(${JSON.stringify(new URL("../cloud/qualifiedRuntime.ts", import.meta.url).href)});
-        const { inspectPrivateSetupRuntime, archivePrivateSetupProvenance } = await import(${JSON.stringify(new URL("./privateSetupCompatibility.ts", import.meta.url).href)});
+        const { inspectPrivateSetupRuntime, archivePrivateSetupProvenance, projectAuthenticatedPrivateSetupPayload } = await import(${JSON.stringify(new URL("./privateSetupCompatibility.ts", import.meta.url).href)});
         const input = JSON.parse(process.argv[1]);
         const payload = path.join(input.scratch, "payload");
         await fs.mkdir(payload, { mode: 0o700 });
         await extractQualifiedLinuxArchive(input.archive, payload);
-        assert.equal((await fs.stat(path.join(payload, "t3"))).mode & 0o777, 0o700);
+        assert.equal((await fs.stat(path.join(payload, "t3"))).mode & 0o777, 0o711);
         const preimage = await inspectPrivateSetupRuntime(input.privateSetup);
+        assert.notEqual(await qualifiedPayloadDigest(payload), preimage.payloadSha256);
+        await projectAuthenticatedPrivateSetupPayload({
+          preimage, payloadDirectory: payload, uid: input.privateSetup.uid,
+          artifact: input.privateSetup.artifact,
+        });
+        assert.equal((await fs.stat(path.join(payload, "t3"))).mode & 0o777, 0o700);
         assert.equal(await qualifiedPayloadDigest(payload), preimage.payloadSha256);
         const archive = path.join(input.scratch, "archive");
         const before = await fs.stat(preimage.path);
@@ -2087,3 +2145,71 @@ it("refuses a stale legacy Mac child capability after activation", () =>
     },
     { legacyMac: true },
   ));
+
+it.each([false, true])("plans stable pointer bootstrap without effects (launchd=%s)", (legacyMac) =>
+  fixture(
+    async (f) => {
+      const before = await tree(f.root);
+      const plan = await planHostAdoption({ ...f.input, launcherPointer: true }, f.host);
+      expect(plan.launcherPointer?.program).toBe(NodePath.join(f.runtime, "launcher/t3-launcher"));
+      expect(plan.serviceContents).toContain(NodePath.join(f.runtime, "launcher/t3-launcher"));
+      expect(plan.launcherPointer?.previousServiceSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(await tree(f.root)).toEqual(before);
+    },
+    { legacyMac },
+  ),
+);
+
+it("bootstraps a stable pointer, archives its rollback preimage and checks the effective service program", () =>
+  fixture(async (f) => {
+    const program = NodePath.join(f.runtime, "launcher/t3-launcher");
+    const result = await adoptHost(
+      { ...f.input, launcherPointer: true },
+      {
+        ...f.host,
+        run: async (command) =>
+          command.command === "systemctl" && command.args.includes("--property=ExecStart")
+            ? program
+            : f.host.run(command),
+      },
+    );
+    expect(result.state).toBe("adopted");
+    expect(await NodeFSP.readlink(NodePath.join(f.runtime, "launcher/current"))).toBe(
+      `../versions/${newVersion}`,
+    );
+    const receipt = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8"),
+    );
+    expect(receipt.launcherPointer.shimSha256).toBe(sha(await NodeFSP.readFile(program)));
+    const archive = NodePath.join(f.runtime, "launcher/previous-service-definition");
+    const archived = await NodeFSP.readFile(archive);
+    expect(receipt.launcherPointer.previousServiceSha256).toBe(sha(archived));
+    let rollbackRestarted = false;
+    const rollback = await adoptHost(f.input, {
+      ...f.host,
+      run: async (command) => {
+        const result = await f.host.run(command);
+        if (command.command === "systemctl" && command.args.includes("restart")) {
+          rollbackRestarted = true;
+          const capabilityPath = NodePath.join(f.runtime, UPDATE_CAPABILITY_RECEIPT);
+          const capability = JSON.parse(await NodeFSP.readFile(capabilityPath, "utf8"));
+          await NodeFSP.writeFile(
+            capabilityPath,
+            JSON.stringify({ ...capability, processId: 12348 }),
+          );
+        }
+        return result;
+      },
+      readback: async (plan) => {
+        const live = await f.host.readback(plan);
+        return { ...live, processId: rollbackRestarted ? 12348 : live.processId };
+      },
+    });
+    expect(rollback.state).toBe("adopted");
+    expect(rollback.plan.launcherPointer).toBeUndefined();
+    expect(rollback.plan.serviceContents).toContain(
+      NodePath.join(f.runtime, "versions", newVersion, "t3"),
+    );
+    expect(rollback.plan.serviceContents).not.toContain(program);
+    expect(await NodeFSP.readFile(archive)).toEqual(archived);
+  }));

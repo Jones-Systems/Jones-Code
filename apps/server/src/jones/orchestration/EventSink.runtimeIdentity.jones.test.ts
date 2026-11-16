@@ -12,6 +12,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
@@ -451,3 +452,157 @@ it.effect(
       );
     }).pipe(Effect.provide(testLayer)),
 );
+
+it.effect.each([
+  { title: "no runtime identity", stale: "absent" },
+  { title: "an identity that predates the binding", stale: "unbound" },
+  { title: "the bound generation at an older revision", stale: "older" },
+] as const)(
+  "keeps the stored runtime identity when an update without evidence carries $title",
+  ({ stale }) =>
+    Effect.gen(function* () {
+      const { sink, projection, app, owner, capture } = yield* seedOwner(1);
+      const identity = owner.runtimeIdentity!;
+      const staleIdentity = {
+        requested: { ...identity.requested, model: "stale-request" },
+        observed: { ...identity.observed, model: { status: "unknown" as const } },
+        evidenceRevision: 0,
+      };
+      // A turn-start snapshot emitted outside its producer, as the awaited-task roster was.
+      const stored = yield* sink.write({
+        events: [
+          {
+            id: EventId.make("stale-snapshot"),
+            type: "provider-thread.updated",
+            threadId: app.id,
+            occurredAt: now,
+            payload: {
+              ...owner,
+              status: "idle",
+              runtimeIdentity:
+                stale === "absent"
+                  ? undefined
+                  : stale === "unbound"
+                    ? staleIdentity
+                    : { ...staleIdentity, runtimeGeneration: "producer-1" },
+            },
+          },
+        ],
+      });
+      assert.lengthOf(stored, 1);
+      const row = (yield* projection.getThreadRecords(app.id, ["providerThreads"]))
+        .providerThreads[0]!;
+      assert.equal(row.status, "idle", "the rest of the update still applies");
+      assert.deepEqual(row.runtimeIdentity, identity);
+      // The producer's later events, including its terminal state, must still commit.
+      assert.lengthOf(
+        yield* sink.write({
+          runtimeEvidence: capture,
+          events: [
+            {
+              id: EventId.make("later-bound-state"),
+              type: "provider-thread.updated",
+              threadId: app.id,
+              occurredAt: now,
+              payload: { ...owner, status: "active" },
+            },
+          ],
+        }),
+        1,
+      );
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([
+  { title: "a rollback reset that advances the revision", reset: "revision" },
+  { title: "a different generation", reset: "generation" },
+  // Not stale: the snapshot names the stored generation and revision, so its request applies.
+  { title: "the stored generation and revision with another request", reset: "request" },
+  { title: "a different provider session", reset: "session" },
+] as const)("applies an update without evidence that carries $title", ({ reset }) =>
+  Effect.gen(function* () {
+    const { sink, projection, app, owner } = yield* seedOwner(1);
+    const identity = owner.runtimeIdentity!;
+    const payload =
+      reset === "revision"
+        ? {
+            ...owner,
+            runtimeIdentity: {
+              requested: identity.requested,
+              observed: unobservedRuntimeIdentity(),
+              evidenceRevision: 2,
+            },
+          }
+        : reset === "generation"
+          ? { ...owner, runtimeIdentity: { ...identity, runtimeGeneration: "producer-2" } }
+          : reset === "request"
+            ? {
+                ...owner,
+                runtimeIdentity: {
+                  ...identity,
+                  requested: { ...identity.requested, model: "changed-request" },
+                },
+              }
+            : {
+                ...decodeProviderThread({ ...owner, providerSessionId: "replacement-session" }),
+                runtimeIdentity: undefined,
+              };
+    const stored = yield* sink.write({
+      events: [
+        {
+          id: EventId.make("identity-reset"),
+          type: "provider-thread.updated",
+          threadId: app.id,
+          occurredAt: now,
+          payload,
+        },
+      ],
+    });
+    assert.lengthOf(stored, 1);
+    const row = (yield* projection.getThreadRecords(app.id, ["providerThreads"]))
+      .providerThreads[0]!;
+    assert.deepEqual(row.runtimeIdentity, payload.runtimeIdentity);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("reports a rejected capture once per reason without payload content", () => {
+  const warnings: Array<string> = [];
+  const capturedLogs = Logger.make<unknown, void>(({ message }) => {
+    warnings.push(JSON.stringify(message));
+  });
+  return Effect.gen(function* () {
+    const { sink, app, owner, capture } = yield* seedOwner(1);
+    const replaced = { ...capture, runtimeGeneration: "other-producer" };
+    for (const attempt of [1, 2, 3]) {
+      assert.deepEqual(
+        yield* sink.write({
+          runtimeEvidence: replaced,
+          events: [
+            {
+              id: EventId.make(`rejected-state-${attempt}`),
+              type: "provider-thread.updated",
+              threadId: app.id,
+              occurredAt: now,
+              payload: { ...owner, status: "idle" },
+            },
+          ],
+        }),
+        [],
+      );
+    }
+    const reports = warnings.filter((warning) =>
+      warning.includes("orchestration-v2.runtime-evidence-rejected"),
+    );
+    assert.lengthOf(reports, 1, "a stuck producer must not log every rejected event");
+    const report = reports[0]!;
+    assert.include(report, '"reason":"generation_replaced"');
+    assert.include(report, `"threadId":"${app.id}"`);
+    assert.include(report, `"providerThreadId":"${owner.id}"`);
+    assert.include(report, '"eventTypes":["provider-thread.updated"]');
+    assert.notInclude(report, "native-current", "the report must not carry payload content");
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(testLayer, Logger.layer([capturedLogs], { mergeWithExisting: false })),
+    ),
+  );
+});

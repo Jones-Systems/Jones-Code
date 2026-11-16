@@ -20,9 +20,14 @@
     "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts",
     "apps/server/src/jones/workspaceLifecycle/ManagedConsumer.testkit.ts",
     "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
-    "apps/server/src/jones/workspaceLifecycle/NativeStart.testkit.ts"
+    "apps/server/src/jones/workspaceLifecycle/NativeStart.testkit.ts",
+    "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts",
+    "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/Provenance.ts",
+    "apps/server/src/jones/workspaceLifecycle/Provenance.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/Provenance.integration.test.ts"
   ],
-  "hookPaths": [],
+  "hookPaths": ["apps/server/src/mcp/toolkits/worktree/handlers.ts"],
   "tombstones": [],
   "allowedImports": [
     {
@@ -103,6 +108,86 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Protocol.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeSource.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeOperation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeSource.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/WorktreeMcpService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/worktree/handlers.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/TransitionStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/WorktreeMcpService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/WorktreeMcpService.test.ts",
       "to": "apps/server/src/jones/workspaceLifecycle/Protocol.ts"
     }
   ]

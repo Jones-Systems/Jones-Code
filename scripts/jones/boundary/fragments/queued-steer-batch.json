@@ -63,6 +63,10 @@
     {
       "from": "packages/contracts/src/orchestrationV2.ts",
       "to": "packages/contracts/src/jones/queuedSteerBatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/TransientSteer.ts"
     }
   ]
 }

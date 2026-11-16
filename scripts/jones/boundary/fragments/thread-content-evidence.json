@@ -1,0 +1,24 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-content-evidence",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/threadContentEvidence.ts",
+    "apps/server/src/jones/mcp/threadContentEvidence.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/threadContentEvidence.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestratorMcp.ts",
+      "to": "packages/contracts/src/jones/threadContentEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/mcp/threadContentEvidence.ts"
+    }
+  ]
+}

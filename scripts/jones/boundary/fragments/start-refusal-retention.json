@@ -1,0 +1,61 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "start-refusal-retention",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts",
+    "apps/server/src/jones/startRefusal/Probe.test.ts",
+    "apps/server/src/jones/startRefusal/Probe.ts",
+    "apps/server/src/jones/startRefusal/Store.test.ts",
+    "apps/server/src/jones/startRefusal/Store.ts",
+    "apps/server/src/jones/startRefusal/integration.testkit.ts",
+    "apps/server/src/jones/startRefusal/model.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/startRefusal/model.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/startRefusal/Probe.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/startRefusal/model.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/startRefusal/model.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/startRefusal/Probe.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "packages/shared/src/jones/sqliteReaders/admissionFailure.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    }
+  ]
+}

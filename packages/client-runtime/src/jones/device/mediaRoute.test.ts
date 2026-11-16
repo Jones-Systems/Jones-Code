@@ -97,7 +97,13 @@ function setup(
 function setupStreamRoute() {
   vi.stubGlobal("VideoDecoder", vi.fn());
   vi.stubGlobal("EncodedVideoChunk", vi.fn());
+  // A legacy Android host explicitly advertises AVCC, keeping this fixture on its real WebCodecs path.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json({ stream: { transport: "avcc" } })),
+  );
   const sockets: FakeSocket[] = [];
+  let socketStarted = controlled<void>();
   class FakeSocket {
     static OPEN = 1;
     readyState = 1;
@@ -109,6 +115,7 @@ function setupStreamRoute() {
     constructor(url: string) {
       this.url = url;
       sockets.push(this);
+      socketStarted.resolve();
     }
   }
   vi.stubGlobal("WebSocket", FakeSocket);
@@ -120,7 +127,9 @@ function setupStreamRoute() {
       client = null;
     },
   });
-  const attach = (access: DeviceHubAccess) => {
+  const attach = async (access: DeviceHubAccess) => {
+    socketStarted = controlled<void>();
+    const started = socketStarted;
     client = createDeviceStreamClient(
       { platform: "android", deviceId: "simulator", access },
       { getContext: () => null } as unknown as HTMLCanvasElement,
@@ -136,6 +145,7 @@ function setupStreamRoute() {
     );
     const attached = client;
     attached.start();
+    await started.promise;
     return attached;
   };
   return { ...run, attach, sockets };
@@ -495,7 +505,7 @@ describe("device media route", () => {
       const run = setupStreamRoute();
       await run.manager.start();
       const access = run.current().access!;
-      const stream = run.attach(access);
+      const stream = await run.attach(access);
       const socket = run.sockets[0]!;
       expect(new URL(socket.url).searchParams.get("clientOrigin")).toBe("https://client.example");
       socket.onopen?.();
@@ -531,7 +541,7 @@ describe("device media route", () => {
   it("stops the old input synchronously and never replays gestures or keys onto proxy", async () => {
     const run = setupStreamRoute();
     await run.manager.start();
-    const old = run.attach(run.current().access!);
+    const old = await run.attach(run.current().access!);
     const socket = run.sockets[0]!;
     socket.onopen?.();
     run.ready();
@@ -550,7 +560,7 @@ describe("device media route", () => {
     const classified = run.nextRoute();
     response.resolve(new Response(null, { status: 503 }));
     await classified;
-    const replacement = run.attach(run.current().access!);
+    const replacement = await run.attach(run.current().access!);
     const proxySocket = run.sockets[1]!;
     proxySocket.onopen?.();
     expect(run.sockets).toHaveLength(2);

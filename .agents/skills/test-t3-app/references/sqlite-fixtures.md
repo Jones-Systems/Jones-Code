@@ -10,6 +10,8 @@ The server copies the V1 `state.sqlite` into `statev2.sqlite` only when `statev2
 
 Start the target runtime once before seeding so all migrations have run. Use an isolated base directory. Stop the server before writes to avoid racing application state or an active projection.
 
+A separate private, in-process synthetic-presentation capability can be supplied by a qualified task harness after recovery and before activation. It uses the server's real projection service and one transaction, with exact source, private-home, database, descriptor, ownership and once-only checks. The normal entrypoint provides no capability or public selector. Its use requires prior consumer-inertness and reader-root isolation proof; it creates no executable history or native callback. This does not authorize external SQLite writes while a server is running.
+
 ## Use the helper
 
 List tables:

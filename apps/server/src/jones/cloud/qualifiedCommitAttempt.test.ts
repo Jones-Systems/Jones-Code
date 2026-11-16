@@ -83,3 +83,13 @@ it("names version drift without attempting to refresh or treating equal versions
   expect(notice).toContain("t3 jones host adopt");
   expect(notice?.endsWith("\n")).toBe(true);
 });
+
+it("reports automatic pointer handoff status while older hosts keep their planned refresh advice", () => {
+  for (const status of ["waiting", "requested", "rejected"] as const) {
+    const notice = launcherDriftNotice("old", "new", status);
+    expect(notice).toContain("automatic launcher handoff");
+    expect(notice).not.toContain("t3 jones host adopt");
+    expect(launcherDriftNotice("same", "same", status)).toBeUndefined();
+  }
+  expect(launcherDriftNotice("old", "new")).toContain("t3 jones host adopt");
+});

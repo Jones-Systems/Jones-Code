@@ -9,8 +9,10 @@ import {
   type ThreadConfigurationEvidence,
   type ThreadExecutionPrecondition,
 } from "@t3tools/contracts";
+import { makeOwnerSelectionStore } from "./ownerSelectionStore.ts";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -31,6 +33,8 @@ import {
   nativeCreationCanonicalJson as canonical,
   nativeCreationSha256 as digest,
 } from "../nativeCreation/NativeCreationPreparation.ts";
+import { selectionAdmissionReason } from "./selectionAdmission.ts";
+import { readSelectionEventRevision } from "./selectionRevision.ts";
 
 export class ThreadSelfConfigurationError extends Schema.TaggedError<ThreadSelfConfigurationError>()(
   "ThreadSelfConfigurationError",
@@ -80,16 +84,16 @@ const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService;
   const transitions = yield* Switch.ProviderSwitchServiceV2;
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
-  const generationNamespace = yield* crypto.randomUUIDv4();
+  const ownerSelections = makeOwnerSelectionStore(sql, makeJonesTablePresence(sql));
+  const crypto = yield* SecureRandom.SecureRandom;
+  const generationNamespace = yield* crypto.uuidV4();
   let nextGeneration = 0;
   const residentGenerations = new WeakMap<object, string>();
-  const revision = (threadId: ThreadId) =>
-    sql<{ revision: number }>`
-    SELECT COALESCE(MAX(sequence), 0) AS revision FROM orchestration_events
-    WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${threadId}
-      AND event_type IN ('thread.created', 'thread.model-selection-updated', 'thread.provider-switched')
-  `.pipe(Effect.map((rows) => rows[0]?.revision ?? 0));
+  const revision = Effect.fn("ThreadSelfConfiguration.revision")(function* (threadId: ThreadId) {
+    const events = yield* readSelectionEventRevision(sql, threadId);
+    const owner = yield* ownerSelections.read(threadId);
+    return Math.max(events, owner?.resultSequence ?? 0);
+  });
   const snapshot = Effect.fn("ThreadSelfConfiguration.snapshot")(function* (
     threadId: ThreadId,
     scope: McpInvocationScope,
@@ -233,45 +237,15 @@ const make = Effect.gen(function* () {
           if (Option.isNone(registry))
             return yield* new ThreadSelfConfigurationError({ reason: "provider_unavailable" });
           const providers = yield* registry.value.getProviders;
-          const provider = providers.find(
-            (provider) => provider.instanceId === input.modelSelection.instanceId,
-          );
           const config = yield* settings.getSettings;
-          const projectEnabled =
-            config.projectSettingsOverrides[initial.projection.thread.projectId]
-              ?.providerInstances?.[input.modelSelection.instanceId]?.enabled;
-          if (
-            provider === undefined ||
-            !provider.enabled ||
-            !provider.installed ||
-            projectEnabled === false
-          )
-            return yield* new ThreadSelfConfigurationError({ reason: "provider_unavailable" });
-          const model = provider.models.find(
-            (model) =>
-              model.slug === input.modelSelection.model &&
-              (model.isCustom ||
-                !config.providerModelPreferences?.[provider.instanceId]?.hiddenModels.includes(
-                  model.slug,
-                )),
-          );
-          if (model === undefined)
-            return yield* new ThreadSelfConfigurationError({ reason: "invalid_selection" });
-          const seen = new Set<string>();
-          for (const option of input.modelSelection.options ?? []) {
-            const descriptor = model.capabilities?.optionDescriptors?.find(
-              (descriptor) => descriptor.id === option.id,
-            );
-            if (
-              seen.has(option.id) ||
-              descriptor === undefined ||
-              (descriptor.type === "boolean"
-                ? typeof option.value !== "boolean"
-                : !descriptor.options.some((choice) => choice.id === option.value))
-            )
-              return yield* new ThreadSelfConfigurationError({ reason: "invalid_selection" });
-            seen.add(option.id);
-          }
+          const admissionReason = selectionAdmissionReason({
+            providers,
+            selection: input.modelSelection,
+            settings: config,
+            projectId: initial.projection.thread.projectId,
+          });
+          if (admissionReason !== null)
+            return yield* new ThreadSelfConfigurationError({ reason: admissionReason });
           yield* transitions
             .plan({ projection: initial.projection, targetModelSelection: input.modelSelection })
             .pipe(

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -26,6 +27,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   prefix: "claude-driver-evaluator-capability-",
 }).pipe(
   Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(NodeCrypto.layer),
   Layer.provideMerge(IdAllocator.layer),
   Layer.provideMerge(McpProviderSessions.layer),
   Layer.provideMerge(Layer.mock(ClaudeAdapterV2.ClaudeAgentSdkQueryRunner)({})),
@@ -55,6 +57,35 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
 const layerTest = ProviderHostLive.layer.pipe(Layer.provideMerge(layerDeps));
 
 it.layer(layerTest)("ClaudeDriver evaluator capability", (it) => {
+  it.effect("binds a default native account to provider HOME without changing server HOME", () =>
+    Effect.gen(function* () {
+      const original = {
+        HOME: process.env.HOME,
+        CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+      };
+      const fs = yield* FileSystem.FileSystem;
+      const providerHome = yield* fs.makeTempDirectoryScoped({ prefix: "claude-driver-home-" });
+      const instance = yield* ClaudeDriver.create({
+        instanceId: ProviderInstanceId.make("synthetic-native-default"),
+        displayName: "Synthetic native default",
+        environment: [{ name: "HOME", value: providerHome, sensitive: false }],
+        enabled: false,
+        config: { ...ClaudeDriver.defaultConfig(), enabled: false, homePath: "" },
+      }).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.die("Disabled binding must not spawn")),
+        ),
+      );
+      expect(instance.continuationIdentity.continuationKey).toBe(
+        `claude:home:${providerHome}/.claude`,
+      );
+      expect({ HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR }).toEqual(
+        original,
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.effect.each([
     { launchArgs: "", supported: true },
     { launchArgs: "--tools Read Bash --setting-sources user,local", supported: true },
@@ -83,6 +114,6 @@ it.layer(layerTest)("ClaudeDriver evaluator capability", (it) => {
         expect(snapshot.status).toBe("disabled");
         expect(instance.orchestrationAdapter).toBeDefined();
         expect(instance.textGeneration).toBeDefined();
-      }).pipe(Effect.scoped),
+      }).pipe(Effect.scoped, Effect.provide(NodeCrypto.layer)),
   );
 });

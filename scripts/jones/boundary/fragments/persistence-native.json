@@ -7,6 +7,7 @@
   ],
   "hookPaths": [
     "apps/server/src/persistence/DatabaseMaintenance.ts",
+    "apps/server/src/persistence/DatabaseStorage.ts",
     "apps/server/src/persistence/Migrations.ts",
     "apps/server/src/orchestration-v2/EffectOutbox.ts",
     "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
@@ -34,6 +35,10 @@
   "allowedImports": [
     {
       "from": "apps/server/src/persistence/DatabaseMaintenance.ts",
+      "to": "apps/server/src/jones/persistence/settlementCompactionPreflight.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/DatabaseStorage.ts",
       "to": "apps/server/src/jones/persistence/settlementCompactionPreflight.ts"
     },
     {
@@ -135,6 +140,30 @@
     {
       "from": "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
       "to": "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+      "to": "apps/server/src/terminal/NativeSetupControl.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationRepository.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationAuthority.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationRepository.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecution.ts"
     }
   ]
 }

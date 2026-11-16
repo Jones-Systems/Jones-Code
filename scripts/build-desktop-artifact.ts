@@ -25,6 +25,15 @@ import desktopPackageJson from "../apps/desktop/package.json" with { type: "json
 import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
+import { requireProductionProfile } from "./jones/signing/profile.ts";
+import { planCliArchiveDependencies } from "./jones/packaging/cliArchiveDependencies.ts";
+import {
+  desktopAppId,
+  nativePasskeysEnabled,
+  productionSigning,
+  requireProductionBuild,
+  requireProductionPasskeys,
+} from "./jones/signing/policy.ts";
 import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
 import {
   applyCompanionPackageVariant,
@@ -706,6 +715,15 @@ export class DesktopBuildDistDirectoryMissingError extends Schema.TaggedError<De
   }
 }
 
+export class DesktopBuildArtifactCopyError extends Schema.TaggedError<DesktopBuildArtifactCopyError>()(
+  "DesktopBuildArtifactCopyError",
+  { from: Schema.String, to: Schema.String, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return `Failed to copy build artifact ${this.from} to ${this.to}.`;
+  }
+}
+
 export class DesktopBuildNoArtifactsProducedError extends Schema.TaggedError<DesktopBuildNoArtifactsProducedError>()(
   "DesktopBuildNoArtifactsProducedError",
   {
@@ -1039,15 +1057,15 @@ export const LINUX_FILE_EXCLUSIONS = [
   "!**/node_modules/node-pty/prebuilds/darwin-*/**/*",
 ] as const;
 
-// node-pty publishes both Darwin prebuilds in one package. Single-architecture
-// apps only need the native target; universal apps need both.
+// Native packages (node-pty, objc-js) ship prebuilds for both Darwin architectures; only universal
+// apps need both. macOS 27 warns that an arm64 app holding x64-only code won't open on macOS 28.
 export function resolveMacFileExclusions(arch?: typeof BuildArch.Type) {
   if (arch === undefined || arch === "universal") {
     return [...MAC_FILE_EXCLUSIONS];
   }
 
   const unusedArch = arch === "arm64" ? "x64" : "arm64";
-  return [...MAC_FILE_EXCLUSIONS, `!**/node_modules/node-pty/prebuilds/darwin-${unusedArch}/**/*`];
+  return [...MAC_FILE_EXCLUSIONS, `!**/node_modules/**/prebuilds/darwin-${unusedArch}/**/*`];
 }
 // Windows ships the server tree (bundle + node_modules) as a separate
 // resources/server.asar sidecar instead of loose files: the NSIS installer then
@@ -1350,7 +1368,7 @@ export function resolveMacPasskeySigningConfiguration(
   }
 
   return {
-    appId: DESKTOP_APP_ID,
+    appId: desktopAppId(env, DESKTOP_APP_ID),
     teamId,
     rpDomains: uniqueRpDomains,
     provisioningProfilePath,
@@ -1508,6 +1526,19 @@ export function resolveMergedStageDependencies(input: {
   };
 }
 
+export const planDesktopStageDependencies = (
+  input: Parameters<typeof planCliArchiveDependencies>[0],
+) =>
+  Effect.try({
+    try: () => planCliArchiveDependencies(input),
+    catch: (cause) =>
+      new DesktopBuildDependencyResolutionError({
+        kind: "desktop-runtime",
+        manifestPath: "pnpm-lock.yaml",
+        cause,
+      }),
+  });
+
 /** Cursor's helper lookup falls through the archive to this real resources tree. */
 export const stageCursorSdkPlatformPackages = Effect.fn("stageCursorSdkPlatformPackages")(
   function* (nodeModulesDir: string, destination: string) {
@@ -1580,11 +1611,9 @@ export function resolveKeyringNativeArtifacts(
 }
 
 /**
- * Same nesting problem as the Clerk passkey binaries: pnpm keeps the platform
- * package under `@napi-rs/keyring`, electron-builder only retains collected
- * top-level dependencies, and the generated loader checks for a sibling
- * `keyring.<platform>.node` before falling back to the package. Staging the
- * binary beside `index.js` lets that first branch win.
+ * pnpm nests the platform package under @napi-rs/keyring, but electron-builder retains
+ * only collected top-level dependencies. Stage keyring.<platform>.node beside index.js
+ * so the generated loader's sibling lookup succeeds before package fallback.
  */
 const stageKeyringNativeBinaries = Effect.fn("stageKeyringNativeBinaries")(function* (
   stageAppDir: string,
@@ -2188,7 +2217,7 @@ const NativeMarkerManifest = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   optionalDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
-const decodeNativeMarkerManifest = Schema.decodeUnknownSync(
+const decodeNativeMarkerManifest = Schema.decodeUnknownOption(
   Schema.fromJsonString(NativeMarkerManifest),
 );
 
@@ -2228,13 +2257,12 @@ const hasNativeLoaderMarkers = Effect.fn("hasNativeLoaderMarkers")(function* (pa
   if (!(yield* exists(manifestPath))) return false;
   const source = yield* fs.readFileString(manifestPath).pipe(Effect.orElseSucceed(() => ""));
   if (source === "") return false;
-  const manifest = yield* Effect.try(() => decodeNativeMarkerManifest(source)).pipe(
-    Effect.orElseSucceed(() => null),
-  );
-  if (manifest === null) return false;
-  return Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies }).some(
-    (dependency) => dependency.startsWith("node-gyp-build"),
-  );
+  const manifest = decodeNativeMarkerManifest(source);
+  if (Option.isNone(manifest)) return false;
+  return Object.keys({
+    ...manifest.value.dependencies,
+    ...manifest.value.optionalDependencies,
+  }).some((dependency) => dependency.startsWith("node-gyp-build"));
 });
 
 export const copyDirectoryPreservingSymlinks = Effect.fn("copyDirectoryPreservingSymlinks")(
@@ -2877,7 +2905,14 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   variant?: DesktopPackageVariant,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    afterPack: (yield* Path.Path).join(
+      yield* RepoRoot,
+      platform === "linux"
+        ? "scripts/linux-after-pack.ts"
+        : "scripts/prepare-server-compile-cache.cjs",
+    ),
+    appId: desktopAppId(process.env, DESKTOP_APP_ID),
+    ...(productionSigning(process.env) ? { forceCodeSigning: true } : {}),
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
@@ -2897,7 +2932,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // not inflate the loose-file count and slow NSIS installation.
     ...(platform === "win"
       ? { asar: { smartUnpack: false }, asarUnpack: [WINDOWS_NATIVE_ASAR_UNPACK_GLOB] }
-      : {}),
+      : { asarUnpack: ["**/node_modules/@transcribe-cpp/**/*.{dylib,so,so.*}"] }),
     extraResources: [
       ...DESKTOP_EXTRA_RESOURCES,
       ...(platform === "linux" ? LINUX_CAPTURE_EXTRA_RESOURCES : []),
@@ -2929,6 +2964,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
     buildConfig.mac = {
+      ...(productionSigning(process.env) ? { notarize: false, hardenedRuntime: true } : {}),
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
@@ -2937,6 +2973,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         NSLocalNetworkUsageDescription:
           "T3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
+        NSCalendarsUsageDescription:
+          "Commands you run in T3 Code may need access to your calendars.",
+        NSCalendarsFullAccessUsageDescription:
+          "Commands you run in T3 Code may need to read and write your calendar events.",
+        NSCalendarsWriteOnlyAccessUsageDescription:
+          "Commands you run in T3 Code may need to add events to your calendars.",
         NSScreenCaptureUsageDescription:
           "T3 Code captures the active window when you use the window capture shortcut.",
         NSCameraUsageDescription:
@@ -3660,6 +3702,42 @@ export const validateWindowsPackagedPayload = Effect.fn(
   return { packagedAppDir, fileCount, unpackedFiles } as const;
 });
 
+export class MacPackagedAppMissingError extends Schema.TaggedError<MacPackagedAppMissingError>()(
+  "MacPackagedAppMissingError",
+  { stageDistDir: Schema.String },
+) {
+  override get message(): string {
+    return `Expected electron-builder to leave a packaged .app with Contents/Resources/app.asar under ${this.stageDistDir}/mac*.`;
+  }
+}
+
+export const validateMacPackagedPayload = Effect.fn("desktopArtifact.validateMacPackagedPayload")(
+  function* (input: { readonly stageDistDir: string; readonly verbose?: boolean }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const asarPaths: string[] = [];
+    for (const entry of yield* fs.readDirectory(input.stageDistDir)) {
+      if (!entry.startsWith("mac")) continue;
+      const outputDir = path.join(input.stageDistDir, entry);
+      const apps = yield* fs.readDirectory(outputDir).pipe(Effect.orElseSucceed(() => []));
+      for (const app of apps) {
+        if (app.endsWith(".app")) {
+          asarPaths.push(path.join(outputDir, app, "Contents/Resources/app.asar"));
+        }
+      }
+    }
+    if (asarPaths.length === 0) {
+      return yield* new MacPackagedAppMissingError({ stageDistDir: input.stageDistDir });
+    }
+    for (const asarPath of asarPaths) {
+      yield* verifyPackagedBundleIsSelfContained({ asarPath, verbose: input.verbose ?? false });
+    }
+    yield* Effect.log(
+      `[desktop-artifact] Validated macOS payload (${String(asarPaths.length)} app bundle(s)).`,
+    );
+  },
+);
+
 export const allocateDesktopStageRoot = Effect.fn("allocateDesktopStageRoot")(function* (
   platform: typeof BuildPlatform.Type,
   keepStage: boolean,
@@ -3678,6 +3756,7 @@ export const allocateDesktopStageRoot = Effect.fn("allocateDesktopStageRoot")(fu
 const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(function* (
   options: ResolvedBuildOptions,
 ) {
+  requireProductionBuild(process.env, options);
   const repoRoot = yield* RepoRoot;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -3913,7 +3992,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
   const configuredMacPasskeySigning =
-    options.variant !== "preview-companion" && options.platform === "mac" && options.signed
+    options.variant !== "preview-companion" &&
+    options.platform === "mac" &&
+    options.signed &&
+    nativePasskeysEnabled(loadRepoEnv({ repoRoot }))
       ? yield* Effect.try({
           try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
@@ -3938,10 +4020,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
       });
     }
-    macWebAuthn = resolveMacWebAuthnEntitlements(
-      yield* fs.readFileString(macPasskeySigning.provisioningProfilePath),
-      macPasskeySigning,
-    );
+    const macProfile = yield* fs.readFileString(macPasskeySigning.provisioningProfilePath);
+    requireProductionProfile(process.env, macProfile, macPasskeySigning.rpDomains);
+    macWebAuthn = resolveMacWebAuthnEntitlements(macProfile, macPasskeySigning);
+    requireProductionPasskeys(process.env, macWebAuthn);
     yield* Effect.log(
       `[desktop-artifact] In-app browser passkeys: Touch ID ${macWebAuthn.touchIdKeychainAccessGroup ? "enabled" : "disabled"}, browser passkeys ${macWebAuthn.browserPasskeys ? "enabled" : "disabled"}.`,
     );
@@ -3951,7 +4033,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     );
   }
 
-  const stageDependencies =
+  const resolvedStageDependencies =
     options.platform === "win"
       ? { ...resolvedDesktopRuntimeDependencies }
       : resolveMergedStageDependencies({
@@ -3961,10 +4043,20 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
           arch: options.arch,
           fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
         });
-  const stagePatchedDependencies = createStagePatchedDependencies(
-    workspacePatchedDependencies,
-    stageDependencies,
-  );
+  const { dependencies: stageDependencies, patchedDependencies: stagePatchedDependencies } =
+    options.platform === "win"
+      ? {
+          dependencies: resolvedStageDependencies,
+          patchedDependencies: createStagePatchedDependencies(
+            workspacePatchedDependencies,
+            resolvedStageDependencies,
+          ),
+        }
+      : yield* planDesktopStageDependencies({
+          dependencies: resolvedStageDependencies,
+          patchedDependencies: workspacePatchedDependencies,
+          lockfile: yield* fs.readFileString(path.join(repoRoot, "pnpm-lock.yaml")),
+        });
   const windowsServerAsarPath =
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
@@ -4195,19 +4287,14 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     });
   }
 
-  const stageEntries = yield* fs.readDirectory(stageDistDir);
-  yield* fs.makeDirectory(options.outputDir, { recursive: true });
-
-  const copiedArtifacts: string[] = [];
-  for (const entry of stageEntries) {
-    const from = path.join(stageDistDir, entry);
-    const stat = yield* fs.stat(from).pipe(Effect.orElseSucceed(() => null));
-    if (!stat || stat.type !== "File") continue;
-
-    const to = path.join(options.outputDir, entry);
-    yield* fs.copyFile(from, to);
-    copiedArtifacts.push(to);
+  if (options.platform === "mac") {
+    yield* validateMacPackagedPayload({ stageDistDir, verbose: options.verbose });
   }
+  const copiedArtifacts = yield* copyDesktopBuildArtifacts(
+    stageDistDir,
+    options.outputDir,
+    options.target === "dir",
+  );
 
   if (copiedArtifacts.length === 0) {
     return yield* new DesktopBuildNoArtifactsProducedError({
@@ -4227,6 +4314,43 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 ) {
   const repoRoot = yield* RepoRoot;
   return yield* withDesktopBuildLock(repoRoot, buildDesktopArtifactUnlocked(options));
+});
+
+export const copyDesktopBuildArtifacts = Effect.fn("copyDesktopBuildArtifacts")(function* (
+  stageDistDir: string,
+  outputDir: string,
+  includeDirectories = false,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const stageEntries = yield* fs.readDirectory(stageDistDir);
+  yield* fs.makeDirectory(outputDir, { recursive: true });
+
+  const copiedArtifacts: string[] = [];
+  for (const entry of stageEntries) {
+    const from = path.join(stageDistDir, entry);
+    const stat = yield* fs.stat(from).pipe(Effect.orElseSucceed(() => null));
+    if (!stat || (stat.type !== "File" && !(includeDirectories && stat.type === "Directory")))
+      continue;
+
+    const to = path.join(outputDir, entry);
+    // Replace whatever a reused output dir already holds at this path. fs.cp refuses to
+    // overwrite a directory with a file or a file with a directory, and only merges into
+    // an existing directory, so a stale entry of either type must go first.
+    yield* fs.remove(to, { recursive: true, force: true });
+    yield* Effect.tryPromise({
+      try: () =>
+        NodeFSP.cp(from, to, {
+          recursive: true,
+          force: true,
+          verbatimSymlinks: true,
+        }),
+      catch: (cause) => new DesktopBuildArtifactCopyError({ from, to, cause }),
+    });
+    copiedArtifacts.push(to);
+  }
+
+  return copiedArtifacts;
 });
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {

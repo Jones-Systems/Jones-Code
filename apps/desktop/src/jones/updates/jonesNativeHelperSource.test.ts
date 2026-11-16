@@ -5,8 +5,15 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
+import { jonesNativeHelperSource as productionNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { hashMacApp } from "./jonesMacStaging.ts";
+
+// These fixtures model filesystem/state recovery. Native signature admission has its
+// own command-boundary tests in jonesSigningSource.test.ts.
+const jonesNativeHelperSource = productionNativeHelperSource.replace(
+  "\nparser = argparse.ArgumentParser()",
+  "\nverify_signing_transition = lambda expected, candidate: None\nverify_rollback_signature = lambda expected, retained: None\nparser = argparse.ArgumentParser()",
+);
 
 function runPython(
   source: string,
@@ -33,6 +40,34 @@ async function fixture() {
   return { directory, cleanup: () => cleanupFixture(directory) };
 }
 
+// Historical candidates have complete preparation and recovery records but no live
+// stage/attempt binding. Live activation history remains intact in every fixture.
+const historicalWarmFixture = String.raw`
+def historical_warm(identifier, prior, template, phase='rolled-back'):
+    directory = template.parent / identifier
+    selected = dict(staged, handle=identifier)
+    historical_claim = preparation_claim(prior, selected['handle'], identifier,
+        staging / ('historical-' + identifier + '.json'), '0' * 64)
+    historical_intent = dict(intent, transactionId=identifier, expected=prior, staged=selected,
+        continuationReceipt=str(directory / 'continuation.json'))
+    seed_record(directory / 'prepare-intent.json', historical_claim, True)
+    seed_record(directory / 'prepare-dispatched.json', historical_claim, True)
+    seed_record(directory / 'continuation.json', dict(historical_claim, prepared=True), True)
+    seed_record(directory / 'intent.json', historical_intent, True)
+    for name, marker, field in (('previous-pair', 'pair.json', 'expected'), ('advanced-state', 'retained.json', 'previous')):
+        if not (template / name).exists(): continue
+        shutil.copytree(template / name, directory / name)
+        value = read(directory / name / marker)
+        value[field] = prior
+        seed_record(directory / name / marker, value)
+    stable = pathlib.Path(prior['appPath'])
+    previous = stable.with_name(stable.name + '.jones-previous-' + prior['generation'])
+    if not previous.exists(): shutil.copytree(previous_app, previous)
+    seed_record(directory / 'journal.json', {'intent': historical_intent, 'phase': phase,
+        'pairedState': str(directory / 'previous-pair'), 'previousBundle': str(previous)}, True)
+    return directory
+`;
+
 const activationScenario = String.raw`
 root, fault = pathlib.Path(sys.argv[1]), sys.argv[2]
 def seed_record(path, value, exclusive=False):
@@ -51,7 +86,7 @@ database = home / 'state.sqlite'
 with sqlite3.connect(database) as db:
     db.execute('CREATE TABLE identity (value TEXT)')
     db.execute("INSERT INTO identity VALUES ('previous-state')")
-(home / 'settings.json').write_text('previous-settings')
+(home / 'settings.json').write_text('{"fixture":"previous-settings"}')
 (profile / 'opaque').write_text('same-host-profile')
 previous_app, candidate_app = root / 'previous.app', root / 'candidate.app'
 for app in (previous_app, candidate_app):
@@ -149,12 +184,12 @@ def observed_state_rename(source, target):
     return native_state_rename(source, target)
 os.rename = observed_state_rename
 native_storage_preflight = storage_preflight
-def synthetic_storage_preflight(active, candidate, transaction):
+def synthetic_storage_preflight(active, candidate, transaction, clone_required=False):
     events.append('storage-preflight')
     if fault == 'storage-refused': raise RuntimeError('Insufficient recovery capacity.')
     native_space = os.statvfs
     os.statvfs = lambda path: type('Space', (), {'f_bavail': 1 << 50, 'f_frsize': 1})()
-    try: return native_storage_preflight(active, candidate, transaction)
+    try: return native_storage_preflight(active, candidate, transaction, clone_required)
     finally: os.statvfs = native_space
 storage_preflight = synthetic_storage_preflight
 if fault == 'reserve-denied':
@@ -193,6 +228,8 @@ def synthetic_stop(proofs):
     if fault == 'state-grew': (home / 'desktop-settings.json').write_bytes(bytes(RECOVERY_HEADROOM))
     for proof in proofs:
         if proof.get('pid') == 654: alive(proof)
+    if fault == 'binding-recovery-eperm' and 'candidate-launch' in events:
+        raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
     if fault == 'candidate-stop' and proofs and proofs[0]['pid'] == 456:
         raise RuntimeError('Writer quiescence could not be proved.')
 stop_exact = synthetic_stop
@@ -201,20 +238,21 @@ if fault == 'old-quiescence':
     def fail_quiescence(active): raise RuntimeError('Old native writers remain.')
     prove_quiescence = fail_quiescence
 native_pair = pair_state
-def synthetic_pair(active, directory):
+def synthetic_pair(active, directory, clone_required=False):
     events.append('pair')
     if fault in ('snapshot-failed', 'snapshot-restart-refused'): raise RuntimeError('Profile snapshot did not complete.')
-    return native_pair(active, directory)
+    return native_pair(active, directory, clone_required)
 pair_state = synthetic_pair
 def synthetic_launch(active, descriptor=None):
     if descriptor is None:
         events.append('restart-previous')
         if fault in ('restart-refused', 'snapshot-restart-refused'): raise RuntimeError('Synthetic relaunch refusal')
-        return {'pid': 789, 'identity': 'restored-native-app'}
+        if fault == 'relaunch-eperm': raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
+        return {'pid': 789, 'startSec': 102, 'startUsec': 0, 'executable': active['executablePath']}
     events.append('candidate-launch')
     assert (tx / 'previous-pair' / 'pair.json').exists()
     with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='advanced-state'")
-    (home / 'settings.json').write_text('candidate-settings')
+    (home / 'settings.json').write_text('{"fixture":"candidate-settings"}')
     (profile / 'opaque').write_text('advanced-profile')
     if fault == 'untracked-launch': raise RuntimeError('Candidate identity was not captured.')
     wanted = read(descriptor)
@@ -230,12 +268,13 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'version-mismatch': receipt['version'] = 'wrong-version'
     if fault == 'listener-mismatch': receipt['listener'] = 'http://127.0.0.1:4777'
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
+    if fault == 'kernel-receipt': receipt['backendProcess'] = {'pid': 654, 'startSec': 101, 'startUsec': 0, 'executable': '/synthetic/backend'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
-    if fault in ('trial-mismatch', 'restart-refused', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
+    if fault in ('trial-mismatch', 'restart-refused', 'relaunch-eperm', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
     if fault.startswith('authority-'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
-    return {'pid': 456, 'identity': 'tracked-native-app'}
+    return {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': active['executablePath']}
 launch = synthetic_launch
 def synthetic_identity(pid, deadline=None):
     events.append('identity:' + str(pid))
@@ -247,6 +286,17 @@ def synthetic_identity(pid, deadline=None):
     return None
 process_identity = synthetic_identity
 process_start = lambda pid, deadline=None: ('S', '')
+def synthetic_kernel_sample(pid):
+    events.append('identity:' + str(pid))
+    if pid == 654:
+        if fault == 'dead-backend': raise KernelProcessError('process-exited', 'proc_pidinfo', 3)
+        if fault in ('binding-eperm', 'binding-recovery-eperm'): raise KernelProcessError('process-inspection-failed', 'proc_pidinfo', 1)
+        start = int(time.time()) + 100 if fault == 'changed-backend' else (99 if fault == 'backend-before-candidate' else 101)
+        return {'pid': pid, 'startSec': start, 'startUsec': 0, 'executable': '/synthetic/backend'}, 999 if fault == 'backend-parent' else 456
+    if pid == 456 and fault == 'candidate-gone': raise KernelProcessError('process-exited', 'proc_pidinfo', 3)
+    return {'pid': pid, 'startSec': 100, 'startUsec': 0, 'executable': expected['executablePath']}, 1
+kernel_process_sample = synthetic_kernel_sample
+kernel_process_identity = lambda pid: synthetic_kernel_sample(pid)[0]
 native_durable = durable
 syncing_marker = None
 def synthetic_durable(destination, value, exclusive=False):
@@ -314,8 +364,9 @@ else:
         assert read(manifest_path) == expected
         assert not (tx / 'commit-grant.json').exists()
         assert 'manifest-commit' not in events
-    if fault == 'dead-backend':
-        assert 'stop:2' in events
+    if fault in ('dead-backend', 'changed-backend'):
+        assert 'stop:1' in events
+        assert 'stop:2' not in events
         assert events.count('quiescence') >= 3
     if fault in ('invalid-backend', 'missing-backendProcess'):
         assert 'identity:654' not in events
@@ -323,7 +374,7 @@ else:
         assert 'stop:2' not in events
     if journal['phase'] == 'rolled-back':
         assert state == 'previous-state'
-        assert (home / 'settings.json').read_text() == 'previous-settings'
+        assert (home / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
         assert (profile / 'opaque').read_text() == ('advanced-profile' if 'candidate-launch' in events else 'same-host-profile')
         assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
         if 'preEffect' not in journal and fault not in ('snapshot-failed', 'snapshot-restart-refused', 'state-grew'):
@@ -474,7 +525,7 @@ def manual_launch(active, descriptor=None):
     for name, content in originals.items(): assert (pair / name).read_bytes() == content
     events.append('launched')
     if manual_fault == 'launch-unknown': raise RuntimeError('Synthetic unknown launch effect')
-    return {'pid': 456, 'identity': 'captured-new-process'}
+    return {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': active['executablePath']}
 launch = manual_launch
 refused = ('flag-only', 'plan-only', 'unknown-policy', 'clonefile-unavailable', 'cross-volume')
 if manual_fault in refused:
@@ -595,52 +646,67 @@ assert not list(manifest_path.parent.glob(manifest_path.name + '.*'))
       const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
       const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
       const scenario = String.raw`
-generations = []
-for generation in range(3):
-    if generation:
-        expected = read(manifest_path)
-        transaction_id = str(generation) * 64
-        tx = tx.parent / transaction_id
-        staged = dict(staged, handle=str(generation + 3) * 64, sourceSha=str(generation + 3) * 40, sourceTree=str(generation + 6) * 40)
-        candidate = dict(candidate, source=staged['sourceSha'], tree=staged['sourceTree'], installedSource=expected['sourceSha'])
-        durable(staged['receiptPath'], {'app': staged, 'candidate': candidate,
-            'artifact': {'candidate': candidate, 'payloadPath': str(payload), 'receipt': {'sha256': digest(payload)}}})
-        selection = dict(selection, currentVersion=expected['version'], installedSource=expected['sourceSha'], active=expected, app=staged)
-        selection_path = selection_path.with_name(expected['sourceSha'] + '-' + transaction_id + '.json')
-        durable(selection_path, selection, True)
-        selection_digest = digest(selection_path)
-        attempt_key = hashlib.sha256((str(selection_path) + '\n' + selection_digest).encode()).hexdigest()
-        durable(attempt_path.parent / (attempt_key + '.json'), {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
-        result = selection_command('claim-preparation', expected, staged['handle'], str(selection_path), selection_digest, transaction_id=transaction_id)
-        assert result['status'] == 'preparation-claimed', result
-        claim = read(tx / 'prepare-intent.json')
-        durable(tx / 'prepare-dispatched.json', claim, True)
-        durable(tx / 'continuation.json', dict(claim, prepared=True), True)
-        intent = dict(intent, transactionId=transaction_id, expected=expected, staged=staged, continuationReceipt=str(tx / 'continuation.json'))
-        durable(tx / 'activation-request.json', intent, True)
-        result = selection_command('claim-activation', expected, staged['handle'], str(selection_path), selection_digest, str(tx / 'activation-request.json'), transaction_id)
-        assert result['status'] == 'claimed', result
-        events.clear()
-    activate(tx / 'intent.json')
-    journal = read(tx / 'journal.json')
-    assert journal['phase'] == 'resumed', journal
-    assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves']), 'Successful activation retained recovery reserves'
-    assert (tx / 'previous-pair' / 'state.sqlite').exists()
-    assert pathlib.Path(journal['previousBundle']).is_dir()
-    generations.append(tx)
-    active = read(manifest_path)
-    assert retirement_command('inspect-retirement', active, transaction_id)['reason'] == 'protected-generation'
-    if generation:
-        assert retirement_command('inspect-retirement', active, generations[-2].name)['reason'] == 'protected-recovery-parent'
-        assert (generations[-2] / 'previous-pair' / 'state.sqlite').exists()
-acquire_writer_exclusion = native_exclusion
-oldest = generations[0]
-inspected = retirement_command('inspect-retirement', active, oldest.name)
-assert inspected['status'] == 'ready', inspected
-retired = retirement_command('retire-transaction', active, oldest.name, inspected['planSha256'])
-assert retired['status'] == 'retired', retired
-assert not (oldest / 'previous-pair' / 'state.sqlite').exists()
-assert all((generation / 'previous-pair' / 'state.sqlite').exists() for generation in generations[1:])
+${historicalWarmFixture}
+with open(manifest_path.with_name('jones-activation.lock'), 'w+') as retention_lock:
+    retention_lock.write('jones-activation-lock-v1\n'); retention_lock.flush()
+    fcntl.flock(retention_lock, fcntl.LOCK_EX)
+    retention_exclusion_held = True
+    retention_exclusion_descriptor = retention_lock.fileno()
+    try:
+        generations = []
+        for generation in range(3):
+            if generation:
+                expected = read(manifest_path)
+                transaction_id = str(generation) * 64
+                tx = tx.parent / transaction_id
+                staged = dict(staged, handle=str(generation + 3) * 64, sourceSha=str(generation + 3) * 40, sourceTree=str(generation + 6) * 40)
+                candidate = dict(candidate, source=staged['sourceSha'], tree=staged['sourceTree'], installedSource=expected['sourceSha'])
+                durable(staged['receiptPath'], {'app': staged, 'candidate': candidate,
+                    'artifact': {'candidate': candidate, 'payloadPath': str(payload), 'receipt': {'sha256': digest(payload)}}})
+                selection = dict(selection, currentVersion=expected['version'], installedSource=expected['sourceSha'], active=expected, app=staged)
+                selection_path = selection_path.with_name(expected['sourceSha'] + '-' + transaction_id + '.json')
+                durable(selection_path, selection, True)
+                selection_digest = digest(selection_path)
+                attempt_key = hashlib.sha256((str(selection_path) + '\n' + selection_digest).encode()).hexdigest()
+                durable(attempt_path.parent / (attempt_key + '.json'), {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
+                result = selection_command('claim-preparation', expected, staged['handle'], str(selection_path), selection_digest, transaction_id=transaction_id)
+                assert result['status'] == 'preparation-claimed', result
+                claim = read(tx / 'prepare-intent.json')
+                durable(tx / 'prepare-dispatched.json', claim, True)
+                durable(tx / 'continuation.json', dict(claim, prepared=True), True)
+                intent = dict(intent, transactionId=transaction_id, expected=expected, staged=staged, continuationReceipt=str(tx / 'continuation.json'))
+                durable(tx / 'activation-request.json', intent, True)
+                result = selection_command('claim-activation', expected, staged['handle'], str(selection_path), selection_digest, str(tx / 'activation-request.json'), transaction_id)
+                assert result['status'] == 'claimed', result
+                events.clear()
+            activate(tx / 'intent.json')
+            journal = read(tx / 'journal.json')
+            assert journal['phase'] == 'resumed', journal
+            assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves']), 'Successful activation retained recovery reserves'
+            assert (tx / 'previous-pair' / 'state.sqlite').exists()
+            assert pathlib.Path(journal['previousBundle']).is_dir()
+            generations.append(tx)
+            active = read(manifest_path)
+            assert retirement_command('inspect-retirement', active, transaction_id)['reason'] == 'protected-recovery-parent'
+            if generation:
+                assert retirement_command('inspect-retirement', active, generations[-2].name)['reason'] == 'protected-recovery-parent'
+                assert (generations[-2] / 'previous-pair' / 'state.sqlite').exists()
+        acquire_writer_exclusion = native_exclusion
+        # All three successful generations form a transitive recovery chain.
+        for retained in generations:
+            assert retained.name in install_retention_plan()['snapshot']['warmKeep']
+            inspected = retirement_command('inspect-retirement', active, retained.name)
+            assert inspected['reason'] == 'protected-recovery-parent', inspected
+            assert (retained / 'previous-pair' / 'state.sqlite').exists()
+        obsolete = historical_warm('8' * 64, dict(expected, generation='historical', transactionId='bootstrap'), generations[0])
+        assert obsolete.name not in install_retention_plan()['snapshot']['warmKeep']
+        inspected = retirement_command('inspect-retirement', active, obsolete.name)
+        assert inspected['status'] == 'ready', inspected
+        retired = retirement_command('retire-transaction', active, obsolete.name, inspected['planSha256'])
+        assert retired['status'] == 'retired', retired
+        assert not (obsolete / 'previous-pair' / 'state.sqlite').exists()
+        assert all((generation / 'previous-pair' / 'state.sqlite').exists() for generation in generations)
+    finally: retention_exclusion_held = False
 `;
       runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success"], {
         encoding: "utf8",
@@ -1348,7 +1414,11 @@ def direct_launch(*args, **kwargs):
     return type('Child', (), {'pid': 456})()
 subprocess.run = capture
 subprocess.Popen = direct_launch
-process_identity = lambda pid: 'start ' + active['executablePath']
+proof = {'pid': 456, 'startSec': 100, 'startUsec': 2, 'executable': '/synthetic/ResolvedJonesImage'}
+kernel_process_sample = lambda pid: (dict(proof), 1)
+def forbidden_legacy(*args, **kwargs): raise AssertionError('New launch used legacy process inspection')
+process_identity = process_start = forbidden_legacy
+os.path.samefile = lambda left, right: left == proof['executable'] and right == active['executablePath']
 read = lambda path: {'listener': 'http://127.0.0.1:3777'}
 for descriptor in (None, pathlib.Path('/synthetic/trial.json')):
     calls.clear()
@@ -1367,7 +1437,7 @@ for descriptor in (None, pathlib.Path('/synthetic/trial.json')):
         **{name: os.environ[name] for name in ('HOME', 'TMPDIR', 'USER', 'LOGNAME') if name in os.environ})
     assert options['stdin'] == subprocess.DEVNULL and options['stdout'] == subprocess.PIPE
     assert options['stderr'] == subprocess.DEVNULL and options['timeout'] == 30
-    assert proof == {'pid': 456, 'identity': 'start ' + active['executablePath']}
+    assert proof == {'pid': 456, 'startSec': 100, 'startUsec': 2, 'executable': '/synthetic/ResolvedJonesImage'}
 del os.environ['T3CODE_NATIVE_AUTHORITY_STATE_DIR']
 launch(active)
 assert 'T3CODE_NATIVE_AUTHORITY_STATE_DIR' not in json.loads(calls[-1][0][5])['environment']
@@ -1378,6 +1448,118 @@ assert 'T3CODE_NATIVE_AUTHORITY_STATE_DIR' not in json.loads(calls[-1][0][5])['e
       timeout: 10000,
     });
   });
+
+  it("rolls back with homogeneous kernel candidate and backend proofs without legacy inspection", async () => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+      const scenario = String.raw`
+candidate_proof = {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': str(previous_app / 'Contents/MacOS/Jones')}
+backend_proof = {'pid': 654, 'startSec': 101, 'startUsec': 0, 'executable': '/synthetic/backend'}
+launch_fixture = launch
+def kernel_launch(active, descriptor=None):
+    launch_fixture(active, descriptor)
+    return dict(candidate_proof, pid=789) if descriptor is None else dict(candidate_proof)
+launch = kernel_launch
+def forbidden_legacy(*args, **kwargs): raise AssertionError('New candidate rollback used legacy inspection')
+process_identity = process_start = forbidden_legacy
+bound = False
+def sample(pid):
+    global bound
+    events.append('identity:' + str(pid))
+    if pid == 654: bound = True; return dict(backend_proof), 456
+    return dict(candidate_proof), 1
+kernel_process_sample = sample
+kernel_process_identity = lambda pid: sample(pid)[0]
+original_binding = same_binding
+same_binding = lambda left, right: False if bound and left == right == expected else original_binding(left, right)
+stopped = []
+def capture_stop(proofs):
+    if 'candidate-launch' in events:
+        assert valid_kernel_processes(proofs), proofs
+        stopped.append(proofs)
+    events.append('stop:' + str(len(proofs)))
+stop_exact = capture_stop
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == 'rolled-back', journal
+assert 'Active manifest changed before commit' in journal['message']
+assert stopped == [[candidate_proof, backend_proof]], stopped
+assert journal['candidateWriter'] == candidate_proof and journal['backendWriter'] == backend_proof
+assert journal['trialReceipt']['backendProcess'] == {'pid': 654, 'identity': 'tracked-native-backend'}
+assert read(manifest_path) == expected
+`;
+      runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success"], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "backend-parent",
+    "backend-before-candidate",
+    "changed-backend",
+    "dead-backend",
+    "candidate-gone",
+    "invalid-backend",
+    "missing-backendProcess",
+    "kernel-receipt",
+    "binding-eperm",
+    "binding-recovery-eperm",
+    "relaunch-eperm",
+  ])(
+    "refuses unbound trial writers and retains separate kernel diagnostics for %s",
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const definitions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
+        const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+        const scenario = String.raw`
+stops = []
+fixture_stop = stop_exact
+def observed_stop(proofs):
+    if 'candidate-launch' in events: stops.extend(proofs)
+    return fixture_stop(proofs)
+stop_exact = observed_stop
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == ('blocked' if fault == 'binding-recovery-eperm' else 'rolled-back'), journal
+assert all(proof['pid'] != 654 for proof in stops), stops
+assert 'backendWriter' not in journal
+assert not (tx / 'commit-grant.json').exists() and read(manifest_path) == expected
+if fault in ('invalid-backend', 'missing-backendProcess', 'kernel-receipt'):
+    assert 'identity:654' not in events
+if fault in ('backend-parent', 'backend-before-candidate', 'changed-backend', 'kernel-receipt'):
+    assert 'Candidate did not prove the exact backend process.' in journal['message']
+if fault == 'dead-backend': assert 'Candidate backend stopped before commit.' in journal['message']
+if fault == 'candidate-gone': assert 'Candidate app stopped.' in journal['message']
+if fault in ('binding-eperm', 'binding-recovery-eperm'):
+    assert journal['diagnostics'] == {'error': 'process-inspection-failed', 'call': 'proc_pidinfo', 'errno': 1}
+if fault == 'binding-recovery-eperm':
+    assert journal['recoveryDiagnostics'] == {'error': 'process-inspection-failed', 'call': 'proc_pidpath', 'errno': 1}
+    assert 'restart-previous' not in events
+if fault == 'relaunch-eperm':
+    assert journal['relaunch'] == 'failed'
+    assert journal['relaunchDiagnostics'] == {'error': 'process-inspection-failed', 'call': 'proc_pidpath', 'errno': 1}
+    assert 'Candidate trial identity does not match install intent.' in journal['message']
+`;
+        runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, fault], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        });
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
 
   it("rejects unproved LaunchServices outcomes after one attempt without direct fallback", () => {
     const nativeFunctions = jonesNativeHelperSource.split(
@@ -1392,7 +1574,7 @@ good = {'protocol': 1, 'status': 'launched', 'pid': 456,
 cases = ['timeout', 'os-error', 'nonzero', 'oversized', 'non-ascii', 'malformed', 'list', 'protocol-missing',
          'protocol-wrong', 'protocol-boolean', 'failed', 'unavailable', 'pid-zero', 'pid-negative', 'pid-boolean',
          'pid-string', 'pid-missing', 'bundle-missing', 'bundle-wrong', 'executable-missing', 'executable-wrong',
-         'exited', 'identity-wrong', 'identity-prefix']
+         'exited', 'identity-wrong', 'identity-prefix', 'identity-io', 'identity-eperm']
 for fault in cases:
     calls, direct, observed = [], [], []
     def capture(command, **kwargs):
@@ -1421,17 +1603,22 @@ for fault in cases:
         raise AssertionError('Direct fallback attempted')
     def identity(pid):
         observed.append(pid)
-        if fault == 'exited': return None
-        if fault == 'identity-wrong': return 'start /some/other/app'
-        if fault == 'identity-prefix': return 'start ' + active['executablePath'] + '-substituted'
-        return 'start ' + active['executablePath']
-    subprocess.run, subprocess.Popen, process_identity = capture, direct_launch, identity
+        if fault == 'exited': raise KernelProcessError('process-exited', 'proc_pidinfo', 3)
+        if fault == 'identity-eperm': raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
+        path = '/some/other/app' if fault == 'identity-wrong' else active['executablePath'] + '-substituted'
+        return {'pid': pid, 'startSec': 100, 'startUsec': 0, 'executable': path}, 1
+    def samefile(left, right):
+        if fault == 'identity-io': raise FileNotFoundError('Synthetic image disappeared')
+        return left == right
+    os.path.samefile = samefile
+    subprocess.run, subprocess.Popen, kernel_process_sample = capture, direct_launch, identity
     try: launch(active)
     except RuntimeError as error:
         assert 'must-not-leak' not in str(error) and '/usr/bin/osascript' not in str(error)
+        if fault == 'identity-eperm': assert error.diagnostic == {'error': 'process-inspection-failed', 'call': 'proc_pidpath', 'errno': 1}
     else: raise AssertionError('Unproved launch accepted: ' + fault)
     assert len(calls) == 1 and direct == [], fault
-    assert observed == ([456] if fault in ('exited', 'identity-wrong', 'identity-prefix') else []), fault
+    assert observed == ([456] if fault in ('exited', 'identity-wrong', 'identity-prefix', 'identity-io', 'identity-eperm') else []), fault
 `;
     runPython(nativeFunctions + "\n" + scenario, [], {
       encoding: "utf8",
@@ -1571,6 +1758,235 @@ assert launch_services_available() is False and len(calls) == 1
     }
   });
 
+  it("preserves nested bundle modes, files and internal links under umask 077", async () => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+source, copied = root / 'stage.app', root / 'copied.app'
+bin_dir = source / 'Contents' / 'MacOS'
+bin_dir.mkdir(parents=True)
+(source / 'Contents').chmod(0o755)
+bin_dir.chmod(0o751)
+binary = bin_dir / 'Jones'
+binary.write_bytes(b'synthetic executable')
+binary.chmod(0o755)
+(source / 'entry').symlink_to('Contents/MacOS/Jones')
+before = app_digest(source)
+mask = os.umask(0o077)
+try: clone_tree(source, copied)
+finally: os.umask(mask)
+assert app_digest(source) == before == app_digest(copied)
+assert os.readlink(copied / 'entry') == 'Contents/MacOS/Jones'
+`;
+      runPython(definitions + "\n" + scenario, [f.directory], { encoding: "utf8", timeout: 10000 });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "response-lost",
+    "interrupted-witness",
+    "full-retry",
+    "receipt-phase",
+    "changed-plan-bytes",
+    "replaced-plan-inode",
+    "stable-drift",
+    "manifest-drift",
+    "symlink-witness",
+    "foreign-witness",
+    "forged-marker",
+    "pair-sidecar",
+    "pair-mtime",
+    "reserve-inode",
+    "swapped-generation",
+    "incoming-content",
+    "incoming-executable-mode",
+    "writer-active",
+    "writer-inspection-failed",
+    "stale-proof",
+  ])("validates held manual settlement with %s", async (fault) => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+import errno
+expected = dict(installed)
+durable(manifest_path, expected)
+plan['expectedManifestSha256'] = digest(manifest_path)
+(candidate_app / 'Contents').chmod(0o755)
+candidate['appDigest'] = app_digest(candidate_app)
+captured = {'pid': 123, 'startSec': 100, 'startUsec': 42, 'executable': expected['executablePath']}
+plan.update(stateRecovery='clone-required', processes=[captured])
+durable(plan_path, plan, True)
+wal = pathlib.Path(str(database) + '-wal')
+wal.write_bytes(b'previous-wal')
+def exited(pid):
+    assert pid == captured['pid']
+    raise KernelProcessError('process-exited', 'proc_pidinfo', errno.ESRCH)
+kernel_process_identity = exited
+stop_exact = lambda proofs: None
+prove_quiescence = lambda active: None
+def fixture_clone(source, target, flags):
+    assert flags == 1
+    shutil.copy2(os.fsdecode(source), os.fsdecode(target))
+    return 0
+darwin_clonefile = lambda: fixture_clone
+def historical_umask_copy(source, target):
+    shutil.copytree(source, target, symlinks=True)
+    (target / 'Contents').chmod(0o700)
+qualified_copy, qualified_swap = clone_tree, swap_bundle
+clone_tree = historical_umask_copy
+def forbidden(*args): raise AssertionError('Settlement crossed the bundle-swap boundary')
+swap_bundle = launch = forbidden
+activation_lock = manifest_path.with_name('jones-activation.lock').open('x+')
+activation_lock.write('jones-activation-lock-v1\n')
+activation_lock.flush()
+fcntl.flock(activation_lock, fcntl.LOCK_EX)
+retention_exclusion_descriptor, retention_exclusion_held = activation_lock.fileno(), True
+try: manual_install(plan_path, digest(plan_path), apply=True, clone_required=True)
+except RuntimeError as error: assert str(error) == 'Staged app integrity changed during bundle preparation.', str(error)
+else: raise AssertionError('Historical copy should have failed before swap')
+directory, = (manifest_path.parent / 'jones-manual-installs').iterdir()
+identifier = directory.name
+receipt_path, marker = directory / 'receipt.json', directory / 'aborted-before-swap.json'
+pair = directory / 'previous-pair'
+incoming = previous_app.with_name(previous_app.name + '.jones-incoming-' + identifier)
+retained = previous_app.with_name(previous_app.name + '.jones-previous-' + expected['generation'])
+reserve = directory / 'recovery-reserve.bin'
+receipt = read(receipt_path)
+assert receipt['phase'] == 'held' and receipt['stoppedAt'] == 'paired'
+assert reserve.is_file() and not (directory / 'recovery-journal-reserve.bin').exists()
+assert (pair / 'state.sqlite-wal').read_bytes() == wal.read_bytes()
+assert not (pair / 'state.sqlite-shm').exists() and not retained.exists()
+evidence = {p: digest(p) for p in [manifest_path, receipt_path, database, wal, pair / 'pair.json',
+            pair / 'state.sqlite', pair / 'state.sqlite-wal', home / 'settings.json', pair / 'settings.json']}
+bundle_digests = [app_digest(path) for path in (previous_app, candidate_app, incoming)]
+reserve_id = retention_identity(directory), reserve.stat().st_ino
+def inspect(): return manual_settlement(identifier, plan_path)
+def refused(action):
+    try: action()
+    except (RuntimeError, SelectionRefused, OSError): return
+    raise AssertionError('Accepted changed settlement evidence: ' + manual_fault)
+result = inspect()
+proof = result['proofSha256']
+witness = directory / ('manual-settlement-proof-' + proof + '.json')
+assert result['status'] == 'ready' and len(proof) == 64 and not marker.exists()
+if manual_fault in ('response-lost', 'interrupted-witness', 'full-retry'):
+    if manual_fault == 'interrupted-witness':
+        link = os.link
+        def crash_before_commit(source, target, **kwargs):
+            if target == marker: raise OSError('Synthetic interruption before the commit link')
+            return link(source, target, **kwargs)
+        os.link = crash_before_commit
+        try: refused(lambda: manual_settlement(identifier, plan_path, proof))
+        finally: os.link = link
+        assert not marker.exists() and witness.is_file() and not manual_aborted_before_swap(directory)
+        # A crash while writing a witness may leave an exact short prefix.
+        with witness.open('r+b') as stream: stream.truncate(witness.stat().st_size // 2)
+        refused(lambda: manual_install(plan_path, digest(plan_path), clone_required=True))
+    if manual_fault == 'response-lost':
+        sync = sync_parent
+        def lose_response(path):
+            sync(path)
+            if path == marker: raise OSError('Synthetic interruption after durable commit')
+        sync_parent = lose_response
+        try: refused(lambda: manual_settlement(identifier, plan_path, proof))
+        finally: sync_parent = sync
+    else: assert manual_settlement(identifier, plan_path, proof)['status'] == 'settled'
+    assert marker.is_file() and marker.samefile(witness) and marker.stat().st_nlink == 2
+    assert manual_aborted_before_swap(directory)
+    committed_marker = marker.read_bytes()
+    assert manual_settlement(identifier, plan_path, proof)['status'] == 'settled'
+    assert marker.read_bytes() == committed_marker
+    assert all(digest(path) == sha for path, sha in evidence.items())
+    assert [app_digest(path) for path in (previous_app, candidate_app, incoming)] == bundle_digests
+    assert (retention_identity(directory), reserve.stat().st_ino) == reserve_id and not retained.exists()
+    assert manual_install(plan_path, digest(plan_path), clone_required=True)['status'] == 'ready'
+    if manual_fault == 'full-retry':
+        clone_tree, swap_bundle = qualified_copy, qualified_swap
+        launches = []
+        def launch(active):
+            assert active['sourceSha'] == candidate['sourceSha'] and active['generation'] != identifier
+            launches.append(dict(active))
+            return dict(captured, pid=456)
+        mask = os.umask(0o077)
+        try: outcome = manual_install(plan_path, digest(plan_path), apply=True, clone_required=True)
+        finally: os.umask(mask)
+        assert outcome['status'] == 'launched' and launches == [read(manifest_path)]
+        new_receipt = pathlib.Path(outcome['receiptPath'])
+        assert new_receipt.parent != directory and read(new_receipt)['phase'] == 'launched'
+        assert new_receipt.parent.name == launches[0]['generation']
+        assert app_digest(previous_app) == candidate['appDigest'] and app_digest(retained) == installed['appDigest']
+        assert manual_aborted_before_swap(directory) and inspect()['status'] == 'settled'
+        assert marker.read_bytes() == committed_marker and digest(receipt_path) == evidence[receipt_path]
+    elif manual_fault == 'response-lost':
+        durable(receipt_path, dict(receipt, phase='launched'))
+        try: trusted = manual_aborted_before_swap(directory)
+        except (RuntimeError, SelectionRefused, OSError): trusted = False
+        assert not trusted, 'Terminal marker still trusted a replaced held receipt'
+        refused(lambda: manual_install(plan_path, digest(plan_path), clone_required=True))
+else:
+    if manual_fault == 'receipt-phase': durable(receipt_path, dict(receipt, stoppedAt='swap-intent'))
+    if manual_fault == 'changed-plan-bytes': plan_path.write_bytes(plan_path.read_bytes() + b'\n')
+    if manual_fault == 'replaced-plan-inode':
+        original_plan = root / 'first-plan-inode'
+        plan_path.rename(original_plan)
+        shutil.copy2(original_plan, plan_path)
+        assert digest(plan_path) == receipt['planSha256']
+    if manual_fault == 'stable-drift': (previous_app / 'Contents/MacOS/Jones').write_bytes(b'changed installed executable')
+    if manual_fault == 'manifest-drift': durable(manifest_path, dict(expected, generation='other'))
+    if manual_fault == 'symlink-witness': witness.symlink_to(root / 'absent-witness-target')
+    if manual_fault == 'foreign-witness':
+        (directory / ('manual-settlement-proof-' + 'f' * 64 + '.json')).write_bytes(b'foreign proof')
+    if manual_fault == 'forged-marker':
+        # A byte-identical regular second copy cannot substitute for the atomic commit link.
+        def separate_marker(source, target, **kwargs):
+            if target == marker: return shutil.copyfile(source, target)
+            return link(source, target, **kwargs)
+        link = os.link
+        os.link = separate_marker
+        try: refused(lambda: manual_settlement(identifier, plan_path, proof))
+        finally: os.link = link
+        assert marker.read_bytes() == witness.read_bytes() and not marker.samefile(witness)
+    if manual_fault == 'pair-sidecar': (pair / 'state.sqlite-shm').write_bytes(b'unexpected')
+    if manual_fault == 'pair-mtime':
+        paired_db = pair / 'state.sqlite'
+        info = paired_db.stat()
+        os.utime(paired_db, ns=(info.st_atime_ns, info.st_mtime_ns - 2_000_000_000))
+    if manual_fault == 'reserve-inode':
+        reserve.rename(root / 'original-reserve')
+        shutil.copy2(root / 'original-reserve', reserve)
+    if manual_fault == 'swapped-generation': retained.mkdir()
+    if manual_fault == 'incoming-content': (incoming / 'Contents/MacOS/Jones').write_text('tampered payload')
+    if manual_fault == 'incoming-executable-mode':
+        executable = incoming / 'Contents/MacOS/Jones'
+        executable.chmod(stat.S_IMODE(executable.stat().st_mode) ^ 0o100)
+    if manual_fault == 'writer-active': kernel_process_identity = lambda pid: captured
+    if manual_fault == 'writer-inspection-failed':
+        def kernel_process_identity(pid): raise KernelProcessError('process-inspection-failed', 'proc_pidpath', errno.EPERM)
+    if manual_fault == 'stale-proof': proof = '0' * 64
+    elif manual_fault == 'replaced-plan-inode': assert inspect()['proofSha256'] != proof
+    else: refused(inspect)
+    refused(lambda: manual_settlement(identifier, plan_path, proof))
+    assert marker.exists() == (manual_fault == 'forged-marker')
+    if manual_fault != 'manifest-drift': assert digest(manifest_path) == evidence[manifest_path]
+    assert not (root / 'absent-witness-target').exists()
+activation_lock.close()
+`;
+      runPython(
+        definitions + "\n" + setup + "\n" + manualInstallSetup + "\n" + scenario,
+        [f.directory, "success", fault],
+        { encoding: "utf8", timeout: 10000 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it.each([
     "success",
     "stale-admission",
@@ -1612,13 +2028,13 @@ def manual_launch(active, descriptor=None):
     assert (pair / 'state.sqlite').read_bytes() == database.read_bytes()
     assert not (pair / 'profile').exists()
     assert (profile / 'opaque').read_text() == 'same-host-profile'
-    assert (pair / 'settings.json').read_text() == 'previous-settings'
+    assert (pair / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
     events.append('launched')
     if manual_fault == 'launch-unknown':
         with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='advanced-state'")
         (profile / 'opaque').write_text('advanced-profile')
         raise RuntimeError('Synthetic unknown launch effect')
-    return {'pid': 456, 'identity': 'captured-new-process'}
+    return {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': active['executablePath']}
 launch = manual_launch
 manual_root = manifest_path.parent / 'jones-manual-installs'
 if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missing-bundle-identity', 'cold-state', 'launch-unavailable'):
@@ -1631,6 +2047,16 @@ if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missin
     assert manifest_path.read_bytes() == original_manifest
     assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
 else:
+    if manual_fault == 'success':
+        # Public identity capture and the manual result use the same closed proof.
+        captured = {'pid': 123, 'startSec': 100, 'startUsec': 0, 'executable': expected['executablePath']}
+        kernel_process_identity = lambda pid: dict(captured)
+        kernel_plan = dict(plan, processes=[kernel_process_identity(123)])
+        kernel_path = root / 'kernel-manual-plan.json'
+        durable(kernel_path, kernel_plan, True)
+        original_kernel_plan = kernel_path.read_bytes()
+        assert manual_install(kernel_path, digest(kernel_path))['status'] == 'ready'
+        assert kernel_path.read_bytes() == original_kernel_plan and not manual_root.exists()
     inspected = manual_install(plan_path, plan_hash)
     assert inspected['status'] == 'ready' and not manual_root.exists()
     try: result = manual_install(plan_path, plan_hash, apply=True)
@@ -1640,11 +2066,13 @@ else:
         assert manual_fault == 'success'
         assert result['status'] == 'launched' and result['readinessVerified'] is False
         assert result['automaticContinuationRequested'] is False
+        assert valid_kernel_process(result['process']) and result['process']['pid'] == 456
     receipt = read(next(manual_root.glob('*/receipt.json')))
     assert receipt['originalManifest'].encode() == original_manifest
     assert receipt['installed']['sourceSha'] == '3' * 40
     assert receipt['phase'] == ('held' if manual_fault == 'launch-unknown' else 'launched')
     assert receipt['automaticContinuationRequested'] is False
+    if manual_fault == 'success': assert receipt['process'] == result['process']
     assert read(manifest_path)['sourceSha'] == candidate['sourceSha']
     assert read(manifest_path)['transactionId'].startswith('manual-')
     assert (pathlib.Path(receipt['previousBundle']) / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
@@ -1689,108 +2117,121 @@ print(json.dumps({'case': manual_fault, 'passed': True}))
         )[0];
         const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
         const scenario = String.raw`
-boundary_fault = sys.argv[3]
-activate(tx / 'intent.json')
-assert read(tx / 'journal.json')['phase'] == 'rolled-back'
-# Retirement still supports previously retained pairs with an Electron profile.
-legacy_pair = tx / 'previous-pair'
-shutil.copy2(database, legacy_pair / 'state.sqlite')
-clone_tree(profile, legacy_pair / 'profile', profile=True)
-legacy_marker = read(legacy_pair / 'pair.json')
-del legacy_marker['stateScope']; del legacy_marker['files']
-durable(legacy_pair / 'pair.json', legacy_marker)
-acquire_writer_exclusion = native_exclusion
-selection_path.unlink()
-profile_payload = tx / 'previous-pair' / 'profile'
-before = {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()}
-def changed_device(info):
-    fields = list(info); fields[2] = info.st_dev + 1
-    return os.stat_result(fields)
-if boundary_fault == 'mount-inspect':
-    original_lstat = pathlib.Path.lstat
-    def mounted_lstat(path, *args, **kwargs):
-        info = original_lstat(path, *args, **kwargs)
-        return changed_device(info) if path == profile_payload or path.is_relative_to(profile_payload) else info
-    pathlib.Path.lstat = mounted_lstat
+${historicalWarmFixture}
+with open(manifest_path.with_name('jones-activation.lock'), 'w+') as retention_lock:
+    retention_lock.write('jones-activation-lock-v1\n'); retention_lock.flush()
+    fcntl.flock(retention_lock, fcntl.LOCK_EX)
+    retention_exclusion_held = True
+    retention_exclusion_descriptor = retention_lock.fileno()
     try:
-        outcome = retirement_command('inspect-retirement', expected, transaction_id)
-        assert outcome['status'] == 'refused' and outcome['reason'] == 'unknown-payload-device', outcome
-    finally: pathlib.Path.lstat = original_lstat
-    assert not (tx / 'retirement-intent.json').exists()
-elif boundary_fault == 'mount-delete':
-    _, plan = retirement_context(expected, transaction_id)
-    target = next(target for target in plan['targets'] if target['path'] == str(profile_payload))
-    target['parentDevice'] = str(int(target['parentDevice']) + 1)
-    original_open, original_fstat = os.open, os.fstat
-    parent_fd = None
-    def mounted_open(path, *args, **kwargs):
-        global parent_fd
-        fd = original_open(path, *args, **kwargs)
-        if path == profile_payload.parent: parent_fd = fd
-        return fd
-    def mounted_fstat(fd):
-        info = original_fstat(fd)
-        return changed_device(info) if fd == parent_fd else info
-    os.open, os.fstat = mounted_open, mounted_fstat
-    try:
-        try: remove_retirement_payload(target)
-        except SelectionRefused as error: assert error.reason == 'plan-changed'
-        else: raise AssertionError('A different-device payload root was deleted')
-    finally: os.open, os.fstat = original_open, original_fstat
-else:
-    inspected = retirement_command('inspect-retirement', expected, transaction_id)
-    assert inspected['status'] == 'ready', inspected
-    marker = 'retirement-intent.json' if boundary_fault == 'intent-fsync' else 'retirement-receipt.json'
-    original_link, original_fsync, original_sync_parent = os.link, os.fsync, sync_parent
-    linked, failed_initial, replay_failure, syncing = False, False, False, None
-    synced = []
-    calls = []
-    original_remove = remove_retirement_payload
-    def observed_remove(target):
-        calls.append(target['path'])
-        return original_remove(target)
-    remove_retirement_payload = observed_remove
-    def observed_link(source, destination, *args, **kwargs):
-        global linked
-        result = original_link(source, destination, *args, **kwargs)
-        if pathlib.Path(destination).name == marker: linked = True
-        return result
-    def failed_parent_fsync(fd):
-        global failed_initial
-        if stat.S_ISDIR(os.fstat(fd).st_mode):
-            if linked and not failed_initial:
-                failed_initial = True
-                raise OSError('Synthetic marker link succeeded but parent fsync failed')
-            if syncing == marker and replay_failure:
-                raise OSError('Synthetic retained marker parent fsync still fails')
-        return original_fsync(fd)
-    def observed_sync_parent(path):
-        global syncing
-        syncing = pathlib.Path(path).name
-        try:
-            result = original_sync_parent(path)
-            synced.append(syncing)
-            return result
-        finally: syncing = None
-    os.link, os.fsync, sync_parent = observed_link, failed_parent_fsync, observed_sync_parent
-    try:
-        result = retirement_command('retire-transaction', expected, transaction_id, inspected['planSha256'])
-        assert linked and failed_initial and (tx / marker).exists()
-        assert result['status'] == 'uncertain', result
-        if boundary_fault == 'intent-fsync': assert calls == []
-        count = len(calls)
-        replay_failure = True
-        for operation in ('retire-transaction', 'inspect-retirement'):
-            result = retirement_command(operation, expected, transaction_id, inspected['planSha256'])
-            assert result['status'] == 'uncertain' and len(calls) == count, result
-        replay_failure = False
-        result = retirement_command('retire-transaction', expected, transaction_id, inspected['planSha256'])
-        assert result['status'] == 'retired' and marker in synced, result
-        if boundary_fault == 'receipt-fsync': assert len(calls) == count
-    finally: os.link, os.fsync, sync_parent = original_link, original_fsync, original_sync_parent
-if boundary_fault.startswith('mount-'):
-    assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
-assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
+        boundary_fault = sys.argv[3]
+        activate(tx / 'intent.json')
+        assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+        live_bindings = {path: path.read_bytes() for path in (selection_path, attempt_path)}
+        live_transaction = tx
+        tx = historical_warm('8' * 64, dict(expected, generation='historical', transactionId='bootstrap'), live_transaction)
+        transaction_id = tx.name
+        assert transaction_id not in install_retention_plan()['snapshot']['warmKeep']
+        # Retirement still supports previously retained pairs with an Electron profile.
+        legacy_pair = tx / 'previous-pair'
+        shutil.copy2(database, legacy_pair / 'state.sqlite')
+        clone_tree(profile, legacy_pair / 'profile', profile=True)
+        legacy_marker = read(legacy_pair / 'pair.json')
+        del legacy_marker['stateScope']; del legacy_marker['files']
+        durable(legacy_pair / 'pair.json', legacy_marker)
+        acquire_writer_exclusion = native_exclusion
+        profile_payload = tx / 'previous-pair' / 'profile'
+        before = {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()}
+        def changed_device(info):
+            fields = list(info); fields[2] = info.st_dev + 1
+            return os.stat_result(fields)
+        if boundary_fault == 'mount-inspect':
+            original_lstat = pathlib.Path.lstat
+            def mounted_lstat(path, *args, **kwargs):
+                info = original_lstat(path, *args, **kwargs)
+                return changed_device(info) if path == profile_payload or path.is_relative_to(profile_payload) else info
+            pathlib.Path.lstat = mounted_lstat
+            try:
+                outcome = retirement_command('inspect-retirement', expected, transaction_id)
+                assert outcome['status'] == 'refused' and outcome['reason'] == 'unknown-payload-device', outcome
+            finally: pathlib.Path.lstat = original_lstat
+            assert not (tx / 'retirement-intent.json').exists()
+        elif boundary_fault == 'mount-delete':
+            _, plan = retirement_context(expected, transaction_id)
+            target = next(target for target in plan['targets'] if target['path'] == str(profile_payload))
+            target['parentDevice'] = str(int(target['parentDevice']) + 1)
+            original_open, original_fstat = os.open, os.fstat
+            parent_fd = None
+            def mounted_open(path, *args, **kwargs):
+                global parent_fd
+                fd = original_open(path, *args, **kwargs)
+                if path == profile_payload.parent: parent_fd = fd
+                return fd
+            def mounted_fstat(fd):
+                info = original_fstat(fd)
+                return changed_device(info) if fd == parent_fd else info
+            os.open, os.fstat = mounted_open, mounted_fstat
+            try:
+                try: remove_retirement_payload(target)
+                except SelectionRefused as error: assert error.reason == 'plan-changed'
+                else: raise AssertionError('A different-device payload root was deleted')
+            finally: os.open, os.fstat = original_open, original_fstat
+        else:
+            inspected = retirement_command('inspect-retirement', expected, transaction_id)
+            assert inspected['status'] == 'ready', inspected
+            marker = 'retirement-intent.json' if boundary_fault == 'intent-fsync' else 'retirement-receipt.json'
+            original_link, original_fsync, original_sync_parent = os.link, os.fsync, sync_parent
+            linked, failed_initial, replay_failure, syncing = False, False, False, None
+            synced = []
+            calls = []
+            original_remove = remove_retirement_payload
+            def observed_remove(target):
+                calls.append(target['path'])
+                return original_remove(target)
+            remove_retirement_payload = observed_remove
+            def observed_link(source, destination, *args, **kwargs):
+                global linked
+                result = original_link(source, destination, *args, **kwargs)
+                if pathlib.Path(destination).name == marker: linked = True
+                return result
+            def failed_parent_fsync(fd):
+                global failed_initial
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    if linked and not failed_initial:
+                        failed_initial = True
+                        raise OSError('Synthetic marker link succeeded but parent fsync failed')
+                    if syncing == marker and replay_failure:
+                        raise OSError('Synthetic retained marker parent fsync still fails')
+                return original_fsync(fd)
+            def observed_sync_parent(path):
+                global syncing
+                syncing = pathlib.Path(path).name
+                try:
+                    result = original_sync_parent(path)
+                    synced.append(syncing)
+                    return result
+                finally: syncing = None
+            os.link, os.fsync, sync_parent = observed_link, failed_parent_fsync, observed_sync_parent
+            try:
+                result = retirement_command('retire-transaction', expected, transaction_id, inspected['planSha256'])
+                assert linked and failed_initial and (tx / marker).exists()
+                assert result['status'] == 'uncertain', result
+                if boundary_fault == 'intent-fsync': assert calls == []
+                count = len(calls)
+                replay_failure = True
+                for operation in ('retire-transaction', 'inspect-retirement'):
+                    result = retirement_command(operation, expected, transaction_id, inspected['planSha256'])
+                    assert result['status'] == 'uncertain' and len(calls) == count, result
+                replay_failure = False
+                result = retirement_command('retire-transaction', expected, transaction_id, inspected['planSha256'])
+                assert result['status'] == 'retired' and marker in synced, result
+                if boundary_fault == 'receipt-fsync': assert len(calls) == count
+            finally: os.link, os.fsync, sync_parent = original_link, original_fsync, original_sync_parent
+        if boundary_fault.startswith('mount-'):
+            assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
+        assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
+        assert {path: path.read_bytes() for path in live_bindings} == live_bindings
+    finally: retention_exclusion_held = False
 `;
         runPython(
           `${nativeFunctions}\n${runtime}\n${scenario}`,
@@ -1835,130 +2276,142 @@ assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profi
       )[0];
       const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
       const scenario = String.raw`
-retirement_fault = sys.argv[3]
-activate(tx / 'intent.json')
-assert read(tx / 'journal.json')['phase'] == 'rolled-back'
-# Retirement still supports previously retained pairs with an Electron profile.
-legacy_pair = tx / 'previous-pair'
-shutil.copy2(database, legacy_pair / 'state.sqlite')
-clone_tree(profile, legacy_pair / 'profile', profile=True)
-legacy_marker = read(legacy_pair / 'pair.json')
-del legacy_marker['stateScope']; del legacy_marker['files']
-durable(legacy_pair / 'pair.json', legacy_marker)
-acquire_writer_exclusion = native_exclusion
-if retirement_fault != 'stage': selection_path.unlink()
-journal = read(tx / 'journal.json')
-if retirement_fault in ('active', 'parent'):
-    active = dict(expected, generation=transaction_id, transactionId=transaction_id)
-    if retirement_fault == 'parent':
-        next_id = '9' * 64
-        next_tx = tx.parent / next_id
-        next_intent = dict(intent, transactionId=next_id, expected=active)
-        durable(next_tx / 'intent.json', next_intent, True)
-        durable(next_tx / 'journal.json', {'intent': next_intent, 'phase': 'resumed'}, True)
-        active = dict(expected, generation=next_id, transactionId=next_id)
-    durable(manifest_path, active)
-else: active = expected
-if retirement_fault in ('pending', 'unknown-journal'):
-    durable(tx / 'journal.json', dict(journal, phase='trial' if retirement_fault == 'pending' else 'unknown'))
-if retirement_fault == 'symlink-target':
-    payload = tx / 'previous-pair' / 'profile'
-    payload.rename(payload.with_name('profile-retained'))
-    payload.symlink_to(profile)
-if retirement_fault == 'foreign-hardlink': os.link(tx / 'previous-pair' / 'state.sqlite', root / 'foreign-link')
-if retirement_fault == 'internal-symlink':
-    (root / 'unrelated-payload').write_text('must survive')
-    (tx / 'previous-pair' / 'profile' / 'external-link').symlink_to(root / 'unrelated-payload')
-if retirement_fault == 'reference':
-    shared = pathlib.Path(journal['previousBundle'])
-    shutil.copytree(previous_app, shared)
-    other_tx = tx.parent / ('9' * 64)
-    other_intent = dict(intent, transactionId=other_tx.name)
-    durable(other_tx / 'intent.json', other_intent, True)
-    durable(other_tx / 'journal.json', {'intent': other_intent, 'phase': 'rolled-back', 'previousBundle': str(shared)}, True)
-if retirement_fault in ('reserve', 'reserve-owner'):
-    reserve = allocate_recovery_file(tx / 'recovery-reserve.bin', 16384)
-    journal['recoveryReserves'] = [reserve]
-    durable(tx / 'journal.json', journal)
-    if retirement_fault == 'reserve-owner':
-        pathlib.Path(reserve['path']).rename(root / 'original-reserve')
-        pathlib.Path(reserve['path']).write_bytes(bytes(16384))
-metadata = [path for path in tx.rglob('*.json') if path.name not in SETTINGS]
-before = {str(path): path.read_bytes() for path in metadata}
-inspect = retirement_command('inspect-retirement', active, transaction_id)
-refusals = ('active', 'parent', 'pending', 'stage', 'unknown-journal', 'symlink-target', 'foreign-hardlink', 'reference', 'reserve-owner')
-if retirement_fault in refusals:
-    assert inspect['status'] == 'refused', inspect
-    assert not (tx / 'retirement-intent.json').exists()
-else:
-    assert inspect['status'] == 'ready' and inspect['targets'], inspect
-    plan_sha = inspect['planSha256']
-    if retirement_fault == 'wrong-plan': plan_sha = '0' * 64
-    if retirement_fault == 'changed-inode':
-        payload = pathlib.Path(inspect['targets'][0]['path'])
-        payload.rename(root / 'replaced-payload')
-        payload.write_bytes(b'changed')
-    reader = None
-    if retirement_fault == 'writer-busy':
-        reader = sqlite3.connect(native_writer_lease_paths(active)[0][0], isolation_level=None)
-        reader.execute('BEGIN'); reader.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
-    native_remove = remove_retirement_payload
-    calls = []
-    def observed_remove(target):
-        calls.append(target['path'])
-        native_remove(target)
-        if retirement_fault.startswith('partial') and len(calls) == 1: raise OSError('Synthetic interruption after one approved payload')
-    remove_retirement_payload = observed_remove
-    original_durable = durable
-    if retirement_fault == 'lost-reply':
-        def durable(path, value, exclusive=False):
-            original_durable(path, value, exclusive)
-            if pathlib.Path(path).name == 'retirement-receipt.json': raise OSError('Synthetic completion response lost')
-    try: result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
-    finally:
-        if reader is not None: reader.close()
-    if retirement_fault in ('wrong-plan', 'changed-inode', 'writer-busy'):
-        assert result['status'] == 'refused' and calls == [], result
-        assert not (tx / 'retirement-intent.json').exists()
-    elif retirement_fault.startswith('partial'):
-        assert result['status'] == 'uncertain', result
-        try: inspect_selection_transactions(active)
-        except SelectionRefused as error: assert error.reason == 'activation-pending'
-        else: raise AssertionError('Unreconciled retirement admitted activation')
-        if retirement_fault == 'partial-new-file': (tx / 'previous-pair' / 'profile' / 'new-file').write_text('unapproved')
-        if retirement_fault == 'partial-replacement':
-            payload = tx / 'previous-pair' / 'profile' / 'opaque'
-            payload.rename(root / 'original-profile-payload'); payload.write_text('replacement')
-        resume = retirement_command('inspect-retirement', active, transaction_id)
-        if retirement_fault == 'partial':
-            assert resume['status'] == 'ready' and resume['reconciliation'] is True, resume
-            assert resume['planSha256'] == plan_sha
-            result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
-            assert result['status'] == 'retired', result
+${historicalWarmFixture}
+with open(manifest_path.with_name('jones-activation.lock'), 'w+') as retention_lock:
+    retention_lock.write('jones-activation-lock-v1\n'); retention_lock.flush()
+    fcntl.flock(retention_lock, fcntl.LOCK_EX)
+    retention_exclusion_held = True
+    retention_exclusion_descriptor = retention_lock.fileno()
+    try:
+        retirement_fault = sys.argv[3]
+        activate(tx / 'intent.json')
+        assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+        live_bindings = {path: path.read_bytes() for path in (selection_path, attempt_path)}
+        live_transaction = tx
+        if retirement_fault != 'stage':
+            tx = historical_warm('8' * 64, dict(expected, generation='historical', transactionId='bootstrap'), live_transaction)
+            transaction_id = tx.name
+            assert transaction_id not in install_retention_plan()['snapshot']['warmKeep']
+        # Retirement still supports previously retained pairs with an Electron profile.
+        legacy_pair = tx / 'previous-pair'
+        shutil.copy2(database, legacy_pair / 'state.sqlite')
+        clone_tree(profile, legacy_pair / 'profile', profile=True)
+        legacy_marker = read(legacy_pair / 'pair.json')
+        del legacy_marker['stateScope']; del legacy_marker['files']
+        durable(legacy_pair / 'pair.json', legacy_marker)
+        acquire_writer_exclusion = native_exclusion
+        journal = read(tx / 'journal.json')
+        if retirement_fault in ('active', 'parent'):
+            active = dict(expected, generation=transaction_id, transactionId=transaction_id)
+            if retirement_fault == 'parent':
+                next_id = '9' * 64
+                next_tx = historical_warm(next_id, active, tx, phase='resumed')
+                active = dict(expected, generation=next_id, transactionId=next_id)
+            durable(manifest_path, active)
+        else: active = expected
+        if retirement_fault in ('pending', 'unknown-journal'):
+            durable(tx / 'journal.json', dict(journal, phase='trial' if retirement_fault == 'pending' else 'unknown'))
+        if retirement_fault == 'symlink-target':
+            payload = tx / 'previous-pair' / 'profile'
+            payload.rename(root / 'profile-retained')
+            payload.symlink_to(profile)
+        if retirement_fault == 'foreign-hardlink': os.link(tx / 'previous-pair' / 'state.sqlite', root / 'foreign-link')
+        if retirement_fault == 'internal-symlink':
+            (root / 'unrelated-payload').write_text('must survive')
+            (tx / 'previous-pair' / 'profile' / 'external-link').symlink_to(root / 'unrelated-payload')
+        if retirement_fault == 'reference':
+            shared = pathlib.Path(journal['previousBundle'])
+            other_tx = historical_warm('9' * 64, read(tx / 'intent.json')['expected'], tx)
+            assert read(other_tx / 'journal.json')['previousBundle'] == str(shared)
+        if retirement_fault in ('reserve', 'reserve-owner'):
+            reserve = allocate_recovery_file(tx / 'recovery-reserve.bin', 16384)
+            journal['recoveryReserves'] = [reserve]
+            durable(tx / 'journal.json', journal)
+            if retirement_fault == 'reserve-owner':
+                pathlib.Path(reserve['path']).rename(root / 'original-reserve')
+                pathlib.Path(reserve['path']).write_bytes(bytes(16384))
+        metadata = [path for path in tx.rglob('*.json') if path.name not in SETTINGS]
+        before = {str(path): path.read_bytes() for path in metadata}
+        inspect = retirement_command('inspect-retirement', active, transaction_id)
+        refusals = ('active', 'parent', 'pending', 'stage', 'unknown-journal', 'symlink-target', 'foreign-hardlink', 'reference', 'reserve-owner')
+        if retirement_fault in refusals:
+            reasons = {'active': 'protected-recovery-parent', 'parent': 'protected-recovery-parent',
+                'pending': 'activation-pending', 'stage': 'protected-recovery-parent', 'unknown-journal': 'activation-pending',
+                'symlink-target': 'unknown-payload-type', 'foreign-hardlink': 'unknown-payload-type',
+                'reference': 'protected-reference', 'reserve-owner': 'unknown-reserve-owner'}
+            assert inspect['status'] == 'refused' and inspect['reason'] == reasons[retirement_fault], inspect
+            assert not (tx / 'retirement-intent.json').exists()
         else:
-            assert resume['status'] == 'uncertain', resume
-            prior_calls = len(calls)
-            assert retirement_command('retire-transaction', active, transaction_id, plan_sha)['status'] == 'uncertain'
-            assert len(calls) == prior_calls
-    elif retirement_fault == 'lost-reply':
-        assert result['status'] == 'uncertain', result
-        durable = original_durable
-        count = len(calls)
-        result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
-        assert result['status'] == 'retired' and len(calls) == count, result
-    else:
-        assert result['status'] == 'retired', result
-        count = len(calls)
-        assert retirement_command('retire-transaction', active, transaction_id, plan_sha)['status'] == 'retired'
-        assert len(calls) == count
-    if result['status'] == 'retired':
-        assert all(not pathlib.Path(target['path']).exists() for target in inspect['targets'])
-        assert retirement_command('inspect-retirement', active, transaction_id)['status'] == 'retired'
-assert {str(path): path.read_bytes() for path in metadata} == before
-assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
-assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
-if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
+            assert inspect['status'] == 'ready' and inspect['targets'], inspect
+            plan_sha = inspect['planSha256']
+            if retirement_fault == 'wrong-plan': plan_sha = '0' * 64
+            if retirement_fault == 'changed-inode':
+                payload = pathlib.Path(inspect['targets'][0]['path'])
+                payload.rename(root / 'replaced-payload')
+                payload.write_bytes(b'changed')
+            reader = None
+            if retirement_fault == 'writer-busy':
+                reader = sqlite3.connect(native_writer_lease_paths(active)[0][0], isolation_level=None)
+                reader.execute('BEGIN'); reader.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
+            native_remove = remove_retirement_payload
+            calls = []
+            def observed_remove(target):
+                calls.append(target['path'])
+                native_remove(target)
+                if retirement_fault.startswith('partial') and len(calls) == 1: raise OSError('Synthetic interruption after one approved payload')
+            remove_retirement_payload = observed_remove
+            original_durable = durable
+            if retirement_fault == 'lost-reply':
+                def durable(path, value, exclusive=False):
+                    original_durable(path, value, exclusive)
+                    if pathlib.Path(path).name == 'retirement-receipt.json': raise OSError('Synthetic completion response lost')
+            try: result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
+            finally:
+                if reader is not None: reader.close()
+            if retirement_fault in ('wrong-plan', 'changed-inode', 'writer-busy'):
+                assert result['status'] == 'refused' and calls == [], result
+                assert not (tx / 'retirement-intent.json').exists()
+            elif retirement_fault.startswith('partial'):
+                assert result['status'] == 'uncertain', result
+                try: inspect_selection_transactions(active)
+                except SelectionRefused as error: assert error.reason == 'activation-pending'
+                else: raise AssertionError('Unreconciled retirement admitted activation')
+                if retirement_fault == 'partial-new-file': (tx / 'previous-pair' / 'profile' / 'new-file').write_text('unapproved')
+                if retirement_fault == 'partial-replacement':
+                    payload = tx / 'previous-pair' / 'profile' / 'opaque'
+                    payload.rename(root / 'original-profile-payload'); payload.write_text('replacement')
+                resume = retirement_command('inspect-retirement', active, transaction_id)
+                if retirement_fault == 'partial':
+                    assert resume['status'] == 'ready' and resume['reconciliation'] is True, resume
+                    assert resume['planSha256'] == plan_sha
+                    result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
+                    assert result['status'] == 'retired', result
+                else:
+                    assert resume['status'] == 'uncertain', resume
+                    prior_calls = len(calls)
+                    assert retirement_command('retire-transaction', active, transaction_id, plan_sha)['status'] == 'uncertain'
+                    assert len(calls) == prior_calls
+            elif retirement_fault == 'lost-reply':
+                assert result['status'] == 'uncertain', result
+                durable = original_durable
+                count = len(calls)
+                result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
+                assert result['status'] == 'retired' and len(calls) == count, result
+            else:
+                assert result['status'] == 'retired', result
+                count = len(calls)
+                assert retirement_command('retire-transaction', active, transaction_id, plan_sha)['status'] == 'retired'
+                assert len(calls) == count
+            if result['status'] == 'retired':
+                assert all(not pathlib.Path(target['path']).exists() for target in inspect['targets'])
+                assert retirement_command('inspect-retirement', active, transaction_id)['status'] == 'retired'
+        assert {str(path): path.read_bytes() for path in metadata} == before
+        assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
+        assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+        assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
+        if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
+        assert {path: path.read_bytes() for path in live_bindings} == live_bindings
+    finally: retention_exclusion_held = False
 `;
       // Keep generated programs out of argv: Linux limits each argument to 128 KiB.
       const script = NodePath.join(f.directory, "retirement-scenario.py");
@@ -2700,7 +3153,7 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["listener-mismatch", "rolled-back"],
     ["invalid-backend", "rolled-back"],
     ["dead-backend", "rolled-back"],
-    ["changed-backend", "blocked"],
+    ["changed-backend", "rolled-back"],
     ["missing-protocol", "rolled-back"],
     ["missing-startupGateProtocol", "blocked"],
     ["missing-transactionId", "rolled-back"],
@@ -3394,7 +3847,7 @@ assert not (tx / 'previous-pair' / 'pair.json').exists()
 assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves'])
 assert read(manifest_path) == expected
 assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (home / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 assert '/private/' not in json.dumps(journal['preEffect'])
 assert len(json.dumps(journal['preEffect'].get('diagnostics', {})).encode()) <= 1024
@@ -3464,7 +3917,7 @@ else:
 assert clock[0] <= 30
 assert 'candidate-launch' not in events
 assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (home / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
     runPython(definitions + "\n" + runtime + "\n" + scenario, [f.directory, mode, mode], {
@@ -3581,7 +4034,7 @@ else:
 assert (tx / 'intent.json').read_bytes() == before_intent
 assert (tx / 'recovery-reserve.bin').read_text() == 'retained-reserve'
 assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (home / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
     runPython(
@@ -3714,7 +4167,11 @@ for pid in [True, False, 0, -1, 2147483648, '4321', 1.0, None]:
         try: kernel_process_identity(pid)
         except KernelProcessError: pass
         else: raise AssertionError(pid)
-with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'sizeof', return_value=128), patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid ABI loaded a library')):
+native_sizeof = ctypes.sizeof
+def invalid_process_layout(value):
+    # ctypes itself uses sizeof while creating fields; only corrupt the completed ABI check.
+    return 128 if isinstance(value, type) and value.__name__ == 'ProcBsdinfo' else native_sizeof(value)
+with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'sizeof', side_effect=invalid_process_layout), patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid ABI loaded a library')):
     try: kernel_process_identity(4321)
     except KernelProcessError as e: assert e.diagnostic['call'] == 'proc_bsdinfo-layout'
     else: raise AssertionError('invalid ABI accepted')
@@ -3763,11 +4220,33 @@ print('kernel-cli-refusals')
       const result = runPython(
         `${jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]}\n` +
           String.raw`
-child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read(1)'], stdin=subprocess.PIPE)
+# Framework Python's launcher can differ from its loaded Mach-O image.
+# The owned child reports dyld's image independently of the libproc helper.
+child_source = '''
+import ctypes, json, os, sys
+image_path = ctypes.CDLL(None)._NSGetExecutablePath
+image_path.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+image_path.restype = ctypes.c_int
+size = ctypes.c_uint32(4096)
+image = ctypes.create_string_buffer(size.value)
+result = image_path(image, ctypes.byref(size))
+if result == -1:
+    assert 4096 < size.value <= 1048576, size.value
+    image = ctypes.create_string_buffer(size.value)
+    result = image_path(image, ctypes.byref(size))
+assert result == 0 and image.value, result
+print(json.dumps({'pid': os.getpid(), 'executable': os.path.realpath(os.fsdecode(image.value))}), flush=True)
+sys.stdin.buffer.read(1)
+'''
+child = subprocess.Popen([sys.executable, '-c', child_source], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 try:
+    ready = json.loads(child.stdout.readline())
+    assert set(ready) == {'pid', 'executable'} and ready['pid'] == child.pid, ready
+    expected_executable = ready['executable']
+    assert os.path.isabs(expected_executable) and os.path.isfile(expected_executable), ready
     proof = kernel_process_identity(child.pid)
     assert proof['pid'] == child.pid and proof['startSec'] > 0 and 0 <= proof['startUsec'] < 1000000
-    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], sys.executable)
+    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], expected_executable), {'launcherExecutable': sys.executable, 'expectedImage': expected_executable, 'observedExecutable': proof['executable'], 'observedResolved': os.path.realpath(proof['executable'])}
     assert kernel_process_identity(child.pid) == proof
     child.stdin.close()
     deadline = time.monotonic() + 3
@@ -3785,6 +4264,7 @@ finally:
     if child.stdin and not child.stdin.closed: child.stdin.close()
     if child.poll() is None: child.kill()
     child.wait(timeout=1)
+    child.stdout.close()
 print('darwin-owned-child')
 `,
         [],

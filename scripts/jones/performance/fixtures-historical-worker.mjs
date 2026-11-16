@@ -15,6 +15,8 @@ import {
 } from "./guard.mjs";
 
 import { assertQualificationDatabaseSource, assertSyntheticDatabaseSource } from "./sources.mjs";
+import { drainHistoricalImports } from "./historical-resolution.mjs";
+import { qualificationSqliteApi } from "./qualification-adapters.mjs";
 
 const requestLimit = 49 * 1024;
 const receiptLimit = 24 * 1024;
@@ -209,7 +211,12 @@ function checkedOptions(options, checkSource = checkedSource) {
   return { ...options, databaseSource, recipe: freeze(recipe), policy };
 }
 
-async function loadSource(source) {
+export async function probeHistoricalFixtureImports(source, options) {
+  checkedQualificationSource(source);
+  return Object.keys(await loadSource(source, options));
+}
+
+async function loadSource(source, { resolutionGuard, importState } = {}) {
   const root = source.worktreePath;
   const require = NodeModule.createRequire(NodePath.join(root, "apps/server/package.json"));
   const dependencies = {
@@ -220,7 +227,7 @@ async function loadSource(source) {
     Option: "effect/Option",
     Stream: "effect/Stream",
     Logger: "effect/Logger",
-    SqlClient: "effect/sql/SqlClient",
+    SqlClient: qualificationSqliteApi(false).sqlClient,
     NodeServices: "@effect/platform-node/NodeServices",
   };
   const files = {
@@ -251,16 +258,23 @@ async function loadSource(source) {
     files.NativePreparation = "apps/server/src/orchestration/NativeCreationPreparation.ts";
   }
   return Object.fromEntries(
-    await Promise.all([
-      ...Object.entries(dependencies).map(async ([key, specifier]) => [
-        key,
-        await import(NodeURL.pathToFileURL(require.resolve(specifier)).href),
-      ]),
-      ...Object.entries(files).map(async ([key, relative]) => [
-        key,
-        await import(NodeURL.pathToFileURL(NodePath.join(root, relative)).href),
-      ]),
-    ]),
+    await drainHistoricalImports(
+      [
+        ...Object.entries(dependencies).map(([key, specifier]) => async () => [
+          key,
+          await import(
+            resolutionGuard
+              ? resolutionGuard.dependencyURL(source.worktreePath, specifier, import.meta.url)
+              : NodeURL.pathToFileURL(require.resolve(specifier)).href
+          ),
+        ]),
+        ...Object.entries(files).map(([key, relative]) => async () => [
+          key,
+          await import(NodeURL.pathToFileURL(NodePath.join(root, relative)).href),
+        ]),
+      ],
+      importState,
+    ),
   );
 }
 
@@ -304,13 +318,13 @@ function some(modules, value, label) {
 async function produceFiles(state) {
   const { modules, paths, workspace, worktree } = state;
   const { Schema } = modules;
-  const settings = Schema.encodeSync(modules.Settings.ServerSettings)({
+  const decodeHistoricalFixture1 = Schema.encodeSync(modules.Settings.ServerSettings);
+  const settings = decodeHistoricalFixture1({
     ...modules.Settings.DEFAULT_SERVER_SETTINGS,
     providerInstances: { codex: { driver: "codex", displayName: "Synthetic offline", config: {} } },
   });
-  const keybindings = Schema.decodeUnknownSync(modules.Keybindings.KeybindingsConfig)([
-    { key: "mod+shift+k", command: "thread.stop" },
-  ]);
+  const decodeHistoricalFixture3 = Schema.decodeUnknownSync(modules.Keybindings.KeybindingsConfig);
+  const keybindings = decodeHistoricalFixture3([{ key: "mod+shift+k", command: "thread.stop" }]);
   const attachmentId = modules.Attachments.createAttachmentId("fixture-history", ".png");
   const attachment = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4WQAAAAASUVORK5CYII=",
@@ -352,7 +366,10 @@ async function produceNative(state, dispatch) {
   if (!modules.Native) return;
   const { Effect, Schema, Contracts, NativePreparation: preparationModule } = modules;
   const repository = await state.run(modules.Native.make);
-  const binding = Schema.decodeUnknownSync(preparationModule.NativePreparationBinding)({
+  const decodeHistoricalFixture5 = Schema.decodeUnknownSync(
+    preparationModule.NativePreparationBinding,
+  );
+  const binding = decodeHistoricalFixture5({
     backend_instance: "synthetic-backend",
     environment_id: "synthetic-environment",
     project_id: "fixture-project",
@@ -392,7 +409,10 @@ async function produceNative(state, dispatch) {
       ),
     ),
   );
-  const historical = Schema.decodeUnknownSync(Contracts.NativeCreationHistoricalBinding)({
+  const decodeHistoricalFixture7 = Schema.decodeUnknownSync(
+    Contracts.NativeCreationHistoricalBinding,
+  );
+  const historical = decodeHistoricalFixture7({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -435,16 +455,18 @@ async function produceNative(state, dispatch) {
       `${raw.commandId}:bootstrap-thread-create`,
     ]),
   );
+  const decodeHistoricalFixture9 = Schema.decodeUnknownSync(Contracts.OrchestrationCommand);
   await state.run(
     repository.recordNormalizedCommand(
       claimId,
-      Schema.decodeUnknownSync(Contracts.OrchestrationCommand)({
+      decodeHistoricalFixture9({
         ...raw,
         modelSelection: binding.provider_model_selection,
       }),
     ),
   );
-  const command = Schema.decodeUnknownSync(Contracts.OrchestrationCommand)({
+  const decodeHistoricalFixture11 = Schema.decodeUnknownSync(Contracts.OrchestrationCommand);
+  const command = decodeHistoricalFixture11({
     type: "thread.create",
     commandId: `${raw.commandId}:bootstrap-thread-create`,
     threadId: raw.threadId,
@@ -1324,7 +1346,9 @@ async function produceCheckedFixture(options, use) {
   let runtime;
   let permit;
   try {
+    result.closeKnown = false;
     const modules = await loadSource(options.databaseSource);
+    result.closeKnown = true;
     const paths = await modules.Effect.runPromise(
       modules.Config.deriveServerPaths(root, undefined).pipe(
         modules.Effect.provide(modules.NodeServices.layer),
@@ -1411,7 +1435,7 @@ async function produceCheckedFixture(options, use) {
       if (state) {
         state.status = "closing";
         state.cancellation.abort();
-        await Promise.allSettled([...state.active]);
+        await Promise.allSettled(state.active);
       }
       let closedProof;
       if (result.profile) result.profile.stage = "production-close";
@@ -1668,7 +1692,7 @@ export async function withQualificationFixture(seedContext, options, use) {
     if (state) {
       state.status = "closing";
       state.cancellation.abort();
-      await Promise.allSettled([...state.active]);
+      await Promise.allSettled(state.active);
     }
     if (runtime) {
       try {

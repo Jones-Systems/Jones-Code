@@ -55,7 +55,16 @@ dropped, which is how a changed LAN address replaces the old one; routes the
 user saved are never touched. The reported addresses are hints like any advertised endpoint, so a
 learned route still has to answer as this environment before it is used.
 
-GitHub routing trust covers the whole route list. Adding or changing a route
+A background service with no configured host is what makes this work for
+headless machines. It listens on every IPv4 interface and closes each
+connection unless both addresses of the direct peer are loopback, private, or
+tailnet IPv4. That keeps a VPS's public address closed, including a cloud VM
+whose public address is NATed to a private interface. It is not a firewall:
+T3 Connect and Tailscale Serve reach the server over loopback by design, and a
+proxy that rewrites the source address looks private. One listener per address would
+miss a DHCP change, and the wildcard keeps the reported addresses current.
+
+Pull request routing trust covers the whole route list. Adding or changing a route
 revokes it; reordering does not, because the same addresses remain trusted.
 
 ## Peer links
@@ -116,6 +125,26 @@ that thread and completes the task with `delegated_task.remote.complete`. That
 internal command reuses the parent half of a local finalize, so the parent
 wakes the same way. Open remote tasks are followed again at startup, which is
 also what keeps restart recovery from treating them as abandoned provider work.
+
+The source persists a delegation intent before launch, while the receiver owns
+admission and dispatch. Recovery retains that intent's original key and task:
+an unanswered launch may already have executed. A conflicting admission returns
+`request_conflict` without changing its original binding. An unrecognized RPC
+error is an uncertain outcome, not evidence that the request was rejected.
+
+Failed recovery attempts have a finite budget per activation. Permanent errors
+stop automatic attempts; exhausted or otherwise uncertain work keeps its pending
+intent and reconciliation guidance instead of becoming a fabricated failure.
+Valid owner-approval holds remain actionable and do not consume that failure
+budget. Startup, identical-key replay and cancellation can reopen a recovery
+window without creating a replacement launch. The policy lives in
+[`remoteDelegation/Lifecycle`](../../apps/server/src/jones/remoteDelegation/Lifecycle.ts).
+
+Withdrawal cannot cancel an admission whose dispatch was already claimed. After
+checking the originating client and binding, the withdrawal adapter returns the
+existing dispatch or denial status. The source can then recover the original
+child binding and pass its cancellation obligation to the follower. A local
+cancellation alone never proves that remote execution stopped.
 
 The link is routing, not isolation: an agent the link starts runs as the
 receiving environment's user. **A full-access link is therefore not fenced**:

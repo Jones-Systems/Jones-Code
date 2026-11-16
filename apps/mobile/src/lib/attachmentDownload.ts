@@ -271,10 +271,25 @@ export async function shareLocalAttachment(input: {
   }
 }
 
+export async function writeGeneratedAttachmentFile(input: {
+  readonly bytes: Uint8Array;
+  readonly attachment: AttachmentFileMetadata;
+}): Promise<AttachmentPreviewFile> {
+  const cached = await createCachedAttachmentFile(input.attachment);
+  try {
+    await cached.file.write(input.bytes);
+    return cached.preview;
+  } catch (error) {
+    cached.preview.dispose();
+    throw error;
+  }
+}
+
 export async function shareGeneratedAttachment(input: {
   readonly bytes: Uint8Array;
   readonly attachment: AttachmentFileMetadata;
   readonly signal: AbortSignal;
+  readonly sourceIdentifier?: string;
 }): Promise<boolean> {
   const sharing = await availableSharing(input.signal).catch(() => null);
   if (sharing === null) return false;
@@ -282,7 +297,7 @@ export async function shareGeneratedAttachment(input: {
   try {
     if (input.signal.aborted) return false;
     cached.file.write(input.bytes);
-    await cached.preview.share(input.signal);
+    await cached.preview.share(input.signal, input.sourceIdentifier);
     return true;
   } finally {
     cached.preview.dispose();

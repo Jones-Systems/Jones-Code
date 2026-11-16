@@ -6,10 +6,63 @@ import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import * as NodeStream from "node:stream";
 import {
+  NativeFixtureOwnership,
   nativeFixtureFailureReport,
   runNativeFixtureCommand,
   withNativeFixtureScratch,
 } from "./native-fixture-support.mjs";
+
+NodeTest.test(
+  "native fixture holds survive swallowed failures and replacement finally errors",
+  async () => {
+    for (const replace of [false, true]) {
+      let root;
+      let ownership;
+      let hold;
+      const original = new Error("unresolved native fixture work");
+      const replacement = new Error("outer finally failed");
+      try {
+        await NodeAssert.rejects(
+          withNativeFixtureScratch(async (allocated, owner) => {
+            root = allocated;
+            ownership = owner;
+            NodeAssert.ok(owner instanceof NativeFixtureOwnership);
+            NodeAssert.throws(
+              () => new NativeFixtureOwnership().holdCustody(root),
+              (error) => error.preserveScratch === true,
+            );
+            await owner.file(NodePath.join(root, "marker"), "owned evidence");
+            hold = owner.holdCustody(root);
+            hold.retain(original);
+            if (replace) throw replacement;
+            // Deliberately swallow the original error. The owner still holds custody.
+          }),
+          (error) => {
+            NodeAssert.equal(error.preserveScratch, true);
+            NodeAssert.equal(error.scratchRoot, root);
+            const held = replace ? error.errors[1] : error;
+            NodeAssert.ok(held instanceof AggregateError);
+            NodeAssert.equal(held.errors[0], original);
+            if (replace) NodeAssert.equal(error.cause, replacement);
+            return true;
+          },
+        );
+        NodeAssert.equal(
+          await NodeFSP.readFile(NodePath.join(root, "marker"), "utf8"),
+          "owned evidence",
+        );
+        await NodeAssert.rejects(ownership.cleanup(), (error) => error.preserveScratch === true);
+        // This test creates files only; releasing its synthetic hold is its complete reconciliation.
+        hold.release();
+        await ownership.cleanup();
+        await NodeAssert.rejects(NodeFSP.lstat(root), { code: "ENOENT" });
+      } finally {
+        hold?.release();
+        if (ownership) await ownership.cleanup();
+      }
+    }
+  },
+);
 
 for (const scenario of [
   { name: "closed timeout", phase: "observer-compile", expected: "observer-compile", close: true },

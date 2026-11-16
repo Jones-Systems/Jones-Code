@@ -48,11 +48,11 @@ export function isPreparationJobId(value: string): boolean {
 }
 
 /**
- * Runtime lock name, inside the job directory, that the job's owner holds for the job's whole
- * life. A sweep removes a job directory only after taking this lock, so never a live job's.
+ * This owner's lock inode outlives job scratch, so restart reconciliation uses the same lock.
+ * The lock serializes lifecycle evidence; captured group absence is separately required.
  */
 export function preparationJobLock(jobId: string): string {
-  return NodePath.join("jones-preparation", "jobs", jobId, "owner");
+  return NodePath.join("jones-preparation", `job-owner-${jobId}`);
 }
 
 export interface PreparationHost {
@@ -109,6 +109,8 @@ export interface PreparationSweep {
   readonly removed: number;
   readonly retained: number;
   readonly failed: number;
+  readonly removedJobIds?: ReadonlyArray<string>;
+  readonly retainedJobIds?: ReadonlyArray<string>;
 }
 
 export type PreparationOutcome =
@@ -282,9 +284,24 @@ function decodeOutcome(
 ): PreparationOutcome | undefined {
   const r = record(value);
   if (r === undefined || r.kind !== kind) return undefined;
+  const jobIds = (value: unknown): value is string[] =>
+    Array.isArray(value) &&
+    value.length <= 64 &&
+    value.every((id) => typeof id === "string" && JOB_ID.test(id));
   if (r.kind === "sweep")
-    return count(r.removed) && count(r.retained) && count(r.failed)
-      ? { kind: "sweep", removed: r.removed, retained: r.retained, failed: r.failed }
+    return (r.removedJobIds === undefined || jobIds(r.removedJobIds)) &&
+      (r.retainedJobIds === undefined || jobIds(r.retainedJobIds)) &&
+      count(r.removed) &&
+      count(r.retained) &&
+      count(r.failed)
+      ? {
+          kind: "sweep",
+          removed: r.removed,
+          retained: r.retained,
+          failed: r.failed,
+          ...(jobIds(r.removedJobIds) ? { removedJobIds: r.removedJobIds } : {}),
+          ...(jobIds(r.retainedJobIds) ? { retainedJobIds: r.retainedJobIds } : {}),
+        }
       : undefined;
   if (r.kind === "verify-runtime") {
     const receipt = decodeQualifiedRuntimeReceipt(r.receipt);

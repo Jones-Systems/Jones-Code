@@ -305,7 +305,10 @@ it.layer(layerSuite, { excludeTestServices: true })("foreground reads", (it) => 
       });
 
       const release = yield* holdWriter;
-      const writerSnapshot = yield* Effect.forkChild(projections.getThreadSnapshot(legacyId));
+      const sql = yield* SqlClient.SqlClient;
+      const writerSnapshot = yield* Effect.forkChild(
+        sql.withTransaction(projections.getThreadSnapshot(legacyId)),
+      );
       const held = yield* Effect.all({
         snapshot: threads.getThreadSnapshot(legacyId),
         window: threads.getThreadSnapshotWindow(legacyId, windowOptions),
@@ -396,6 +399,8 @@ it.layer(layerSuite, { excludeTestServices: true })("foreground reads", (it) => 
         Effect.provideService(
           ThreadManagementService.ThreadManagementService,
           boundedService<ThreadManagementService.ThreadManagementService["Service"]>({
+            listActiveShellIndex: () =>
+              Effect.die("untrimmed shell subscription must not read the shell index"),
             readShellSnapshot: () =>
               Effect.succeed(
                 Effect.succeed({
@@ -437,7 +442,10 @@ it.layer(layerSuite, { excludeTestServices: true })("foreground reads", (it) => 
       yield* Deferred.await(liveReady).pipe(Effect.timeout(bound));
 
       const release = yield* holdWriter;
-      const writerShell = yield* Effect.forkChild(projections.getThreadShell(threadId));
+      const sql = yield* SqlClient.SqlClient;
+      const writerShell = yield* Effect.forkChild(
+        sql.withTransaction(projections.getThreadShell(threadId)),
+      );
       // A full batch flushes the shell window without waiting for its timer.
       const events = Array.from({ length: 512 }, (_, index) => ({
         sequence: index + 1,

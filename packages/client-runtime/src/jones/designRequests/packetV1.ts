@@ -7,11 +7,10 @@ import {
 } from "@t3tools/contracts/jones/designRequests";
 
 /**
- * Port of the design gallery's packet v1 (`tools/design-gallery/request-packet.mjs`, Frontend
- * d7be667). The digest is SHA-256 over canonical JSON of every packet member except `digest`
- * and `attachmentData`. Packet-level members are checked exactly as the gallery does; reference
- * targets and capture contexts are only checked structurally because the digest already binds
- * them and Jones only quotes them as review data.
+ * Port of Frontend d7be667 tools/design-gallery/request-packet.mjs packet v1.
+ * SHA-256 covers canonical JSON except digest and attachmentData. Validate packet-level members exactly;
+ * reference targets/capture contexts need structural checks only because the digest binds them
+ * and Jones quotes them only as review data.
  */
 const PACKET_V1_FORMAT = "design-gallery-request-packet";
 const PACKET_V1_VERSION = 1;
@@ -58,7 +57,7 @@ const HEX = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const REQUEST_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-// oxlint-disable-next-line no-control-regex -- Mirrors the gallery's bounded-text rule.
+// Mirrors the gallery's bounded-text rule.
 const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const encoder = new TextEncoder();
 

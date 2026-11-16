@@ -1,8 +1,5 @@
 import { parseSemver } from "@t3tools/shared/semver";
-import * as Cache from "effect/Cache";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/http/HttpClient";
@@ -10,11 +7,9 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import { parseGenericCliVersion } from "@t3tools/provider-core/server/snapshotProbe";
+import { makeOpenCodeProtocolFreshness, type ProbedOpenCode } from "./jones/protocolFreshness.ts";
 
-export interface ProbedOpenCode {
-  readonly generation: "v1" | "v2";
-  readonly version: string;
-}
+export type { ProbedOpenCode } from "./jones/protocolFreshness.ts";
 
 // Meant to stop a hung `--version`; wrapped installs can take several seconds to start cold.
 const OPENCODE_VERSION_PROBE_TIMEOUT = "10 seconds";
@@ -36,11 +31,7 @@ function probed(version: string | null | undefined): ProbedOpenCode | undefined 
 export const classifyOpenCodeCliVersion = (output: string) =>
   probed(parseGenericCliVersion(output));
 
-/**
- * Each serves its web UI's HTML with a 200 on the other's path, so only a JSON body counts. Both
- * versions answer a wrong password with a 401 on either path, so a 401 says nothing about the
- * version.
- */
+// Cross-version paths return HTML 200s, so require JSON; either version returns 401 for bad passwords.
 function classifyOpenCodeProbeResponse(
   path: "/api/info" | "/global/health",
   response: {
@@ -90,8 +81,7 @@ const probeOpenCodeBinary = Effect.fn("probeOpenCodeBinary")(function* (
   });
 });
 
-// Server failures reach clients through the provider status, so their details are fixed text:
-// the underlying error can carry the configured URL, its credentials, or the password header.
+// Use fixed status text; underlying errors may expose URLs, credentials, or password headers.
 const probeOpenCodeServer = Effect.fn("probeOpenCodeServer")(function* (
   serverUrl: string,
   serverPassword: string,
@@ -177,15 +167,7 @@ export const probeOpenCodeRuntime = (
     ? probeOpenCodeServer(settings.serverUrl, settings.serverPassword)
     : probeOpenCodeBinary(settings.binaryPath, environment);
 
-export const makeOpenCodeRuntimeProbe = <E>(probe: Effect.Effect<ProbedOpenCode, E>) =>
-  Effect.map(
-    Cache.makeWith(() => probe, {
-      capacity: 1,
-      timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
-    }),
-    (cache) => ({
-      get: Cache.get(cache, undefined),
-      refresh: Cache.refresh(cache, undefined),
-      lastSuccess: Cache.getSuccess(cache, undefined),
-    }),
-  );
+export const makeOpenCodeRuntimeProbe = <E>(
+  probe: Effect.Effect<ProbedOpenCode, E>,
+  readSource: Effect.Effect<string> = Effect.succeed("fixed"),
+) => makeOpenCodeProtocolFreshness(probe, readSource);

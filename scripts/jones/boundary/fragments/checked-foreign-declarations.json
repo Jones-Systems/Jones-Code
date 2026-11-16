@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "checked-foreign-declarations",
+  "jonesOwnedPaths": [],
+  "hookPaths": ["scripts/knip-schemas.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "scripts/knip-schemas.ts",
+      "to": "scripts/jones/analysis/foreignBindings.ts"
+    }
+  ]
+}

@@ -1,15 +1,23 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.1.1",
+  "version": "0.1.8",
   "private": true,
   "files": [
     "dist"
   ],
   "type": "module",
   "exports": {
-    "./jones/workstreamOperations": {
-      "types": "./src/jones/workstreamOperations.ts",
-      "import": "./src/jones/workstreamOperations.ts"
+    "./jones/workstreamsPersonal": {
+      "types": "./src/jones/workstreamsPersonal.ts",
+      "import": "./src/jones/workstreamsPersonal.ts"
+    },
+    "./jones/workstreamsPersonalRpc": {
+      "types": "./src/jones/workstreamsPersonalRpc.ts",
+      "import": "./src/jones/workstreamsPersonalRpc.ts"
+    },
+    "./jones/deliveryEvidence": {
+      "types": "./src/jones/deliveryEvidence.ts",
+      "import": "./src/jones/deliveryEvidence.ts"
     },
     "./jones/shellDestinationFence": {
       "types": "./src/jones/shellDestinationFence.ts",
@@ -18,10 +26,6 @@
     "./jones/userResponseRequest": {
       "types": "./src/jones/userResponseRequest.ts",
       "import": "./src/jones/userResponseRequest.ts"
-    },
-    "./jones/workstreamsRegistrationAvailability": {
-      "types": "./src/jones/workstreamsRegistrationAvailability.ts",
-      "import": "./src/jones/workstreamsRegistrationAvailability.ts"
     },
     "./jones/fleet-updates": {
       "types": "./src/jones/fleetUpdates/index.ts",
@@ -51,6 +55,14 @@
       "types": "./src/jones/jonesUpdates.ts",
       "import": "./src/jones/jonesUpdates.ts"
     },
+    "./jones/jonesOperations": {
+      "types": "./src/jones/jonesOperations.ts",
+      "import": "./src/jones/jonesOperations.ts"
+    },
+    "./jones/installPlan": {
+      "types": "./src/jones/installPlan.ts",
+      "import": "./src/jones/installPlan.ts"
+    },
     "./jones/designRequests": {
       "types": "./src/jones/designRequests.ts",
       "import": "./src/jones/designRequests.ts"
@@ -78,10 +90,31 @@
     "./jones/linkedThreadsRpc": {
       "types": "./src/jones/linkedThreadsRpc.ts",
       "import": "./src/jones/linkedThreadsRpc.ts"
+    },
+    "./jones/workstreamsSnapshot": {
+      "types": "./src/jones/workstreamsSnapshot.ts",
+      "import": "./src/jones/workstreamsSnapshot.ts"
+    },
+    "./jones/desktopThreadMonitor": {
+      "types": "./src/jones/desktopThreadMonitor.ts",
+      "import": "./src/jones/desktopThreadMonitor.ts"
+    },
+    "./jones/guardedThreadSettlement": {
+      "types": "./src/jones/guardedThreadSettlement.ts",
+      "import": "./src/jones/guardedThreadSettlement.ts"
+    },
+    "./jones/fleetCheckpoint": {
+      "types": "./src/jones/fleetCheckpoint.ts",
+      "import": "./src/jones/fleetCheckpoint.ts"
+    },
+    "./jones/authClientPresentation": {
+      "types": "./src/jones/authClientPresentation.ts",
+      "import": "./src/jones/authClientPresentation.ts"
     }
   },
   "scripts": {
-    "typecheck": "tsc-rs --noEmit",
+    "typecheck": "vp run tsrs:typecheck",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {

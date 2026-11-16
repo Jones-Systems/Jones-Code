@@ -205,6 +205,11 @@ const cosmeticCommands = new Set([
   "thread.title.regeneration.complete",
 ]);
 
+const internalRecoveryTriggers = new Map<string, ReadonlyArray<string>>([
+  ["provider-runtime.reconcile", ["startup", "shutdown"]],
+  ["provider-runtime.reconcile-orphaned-records", ["orphaned-records"]],
+]);
+
 export function changesPlannedControl(
   receipt: {
     readonly command_id: string;
@@ -217,16 +222,18 @@ export function changesPlannedControl(
   if (cosmeticCommands.has(receipt.command_type)) return false;
   const acceptedAt =
     receipt.accepted_at === undefined ? Option.none() : DateTime.make(receipt.accepted_at);
-  // Only ProviderRuntimeRecoveryService emits this internal receipt. Its exact identity
-  // binds the lifecycle trigger, captured thread, and committed acceptance timestamp.
-  // The caller still checks every intervening user receipt and the current projection.
+  // Only ProviderRuntimeRecoveryService emits these receipts: its startup and shutdown passes
+  // and the Jones OrphanedRunRecords startup pass. The exact identity binds receipt type,
+  // lifecycle trigger, captured thread and acceptance timestamp. The caller still checks
+  // every intervening user receipt and the current projection.
+  const recoveryTriggers = internalRecoveryTriggers.get(receipt.command_type);
   if (
-    receipt.command_type === "provider-runtime.reconcile" &&
+    recoveryTriggers !== undefined &&
     receipt.accepted_at !== undefined &&
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(receipt.accepted_at) &&
     Option.isSome(acceptedAt) &&
     DateTime.formatIso(acceptedAt.value) === receipt.accepted_at &&
-    ["startup", "shutdown"].some(
+    recoveryTriggers.some(
       (trigger) =>
         receipt.command_id ===
         `command:runtime-reconcile:${trigger}:${snapshot.threadId}:${receipt.accepted_at}`,

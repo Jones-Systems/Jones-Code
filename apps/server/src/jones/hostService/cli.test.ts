@@ -414,3 +414,12 @@ it.effect("adopt forwards explicit legacy Mac identity bindings", () =>
     });
   }),
 );
+
+it.effect("exposes pointer bootstrap independently of applying either adoption plan", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([...systemFlags, "--launcher-pointer", "--dry-run"]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan-system-adoption"]);
+    expect(t.calls[0]?.input).toMatchObject({ launcherPointer: true });
+  }),
+);

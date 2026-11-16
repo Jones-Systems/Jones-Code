@@ -22,8 +22,7 @@ export interface VoiceReviewClientOptions {
 }
 const isReviewError = Schema.is(VoiceReviewError);
 const isWrappedFetchError = Schema.is(
-  Schema.Struct({
-    _tag: Schema.Literal("RemoteEnvironmentAuthFetchError"),
+  Schema.TaggedStruct("RemoteEnvironmentAuthFetchError", {
     cause: Schema.Unknown,
   }),
 );
@@ -195,6 +194,8 @@ export const fetchVoiceReviewDiagnostics = Effect.fn("clientRuntime.voiceReview.
   },
 );
 
+const decodeThreadRegistryAssociation = Schema.decodeEffect(ThreadRegistryAssociationPayload);
+
 export const correctThreadRegistryAssociation = Effect.fn(
   "clientRuntime.voiceReview.correctAssociation",
 )(function* (
@@ -202,9 +203,7 @@ export const correctThreadRegistryAssociation = Effect.fn(
     readonly payload: typeof ThreadRegistryAssociationPayload.Type;
   },
 ) {
-  const payload = yield* Schema.decodeUnknownEffect(ThreadRegistryAssociationPayload)(
-    input.payload,
-  );
+  const payload = yield* decodeThreadRegistryAssociation(input.payload);
   return yield* unwrapReviewError(
     executeAuthenticatedEnvironmentHttpRequest({
       ...input,

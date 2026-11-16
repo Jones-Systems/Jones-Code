@@ -683,7 +683,7 @@ export async function produceCurrentFixture<A>(
     stage = "close";
     open = false;
     cancellation.abort();
-    await Promise.allSettled([...pending]);
+    await Promise.allSettled(pending);
     try {
       let closedProof = await observeSyntheticClose(owner, {
         permit,

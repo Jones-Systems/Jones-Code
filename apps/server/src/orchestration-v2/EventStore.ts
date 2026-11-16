@@ -2,7 +2,12 @@ import {
   type RecordedEvent as OrchestrationV2RecordedEvent,
   type RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
 } from "./RecordedTypes.ts";
-import { type ApplicationProjectEvent, CommandId, ThreadId } from "@t3tools/contracts";
+import {
+  type ApplicationProjectEvent,
+  CommandId,
+  type EventId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -53,6 +58,7 @@ export interface EventStoreV2Shape {
     event: OrchestrationEventStore.UnsequencedProjectEvent,
   ) => Effect.Effect<ApplicationProjectEvent, EventStoreV2Error>;
   readonly read: (input?: {
+    readonly eventId?: EventId;
     readonly afterSequence?: number;
     readonly throughSequence?: number;
     readonly threadId?: ThreadId;
@@ -84,6 +90,7 @@ const layerBase: Layer.Layer<EventStoreV2, never, OrchestrationEventStore.Orches
       const read: EventStoreV2Shape["read"] = (input) =>
         applicationEvents
           .readAgentEvents({
+            ...(input?.eventId === undefined ? {} : { eventId: input.eventId }),
             ...(input?.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
             ...(input?.throughSequence === undefined
               ? {}
@@ -106,8 +113,8 @@ const layerBase: Layer.Layer<EventStoreV2, never, OrchestrationEventStore.Orches
           );
 
       return EventStoreV2.of({
-        append: (input) =>
-          applicationEvents.appendAgentEvents(input).pipe(
+        append: Effect.fn("EventStoreV2.append")(function (input) {
+          return applicationEvents.appendAgentEvents(input).pipe(
             Effect.mapError(
               (cause) =>
                 new EventStoreAppendEventsError({
@@ -115,20 +122,22 @@ const layerBase: Layer.Layer<EventStoreV2, never, OrchestrationEventStore.Orches
                   cause,
                 }),
             ),
-          ),
-        appendProjectEvent: (event) =>
-          applicationEvents
+          );
+        }),
+        appendProjectEvent: Effect.fn("EventStoreV2.appendProjectEvent")(function (event) {
+          return applicationEvents
             .appendProjectEvent(event)
             .pipe(
               Effect.mapError((cause) => new EventStoreAppendEventsError({ eventCount: 1, cause })),
-            ),
+            );
+        }),
         read,
         readByCommandId: ({ commandId }) =>
           applicationEvents
             .readAgentEvents({ commandId })
             .pipe(Stream.mapError((cause) => new EventStoreReadEventsError({ cause }))),
-        latestSequence: (input) =>
-          applicationEvents.latestAgentSequence(input?.threadId).pipe(
+        latestSequence: Effect.fn("EventStoreV2.latestSequence")(function (input) {
+          return applicationEvents.latestAgentSequence(input?.threadId).pipe(
             Effect.mapError(
               (cause) =>
                 new EventStoreReadEventsError({
@@ -136,7 +145,8 @@ const layerBase: Layer.Layer<EventStoreV2, never, OrchestrationEventStore.Orches
                   cause,
                 }),
             ),
-          ),
+          );
+        }),
         latestApplicationSequence: applicationEvents.latestApplicationSequence.pipe(
           Effect.mapError((cause) => new EventStoreReadEventsError({ cause })),
         ),

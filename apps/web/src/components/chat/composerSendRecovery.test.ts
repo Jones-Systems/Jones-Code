@@ -31,6 +31,7 @@ function recovery() {
       previewAnnotations: [],
       reviewComments: [],
       threadContexts: [],
+      environmentContexts: [],
     },
     resetCursor: vi.fn(),
   } satisfies Parameters<typeof restoreFailedComposerSend>[0];
@@ -89,6 +90,7 @@ function fullSnapshot(): Parameters<typeof restoreFailedComposerSend>[0]["snapsh
       },
     ],
     threadContexts: [threadContextRecord(b, "Related work")],
+    environmentContexts: [],
     reviewComments: [
       buildFileReviewComment({
         id: "review",

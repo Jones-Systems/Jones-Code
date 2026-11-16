@@ -17,7 +17,7 @@ import {
   type SettlementArrival,
   type SettlementOriginDetails,
 } from "@t3tools/client-runtime/jones/settlement-notifications";
-import { Atom } from "effect/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -29,6 +29,9 @@ const state = vi.hoisted(() => ({
   navigate: vi.fn(),
   environmentIds: [] as EnvironmentId[],
   shellAtom: null as Atom.Atom<EnvironmentShellState> | null,
+  familyAtom: null as Atom.Atom<
+    AsyncResult.AsyncResult<import("@t3tools/contracts").OrchestrationV2ThreadFamily, unknown>
+  > | null,
   resolveOrigins:
     vi.fn<
       (arrivals: readonly SettlementArrival[]) => Promise<readonly SettlementOriginDetails[] | null>
@@ -47,6 +50,10 @@ vi.mock(
     ({
       environmentShell: { stateValueAtom: () => state.shellAtom! },
     }) as never,
+);
+vi.mock(
+  import("../../state/threads"),
+  () => ({ threadFamilies: { familyAtom: () => state.familyAtom! } }) as never,
 );
 vi.mock(import("./resolveOrigins"), () => ({
   resolveSettlementOrigins: (_environmentId, arrivals) => state.resolveOrigins(arrivals),
@@ -113,6 +120,8 @@ function shell(
 ): EnvironmentShellState {
   return {
     status: "live",
+    generation: sequence,
+    removedAt: new Map(),
     error: Option.none(),
     snapshot: Option.some({
       schemaVersion: 1,
@@ -220,6 +229,7 @@ async function setupTest(): Promise<AsyncDisposable> {
     state.navigate.mockReset();
     state.environmentIds = [];
     state.shellAtom = null;
+    state.familyAtom = Atom.make(AsyncResult.initial());
     state.resolveOrigins.mockReset();
     const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
     await store.saveInbox(inbox([entry("a")]));
@@ -238,6 +248,31 @@ async function setupTest(): Promise<AsyncDisposable> {
 }
 
 describe("persistent settlement notification", () => {
+  it("keeps omitted notice targets unknown until a successful current family read", async () => {
+    await using _fixture = await setupTest();
+    storage.clear();
+    const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
+    await store.saveInbox(inbox([entry("omitted", env)]));
+    state.controller = createSettlementNotificationController({ store });
+    state.environmentIds = [env];
+    state.shellAtom = Atom.make(shell(2, []));
+    const familyAtom = Atom.make<
+      AsyncResult.AsyncResult<import("@t3tools/contracts").OrchestrationV2ThreadFamily, unknown>
+    >(AsyncResult.initial());
+    state.familyAtom = familyAtom;
+    await render();
+    await act(async () => {
+      await state.controller!.flush();
+    });
+    expect(state.controller!.getSnapshot().visible[0]?.threadGone).toBe(false);
+    await act(async () => {
+      registry.set(familyAtom, AsyncResult.success({ snapshotSequence: 2, threads: [] }));
+      await state.controller!.flush();
+    });
+    expect(state.controller!.getSnapshot().visible[0]?.threadGone).toBe(true);
+    expect(state.controller!.getSnapshot().visible).toHaveLength(1);
+  });
+
   it("hides cached children before hydration without acknowledging them when the parent is dismissed", async () => {
     await using _fixture = await setupTest();
     storage.clear();

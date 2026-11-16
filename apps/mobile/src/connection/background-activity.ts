@@ -28,8 +28,6 @@ const REPORT_INTERVAL_MS = 25_000;
 const LEASE_TTL_MS = 45_000;
 const BASELINE_SCOPES: ReadonlyArray<BackgroundScope> = [{ type: "provider-status" }];
 
-// `AppState.currentState` is a loosely typed string that can be unset before
-// the first change event; anything outside the known states reports as unknown.
 function normalizeAppState(
   state: string | null | undefined,
 ): NonNullable<ClientActivityReportInput["appState"]> {
@@ -67,7 +65,7 @@ export const layerReporter = Layer.effectDiscard(
       yield* Effect.forEach(
         entries.keys(),
         (environmentId) =>
-          lanes.submit(environmentId, {
+          lanes.submit(environmentId as EnvironmentId, {
             environmentId: environmentId as EnvironmentId,
             clientId,
             clientKind: "mobile",
@@ -82,7 +80,7 @@ export const layerReporter = Layer.effectDiscard(
             ttlMs: LEASE_TTL_MS,
             observedAt: DateTime.makeUnsafe(observedAtMs),
           }),
-        { discard: true },
+        { concurrency: "unbounded", discard: true },
       );
     }).pipe(Effect.withSpan("mobile.backgroundActivity.report"));
 

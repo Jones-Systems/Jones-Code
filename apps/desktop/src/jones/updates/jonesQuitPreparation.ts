@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import type * as Mac from "effect/crypto/Mac";
 import * as Option from "effect/Option";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as DesktopObservability from "../../app/DesktopObservability.ts";
@@ -9,7 +10,7 @@ const { logInfo, logWarning } = DesktopObservability.makeComponentLogger(
 );
 
 export const prepareLocalBackendsForQuit = Effect.fn("desktop.quit.prepareLocalBackends")(
-  function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool> {
+  function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool | Mac.Mac> {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
     const instances = yield* pool.list;
     yield* Effect.forEach(

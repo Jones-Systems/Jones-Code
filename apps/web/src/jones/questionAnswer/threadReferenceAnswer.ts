@@ -6,13 +6,13 @@ import { formatThreadLink } from "@t3tools/shared/threadLinks";
 export function projectPendingUserInputAnswer(
   answer: unknown,
   threadContexts: ReadonlyArray<ThreadContextRecord>,
-  environmentId: EnvironmentId,
+  environmentId?: EnvironmentId,
 ) {
   if (typeof answer !== "string" || threadContexts.length === 0) return answer;
   const recordsById = new Map(threadContexts.map((record) => [record.contextId, record]));
   const identity = (record: ThreadContextRecord, label: string) =>
-    record.environmentId === environmentId
-      ? formatThreadLink(record.threadId, label)
+    environmentId === undefined || record.environmentId === environmentId
+      ? formatThreadLink(record, label)
       : `${record.title} (threadId: ${record.threadId}; environmentId: ${record.environmentId}; ${record.excerpt?.status === "captured" ? "bounded point-in-time context attached" : "reference only, no history attached"}; additional history requires a tool supporting environmentId and linked source access).`;
   const referenced: ThreadContextRecord[] = [];
   const baseline = replaceComposerContextReferences(answer, (reference) => {

@@ -40,7 +40,7 @@ export const layer = Layer.unwrap(
     });
     return Lifecycle.layer.pipe(
       Layer.provide(source.pipe(Layer.provide(NativeOperation.layer))),
-      Layer.provide(Registry.layer(selected.registry)),
+      Layer.provide(Registry.layer(selected.registry, selected.outputs)),
       Layer.provideMerge(configuration),
     );
   }),

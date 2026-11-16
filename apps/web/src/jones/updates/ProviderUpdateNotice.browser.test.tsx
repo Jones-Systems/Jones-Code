@@ -1,0 +1,622 @@
+import { act, render, fakeTimers } from "../../../test/render";
+import "~/index.css";
+import { page, userEvent } from "vite-plus/test/browser";
+import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import { collectProviderUpdateCandidates } from "@t3tools/client-runtime/jones/provider-updates";
+import { AsyncResult } from "effect/reactivity";
+import type { useJonesProviderUpdates } from "./useProviderUpdates";
+import { ToastProvider, toastManager } from "~/components/ui/toast";
+
+const state = vi.hoisted(() => ({
+  updates: null as ReturnType<typeof useJonesProviderUpdates> | null,
+  navigate: vi.fn(),
+  updateEnvironment: vi.fn(async () => []),
+  updateAll: vi.fn(async (_options?: { quiet?: boolean }) => []),
+}));
+vi.mock(import("./useProviderUpdates"), () => ({ useJonesProviderUpdates: () => state.updates! }));
+vi.mock("@tanstack/react-router", async (original) => ({
+  ...(await original<typeof import("@tanstack/react-router")>()),
+  useNavigate: () => state.navigate,
+}));
+import { ProviderUpdateEnvironmentRows, ProviderUpdateNotice } from "./ProviderUpdateNotice";
+import { UpdateEverythingDialog } from "~/components/sidebar/UpdateEverythingDialog";
+import { JonesBuildReview } from "~/components/sidebar/SidebarUpdatePill";
+import { describeUpdateEverything } from "~/components/sidebar/updateEverything.logic";
+
+const wsl = EnvironmentId.make("ui-update-wsl");
+const laptop = EnvironmentId.make("ui-update-laptop");
+
+describe("Jones install handoff in the composed update dialog", () => {
+  it("passes the exact chosen artifact from the build picker", async () => {
+    const choose = vi.fn();
+    const build = {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: "1".repeat(40),
+      sourceTree: "a".repeat(40),
+      workflow: "artifact-desktop-mac.yml",
+      runId: 101,
+      runAttempt: 1,
+      artifactId: 201,
+      artifactDigest: "sha256:" + "a".repeat(64),
+      platform: "darwin",
+      architecture: "arm64",
+      version: "0.1.2-preview.20261106.101.1",
+    } as const;
+    const other = {
+      ...build,
+      sourceSha: "2".repeat(40),
+      sourceTree: "b".repeat(40),
+      runId: 100,
+      artifactId: 200,
+      version: "0.1.2-preview.20261106.100.1",
+    };
+    await using _screen = await render(
+      <JonesBuildReview
+        build={build}
+        list={{ builds: [build, other], unavailable: false }}
+        onSelect={choose}
+      />,
+    );
+    const picker = page.getByRole("combobox", { name: "Jones Code build" });
+    await expect.element(picker).toHaveValue("201");
+    const select = picker.element() as HTMLSelectElement;
+    await act(async () => {
+      select.value = "200";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(choose).toHaveBeenCalledExactlyOnceWith(other);
+  });
+
+  it.each([
+    { mixed: false, label: "Jones-only" },
+    { mixed: true, label: "mixed provider and Jones" },
+  ])("keeps $label rows visible without starting an install", async ({ mixed }) => {
+    const confirm = vi.fn();
+    const updateProviders = vi.fn();
+    const description = describeUpdateEverything({
+      localVersion: null,
+      localMachines: [],
+      servers: [],
+      jonesMachines: [{ environmentId: laptop, label: "Laptop" }],
+      providerMachines: mixed
+        ? [{ environmentId: laptop, label: "Laptop", providers: ["Codex · personal"] }]
+        : [],
+      skipped: [],
+    });
+    await using _screen = await render(
+      <UpdateEverythingDialog
+        open
+        onOpenChange={() => {}}
+        {...description}
+        restarts={[]}
+        onConfirm={confirm}
+        {...(mixed ? { onProvidersOnly: updateProviders } : {})}
+      />,
+    );
+    const dialog = page.getByRole("alertdialog");
+    await expect.element(dialog.getByRole("heading", { name: "Update 1 machine?" })).toBeVisible();
+    await expect.element(dialog.getByText("Laptop", { exact: true })).toBeVisible();
+    await expect.element(dialog.getByText("Install status", { exact: true })).toBeVisible();
+    await expect
+      .element(
+        dialog.getByText("Install status after Laptop verification; every install needs review"),
+      )
+      .toBeVisible();
+    if (mixed) {
+      await expect.element(dialog.getByText("Codex · personal", { exact: true })).toBeVisible();
+      await expect.element(dialog.getByText("1 provider update", { exact: true })).toBeVisible();
+      await dialog.getByRole("button", { name: "Update providers only" }).click();
+      expect(updateProviders).toHaveBeenCalledOnce();
+    } else {
+      await expect
+        .element(dialog.getByText("Codex · personal", { exact: true }))
+        .not.toBeInTheDocument();
+      await expect
+        .element(dialog.getByRole("button", { name: "Update providers only" }))
+        .not.toBeInTheDocument();
+    }
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+});
+function provider(id: string, manual = false): ServerProvider {
+  return {
+    instanceId: ProviderInstanceId.make(id),
+    driver: ProviderDriverKind.make("codex"),
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-10-26T01:00:00.000Z",
+    models: [],
+    skills: [],
+    slashCommands: [],
+    versionAdvisory: {
+      status: "behind_latest",
+      currentVersion: "1.0.0",
+      latestVersion: "2.0.0",
+      updateCommand: manual ? null : "npm install -g @openai/codex@latest",
+      canUpdate: !manual,
+      checkedAt: "2026-10-26T01:00:00.000Z",
+      message: "Update available.",
+    },
+  };
+}
+function updates() {
+  const groups = [
+    { environmentId: wsl, label: "WSL", providers: [provider("personal"), provider("work")] },
+    { environmentId: laptop, label: "Laptop", providers: [provider("manual", true)] },
+  ].map((group) => ({
+    ...group,
+    isPrimary: group.environmentId === wsl,
+    isSettling: false,
+    allCandidates: collectProviderUpdateCandidates(group.providers),
+    candidates: collectProviderUpdateCandidates(group.providers).filter(
+      (candidate) => candidate.versionAdvisory.canUpdate,
+    ),
+    attempt: undefined as ReturnType<typeof useJonesProviderUpdates>["groups"][number]["attempt"],
+    canManage: true,
+    connected: true,
+  }));
+  return {
+    groups,
+    machines: groups.filter((group) => group.candidates.length > 0),
+    noticeKey: "ui-fixture",
+    isAnySettling: false,
+    updateAll: state.updateAll,
+    updateEnvironment: state.updateEnvironment,
+    attempts: new Map(),
+    completed: [],
+    canManage: true,
+  };
+}
+
+// Match the real external store: snapshots change identity on publication.
+function publishGroups(group: ReturnType<typeof useJonesProviderUpdates>["groups"][number]) {
+  state.updates = {
+    ...state.updates!,
+    groups: state.updates!.groups.map((entry) =>
+      entry.environmentId === group.environmentId ? { ...group } : entry,
+    ),
+  };
+}
+
+describe("current provider update notice rows", () => {
+  it("keeps Update All in the footer, retains progress through collapse, and permits retry", async () => {
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+    state.updates = { ...updates(), noticeKey: "update-all-footer" };
+    const notice = () => (
+      <ToastProvider>
+        <ProviderUpdateNotice />
+      </ToastProvider>
+    );
+    let finish = () => {};
+    const finished = new Promise<[]>((resolve) => {
+      finish = () => resolve([]);
+    });
+    state.updateAll.mockReset();
+    state.updateAll.mockReturnValueOnce(finished);
+    await using screen = await render(<ToastProvider />);
+    await screen.rerender(notice());
+    const all = page.getByRole("button", { name: "Update All", exact: true });
+    await expect.element(all).toBeVisible();
+    const footer = all.element().parentElement!;
+    const settings = page.getByRole("button", { name: "Settings", exact: true });
+    await expect.element(settings).toBeVisible();
+    const settingsBounds = settings.element().getBoundingClientRect();
+    const updateBounds = all.element().getBoundingClientRect();
+    const footerBounds = footer.getBoundingClientRect();
+    expect(settingsBounds.left).toBeCloseTo(footerBounds.left, 0);
+    expect(updateBounds.right).toBeCloseTo(footerBounds.right, 0);
+    expect(settingsBounds.top + settingsBounds.height / 2).toBeCloseTo(
+      updateBounds.top + updateBounds.height / 2,
+      0,
+    );
+    expect(document.querySelectorAll('button[data-slot="toast-action"]')).toHaveLength(1);
+    for (const row of document.querySelectorAll('section[aria-label^="Provider updates on "]')) {
+      expect(row.textContent).not.toContain("Settings");
+    }
+    await all.click();
+    const pending = page.getByRole("button", { name: "Updating…", exact: true });
+    await expect.element(pending).toBeDisabled();
+    expect(state.updateAll).toHaveBeenCalledExactlyOnceWith({ quiet: true });
+    const toggle = page.getByRole("button", { name: "Provider updates available", exact: true });
+    await toggle.click();
+    await expect.element(pending).not.toBeInTheDocument();
+    await toggle.click();
+    await expect.element(pending).toBeDisabled();
+    const group = state.updates.groups[0]!;
+    publishGroups({
+      ...group,
+      attempt: {
+        generation: 1,
+        machine: group,
+        phase: "failed",
+        runs: [],
+        message: "Synthetic update failed.",
+      },
+    });
+    state.updates = { ...state.updates!, noticeKey: "update-all-footer-failed" };
+    await screen.rerender(notice());
+    await act(async () => {
+      finish();
+      await finished;
+    });
+    await expect.element(page.getByText("Synthetic update failed.", { exact: true })).toBeVisible();
+    await expect.element(all).toBeEnabled();
+    state.updateAll.mockResolvedValueOnce([]);
+    await all.click();
+    expect(state.updateAll).toHaveBeenCalledTimes(2);
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+  });
+
+  it.each(["manual", "disconnected", "permission", "running"])(
+    "disables the footer bulk action for %s updates while preserving Settings",
+    async (reason) => {
+      localStorage.removeItem("t3code:provider-update-dismissals:v1");
+      state.updates = { ...updates(), noticeKey: `update-all-${reason}` };
+      state.updates.machines = [];
+      if (reason === "manual") state.updates.groups = state.updates.groups.slice(1);
+      if (reason === "disconnected") {
+        state.updates.groups = state.updates.groups.map((group) => ({
+          ...group,
+          connected: false,
+          candidates: [],
+        }));
+      }
+      if (reason === "permission") {
+        state.updates.canManage = false;
+        state.updates.groups = state.updates.groups.map((group) => ({
+          ...group,
+          canManage: false,
+        }));
+      }
+      if (reason === "running") {
+        state.updates.machines = updates().machines;
+        const group = state.updates.groups[0]!;
+        publishGroups({
+          ...group,
+          attempt: {
+            generation: 1,
+            machine: group,
+            phase: "running",
+            runs: [],
+            message: "Updating providers…",
+          },
+        });
+      }
+      state.navigate.mockReset();
+      await using screen = await render(<ToastProvider />);
+      await screen.rerender(
+        <ToastProvider>
+          <ProviderUpdateNotice />
+        </ToastProvider>,
+      );
+      await expect
+        .element(
+          page.getByRole("button", {
+            name: reason === "running" ? "Updating…" : "Update All",
+            exact: true,
+          }),
+        )
+        .toBeDisabled();
+      await page.elementLocator(document.querySelector('[data-slot="toast-action"]')!).click();
+      expect(state.navigate).toHaveBeenCalledWith({ to: "/settings/providers" });
+      localStorage.removeItem("t3code:provider-update-dismissals:v1");
+    },
+  );
+
+  it("collapses devices independently and keeps update and retry actions available", async () => {
+    state.updates = updates();
+    state.updateEnvironment.mockClear();
+    state.navigate.mockReset();
+    await using screen = await render(<ProviderUpdateEnvironmentRows />, { router: false });
+    const toggle = page.getByRole("button", { name: "Provider updates on WSL", exact: true });
+    const row = page.getByRole("region", { name: "Provider updates on WSL", exact: true });
+    await toggle.click();
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect.element(page.getByText("Codex · personal", { exact: true })).not.toBeVisible();
+    await expect.element(page.getByText("Codex · manual", { exact: true })).toBeVisible();
+    await expect
+      .element(row.getByRole("button", { name: "Settings", exact: true }))
+      .not.toBeInTheDocument();
+    await row.getByRole("button", { name: "Update", exact: true }).click();
+    expect(state.updateEnvironment).toHaveBeenCalledWith(wsl);
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    const group = state.updates.groups[0]!;
+    publishGroups({
+      ...group,
+      attempt: {
+        generation: 1,
+        machine: group,
+        phase: "failed",
+        runs: [],
+        message: "Long diagnostic that should stay hidden when this device is collapsed.",
+      },
+    });
+    await screen.rerender(<ProviderUpdateEnvironmentRows />);
+    await expect.element(row.getByRole("status")).toHaveTextContent("Update needs attention");
+    await expect
+      .element(
+        row.getByText("Long diagnostic that should stay hidden when this device is collapsed."),
+      )
+      .not.toBeVisible();
+    await row.getByRole("button", { name: "Retry", exact: true }).click();
+    expect(state.updateEnvironment).toHaveBeenCalledTimes(2);
+    toggle.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect
+      .element(
+        row.getByText("Long diagnostic that should stay hidden when this device is collapsed."),
+      )
+      .toBeVisible();
+    await expect
+      .element(row.getByRole("button", { name: "Settings", exact: true }))
+      .not.toBeInTheDocument();
+  });
+
+  it("fully collapses the toast while retaining device choices through progress and refreshed targets", async () => {
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+    state.updates = { ...updates(), noticeKey: "collapse-first" };
+    const notice = () => (
+      <ToastProvider>
+        <ProviderUpdateNotice />
+      </ToastProvider>
+    );
+    await using screen = await render(<ToastProvider />);
+    await screen.rerender(notice());
+    const toggle = page.getByRole("button", { name: "Provider updates available", exact: true });
+    const device = page.getByRole("button", { name: "Provider updates on WSL", exact: true });
+    await expect.element(toggle).toBeVisible();
+    await device.click();
+    await toggle.click();
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect.element(device).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Settings", exact: true }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Dismiss notification", exact: true }))
+      .toBeVisible();
+    const group = state.updates.groups[0]!;
+    publishGroups({
+      ...group,
+      attempt: {
+        generation: 1,
+        machine: group,
+        phase: "running",
+        runs: [],
+        message: "Updating providers…",
+      },
+    });
+    await screen.rerender(notice());
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    publishGroups({
+      ...group,
+      attempt: {
+        generation: 1,
+        machine: group,
+        phase: "succeeded",
+        runs: [],
+        message: "Synthetic update finished",
+      },
+    });
+    state.updates = { ...state.updates!, noticeKey: "collapse-refreshed" };
+    await screen.rerender(notice());
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    toggle.element().focus();
+    await userEvent.keyboard(" ");
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect.element(device).toHaveAttribute("aria-expanded", "false");
+    await expect.element(page.getByText("Providers updated", { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByText("Synthetic update finished", { exact: true }))
+      .not.toBeVisible();
+    await toggle.click();
+    await page.getByRole("button", { name: "Dismiss notification", exact: true }).click();
+    await expect.element(toggle).not.toBeInTheDocument();
+    expect(
+      JSON.parse(localStorage.getItem("t3code:provider-update-dismissals:v1") ?? "{}").keys,
+    ).toContain("collapse-refreshed");
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+  });
+
+  it("keeps a single-device notice collapsible and preserves its global Settings action", async () => {
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+    state.updates = updates();
+    state.updates.groups = state.updates.groups.slice(0, 1);
+    state.updates.noticeKey = "collapse-primary";
+    state.navigate.mockReset();
+    await using screen = await render(<ToastProvider />);
+    await screen.rerender(
+      <ToastProvider>
+        <ProviderUpdateNotice />
+      </ToastProvider>,
+    );
+    const toggle = page.getByRole("button", { name: "Provider updates available", exact: true });
+    await toggle.click();
+    await expect.element(page.getByText("Codex · personal", { exact: true })).not.toBeVisible();
+    await toggle.click();
+    await page.elementLocator(document.querySelector('[data-slot="toast-action"]')!).click();
+    expect(state.navigate).toHaveBeenCalledWith({ to: "/settings/providers" });
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+  });
+
+  it("gives each new settling period its own grace timer and retires the old timer", async () => {
+    using _timers = fakeTimers();
+    using addToast = vi.spyOn(toastManager, "add").mockReturnValue("provider-update-toast");
+    using updateToast = vi.spyOn(toastManager, "update").mockImplementation(() => {});
+    using closeToast = vi.spyOn(toastManager, "close").mockImplementation(() => {});
+    state.updates = { ...updates(), noticeKey: "grace-first", isAnySettling: true };
+    {
+      await using screen = await render(<ProviderUpdateNotice />);
+      await act(() => vi.advanceTimersByTimeAsync(29_999));
+      expect(addToast).not.toHaveBeenCalled();
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(addToast).toHaveBeenCalledTimes(1);
+
+      state.updates = { ...state.updates!, noticeKey: "", isAnySettling: false };
+      await screen.rerender(<ProviderUpdateNotice />);
+      state.updates = { ...state.updates!, noticeKey: "grace-second", isAnySettling: true };
+      await screen.rerender(<ProviderUpdateNotice />);
+      await act(() => vi.advanceTimersByTimeAsync(29_999));
+      expect(addToast).toHaveBeenCalledTimes(1);
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(addToast).toHaveBeenCalledTimes(1);
+      expect(updateToast).toHaveBeenCalledTimes(1);
+
+      state.updates = { ...state.updates!, noticeKey: "", isAnySettling: false };
+      await screen.rerender(<ProviderUpdateNotice />);
+      state.updates = { ...state.updates!, noticeKey: "grace-cancelled", isAnySettling: true };
+      await screen.rerender(<ProviderUpdateNotice />);
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      state.updates = { ...state.updates!, noticeKey: "", isAnySettling: false };
+      await screen.rerender(<ProviderUpdateNotice />);
+      await act(() => vi.advanceTimersByTimeAsync(30_000));
+      expect(addToast).toHaveBeenCalledTimes(1);
+      expect(updateToast).toHaveBeenCalledTimes(1);
+    }
+    expect(closeToast).toHaveBeenCalled();
+  });
+
+  it.each(["instance", "version"])(
+    "resurfaces current %s targets after a completed attempt while preserving active capture",
+    async (change) => {
+      state.updates = updates();
+      state.updates.groups = state.updates.groups.slice(0, 1);
+      const group = state.updates.groups[0]!;
+      const personal = collectProviderUpdateCandidates([provider("personal")]);
+      group.candidates = personal;
+      group.allCandidates = personal;
+      group.attempt = {
+        generation: 1,
+        machine: { environmentId: wsl, label: "WSL", candidates: personal },
+        phase: "succeeded",
+        message: "Personal completed",
+        runs: [],
+      };
+      await using screen = await render(<ProviderUpdateEnvironmentRows />, { router: false });
+      await expect.element(page.getByText("Personal completed", { exact: true })).toBeVisible();
+      const baseProvider = provider(change === "instance" ? "work" : "personal");
+      const offered = {
+        ...baseProvider,
+        versionAdvisory: { ...baseProvider.versionAdvisory!, latestVersion: "3.0.0" },
+      };
+      group.allCandidates = collectProviderUpdateCandidates([offered]);
+      group.candidates = group.allCandidates;
+      publishGroups(group);
+      await screen.rerender(<ProviderUpdateEnvironmentRows />);
+      await expect
+        .element(page.getByText("Personal completed", { exact: true }))
+        .not.toBeInTheDocument();
+      await expect
+        .element(page.getByText(`Codex · ${offered.instanceId}`, { exact: true }))
+        .toBeVisible();
+      state.updateEnvironment.mockClear();
+      await page.getByRole("button", { name: "Update", exact: true }).click();
+      expect(state.updateEnvironment).toHaveBeenCalledWith(wsl);
+      expect(
+        group.candidates.map((candidate) => [
+          candidate.instanceId,
+          candidate.versionAdvisory.latestVersion,
+        ]),
+      ).toEqual([[offered.instanceId, "3.0.0"]]);
+      group.attempt = { ...group.attempt!, phase: "running" };
+      publishGroups(group);
+      await screen.rerender(<ProviderUpdateEnvironmentRows />);
+      await expect
+        .element(page.getByText("Codex · personal · updating", { exact: true }))
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Loading", exact: true }))
+        .toBeDisabled();
+    },
+  );
+
+  it("groups every instance, exposes manual instructions, and retains retry and diagnostic feedback", async () => {
+    state.navigate.mockReset();
+    state.updateEnvironment.mockClear();
+    state.updates = updates();
+    await using screen = await render(<ProviderUpdateEnvironmentRows />, { router: false });
+    await expect
+      .element(page.getByRole("region", { name: "Provider updates on WSL" }))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("region", { name: "Provider updates on Laptop" }))
+      .toBeVisible();
+    await expect.element(page.getByText("Codex · personal", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Codex · work", { exact: true })).toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "Update manually with the app or tool that installed this provider. Review provider settings for details.",
+        ),
+      )
+      .toBeVisible();
+    const wslRow = page.getByRole("region", { name: "Provider updates on WSL" });
+    await wslRow.getByRole("button", { name: "Update", exact: true }).click();
+    expect(state.updateEnvironment).toHaveBeenCalledWith(wsl);
+    await expect
+      .element(wslRow.getByRole("button", { name: "Settings", exact: true }))
+      .not.toBeInTheDocument();
+    const group = state.updates.groups[0]!;
+    group.attempt = {
+      generation: 1,
+      machine: group,
+      phase: "unchanged",
+      message: "Provider update could not be verified.",
+      runs: group.candidates.map((target) => ({
+        environmentId: wsl,
+        machineLabel: "WSL",
+        driver: target.driver,
+        instanceId: target.instanceId,
+        result: AsyncResult.success({
+          providers: [
+            {
+              ...target,
+              updateState: {
+                status: "unchanged",
+                startedAt: target.checkedAt,
+                finishedAt: target.checkedAt,
+                message: "Installed version could not be verified.",
+                output: null,
+              },
+            },
+          ],
+        }),
+      })),
+    };
+    await act(async () => {
+      publishGroups(group);
+      await screen.rerender(<ProviderUpdateEnvironmentRows />);
+    });
+    await expect
+      .element(wslRow.getByRole("status"))
+      .toHaveTextContent("Provider update could not be verified.");
+    await expect
+      .element(page.getByText("Codex · personal · update could not be verified", { exact: true }))
+      .toBeVisible();
+    await expect
+      .element(page.getByText("Codex · work · update could not be verified", { exact: true }))
+      .toBeVisible();
+    await wslRow.getByRole("button", { name: "Retry", exact: true }).click();
+    expect(state.updateEnvironment).toHaveBeenCalledTimes(2);
+    group.connected = false;
+    await act(async () => {
+      publishGroups(group);
+      await screen.rerender(<ProviderUpdateEnvironmentRows />);
+    });
+    await expect.element(wslRow.getByRole("button", { name: "Retry", exact: true })).toBeDisabled();
+    await expect
+      .element(wslRow.getByText("Connect this environment before updating providers."))
+      .toBeVisible();
+  });
+});

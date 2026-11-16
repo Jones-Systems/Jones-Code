@@ -25,6 +25,8 @@ const replyRunner =
 
 const pass = { verdict: "pass", category: "none", reason: "Bounded coding work." } as const;
 
+const compiledIs1 = Schema.is(RemoteRequestEvaluationResult);
+
 describe("remote request evaluation", () => {
   it.effect(
     "uses a flat object schema while retaining strict domain validation after the runner",
@@ -45,7 +47,7 @@ describe("remote request evaluation", () => {
         expect(Schema.is(outputSchema)({ ...pass, reason: " " })).toBe(false);
         const mismatched = { verdict: "pass", category: "risky", reason: "Invalid pairing." };
         expect(Schema.is(outputSchema)(mismatched)).toBe(true);
-        expect(Schema.is(RemoteRequestEvaluationResult)(mismatched)).toBe(false);
+        expect(compiledIs1(mismatched)).toBe(false);
         const generation = fromRunner("Synthetic", replyRunner(JSON.stringify(mismatched)), {
           remoteRequestEvaluation: "tool-less",
         });
@@ -130,7 +132,7 @@ describe("remote request evaluation", () => {
     { verdict: "pass", category: "none" },
   ])("rejects malformed model results without converting them to pass (case %#)", (reply) =>
     Effect.gen(function* () {
-      expect(Schema.is(RemoteRequestEvaluationResult)(reply)).toBe(false);
+      expect(compiledIs1(reply)).toBe(false);
       const generation = fromRunner("Synthetic", replyRunner(JSON.stringify(reply)), {
         remoteRequestEvaluation: "tool-less",
       });

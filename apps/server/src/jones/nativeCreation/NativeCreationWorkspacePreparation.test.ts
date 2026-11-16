@@ -1,3 +1,4 @@
+import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import * as SetupCustody from "./NativeWorkspaceSetupCustody.ts";
 import type * as WorkspaceTypes from "./NativeCreationWorkspaceTypes.ts";
 import { assert, it } from "@effect/vitest";
@@ -9,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Authority from "./NativeCreationAuthority.ts";
 import * as Repository from "./NativeCreationRepository.ts";
@@ -110,7 +112,7 @@ const fixture = Effect.fnUntraced(function* (
   return { input, historical, preparation, authorize: Effect.succeed(historical) };
 });
 
-const scenario = Effect.fnUntraced(function* (setup = false, fetch = false) {
+const scenario = Effect.fnUntraced(function* (setup = false, fetch = false, setupWriter = false) {
   const repository = yield* Repository.NativeCreationRepository;
   const value = yield* fixture("workspace", "Synthetic", "/fixture/worktree", setup, fetch);
   yield* repository.claim(value.input, value.authorize);
@@ -123,6 +125,7 @@ const scenario = Effect.fnUntraced(function* (setup = false, fetch = false) {
     changed: false,
     unknown: false,
     setupExit: 0,
+    setupLifetimeClosed: false,
     revokeAfterFetch: false,
   };
   const basis: WorkspaceTypes.NativeWorkspaceBasis = {
@@ -152,6 +155,8 @@ const scenario = Effect.fnUntraced(function* (setup = false, fetch = false) {
   };
   const started = yield* Deferred.make<void>();
   const completion = yield* Deferred.make<number>();
+  const writerEntered = yield* Deferred.make<void>();
+  const releaseWriter = yield* Deferred.make<void>();
   const mutate = (name: string, check: Effect.Effect<void, Workspace.NativeWorkspaceError>) =>
     Effect.gen(function* () {
       yield* check;
@@ -204,8 +209,28 @@ const scenario = Effect.fnUntraced(function* (setup = false, fetch = false) {
           basis,
         );
         assert.isTrue(start.terminalId?.startsWith("native-setup-") === true);
+        const lifetime = yield* Effect.serviceOption(Scope.Scope);
+        if (Option.isNone(lifetime))
+          return yield* Effect.die("Setup must inherit the whole preparation scope.");
+        yield* Scope.addFinalizer(
+          lifetime.value,
+          Effect.sync(() => {
+            state.setupLifetimeClosed = true;
+          }),
+        );
         yield* mutate("setup", check);
         yield* Deferred.succeed(started, undefined);
+        if (setupWriter) {
+          yield* withWorkspaceLease(
+            basis.worktreePath,
+            Effect.gen(function* () {
+              yield* Deferred.succeed(writerEntered, undefined);
+              yield* Deferred.await(releaseWriter);
+              yield* mutate("setup-write", check);
+              yield* Deferred.succeed(completion, 0);
+            }),
+          ).pipe(Effect.forkIn(lifetime.value));
+        }
         return { terminalId: start.terminalId!, completion: Deferred.await(completion) };
       }),
     cleanup: (_basis, _proof, check) => mutate("cleanup", check),
@@ -231,7 +256,20 @@ const scenario = Effect.fnUntraced(function* (setup = false, fetch = false) {
       }),
   });
   const service = Workspace.layer.pipe(Layer.provide(Layer.merge(ports, authority)));
-  return { repository, value, input, state, basis, proof, started, completion, service, authority };
+  return {
+    repository,
+    value,
+    input,
+    state,
+    basis,
+    proof,
+    started,
+    completion,
+    writerEntered,
+    releaseWriter,
+    service,
+    authority,
+  };
 });
 it.effect("absent qualified physical/terminal ports fail before every external effect", () =>
   Effect.gen(function* () {
@@ -269,12 +307,43 @@ it.effect("setup waits for exact retained terminal completion before verified re
       const owner = yield* Workspace.NativeCreationWorkspacePreparation;
       const fiber = yield* owner.prepare(s.input).pipe(Effect.forkChild);
       yield* Deferred.await(s.started);
+      assert.isFalse(s.state.setupLifetimeClosed);
       assert.isTrue(Option.isNone(yield* s.repository.readWorkspaceVerified!(s.input.claimId)));
       yield* Deferred.succeed(s.completion, 0);
       const result = yield* Fiber.join(fiber);
+      assert.isTrue(s.state.setupLifetimeClosed);
       assert.isTrue(result.setupTerminalId?.startsWith("native-setup-") === true);
       assert.isTrue(Option.isSome(yield* s.repository.readWorkspaceVerified!(s.input.claimId)));
     }).pipe(Effect.provide(s.service));
+  }).pipe(Effect.scoped, Effect.provide(repositoryLayer)),
+);
+it.effect("setup writer acquires its own workspace lease before final verification", () =>
+  Effect.gen(function* () {
+    const s = yield* scenario(true, false, true);
+    yield* Effect.gen(function* () {
+      const owner = yield* Workspace.NativeCreationWorkspacePreparation;
+      const pending = yield* owner.prepare(s.input).pipe(Effect.forkChild);
+      yield* Deferred.await(s.started);
+      yield* Deferred.await(s.writerEntered);
+      assert.deepEqual(s.state.mutations, ["worktree", "submodules", "base-config", "setup"]);
+      assert.isTrue(Option.isNone(yield* s.repository.readWorkspaceVerified!(s.input.claimId)));
+      assert.isFalse(s.state.setupLifetimeClosed);
+      yield* Deferred.succeed(s.releaseWriter, undefined);
+      const verified = yield* Fiber.join(pending);
+      assert.deepEqual(s.state.mutations, [
+        "worktree",
+        "submodules",
+        "base-config",
+        "setup",
+        "setup-write",
+      ]);
+      assert.isTrue(Option.isSome(yield* s.repository.readWorkspaceVerified!(s.input.claimId)));
+      assert.isTrue(verified.setupTerminalId?.startsWith("native-setup-") === true);
+      assert.isTrue(s.state.setupLifetimeClosed);
+    }).pipe(
+      Effect.ensuring(Deferred.succeed(s.releaseWriter, undefined)),
+      Effect.provide(s.service),
+    );
   }).pipe(Effect.scoped, Effect.provide(repositoryLayer)),
 );
 it.effect("unknown external completion retains path and started history without replay", () =>
@@ -368,6 +437,7 @@ it.effect("cancellation retains started setup and terminal identity and never re
       const fiber = yield* owner.prepare(s.input).pipe(Effect.forkChild);
       yield* Deferred.await(s.started);
       yield* Fiber.interrupt(fiber);
+      assert.isTrue(s.state.setupLifetimeClosed);
       const facts = (yield* s.repository.readWorkspaceClaim!(s.input.claimId)).effects;
       const setup = facts.find((fact) => fact.kind === "setup" && fact.phase === "completed");
       assert.ok(setup && setup.kind === "setup" && setup.phase === "completed");
@@ -447,4 +517,23 @@ it.effect(
         ],
       );
     }).pipe(Effect.scoped, Effect.provide(repositoryLayer)),
+);
+
+it.effect("native failed setup exit cannot verify or replay its workspace", () =>
+  Effect.gen(function* () {
+    const s = yield* scenario(true);
+    yield* Effect.gen(function* () {
+      const owner = yield* Workspace.NativeCreationWorkspacePreparation;
+      const preparing = yield* owner.prepare(s.input).pipe(Effect.forkChild);
+      yield* Deferred.await(s.started);
+      yield* Deferred.succeed(s.completion, 7);
+      const result = yield* Fiber.join(preparing).pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") assert.equal(result.failure.code, "failed");
+      assert.isTrue(s.state.setupLifetimeClosed);
+      assert.isTrue(Option.isNone(yield* s.repository.readWorkspaceVerified!(s.input.claimId)));
+      assert.equal((yield* owner.prepare(s.input).pipe(Effect.result))._tag, "Failure");
+      assert.equal(s.state.mutations.filter((value) => value === "setup").length, 1);
+    }).pipe(Effect.provide(s.service));
+  }).pipe(Effect.scoped, Effect.provide(repositoryLayer)),
 );

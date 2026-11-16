@@ -1,6 +1,5 @@
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
-import * as WorkstreamGateway from "../../../workstreams/WorkstreamGateway.ts";
 import * as RuntimeCensus from "../../runtime/RuntimeCensus.ts";
 import { type ProjectId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -12,6 +11,8 @@ import { requireMcpCapability } from "../../../mcp/McpInvocationContext.ts";
 import { CollectorFailure, DecisionSnapshotCollector, monotonicSeconds } from "./collector.ts";
 import { DecisionSnapshot, DecisionSnapshotToolkit } from "./tools.ts";
 
+const encodeNativePacket = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeSnapshotJson = Schema.decodeUnknownEffect(Schema.fromJsonString(DecisionSnapshot));
 export class NativeCountReadError extends Schema.TaggedError<NativeCountReadError>()(
   "NativeCountReadError",
   { source: Schema.Literals(["threads", "workstreams"]) },
@@ -37,54 +38,25 @@ interface OperatingCounts {
   readonly applicationCensusCoverage?: "complete";
   readonly nativeBackgroundCoverage?: "unknown";
 }
-interface RegistryObservation {
-  readonly counts: {
-    readonly context: {
-      readonly owner_id: string;
-      readonly registry_version: number;
-      readonly server_generation: number;
-    };
-    readonly principal_id: string;
-    readonly observed_at: string;
-    readonly active: number;
-    readonly total: number;
-    readonly unknown_lifecycle: number;
-  };
-  readonly binding: {
-    readonly registryId: string;
-    readonly ownerId: string;
-    readonly principalId: string;
-    readonly serverGeneration: number;
-    readonly registryVersion: number;
-    readonly authorizationRevision: number;
-  };
-  // Completeness requires exact-count negotiation and binding revalidation.
-  readonly complete: boolean;
-}
 export class DecisionSnapshotNativeCounts extends Context.Service<
   DecisionSnapshotNativeCounts,
   {
     readonly readOperatingCounts?: (
       projectId?: ProjectId,
     ) => Effect.Effect<OperatingCounts, NativeCountReadError>;
-    readonly readRegistryCounts?: () => Effect.Effect<RegistryObservation, NativeCountReadError>;
   }
 >()("t3/jones/mcp/decisionSnapshot/handlers/DecisionSnapshotNativeCounts") {}
 export const DecisionSnapshotNativeCountsLive = Layer.effect(
   DecisionSnapshotNativeCounts,
   Effect.gen(function* () {
     const census = yield* RuntimeCensus.RuntimeCensus;
-    const workstreams = yield* WorkstreamGateway.WorkstreamGateway;
     return DecisionSnapshotNativeCounts.of({
-      readRegistryCounts: () =>
-        workstreams.readRegistryCounts().pipe(
-          Effect.map((observation) => ({ ...observation, complete: true })),
-          Effect.mapError(() => new NativeCountReadError({ source: "workstreams" })),
-        ),
-      readOperatingCounts: (projectId) =>
-        census
-          .readOperatingCounts(projectId)
-          .pipe(Effect.mapError(() => new NativeCountReadError({ source: "threads" }))),
+      readOperatingCounts: Effect.fn("DecisionSnapshotNativeCounts.readOperatingCounts")(
+        (projectId) =>
+          census
+            .readOperatingCounts(projectId)
+            .pipe(Effect.mapError(() => new NativeCountReadError({ source: "threads" }))),
+      ),
     });
   }),
 ).pipe(Layer.provide(RuntimeCensus.layer));
@@ -171,8 +143,8 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
                         ? null
                         : "native_background_coverage_incomplete",
                   })),
-                  Effect.catch(() =>
-                    Effect.succeed(absentEntry("native_projection_unavailable", threadScope)),
+                  Effect.orElseSucceed(() =>
+                    absentEntry("native_projection_unavailable", threadScope),
                   ),
                   Effect.timeoutOrElse({
                     duration: 5_000,
@@ -191,52 +163,17 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
             registry_version: null,
             authorization_revision: null,
           };
-          const registry = Effect.gen(function* () {
-            if (countsPort.readRegistryCounts === undefined)
-              return absentEntry("registry_counts_unavailable", registryScope);
-            const { counts, binding, complete } = yield* countsPort.readRegistryCounts();
-            if (
-              counts.context.owner_id !== binding.ownerId ||
-              counts.context.registry_version !== binding.registryVersion ||
-              counts.context.server_generation !== binding.serverGeneration ||
-              counts.principal_id !== binding.principalId
-            )
-              return absentEntry("registry_binding_changed", registryScope);
-            return {
-              status: complete ? ("observed" as const) : ("partial" as const),
-              observed_at: counts.observed_at,
-              timestamp_basis: "native_observation" as const,
-              scope: {
-                registry_id: binding.registryId,
-                owner_id: binding.ownerId,
-                principal_id: binding.principalId,
-                server_generation: binding.serverGeneration,
-                registry_version: binding.registryVersion,
-                authorization_revision: binding.authorizationRevision,
-              },
-              values: {
-                active: counts.active,
-                total: counts.total,
-                unknown_lifecycle: counts.unknown_lifecycle,
-              },
-              reason: complete ? null : "registry_counts_incomplete",
-            };
-          }).pipe(
-            Effect.catch(() =>
-              Effect.succeed(absentEntry("registry_counts_unavailable", registryScope)),
-            ),
-            Effect.timeoutOrElse({
-              duration: 10_000,
-              orElse: () =>
-                Effect.succeed(absentEntry("registry_counts_timeout", registryScope, "timeout")),
-            }),
+          // The bound v1 collector accepts only registry identity scope. Sending personal
+          // environment scope would invalidate the entire packet, including unrelated sources.
+          const registry = Effect.succeed(
+            absentEntry("registry_counts_unavailable", registryScope),
           );
           const nativeCounts = yield* Effect.forkChild(
             Effect.all([threads, registry], { concurrency: 2 }),
           );
           const nativePacket = Fiber.join(nativeCounts).pipe(
             Effect.flatMap(([threadEntry, workstreamEntry]) =>
-              Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+              encodeNativePacket({
                 schema: "codex.decision-snapshot-native/v1",
                 authority_effect: "none",
                 provenance: "native_observed",
@@ -247,7 +184,7 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
           );
           const output = yield* collector.collect(purpose, nativePacket, deadlineMonotonic).pipe(
             Effect.flatMap((text) =>
-              Schema.decodeUnknownEffect(Schema.fromJsonString(DecisionSnapshot))(text, {
+              decodeSnapshotJson(text, {
                 onExcessProperty: "error",
               }),
             ),
@@ -264,30 +201,42 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
               }),
             ),
           );
-          if (output.value !== null) return output.value;
           const [threadEntry, workstreamEntry] = yield* Fiber.join(nativeCounts);
           const collected_at = yield* isoNow;
-          const wrap = ({ timestamp_basis, ...entry }: NativeCountEntry, name: string) => ({
-            ...entry,
-            received_at: collected_at,
-            age_seconds:
-              entry.observed_at === null
-                ? null
-                : Math.max(0, (Date.parse(collected_at) - Date.parse(entry.observed_at)) / 1_000),
-            freshness:
-              entry.observed_at === null || Date.parse(entry.observed_at) > Date.parse(collected_at)
-                ? ("unknown" as const)
-                : Date.parse(collected_at) - Date.parse(entry.observed_at) <= 120_000
-                  ? ("fresh" as const)
-                  : ("stale" as const),
-            provenance: {
-              kind: "native_observed" as const,
-              collector: `jones.${name}`,
-              schema: "codex.decision-snapshot-native/v1",
-              timestamp_basis,
-              release_id: "source_tree",
-            },
-          });
+          const wrap = ({ timestamp_basis, ...entry }: NativeCountEntry, name: string) => {
+            return {
+              ...entry,
+              received_at: collected_at,
+              age_seconds:
+                entry.observed_at === null
+                  ? null
+                  : Math.max(0, (Date.parse(collected_at) - Date.parse(entry.observed_at)) / 1_000),
+              freshness:
+                entry.observed_at === null ||
+                Date.parse(entry.observed_at) > Date.parse(collected_at)
+                  ? ("unknown" as const)
+                  : Date.parse(collected_at) - Date.parse(entry.observed_at) <= 120_000
+                    ? ("fresh" as const)
+                    : ("stale" as const),
+              provenance: {
+                kind: "native_observed" as const,
+                collector: `jones.${name}`,
+                schema: "codex.decision-snapshot-native/v1",
+                timestamp_basis,
+                release_id: "source_tree",
+              },
+            };
+          };
+          if (output.value !== null)
+            return {
+              ...output.value,
+              coverage:
+                output.value.coverage === "complete" ? ("partial" as const) : output.value.coverage,
+              sources: {
+                ...output.value.sources,
+                workstreams: wrap(workstreamEntry, "workstreams"),
+              },
+            };
           const unavailable = (name: string) => ({
             ...wrap(
               absentEntry(
@@ -315,10 +264,7 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
             schema: "codex.decision-snapshot/v1" as const,
             authority_effect: "none" as const,
             coverage:
-              threadEntry.status === "observed" ||
-              threadEntry.status === "partial" ||
-              workstreamEntry.status === "observed" ||
-              workstreamEntry.status === "partial"
+              threadEntry.status === "observed" || threadEntry.status === "partial"
                 ? ("partial" as const)
                 : ("unavailable" as const),
             purpose,

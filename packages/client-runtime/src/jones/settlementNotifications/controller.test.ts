@@ -67,6 +67,30 @@ describe("settlement notification controller", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it("keeps omitted older threads available and marks gone only from current family evidence", async () => {
+    const h = harness();
+    h.data.inbox = encodeSettlementInbox({ ...emptyInbox(), entries: [entry()] });
+    const controller = createSettlementNotificationController({ store: h.store });
+    await controller.hydrate();
+    controller.observe(env, shell(2, []));
+    expect(controller.getSnapshot().visible[0]?.threadGone).toBe(false);
+    controller.observe(env, shell(3, []), {
+      families: [
+        { threadId: entry().threadId, generation: 0, family: { snapshotSequence: 2, threads: [] } },
+      ],
+    });
+    expect(controller.getSnapshot().visible[0]?.threadGone).toBe(false);
+    controller.observe(env, shell(4, []), {
+      families: [
+        { threadId: entry().threadId, generation: 1, family: { snapshotSequence: 4, threads: [] } },
+      ],
+    });
+    expect(controller.getSnapshot().visible[0]?.threadGone).toBe(true);
+    controller.observe(env, shell(5, [thread("thread-a", 200)]));
+    expect(controller.getSnapshot().visible[0]?.threadGone).toBe(false);
+    await controller.flush();
+  });
+
   it.each(["cached", "synchronizing"] as const)(
     "hides saved local and remote children in every publication with %s metadata before hydration",
     async (status) => {
@@ -193,7 +217,10 @@ describe("settlement notification controller", () => {
         .sort(),
     );
     expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([]);
-    controller.observe(env, shell(2, rows, archived));
+    controller.observe(env, {
+      ...shell(2, rows, archived),
+      removedAt: new Map([[entry("missing").threadId, 2]]),
+    });
     await controller.flush();
     const persisted = decodeSettlementInbox(h.data.inbox!);
     expect(persisted.acknowledged).toEqual(

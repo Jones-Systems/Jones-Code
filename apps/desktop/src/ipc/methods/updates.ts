@@ -3,7 +3,11 @@ import {
   FleetDesktopState,
   FleetOperationId,
 } from "@t3tools/contracts/jones/fleet-updates";
-import { JonesUpdateDownloadInput } from "@t3tools/contracts/jones/jonesUpdates";
+import {
+  JonesUpdateBuildList,
+  JonesUpdateDownloadInput,
+  JonesUpdateProvenance,
+} from "@t3tools/contracts/jones/jonesUpdates";
 import {
   DesktopUpdateActionResultSchema,
   DesktopUpdateChannelSchema,
@@ -29,11 +33,14 @@ export const getUpdateState = DesktopIpc.makeIpcMethod({
 
 export const setUpdateChannel = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.UPDATE_SET_CHANNEL_CHANNEL,
-  payload: DesktopUpdateChannelSchema,
+  payload: Schema.Struct({
+    channel: DesktopUpdateChannelSchema,
+    minimumVersion: Schema.optional(Schema.String),
+  }),
   result: DesktopUpdateStateSchema,
-  handler: Effect.fn("desktop.ipc.updates.setChannel")(function* (channel) {
+  handler: Effect.fn("desktop.ipc.updates.setChannel")(function* ({ channel, minimumVersion }) {
     const updates = yield* DesktopUpdates.DesktopUpdates;
-    return yield* updates.setChannel(channel);
+    return yield* updates.setChannel(channel, { minimumVersion });
   }),
 });
 
@@ -53,6 +60,26 @@ export const downloadUpdate = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const listJonesUpdateBuilds = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.JONES_UPDATE_LIST_BUILDS_CHANNEL,
+  payload: Schema.Void,
+  result: JonesUpdateBuildList,
+  handler: Effect.fn("desktop.ipc.updates.listJonesBuilds")(function* () {
+    const updates = yield* DesktopUpdates.DesktopUpdates;
+    return yield* updates.listJonesBuilds ?? Effect.succeed({ builds: [], unavailable: true });
+  }),
+});
+
+export const selectJonesUpdateBuild = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.JONES_UPDATE_SELECT_BUILD_CHANNEL,
+  payload: JonesUpdateProvenance,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.updates.selectJonesBuild")(function* (build) {
+    const updates = yield* DesktopUpdates.DesktopUpdates;
+    return yield* updates.selectJonesBuild?.(build) ?? Effect.succeed(false);
+  }),
+});
+
 export const installUpdate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.UPDATE_INSTALL_CHANNEL,
   payload: Schema.Union([
@@ -65,6 +92,11 @@ export const installUpdate = DesktopIpc.makeIpcMethod({
     const updates = yield* DesktopUpdates.DesktopUpdates;
     const stagedHandle = typeof request === "object" ? request.stagedHandle : request;
     const campaignId = typeof request === "object" ? request.campaignId : undefined;
+    const state = yield* updates.getState;
+    if (state.jones === undefined && typeof request === "string") {
+      const { accepted, completed, state: next } = yield* updates.installPrepared(request);
+      return { accepted, completed, state: next };
+    }
     if (stagedHandle !== undefined) {
       if (updates.installStaged !== undefined)
         return yield* campaignId === undefined

@@ -262,6 +262,7 @@ describe("real MermaidDiagram acceptance", () => {
     using fixture = setup({ svg });
     const source = math ? 'flowchart TD\n  A["$$x^2$$"]' : firstSource;
     await using screen = await render(pendingDiagram(source), { router: false });
+    await act(() => vi.dynamicImportSettled());
     await vi.waitFor(() => expect(fixture.instances).toHaveLength(1));
     const output = screen.container.querySelector("svg")!;
     expect(output).not.toBeNull();

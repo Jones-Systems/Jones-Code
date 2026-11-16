@@ -7,6 +7,7 @@ import * as NodePath from "node:path";
 import type { JonesActionsCandidate } from "@t3tools/shared/jones/jonesActions";
 import {
   decodeStagedQualifiedRuntime,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
   QualifiedRuntimeBlockedError,
   type StagedQualifiedRuntime,
 } from "../../cloud/qualifiedRuntime.ts";
@@ -65,7 +66,9 @@ export async function adoptPreparedStage(input: {
   if (
     receipt.sourceSha !== candidate.source ||
     receipt.sourceTree !== candidate.tree ||
-    receipt.installedSourceSha !== candidate.installedSource ||
+    (durable.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+      ? binding.activeSourceSha
+      : receipt.installedSourceSha) !== candidate.installedSource ||
     receipt.workflow !== candidate.workflow ||
     receipt.runId !== candidate.runId ||
     receipt.runAttempt !== candidate.runAttempt ||

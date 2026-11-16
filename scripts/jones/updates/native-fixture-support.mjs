@@ -5,6 +5,59 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { FixtureOwnership } from "./native-startup-fixture.mjs";
+
+// The creating layer releases a hold only after all of its external custody is
+// settled. A swallowed error or replacement finally error cannot release it.
+export class NativeFixtureOwnership extends FixtureOwnership {
+  #custody = new Set();
+  #roots = new Set();
+
+  async temporary(prefix) {
+    const root = await super.temporary(prefix);
+    this.#roots.add(root);
+    return root;
+  }
+
+  holdCustody(fixtureRoot) {
+    if (
+      ![...this.#roots].some(
+        (root) => fixtureRoot === root || fixtureRoot.startsWith(root + NodePath.sep),
+      )
+    ) {
+      const failure = new Error("Native custody must use the owner of its fixture root.");
+      failure.preserveScratch = true;
+      throw failure;
+    }
+    const entry = { cause: null };
+    this.#custody.add(entry);
+    return Object.freeze({
+      retain: (cause) => {
+        entry.cause = cause;
+      },
+      release: () => {
+        this.#custody.delete(entry);
+      },
+    });
+  }
+
+  async cleanup() {
+    if (this.#custody.size) {
+      const failure = new AggregateError(
+        [...this.#custody].map((entry) => entry.cause).filter((cause) => cause !== null),
+        "Native fixture custody is unresolved; fixture cleanup is held.",
+      );
+      failure.preserveScratch = true;
+      throw failure;
+    }
+    try {
+      await super.cleanup();
+    } catch (failure) {
+      failure.preserveScratch = true;
+      throw failure;
+    }
+  }
+}
 
 const commandPhaseNames = new Set([
   "fixture",
@@ -66,14 +119,15 @@ export async function withNativeFixtureScratch(
   { temporaryDirectory = NodeOS.tmpdir() } = {},
 ) {
   const parent = await NodeFSP.realpath(temporaryDirectory);
-  const root = await NodeFSP.mkdtemp(NodePath.join(parent, "jones-identity-native-"));
+  const ownership = new NativeFixtureOwnership();
+  const root = await ownership.temporary(NodePath.join(parent, "jones-identity-native-"));
   // Emit the literal ownership locator before body can launch any subprocess.
   process.stderr.write(`${JSON.stringify({ event: "identity-fixture-root", root })}\n`);
   const owner = await NodeFSP.lstat(root, { bigint: true });
   let failure;
   let result;
   try {
-    result = await body(root);
+    result = await body(root, ownership);
   } catch (cause) {
     failure = cause;
   }
@@ -85,12 +139,13 @@ export async function withNativeFixtureScratch(
   try {
     const current = await NodeFSP.lstat(root, { bigint: true });
     NodeAssert.ok(current.isDirectory() && current.dev === owner.dev && current.ino === owner.ino);
-    await NodeFSP.rm(root, { recursive: true, force: false });
+    await ownership.cleanup();
     await NodeAssert.rejects(NodeFSP.lstat(root), { code: "ENOENT" });
   } catch (cleanup) {
     const retained = failure
       ? new AggregateError([failure, cleanup], failure.message, { cause: failure })
       : cleanup;
+    if (custodyEvidence(cleanup).preserveScratch) retained.preserveScratch = true;
     retained.scratchRoot = root;
     throw retained;
   }

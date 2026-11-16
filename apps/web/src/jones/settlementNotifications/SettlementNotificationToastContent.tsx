@@ -1,3 +1,4 @@
+import { settlementRemainingRows } from "@t3tools/client-runtime/jones/settlement-notifications";
 import { useState } from "react";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../../components/ui/tooltip";
@@ -82,8 +83,8 @@ export function SettlementNotificationToastContent({
               data-slot="settlement-remaining"
               className="mt-0.5 list-disc space-y-0.5 pl-4 text-xs text-muted-foreground"
             >
-              {entry.projectRemaining.map((item, index) => (
-                <li key={`${index}:${item}`} className="min-w-0">
+              {settlementRemainingRows(entry.projectRemaining).map((item) => (
+                <li key={item.key} className="min-w-0">
                   <Tooltip>
                     <TooltipTrigger
                       render={
@@ -94,9 +95,9 @@ export function SettlementNotificationToastContent({
                         />
                       }
                     >
-                      {item}
+                      {item.label}
                     </TooltipTrigger>
-                    <TooltipPopup>{item}</TooltipPopup>
+                    <TooltipPopup>{item.label}</TooltipPopup>
                   </Tooltip>
                 </li>
               ))}

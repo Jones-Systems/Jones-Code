@@ -1,6 +1,15 @@
 import * as Schema from "effect/Schema";
 import { JonesBuildStartedAt } from "./fleetUpdates/source.ts";
 import { EnvironmentId, TrimmedNonEmptyString } from "../baseSchemas.ts";
+import {
+  JonesOperationId,
+  JonesOperationReceipt,
+  JonesRecoveryPolicy,
+  JonesSourceSha,
+} from "./jonesOperations.ts";
+import { JonesUpdateLastCheck, JonesUpdateProgress } from "./jonesUpdateProgress.ts";
+
+export * from "./jonesUpdateProgress.ts";
 
 export const JonesUpdatePhase = Schema.Literals([
   "checking",
@@ -36,6 +45,34 @@ export const JonesUpdateProvenance = Schema.Struct({
 });
 export type JonesUpdateProvenance = typeof JonesUpdateProvenance.Type;
 
+export const JonesUpdateBuildList = Schema.Struct({
+  builds: Schema.Array(JonesUpdateProvenance).check(Schema.isMaxLength(5)),
+  unavailable: Schema.Boolean,
+});
+export type JonesUpdateBuildList = typeof JonesUpdateBuildList.Type;
+
+/** Discovery metadata only; it carries neither a staged handle nor a migration plan. */
+export const JonesUpdateAlternative = Schema.Struct({
+  provenance: JonesUpdateProvenance,
+  checkedAt: Schema.String,
+  expiresAt: Schema.String,
+});
+export type JonesUpdateAlternative = typeof JonesUpdateAlternative.Type;
+
+export function sameJonesUpdateAlternative(
+  left: JonesUpdateAlternative | undefined,
+  right: JonesUpdateAlternative | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.checkedAt === right.checkedAt &&
+    left.expiresAt === right.expiresAt &&
+    (Object.keys(JonesUpdateProvenance.fields) as Array<keyof JonesUpdateProvenance>).every(
+      (key) => left.provenance[key] === right.provenance[key],
+    )
+  );
+}
+
 export const JonesUpdateCapability = Schema.Struct({
   check: Schema.Boolean,
   download: Schema.Boolean,
@@ -47,6 +84,9 @@ export const JonesUpdateCapability = Schema.Struct({
   exactSource: Schema.optionalKey(Schema.Boolean),
   /** Exact-source staging can retire a caller-bound selection; requires download and exactSource. */
   replaceStaged: Schema.optionalKey(Schema.Boolean),
+  /** Durable operations require download and install support. Absent means unsupported. */
+  operations: Schema.optionalKey(Schema.Literal(1)),
+  recoveryPolicy: Schema.optionalKey(Schema.Literal(1)),
   reason: Schema.optionalKey(
     Schema.Literals([
       "bootstrap-required",
@@ -60,17 +100,61 @@ export const JonesUpdateCapability = Schema.Struct({
 
 /**
  * Present only on a host enrolled to follow a laptop. Such a host offers, stages and installs
- * exactly `leaderSource`, the laptop's committed source, and only a build whose commit has
- * `leaderTree`; null means the laptop has not published one yet, so the host holds. Hosts without
- * a policy select their own builds.
+ * exactly `leaderSource` and `leaderTree` unless `reviewTarget` holds automatic following and
+ * permits only that target's reviewed operations. A null leader without a review target holds.
+ * Hosts without a policy select their own builds.
  */
 export const JonesUpdatePolicy = Schema.Struct({
   role: Schema.Literal("follower"),
   leaderSource: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/))),
   /** Sent with every published `leaderSource`. */
   leaderTree: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/))),
+  reviewTarget: Schema.optionalKey(
+    Schema.Struct({
+      source: JonesSourceSha,
+      tree: JonesSourceSha,
+      directiveId: JonesOperationId,
+    }),
+  ),
 });
 export type JonesUpdatePolicy = typeof JonesUpdatePolicy.Type;
+
+export const JonesCheckClassification = Schema.Struct({
+  kind: Schema.Literals([
+    "available",
+    "target-already-running",
+    "qualification-pending",
+    "qualification-failed",
+    "no-eligible-package-in-window",
+    "incomplete-discovery",
+    "failure",
+  ]),
+  checkedAt: Schema.String,
+  discovery: Schema.optionalKey(
+    Schema.Struct({
+      termination: Schema.Literals([
+        "not-started",
+        "target-proved",
+        "candidate-selected",
+        "window-ended",
+        "interrupted",
+      ]),
+      /** The discovery frontier fit its budget; this does not claim an exhaustive search. */
+      bounded: Schema.Boolean,
+      unresolvedLimits: Schema.Array(
+        Schema.Literals([
+          "producer-pages",
+          "ci-page",
+          "artifact-page",
+          "unknown-terminal-evidence",
+        ]),
+      ).check(Schema.isMaxLength(4)),
+    }),
+  ),
+  pendingCount: Schema.optionalKey(Schema.Number),
+  failedQualificationCount: Schema.optionalKey(Schema.Number),
+});
+export type JonesCheckClassification = typeof JonesCheckClassification.Type;
 
 /** The staged handle is immutable even when a later check discovers another build. */
 export const JonesUpdateState = Schema.Struct({
@@ -79,7 +163,10 @@ export const JonesUpdateState = Schema.Struct({
   phase: JonesUpdatePhase,
   revision: Schema.optionalKey(Schema.Number),
   capability: JonesUpdateCapability,
+  operation: Schema.optionalKey(JonesOperationReceipt),
+  checkClassification: Schema.optionalKey(JonesCheckClassification),
   provenance: Schema.optionalKey(JonesUpdateProvenance),
+  alternativeCandidate: Schema.optionalKey(JonesUpdateAlternative),
   stagedHandle: Schema.optionalKey(TrimmedNonEmptyString),
   message: Schema.optionalKey(Schema.String),
   checkedAt: Schema.optionalKey(Schema.String),
@@ -127,6 +214,7 @@ export const JonesUpdateState = Schema.Struct({
   recovery: Schema.optionalKey(
     Schema.Struct({
       method: Schema.Literals(["clone", "copy"]),
+      requested: Schema.optionalKey(JonesRecoveryPolicy),
       bytes: Schema.Number,
       completedAt: Schema.String,
       durationMs: Schema.optionalKey(Schema.Number),
@@ -139,6 +227,11 @@ export const JonesUpdateState = Schema.Struct({
     }),
   ),
   policy: Schema.optionalKey(JonesUpdatePolicy),
+  /** Structured download or install steps. Older hosts omit it; older clients ignore it. */
+  progress: Schema.optionalKey(JonesUpdateProgress),
+  lastCheck: Schema.optionalKey(JonesUpdateLastCheck),
+  /** The staged build's source or tree is the one already running; installing it changes nothing. */
+  stagedAlreadyRunning: Schema.optionalKey(Schema.Literal(true)),
 });
 export type JonesUpdateState = typeof JonesUpdateState.Type;
 
@@ -163,6 +256,8 @@ export const JonesUpdateExactInput = Schema.Struct({
       environmentId: EnvironmentId,
       currentVersion: TrimmedNonEmptyString,
       expectedInstalledSource: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+      /** Present only for generic Check offers; laptop matching retains its installed-source semantics. */
+      alternative: Schema.optionalKey(JonesUpdateAlternative),
     }),
   ),
 });

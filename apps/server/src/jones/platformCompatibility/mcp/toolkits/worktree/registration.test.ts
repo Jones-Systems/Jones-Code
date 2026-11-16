@@ -1,3 +1,8 @@
+import * as ProjectCloneTracker from "../../../../../project/ProjectCloneTracker.ts";
+import * as PeerLinks from "../../../../../peer/PeerLinks.ts";
+import * as PeerLinkRequests from "../../../../../peer/PeerLinkRequests.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as ConversationPolicy from "../../../../conversationWorkspace/ConversationPolicy.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as CommandReceipts from "../../../../../orchestration-v2/CommandReceiptStore.ts";
@@ -25,6 +30,7 @@ import * as ProjectService from "../../../../../project/ProjectService.ts";
 import * as PullRequestReviewGuideService from "../../../../../pullRequest/PullRequestReviewGuideService.ts";
 import * as ProjectSetupScriptRunner from "../../../../../project/ProjectSetupScriptRunner.ts";
 import * as ProviderRegistry from "../../../../../provider/ProviderRegistry.ts";
+import * as DocumentText from "../../../../../provider/DocumentText.ts";
 import * as ScheduledTaskService from "../../../../../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../../../../../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../../../../../peer/RemoteDelegation.ts";
@@ -32,6 +38,7 @@ import * as RemoteAdmissionIntake from "../../../../remoteAdmissionIntegration/R
 import * as ServerSettings from "../../../../../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../../../../../vcs/VcsStatusBroadcaster.ts";
 import * as ServerSecretStore from "../../../../../auth/ServerSecretStore.ts";
+import * as AssetSigner from "../../../../../assets/AssetSigner.ts";
 import * as ManagedProjectFolders from "../../../../../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../../../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadSearch from "../../../../../orchestration-v2/ThreadSearch.ts";
@@ -44,53 +51,57 @@ import * as PreviewAutomationBroker from "../../../../../mcp/PreviewAutomationBr
 import * as PreviewBrowser from "../../../../../preview/PreviewBrowser.ts";
 import * as PeerForwarding from "../../../../../peer/PeerForwarding.ts";
 
-import * as WorkstreamGateway from "../../../../../workstreams/WorkstreamGateway.ts";
-import * as WorkstreamOperations from "../../../../workstreams/operations/service.ts";
+import * as PersonalWorkstreams from "../../../../workstreams/personal/service.ts";
+import * as AgentWorkstreams from "../../../../workstreams/personal/agentService.ts";
 
-const layerStubServices = Layer.mergeAll(
-  McpProviderSessions.layer,
-  NodeSqliteClient.layer({ filename: ":memory:" }),
-  Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
-  Layer.mock(EventSink.EventSinkV2)({}),
-  Layer.mock(Orchestrator.OrchestratorV2)({}),
-  Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-  Layer.mock(DeviceService.DeviceService)({}),
-  Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-  Layer.mock(ProviderRegistry.ProviderRegistry)({}),
-  Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
-  Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-    isMcpCallerAttached: () => Effect.succeed(false),
-  }),
-  Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-  Layer.mock(PeerForwarding.PeerForwarding)({}),
-  Layer.mock(SecretRequests.SecretRequests)({}),
-  Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-  Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
-  Layer.mock(ProjectService.ProjectService)({}),
-  Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
-  ServerSettings.layerTest({}),
-  Layer.mock(GitWorkflowService.GitWorkflowService)({}),
-  Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
-  Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
-  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
-  Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
-  Layer.mock(PreviewManager.PreviewManager)({}),
-  Layer.mock(ServerSecretStore.ServerSecretStore)({}),
-  Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
-  Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
-  Layer.mock(ThreadSearch.ThreadSearch)({}),
-  Layer.mock(WorkstreamOperations.WorkstreamOperations)({}),
-  Layer.mock(WorkstreamGateway.WorkstreamGateway)({
-    purgeAuthorization: () => {},
-    readRegistryCounts: () =>
-      Effect.fail(
-        new WorkstreamGateway.WorkstreamGatewayError({
-          reason: "contract-mismatch",
-          detail: "Tool-list fixture does not provide registry counts.",
-        }),
-      ),
-  }),
-);
+type TurnAttachment = Parameters<
+  NonNullable<ConversationPolicy.ConversationPolicy["Service"]["registerTurnAttachment"]>
+>[0];
+const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
+  Layer.mergeAll(
+    Layer.mock(ConversationPolicy.ConversationPolicy)({
+      ownsPath: () => false,
+      registerTurnAttachment: (attach) => Effect.sync(() => onAttachment(attach)),
+    }),
+    Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
+    Layer.mock(PeerLinks.PeerLinks)({}),
+    Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+    McpProviderSessions.layer,
+    NodeSqliteClient.layer({ filename: ":memory:" }),
+    Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
+    Layer.mock(EventSink.EventSinkV2)({}),
+    Layer.mock(Orchestrator.OrchestratorV2)({}),
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+    Layer.mock(DeviceService.DeviceService)({}),
+    Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+    Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+    Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+    Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+      isMcpCallerAttached: () => Effect.succeed(false),
+    }),
+    Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+    Layer.mock(PeerForwarding.PeerForwarding)({}),
+    Layer.mock(SecretRequests.SecretRequests)({}),
+    Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+    Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
+    Layer.mock(ProjectService.ProjectService)({}),
+    Layer.succeed(DocumentText.DocumentText, { ensure: () => Effect.sync(() => undefined) }),
+    Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+    ServerSettings.layerTest({}),
+    Layer.mock(GitWorkflowService.GitWorkflowService)({}),
+    Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
+    Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
+    Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+    Layer.mock(PreviewManager.PreviewManager)({}),
+    Layer.mock(ServerSecretStore.ServerSecretStore)({}),
+    Layer.mock(AssetSigner.AssetSigner)({}),
+    Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
+    Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+    Layer.mock(ThreadSearch.ThreadSearch)({}),
+    Layer.mock(AgentWorkstreams.AgentWorkstreams)({}),
+    Layer.mock(PersonalWorkstreams.PersonalWorkstreams)({}),
+  );
 
 const ToolsListPayload = Schema.fromJsonString(
   Schema.Struct({
@@ -116,6 +127,8 @@ const decodeToolsListPayload = Schema.decodeUnknownEffect(ToolsListPayload);
 it.effect("production mcp layer lists worktree tools over http", () =>
   Effect.scoped(
     Effect.gen(function* () {
+      let registeredAttachment: TurnAttachment | undefined;
+      let registrations = 0;
       const context = yield* HttpRouter.serve(McpHttpServer.layer, {
         disableListenLog: true,
         disableLogger: true,
@@ -128,10 +141,17 @@ it.effect("production mcp layer lists worktree tools over http", () =>
         ),
         Layer.provide(PreviewAutomationBroker.layer),
         Layer.provide(PreviewBrowser.layer),
-        Layer.provide(layerStubServices),
+        Layer.provide(
+          layerStubServices((attach) => {
+            registeredAttachment = attach;
+            registrations++;
+          }),
+        ),
         Layer.build,
       );
 
+      expect(registrations).toBe(1);
+      expect(typeof registeredAttachment).toBe("function");
       const registry = Context.get(context, McpSessionRegistry.McpSessionRegistry).issue({
         threadId: ThreadId.make("thread-scratch"),
         providerInstanceId: ProviderInstanceId.make("claudeAgent"),
@@ -178,10 +198,9 @@ it.effect("production mcp layer lists worktree tools over http", () =>
         expect.arrayContaining([
           "t3_workstreams_list",
           "t3_workstream_create",
+          "t3_workstream_update",
           "t3_thread_workstream_set",
           "t3_thread_workstream_read",
-          "t3_workstream_operation_status",
-          "t3_workstreams_status",
         ]),
       );
 
@@ -205,9 +224,9 @@ it.effect("production mcp layer lists worktree tools over http", () =>
       Layer.mergeAll(
         NodeHttpServer.layerTest,
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-worktree-mcp-" }).pipe(
-          Layer.provide(NodeServices.layer),
+          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         ),
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
       ),
     ),
   ),

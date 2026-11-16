@@ -2,7 +2,14 @@ import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ThreadId, type OrchestrationV2Subagent } from "@t3tools/contracts";
 import type { ThreadRelationshipWalkRow } from "@t3tools/client-runtime/state/thread-relationships";
 import {
+  BearerConnectionTarget,
+  PrimaryConnectionTarget,
+  RelayConnectionTarget,
+  SshConnectionTarget,
+} from "@t3tools/client-runtime/connection";
+import {
   groupLineageRows,
+  isClientLocalMachine,
   resolveMachineIdentity,
   resolveParentRef,
   type ParentSource,
@@ -10,6 +17,32 @@ import {
 
 const environmentId = EnvironmentId.make("local");
 const threadId = ThreadId.make("parent");
+
+describe("client-local machine", () => {
+  const identity = { environmentId, label: "Laptop" };
+  const primary = new PrimaryConnectionTarget({
+    ...identity,
+    httpBaseUrl: "http://127.0.0.1:3773",
+    wsBaseUrl: "ws://127.0.0.1:3773",
+  });
+  const secondary = new BearerConnectionTarget({ ...identity, connectionId: "local:wsl:default" });
+  it("recognizes desktop primary and desktop-managed secondary backends", () => {
+    expect(isClientLocalMachine(primary, true)).toBe(true);
+    expect(isClientLocalMachine(secondary, true)).toBe(true);
+  });
+  it("retains locations for remote routes, unknown targets and browser clients", () => {
+    for (const target of [
+      new BearerConnectionTarget({ ...identity, connectionId: "saved-laptop" }),
+      new SshConnectionTarget({ ...identity, connectionId: "ssh-laptop" }),
+      new RelayConnectionTarget(identity),
+      undefined,
+    ]) {
+      expect(isClientLocalMachine(target, true)).toBe(false);
+    }
+    expect(isClientLocalMachine(primary, false)).toBe(false);
+    expect(isClientLocalMachine(secondary, false)).toBe(false);
+  });
+});
 const remote = (status: string, stoppedThere: boolean): OrchestrationV2Subagent =>
   ({
     id: `remote-${status}`,

@@ -18,6 +18,7 @@ import * as TestClock from "effect/testing/TestClock";
 import {
   TOKEN_ACCOUNTING_READER_LIMITS,
   TokenAccountingReaderError,
+  type TokenAccountingReaderBinding,
   type TokenAccountingReaderPort,
 } from "./Reader.ts";
 import { make } from "./TokenAccountingService.ts";
@@ -394,6 +395,134 @@ describe("saved accounting transport", () => {
           status: "reader_failed",
           reason: "reader_timeout",
         });
+      }),
+    ),
+  );
+
+  it.effect(
+    "shares one availability check across callers and reuses it until the TTL expires",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const entered = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          let checks = 0;
+          let binding: TokenAccountingReaderBinding = {
+            status: "bound",
+            configuredReportId: REPORT_ID,
+          };
+          const service = yield* make({
+            ...reader(),
+            checkBinding: Effect.gen(function* () {
+              checks += 1;
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+              return binding;
+            }),
+          });
+          const callers = yield* Effect.forEach(Array.from({ length: 8 }), () =>
+            service.isAvailable.pipe(Effect.forkChild),
+          );
+          yield* Deferred.await(entered);
+          yield* Effect.yieldNow;
+          yield* Deferred.succeed(release, undefined);
+          expect(yield* Effect.forEach(callers, Fiber.join)).toEqual(Array(8).fill(true));
+          expect(checks).toBe(1);
+
+          // Inside the TTL the cached answer is served without another check.
+          binding = {
+            status: "unconfigured",
+            reason: "report_unconfigured",
+            configuredReportId: null,
+          };
+          yield* TestClock.adjust("29 seconds");
+          expect(yield* service.isAvailable).toBe(true);
+          expect(checks).toBe(1);
+
+          // Once it expires the capability follows the binding again.
+          yield* TestClock.adjust("1 second");
+          expect(yield* service.isAvailable).toBe(false);
+          expect(checks).toBe(2);
+          expect(yield* service.isAvailable).toBe(false);
+          expect(checks).toBe(2);
+        }),
+      ),
+  );
+
+  it.effect("bounds a stalled availability check and caches the unavailable answer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        let checks = 0;
+        const service = yield* make({
+          ...reader(),
+          checkBinding: Effect.sync(() => {
+            checks += 1;
+          }).pipe(
+            Effect.andThen(Deferred.succeed(entered, undefined)),
+            Effect.andThen(Effect.never),
+          ),
+        });
+        const first = yield* service.isAvailable.pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        yield* TestClock.adjust("5 seconds");
+        expect(yield* Fiber.join(first)).toBe(false);
+        expect(yield* service.isAvailable).toBe(false);
+        expect(checks).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("gives the binding check and the archive read separate budgets", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const bindingEntered = yield* Deferred.make<void>();
+        const readEntered = yield* Deferred.make<void>();
+        const service = yield* make({
+          checkBinding: Deferred.succeed(bindingEntered, undefined).pipe(
+            Effect.andThen(Effect.sleep("4 seconds")),
+            Effect.as({ status: "bound", configuredReportId: REPORT_ID } as const),
+          ),
+          readSummary: () =>
+            Deferred.succeed(readEntered, undefined).pipe(
+              Effect.andThen(Effect.sleep("4 seconds")),
+              Effect.as(encodeJson(report())),
+            ),
+        });
+        const pending = yield* service.read.pipe(Effect.forkChild);
+        yield* Deferred.await(bindingEntered);
+        yield* TestClock.adjust("4 seconds");
+        yield* Deferred.await(readEntered);
+        yield* TestClock.adjust("4 seconds");
+        // Eight seconds of work in total, but neither step passed its own five-second budget.
+        expect(yield* Fiber.join(pending)).toMatchObject({ state: "ready" });
+      }),
+    ),
+  );
+
+  it.effect("reports a stalled binding check as a timeout without starting a read", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        let reads = 0;
+        const service = yield* make({
+          checkBinding: Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+          readSummary: () =>
+            Effect.sync(() => {
+              reads += 1;
+              return encodeJson(report());
+            }),
+        });
+        const pending = yield* service.read.pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        yield* TestClock.adjust("5 seconds");
+        expect(yield* Fiber.join(pending)).toMatchObject({
+          state: "unavailable",
+          status: "reader_failed",
+          reason: "reader_timeout",
+          configuredReportId: null,
+        });
+        expect(reads).toBe(0);
       }),
     ),
   );

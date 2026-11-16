@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { validateNativeStoreAuthorityPath } from "./nativeStoreAuthorityPath.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import {
+  acquireExistingNativeAuthorityReadUse,
   advanceNativeStoreAuthority,
   advanceNativeAuthorityRestore,
   fenceNativeAuthorityRestore,
@@ -26,7 +27,8 @@ const withDirectory = (run: (directory: string) => void): void => {
   try {
     run(NodePath.join(root, "authority"));
   } finally {
-    NodeFS.rmSync(root, { recursive: true, force: true });
+    if (process.env.NW_AUTHORITY_PREPARATION_EVIDENCE_DIR === undefined)
+      NodeFS.rmSync(root, { recursive: true, force: true });
   }
 };
 
@@ -52,7 +54,8 @@ describe("native store authority persistence", () => {
         initializeNativeStoreAuthorityForBaseDir(root, SERVICE_LAUNCHER_PROTOCOL),
       ).not.toThrow();
     } finally {
-      NodeFS.rmSync(root, { recursive: true, force: true });
+      if (process.env.NW_AUTHORITY_PREPARATION_EVIDENCE_DIR === undefined)
+        NodeFS.rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -330,4 +333,83 @@ describe("guarded native paired restore", () => {
       expect(readNativeStoreAuthorityState(directory).state).toBe("fenced");
     });
   });
+});
+
+describe("scoped current-authority read uses", () => {
+  it("never creates missing authority or incompatible lock state", () =>
+    withDirectory((directory) => {
+      expect(() => acquireExistingNativeAuthorityReadUse(directory)).toThrow();
+      expect(NodeFS.existsSync(directory)).toBe(false);
+      initializeNativeStoreAuthority(directory, "read-use");
+      const lock = nativeStoreAuthorityPaths(directory).lockDatabasePath;
+      NodeFS.renameSync(lock, lock + ".retained");
+      expect(() => acquireExistingNativeAuthorityReadUse(directory)).toThrow();
+      expect(NodeFS.existsSync(lock)).toBe(false);
+      const incompatible = new NodeSqlite.DatabaseSync(lock);
+      incompatible.exec("CREATE TABLE incompatible(value TEXT)");
+      incompatible.close();
+      NodeFS.chmodSync(lock, 0o600);
+      expect(() => acquireExistingNativeAuthorityReadUse(directory)).toThrow("incompatible");
+    }));
+
+  it("retains one shared pager lock through nested uses and same-process refused mutations", () =>
+    withDirectory((directory) => {
+      initializeNativeStoreAuthority(directory, "read-use");
+      const first = acquireExistingNativeAuthorityReadUse(directory);
+      const second = acquireExistingNativeAuthorityReadUse(directory);
+      const moduleUrl = new URL("./nativeStoreAuthorityPersistence.ts", import.meta.url).href;
+      const probe = () => {
+        const script = `const m=await import(${JSON.stringify(moduleUrl)});
+        try { m.fenceNativeStoreAuthority(${JSON.stringify(directory)}, "read-use"); console.log("mutated"); }
+        catch { console.log("excluded"); }`;
+        const result = NodeChildProcess.spawnSync(
+          process.execPath,
+          ["--input-type=module", "-e", script],
+          {
+            encoding: "utf8",
+            timeout: 10000,
+          },
+        );
+        NodeFS.appendFileSync(
+          NodePath.join(NodePath.dirname(directory), "read-use-probes.jsonl"),
+          JSON.stringify({
+            argv: [process.execPath, "--input-type=module", "-e", script],
+            pid: result.pid,
+            exit: result.status,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            pid_absent: !NodeFS.existsSync("/proc/" + result.pid),
+          }) + "\n",
+        );
+        expect(result.status, result.stderr).toBe(0);
+        return result.stdout.trim();
+      };
+      try {
+        expect(probe()).toBe("excluded");
+        for (let i = 0; i < 3; i++) {
+          expect(() => fenceNativeStoreAuthority(directory, "read-use")).toThrow(
+            "writer is already active",
+          );
+          first.assertHeld();
+          second.assertHeld();
+          expect(probe()).toBe("excluded");
+        }
+        first.release();
+        first.release();
+        expect(() => first.assertHeld()).toThrow("expired");
+        second.assertHeld();
+        expect(probe()).toBe("excluded");
+        const nested = acquireExistingNativeAuthorityReadUse(directory);
+        nested.assertHeld();
+        nested.release();
+        second.assertHeld();
+        expect(probe()).toBe("excluded");
+      } finally {
+        first.release();
+        second.release();
+      }
+      expect(probe()).toBe("mutated");
+      expect(readNativeStoreAuthorityState(directory).state).toBe("fenced");
+      expect(() => acquireExistingNativeAuthorityReadUse(directory)).toThrow("not active");
+    }));
 });

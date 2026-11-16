@@ -1,12 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import { runtime } from "../../lib/runtime";
 import { FleetEnrollmentStatus, type FleetHostReadiness } from "./FleetEnrollmentStatus";
 import { describeFollower } from "./followerStatus";
+import { fleetInstalledSource, fleetPublication } from "./publicationState";
+import {
+  describePublication,
+  describePublicationReceipt,
+  selectPublicationReceipt,
+} from "./publicationStatus";
 import {
   fleetDesktopState,
   fleetHost,
@@ -14,34 +20,51 @@ import {
   refreshFleetDesktopState,
 } from "./runtime";
 
-export function FleetEnrollmentControls({
-  environmentId,
-  label,
-}: {
+interface FleetEnrollmentControlsProps {
   readonly environmentId: EnvironmentId;
   readonly label: string;
-}) {
+}
+
+export function FleetEnrollmentControls(props: FleetEnrollmentControlsProps) {
+  return <FleetEnrollmentControlsForHost key={props.environmentId} {...props} />;
+}
+
+function FleetEnrollmentControlsForHost({ environmentId, label }: FleetEnrollmentControlsProps) {
   const state = useAtomValue(fleetDesktopState);
   const storageError = useAtomValue(fleetStatusError);
+  const publication = useAtomValue(fleetPublication);
+  const installedSource = useAtomValue(fleetInstalledSource);
   const enrollment = state?.enrollments.find((entry) => entry.environmentId === environmentId);
   const [status, setStatus] = useState<FleetHostStatus | null>(null);
+  const [statusObservedAt, setStatusObservedAt] = useState<string>();
+  const statusRequest = useRef(0);
   const [message, setMessage] = useState<string>();
   const [statusUnavailable, setStatusUnavailable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [continueThreads, setContinueThreads] = useState(false);
   const supported = window.desktopBridge?.fleetUpdates !== undefined;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read fleet enrollment status through the desktop bridge and ignore responses after the controls retire.
   useEffect(() => {
     if (!supported) return;
     let cancelled = false;
+    const request = ++statusRequest.current;
     void Promise.all([refreshFleetDesktopState(), fleetHost(environmentId, { action: "status" })])
       .then(([, next]) => {
-        if (!cancelled) setStatus(next);
+        if (!cancelled && request === statusRequest.current) {
+          setStatus(next);
+          setStatusObservedAt(new Date().toISOString());
+          setStatusUnavailable(false);
+        }
       })
       .catch(() => {
-        if (!cancelled) setStatusUnavailable(true);
+        if (!cancelled && request === statusRequest.current) {
+          setStatusUnavailable(true);
+          setStatusObservedAt(new Date().toISOString());
+        }
       });
     return () => {
       cancelled = true;
+      statusRequest.current++;
     };
   }, [environmentId, supported]);
   if (!supported) return null;
@@ -56,6 +79,7 @@ export function FleetEnrollmentControls({
   const toggle = async () => {
     const bridge = window.desktopBridge?.fleetUpdates;
     if (bridge === undefined) return;
+    const request = ++statusRequest.current;
     setBusy(true);
     await (async () => {
       if (enrollment?.enabled) {
@@ -69,7 +93,10 @@ export function FleetEnrollmentControls({
             expectedEnrollmentId: enrollment.enrollmentId,
           },
         });
+        if (request !== statusRequest.current) return;
         setStatus(next);
+        setStatusObservedAt(new Date().toISOString());
+        setStatusUnavailable(false);
         setMessage(
           "Automatic updates turned off. Host transactions already accepted still finish.",
         );
@@ -77,7 +104,7 @@ export function FleetEnrollmentControls({
         const fresh = await fleetHost(environmentId, { action: "status" });
         const selected = {
           enrollmentId: await runtime.runPromise(
-            Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
+            SecureRandom.SecureRandom.pipe(Effect.flatMap((crypto) => crypto.uuidV4())),
           ),
           environmentId,
           enabled: true,
@@ -94,13 +121,17 @@ export function FleetEnrollmentControls({
           throw new Error("Host enrollment was not confirmed.");
         await bridge({ action: "enroll", enrollment: selected });
         await refreshFleetDesktopState();
+        if (request !== statusRequest.current) return;
         setStatus(next);
+        setStatusObservedAt(new Date().toISOString());
+        setStatusUnavailable(false);
         setMessage(
           "Automatic updates on. This host follows this laptop’s exact source after each committed laptop update.",
         );
       }
     })()
       .catch(() => {
+        if (request !== statusRequest.current) return;
         setMessage(
           enrollment?.enabled
             ? "The host didn’t confirm. Automatic dispatch from this laptop is stopped if its local save succeeded; refresh before retrying."
@@ -108,7 +139,7 @@ export function FleetEnrollmentControls({
         );
       })
       .finally(() => {
-        setBusy(false);
+        if (request === statusRequest.current) setBusy(false);
       });
   };
   const readiness: FleetHostReadiness = statusUnavailable
@@ -118,14 +149,26 @@ export function FleetEnrollmentControls({
       : qualified
         ? "qualified"
         : "setup-required";
+  const latestReceipt = selectPublicationReceipt(enrollment, publication?.hosts, {
+    status,
+    observedAt: statusObservedAt,
+    unavailable: statusUnavailable,
+  });
+  const follower = latestReceipt?.outcome === "unknown" ? undefined : latestReceipt?.follower;
+  const publicationNotice = enrollment?.enabled
+    ? [
+        describePublication(publication?.publication, installedSource),
+        describePublicationReceipt(label, latestReceipt),
+      ].join(" ")
+    : undefined;
   return (
     <FleetEnrollmentStatus
       label={label}
       enrolled={enrollment?.enabled === true}
       readiness={readiness}
       follower={
-        enrollment?.enabled === true && status?.follower !== undefined
-          ? describeFollower(status.follower)
+        enrollment?.enabled === true && follower !== undefined
+          ? describeFollower(follower)
           : undefined
       }
       campaign={
@@ -137,24 +180,34 @@ export function FleetEnrollmentControls({
               ...(latest.member.reason ? { reason: latest.member.reason } : {}),
             }
       }
-      notice={storageError ?? message}
+      notice={[storageError ?? message, publicationNotice].filter(Boolean).join(" ")}
       continueThreads={continueThreads}
       busy={busy}
       onContinueThreadsChange={setContinueThreads}
       onToggle={() => void toggle()}
       onRefresh={() => {
+        const request = ++statusRequest.current;
         setBusy(true);
         void Promise.all([
           refreshFleetDesktopState(),
           fleetHost(environmentId, { action: "status" }),
         ])
           .then(([, next]) => {
+            if (request !== statusRequest.current) return;
             setStatus(next);
+            setStatusObservedAt(new Date().toISOString());
             setStatusUnavailable(false);
             setMessage(undefined);
           })
-          .catch(() => setStatusUnavailable(true))
-          .finally(() => setBusy(false));
+          .catch(() => {
+            if (request === statusRequest.current) {
+              setStatusUnavailable(true);
+              setStatusObservedAt(new Date().toISOString());
+            }
+          })
+          .finally(() => {
+            if (request === statusRequest.current) setBusy(false);
+          });
       }}
     />
   );

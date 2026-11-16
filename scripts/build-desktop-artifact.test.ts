@@ -1,11 +1,10 @@
-import { resolveGitCommitHash, bundlesWslRuntime } from "./build-desktop-artifact.ts";
 import { statFile } from "@electron/asar";
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node path and crypto APIs for isolated packaged-artifact fixtures.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
-import { createPackageWithOptions, extractFile } from "@electron/asar";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { createPackageWithOptions, extractFile } from "@electron/asar";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
@@ -18,8 +17,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
-import * as Sink from "effect/Sink";
 import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -28,10 +27,12 @@ import { decodeJonesDesktopBuildMetadata } from "./jones/updates/build-provenanc
 import {
   allocateDesktopStageRoot,
   buildDesktopBundles,
+  copyDesktopBuildArtifacts,
   DesktopBuildManifestRestoreError,
   BundleNotSelfContainedError,
   BuildCommandFailedError,
   parseWslRuntimeArchiveMembers,
+  DesktopBuildDependencyResolutionError,
   readWorkspaceConfig,
   createBuildConfig,
   createStagePatchedDependencies,
@@ -46,9 +47,12 @@ import {
   packWindowsServerAsar,
   preflightWindowsDesktopBuild,
   renderMacPasskeyEntitlements,
+  resolveMacFileExclusions,
   resolveMacWebAuthnEntitlements,
   resolveMacPasskeySigningConfiguration,
   resolveMergedStageDependencies,
+  resolveDesktopRuntimeDependencies,
+  planDesktopStageDependencies,
   resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
@@ -59,7 +63,9 @@ import {
   ancestorNodeModulesPaths,
   copyDirectoryPreservingSymlinks,
   LinuxBrowserSecretHostError,
+  MacPackagedAppMissingError,
   stageBrowserSecret,
+  validateMacPackagedPayload,
   validateWindowsPackagedPayload,
   verifyJonesPackagedMacResources,
   verifyPackagedBundleIsSelfContained,
@@ -91,6 +97,40 @@ const encodeModuleUrl = Schema.encodeEffect(Schema.fromJsonString(Schema.String)
 const decodePackageVersion = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
 );
+
+const readCommittedDesktopStageInputs = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const repoRoot = yield* path.fromFileUrl(new URL("../", import.meta.url));
+  const decodeManifest = Schema.decodeEffect(
+    Schema.fromJsonString(
+      Schema.Struct({ dependencies: Schema.Record(Schema.String, Schema.String) }),
+    ),
+  );
+  const server = yield* decodeManifest(
+    yield* fs.readFileString(path.join(repoRoot, "apps/server/package.json")),
+  );
+  const desktop = yield* decodeManifest(
+    yield* fs.readFileString(path.join(repoRoot, "apps/desktop/package.json")),
+  );
+  const workspace = yield* readWorkspaceConfig();
+  const catalog = workspace.catalog ?? {};
+  const fffNodeVersion = server.dependencies["@ff-labs/fff-node"];
+  if (!fffNodeVersion) {
+    return yield* new DesktopBuildDependencyResolutionError({
+      kind: "server-production",
+      manifestPath: "apps/server/package.json",
+      cause: "Missing committed @ff-labs/fff-node version.",
+    });
+  }
+  return {
+    serverDependencies: resolveCatalogDependencies(server.dependencies, catalog, "apps/server"),
+    desktopDependencies: resolveDesktopRuntimeDependencies(desktop.dependencies, catalog),
+    fffNodeVersion,
+    workspace,
+    lockfile: yield* fs.readFileString(path.join(repoRoot, "pnpm-lock.yaml")),
+  };
+});
 
 const makeLinuxCliArchiveFixture = Effect.fn("test.makeLinuxCliArchiveFixture")(function* (input: {
   readonly root: string;
@@ -226,6 +266,26 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
     generatedAsarPath,
     appExecutableName,
   } as const;
+});
+
+const makeMacPayloadFixture = Effect.fn("test.makeMacPayloadFixture")(function* (input: {
+  readonly serverEntrySource?: string;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mac-payload-test-" });
+  const sourceDir = path.join(tempDir, "app-source");
+  const serverEntryPath = path.join(sourceDir, "apps/server/dist/bin.mjs");
+  yield* fs.makeDirectory(path.dirname(serverEntryPath), { recursive: true });
+  yield* fs.writeFileString(serverEntryPath, input.serverEntrySource ?? "console.log('server');\n");
+
+  const stageDistDir = path.join(tempDir, "dist");
+  const resourcesDir = path.join(stageDistDir, "mac-arm64/T3 Code.app/Contents/Resources");
+  yield* fs.makeDirectory(resourcesDir, { recursive: true });
+  yield* Effect.promise(() =>
+    createPackageWithOptions(sourceDir, path.join(resourcesDir, "app.asar"), {}),
+  );
+  return { stageDistDir } as const;
 });
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
@@ -591,6 +651,33 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
+  it.effect("declares Calendar access for hosted commands in macOS builds", () =>
+    Effect.gen(function* () {
+      for (const version of ["0.1.0", "0.1.1-nightly.20261019.1"]) {
+        for (const signed of [false, true]) {
+          const config = yield* createBuildConfig(
+            "mac",
+            "dmg",
+            version,
+            signed,
+            false,
+            undefined,
+            undefined,
+          );
+          const mac = config.mac as { extendInfo: Record<string, unknown> };
+          for (const key of [
+            "NSCalendarsUsageDescription",
+            "NSCalendarsFullAccessUsageDescription",
+            "NSCalendarsWriteOnlyAccessUsageDescription",
+          ]) {
+            assert.isString(mac.extendInfo[key], `${version}, signed=${signed}: ${key}`);
+            assert.isNotEmpty(mac.extendInfo[key]);
+          }
+        }
+      }
+    }),
+  );
+
   // pnpm writes "set this to true or false" placeholders into allowBuilds when a
   // tarball changes. pnpm ignores them, but the release build decode rejects them.
   it.effect("decodes the repo allowBuilds and every file: tarball it names exists", () =>
@@ -650,6 +737,101 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           cpu: [arch],
           libc: ["glibc"],
         });
+      }),
+  );
+
+  it.effect.each([
+    {
+      platform: "mac",
+      arch: "arm64",
+      nativePackages: ["@ff-labs/fff-bin-darwin-arm64"],
+      architectures: { os: ["darwin"], cpu: ["arm64"] },
+    },
+    {
+      platform: "linux",
+      arch: "arm64",
+      nativePackages: ["@ff-labs/fff-bin-linux-arm64-gnu", "@ff-labs/fff-bin-linux-arm64-musl"],
+      architectures: { os: ["linux"], cpu: ["arm64"], libc: ["glibc"] },
+    },
+    {
+      platform: "linux",
+      arch: "x64",
+      nativePackages: ["@ff-labs/fff-bin-linux-x64-gnu", "@ff-labs/fff-bin-linux-x64-musl"],
+      architectures: { os: ["linux"], cpu: ["x64"], libc: ["glibc"] },
+    },
+  ] as const)("pins committed merged desktop dependencies for $platform $arch", (target) =>
+    Effect.gen(function* () {
+      const input = yield* readCommittedDesktopStageInputs;
+      const merged = resolveMergedStageDependencies({ ...input, ...target });
+      assert.equal(merged["node-pty"], "^1.2.0-beta.15");
+      const planned = yield* planDesktopStageDependencies({
+        dependencies: merged,
+        patchedDependencies: input.workspace.patchedDependencies ?? {},
+        lockfile: input.lockfile,
+      });
+      assert.deepStrictEqual(planned.dependencies, { ...merged, "node-pty": "1.2.0-beta.15" });
+      assert.deepStrictEqual(planned.patchedDependencies, {
+        "node-pty@1.2.0-beta.15": "patches/node-pty@1.2.0-beta.15.patch",
+        "@ff-labs/fff-node@0.11.0": "patches/@ff-labs__fff-node@0.11.0.patch",
+      });
+      for (const [name, spec] of Object.entries(input.desktopDependencies)) {
+        assert.equal(planned.dependencies[name], spec, `Desktop root changed: ${name}`);
+      }
+      assert.deepStrictEqual(
+        Object.keys(planned.dependencies).filter((name) => name.startsWith("@ff-labs/fff-bin-")),
+        [...target.nativePackages],
+      );
+      for (const name of target.nativePackages) {
+        assert.equal(planned.dependencies[name], input.fffNodeVersion);
+      }
+      assert.notProperty(planned.dependencies, "effect");
+      assert.equal(
+        input.workspace.patchedDependencies?.["effect@4.1.2"],
+        "patches/effect@4.1.2.patch",
+      );
+      const overrides = resolveCatalogDependencies(
+        input.workspace.overrides ?? {},
+        input.workspace.catalog ?? {},
+        "apps/desktop",
+      );
+      assert.deepStrictEqual(
+        createStageWorkspaceConfig({
+          platform: target.platform,
+          arch: target.arch,
+          allowBuilds: input.workspace.allowBuilds ?? {},
+          patchedDependencies: planned.patchedDependencies,
+          overrides,
+        }),
+        {
+          supportedArchitectures: target.architectures,
+          allowBuilds: input.workspace.allowBuilds,
+          patchedDependencies: planned.patchedDependencies,
+          overrides,
+          packageExtensions: {
+            "electron-webauthn": { peerDependenciesMeta: { typescript: { optional: true } } },
+            "@electron-webauthn/macos": {
+              peerDependenciesMeta: { typescript: { optional: true } },
+            },
+          },
+        },
+      );
+    }),
+  );
+
+  it.effect.each(["malformed", "stale"] as const)(
+    "rejects a %s desktop stage lock before installation",
+    (kind) =>
+      Effect.gen(function* () {
+        const input = yield* readCommittedDesktopStageInputs;
+        const merged = resolveMergedStageDependencies({ ...input, platform: "mac", arch: "arm64" });
+        const error = yield* planDesktopStageDependencies({
+          dependencies: kind === "stale" ? { ...merged, "node-pty": "^1.2.0-beta.16" } : merged,
+          patchedDependencies: input.workspace.patchedDependencies ?? {},
+          lockfile: kind === "malformed" ? "lockfileVersion: [" : input.lockfile,
+        }).pipe(Effect.flip);
+        assert.instanceOf(error, DesktopBuildDependencyResolutionError);
+        assert.equal(error.kind, "desktop-runtime");
+        assert.equal(error.manifestPath, "pnpm-lock.yaml");
       }),
   );
 
@@ -729,6 +911,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it.effect("packages Mac resources without the retired standalone bootstrap", () =>
     Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const repoRoot = path.resolve(import.meta.dirname, "..");
       for (const variant of [undefined, "preview-companion"] as const) {
         const config = yield* createBuildConfig(
           "mac",
@@ -743,7 +927,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           variant,
         );
         assert.deepStrictEqual(config.extraResources, DESKTOP_EXTRA_RESOURCES);
-        assert.notProperty(config, "afterPack");
+        assert.equal(
+          config.afterPack,
+          path.join(repoRoot, "scripts/prepare-server-compile-cache.cjs"),
+        );
       }
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
@@ -952,6 +1139,30 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         }),
       ),
   );
+
+  it("drops the other architecture's Darwin prebuilds from single-architecture Mac builds", () => {
+    const excludes = (arch: "arm64" | "x64" | "universal", file: string) =>
+      resolveMacFileExclusions(arch).some((glob) => NodePath.matchesGlob(file, glob.slice(1)));
+    const x64 = [
+      "node_modules/node-pty/prebuilds/darwin-x64/pty.node",
+      "node_modules/objc-js/prebuilds/darwin-x64/node.napi.node",
+    ];
+    const arm64 = [
+      "node_modules/node-pty/prebuilds/darwin-arm64/pty.node",
+      "node_modules/objc-js/prebuilds/darwin-arm64/node.napi.armv8.node",
+    ];
+
+    for (const file of x64) {
+      assert.isTrue(excludes("arm64", file), file);
+      assert.isFalse(excludes("x64", file), file);
+      assert.isFalse(excludes("universal", file), file);
+    }
+    for (const file of arm64) {
+      assert.isTrue(excludes("x64", file), file);
+      assert.isFalse(excludes("arm64", file), file);
+      assert.isFalse(excludes("universal", file), file);
+    }
+  });
 
   it.effect("unpacks target Windows natives while excluding the other architecture", () =>
     Effect.scoped(
@@ -1439,7 +1650,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         });
 
         assert.isFalse(
-          commands.some((command) => command.options.env?.ELECTRON_RUN_AS_NODE === "1"),
+          commands.some(
+            (command) =>
+              command.command === NodePath.join(fixture.packagedAppDir, fixture.appExecutableName),
+          ),
         );
         assert.isTrue(
           commands.some(
@@ -1591,6 +1805,58 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
         assert.instanceOf(error, BundleNotSelfContainedError);
         assert.include(error.output, "t3code-deliberately-missing-package");
+      }),
+    ),
+  );
+
+  it.effect("rejects a macOS app whose packaged server bundle cannot resolve", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeMacPayloadFixture({
+          serverEntrySource: 'import "t3code-deliberately-missing-package";\n',
+        });
+        const error = yield* validateMacPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+        }).pipe(Effect.flip);
+
+        assert.instanceOf(error, BundleNotSelfContainedError);
+        assert.include(error.output, "t3code-deliberately-missing-package");
+      }),
+    ),
+  );
+
+  it.effect("accepts a macOS app whose packaged server bundle resolves", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeMacPayloadFixture({});
+        yield* validateMacPackagedPayload({ stageDistDir: fixture.stageDistDir });
+      }),
+    ),
+  );
+
+  it.effect("rejects a macOS stage without a packaged app", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const stageDistDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mac-payload-test-" });
+        const error = yield* validateMacPackagedPayload({ stageDistDir }).pipe(Effect.flip);
+
+        assert.instanceOf(error, MacPackagedAppMissingError);
+      }),
+    ),
+  );
+
+  it.effect("rejects a macOS app without app.asar", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const stageDistDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mac-payload-test-" });
+        yield* fs.makeDirectory(`${stageDistDir}/mac-arm64/T3 Code.app/Contents/Resources`, {
+          recursive: true,
+        });
+        const error = yield* validateMacPackagedPayload({ stageDistDir }).pipe(Effect.flip);
+
+        assert.instanceOf(error, BundleNotSelfContainedError);
       }),
     ),
   );
@@ -1984,56 +2250,56 @@ it.effect.skipIf(!symlinksSupported)("rebases packaged links into the isolated t
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect.each([
-  {
-    stdout: "  ABCDEF1234567890ABCDEF1234567890ABCDEF12\n",
-    exitCode: 0,
-    expected: "abcdef1234567890abcdef1234567890abcdef12",
-  },
-  { stdout: "abcdef123456", exitCode: 0, expected: "unknown" },
-  { stdout: "g".repeat(40), exitCode: 0, expected: "unknown" },
-  { stdout: "a".repeat(41), exitCode: 0, expected: "unknown" },
-  { stdout: "", exitCode: 0, expected: "unknown" },
-  { stdout: "a".repeat(40), exitCode: 1, expected: "unknown" },
-])("resolves only a successful full Git HEAD: %j", ({ stdout, exitCode, expected }) =>
+it.effect("preserves packaged app directories from the dir target", () =>
   Effect.gen(function* () {
-    const commands: ChildProcess.Command[] = [];
-    const hash = yield* resolveGitCommitHash("/synthetic/repository").pipe(
-      Effect.provide(
-        Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make((command) => {
-            commands.push(command);
-            return Effect.succeed(mockProcess(exitCode, stdout));
-          }),
-        ),
-      ),
-    );
-    assert.equal(hash, expected);
-    assert.deepEqual(commands, [
-      ChildProcess.make("git", ["rev-parse", "HEAD"], { cwd: "/synthetic/repository" }),
-    ]);
-  }),
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-dir-artifact-" });
+    const stage = path.join(root, "stage");
+    const output = path.join(root, "output");
+    const app = path.join("mac-arm64", "T3 Code.app", "Contents");
+    yield* fs.makeDirectory(path.join(stage, app), { recursive: true });
+    yield* fs.writeFileString(path.join(stage, app, "Info.plist"), "built-app");
+    yield* fs.writeFileString(path.join(stage, "builder-debug.yml"), "debug");
+    const copied = yield* copyDesktopBuildArtifacts(stage, output, true);
+    assert.include(copied, path.join(output, "mac-arm64"));
+    assert.equal(yield* fs.readFileString(path.join(output, app, "Info.plist")), "built-app");
+    assert.equal(yield* fs.readFileString(path.join(stage, app, "Info.plist")), "built-app");
+    yield* fs.remove(path.join(stage, app, "Info.plist"));
+    yield* fs.writeFileString(path.join(stage, app, "New.plist"), "rebuilt-app");
+    yield* copyDesktopBuildArtifacts(stage, output, true);
+    assert.isFalse(yield* fs.exists(path.join(output, app, "Info.plist")));
+    assert.equal(yield* fs.readFileString(path.join(output, app, "New.plist")), "rebuilt-app");
+    const filesOnly = yield* copyDesktopBuildArtifacts(stage, path.join(root, "files-only"));
+    assert.deepEqual(filesOnly, [path.join(root, "files-only", "builder-debug.yml")]);
+    assert.isFalse(yield* fs.exists(path.join(root, "files-only", "mac-arm64")));
+    yield* fs.remove(path.join(stage, "mac-arm64"), { recursive: true });
+    yield* fs.writeFileString(path.join(stage, "mac-arm64"), "flattened");
+    yield* copyDesktopBuildArtifacts(stage, output, true);
+    assert.equal(yield* fs.readFileString(path.join(output, "mac-arm64")), "flattened");
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
 
-it.effect("reports unknown when resolving Git HEAD cannot spawn", () =>
-  resolveGitCommitHash("/synthetic/repository").pipe(
-    Effect.provide(
-      Layer.succeed(
-        ChildProcessSpawner.ChildProcessSpawner,
-        ChildProcessSpawner.make(() =>
-          Effect.fail(
-            PlatformError.systemError({
-              _tag: "NotFound",
-              module: "ChildProcess",
-              method: "spawn",
-              pathOrDescriptor: "git",
-              description: "synthetic unavailable Git",
-            }),
-          ),
-        ),
-      ),
-    ),
-    Effect.tap((hash) => Effect.sync(() => assert.equal(hash, "unknown"))),
-  ),
+it.effect.skipIf(!symlinksSupported)("preserves relative links when replacing dir artifacts", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-dir-artifact-links-" });
+    const stage = path.join(root, "stage");
+    const output = path.join(root, "output");
+    const app = path.join("mac-arm64", "T3 Code.app", "Contents");
+    yield* fs.makeDirectory(path.join(stage, app), { recursive: true });
+    yield* fs.writeFileString(path.join(stage, app, "Info.plist"), "built-app");
+    yield* fs.symlink("Info.plist", path.join(stage, app, "Current"));
+    yield* copyDesktopBuildArtifacts(stage, output, true);
+    assert.equal(yield* fs.readLink(path.join(output, app, "Current")), "Info.plist");
+    assert.equal(yield* fs.readFileString(path.join(output, app, "Current")), "built-app");
+
+    yield* fs.remove(path.join(stage, app, "Current"));
+    yield* fs.writeFileString(path.join(stage, app, "New.plist"), "rebuilt-app");
+    yield* fs.symlink("New.plist", path.join(stage, app, "Current"));
+    yield* copyDesktopBuildArtifacts(stage, output, true);
+    assert.equal(yield* fs.readLink(path.join(output, app, "Current")), "New.plist");
+    assert.equal(yield* fs.readFileString(path.join(output, app, "Current")), "rebuilt-app");
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );

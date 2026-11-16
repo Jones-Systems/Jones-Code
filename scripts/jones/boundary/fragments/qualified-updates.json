@@ -38,6 +38,9 @@
     "apps/server/src/jones/updates/JonesUpdater.ts",
     "apps/server/src/jones/updates/capabilityReceipt.test.ts",
     "apps/server/src/jones/updates/capabilityReceipt.ts",
+    "apps/server/src/jones/updates/checkRecord.ts",
+    "apps/server/src/jones/updates/progress.test.ts",
+    "apps/server/src/jones/updates/progress.ts",
     "apps/server/src/jones/updates/http.test.ts",
     "apps/server/src/jones/updates/http.ts",
     "apps/server/src/jones/updates/migrationPlan.test.ts",
@@ -90,6 +93,7 @@
     "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
     "apps/server/src/jones/cloud/capturedProcess.ts",
     "apps/server/src/jones/cloud/capturedProcess.test.ts",
+    "apps/server/src/jones/cloud/servicePreflightResult.ts",
     "apps/server/src/jones/cloud/stoppedServerOwnership.ts",
     "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
     "apps/server/src/jones/cloud/ownedScratch.ts",
@@ -108,7 +112,12 @@
     "apps/desktop/src/jones/updates/updateChannels.test.ts",
     "apps/desktop/src/jones/updates/jonesColdBackendCustody.testFixtures.ts",
     "apps/server/src/jones/updates/trialGate.testFixtures.ts",
-    "apps/server/src/jones/cloud/qualifiedLauncher.testFixtures.ts"
+    "apps/server/src/jones/cloud/qualifiedLauncher.testFixtures.ts",
+    "apps/server/src/jones/updates/recoverQualifiedStage.ts",
+    "apps/server/src/jones/updates/recoverQualifiedStage.test.ts",
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts",
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts",
+    "apps/web/src/jones/updates/qualifiedBuildReview.browser.test.tsx"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -150,11 +159,13 @@
     "apps/web/src/components/desktopUpdate.logic.ts",
     "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
     "apps/web/src/components/settings/SettingsPanels.tsx",
-    "apps/web/src/components/LegacySidebar.tsx",
+    "apps/web/src/components/sidebar/SidebarChrome.tsx",
     "apps/web/src/components/desktopUpdate.toast.tsx",
     "scripts/tsconfig.json",
     "apps/desktop/tsconfig.json",
-    "apps/desktop/src/backend/DesktopBackendConfiguration.ts"
+    "apps/desktop/src/backend/DesktopBackendConfiguration.ts",
+    "apps/server/src/background/BackgroundPolicy.ts",
+    "scripts/smoke-cli-archive.ts"
   ],
   "tombstones": [
     "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
@@ -264,6 +275,10 @@
     {
       "from": "apps/desktop/src/updates/DesktopUpdates.ts",
       "to": "apps/desktop/src/jones/updates/JonesDesktopUpdates.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
     },
     {
       "from": "apps/desktop/src/updates/DesktopUpdates.ts",
@@ -382,11 +397,19 @@
       "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
     },
     {
+      "from": "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/useUpdateEverything.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
       "from": "apps/web/src/components/settings/SettingsPanels.tsx",
       "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
     },
     {
-      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
       "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
     },
     {
@@ -404,6 +427,14 @@
     {
       "from": "apps/server/src/cloud/servicePreflight.ts",
       "to": "apps/server/src/jones/updates/migrationPlan.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/servicePreflight.ts",
+      "to": "apps/server/src/jones/cloud/servicePreflightResult.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/servicePreflightResult.ts"
     },
     {
       "from": "apps/server/src/serviceLauncher.ts",
@@ -452,6 +483,26 @@
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/jones/updates/sourceRelation.ts"
+    },
+    {
+      "from": "apps/server/src/cli/servicePreflight.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/background/BackgroundPolicy.ts",
+      "to": "apps/server/src/jones/fleetUpdates/backgroundPolicyChanges.ts"
+    },
+    {
+      "from": "apps/server/src/cli/service.ts",
+      "to": "apps/server/src/jones/cli/serviceOnboarding.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "apps/server/src/jones/updateContinuity/Runtime.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts"
     }
   ]
 }

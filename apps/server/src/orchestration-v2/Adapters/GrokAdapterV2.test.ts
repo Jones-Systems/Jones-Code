@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ProjectId,
@@ -10,6 +11,7 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   type RuntimeMode,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import { GrokSettings } from "@t3tools/provider-grok/settings";
@@ -39,6 +41,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as RuntimePolicy from "../RuntimePolicy.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 import { acpPermissionDisposition } from "@t3tools/provider-acp/server/clientPolicy";
 import { acpCompletedTurnShouldTerminalizeTool } from "@t3tools/provider-acp/server/adapter";
 import {
@@ -233,9 +236,12 @@ describe("Grok permission prompts", () => {
 });
 
 describe("Grok launch permission mode", () => {
-  const layerHost = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer));
+  const layerHost = TestProviderHost.layer().pipe(
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
   const layerTest = Layer.mergeAll(
     NodeServices.layer,
+    NodeCrypto.layer,
     IdAllocator.layer,
     McpProviderSessions.layer,
     layerHost,
@@ -245,7 +251,7 @@ describe("Grok launch permission mode", () => {
     Effect.gen(function* () {
       const launches: Array<ReadonlyArray<string>> = [];
       const childProcessSpawner = ChildProcessSpawner.make((command) => {
-        if (command._tag === "StandardCommand") launches.push(command.args);
+        if (command._tag === "StandardCommand") launches.push(command.args.map(String));
         return Effect.fail(
           PlatformError.systemError({
             _tag: "NotFound",
@@ -300,8 +306,32 @@ describe("Grok launch permission mode", () => {
 
   it.effect("launches a thread stored as Auto-accept edits asking", () =>
     Effect.gen(function* () {
-      const snapshot = yield* buildInitialGrokProviderSnapshot(LAUNCH_TEST_GROK_SETTINGS);
       const instanceId = ProviderInstanceId.make("grok-launch-test");
+      const snapshot = {
+        ...(yield* buildInitialGrokProviderSnapshot(LAUNCH_TEST_GROK_SETTINGS)),
+        instanceId,
+        driver: GROK_PROVIDER,
+      } satisfies ServerProvider;
+      const instance: ProviderInstance = {
+        instanceId,
+        driverKind: snapshot.driver,
+        continuationIdentity: { driverKind: snapshot.driver, continuationKey: instanceId },
+        displayName: undefined,
+        enabled: true,
+        snapshot: {
+          getSnapshot: Effect.succeed(snapshot),
+          refresh: Effect.die("Runtime policy must not refresh the provider."),
+          resolveMaintenance: () => Effect.die("Runtime policy must not resolve maintenance."),
+          streamChanges: Stream.empty,
+          applyUsageLimits: () => Effect.die("Runtime policy must not apply usage limits."),
+        },
+        get orchestrationAdapter(): ProviderInstance["orchestrationAdapter"] {
+          throw new Error("Runtime policy must not start a provider session.");
+        },
+        get textGeneration(): ProviderInstance["textGeneration"] {
+          throw new Error("Runtime policy must not generate text.");
+        },
+      };
       const now = yield* DateTime.now;
       const threadId = ThreadId.make("grok-launch-test");
       const modelSelection = { instanceId, model: "grok-build" } as const;
@@ -336,6 +366,7 @@ describe("Grok launch permission mode", () => {
       }).pipe(
         Effect.provide(
           RuntimePolicy.layerFromProjectStore.pipe(
+            Layer.provide(ServerSettings.layerTest()),
             Layer.provide(
               Layer.mock(ProjectStore.ProjectStoreV2)({
                 get: () => Effect.die("the thread has a worktree"),
@@ -343,10 +374,8 @@ describe("Grok launch permission mode", () => {
             ),
             Layer.provide(
               Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-                getInstance: () =>
-                  Effect.succeed({
-                    snapshot: { getSnapshot: Effect.succeed(snapshot) },
-                  } as ProviderInstance),
+                getCatalogSource: (id) => (id === instanceId ? instance : undefined),
+                getInstance: () => Effect.succeed(instance),
               }),
             ),
           ),
@@ -361,9 +390,12 @@ describe("Grok launch permission mode", () => {
 });
 
 describe("Grok native questions", () => {
-  const layerHost = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer));
+  const layerHost = TestProviderHost.layer().pipe(
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
   const layerTest = Layer.mergeAll(
     NodeServices.layer,
+    NodeCrypto.layer,
     IdAllocator.layer,
     McpProviderSessions.layer,
     layerHost,

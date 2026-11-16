@@ -2,6 +2,7 @@ name: Jones update qualification
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     # Keep the macOS gate in qualify-mac-changes in step with these paths.
     paths:
       - .github/workflows/jones-update-qualification.yml
@@ -50,6 +51,8 @@ on:
       - scripts/jones/boundary/fragments/staged-selection-recovery.json
       - scripts/jones/boundary/fragments/launcher-commit-diagnostics.json
   workflow_dispatch:
+  schedule:
+    - cron: "23 8 * * *"
 
 permissions:
   contents: read
@@ -61,16 +64,52 @@ concurrency:
 jobs:
   qualify:
     name: Jones native startup qualification
+    if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          sparse-checkout: |
+      - name: Checkout public source
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: Jones-Systems/Jones-Code
+          JONES_CHECKOUT_SHA: ${{ github.sha }}
+          JONES_CHECKOUT_DEPTH: "0"
+          JONES_CHECKOUT_CONE: "false"
+          JONES_CHECKOUT_SPARSE: |
             /*
             !/.repos/
-          sparse-checkout-cone-mode: false
+        run: |
+          set -euo pipefail
+          # Bootstrap is copied into checkout steps because repository source is not available yet.
+          # anonymous-checkout.node-test.mjs binds every copy to this exact script.
+          test "$GITHUB_REPOSITORY" = Jones-Systems/Jones-Code
+          [[ "$JONES_CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$JONES_CHECKOUT_DEPTH" in 0|1|2) ;; *) exit 2 ;; esac
+          case "$JONES_CHECKOUT_CONE" in true|false) ;; *) exit 2 ;; esac
+          test ! -L "$GITHUB_WORKSPACE"
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+          shopt -s nullglob dotglob
+          checkout_entries=("$GITHUB_WORKSPACE"/*)
+          test "${#checkout_entries[@]}" -eq 0
+          unset GIT_CONFIG_PARAMETERS GIT_CONFIG GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+          export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          if test "$JONES_CHECKOUT_CONE" = true; then
+            git sparse-checkout init --cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --cone --stdin
+          else
+            git sparse-checkout init --no-cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --no-cone --stdin
+          fi
+          if test "$JONES_CHECKOUT_DEPTH" = 0; then
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' "$JONES_CHECKOUT_SHA"
+          else
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --no-tags --depth="$JONES_CHECKOUT_DEPTH" origin "$JONES_CHECKOUT_SHA"
+          fi
+          git checkout --detach "$JONES_CHECKOUT_SHA"
+          test "$(git rev-parse HEAD)" = "$JONES_CHECKOUT_SHA"
 
       - uses: voidzero-dev/setup-vp@v1
         with:
@@ -86,6 +125,12 @@ jobs:
 
       - name: Check startup qualification fixtures
         run: node --test --test-concurrency=1 scripts/jones/updates/native-startup-fixture.node-test.mjs scripts/jones/updates/native-fixture-support.node-test.mjs
+
+      - name: Check packaged recovery harness controls
+        run: node --test --test-concurrency=1 scripts/jones/updates/packaged-recovery-fixture.node-test.mjs scripts/jones/updates/packaged-recovery-launcher.node-test.mjs scripts/jones/updates/packaged-recovery-preload.node-test.mjs
+
+      - name: Check packaged desktop recovery source controls
+        run: node --test --test-concurrency=1 scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs scripts/jones/updates/packaged-desktop-pair.node-test.mjs
 
       - name: Qualify Chromium-mode native startup refusal
         run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
@@ -110,6 +155,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          INTERRUPTION_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'qualify-interrupted-staging') }}
         run: |
           set -uo pipefail
 
@@ -122,6 +170,15 @@ jobs:
           count_rows() {
             printf '%s\n' "$1" | grep -c . || true
           }
+
+          # Nightly and label runs exercise only the bounded interrupted-staging steps below.
+          if [[ "$EVENT_NAME" == schedule || "$INTERRUPTION_LABEL" == true ]]; then
+            run_macos "Interrupted-staging qualification selected."
+          fi
+          if [[ "$EVENT_ACTION" == labeled ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # A manual run qualifies every job, as it does for the renderer Preview.
           if [[ -z "${PR_NUMBER}" ]]; then
@@ -244,21 +301,58 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          sparse-checkout: |
+      - name: Checkout public source
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: Jones-Systems/Jones-Code
+          JONES_CHECKOUT_SHA: ${{ github.sha }}
+          JONES_CHECKOUT_DEPTH: "0"
+          JONES_CHECKOUT_CONE: "false"
+          JONES_CHECKOUT_SPARSE: |
             /*
             !/.repos/
-          sparse-checkout-cone-mode: false
+        run: |
+          set -euo pipefail
+          # Bootstrap is copied into checkout steps because repository source is not available yet.
+          # anonymous-checkout.node-test.mjs binds every copy to this exact script.
+          test "$GITHUB_REPOSITORY" = Jones-Systems/Jones-Code
+          [[ "$JONES_CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$JONES_CHECKOUT_DEPTH" in 0|1|2) ;; *) exit 2 ;; esac
+          case "$JONES_CHECKOUT_CONE" in true|false) ;; *) exit 2 ;; esac
+          test ! -L "$GITHUB_WORKSPACE"
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+          shopt -s nullglob dotglob
+          checkout_entries=("$GITHUB_WORKSPACE"/*)
+          test "${#checkout_entries[@]}" -eq 0
+          unset GIT_CONFIG_PARAMETERS GIT_CONFIG GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+          export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          if test "$JONES_CHECKOUT_CONE" = true; then
+            git sparse-checkout init --cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --cone --stdin
+          else
+            git sparse-checkout init --no-cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --no-cone --stdin
+          fi
+          if test "$JONES_CHECKOUT_DEPTH" = 0; then
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' "$JONES_CHECKOUT_SHA"
+          else
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --no-tags --depth="$JONES_CHECKOUT_DEPTH" origin "$JONES_CHECKOUT_SHA"
+          fi
+          git checkout --detach "$JONES_CHECKOUT_SHA"
+          test "$(git rev-parse HEAD)" = "$JONES_CHECKOUT_SHA"
       - uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
           cache: true
           run-install: true
       - name: Ensure Electron runtime is installed
+        if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
         run: vp run --filter @t3tools/desktop ensure:electron
       - name: Qualify migration, launcher recovery and desktop snapshot cleanup
+        if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
         run: >-
           vp test run
           apps/server/src/jones/updates/migrationPlan.test.ts
@@ -272,19 +366,89 @@ jobs:
           apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
           --maxWorkers=1
 
+      - name: Exercise interrupted staging on Apple Silicon (synthetic regression only)
+        env:
+          INTERRUPTION_REPORT: ${{ runner.temp }}/interrupted-staging.json
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          node --test --test-concurrency=1 scripts/jones/updates/interrupted-staging-fixture.node-test.mjs
+          vp test run apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts --maxWorkers=1
+          node scripts/jones/updates/interrupted-staging-fixture.mjs "$INTERRUPTION_REPORT"
+          node --input-type=module - "$INTERRUPTION_REPORT" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.equal(report.syntheticTransfer.status, 'passed');
+          assert.equal(report.syntheticTransfer.packagedProof, false);
+          assert.equal(report.packagedQualification, 'unavailable');
+          assert.equal(report.packaged.length, 3);
+          for (const row of report.packaged) {
+            assert.equal(row.status, 'unavailable');
+            assert.equal(row.packagedProof, false);
+          }
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            'Interrupted staging: synthetic regression passed. Packaged 47cad979 transfer/native interruption and qualified native recovery remain **unavailable**, not passing native proof. See retained report prerequisites.\n');
+          NODE
+
+      - name: Retain interrupted-staging coverage limits
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: interrupted-staging-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/interrupted-staging.json
+          if-no-files-found: warn
+          retention-days: 7
+
   preview-changes:
     name: Detect renderer update changes
+    if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}
     runs-on: ubuntu-24.04
     outputs:
       changed: ${{ steps.paths.outputs.changed }}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          sparse-checkout: |
+      - name: Checkout public source
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: Jones-Systems/Jones-Code
+          JONES_CHECKOUT_SHA: ${{ github.sha }}
+          JONES_CHECKOUT_DEPTH: "0"
+          JONES_CHECKOUT_CONE: "false"
+          JONES_CHECKOUT_SPARSE: |
             /*
             !/.repos/
-          sparse-checkout-cone-mode: false
+        run: |
+          set -euo pipefail
+          # Bootstrap is copied into checkout steps because repository source is not available yet.
+          # anonymous-checkout.node-test.mjs binds every copy to this exact script.
+          test "$GITHUB_REPOSITORY" = Jones-Systems/Jones-Code
+          [[ "$JONES_CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$JONES_CHECKOUT_DEPTH" in 0|1|2) ;; *) exit 2 ;; esac
+          case "$JONES_CHECKOUT_CONE" in true|false) ;; *) exit 2 ;; esac
+          test ! -L "$GITHUB_WORKSPACE"
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+          shopt -s nullglob dotglob
+          checkout_entries=("$GITHUB_WORKSPACE"/*)
+          test "${#checkout_entries[@]}" -eq 0
+          unset GIT_CONFIG_PARAMETERS GIT_CONFIG GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+          export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          if test "$JONES_CHECKOUT_CONE" = true; then
+            git sparse-checkout init --cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --cone --stdin
+          else
+            git sparse-checkout init --no-cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --no-cone --stdin
+          fi
+          if test "$JONES_CHECKOUT_DEPTH" = 0; then
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' "$JONES_CHECKOUT_SHA"
+          else
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --no-tags --depth="$JONES_CHECKOUT_DEPTH" origin "$JONES_CHECKOUT_SHA"
+          fi
+          git checkout --detach "$JONES_CHECKOUT_SHA"
+          test "$(git rev-parse HEAD)" = "$JONES_CHECKOUT_SHA"
       - name: Select renderer update paths
         id: paths
         env:
@@ -312,14 +476,47 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout exact public candidate
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-          sparse-checkout: |
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: Jones-Systems/Jones-Code
+          JONES_CHECKOUT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          JONES_CHECKOUT_DEPTH: "0"
+          JONES_CHECKOUT_CONE: "false"
+          JONES_CHECKOUT_SPARSE: |
             /*
             !/.repos/
-          sparse-checkout-cone-mode: false
+        run: |
+          set -euo pipefail
+          # Bootstrap is copied into checkout steps because repository source is not available yet.
+          # anonymous-checkout.node-test.mjs binds every copy to this exact script.
+          test "$GITHUB_REPOSITORY" = Jones-Systems/Jones-Code
+          [[ "$JONES_CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$JONES_CHECKOUT_DEPTH" in 0|1|2) ;; *) exit 2 ;; esac
+          case "$JONES_CHECKOUT_CONE" in true|false) ;; *) exit 2 ;; esac
+          test ! -L "$GITHUB_WORKSPACE"
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+          shopt -s nullglob dotglob
+          checkout_entries=("$GITHUB_WORKSPACE"/*)
+          test "${#checkout_entries[@]}" -eq 0
+          unset GIT_CONFIG_PARAMETERS GIT_CONFIG GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+          export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          if test "$JONES_CHECKOUT_CONE" = true; then
+            git sparse-checkout init --cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --cone --stdin
+          else
+            git sparse-checkout init --no-cone
+            printf '%s\n' "$JONES_CHECKOUT_SPARSE" | git sparse-checkout set --no-cone --stdin
+          fi
+          if test "$JONES_CHECKOUT_DEPTH" = 0; then
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' "$JONES_CHECKOUT_SHA"
+          else
+            git -c protocol.version=2 -c credential.helper= -c core.askPass=/bin/false fetch --no-tags --depth="$JONES_CHECKOUT_DEPTH" origin "$JONES_CHECKOUT_SHA"
+          fi
+          git checkout --detach "$JONES_CHECKOUT_SHA"
+          test "$(git rev-parse HEAD)" = "$JONES_CHECKOUT_SHA"
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1

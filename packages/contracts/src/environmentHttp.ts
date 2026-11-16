@@ -22,7 +22,6 @@ import {
   AuthAccessTokenResult,
   AuthBrowserSessionRequest,
   AuthBrowserSessionResult,
-  AuthClientSession,
   AuthCreatePairingCredentialInput,
   AuthMcpApprovalDecisionRequest,
   AuthMcpApprovalDetails,
@@ -38,12 +37,12 @@ import {
   AuthMcpTokenRequest,
   AuthMcpTokenResult,
   AuthPairingCredentialResult,
-  AuthPairingLink,
   AuthRevokeClientSessionInput,
   AuthRevokePairingLinkInput,
   AuthEnvironmentScope,
   AuthTokenExchangeRequest,
   AuthSessionState,
+  AuthWebSocketTicketParams,
   AuthWebSocketTicketResult,
   ServerAuthSessionMethod,
 } from "./auth.ts";
@@ -58,6 +57,23 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import {
+  CloudSpeechApiKey,
+  CloudSpeechError,
+  CloudSpeechKeys,
+  CloudSpeechModelId,
+  CloudSpeechModels,
+  CloudSpeechProvider,
+  EnvironmentSpeechAccelerationRequest,
+  EnvironmentSpeechModelRequest,
+  EnvironmentSpeechModels,
+  EnvironmentSpeechModelUnloadTimeoutRequest,
+  EnvironmentSpeechPostProcessingRequest,
+  EnvironmentSpeechPostProcessingResult,
+  EnvironmentSpeechStatus,
+  EnvironmentSpeechTranscriptionResult,
+} from "./speech.ts";
+import { SecretReference } from "./secretReference.ts";
 import {
   OrchestrationV2ShellSnapshot,
   OrchestrationV2ThreadBoundedSnapshot,
@@ -88,23 +104,6 @@ export {
   EnvironmentConversationLibraryErrorCode,
   type EnvironmentConversationLibraryError,
 } from "./jones/environmentHttpGroups.ts";
-import {
-  T3WorkstreamCommandPollParams,
-  T3WorkstreamCommandRequest,
-  T3WorkstreamDetailParams,
-  T3WorkstreamListResult,
-  T3WorkstreamPageQuery,
-  T3WorkstreamReferenceParams,
-  WorkstreamDeclarationPage,
-  WorkstreamDetail,
-  WorkstreamEdgePage,
-  WorkstreamHistoryPage,
-  WorkstreamMembershipPage,
-  WorkstreamReferenceDetail,
-  WorkstreamReferencePage,
-  WorkstreamReceipt,
-} from "./workstreams.ts";
-import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -129,6 +128,9 @@ export const EnvironmentRequestInvalidReason = Schema.Literals([
   "thread_transcript_too_large",
   "dispatch_guard_bootstrap_unsupported",
   "dispatch_guard_rejected",
+  "invalid_audio",
+  "speech_unavailable",
+  "speech_busy",
 ]);
 export type EnvironmentRequestInvalidReason = typeof EnvironmentRequestInvalidReason.Type;
 
@@ -383,6 +385,8 @@ const EnvironmentScopedOperationErrors = [
 ] as const;
 const EnvironmentPairingCredentialErrors = [
   EnvironmentRequestInvalidError,
+  // The managed policy does not allow remote clients.
+  EnvironmentHttpForbiddenError,
   ...EnvironmentScopedOperationErrors,
 ] as const;
 const EnvironmentSessionRevokeErrors = [
@@ -399,18 +403,9 @@ const EnvironmentOrchestrationSnapshotErrors = [
   EnvironmentInternalError,
 ] as const;
 const EnvironmentWorkstreamSnapshotErrors = [
-  EnvironmentScopeRequiredError,
-  EnvironmentInternalError,
-] as const;
-const EnvironmentWorkstreamCommandErrors = [
-  EnvironmentRequestInvalidError,
   EnvironmentHttpConflictError,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
-] as const;
-const EnvironmentWorkstreamPagedSnapshotErrors = [
-  ...EnvironmentWorkstreamSnapshotErrors,
-  EnvironmentHttpConflictError,
 ] as const;
 const EnvironmentOrchestrationThreadSnapshotErrors = [
   EnvironmentScopeRequiredError,
@@ -553,6 +548,10 @@ export const EnvironmentCloudLinkStateResult = Schema.Struct({
   linkRevoked: Schema.optional(Schema.Boolean),
   /** The latest check the server ran on its own, absent until one finishes. */
   reachability: Schema.optional(EnvironmentConnectReachability),
+  /** The tunnel's public hostname, once cloudflared has connected. Older servers omit it. */
+  tunnelHostname: Schema.optional(Schema.String),
+  /** Whether this is the desktop app's own session, which may link from where it is. */
+  linkableHere: Schema.optional(Schema.Boolean),
 });
 export type EnvironmentCloudLinkStateResult = typeof EnvironmentCloudLinkStateResult.Type;
 
@@ -614,6 +613,14 @@ class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
+    HttpApiEndpoint.post("webSocketTicketFor", "/api/auth/websocket-ticket/:use", {
+      headers: OptionalBearerHeaders,
+      params: AuthWebSocketTicketParams,
+      success: AuthWebSocketTicketResult,
+      error: [EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
     HttpApiEndpoint.post("pairingCredential", "/api/auth/pairing-token", {
       headers: OptionalBearerHeaders,
       payload: AuthCreatePairingCredentialInput,
@@ -622,24 +629,10 @@ class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
-    HttpApiEndpoint.get("pairingLinks", "/api/auth/pairing-links", {
-      headers: OptionalBearerHeaders,
-      success: Schema.Array(AuthPairingLink),
-      error: EnvironmentScopedOperationErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
     HttpApiEndpoint.post("revokePairingLink", "/api/auth/pairing-links/revoke", {
       headers: OptionalBearerHeaders,
       payload: AuthRevokePairingLinkInput,
       success: AuthPairingLinkRevokeResult,
-      error: EnvironmentScopedOperationErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("clients", "/api/auth/clients", {
-      headers: OptionalBearerHeaders,
-      success: Schema.Array(AuthClientSession),
       error: EnvironmentScopedOperationErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
@@ -685,6 +678,8 @@ class EnvironmentMcpOAuthHttpApi extends HttpApiGroup.make("mcpOAuth")
   .add(HttpApiEndpoint.get("authorize", "/oauth/mcp/authorize"))
   .add(
     HttpApiEndpoint.post("approval", "/oauth/mcp/approval", {
+      // The hosted app sends the owner's T3 Connect credential; the environment's own page uses its cookie.
+      headers: OptionalBearerHeaders,
       payload: AuthMcpAuthorizationRequest,
       success: [AuthMcpApprovalDetails, AuthMcpApprovalRedirect],
       error: AuthMcpApprovalError,
@@ -692,6 +687,8 @@ class EnvironmentMcpOAuthHttpApi extends HttpApiGroup.make("mcpOAuth")
   )
   .add(
     HttpApiEndpoint.post("decision", "/oauth/mcp/decision", {
+      // The hosted app sends the owner's T3 Connect credential; the environment's own page uses its cookie.
+      headers: OptionalBearerHeaders,
       payload: AuthMcpApprovalDecisionRequest,
       success: AuthMcpApprovalRedirect,
       error: AuthMcpApprovalError,
@@ -709,14 +706,24 @@ const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
   threadId: ThreadId,
 });
 
+const EnvironmentOrchestrationShellSnapshotQuery = Schema.Struct({
+  omitIdleSubagents: Schema.optionalKey(Schema.String),
+  omitOlderSettled: Schema.optionalKey(Schema.String),
+});
+
 const EnvironmentOrchestrationThreadBoundedSnapshotQuery = Schema.Struct({
+  deferWork: Schema.optionalKey(Schema.String),
   compactTurnItems: Schema.optionalKey(Schema.String),
+  dedupeBodies: Schema.optionalKey(Schema.String),
+  compactIds: Schema.optionalKey(Schema.String),
 });
 
 const EnvironmentOrchestrationThreadHistoryQuery = Schema.Struct({
   cursor: TrimmedNonEmptyString,
   throughEntryId: Schema.optional(TrimmedNonEmptyString),
-  view: Schema.optional(Schema.Literals(["conversation", "activity"])),
+  view: Schema.optional(Schema.Literals(["conversation", "activity", "work"])),
+  deferWork: Schema.optionalKey(Schema.String),
+  compactIds: Schema.optionalKey(Schema.String),
 });
 
 const EnvironmentOrchestrationThreadHistoryErrors = [
@@ -781,6 +788,7 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
   .add(
     HttpApiEndpoint.get("shellSnapshot", "/api/orchestration/shell", {
       headers: OrchestrationProtocolHeaders,
+      query: EnvironmentOrchestrationShellSnapshotQuery,
       success: OrchestrationV2ShellSnapshot,
       error: EnvironmentOrchestrationSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
@@ -873,105 +881,262 @@ const {
   EnvironmentSettlementRestoreHttpApi: SettlementRestoreHttpApi,
   EnvironmentConversationLibraryHttpApi: ConversationLibraryHttpApi,
   EnvironmentWorkstreamAppearanceHttpApi,
-  EnvironmentWorkstreamsNativeHttpApi,
 } = makeJonesHttpGroups({
   OptionalBearerHeaders,
   EnvironmentAuthenticatedAuth,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
   EnvironmentHttpBadRequestError,
+  EnvironmentHttpConflictError,
 });
 
+// Exact retired routes are kept for independently upgraded clients.
 class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi.add(
   HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
     headers: OptionalBearerHeaders,
-    payload: T3PlacementLoadRequest,
-    success: T3PlacementResult,
+    payload: Schema.Unknown,
+    success: Schema.Never,
     error: EnvironmentWorkstreamSnapshotErrors,
   }).middleware(EnvironmentAuthenticatedAuth),
 )
   .add(
+    HttpApiEndpoint.post("nativeRead", "/api/workstreams/native/v1/read", {
+      headers: OptionalBearerHeaders,
+      payload: Schema.Unknown,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("nativeExport", "/api/workstreams/native/v1/export", {
+      headers: OptionalBearerHeaders,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("legacyReceiptLookup", "/api/workstreams/legacy-receipts/v1/lookup", {
+      headers: OptionalBearerHeaders,
+      payload: Schema.Unknown,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
     HttpApiEndpoint.get("list", "/api/workstreams", {
       headers: OptionalBearerHeaders,
-      payload: T3WorkstreamPageQuery,
-      success: T3WorkstreamListResult,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("references", "/api/workstreams/references", {
       headers: OptionalBearerHeaders,
-      payload: T3WorkstreamPageQuery,
-      success: WorkstreamReferencePage,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("reference", "/api/workstreams/references/:nativeReferenceId", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamReferenceParams,
-      success: WorkstreamReferenceDetail,
+      params: Schema.Struct({ nativeReferenceId: Schema.String }),
+      success: Schema.Never,
       error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("detail", "/api/workstreams/:workstreamId", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamDetailParams,
-      success: WorkstreamDetail,
+      params: Schema.Struct({ workstreamId: Schema.String }),
+      success: Schema.Never,
       error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("memberships", "/api/workstreams/:workstreamId/memberships", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamDetailParams,
-      payload: T3WorkstreamPageQuery,
-      success: WorkstreamMembershipPage,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      params: Schema.Struct({ workstreamId: Schema.String }),
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("declarations", "/api/workstreams/:workstreamId/declarations", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamDetailParams,
-      payload: T3WorkstreamPageQuery,
-      success: WorkstreamDeclarationPage,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      params: Schema.Struct({ workstreamId: Schema.String }),
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("edges", "/api/workstreams/:workstreamId/edges", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamDetailParams,
-      payload: T3WorkstreamPageQuery,
-      success: WorkstreamEdgePage,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      params: Schema.Struct({ workstreamId: Schema.String }),
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("history", "/api/workstreams/:workstreamId/history", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamDetailParams,
-      payload: T3WorkstreamPageQuery,
-      success: WorkstreamHistoryPage,
-      error: EnvironmentWorkstreamPagedSnapshotErrors,
+      params: Schema.Struct({ workstreamId: Schema.String }),
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("command", "/api/workstreams/commands/:commandId", {
       headers: OptionalBearerHeaders,
-      params: T3WorkstreamCommandPollParams,
-      success: WorkstreamReceipt,
+      params: Schema.Struct({ commandId: Schema.String }),
+      success: Schema.Never,
       error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.post("submit", "/api/workstreams/commands", {
       headers: OptionalBearerHeaders,
-      payload: T3WorkstreamCommandRequest,
-      success: WorkstreamReceipt,
-      error: EnvironmentWorkstreamCommandErrors,
+      payload: Schema.Unknown,
+      success: Schema.Never,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+export class EnvironmentVoiceBodyLimit extends HttpApiMiddleware.Service<EnvironmentVoiceBodyLimit>()(
+  "EnvironmentVoiceBodyLimit",
+  { error: EnvironmentRequestInvalidError },
+) {}
+
+export class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice")
+  .add(
+    HttpApiEndpoint.get("cloudKeys", "/api/voice/cloud/keys", {
+      headers: OptionalBearerHeaders,
+      success: CloudSpeechKeys,
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("setCloudKey", "/api/voice/cloud/:provider/key", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ provider: CloudSpeechProvider }),
+      payload: Schema.Struct({
+        key: Schema.NullOr(
+          Schema.Union([Schema.RedactedFromValue(CloudSpeechApiKey), SecretReference]),
+        ),
+      }),
+      success: HttpApiSchema.NoContent,
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    // Public catalog; carries no credential and no audio.
+    HttpApiEndpoint.get("cloudModels", "/api/voice/cloud/openrouter/models", {
+      headers: OptionalBearerHeaders,
+      success: CloudSpeechModels,
+      error: [...EnvironmentScopedOperationErrors, CloudSpeechError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("transcribeCloud", "/api/voice/cloud/:provider/transcribe", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ provider: CloudSpeechProvider }),
+      query: Schema.Struct({ model: Schema.optionalKey(CloudSpeechModelId) }),
+      payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+      success: EnvironmentSpeechTranscriptionResult,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        EnvironmentRequestInvalidError,
+        CloudSpeechError,
+      ],
+    })
+      .middleware(EnvironmentVoiceBodyLimit)
+      .middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("status", "/api/voice/status", {
+      headers: OptionalBearerHeaders,
+      success: EnvironmentSpeechStatus,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("prepareModel", "/api/voice/models/prepare", {
+      headers: OptionalBearerHeaders,
+      success: Schema.Void,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("models", "/api/voice/models", {
+      headers: OptionalBearerHeaders,
+      query: { benchmarks: Schema.optionalKey(Schema.Literal("1")) },
+      success: EnvironmentSpeechModels,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("downloadModel", "/api/voice/models/download", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechModelRequest,
+      success: EnvironmentSpeechModels,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("selectModel", "/api/voice/models/select", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechModelRequest,
+      success: EnvironmentSpeechModels,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("cancelModelDownload", "/api/voice/models/cancel", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechModelRequest,
+      success: EnvironmentSpeechModels,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("removeModel", "/api/voice/models/remove", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechModelRequest,
+      success: EnvironmentSpeechModels,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("updateAcceleration", "/api/voice/acceleration", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechAccelerationRequest,
+      success: EnvironmentSpeechStatus,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("updateModelUnloadTimeout", "/api/voice/model-unload-timeout", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechModelUnloadTimeoutRequest,
+      success: EnvironmentSpeechStatus,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("transcribe", "/api/voice/transcribe", {
+      headers: OptionalBearerHeaders,
+      payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+      success: EnvironmentSpeechTranscriptionResult,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    })
+      .middleware(EnvironmentVoiceBodyLimit)
+      .middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("postProcess", "/api/voice/post-process", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechPostProcessingRequest,
+      success: EnvironmentSpeechPostProcessingResult,
+      error: EnvironmentScopedOperationErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
@@ -1029,13 +1194,6 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   )
   .add(
-    HttpApiEndpoint.post("mintCredential", "/api/connect/mint-credential", {
-      payload: RelayCloudMintCredentialRequest,
-      success: RelayEnvironmentMintResponse,
-      error: EnvironmentHttpCloudErrors,
-    }),
-  )
-  .add(
     HttpApiEndpoint.post("t3MintCredential", "/api/t3-connect/mint-credential", {
       payload: RelayCloudMintCredentialRequest,
       success: RelayEnvironmentMintResponse,
@@ -1084,11 +1242,7 @@ export class EnvironmentConversationLibraryHttpApi extends ConversationLibraryHt
 export class EnvironmentWorkQueueMetadataHttpApi extends WorkQueueMetadataHttpApi {}
 export class EnvironmentSettlementOriginsHttpApi extends SettlementOriginsHttpApi {}
 class EnvironmentSettlementRestoreHttpApi extends SettlementRestoreHttpApi {}
-/**
- * Public entry point for webhook tasks. Unauthenticated by design: the token
- * in the path, and an optional body signature, are the credential. The handler
- * reads the raw body itself so a signature is checked over the exact bytes.
- */
+// Path tokens and optional body signatures authenticate webhooks; read raw bytes to verify signatures.
 const WebhookParams = Schema.Struct({
   hookId: TrimmedNonEmptyString,
   token: TrimmedNonEmptyString,
@@ -1122,8 +1276,8 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentWorkstreamsHttpApi)
-  .add(EnvironmentWorkstreamsNativeHttpApi)
   .add(EnvironmentProjectsHttpApi)
+  .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentConnectHttpApi)
   .add(EnvironmentConversationLibraryHttpApi)
   .add(EnvironmentJonesUpdatesHttpApi)

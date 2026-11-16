@@ -75,9 +75,14 @@ describe("Jones agent app identity", () => {
       expect(turn.additionalContext?.jones_code_identity?.value).toContain(
         "product ID: jones-code",
       );
-      expect(turn.additionalContext).not.toHaveProperty("t3_code_orchestration");
+      expect(
+        Object.keys(turn.additionalContext ?? {}).some((key) =>
+          key.startsWith("t3_code_orchestration_"),
+        ),
+      ).toBe(false);
+      expect(turn.additionalContext).not.toHaveProperty("t3_code_runtime");
       expect(turn.additionalContext).not.toHaveProperty("t3_code_tools");
-      expect(turn.collaborationMode).toBeUndefined();
+      expect(turn.collaborationMode).toEqual({ mode: "default", settings: { model: "gpt-5.4" } });
     }),
   );
 
@@ -99,6 +104,8 @@ describe("Jones agent app identity", () => {
           name: string,
           handler: (event: { systemPrompt: string }) => { systemPrompt: string },
         ) => handlers.set(name, handler),
+        // The shipped extension now registers the service-tier command at startup.
+        registerCommand: () => {},
       },
     });
     const hook = handlers.get("before_agent_start")!;

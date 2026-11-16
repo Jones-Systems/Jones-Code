@@ -14,8 +14,6 @@ type ExplicitWorkspace = NonNullable<OrchestratorMcpDelegateTaskInput["workspace
 
 export interface DelegatedTaskWorkspaceInput {
   readonly request: Pick<OrchestratorMcpDelegateTaskInput, "isolation" | "workspaceStrategy">;
-  /** The command receipt already exists, so dispatch replays the accepted delegation. */
-  readonly isRetryOfAcceptedDelegation: boolean;
   /** The child's project (see resolveDelegatedTaskProject); loaded only when a strategy needs validating. */
   readonly project: Effect.Effect<
     { readonly id: ProjectId; readonly workspaceRoot: string },
@@ -34,8 +32,6 @@ const realPath = (path: string) =>
 export interface DelegatedTaskProjectInput {
   readonly request: Pick<OrchestratorMcpDelegateTaskInput, "projectId" | "workspaceStrategy">;
   readonly parentProjectId: ProjectId;
-  /** The command receipt already exists, so dispatch replays the accepted delegation. */
-  readonly isRetryOfAcceptedDelegation: boolean;
   /** Fails with invalid_request when the project does not exist. */
   readonly loadProject: (
     projectId: ProjectId,
@@ -66,9 +62,6 @@ export const resolveDelegatedTaskProject = Effect.fn("jones.delegatedTaskWorkspa
       return yield* invalid(
         `Project ${requested} is not this thread's project, so pass workspaceStrategy with a new or existing worktree of that project; a child cannot share or copy this thread's checkout there. No task was created.`,
       );
-    // Replay returns the accepted delegation, which may name a project deleted since.
-    if (input.isRetryOfAcceptedDelegation)
-      return { projectId: requested, commandProjectId: requested };
     const project = yield* input.loadProject(requested);
     if (project.deletedAt !== null)
       return yield* invalid(`Project ${requested} was deleted. No task was created.`);
@@ -77,12 +70,9 @@ export const resolveDelegatedTaskProject = Effect.fn("jones.delegatedTaskWorkspa
 );
 
 /**
- * Resolves the explicit `workspaceStrategy` of a `delegate_task` call. The
- * child is still created through `delegated_task.request`, so it keeps the
- * subagent record, lineage, completion wake, task_status and task_cancel; the
- * strategy only defers its start until the checkout is prepared. Returns
- * undefined when no explicit strategy applies, leaving legacy `isolation` to
- * its existing resolution.
+ * Explicit workspaceStrategy defers launch until checkout preparation; delegated_task.request still owns
+ * the subagent, lineage, completion wake, task_status and task_cancel.
+ * Return undefined without an explicit strategy, preserving legacy isolation resolution.
  */
 export const resolveExplicitDelegatedTaskWorkspace = Effect.fn(
   "jones.delegatedTaskWorkspace.resolveExplicit",
@@ -95,16 +85,21 @@ export const resolveExplicitDelegatedTaskWorkspace = Effect.fn(
     return yield* invalid(
       'Pass either isolation or workspaceStrategy, not both. isolation:"worktree" starts from the parent commit; workspaceStrategy names a base, branch, or existing worktree.',
     );
-  // Replay returns the accepted delegation. Re-validating could fail it after
-  // its worktree was created or its base moved, so the request is not re-read.
-  if (input.isRetryOfAcceptedDelegation) return undefined;
   const project = yield* input.project;
   if (strategy.type === "existing_worktree") {
     // Same admission as t3_thread_launch: without it a child could be pointed
     // at any directory on the machine.
+    // A listing failure still refuses the request, but names the git failure
+    // instead of claiming the path is not a worktree.
     const worktrees = yield* input.git.listWorktreePaths(project.workspaceRoot).pipe(
+      Effect.mapError(
+        (error) =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: `Could not list the git worktrees of project ${project.id}, so worktreePath was not checked: ${error.message} No task was created.`,
+          }),
+      ),
       Effect.flatMap((paths) => Effect.forEach(paths, realPath)),
-      Effect.orElseSucceed((): ReadonlyArray<string> => []),
     );
     if (!worktrees.includes(yield* realPath(strategy.worktreePath)))
       return yield* invalid(

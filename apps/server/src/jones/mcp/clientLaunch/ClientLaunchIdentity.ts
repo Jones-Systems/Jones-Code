@@ -62,18 +62,24 @@ export function clientLaunchDigest(input: ClientLaunchRequest, projectId: Projec
   const workspaceStrategy =
     strategy.type === "root"
       ? { type: "root" }
-      : strategy.type === "worktree"
+      : strategy.type === "auto"
         ? {
             type: strategy.type,
             baseRef: strategy.baseRef ?? null,
             branch: strategy.branch ?? null,
-            startFromOrigin: strategy.startFromOrigin ?? false,
           }
-        : {
-            type: strategy.type,
-            worktreePath: strategy.worktreePath,
-            branch: strategy.branch ?? null,
-          };
+        : strategy.type === "worktree"
+          ? {
+              type: strategy.type,
+              baseRef: strategy.baseRef ?? null,
+              branch: strategy.branch ?? null,
+              startFromOrigin: strategy.startFromOrigin ?? false,
+            }
+          : {
+              type: strategy.type,
+              worktreePath: strategy.worktreePath,
+              branch: strategy.branch ?? null,
+            };
   return sha256(
     canonicalRequestJson({
       v: 1,

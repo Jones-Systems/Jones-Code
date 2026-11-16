@@ -1,0 +1,187 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workspace-retirement-settlement",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/workspaceRetirement/ClaimReconciliation.test.ts",
+    "apps/server/src/jones/workspaceRetirement/ClaimReconciliation.ts",
+    "apps/server/src/jones/workspaceRetirement/CrossRuntime.source-test.mjs",
+    "apps/server/src/jones/workspaceRetirement/Disposal.ts",
+    "apps/server/src/jones/workspaceRetirement/DurableCodecs.ts",
+    "apps/server/src/jones/workspaceRetirement/Duty.ts",
+    "apps/server/src/jones/workspaceRetirement/DutyIdentity.ts",
+    "apps/server/src/jones/workspaceRetirement/EffectSeam.node-test-support.mjs",
+    "apps/server/src/jones/workspaceRetirement/EventIntegration.ts",
+    "apps/server/src/jones/workspaceRetirement/NativeConsumers.ts",
+    "apps/server/src/jones/workspaceRetirement/NativeDutyOwner.ts",
+    "apps/server/src/jones/workspaceRetirement/NativeObservations.ts",
+    "apps/server/src/jones/workspaceRetirement/Outcome.ts",
+    "apps/server/src/jones/workspaceRetirement/OwnerAction.ts",
+    "apps/server/src/jones/workspaceRetirement/ProjectScriptObservation.node-test.mjs",
+    "apps/server/src/jones/workspaceRetirement/ProjectScriptObservation.test.ts",
+    "apps/server/src/jones/workspaceRetirement/ProjectScriptObservation.testkit.ts",
+    "apps/server/src/jones/workspaceRetirement/ProjectScriptObservation.ts",
+    "apps/server/src/jones/workspaceRetirement/Receipts.ts",
+    "apps/server/src/jones/workspaceRetirement/RemovalGate.ts",
+    "apps/server/src/jones/workspaceRetirement/Reservation.ts",
+    "apps/server/src/jones/workspaceRetirement/RetentionGuard.ts",
+    "apps/server/src/jones/workspaceRetirement/Retirement.node-test.mjs",
+    "apps/server/src/jones/workspaceRetirement/Retirement.test.ts",
+    "apps/server/src/jones/workspaceRetirement/Retirement.testkit.ts",
+    "apps/server/src/jones/workspaceRetirement/RetirementExecutor.ts",
+    "apps/server/src/jones/workspaceRetirement/Runtime.ts",
+    "apps/server/src/jones/workspaceRetirement/ScheduledTaskAdmission.ts",
+    "apps/server/src/jones/workspaceRetirement/ScriptCompletionProtocol.ts",
+    "apps/server/src/jones/workspaceRetirement/SettlementAdmission.ts",
+    "apps/server/src/jones/workspaceRetirement/SettlementRecovery.test.ts",
+    "apps/server/src/jones/workspaceRetirement/SettlementRecovery.ts",
+    "apps/server/src/jones/workspaceRetirement/TerminalCwdObservation.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/WorktreeMcpService.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Outcome.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/WorktreeMcpService.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Duty.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/EventIntegration.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Duty.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Duty.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Outcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Receipts.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Runtime.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Duty.ts"
+    },
+    {
+      "from": "apps/server/src/serverSettings.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/RetentionGuard.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/OwnerAction.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/RemovalGate.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Runtime.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Receipts.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Duty.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/workspaceRetirement.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/jones/workspaceRetirement.ts"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/jones/workspaceRetirement.ts"
+    },
+    {
+      "from": "packages/contracts/src/settings.ts",
+      "to": "packages/contracts/src/jones/workspaceRetirement.ts"
+    },
+    {
+      "from": "packages/contracts/src/worktreeMcp.ts",
+      "to": "packages/contracts/src/jones/workspaceRetirement.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/DutyIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/ProjectScriptObservation.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/TerminalCwdObservation.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/ScriptCompletionProtocol.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/ScheduledTaskAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Receipts.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/ProjectProduction.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/NativeConsumers.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Receipts.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/NativeObservations.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/RegistryCli.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/TerminalCwdObservation.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Duty.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/NativeDutyOwner.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/persistence/JonesTablePresence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/SettlementRecovery.ts"
+    }
+  ]
+}

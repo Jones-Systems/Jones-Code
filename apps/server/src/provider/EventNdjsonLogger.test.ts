@@ -7,16 +7,20 @@ import { ThreadId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { RotatingFileSinkError } from "@t3tools/shared/logging";
+import * as CodexProtocol from "effect-codex-app-server/protocol";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
+import * as Stdio from "effect/Stdio";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
-  makeEventNdjsonLogger,
   makeEventNdjsonLogStore,
   type PendingRecord,
   writeBatchedMessages,
@@ -70,11 +74,10 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
       circular.self = circular;
 
       try {
-        const logger = yield* makeEventNdjsonLogger(basePath, { stream: "native" });
-        assert.exists(logger);
-        if (!logger) return;
+        const store = yield* makeEventNdjsonLogStore(basePath);
+        const logger = store.logger("native");
         yield* logger.write(circular, ThreadId.make("thread-1"));
-        yield* logger.close();
+        yield* store.close();
 
         const serialized = encodeUnknownJson(messages);
         assert.notInclude(serialized, secret);
@@ -96,15 +99,12 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
         const basePath = NodePath.join(tempDir, "provider-canonical.ndjson");
 
         try {
-          const logger = yield* makeEventNdjsonLogger(basePath, { stream: "orchestration" });
-          assert.notEqual(logger, undefined);
-          if (!logger) {
-            return;
-          }
+          const store = yield* makeEventNdjsonLogStore(basePath);
+          const logger = store.logger("orchestration");
 
           yield* logger.write({ id: "evt-no-thread" }, null);
           yield* logger.write({ id: "evt-invalid-thread" }, "!!!" as unknown as ThreadId);
-          yield* logger.close();
+          yield* store.close();
 
           const globalPath = ownedLogPath(basePath, "_global");
           assert.equal(NodeFS.existsSync(globalPath), true);
@@ -154,6 +154,39 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
               payload: '{"type":"item.completed","id":"canonical-event"}',
             },
           ],
+        );
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("keeps long thread ids that share a prefix in separate files", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "events.log");
+      const prefix =
+        "thread:delegated-task:command%3Amcp%3A00000000-0000-4000-8000-000000000000%3Adelegate-task%3A";
+
+      try {
+        const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+        const logger = store.logger("native");
+        yield* logger.write({ id: "first" }, ThreadId.make(`${prefix}review-the-diff`));
+        yield* logger.write({ id: "second" }, ThreadId.make(`${prefix}write-the-tests`));
+        yield* store.close();
+
+        const files = NodeFS.readdirSync(tempDir);
+        assert.equal(files.length, 2);
+        assert.deepEqual(
+          files
+            .map((name) =>
+              NodeFS.readFileSync(NodePath.join(tempDir, name), "utf8")
+                .trim()
+                .split("\n")
+                .map((line) => parseLogLine(line).payload),
+            )
+            .toSorted(),
+          [['{"id":"first"}'], ['{"id":"second"}']],
         );
       } finally {
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
@@ -344,14 +377,8 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
       const basePath = NodePath.join(tempDir, "provider-canonical.ndjson");
 
       try {
-        const logger = yield* makeEventNdjsonLogger(basePath, {
-          stream: "canonical",
-          batchWindowMs: 0,
-        });
-        assert.notEqual(logger, undefined);
-        if (!logger) {
-          return;
-        }
+        const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+        const logger = store.logger("canonical");
 
         yield* Effect.all(
           [
@@ -360,7 +387,7 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
           ],
           { concurrency: "unbounded" },
         );
-        yield* logger.close();
+        yield* store.close();
 
         const globalPath = ownedLogPath(basePath, "_global");
         assert.equal(NodeFS.existsSync(globalPath), true);
@@ -431,6 +458,45 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
     }),
   );
 
+  it.effect("retires a thread log once a retention interval passes without writes", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "events.log");
+      const finishedPath = ownedLogPath(basePath, "finished");
+      const activePath = ownedLogPath(basePath, "active");
+
+      try {
+        const store = yield* makeEventNdjsonLogStore(basePath, {
+          batchWindowMs: 0,
+        });
+        const logger = store.logger("native");
+
+        yield* logger.write({ id: "finished-first" }, ThreadId.make("finished"));
+        yield* TestClock.adjust("5 minutes");
+        yield* logger.write({ id: "active-first" }, ThreadId.make("active"));
+        assert.equal(NodeFS.existsSync(finishedPath), true);
+        NodeFS.truncateSync(finishedPath, 512 * 1024 * 1024 + 1);
+
+        yield* TestClock.adjust("5 minutes");
+        yield* logger.write({ id: "active-second" }, ThreadId.make("active"));
+        assert.equal(NodeFS.existsSync(finishedPath), false);
+        assert.equal(NodeFS.existsSync(activePath), true);
+
+        yield* logger.write({ id: "finished-again" }, ThreadId.make("finished"));
+        yield* store.close();
+        assert.deepEqual(
+          NodeFS.readFileSync(finishedPath, "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => parseLogLine(line).payload),
+          ['{"id":"finished-again"}'],
+        );
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("attributes batches that were written before a later chunk fails", () =>
     Effect.gen(function* () {
       const records: ReadonlyArray<PendingRecord> = [
@@ -474,54 +540,110 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
     }),
   );
 
-  it.effect(
-    "keeps unrelated work responsive and drains before close while a disk write is held",
-    () =>
-      Effect.gen(function* () {
-        const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
-        const basePath = NodePath.join(tempDir, "events.log");
-        const fs = yield* FileSystem.FileSystem;
-        const started = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        let writes = 0;
-        try {
-          const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 }).pipe(
-            Effect.provideService(FileSystem.FileSystem, {
-              ...fs,
-              writeFile: (filePath, content, options) =>
-                Effect.gen(function* () {
-                  if (++writes === 1) {
-                    yield* Deferred.succeed(started, undefined);
-                    yield* Deferred.await(release);
-                  }
-                  yield* fs.writeFile(filePath, content, options);
-                }),
-            }),
+  it.effect.each([0, 1_000])(
+    "writes B and sends a Codex request before releasing held disk A (batch %i)",
+    (batchWindowMs) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const tempDir = yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-")),
+            ),
+            (directory) =>
+              Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
           );
-          const first = yield* store
-            .logger("native")
-            .write({ id: "first" }, ThreadId.make("held"))
-            .pipe(Effect.forkChild);
-          yield* Deferred.await(started);
-          const closed = yield* Deferred.make<void>();
-          const close = yield* store
-            .close()
-            .pipe(Effect.andThen(Deferred.succeed(closed, undefined)), Effect.forkChild);
-          assert.equal(yield* Deferred.isDone(closed), false);
+          const basePath = NodePath.join(tempDir, "events.log");
+          const fs = yield* FileSystem.FileSystem;
+          const started = yield* Deferred.make<void>();
+          const secondWritten = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const store = yield* Effect.acquireRelease(
+            makeEventNdjsonLogStore(basePath, { batchWindowMs, maxBufferedRecords: 2 }).pipe(
+              Effect.provideService(FileSystem.FileSystem, {
+                ...fs,
+                writeFile: (filePath, content, options) =>
+                  Effect.gen(function* () {
+                    if (filePath === ownedLogPath(basePath, "held")) {
+                      yield* Deferred.succeed(started, undefined);
+                      yield* Deferred.await(release);
+                    }
+                    yield* fs.writeFile(filePath, content, options);
+                    if (filePath === ownedLogPath(basePath, "free")) {
+                      yield* Deferred.succeed(secondWritten, undefined);
+                    }
+                  }),
+              }),
+            ),
+            (store) => store.close(),
+          );
+          yield* Effect.gen(function* () {
+            const first = yield* store
+              .logger("native")
+              .write({ id: "first" }, ThreadId.make("held"))
+              .pipe(Effect.forkScoped({ startImmediately: true }));
+            if (batchWindowMs > 0) yield* TestClock.adjust(batchWindowMs);
+            yield* Deferred.await(started);
 
-          const heartbeat = yield* Deferred.make<void>();
-          yield* Effect.forkChild(Deferred.succeed(heartbeat, undefined));
-          yield* Deferred.await(heartbeat);
-          yield* Deferred.succeed(release, undefined);
-          yield* Fiber.join(first);
-          yield* Fiber.join(close);
-          assert.include(
-            NodeFS.readFileSync(ownedLogPath(basePath, "held"), "utf8"),
-            '{"id":"first"}',
-          );
-        } finally {
-          NodeFS.rmSync(tempDir, { recursive: true, force: true });
-        }
-      }),
+            const second = store.logger("canonical");
+            const secondWrite = yield* second
+              .write({ id: "second", type: "item.completed" }, ThreadId.make("free"))
+              .pipe(Effect.forkScoped({ startImmediately: true }));
+            if (batchWindowMs > 0) yield* TestClock.adjust(batchWindowMs);
+            yield* Deferred.await(secondWritten);
+            yield* Fiber.join(secondWrite);
+            assert.include(NodeFS.readFileSync(ownedLogPath(basePath, "free"), "utf8"), '"second"');
+
+            const input = yield* Queue.unbounded<Uint8Array>();
+            const output = yield* Queue.unbounded<string>();
+            const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+              stdio: Stdio.make({
+                args: Effect.succeed([]),
+                stdin: Stream.fromQueue(input),
+                stdout: () =>
+                  Sink.forEach((chunk: string | Uint8Array) =>
+                    Queue.offer(
+                      output,
+                      typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
+                    ),
+                  ),
+                stderr: () => Sink.drain,
+              }),
+              logOutgoing: true,
+              logger: (event) =>
+                store.logger("native").write({ provider: "codex", event }, ThreadId.make("free")),
+            });
+            const request = yield* transport
+              .request("thread/read", { threadId: "synthetic-B" })
+              .pipe(Effect.forkScoped);
+            assert.deepEqual(decodeUnknownJson(yield* Queue.take(output)), {
+              id: 1,
+              method: "thread/read",
+              params: { threadId: "synthetic-B" },
+            });
+            assert.equal(yield* Deferred.isDone(release), false);
+            yield* Queue.offer(input, new TextEncoder().encode('{"id":1,"result":{"ok":true}}\n'));
+            assert.deepEqual(yield* Fiber.join(request), { ok: true });
+
+            const closed = yield* Deferred.make<void>();
+            const close = yield* store
+              .close()
+              .pipe(
+                Effect.andThen(Deferred.succeed(closed, undefined)),
+                Effect.forkScoped({ startImmediately: true }),
+              );
+            assert.equal(yield* Deferred.isDone(closed), false);
+            const heartbeat = yield* Deferred.make<void>();
+            yield* Effect.forkScoped(Deferred.succeed(heartbeat, undefined));
+            yield* Deferred.await(heartbeat);
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(first);
+            yield* Fiber.join(close);
+            assert.include(
+              NodeFS.readFileSync(ownedLogPath(basePath, "held"), "utf8"),
+              '{"id":"first"}',
+            );
+          }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+        }),
+      ),
   );
 });

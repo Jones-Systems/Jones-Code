@@ -375,3 +375,117 @@ NodeTest.test(
     }
   },
 );
+
+NodeTest.test(
+  "captured output callbacks can complete a live child readiness handshake",
+  async () => {
+    let pid, handle;
+    let stdout = "",
+      stderr = "";
+    const stopWhenReady = () => {
+      if (stdout === "ready" && stderr === "note") NodeAssert.equal(handle.requestStop(), true);
+    };
+    try {
+      const result = await runOwnedChild(
+        process.execPath,
+        [
+          "-e",
+          'process.stdout.write("ready"); process.stderr.write("note"); setInterval(() => {}, 1000);',
+        ],
+        {
+          timeout: 5000,
+          onSpawn(captured, control) {
+            pid = captured;
+            handle = control;
+          },
+          onStdout(chunk, captured) {
+            NodeAssert.equal(captured, pid);
+            stdout += chunk;
+            stopWhenReady();
+          },
+          onStderr(chunk, captured) {
+            NodeAssert.equal(captured, pid);
+            stderr += chunk;
+            stopWhenReady();
+          },
+        },
+      );
+      NodeAssert.equal(result.signal, "SIGTERM");
+      NodeAssert.equal(result.stdout, stdout);
+      NodeAssert.equal(result.stderr, stderr);
+      NodeAssert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    } finally {
+      assertFixtureProcessesStopped();
+    }
+  },
+);
+
+NodeTest.test(
+  "output callback failure preserves its error and child evidence after drain",
+  async () => {
+    const failure = new Error("fixture observer refused the captured output");
+    let pid;
+    try {
+      await NodeAssert.rejects(
+        runOwnedChild(
+          process.execPath,
+          ["-e", 'process.stdout.write("ready"); setInterval(() => {}, 1000);'],
+          {
+            timeout: 5000,
+            onSpawn(captured) {
+              pid = captured;
+            },
+            onStdout(chunk, captured) {
+              NodeAssert.equal(captured, pid);
+              NodeAssert.equal(chunk, "ready");
+              throw failure;
+            },
+          },
+        ),
+        (error) => {
+          NodeAssert.equal(error, failure);
+          NodeAssert.equal(error.nativeChildResult.signal, "SIGKILL");
+          NodeAssert.equal(error.nativeChildResult.stdout, "ready");
+          NodeAssert.equal(typeof error.nativeChildResult.stderr, "string");
+          return true;
+        },
+      );
+      NodeAssert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    } finally {
+      assertFixtureProcessesStopped();
+    }
+  },
+);
+
+NodeTest.test(
+  "a frozen observer error still rejects after captured-child closure",
+  { timeout: 5000 },
+  async () => {
+    const failure = Object.freeze(new Error("frozen observer refusal"));
+    let pid;
+    try {
+      await NodeAssert.rejects(
+        runOwnedChild(
+          process.execPath,
+          ["-e", 'process.stdout.write("ready"); setInterval(() => {}, 1000);'],
+          {
+            timeout: 3000,
+            onSpawn(captured) {
+              pid = captured;
+            },
+            onStdout() {
+              throw failure;
+            },
+          },
+        ),
+        (error) => {
+          NodeAssert.equal(error, failure);
+          return true;
+        },
+      );
+      NodeAssert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    } finally {
+      assertFixtureProcessesStopped();
+    }
+  },
+);

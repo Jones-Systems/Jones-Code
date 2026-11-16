@@ -1,6 +1,7 @@
 import { PROVIDER_DISPLAY_NAMES, type ProviderDriverKind } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 import * as SqlError from "effect/sql/SqlError";
+import { findSqliteReaderAdmissionFailure } from "@t3tools/shared/jones/sqliteReaders/admissionFailure";
 
 const GENERIC_ERROR_PREFIXES = [
   "Failed to dispatch orchestration V2 command",
@@ -34,7 +35,22 @@ function databaseErrorMessage(value: unknown): string | undefined {
     cause = cause.cause;
   }
 
+  if (findSqliteReaderAdmissionFailure(value) !== undefined)
+    return "The server was too busy to read its database. Check the server logs if this continues.";
+
   return "The T3 Code server could not complete this database request. Retry once; if it still fails, check the server logs for the database error.";
+}
+
+export function userFacingDatabaseErrorMessage(cause: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  let value = cause;
+  while (Predicate.isObject(value) && !seen.has(value)) {
+    seen.add(value);
+    const message = databaseErrorMessage(value);
+    if (message !== undefined) return message;
+    value = value.cause;
+  }
+  return undefined;
 }
 
 const CAPABILITY_REJECTION_MESSAGES: Record<string, (provider: string) => string> = {
@@ -69,9 +85,6 @@ function policyRejectionMessage(value: unknown): string | undefined {
   if (value._tag === "CommandPolicyCapabilityUnsupportedError") {
     const capability = typeof value.capability === "string" ? value.capability : "";
     return CAPABILITY_REJECTION_MESSAGES[capability]?.(provider);
-  }
-  if (value._tag === "CommandPolicyUnsupportedError") {
-    return `${provider} cannot deliver a message that way right now.`;
   }
   return undefined;
 }

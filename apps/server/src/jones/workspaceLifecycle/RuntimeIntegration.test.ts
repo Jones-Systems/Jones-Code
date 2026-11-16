@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   CommandId,
   ThreadId,
@@ -25,6 +26,7 @@ import * as Lifecycle from "./WorkspaceLifecycle.ts";
 import { type Binding, type InventoryEntry } from "./Protocol.ts";
 import * as Runtime from "./RuntimeIntegration.ts";
 import type { Configuration } from "./Configuration.ts";
+import { missingSource, recreate } from "../workspaceRecreation/Native.ts";
 
 const beforeStart = Boundary.beforeUse({
   threadId: "thread",
@@ -82,6 +84,7 @@ const fixture = Effect.gen(function* () {
   yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES('thread',${canonical(thread)})`;
   yield* sql`INSERT INTO orchestration_events VALUES('birth',1,${canonical(thread)},2,'thread','thread','thread.created')`;
   yield* jonesMigrationEntries.find(([id]) => id === 123)![2];
+  yield* jonesMigrationEntries.find(([id]) => id === 138)![2];
   const settings: Configuration = {
     environmentId: "environment",
     projects: [{ projectId: "project", repository: "Jones-Systems/Synthetic", projectRoot: repo }],
@@ -226,7 +229,9 @@ it.effect(
           ),
         ).toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
 );
 
 it.effect(
@@ -246,7 +251,62 @@ it.effect(
         yield* Boundary.beforeCleanupPath(f.linked).pipe(Effect.provide(f.configured()));
         expect(f.calls).toEqual([]);
       }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
+);
+
+it.effect(
+  "disabled and unmanaged lifecycle use accepts a real non-Git workspace; configured managed use still holds",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        const fs = yield* FileSystem.FileSystem;
+        const workspace = yield* fs.makeTempDirectoryScoped({ prefix: "lifecycle-non-git-" });
+        expect(yield* fs.exists(`${workspace}/.git`)).toBe(false);
+        yield* f.sql`UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.worktreePath',${workspace},'$.branch',NULL)`;
+        yield* beforeStart.pipe(Effect.provide(f.configured(null)));
+        yield* f.sql`UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.projectId','unmanaged')`;
+        yield* beforeStart.pipe(Effect.provide(f.configured()));
+        yield* f.sql`UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.projectId','project')`;
+        expect(
+          Exit.isFailure(yield* Effect.exit(beforeStart.pipe(Effect.provide(f.configured())))),
+        ).toBe(true);
+        expect(f.calls).toEqual([]);
+        expect(yield* fs.exists(workspace)).toBe(true);
+        expect(yield* fs.exists(`${workspace}/.git`)).toBe(false);
+      }),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
+);
+
+it.effect("configured managed detached recreation retains its real native breadcrumb path", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const fs = yield* FileSystem.FileSystem;
+      const cwd = f.settings.projects[0]!.projectRoot;
+      yield* fs.remove(f.linked, { recursive: true });
+      const source = yield* Effect.promise(() => missingSource(cwd, f.linked));
+      const result = yield* Effect.promise(() =>
+        recreate({
+          cwd,
+          source,
+          owner: "detached-boundary",
+          alternatePath: `${f.linked}-new`,
+          detached: true,
+        }),
+      );
+      expect(result.branch).toBeNull();
+      expect(result.path).toBe(f.linked);
+      yield* f.sql`UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.branch',NULL)`;
+      yield* beforeStart.pipe(Effect.provide(f.configured()));
+      expect(f.calls).toEqual([]);
+      expect(yield* fs.exists(f.linked)).toBe(true);
+    }),
+  ).pipe(Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)))),
 );
 
 it.effect(
@@ -271,5 +331,7 @@ it.effect(
         expect(f.calls).toEqual([]);
         expect(Option.isNone(yield* Effect.serviceOption(Lifecycle.WorkspaceLifecycle))).toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
 );

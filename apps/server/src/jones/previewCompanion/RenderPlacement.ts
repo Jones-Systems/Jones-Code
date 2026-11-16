@@ -1,4 +1,8 @@
-import type { PreviewCompanionCapabilities, PreviewSessionSnapshot } from "@t3tools/contracts";
+import type {
+  PreviewCompanionCapabilities,
+  PreviewSessionSnapshot,
+  PreviewRenderHostSelection,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -19,6 +23,7 @@ export type Placement =
 export class RenderPlacement extends Context.Service<
   RenderPlacement,
   {
+    readonly bindAtOpen: (key: DesktopTabKey, opener?: DesktopTabKey) => PreviewRenderHostSelection;
     readonly channel: CompanionBrowserChannel.CompanionBrowserChannel["Service"];
     readonly place: (
       snapshot: PreviewSessionSnapshot,
@@ -31,12 +36,22 @@ export class RenderPlacement extends Context.Service<
   }
 >()("t3/jones/previewCompanion/RenderPlacement") {}
 const make = Effect.gen(function* () {
+  const runSync = Effect.runSyncWith(yield* Effect.context<never>());
   const selection = yield* RenderHostSelection.RenderHostSelection;
   const registry = yield* CompanionHostRegistry.CompanionHostRegistry;
   const channel = yield* CompanionBrowserChannel.CompanionBrowserChannel;
   const desktop = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   return RenderPlacement.of({
     channel,
+    bindAtOpen: (key, opener) =>
+      runSync(
+        selection.bind(
+          key,
+          opener === undefined
+            ? undefined
+            : (runSync(selection.binding(opener)) ?? { _tag: "server" }),
+        ),
+      ),
     place: Effect.fn("RenderPlacement.place")(function* (snapshot) {
       const bound = yield* selection.bind(snapshot);
       if (bound._tag === "server") return { _tag: desktop.available ? "local" : "headless" };

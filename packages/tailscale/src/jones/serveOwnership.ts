@@ -120,9 +120,7 @@ export const queryServeMapping = (
 ): Effect.Effect<ServeMappingState, never, ChildProcessSpawner.ChildProcessSpawner> =>
   readTailscaleServeConfigJson.pipe(
     Effect.map((json) => classifyServeConfig(json, input)),
-    Effect.catch(() =>
-      Effect.succeed<ServeMappingState>({ _tag: "unknown", reason: "status-failed" }),
-    ),
+    Effect.orElseSucceed((): ServeMappingState => ({ _tag: "unknown", reason: "status-failed" })),
   );
 
 export function decidePairWrite(
@@ -152,7 +150,7 @@ export const acquireServeMapping = Effect.fn("TailscaleServeOwnership.acquireSer
     if (state._tag !== "absent") return { skipped: state } as const;
     const written = yield* writeTarget(input).pipe(
       Effect.as(true),
-      Effect.catch(() => Effect.succeed(false)),
+      Effect.orElseSucceed(() => false),
     );
     if (!written) return { skipped: { _tag: "unknown", reason: "status-failed" } } as const;
     const readback = yield* queryServeMapping(input);
@@ -177,7 +175,7 @@ export const releaseServeMapping = Effect.fn("TailscaleServeOwnership.releaseSer
     if (state._tag !== "exact") return "skipped";
     const disabled = yield* disableTailscaleServe({ servePort: input.servePort }).pipe(
       Effect.as(true),
-      Effect.catch(() => Effect.succeed(false)),
+      Effect.orElseSucceed(() => false),
     );
     const readback = yield* queryServeMapping(input);
     return disabled && readback._tag === "absent" ? "disabled" : "unknown";

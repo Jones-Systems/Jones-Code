@@ -141,6 +141,8 @@ function projectGroup(includeRemote = true): SidebarProjectSnapshot {
   return {
     ...members[0]!,
     projectKey: "group",
+    pinned: false,
+    archived: false,
     displayName: "Project",
     memberProjects: members,
     memberProjectRefs: members.map((member) => ({

@@ -129,6 +129,16 @@ downloaded versions after showing you the list and asking once. Your projects,
 threads, and settings under `~/.t3/userdata` are kept, along with `service.env`
 under T3 home. Pass `--yes` from a script.
 
+## Local network access
+
+The service listens on your local network and Tailscale addresses, so the
+desktop and mobile apps on the same network connect directly instead of through
+T3 Connect. The hosted web app at app.t3.codes stays on T3 Connect, because
+browsers block plain HTTP from an HTTPS page. The service does not answer on
+public addresses, and every device still needs to pair or sign in. To keep the service reachable from this machine only, set
+`T3CODE_HOST=127.0.0.1` in `service.env` (below). Any `T3CODE_HOST` value
+replaces this default.
+
 ## Configure the service environment
 
 Put custom environment variables in `service.env` under the service's T3 home
@@ -162,10 +172,10 @@ installation and the supported background launcher; **Setup required** means
 that initial host setup is still needed. Enrollment does not replace an existing
 system service or take over an upstream T3 Code installation.
 
-Download the offered laptop update, then choose Install. Enrolled hosts follow
-that exact source only after the laptop successfully switches to it, and never
-move past the laptop. A current host learns the laptop's installed build while
-the desktop app is open, downloads it in the background, and installs it by
+For builds outside an Install status plan, enrolled hosts follow the laptop's
+verified committed source and never move past it. A current host learns the
+laptop's installed build while the desktop app is open, downloads it in the
+background, and installs it by
 itself once no client has had input for 30 minutes and nothing a restart would
 interrupt is running: turns and delegated tasks, queued messages about to start,
 terminal commands, provider background tasks, and approvals waiting in a live
@@ -176,8 +186,18 @@ someone begins using the host. Because the host remembers the laptop's build,
 it can finish while the laptop sleeps. Older hosts wait for the desktop app to
 coordinate their rollout, and an offline host updates after it reconnects.
 
-On an enrolled host, Check, Download and Install offer only the laptop's
-installed build, from any client. Install stays off for any other downloaded
+**Install status** controls a plan's target separately. A new plan includes only
+Laptop; use Edit or the bulk update handoff to include supported hosts. Selection
+does not enroll or unenroll them. Selected hosts wait for Laptop to commit and
+pass native health verification before downloading or staging, and each Install
+requires review. Plan targets are withheld from ordinary following and legacy
+campaigns, including after Done or an app restart, so enrollment cannot silently
+install an excluded target. A participating host's manual-review directive also
+survives restart; ordinary following resumes for a later different published
+leader source. Builds outside a plan retain ordinary automatic following.
+
+Outside a plan's explicit review target, an enrolled host's Check, Download and
+Install offer only the laptop's installed build, from any client. Install stays off for any other downloaded
 build, including an older one, and a host waits until the laptop has reported
 its build. A laptop app too old to report its build cannot release a host:
 update the laptop app, or disable automatic updates for that host to choose its
@@ -271,15 +291,22 @@ For failures after signing in to T3 Connect, see
 
 ## Reclaim database space
 
-T3 Code removes superseded internal history on its own while it runs; your
-conversations are kept. Databases created before this shrank automatically
+T3 Code removes internal history older than a day on its own while it runs;
+your conversations are kept. Databases created before this shrank automatically
 still hold the freed space on disk until a one-time offline repair returns it
 and turns on automatic shrinking. Settings > Storage (web and desktop) or
 Settings > Maintenance (mobile) suggests the repair when at least 1 GiB can be
 reclaimed.
 
-Run `t3 doctor` on the machine that hosts the environment. It reports the
-database size and the space it can reclaim, then asks which repairs to run;
+When the desktop app or the background service runs T3 Code on that machine,
+select **Reclaim** in Settings on web or desktop. T3 Code checks for free disk
+space, then stops, repairs the database, and starts again. It is offline while
+the repair runs, and running agents stop. If the repair fails, Settings shows
+why.
+
+In other cases, such as a server you started by hand, run `t3 doctor` on the
+machine that hosts the environment. It reports the database size and the
+space it can reclaim, then asks which repairs to run;
 pass `--fix` to run the recommended ones without a prompt (for scripts), or
 `--dry-run` to only report. An installed background service for the same data
 directory is stopped for the repair and started again afterwards, also when
@@ -288,10 +315,10 @@ the repair refuses to touch a database that is in use. Use `--base-dir` for a
 different data directory.
 
 The repair can take several minutes on a large database. It rebuilds the
-database through a temporary copy, so it needs free space of about the
-database's size twice over: once in the system temporary directory (`TMPDIR`
-or `/tmp` on Linux and macOS) and once next to the database for its
-write-ahead log.
+database through a temporary copy, so it needs free space of about twice the
+data still in use (the database size minus the reclaimable space): once in the
+system temporary directory (on Linux and macOS, `TMPDIR`, or `/var/tmp` when it
+is not set) and once next to the database for its write-ahead log.
 
 If you upgraded from a version before 0.1.0, its database (`state.sqlite`) is
 still kept next to the current one so you can roll back. `t3 doctor` offers to

@@ -39,6 +39,14 @@ import {
 
 type ProgressEntity = TestModule | TestSuite | TestCase;
 
+/**
+ * Per-case and per-hook events, written next to the timings file instead of
+ * the log. They were most of a shard's log bytes and pushed the failure out of
+ * view; the file keeps them for a hang or crash post-mortem and is uploaded
+ * with the shard's timings. Timing aggregation reads only the timings file.
+ */
+const CASE_EVENTS_FILE_NAME = "server-case-events.ndjson";
+
 const repoRoot = NodeURL.fileURLToPath(new URL("../../", import.meta.url));
 const serverRoot = NodePath.join(repoRoot, "apps/server");
 
@@ -47,6 +55,7 @@ export default class CiTestProgressReporter implements Reporter {
   private runStartedAt = 0;
   private context: Vitest | undefined;
   private capture: CaptureWriter | undefined;
+  private caseEventsPath: string | undefined;
   private completedFiles: string[] = [];
 
   onInit(ctx: Vitest): void {
@@ -97,20 +106,26 @@ export default class CiTestProgressReporter implements Reporter {
   }
 
   onTestCaseReady(test: TestCase): void {
-    this.emit("case-ready", test);
+    this.emit("case-ready", test, {}, "case-file");
   }
 
   onTestCaseResult(test: TestCase): void {
     const result = test.result();
-    this.emit("case-result", test, { state: result.state, errors: result.errors });
+    // A failed case stays in the log; the default reporter prints its details.
+    this.emit(
+      "case-result",
+      test,
+      { state: result.state, errors: result.errors },
+      result.state === "failed" ? "both" : "case-file",
+    );
   }
 
   onHookStart(hook: ReportedHookContext): void {
-    this.emit("hook-start", hook.entity, { hookName: hook.name });
+    this.emit("hook-start", hook.entity, { hookName: hook.name }, "case-file");
   }
 
   onHookEnd(hook: ReportedHookContext): void {
-    this.emit("hook-end", hook.entity, { hookName: hook.name });
+    this.emit("hook-end", hook.entity, { hookName: hook.name }, "case-file");
   }
 
   /**
@@ -169,6 +184,9 @@ export default class CiTestProgressReporter implements Reporter {
       weightsInput: weightsInput(),
       manifest: specifications.map((spec) => serverPath(spec.moduleId)).toSorted(compareStrings),
     });
+    // Created only once the timings file exists; exclusive, like the timings file.
+    this.caseEventsPath = NodePath.join(NodePath.dirname(outputPath), CASE_EVENTS_FILE_NAME);
+    NodeFS.writeFileSync(this.caseEventsPath, "", { flag: "wx" });
   }
 
   private elapsedMs(): number {
@@ -204,6 +222,10 @@ export default class CiTestProgressReporter implements Reporter {
     this.capture.append(record);
   }
 
+  /**
+   * Module and run events go to the log. A per-case or per-hook event goes to
+   * the case events file when capture is on, and to the log only when `both`.
+   */
   private emit(
     event: string,
     entity?: ProgressEntity,
@@ -212,26 +234,29 @@ export default class CiTestProgressReporter implements Reporter {
       hookName?: string;
       errors?: ReadonlyArray<{ message: string }> | undefined;
     } = {},
+    destination: "log" | "case-file" | "both" = "log",
   ): void {
     const module = entity?.type === "module" ? entity : entity?.module;
     // Elapsed time is observed by this reporter, not measured inside workers.
     // Queued-to-collected includes setup/import/collection; module-end does not prove worker teardown.
-    this.log?.(
-      JSON.stringify({
-        event,
-        elapsedMs: Math.round(performance.now() - this.runStartedAt),
-        relativeModuleId: module?.relativeModuleId,
-        entityId: entity?.id,
-        entityName: entity?.type === "module" ? entity.relativeModuleId : entity?.fullName,
-        hookName: details.hookName,
-        state: details.state,
-        errorCount: details.errors?.length,
-        errors: details.errors?.slice(0, 3).map((error) => {
-          const message = error.message ?? "Error without a message";
-          return message.length > 1000 ? `${message.slice(0, 999)}…` : message;
-        }),
+    const line = JSON.stringify({
+      event,
+      elapsedMs: Math.round(performance.now() - this.runStartedAt),
+      relativeModuleId: module?.relativeModuleId,
+      entityId: entity?.id,
+      entityName: entity?.type === "module" ? entity.relativeModuleId : entity?.fullName,
+      hookName: details.hookName,
+      state: details.state,
+      errorCount: details.errors?.length,
+      errors: details.errors?.slice(0, 3).map((error) => {
+        const message = error.message ?? "Error without a message";
+        return message.length > 1000 ? `${message.slice(0, 999)}…` : message;
       }),
-    );
+    });
+    if (destination !== "case-file") this.log?.(line);
+    if (destination !== "log" && this.caseEventsPath) {
+      NodeFS.appendFileSync(this.caseEventsPath, `${line}\n`);
+    }
   }
 }
 

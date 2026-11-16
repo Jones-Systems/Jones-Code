@@ -97,6 +97,8 @@ describe("scheduleFromDraft", () => {
 
   it.each([
     ["1.5", 90_000],
+    ["2,5", 150_000],
+    [" 2,5 ", 150_000],
     [String(60_001 / 60_000), 60_001],
   ])("preserves a valid %s minute interval when saving", (intervalMinutes, everyMs) => {
     expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "interval", intervalMinutes })).toEqual({
@@ -105,8 +107,8 @@ describe("scheduleFromDraft", () => {
     });
   });
 
-  it.each(["NaN", "Infinity", "9007199254740991", "0.5"])(
-    "rejects intervals that cannot be written as safe whole milliseconds: %s",
+  it.each(["0,5", "2,5,0", "Infinity", "150119987580", ""])(
+    "rejects invalid interval minutes: %s",
     (intervalMinutes) => {
       expect(
         scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "interval", intervalMinutes }),
@@ -294,7 +296,7 @@ describe("scheduled-task form save and reopen", () => {
         ...draft.schedule,
         signature: currentSignature,
       });
-      const saved = Schema.decodeUnknownSync(ScheduledTaskUpsertInput)(
+      const saved = decodeUnknownSyncScheduledTaskUpsertInput(
         scheduledTaskUpsertInputFromDraft(draft, currentSchedule),
       );
 
@@ -307,7 +309,7 @@ describe("scheduled-task form save and reopen", () => {
       expect(saved.workspaceStrategy).toEqual({ type: "worktree", startFromOrigin });
       expect(saved.workspaceStrategy).not.toHaveProperty("baseRef");
       expect(draft.schedule.signature).toEqual(staleSignature);
-      const reopened = editDraft(Schema.decodeUnknownSync(ScheduledTask)({ ...task, ...saved }));
+      const reopened = editDraft(decodeUnknownSyncScheduledTask({ ...task, ...saved }));
       expect(reopened.schedule.signature).toEqual(currentSignature);
       expect(reopened.baseRef).toBe("");
       expect(reopened.startFromOrigin).toBe(startFromOrigin);
@@ -320,7 +322,7 @@ describe("scheduled-task form save and reopen", () => {
       workspaceStrategy: { type: "worktree", startFromOrigin },
     };
     const draft = editDraft(task);
-    const saved = Schema.decodeUnknownSync(ScheduledTaskUpsertInput)(
+    const saved = decodeUnknownSyncScheduledTaskUpsertInput(
       scheduledTaskUpsertInputFromDraft(draft),
     );
     expect(saved.workspaceStrategy).toEqual({ type: "worktree", startFromOrigin });
@@ -339,7 +341,7 @@ describe("scheduled-task form save and reopen", () => {
       interactionMode: task.interactionMode,
       creationSource: task.creationSource,
     });
-    const reopened = editDraft(Schema.decodeUnknownSync(ScheduledTask)({ ...task, ...saved }));
+    const reopened = editDraft(decodeUnknownSyncScheduledTask({ ...task, ...saved }));
     expect(reopened.baseRef).toBe("");
     expect(reopened.startFromOrigin).toBe(startFromOrigin);
     expect(hasScheduledTaskDraftChanges(draft, reopened)).toBe(false);
@@ -347,7 +349,7 @@ describe("scheduled-task form save and reopen", () => {
 
   it.each([true, false])("trims an explicit base without changing origin %s", (startFromOrigin) => {
     const draft = { ...editDraft(legacyTask), baseRef: " release/stable ", startFromOrigin };
-    const saved = Schema.decodeUnknownSync(ScheduledTaskUpsertInput)(
+    const saved = decodeUnknownSyncScheduledTaskUpsertInput(
       scheduledTaskUpsertInputFromDraft(draft),
     );
     expect(saved.workspaceStrategy).toEqual({
@@ -355,12 +357,50 @@ describe("scheduled-task form save and reopen", () => {
       baseRef: "release/stable",
       startFromOrigin,
     });
-    const reopened = editDraft(
-      Schema.decodeUnknownSync(ScheduledTask)({ ...legacyTask, ...saved }),
-    );
+    const reopened = editDraft(decodeUnknownSyncScheduledTask({ ...legacyTask, ...saved }));
     expect(reopened.baseRef).toBe("release/stable");
     expect(reopened.startFromOrigin).toBe(startFromOrigin);
     expect(reopened.prompt).toBe(legacyTask.prompt);
     expect(reopened.modelSelection).toEqual(legacyTask.modelSelection);
+  });
+});
+
+const decodeUnknownSyncScheduledTask = Schema.decodeUnknownSync(ScheduledTask);
+
+const decodeUnknownSyncScheduledTaskUpsertInput =
+  Schema.decodeUnknownSync(ScheduledTaskUpsertInput);
+describe("scheduled fresh project allocation inheritance", () => {
+  it("authors new fresh tasks with auto and preserves it on save/reopen", () => {
+    const draft = {
+      ...createDraft(legacyTask.projectId, legacyTask.modelSelection),
+      title: "Fresh",
+      prompt: "Inspect source",
+    };
+    const input = scheduledTaskUpsertInputFromDraft(draft);
+    expect(input?.threadId).toBeNull();
+    expect(input?.workspaceStrategy).toEqual({ type: "auto" });
+    const reopened = editDraft({ ...legacyTask, workspaceStrategy: { type: "auto" } });
+    expect(reopened.workspace).toBe("auto");
+    expect(scheduledTaskUpsertInputFromDraft(reopened)?.workspaceStrategy).toEqual({
+      type: "auto",
+    });
+    expect(
+      hasScheduledTaskDraftChanges(
+        reopened,
+        editDraft({ ...legacyTask, workspaceStrategy: { type: "auto" } }),
+      ),
+    ).toBe(false);
+  });
+
+  it.each<ScheduledTask["workspaceStrategy"]>([
+    { type: "auto", baseRef: "release", branch: "work/automation" },
+    { type: "worktree", baseRef: "release", startFromOrigin: true },
+    { type: "existing_worktree", worktreePath: "/checkouts/explicit" },
+    { type: "root" },
+  ])("preserves the stored $type allocation choice", (workspaceStrategy) => {
+    const draft = editDraft({ ...legacyTask, workspaceStrategy });
+    const saved = scheduledTaskUpsertInputFromDraft(draft);
+    expect(saved?.workspaceStrategy).toEqual(workspaceStrategy);
+    expect(saved?.requireExisting).toBe(true);
   });
 });

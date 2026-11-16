@@ -1,5 +1,11 @@
 import * as Schema from "effect/Schema";
-import { NodeId, ProviderThreadId, RunId, TrimmedNonEmptyString } from "../baseSchemas.ts";
+import {
+  NodeId,
+  ProviderThreadId,
+  RunAttemptId,
+  RunId,
+  TrimmedNonEmptyString,
+} from "../baseSchemas.ts";
 import { ModelSelection } from "../modelSelection.ts";
 import { ProviderInstanceId } from "../providerInstance.ts";
 import { OrchestratorMcpDelegateTaskResult } from "../orchestratorMcp.ts";
@@ -15,6 +21,7 @@ export type TaskContinueInput = typeof TaskContinueInput.Type;
 export const TaskContinuationEvidence = Schema.Struct({
   sourceTaskId: NodeId,
   sourceRunId: RunId,
+  sourceAttemptId: Schema.optional(RunAttemptId),
   sourceEvidence: Schema.Literal("attempt"),
   providerInstanceId: ProviderInstanceId,
   providerThreadId: ProviderThreadId,

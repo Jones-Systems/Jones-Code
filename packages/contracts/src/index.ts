@@ -1,5 +1,6 @@
 export * from "./baseSchemas.ts";
 export * from "./jones/taskContinuation.ts";
+export * from "./jones/delegatedTaskNativeSession.ts";
 export * from "./assistantCitations.ts";
 export * from "./composerContext.ts";
 export * from "./composerContextClipboard.ts";
@@ -31,22 +32,28 @@ export * from "./model.ts";
 export * from "./keybindings.ts";
 export * from "./server.ts";
 export * from "./settings.ts";
+export * from "./managedPolicy.ts";
 export * from "./git.ts";
 export * from "./vcs.ts";
 export * from "./sourceControl.ts";
 export * from "./projectClone.ts";
+export * from "./speech.ts";
 export * from "./pullRequest.ts";
 export * from "./pullRequestReviewGuide.ts";
 export * from "./orchestrationDispatch.ts";
 export * from "./nativeCreation.ts";
 export * from "./orchestrationProject.ts";
 export * from "./orchestrationV2.ts";
+export * from "./guestShare.ts";
+export * from "./guestStream.ts";
 export * from "./applicationEvent.ts";
 export * from "./orchestratorMcp.ts";
+export * from "./jones/threadContentEvidence.ts";
 export * from "./peerLink.ts";
 export * from "./threadMetadataMcp.ts";
 export * from "./threadPullRequest.ts";
 export * from "./threadSearch.ts";
+export * from "./threadTags.ts";
 export * from "./threadTitle.ts";
 export * from "./t3ProjectFile.ts";
 export * from "./editor.ts";
@@ -61,9 +68,9 @@ export * from "./browserProfile.ts";
 export * from "./device.ts";
 export * from "./preview.ts";
 export * from "./previewAutomation.ts";
+export * from "./jones/previewRecordingOperation.ts";
 export * from "./jones/previewCompanion.ts";
 export * from "./previewCapture.ts";
-export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
 export * from "./tokenAccounting.ts";
 export * from "./scheduledTask.ts";
@@ -75,8 +82,6 @@ export * from "./worktreeSetup.ts";
 export * from "./providerQueue.ts";
 
 export * from "./queueDispatch.ts";
-export * from "./workstreams.ts";
-export * from "./workstreamPlacements.ts";
 export * from "./threadRegistry.ts";
 export * from "./queueProtocol.ts";
 export * from "./threadCorpusProtocol.ts";
@@ -88,7 +93,6 @@ export {
   OrchestrationThreadDetailSnapshot,
 } from "./legacyOrchestrationCompatibility.ts";
 export * from "./hostStatus.ts";
-export * from "./jones/workstreamAppearance.ts";
 
 export * from "./jones/organizationMetadata.ts";
 
@@ -96,21 +100,21 @@ export * from "./jones/workQueueMetadata.ts";
 
 export * from "./jones/deviceMedia.ts";
 
-export * from "./jones/workstreamsNativeProvider.ts";
-export * from "./jones/workstreamsRegistrationContext.ts";
 export * from "./jones/jonesUpdates.ts";
 export * from "./jones/runtimeStop.ts";
 export * from "./jones/providerConversationReselection.ts";
 
 export * from "./jones/importedHistory.ts";
 export * from "./secretRequest.ts";
+export * from "./secretReference.ts";
+export * from "./settingsSecretValue.ts";
 export * from "./clientRpcPermissions.ts";
-
-export * from "./jones/workstreamsNativeOwner.ts";
 
 export * from "./jones/queuedSteerBatch.ts";
 
 export * from "./jones/threadGoal.ts";
+export * from "./jones/goalContinuity.ts";
+export * from "./jones/documentSections.ts";
 export * from "./jones/clientLaunch.ts";
 
 export * from "./jones/remoteAdmission.ts";
@@ -122,3 +126,10 @@ export * from "./jones/remoteTaskObservation.ts";
 
 export * from "./jones/linkedThreadsCapability.ts";
 export * from "./jones/linkedThreads.ts";
+
+export * from "./jones/desktopThreadMonitor.ts";
+export * from "./jones/guardedThreadSettlement.ts";
+
+export * from "./jones/threadResultDependency.ts";
+
+export * from "./jones/workspaceRetirement.ts";

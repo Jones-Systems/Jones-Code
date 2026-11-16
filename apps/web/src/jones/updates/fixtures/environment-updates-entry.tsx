@@ -3,6 +3,7 @@ import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { EnvironmentId, type EnvironmentMachineKind } from "@t3tools/contracts";
+import { jonesCheckOutcome } from "@t3tools/client-runtime/jones/updates/target-status";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { AUTH_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
 import "../../../index.css";
@@ -88,6 +89,55 @@ interface Scenario {
 function scenarios(): readonly Scenario[] {
   const id = (key: string) => EnvironmentId.make(`fixture-${key}`);
   return [
+    {
+      key: "already-running",
+      label: "Already running host",
+      kind: "server",
+      subtitle: "Synthetic host · Connected",
+      routes: [{ label: "SSH", address: "fixture-already-running", inUse: true }],
+      build: {
+        state: state(id("already-running"), {
+          phase: "staged",
+          provenance: offered,
+          stagedHandle: "staged-already-running",
+          stagedAlreadyRunning: true,
+        }),
+        freshness: "fresh",
+      },
+      fleet: { enrolled: false, readiness: "qualified" },
+    },
+    {
+      key: "dated-check-failure",
+      label: "Failed check host",
+      kind: "server",
+      subtitle: "Synthetic host · Connected",
+      routes: [{ label: "SSH", address: "fixture-check-failure", inUse: true }],
+      build: {
+        state: state(id("dated-check-failure"), {
+          phase: "no-new",
+          checkClassification: { kind: "failure", checkedAt: "2026-11-10T15:00:00Z" },
+          lastCheck: { outcome: "failed", at: "2026-11-10T15:05:00Z" },
+        }),
+        freshness: "fresh",
+      },
+      fleet: { enrolled: false, readiness: "qualified" },
+    },
+    {
+      key: "successful-recheck",
+      label: "Successful recheck host",
+      kind: "server",
+      subtitle: "Synthetic host · Connected",
+      routes: [{ label: "SSH", address: "fixture-successful-recheck", inUse: true }],
+      build: {
+        state: state(id("successful-recheck"), {
+          phase: "no-new",
+          checkClassification: { kind: "failure", checkedAt: "2026-11-10T15:00:00Z" },
+          lastCheck: { outcome: "succeeded", at: "2026-11-10T15:10:00Z" },
+        }),
+        freshness: "fresh",
+      },
+      fleet: { enrolled: false, readiness: "qualified" },
+    },
     {
       key: "reconnecting",
       label: "MJones’s Mac mini",
@@ -484,6 +534,7 @@ function ScenarioRow({
               environmentId={environmentId}
               state={scenario.build.state}
               freshness={scenario.build.freshness}
+              check={jonesCheckOutcome(scenario.build.state)}
               freshnessMessage={scenario.build.freshnessMessage}
               comparison={scenario.build.comparison ?? null}
               installedComparison={scenario.build.installedComparison ?? null}

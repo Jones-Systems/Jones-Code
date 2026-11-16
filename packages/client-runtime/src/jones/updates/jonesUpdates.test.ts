@@ -11,6 +11,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
@@ -22,12 +23,16 @@ import {
   jonesInstallRefusal,
   jonesFollowerHold,
   jonesFollowerSummary,
+  jonesReadRetryDelayMs,
   jonesUpdateActionError,
   jonesCandidatePresentation,
   jonesUpdatePresentation,
   observeJonesUpdateSnapshot,
   observeJonesUpdateState,
   resolveJonesExactSourceAction,
+  resolveJonesAlternativeAction,
+  sameJonesReplacementStep,
+  jonesAlternativePresentation,
   type JonesExactSourceInput,
   type JonesUpdateObservation,
 } from "./jonesUpdates.ts";
@@ -35,6 +40,7 @@ import { EnvironmentRegistry } from "../../connection/registry.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
 import {
   AVAILABLE_CONNECTION_STATE,
+  PrimaryConnectionTarget,
   RelayConnectionTarget,
   type PreparedConnection,
 } from "../../connection/model.ts";
@@ -56,6 +62,58 @@ const staged: JonesUpdateState = {
   capability: { check: true, download: true, install: true },
   stagedHandle: "fixed-stage",
 };
+
+it("refuses already-running downloads from host proof or conservative full commits, never trees", () => {
+  const env = EnvironmentId.make("already-running-host");
+  const installed = {
+    repository: "Jones-Systems/Jones-Code" as const,
+    sha: "a".repeat(40),
+    tree: "c".repeat(40),
+  };
+  const state: JonesUpdateState = {
+    ...staged,
+    environmentId: env,
+    currentVersion: "old",
+    installedSource: installed,
+    provenance: {
+      repository: installed.repository,
+      sourceSha: "b".repeat(40),
+      sourceTree: installed.tree,
+      artifactId: 1,
+      workflow: "synthetic",
+      runId: 1,
+      runAttempt: 1,
+      artifactDigest: "d".repeat(64),
+      platform: "linux",
+      architecture: "x64",
+      version: "new",
+    },
+  };
+  const clicked = { environmentId: env, stagedHandle: state.stagedHandle!, currentVersion: "old" };
+  const refusal = (
+    next: JonesUpdateState,
+    freshness: JonesUpdateObservation["freshness"] = "fresh",
+  ) => jonesInstallRefusal(clicked, { state: next, freshness });
+  const message = "The downloaded build is already running on this host. Nothing to install.";
+  expect(refusal({ ...state, stagedAlreadyRunning: true })).toBe(message);
+  expect(
+    refusal({ ...state, provenance: { ...state.provenance!, sourceSha: installed.sha } }),
+  ).toBe(message);
+  expect(refusal(state)).toBeUndefined();
+  expect(refusal({ ...state, stagedAlreadyRunning: true, stagedHandle: "changed" })).toContain(
+    "changed while confirmation",
+  );
+  expect(refusal({ ...state, stagedAlreadyRunning: true }, "stale")).toContain(
+    "current update status",
+  );
+  expect(
+    refusal({
+      ...state,
+      installedSource: { ...installed, sha: "abc" },
+      provenance: { ...state.provenance!, sourceSha: "abc" },
+    }),
+  ).toBeUndefined();
+});
 
 it("projects settlement only from reported evidence and preserves old-server status", () => {
   expect(jonesUpdatePresentation(staged)).toMatchObject({
@@ -138,6 +196,8 @@ it.effect(
       } as unknown as EnvironmentRegistry["Service"]);
       const authorizations: Array<string | undefined> = [];
       const authorization = RemoteEnvironmentAuthorization.of({
+        renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
+        rememberCheckedDescriptor: () => Effect.void,
         authorizeBearer: () => Effect.die("Unexpected bearer authorization"),
         authorizeDpop: () => Effect.die("Polling must not replace the socket"),
         authorizeDpopHttp: (input) =>
@@ -385,7 +445,7 @@ it("keeps restart pending until a host outcome arrives and presents rollback rea
     jonesUpdatePresentation({ ...staged, phase: "installing", updateId: "native-id" }),
   ).toMatchObject({
     busy: true,
-    message: "Installing — server restarting. Waiting for the launcher outcome.",
+    message: "Installing. Server restarting. Waiting for the launcher outcome.",
     outcomeMessage: undefined,
   });
   expect(
@@ -481,7 +541,7 @@ it.effect("connection replacement cancels a pending read retry and resets its cu
   }),
 );
 
-it.effect("authorization refusal marks retained data stale without retrying", () =>
+it.effect("authorization refusal marks retained data stale without transient backoff", () =>
   Effect.gen(function* () {
     let reads = 0;
     let delays = 0;
@@ -500,6 +560,87 @@ it.effect("authorization refusal marks retained data stale without retrying", ()
     expect(delays).toBe(0);
   }),
 );
+
+/** Lets forked fibers reach their next TestClock sleep before the clock moves. */
+const letFibersSettle = TestClock.withLive(Effect.sleep("50 millis"));
+
+it.effect("retries a non-retryable read failure after a bounded wait instead of parking", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const observer = yield* observeJonesUpdateSnapshot(
+      Stream.succeed(Option.some("prepared")),
+      () =>
+        ++reads === 1
+          ? Effect.fail({ _tag: "EnvironmentAuthInvalidError" })
+          : Effect.succeed(staged),
+    ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+    yield* letFibersSettle;
+    yield* TestClock.adjust("149 seconds");
+    yield* letFibersSettle;
+    expect(reads).toBe(1);
+    yield* TestClock.adjust("1 second");
+    const results = yield* Fiber.join(observer);
+    expect(results.map((snapshot) => snapshot.freshness)).toEqual(["stale", "fresh"]);
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("stamps heardAt on every successful read, including an unchanged long-poll", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const polling = yield* Deferred.make<void>();
+    const observer = yield* observeJonesUpdateSnapshot(
+      Stream.succeed(Option.some("prepared")),
+      () => {
+        reads++;
+        if (reads === 1) return Effect.succeed(staged);
+        if (reads === 2)
+          return Deferred.succeed(polling, undefined).pipe(
+            Effect.andThen(Effect.sleep("25 seconds")),
+            Effect.as(staged),
+          );
+        return Effect.fail({ _tag: "RemoteEnvironmentAuthTimeoutError" });
+      },
+      () => Effect.never,
+    ).pipe(Stream.take(3), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(polling);
+    yield* TestClock.adjust("25 seconds");
+    const results = yield* Fiber.join(observer);
+    expect(results.map((snapshot) => snapshot.freshness)).toEqual(["fresh", "fresh", "stale"]);
+    const [first, second, failed] = results.map((snapshot) => snapshot.heardAt);
+    expect(second! - first!).toBe(25_000);
+    expect(failed).toBe(second);
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("a kick restarts reads for a non-fresh stream without waiting out its delay", () =>
+  Effect.gen(function* () {
+    const kick = yield* Deferred.make<void>();
+    const waiting = yield* Deferred.make<void>();
+    let reads = 0;
+    const observer = yield* observeJonesUpdateSnapshot(
+      Stream.succeed(Option.some("prepared")),
+      () =>
+        ++reads === 1
+          ? Effect.fail({ _tag: "EnvironmentAuthInvalidError" })
+          : Effect.succeed(staged),
+      () => Effect.never,
+      {
+        kicked: Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Deferred.await(kick))),
+      },
+    ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(waiting);
+    expect(reads).toBe(1);
+    yield* Deferred.succeed(kick, undefined);
+    const results = yield* Fiber.join(observer);
+    expect(results.map((snapshot) => snapshot.freshness)).toEqual(["stale", "fresh"]);
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it("caps the transient read backoff at 150 seconds", () => {
+  expect([1, 2, 3, 8, 9, 20].map(jonesReadRetryDelayMs)).toEqual([
+    1000, 2000, 4000, 128_000, 150_000, 150_000,
+  ]);
+});
 
 it("distinguishes fulfilled remote failures from accepted restart progress", () => {
   expect(
@@ -548,6 +689,108 @@ const offered: JonesUpdateProvenance = {
   architecture: "x64",
   version: "0.0.45-preview.20261011.2.1",
 };
+
+describe("generic alternative selection", () => {
+  const environmentId = EnvironmentId.make("generic-alternative-host");
+  const offer = {
+    provenance: { ...offered, sourceSha: "f".repeat(40), artifactId: 5 },
+    checkedAt: "2026-10-29T00:00:00Z",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  const state: JonesUpdateState = {
+    ...staged,
+    environmentId,
+    currentVersion: "installed",
+    installedSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "c".repeat(40),
+    },
+    provenance: offered,
+    capability: {
+      check: true,
+      download: true,
+      install: true,
+      exactSource: true,
+      replaceStaged: true,
+    },
+    alternativeCandidate: offer,
+    migrationPlan: { pendingUpstream: [42], pendingJones: [7] },
+  };
+  const resolve = (
+    patch: Partial<JonesUpdateState> = {},
+    freshness: JonesUpdateObservation["freshness"] = "fresh",
+  ) =>
+    resolveJonesAlternativeAction({
+      environmentId,
+      observation: { state: { ...state, ...patch }, freshness },
+      canOperate: true,
+      alternative: offer,
+    });
+
+  it("captures the installed binding, retained handle/source and distinct exact target without offering Install", () => {
+    const decision = resolve();
+    expect(decision).toEqual({
+      status: "ready",
+      step: {
+        kind: "replace-exact",
+        targetSource: offer.provenance.sourceSha,
+        replace: {
+          stagedHandle: "fixed-stage",
+          sourceSha: offered.sourceSha,
+          environmentId,
+          currentVersion: "installed",
+          expectedInstalledSource: "a".repeat(40),
+          alternative: offer,
+        },
+      },
+    });
+    expect(jonesAlternativePresentation(state)).toEqual({
+      label: "Alternative",
+      version: offered.version,
+      buildStartedAt: undefined,
+      sourceSha: offer.provenance.sourceSha,
+    });
+    const changed = resolve({ stagedHandle: "competing-client-stage" });
+    expect(
+      decision.status === "ready" &&
+        changed.status === "ready" &&
+        sameJonesReplacementStep(decision.step, changed.step),
+    ).toBe(false);
+  });
+
+  it("refuses stale, absent, changed and expired offers, follower policy and unsupported hosts", () => {
+    for (const patch of [
+      { alternativeCandidate: { ...offer, provenance: { ...offer.provenance, artifactId: 99 } } },
+      { alternativeCandidate: { ...offer, expiresAt: "2000-01-01T00:00:00Z" } },
+      { environmentId: EnvironmentId.make("other") },
+      { policy: { role: "follower", leaderSource: offer.provenance.sourceSha } },
+      { capability: { check: true, download: true, install: true, exactSource: true } },
+      { phase: "preparing" },
+      { phase: "installing" },
+    ] satisfies Array<Partial<JonesUpdateState>>)
+      expect(resolve(patch).status).toBe("unavailable");
+    const { alternativeCandidate: _offer, ...withoutOffer } = state;
+    const { stagedHandle: _handle, ...withoutStage } = state;
+    const { installedSource: _source, ...withoutInstalled } = state;
+    for (const missing of [withoutOffer, withoutStage, withoutInstalled])
+      expect(
+        resolveJonesAlternativeAction({
+          environmentId,
+          observation: { state: missing, freshness: "fresh" },
+          canOperate: true,
+        }).status,
+      ).toBe("unavailable");
+    expect(resolve({}, "stale").status).toBe("unavailable");
+    expect(
+      resolveJonesAlternativeAction({
+        environmentId,
+        observation: { state, freshness: "fresh" },
+        canOperate: false,
+      }).status,
+    ).toBe("unavailable");
+  });
+});
 
 it("presents an offered build's version before download and leaves an older host's absent", () => {
   const { stagedHandle: _handle, ...unstaged } = staged;
@@ -1027,3 +1270,157 @@ it("presents same-minute outcomes with exact-version stamps without changing ide
     }).outcomeMessage,
   ).toBe(`Blocked: ${fromVersion}0 → ${targetVersion}0`);
 });
+
+it.effect(
+  "Stop bypasses a long operation request while later operation reads remain serialized",
+  () =>
+    Effect.gen(function* () {
+      const environmentId = EnvironmentId.make("operation-lanes");
+      const target = new PrimaryConnectionTarget({
+        environmentId,
+        label: "Synthetic primary",
+        httpBaseUrl: "http://updates.example.test",
+        wsBaseUrl: "ws://updates.example.test/ws",
+      });
+      const prepared: PreparedConnection = {
+        environmentId,
+        label: target.label,
+        target,
+        httpBaseUrl: "http://updates.example.test",
+        socketUrl: "ws://updates.example.test/ws",
+        httpAuthorization: null,
+      };
+      const supervisor = EnvironmentSupervisor.of({
+        target,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(Option.none()),
+        prepared: yield* SubscriptionRef.make(Option.some(prepared)),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      });
+      const run: EnvironmentRegistry["Service"]["run"] = (_id, effect) =>
+        Effect.provideService(effect, EnvironmentSupervisor, supervisor);
+      const environmentRegistry = EnvironmentRegistry.of({
+        run,
+      } as unknown as EnvironmentRegistry["Service"]);
+      const entered = yield* Deferred.make<void>();
+      let release = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const calls: string[] = [];
+      const payloads: unknown[] = [];
+      const operationId = "11111111-1111-4111-8111-111111111111";
+      const stopId = "22222222-2222-4222-8222-222222222222";
+      const input = {
+        operationId,
+        environmentId,
+        expectedInstalledSource: "a".repeat(40),
+        action: { kind: "download-exact" as const, targetSource: "b".repeat(40) },
+      };
+      const stopInput = { environmentId, operationId, stopId };
+      const readInput = { environmentId, operationIds: [operationId] };
+      const receipt = {
+        ...input,
+        protocol: 1,
+        phase: "accepted",
+        acceptedAt: "2026-10-27T05:00:00Z",
+        updatedAt: "2026-10-27T05:00:00Z",
+      };
+      const stopReceipt = {
+        ...receipt,
+        phase: "stop-requested",
+        stop: { stopId, requestedAt: receipt.updatedAt },
+      };
+      const fetchFn: typeof fetch = async (request, init) => {
+        const path = new URL(String(request)).pathname;
+        calls.push(path);
+        expect(init?.credentials).toBe("include");
+        if (path.includes("/operations/")) payloads.push(JSON.parse(String(init?.body)));
+        if (path.endsWith("/operations/start")) {
+          Deferred.doneUnsafe(entered, Effect.void);
+          await released;
+          return Response.json(receipt);
+        }
+        if (path.endsWith("/operations/stop")) return Response.json(stopReceipt);
+        if (path.endsWith("/operations/read"))
+          return Response.json({ receipts: [{ operationId, receipt }] });
+        return Response.json(staged);
+      };
+      const runtime = Atom.runtime(
+        Layer.mergeAll(
+          Layer.succeed(EnvironmentRegistry, environmentRegistry),
+          layerRemoteHttpClient(fetchFn),
+        ),
+      );
+      const registry = AtomRegistry.make();
+      const pending: Array<Promise<unknown>> = [];
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          release();
+          try {
+            await Promise.allSettled(pending);
+          } finally {
+            registry.dispose();
+          }
+        }),
+      );
+      const updates = createJonesUpdateAtoms(runtime);
+      const started = updates.operation.run(registry, {
+        environmentId,
+        input: { action: "operationStart", input },
+      });
+      pending.push(started);
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Effect.promise(() => started).pipe(
+          Effect.flatMap((result) =>
+            Effect.die(
+              new Error("operationStart settled before entering the held fetch", { cause: result }),
+            ),
+          ),
+        ),
+      );
+      const read = updates.operation.run(registry, {
+        environmentId,
+        input: { action: "operationRead", input: readInput },
+      });
+      pending.push(read);
+      const stopped = updates.stop.run(registry, {
+        environmentId,
+        input: { action: "operationStop", input: stopInput },
+      });
+      pending.push(stopped);
+      expect(yield* Effect.promise(() => stopped)).toMatchObject({
+        _tag: "Success",
+        value: stopReceipt,
+      });
+      expect(calls).toEqual([
+        "/api/jones-updates/operations/start",
+        "/api/jones-updates/operations/stop",
+      ]);
+      const checked = updates.action.run(registry, { environmentId, input: { action: "check" } });
+      pending.push(checked);
+      expect(yield* Effect.promise(() => checked)).toMatchObject({
+        _tag: "Success",
+        value: staged,
+      });
+      release();
+      expect(yield* Effect.promise(() => started)).toMatchObject({
+        _tag: "Success",
+        value: receipt,
+      });
+      expect(yield* Effect.promise(() => read)).toMatchObject({
+        _tag: "Success",
+        value: { receipts: [{ operationId, receipt }] },
+      });
+      expect(calls).toEqual([
+        "/api/jones-updates/operations/start",
+        "/api/jones-updates/operations/stop",
+        "/api/jones-updates/check",
+        "/api/jones-updates/operations/read",
+      ]);
+      expect(payloads).toEqual([input, stopInput, readInput]);
+    }).pipe(Effect.scoped),
+);

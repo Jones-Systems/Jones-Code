@@ -1,25 +1,48 @@
+import { useEffect } from "react";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/thread-requests";
 import { useAtomValue } from "@effect/atom-react";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
-import { arrayElementsEqual } from "@t3tools/client-runtime/state/entities";
+import {
+  arrayElementsEqual,
+  parseThreadKey,
+  threadKey,
+} from "@t3tools/client-runtime/state/entities";
 import {
   createEnvironmentThreadDetailAtoms,
   createEnvironmentThreadShellAtoms,
   createEnvironmentThreadStateAtoms,
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadState,
+  createOlderSettledThreadAtoms,
   createThreadEnvironmentAtoms,
+  createThreadFamilyAtoms,
 } from "@t3tools/client-runtime/state/threads";
-import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationV2ThreadShell,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
-import { environmentSnapshotAtom } from "./shell";
+import { serverEnvironment } from "./server";
+import { environmentShell, environmentSnapshotAtom } from "./shell";
 
+export const threadFamilies = createThreadFamilyAtoms(
+  connectionAtomRuntime,
+  environmentShell.stateAtom,
+);
+export const olderSettledThreads = createOlderSettledThreadAtoms(
+  connectionAtomRuntime,
+  environmentShell.stateAtom,
+);
 export const threadEnvironment = createThreadEnvironmentAtoms(
   connectionAtomRuntime,
-  environmentSnapshotAtom,
+  threadFamilies.snapshotAtom,
 );
 const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime);
 export const environmentThreadDetails = createEnvironmentThreadDetailAtoms(
@@ -28,6 +51,11 @@ export const environmentThreadDetails = createEnvironmentThreadDetailAtoms(
 export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   snapshotAtom: threadEnvironment.snapshotAtom,
+  hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
+});
+export const childThreadApprovalsAtom = createChildThreadApprovalsAtom({
+  childThreadInputsAtom: environmentThreadShells.childThreadInputsAtom,
+  pendingRequestsAtom: environmentThreadDetails.pendingRequestsAtom,
 });
 
 const EMPTY_THREAD_STATE_ATOM = Atom.make(AsyncResult.success(EMPTY_ENVIRONMENT_THREAD_STATE)).pipe(
@@ -43,11 +71,46 @@ export function useEnvironmentThread(
       ? environmentThreads.stateAtom(environmentId, threadId)
       : EMPTY_THREAD_STATE_ATOM,
   );
-  const state = Option.getOrElse(
-    AsyncResult.value(result),
-    () => EMPTY_ENVIRONMENT_THREAD_STATE,
-  ) as EnvironmentThreadState;
+  const state = AsyncResult.getOrElse(result, () => EMPTY_ENVIRONMENT_THREAD_STATE);
   return state;
+}
+
+const EMPTY_BACKGROUND_WORK_FRESHNESS = {
+  detailAppliedSequence: null as number | null,
+  shellSnapshotSequence: null as number | null,
+  shell: null as OrchestrationV2ThreadShell | null,
+};
+const EMPTY_BACKGROUND_WORK_FRESHNESS_ATOM = Atom.make(EMPTY_BACKGROUND_WORK_FRESHNESS);
+const backgroundWorkFreshnessAtom = Atom.family((key: string) =>
+  Atom.make((get) => {
+    const ref = parseThreadKey(key);
+    const state = Option.getOrNull(
+      AsyncResult.value(get(environmentThreads.stateAtom(ref.environmentId, ref.threadId))),
+    );
+    const snapshot = get(environmentSnapshotAtom(ref.environmentId));
+    return {
+      detailAppliedSequence: state?.appliedSequence ?? null,
+      shellSnapshotSequence: snapshot?.snapshotSequence ?? null,
+      shell: snapshot?.threads.find((thread) => thread.id === ref.threadId) ?? null,
+    };
+  }),
+);
+
+export function useThreadBackgroundWorkFreshness(
+  ref: ScopedThreadRef | null,
+  shell: OrchestrationV2ThreadShell | null,
+) {
+  const freshness = useAtomValue(
+    ref === null
+      ? EMPTY_BACKGROUND_WORK_FRESHNESS_ATOM
+      : backgroundWorkFreshnessAtom(threadKey(ref)),
+  );
+  return {
+    detailAppliedSequence: freshness.detailAppliedSequence,
+    // Family/search rows have separate watermarks; the enclosing live shell cannot date them.
+    shellSnapshotSequence:
+      shell !== null && freshness.shell === shell ? freshness.shellSnapshotSequence : null,
+  };
 }
 
 const isRunning = (status: string) =>
@@ -65,11 +128,7 @@ function isDetailDone<E>(result: AsyncResult.AsyncResult<EnvironmentThreadState,
   );
 }
 
-/**
- * The shell and detail streams are independent, so the shell can report a stop
- * before the detail loads or catches up. A stopped thread stays mounted until
- * its own detail is live and shows the stop too.
- */
+/** Keeps stopped threads mounted until their independent detail stream is live and also reports stopped. */
 export function createRunningThreadKeepAliveAtom<E>(input: {
   readonly environmentIdsAtom: Atom.Atom<ReadonlyArray<EnvironmentId>>;
   readonly threadsAtom: (
@@ -100,8 +159,7 @@ export function createRunningThreadKeepAliveAtom<E>(input: {
       for (const threadId of previous?.get(environmentId) ?? []) {
         if (threadIds.has(threadId)) continue;
         const stateAtom = input.stateAtom(environmentId, threadId);
-        // `once`, not `get`: a dependency on a stopped thread would hold its
-        // stream open until some other change rebuilds this atom.
+        // A get dependency would hold stopped streams open until another change rebuilds this atom.
         if (isDetailDone(get.once(stateAtom))) continue;
         threadIds.add(threadId);
         get.subscribe(stateAtom, (state) => {
@@ -122,3 +180,15 @@ export const runningThreadKeepAliveAtom = createRunningThreadKeepAliveAtom({
   threadsAtom: environmentThreadShells.environmentThreadsAtom,
   stateAtom: environmentThreads.stateAtom,
 });
+
+/** Retains omitted shell relatives while the current thread view is mounted. */
+export function useThreadFamily(
+  environmentId: EnvironmentId | null,
+  rootThreadId: ThreadId | null,
+): void {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the family subscription for this mounted thread view
+  useEffect(() => {
+    if (environmentId !== null && rootThreadId !== null)
+      return threadFamilies.mount(appAtomRegistry, environmentId, rootThreadId);
+  }, [environmentId, rootThreadId]);
+}

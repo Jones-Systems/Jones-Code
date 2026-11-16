@@ -81,7 +81,7 @@ export function buildDesignRequestMessage(
 ): string | null {
   const { request, collection } = packet;
   const lines = [
-    `# Design request — ${oneLine(collection.title, 300)}`,
+    `# Design request. ${oneLine(collection.title, 300)}`,
     "",
     ...packet.notices.map((notice) => `> ${notice}`),
     "",

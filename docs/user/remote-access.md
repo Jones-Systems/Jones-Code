@@ -111,7 +111,8 @@ machine's current LAN and Tailscale addresses and adds them as routes, so
 pairing once through T3 Connect is enough to use the LAN at home. When the
 machine's LAN address changes, for example after it joins another Wi-Fi network,
 the learned route follows it. The machine must allow network access for its LAN
-address to be learned. You can reorder a learned route, but not remove it; it
+address to be learned. The [background service](./background-service.md#local-network-access)
+allows it on private networks by default. You can reorder a learned route, but not remove it; it
 goes away with the route it was learned through, or when the machine stops
 reporting that address.
 
@@ -266,9 +267,8 @@ command to run on the host:
 sudo t3 browser setup
 ```
 
-The server shows the exact line for how you started it, such as
-`sudo npx t3 browser setup`, and keeps your `PATH` when Node is installed only
-for your user. Where `t3` is not on your `PATH`, such as with only the
+The server shows the exact line for how you started it, and keeps your `PATH`
+when you started it with `npx` and Node is installed only for your user. Where `t3` is not on your `PATH`, such as with only the
 desktop app installed, it names the full path of the app's own `t3` instead. It allows Chrome's sandbox with an AppArmor profile and installs
 any missing libraries and system fonts with apt; pages that load without text
 can mean the host has no fonts. It is safe to run again. Without `sudo`, it only
@@ -331,6 +331,7 @@ The evaluator runs without task tools. Qualified Claude instances and managed
 Codex instances with ChatGPT authorization support evaluation. CLI-backed Codex
 instances are excluded because their public integration cannot disable all task
 tools. An existing CLI login does not automatically authorize managed Codex.
+Settings lists configured instances that cannot be selected, with the reason each one reports.
 
 If evaluation fails or is interrupted, the request remains held as an evaluator
 service failure. New failures include a reason such as a timeout, account-access
@@ -353,17 +354,21 @@ pairing links and revoke client sessions. Revoking an unused link prevents new
 pairings; revoke a device's session to remove its existing access. Command-line
 management is available through `t3 auth --help`.
 
+When the app connects to more than one environment, choose one at the top of the
+page. A desktop app with **Local environment** off can manage a background
+service on the same machine this way, including its T3 Connect link.
+
 A session with an open connection stays listed after its access credential
 expires.
 
 To choose a token's permissions, pass `--scope` once for each scope you want:
 
 ```sh
-npx t3 pair --scope orchestration:read --scope relay:read
+t3 pair --scope orchestration:read --scope relay:read
 ```
 
 The selected scopes replace the default permissions. The same option works with
-`npx t3 auth pairing create` and `npx t3 auth session issue`; each command's
+`t3 auth pairing create` and `t3 auth session issue`; each command's
 `--help` lists the available scopes. Without `--scope`, pairing tokens and issued
 bearer sessions get every permission, including managing access and T3 Connect.
 A terminal or a full-access agent on the host can reach those as well, so a

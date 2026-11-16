@@ -106,7 +106,7 @@ const boundarySteerFixture = Effect.fnUntraced(function* (prefix: string) {
     }),
   );
   const workerId = `worker:${prefix}`;
-  const claim = outbox.claimNext({ workerId, leaseDurationMs: 30_000 });
+  const claim = outbox.claimNext({ workerId });
   const succeed = (effectId: string) => outbox.succeed({ effectId, workerId });
   return { outbox, receipts, sql, now, threadId, first, second, workerId, claim, succeed };
 });

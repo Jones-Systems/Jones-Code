@@ -65,6 +65,13 @@ export function buildUserInputRequestRecord(input: {
     projection.turnItems.some((item) => item.id === command.turnItemId)
   )
     return { error: "The response request identifiers are already in use." };
+  const questions = command.questions ?? [command.question];
+  if (
+    questions.length === 0 ||
+    questions.some((question) => question.id.trim().length === 0) ||
+    new Set(questions.map((question) => question.id)).size !== questions.length
+  )
+    return { error: "Response questions must have unique nonempty identifiers." };
   return {
     node: {
       id: command.requestNodeId,
@@ -100,7 +107,7 @@ export function buildUserInputRequestRecord(input: {
       updatedAt: now,
       type: "user_input_request",
       requestId: command.requestId,
-      questions: [command.question],
+      questions,
       responseMode: "message",
     },
     request: {

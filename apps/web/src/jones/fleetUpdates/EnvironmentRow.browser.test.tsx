@@ -9,6 +9,11 @@ import "../../index.css";
 const { execute } = vi.hoisted(() => ({ execute: vi.fn() }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => execute }));
 vi.mock("../../connection/runtime", () => ({ connectionAtomRuntime: {} }));
+vi.mock("../../state/session", () => ({
+  usePreparedConnection: () => {
+    throw new Error("Layout fixture must not access a prepared connection");
+  },
+}));
 vi.mock("@t3tools/client-runtime/state/runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@t3tools/client-runtime/state/runtime")>()),
   createRuntimeCommand: () => ({}),

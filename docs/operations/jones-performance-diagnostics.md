@@ -6,7 +6,9 @@ capacity, or supply a route to discover or copy private databases. Follow
 [development test-data guidance](./development.md#test-data) for the source,
 destination and lifetime of any separately authorized real-data snapshot.
 
-Use the repository's supported Node runtime (`^24.13.1`) and prepared dependencies.
+Use the receiving checkout's supported Node runtime (`26.12.1`) and prepared dependencies.
+Historical dependency installation has its own Node `^24.13.1` / pnpm `11.10.0`
+binding; it does not select the receiving execution runtime.
 Keep request files, runtime bindings and retained reports in task-owned storage
 outside the checkout. Source binding requires a clean checkout, so writing an
 untracked request into it makes the candidate invalid. Choose disk-backed scratch
@@ -64,6 +66,68 @@ Historical checkout preparation is opt-in through
 Its clone operation does not prepare dependencies or prove import compatibility.
 Default checks do not clone historical sources. Installing a dependency alone
 does not qualify the producer or its database.
+
+For the two issue #387 cases, use the separate
+[historical preparation owner](../../scripts/jones/performance/historical-preparation.mjs)
+and its [request types](../../scripts/jones/performance/historical-preparation.d.mts).
+It prepares only `history`, `lease-current` and `lease`; the seven-source opt-in
+check remains separate. Each invocation owns an absent private disk root outside
+the checkout, including its checkouts, store, home, configuration, cache and tmp.
+Evidence belongs to a separate private directory. Supply finite byte, entry,
+file, cache, combined output, process and invocation deadline bounds, an aggregate
+additional-peak estimate, and retention disposition. Every serial producer
+rechecks the actual output filesystems for the 30 GiB reserve plus at least
+10 GiB additional peak. Monitoring is not a filesystem quota or reservation.
+
+Real historical preparation requires a separately assigned frozen execution run.
+Bind canonical historical Node/pnpm paths and digests, and retain individual
+configuration-control inspection evidence in the declared evidence custody.
+The owner verifies versions and the exact pnpm install help before using its
+arguments; missing controls or artifacts fail instead of selecting another tool,
+downloading a toolchain or running a blanket rebuild. The frozen install disables
+scripts. Historical `prepare` stays unexecuted for this source-import route.
+Observed imports must establish that disposition; they are not packaged-build
+attestation.
+
+Within `withHistoricalPreparation`'s callback, pass its receipt path and trusted
+SHA-256 to
+[qualifyHistorical](../../scripts/jones/performance/qualify-historical.mjs).
+Keep the original owner alive until the callback returns explicit consumer
+closure. The strict entrypoint uses the unchanged source-parent interface,
+checks ESM and `createRequire` ownership before allocating databases, then runs
+both original cases serially and preserves their full results. Both must return
+exactly `status: complete` with every original phase and oracle. Skipped,
+unavailable, partial and loader-only results fail acceptance. Metadata is safe
+to inspect without executing either case:
+
+```sh
+node scripts/jones/performance/qualify-historical.mjs --help
+```
+
+The CLI's `--request <JSON-file>` consumes the same preparation receipt and
+requires explicit synthetic opt-in, the receiving runtime binding, case options,
+the declared evidence directory and a finite evidence-byte bound. A serialized
+receipt grants no cleanup capability. Only the original in-memory owner releases
+its root, after all producers and consumers close and evidence is durable.
+Subreaping handles adopted installer descendants without host-wide process
+selection; it is not containment. Unknown family closure, inspection overflow,
+replaced paths and external hardlinks retain the exact root. Preserve the
+original operation failure and cleanup result separately, and reconcile retained
+custody before retrying.
+
+Focused source-only control tests use synthetic processes and files, without
+historical fetches, installs or databases:
+
+```sh
+node --test --test-concurrency=1 \
+  scripts/jones/performance/historical-preparation.node-test.mjs \
+  scripts/jones/performance/historical-resolution.node-test.mjs \
+  scripts/jones/performance/qualify-historical.node-test.mjs
+```
+
+Set `TMPDIR` to short task-owned disk storage before testing. A supervisor-loss
+test intentionally retains its exact small root and durable failure evidence;
+its diagnostic identifies the retained custody for reconciliation.
 
 Heavy qualification and benchmark runs additionally require
 `JONES_RUNTIME_BINDING` to name a canonical JSON file using

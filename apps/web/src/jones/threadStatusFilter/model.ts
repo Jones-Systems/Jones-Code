@@ -75,9 +75,10 @@ export function classifyThreadStatus(
   if (activityWindow?.threadActivityWindowEnabled) {
     if (!threadIsInActivityWindow(thread, activityWindow, now)) return null;
     const status = resolveSidebarThreadStatus(thread);
-    if (status === "approval" || status === "input") return "input";
+    if (status === "approval" || status === "input" || status === "request") return "input";
     if (status === "failed" || status === "limited") return null;
     if (
+      status === "preparing" ||
       status === "working" ||
       status === "waiting" ||
       (thread.pendingBackgroundTasks?.length ?? 0) > 0
@@ -98,6 +99,7 @@ export function classifyThreadStatus(
         return "working";
       case "Pending Approval":
       case "Awaiting Input":
+      case "Guest Request":
         return "input";
       case "Completed":
         return "done";
@@ -106,13 +108,15 @@ export function classifyThreadStatus(
     }
   }
   const status = resolveSidebarThreadStatus(thread);
+  // Worktree setup is its own sidebar status; like the row and folder dot, it is still work.
+  if (status === "preparing") return "working";
   const topStatus = resolveSidebarV2TopStatus({
     status,
     isUnread: hasUnseenCompletion(thread),
     isWoke,
   });
   if (topStatus === "working" || topStatus === "waiting") return "working";
-  if (topStatus === "approval" || topStatus === "input") return "input";
+  if (topStatus === "approval" || topStatus === "input" || topStatus === "request") return "input";
   return topStatus === "done" ? "done" : null;
 }
 

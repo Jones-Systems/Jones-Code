@@ -1,3 +1,4 @@
+import { SidebarThreadUndoNotice } from "../../components/sidebar/SidebarThreadUndoNotice";
 import {
   ArrowLeftIcon,
   BookOpenIcon,
@@ -112,6 +113,7 @@ export const JonesSidebarUtilityMenu = memo(function JonesSidebarUtilityMenu() {
           </SidebarMenuItem>
         );
       })}
+      <SidebarThreadUndoNotice />
       <SidebarUpdatePill />
     </SidebarMenu>
   );

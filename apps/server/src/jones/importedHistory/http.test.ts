@@ -75,12 +75,14 @@ const fixture = (scopes: ReadonlyArray<AuthEnvironmentScope>, calls: unknown[]) 
   );
   return HttpRouter.toWebHandler(routes, { disableLogger: true });
 };
+const compiledEncodeEffect1 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
 it.effect(
   "assembled HTTP route forwards exact choice with verified principal and typed outcome",
   () =>
     Effect.gen(function* () {
       const calls: unknown[] = [];
-      const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(payload);
+      const encoded = yield* compiledEncodeEffect1(payload);
       yield* Effect.acquireUseRelease(
         Effect.sync(() => fixture([AuthOrchestrationOperateScope], calls)),
         (app) =>
@@ -115,7 +117,7 @@ it.effect(
 it.effect("read-only caller cannot invoke imported admission through assembled HTTP routing", () =>
   Effect.gen(function* () {
     const calls: unknown[] = [];
-    const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(payload);
+    const encoded = yield* compiledEncodeEffect1(payload);
     yield* Effect.acquireUseRelease(
       Effect.sync(() => fixture([AuthOrchestrationReadScope], calls)),
       (app) =>

@@ -21,6 +21,8 @@ import {
   systemUnitRecord,
 } from "./systemServiceControl.ts";
 
+import { bootstrapLauncherPointer } from "../cloud/launcherPointer.ts";
+
 const worker = NodePath.join(import.meta.dirname, "systemServiceControl.pl");
 const header = "jones-system-service-control 1";
 const unit = "host-tooling-t3.service";
@@ -1320,3 +1322,43 @@ it("accepts the exact observed historical start command only at its WorkingDirec
 it("keeps the installed worker bytes bound to this source", async () => {
   expect(sha256(await NodeFSP.readFile(worker))).toBe(SYSTEM_SERVICE_CONTROL_SHA256);
 });
+
+it.skipIf(!runnable)("binds the closed pointer request to the shim hash and stopped unit", () =>
+  fixture(async (f) => {
+    await NodeFSP.chmod(f.launcherEntry, 0o700);
+    const pointer = await bootstrapLauncherPointer(
+      f.base,
+      launcherVersion,
+      "retained unit preimage",
+    );
+    const digest = await f.digest();
+    const request = {
+      operation: "install-launcher-pointer" as const,
+      unitDigest: digest,
+      owned: "absent",
+      launcherVersion,
+      shimSha256: pointer.shimSha256,
+    };
+    await f.setShow({ active: false });
+    const bad = await f.run(systemControlArguments({ ...request, shimSha256: "0".repeat(64) }));
+    expect(bad.stdout).toBe(`${header}\nrejected pointer-shim\n`);
+    expect(bad.calls.some((call) => call === "daemon-reload")).toBe(false);
+    await f.setShow(
+      {
+        active: false,
+        dropins: ["jones-code.conf", OWNED_SYSTEM_DROPIN],
+        exec: `${pointer.program} __service-launcher`,
+      },
+      "daemon-reload",
+    );
+    const result = await f.run(systemControlArguments(request));
+    expect(result.code).toBe(0);
+    expect(parseSystemControlResult({ outcome: "exited", signal: null, ...result })).toMatchObject({
+      status: "complete",
+      inspection: { exec: `pointer ${launcherVersion}` },
+    });
+    expect(await NodeFSP.readFile(NodePath.join(f.dropins, OWNED_SYSTEM_DROPIN), "utf8")).toContain(
+      `ExecStart=${pointer.program} __service-launcher`,
+    );
+  }),
+);

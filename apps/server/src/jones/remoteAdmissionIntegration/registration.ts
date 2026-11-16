@@ -21,12 +21,21 @@ const admissionLayer = Layer.unwrap(
               detail: "Choose an evaluator model.",
             }),
           );
+        const payload = envelope.payload;
+        // Keep legacy evaluator bytes intact and omit only the new advisory.
+        const evaluatorPayload =
+          payload !== null &&
+          typeof payload === "object" &&
+          !Array.isArray(payload) &&
+          Object.hasOwn(payload, "advisory")
+            ? Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "advisory"))
+            : payload;
         return generation.evaluateRemoteRequest({
           cwd: config.cwd,
           modelSelection: envelope.receiverPolicy.modelSelection,
           message: encodeJson({
             operation: envelope.operation,
-            payload: envelope.payload,
+            payload: evaluatorPayload,
             target: envelope.target,
           }),
         });

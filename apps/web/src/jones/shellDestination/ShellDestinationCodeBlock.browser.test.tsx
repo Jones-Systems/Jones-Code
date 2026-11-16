@@ -100,24 +100,34 @@ vi.mock(import("../../remoteOpen"), async (original) => ({
   ...(await original()),
   useRemoteOpenResolution: () => ({ state: { mode: "local-exec" }, isResolved: true }) as never,
 }));
-vi.mock(
-  import("../../components/ThreadTerminalDrawer"),
-  () =>
-    ({
-      TerminalViewport: (props: {
-        cwd: string;
-        focusRequestId: number;
-        attachExistingOnly?: boolean;
-      }) => (
-        <textarea
-          aria-label="Native terminal test surface"
-          data-cwd={props.cwd}
-          data-focus-request={props.focusRequestId}
-          data-attach-existing={String(props.attachExistingOnly)}
-        />
-      ),
-    }) as never,
-);
+vi.mock(import("../../components/ThreadTerminalDrawer"), async () => {
+  const { registerTerminalFocusTarget } = await import("../../lib/terminalFocus");
+  return {
+    TerminalViewport: (props: {
+      cwd: string;
+      threadRef: Parameters<typeof registerTerminalFocusTarget>[0]["threadRef"];
+      terminalId: string;
+      attachExistingOnly?: boolean;
+    }) => (
+      <textarea
+        ref={(element) => {
+          if (!element) return;
+          return registerTerminalFocusTarget({
+            threadRef: props.threadRef,
+            terminalId: props.terminalId,
+            focus: () => {
+              element.focus();
+              return document.activeElement === element;
+            },
+          });
+        }}
+        aria-label="Native terminal test surface"
+        data-cwd={props.cwd}
+        data-attach-existing={String(props.attachExistingOnly)}
+      />
+    ),
+  } as never;
+});
 
 import ChatMarkdown from "../../components/ChatMarkdown";
 import { MessagesTimeline } from "../../components/chat/MessagesTimeline";
@@ -257,7 +267,6 @@ function timeline(threadId: string) {
   const environmentId = EnvironmentId.make("source");
   const props: ComponentProps<typeof MessagesTimeline> = {
     isWorking: false,
-    activeTurnInProgress: false,
     listRef: createRef(),
     latestRun: null,
     turnDiffSummaries: [],
@@ -266,7 +275,6 @@ function timeline(threadId: string) {
     onOpenTurnDiff: () => {},
     onOpenThread: () => {},
     onForkFromRun: async () => {},
-    onRollbackCheckpoint: () => {},
     supportsConversationRollback: false,
     onRevertToTurnCount: () => {},
     isRevertingCheckpoint: false,
@@ -283,7 +291,6 @@ function timeline(threadId: string) {
     emptyPlaceholderInset: 0,
     liveFollowEnabled: true,
     onIsAtEndChange: () => {},
-    onManualNavigation: () => {},
     onRunShellCommand: vi.fn(),
     timelineEntries: ["native-a", "native-b"].map((id) => ({
       id: `entry-${id}`,
@@ -449,13 +456,14 @@ describe("destination shell Markdown UI", () => {
     });
     const terminal = view.container.querySelector("textarea")!;
     expect(terminal.getAttribute("data-attach-existing")).toBe("true");
-    const focus = terminal.getAttribute("data-focus-request");
+    terminal.blur();
+    expect(document.activeElement).not.toBe(terminal);
     await act(async () =>
       view.container
         .querySelector<HTMLButtonElement>('button[aria-label="Focus terminal on Mini"]')!
         .click(),
     );
-    expect(terminal.getAttribute("data-focus-request")).not.toBe(focus);
+    expect(document.activeElement).toBe(terminal);
     expect(state.write).toHaveBeenCalledTimes(1);
     await view.unmount();
     expect(state.close).not.toHaveBeenCalled();

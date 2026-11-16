@@ -107,6 +107,7 @@ export const revalidateProviderEventOrigin = Effect.fn(
         (producer.runtimeGeneration !== undefined &&
           event.binding.runtimeGeneration !== producer.runtimeGeneration))) ||
     (event.type !== "runtime_identity.observed" &&
+      "runtimeEvidence" in event &&
       event.runtimeEvidence !== undefined &&
       (event.runtimeEvidence.driver !== producer.driver ||
         event.runtimeEvidence.providerInstanceId !== producer.instanceId ||

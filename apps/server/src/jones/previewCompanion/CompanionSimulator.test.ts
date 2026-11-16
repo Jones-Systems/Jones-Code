@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off -- The opt-in simulator owns and cleans its Chromium profile.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -43,6 +44,7 @@ import * as DesktopChannel from "../../preview/DesktopBrowserChannel.ts";
 import * as Manager from "../../preview/Manager.ts";
 import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
 import * as ServerBrowser from "../../preview/ServerBrowser.ts";
+import * as PreviewAgentActivity from "../../preview/PreviewAgentActivity.ts";
 import { ServerBrowserContexts } from "../../preview/ServerBrowserContexts.ts";
 import * as PageOperations from "../../preview/ServerBrowserPage.ts";
 import * as CompanionRegistration from "./registration.ts";
@@ -178,12 +180,13 @@ it.live.skipIf(!executable || !scratch)(
         }),
       ).pipe(
         Layer.provideMerge(ServerConfig.layerTest(process.cwd(), directory)),
-        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       );
       const services = yield* Layer.build(
         ServerBrowser.layer.pipe(
           Layer.provideMerge(CompanionRegistration.servicesLayer),
           Layer.provideMerge(DesktopChannel.layer),
+          Layer.provide(PreviewAgentActivity.layer),
           Layer.provideMerge(common),
         ),
       );
@@ -203,7 +206,11 @@ it.live.skipIf(!executable || !scratch)(
             ),
           ).pipe(
             Layer.provide(Layer.succeedContext(services)),
-            Layer.provide(NodeHttpPlatform.layer.pipe(Layer.provide(NodeServices.layer))),
+            Layer.provide(
+              NodeHttpPlatform.layer.pipe(
+                Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+              ),
+            ),
           ),
           { disableListenLog: true },
         ).pipe(Layer.provideMerge(NodeHttpServer.layerTest)),
@@ -260,6 +267,9 @@ it.live.skipIf(!executable || !scratch)(
               setDownloadDirectory: () => {},
             },
             (message) => send({ type: "browser", event: { type: "cdp", ...key, message } }),
+            () => {
+              socket.close();
+            },
           );
           for (const name of cdpEvents)
             cdp.on(name, (params) => relay.event(name, params, undefined));

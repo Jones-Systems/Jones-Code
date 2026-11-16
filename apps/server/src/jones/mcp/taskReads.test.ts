@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -37,6 +38,7 @@ import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
+import { fixture as continuationFixture } from "../taskContinuation/testkit.ts";
 
 const parentId = ThreadId.make("thread:task-reads-parent");
 const taskId = NodeId.make("opaque-selected-task");
@@ -96,9 +98,9 @@ const serviceLayer = (
   OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          readRemoteTaskObservation: () => Effect.succeed(undefined),
+          readRemoteTaskObservation: () => Effect.sync(() => undefined),
           ...management,
         }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
@@ -136,17 +138,68 @@ const serviceLayer = (
 
 const parent = idleThreadProjection(liveThreadShell(parentId));
 
+const isOrchestrationV2DomainEvent = Schema.is(OrchestrationV2DomainEvent);
+
+type ReadCall = {
+  readonly threadId: ThreadId;
+  readonly fields: ReadonlyArray<ProjectionRecordField>;
+  readonly options: Parameters<
+    ThreadManagementService.ThreadManagementService["Service"]["getThreadRecords"]
+  >[2];
+};
+const expectedTaskRead: ReadCall = {
+  threadId: parentId,
+  fields: ["subagents"],
+  options: { subagentIds: [taskId] },
+};
+const expectedParentRead: ReadCall = {
+  threadId: parentId,
+  fields: ["runs", "contextTransfers"],
+  options: undefined,
+};
+const expectedAckRead: ReadCall = { threadId: parentId, fields: ["runs"], options: undefined };
+
 describe("MCP task read selection", () => {
+  it.effect("exposes a completed Claude task's captured native ID without manual notes", () =>
+    Effect.gen(function* () {
+      const f = continuationFixture();
+      const reads: Array<ReadonlyArray<string>> = [];
+      const task = {
+        ...f.task,
+        completionDelivery: { state: "acknowledged" as const, observedByRunId: null },
+      };
+      const layer = serviceLayer({
+        getThreadRecords: (threadId, fields) =>
+          Effect.sync(() => {
+            if (threadId === f.parent.thread.id) return { ...f.parent, subagents: [task] };
+            assert.equal(threadId, f.child.thread.id);
+            reads.push(fields);
+            return f.child;
+          }),
+      });
+      const result = yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.taskStatus(f.scope, f.task.id);
+      }).pipe(Effect.provide(layer));
+      assert.deepEqual(result.nativeSession, {
+        nativeSessionId: "original-native",
+        sourceRunId: f.run.id,
+        sourceAttemptId: f.attempt.id,
+        evidence: "attempt",
+      });
+      assert.deepEqual(reads.at(-1), ["attempts", "providerTurns"]);
+    }),
+  );
   it.effect.each(["siblings", "completion", "question", "undecodable"] as const)(
     "filters parent wake events: %s",
     (scenario) =>
       Effect.gen(function* () {
         let reads = 0;
-        const parentFields: Array<ReadonlyArray<string>> = [];
+        const parentCalls: ReadCall[] = [];
         let cursorCaptured = false;
         let streamClosed = false;
         const sibling = storedUpdate(NodeId.make("unrelated-task"));
-        assert.isTrue(Schema.is(OrchestrationV2DomainEvent)(sibling.event));
+        assert.isTrue(isOrchestrationV2DomainEvent(sibling.event));
         const events =
           scenario === "siblings"
             ? Array.from({ length: 128 }, (_, index) => ({ ...sibling, sequence: 42 + index }))
@@ -165,11 +218,11 @@ describe("MCP task read selection", () => {
               cursorCaptured = true;
               return 41;
             }),
-          getThreadRecords: (threadId, fields) =>
+          getThreadRecords: (threadId, fields, options) =>
             Effect.sync(() => {
               assert.equal(threadId, parentId);
               assert.isTrue(cursorCaptured);
-              parentFields.push(fields);
+              parentCalls.push({ threadId, fields, options });
               reads += 1;
               const selected: OrchestrationV2Subagent =
                 reads === 1 || scenario === "siblings"
@@ -219,9 +272,7 @@ describe("MCP task read selection", () => {
           });
         }).pipe(Effect.provide(layer));
         assert.equal(reads, 2);
-        for (const fields of parentFields) {
-          assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
-        }
+        assert.deepEqual(parentCalls, [expectedTaskRead, expectedTaskRead]);
         assert.isTrue(streamClosed);
         assert.equal(result.waitTimedOut, scenario === "siblings");
         assert.equal(result.hasPendingQuestion, scenario === "question");
@@ -249,19 +300,16 @@ describe("MCP task read selection", () => {
       const approvalRequestId = RuntimeRequestId.make("request:task-reads-approval");
       const child = idleThreadProjection(liveThreadShell(childId));
       let parentReads = 0;
+      const calls: ReadCall[] = [];
       let controlReads = 0;
       let resultReads = 0;
       const layer = serviceLayer({
         getThreadEventSequence: () => Effect.succeed(41),
         getThreadRecords: (threadId, fields, options) =>
           Effect.sync(() => {
+            calls.push({ threadId, fields, options });
             if (threadId === parentId) {
               parentReads += 1;
-              assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
-                "runs",
-                "subagents",
-                "contextTransfers",
-              ]);
               return {
                 ...parent,
                 subagents: [
@@ -284,10 +332,15 @@ describe("MCP task read selection", () => {
                 "contextTransfers",
                 "subagents",
                 "providerThreads",
+                "providerTurns",
                 "runtimeRequests",
                 "nodes",
               ]);
-              assert.deepEqual(options, { messageRoles: ["user"], omitSettledLeafNodes: true });
+              assert.deepEqual(options, {
+                messageRoles: ["user"],
+                omitSettledLeafNodes: true,
+                omitSettledSubagents: true,
+              });
               controlReads += 1;
             } else {
               assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
@@ -366,7 +419,41 @@ describe("MCP task read selection", () => {
           : null,
       );
       assert.isFalse(result.waitTimedOut);
-      assert.equal(parentReads, 2);
+      assert.equal(parentReads, 4);
+      const control: ReadCall = {
+        threadId: childId,
+        fields: [
+          "runs",
+          "messages",
+          "contextTransfers",
+          "subagents",
+          "providerThreads",
+          "providerTurns",
+          "runtimeRequests",
+          "nodes",
+        ],
+        options: { messageRoles: ["user"], omitSettledLeafNodes: true, omitSettledSubagents: true },
+      };
+      const resultRead: ReadCall = {
+        threadId: childId,
+        fields: ["messages", "turnItems"],
+        options: {
+          messageRoles: ["assistant"],
+          messageRunIds: [childRunId],
+          turnItemRunIds: [childRunId],
+          turnItemTypes: ["assistant_message", "error"],
+        },
+      };
+      assert.deepEqual(calls, [
+        expectedTaskRead,
+        expectedParentRead,
+        control,
+        resultRead,
+        expectedTaskRead,
+        expectedParentRead,
+        control,
+        resultRead,
+      ]);
       assert.equal(controlReads, 2);
       assert.equal(resultReads, 2);
     }),
@@ -380,12 +467,13 @@ describe("MCP task read selection", () => {
         const originalId = RunId.make("run:task-reads-original");
         const followupId = RunId.make("run:task-reads-followup");
         const child = idleThreadProjection(liveThreadShell(childId));
-        const calls: Array<ReadonlyArray<string>> = [];
+        const calls: ReadCall[] = [];
+        const childCalls: ReadCall[] = [];
         const layer = serviceLayer({
-          getThreadRecords: (threadId, fields) =>
+          getThreadRecords: (threadId, fields, options) =>
             Effect.sync(() => {
               if (threadId === parentId) {
-                calls.push(fields);
+                calls.push({ threadId, fields, options });
                 return {
                   ...parent,
                   subagents: [
@@ -398,6 +486,7 @@ describe("MCP task read selection", () => {
                 };
               }
               assert.equal(threadId, childId);
+              childCalls.push({ threadId, fields, options });
               return {
                 ...child,
                 runs: [
@@ -426,7 +515,38 @@ describe("MCP task read selection", () => {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           return yield* service.taskStatus(scope, taskId);
         }).pipe(Effect.provide(layer));
-        assert.deepEqual(calls, [["runs", "subagents", "contextTransfers"]]);
+        assert.deepEqual(calls, [expectedTaskRead, expectedParentRead]);
+        const resultRunIds = followupStatus === "running" ? [followupId, originalId] : [followupId];
+        assert.deepEqual(childCalls, [
+          {
+            threadId: childId,
+            fields: [
+              "runs",
+              "messages",
+              "contextTransfers",
+              "subagents",
+              "providerThreads",
+              "providerTurns",
+              "runtimeRequests",
+              "nodes",
+            ],
+            options: {
+              messageRoles: ["user"],
+              omitSettledLeafNodes: true,
+              omitSettledSubagents: true,
+            },
+          },
+          {
+            threadId: childId,
+            fields: ["messages", "turnItems"],
+            options: {
+              messageRoles: ["assistant"],
+              messageRunIds: resultRunIds,
+              turnItemRunIds: resultRunIds,
+              turnItemTypes: ["assistant_message", "error"],
+            },
+          },
+        ]);
         assert.equal(result.childRunId, originalId);
         assert.equal(result.status, followupStatus);
         assert.equal(
@@ -441,19 +561,19 @@ describe("MCP task read selection", () => {
     "remote acknowledgement reads fresh runs only and retries with a fresh command id",
     () =>
       Effect.gen(function* () {
-        const calls: Array<ReadonlyArray<string>> = [];
+        const calls: ReadCall[] = [];
         const commands: Array<string> = [];
         const observingRunId = RunId.make("run:fresh-observer");
         const layer = serviceLayer({
-          getThreadRecords: (threadId, fields) =>
+          getThreadRecords: (threadId, fields, options) =>
             Effect.sync(() => {
               assert.equal(threadId, parentId);
-              calls.push(fields);
+              calls.push({ threadId, fields, options });
               return {
                 ...parent,
                 subagents: [{ ...task, status: "completed" as const, result: "Remote result" }],
                 runs:
-                  fields.length === 1
+                  fields.length === 1 && fields[0] === "runs"
                     ? [
                         {
                           id: observingRunId,
@@ -486,10 +606,10 @@ describe("MCP task read selection", () => {
           assert.equal(result.status, "completed");
         }).pipe(Effect.provide(layer));
         assert.deepEqual(calls, [
-          ["runs", "subagents", "contextTransfers"],
-          ["runs"],
-          ["runs", "subagents", "contextTransfers"],
-          ["runs"],
+          expectedTaskRead,
+          expectedAckRead,
+          expectedTaskRead,
+          expectedAckRead,
         ]);
         assert.lengthOf(commands, 2);
         assert.notEqual(commands[0], commands[1]);

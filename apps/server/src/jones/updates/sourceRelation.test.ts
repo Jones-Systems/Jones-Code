@@ -149,10 +149,9 @@ describe("JonesSourceRelation", () => {
     Effect.gen(function* () {
       const h = harness(() => new Promise<never>(() => {}), { timeoutMs: 50 });
       const pairs = ["1", "2", "3", "4", "5"].map((digit) => digit.repeat(40));
-      const results = yield* Effect.all(
-        pairs.map((head) => h.relation(BASE, head)),
-        { concurrency: "unbounded" },
-      );
+      const results = yield* Effect.forEach(pairs, (head) => h.relation(BASE, head), {
+        concurrency: "unbounded",
+      });
       expect(results.every((result) => result.relation === "unknown")).toBe(true);
       expect(h.calls).toHaveLength(4);
     }),

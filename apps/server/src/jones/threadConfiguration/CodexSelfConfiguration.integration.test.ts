@@ -1,3 +1,4 @@
+import * as InProcessMcp from "../../mcp/McpHttpServer.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
@@ -130,7 +131,11 @@ it.live(
               params: {
                 threadId: second.frame.params.threadId,
                 excludeTurns: true,
-                config: { "tools.update_plan.enabled": true, mcp_optional_startup_grace_ms: 10000 },
+                config: {
+                  "tools.update_plan.enabled": true,
+                  mcp_optional_startup_grace_ms: 10000,
+                  "features.concurrent_reasoning_summaries": true,
+                },
               },
             },
           },
@@ -212,7 +217,7 @@ it.live(
           Mcp.layerThreadSelfConfigurationToolkit,
         ).pipe(
           Layer.provide(service),
-          Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
           Layer.provide(NodeCrypto.layer),
           Layer.provide(runtime),
           Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
@@ -278,7 +283,7 @@ it.live(
             ),
           );
           const before = yield* decodeEvidence(
-            (yield* call("t3_thread_configuration")).structuredContent,
+            (yield* call("t3_thread_configure")).structuredContent,
           );
           assert.isNotNull(before.executionPrecondition);
           const receipt = yield* decodeReceipt(

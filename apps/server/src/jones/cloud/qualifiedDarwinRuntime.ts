@@ -214,6 +214,7 @@ export async function extractQualifiedDarwinRuntime(input: {
   await NodeFSP.mkdir(mount, { mode: 0o700 });
   let mountingAttempted = false;
   let stagingFailed = false;
+  let stagingStep = "attach";
   let stagingFailure: unknown;
   let before: ReadonlyArray<AttachmentImage> = [];
   let imagePath = NodePath.resolve(input.artifact.payloadPath);
@@ -257,13 +258,17 @@ export async function extractQualifiedDarwinRuntime(input: {
     signal?.throwIfAborted();
     return result.stdout.trim();
   };
+  let inventoryStep = "read";
   const inventory = async (signal?: AbortSignal) => {
+    inventoryStep = "hdiutil-info";
     const plist = await run("/usr/bin/hdiutil", ["info", "-plist"], signal);
+    inventoryStep = "size-bound";
     if (Buffer.byteLength(plist) > INVENTORY_LIMIT)
       return invalid("The DMG attachment inventory exceeds its bound.");
-    return attachmentInventory(
-      await run("/usr/bin/plutil", ["-convert", "json", "-o", "-", "-"], signal, plist),
-    );
+    inventoryStep = "plutil-conversion";
+    const json = await run("/usr/bin/plutil", ["-convert", "json", "-o", "-", "-"], signal, plist);
+    inventoryStep = "inventory-shape";
+    return attachmentInventory(json);
   };
   const bounded = async <A>(
     action: (signal: AbortSignal) => Promise<A>,
@@ -319,6 +324,7 @@ export async function extractQualifiedDarwinRuntime(input: {
       mount,
       imagePath,
     ]);
+    stagingStep = "inspect-mounted-app";
     const apps = (await NodeFSP.readdir(mount)).filter((name) => name.endsWith(".app"));
     if (apps.length !== 1) return invalid("The qualified DMG must contain exactly one app.");
     const source = NodePath.join(mount, apps[0]!);
@@ -327,7 +333,9 @@ export async function extractQualifiedDarwinRuntime(input: {
       return invalid("The DMG app is not an ordinary directory.");
     await validateAppTree(source);
     const destination = NodePath.join(input.destination, "Jones Code.app");
+    stagingStep = "copy-app";
     await run("/usr/bin/ditto", ["--rsrc", "--extattr", source, destination]);
+    stagingStep = "verify-copied-app";
     await validateAppTree(destination);
     const plist = NodePath.join(destination, "Contents", "Info.plist");
     const executable = await run("/usr/bin/plutil", [
@@ -430,14 +438,25 @@ export async function extractQualifiedDarwinRuntime(input: {
       )
         throw new Error("The candidate DMG does not have one uniquely owned device.");
       ownedDevices = devices;
-      return image.entities.some((entity) => entity.mount === mount) ? mount : whole[0]!;
+      // The whole device still identifies the image if a detach unmounts its volume but leaves it attached.
+      return whole[0]!;
     };
-    const observe = () => bounded(inventory, deadline);
+    let cleanupRound = "before-detach";
+    let cleanupStep = "inventory";
+    const observeTarget = async () => {
+      cleanupStep = "inventory";
+      inventoryStep = "read";
+      const images = await bounded(inventory, deadline);
+      cleanupStep = "ownership";
+      return target(images);
+    };
+    const failedDetaches: string[] = [];
     const errors: unknown[] = [];
     try {
-      let device = target(await observe());
+      let device = await observeTarget();
       for (const force of [false, true]) {
         if (device === undefined) break;
+        cleanupRound = force ? "after-forced-detach" : "after-ordinary-detach";
         try {
           await bounded(
             (signal) =>
@@ -446,11 +465,13 @@ export async function extractQualifiedDarwinRuntime(input: {
           );
         } catch (cause) {
           errors.push(cause);
+          failedDetaches.push(force ? "forced" : "ordinary");
         }
         // An exit code never proves that the device or its mount disappeared.
-        device = target(await observe());
+        device = await observeTarget();
       }
       if (device !== undefined) {
+        cleanupStep = "attachment-remains";
         if (errors.length > 0)
           throw new AggregateError(errors, "Ordinary and forced DMG detach failed.", {
             cause: errors.at(-1),
@@ -465,9 +486,13 @@ export async function extractQualifiedDarwinRuntime(input: {
               "DMG detach and inventory reconciliation failed.",
             )
           : cause;
+      const diagnosticStep = cleanupStep === "inventory" ? inventoryStep : cleanupStep;
       const blocked = new QualifiedRuntimeBlockedError(
         "busy",
-        "DMG mount ownership needs reconciliation at " + mount + "; its directory was retained.",
+        `DMG mount ownership needs reconciliation at ${mount}; its directory was retained. ` +
+          `Staging=${stagingFailed ? stagingStep : "completed"} ` +
+          `cleanup=${cleanupRound}/${diagnosticStep} ` +
+          `failed-detach=${failedDetaches.join(",") || "none"}.`,
       );
       blocked.cause = stagingFailed
         ? new AggregateError([stagingFailure, cleanup], "DMG staging and detach failed.")

@@ -102,7 +102,7 @@ it("shows destination identity and a quiet origin independently of the project w
       },
     ],
   });
-  const row = container.querySelector<HTMLElement>('[aria-label="Run context"]')!;
+  const row = container.querySelector<HTMLElement>('[aria-label^="Run context:"]')!;
   expect(row.textContent).toContain("🧠");
   expect(row.textContent).toContain("from 🏡");
   expect(row.textContent).not.toContain("unrelated-project");

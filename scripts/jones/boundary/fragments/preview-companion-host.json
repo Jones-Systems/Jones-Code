@@ -37,6 +37,22 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/preview/ServerBrowser.test.ts",
+      "to": "apps/server/src/jones/previewCompanion/RenderHostSelection.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowser.test.ts",
+      "to": "apps/server/src/jones/previewCompanion/registration.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowser.test.ts",
+      "to": "apps/server/src/jones/previewCompanion/RenderPlacement.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowser.test.ts",
+      "to": "apps/server/src/jones/previewCompanion/CompanionHostRegistry.ts"
+    },
+    {
       "from": "apps/desktop/src/app/DesktopApp.ts",
       "to": "apps/desktop/src/jones/previewCompanion/CompanionConfig.ts"
     },
@@ -183,6 +199,26 @@
     {
       "from": "apps/desktop/src/app/DesktopPreReadyPlatform.ts",
       "to": "apps/desktop/src/jones/previewCompanion/CompanionProduct.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/previewCompanion/openBinding.ts"
+    },
+    {
+      "from": "apps/server/src/ws.test.ts",
+      "to": "apps/server/src/jones/previewCompanion/RenderHostSelection.ts"
+    },
+    {
+      "from": "apps/server/src/ws.test.ts",
+      "to": "apps/server/src/jones/previewCompanion/RenderPlacement.ts"
+    },
+    {
+      "from": "apps/server/src/ws.test.ts",
+      "to": "apps/server/src/jones/previewCompanion/CompanionHostRegistry.ts"
+    },
+    {
+      "from": "apps/server/src/ws.test.ts",
+      "to": "apps/server/src/jones/http/registration.ts"
     }
   ]
 }

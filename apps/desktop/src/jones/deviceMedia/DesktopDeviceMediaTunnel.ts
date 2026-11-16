@@ -53,6 +53,7 @@ const waitUntil = <E, R>(check: Effect.Effect<boolean, E, R>) =>
 
 const make = Effect.gen(function* () {
   const managerScope = yield* Scope.Scope;
+  const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -115,7 +116,7 @@ const make = Effect.gen(function* () {
               yield* Effect.acquireRelease(
                 Effect.sync(() =>
                   lifetime.subscribe(() => {
-                    Effect.runFork(close(id, rendererId));
+                    runFork(close(id, rendererId));
                   }),
                 ),
                 (unsubscribe) => Effect.sync(unsubscribe),

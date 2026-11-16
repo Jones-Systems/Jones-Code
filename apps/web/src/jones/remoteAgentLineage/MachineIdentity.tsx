@@ -1,36 +1,11 @@
 /* oxlint-disable shadcn/no-raw-colors -- The approved route arrow specifies these exact two colors. */
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../../components/ui/tooltip";
-import type { LucideProps } from "lucide-react";
-import type { EnvironmentId, EnvironmentMachineKind, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { EnvironmentMachineIcon } from "../../components/EnvironmentMachineIcon";
 import { useEnvironment } from "../../state/environments";
 import { useQuietThreadShell } from "../../state/entities";
-import { resolveMachineIdentity } from "./model";
-
-export function MachineIcon({
-  label,
-  kind,
-  ...props
-}: LucideProps & {
-  label?: string | null | undefined;
-  kind?: EnvironmentMachineKind | null | undefined;
-}) {
-  const machine = resolveMachineIdentity(label, kind);
-  const emoji = { vps: "🧠", test: "🤖", laptop: "🏡", mini: "🍎", unknown: null }[
-    machine.identity
-  ];
-  return emoji ? (
-    <span
-      aria-hidden="true"
-      className="inline-flex size-4 shrink-0 items-center justify-center text-base leading-none"
-    >
-      {emoji}
-    </span>
-  ) : (
-    <EnvironmentMachineIcon kind={machine.kind} {...props} />
-  );
-}
+import { MachineIcon } from "./MachineIcon";
+export { MachineIcon } from "./MachineIcon";
 
 export function MachineRouteBadge({
   environmentId,

@@ -44,9 +44,10 @@ export function createCompanionAssignments() {
 }
 
 export function localBrowserChannel(host: DesktopBrowserHost["Service"]) {
+  const source = {};
   const isLocal = (key: DesktopBrowserTabKey) => !host.isCompanionOwned(key);
   return {
-    desktopBrowserStream: host.eventsMatching(isLocal),
-    onDesktopBrowserCommand: (line: string) => host.handleCommandLine(line, isLocal),
+    desktopBrowserStream: host.eventsMatching(isLocal, source),
+    onDesktopBrowserCommand: (line: string) => host.handleCommandLine(line, isLocal, source),
   };
 }

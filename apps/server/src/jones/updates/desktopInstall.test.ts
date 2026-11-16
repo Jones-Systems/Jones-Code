@@ -235,7 +235,7 @@ it.effect.each([
           }).pipe(Effect.andThen(gate.enqueueCommand(effect))),
         markOptedInProviderSessionsForContinuation: Effect.gen(function* () {
           marks += 1;
-          if (scenario.gate === "mark-failed") return yield* Effect.fail(error);
+          if (scenario.gate === "mark-failed") return yield* error;
           return [ThreadId.make("quit-thread-one"), ThreadId.make("quit-thread-two")];
         }),
       }),

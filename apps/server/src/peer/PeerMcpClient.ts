@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   OrchestratorMcpFailure,
+  type LinkedRequestContext,
   type ProviderInteractionMode,
   type RuntimeMode,
 } from "@t3tools/contracts";
@@ -8,9 +9,13 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-
 import * as PeerMcpTransport from "../jones/peerTransport/PeerMcpTransport.ts";
 import type { LinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
+
+export {
+  lookupSendReceipt,
+  type SendReceiptLookupInput,
+} from "../jones/peerTransport/PeerMcpTransport.ts";
 
 /** The limits a call carries to the peer: the calling agent's modes here. */
 export interface PeerCallLimits {
@@ -29,10 +34,12 @@ export class PeerMcpClient extends Context.Service<
     /** Calls `tool` on the peer and decodes its structured result with `success`. */
     readonly call: <S extends Schema.Decoder<unknown>>(input: {
       readonly environmentId: EnvironmentId;
+      readonly expectedGeneration?: string;
       readonly tool: string;
       readonly arguments: Record<string, unknown>;
       readonly limits: PeerCallLimits;
       readonly origin?: LinkedMessageOrigin;
+      readonly context?: LinkedRequestContext;
       readonly success: S;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
   }

@@ -4,7 +4,6 @@ import type {
   DesktopUpdateState,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type { DesktopUpdates } from "../../updates/DesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
@@ -30,7 +29,7 @@ export function makeCompanionProductUpdates(input: {
     isInstallActive: Effect.succeed(false),
     subscribe: Effect.succeed({ latest: state, changes: Stream.never }),
     emitState,
-    disabledReason: Effect.succeed(Option.some(MANUAL_UPDATE_REASON)),
+    disabledReason: Effect.succeedSome(MANUAL_UPDATE_REASON),
     configure: emitState,
     setChannel: () => Effect.succeed(state),
     check: () => Effect.succeed({ checked: false, state }),

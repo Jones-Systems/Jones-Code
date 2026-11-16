@@ -5,8 +5,10 @@ import type { EnvironmentScopeAccess } from "../state/session";
 
 export type ThreadActionMenuId =
   | "environment-access-status"
+  | "find"
   | "new-thread-on-branch"
   | "filter-by-project"
+  | "turn-into-project"
   | "project-settings"
   | "pin"
   | "unpin"
@@ -24,9 +26,11 @@ export type ThreadActionMenuId =
   | "rename"
   | "regenerate-title"
   | "mark-unread"
+  | "share-guest"
   | "copy"
   | "copy-path"
   | "copy-branch"
+  | "copy-thread"
   | "copy-thread-id"
   | "archive"
   | "delete";
@@ -73,6 +77,7 @@ export interface ThreadActionMenuState {
   readonly assignmentItems?: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> | undefined;
   readonly canOperate: boolean;
   readonly environmentAccessStatus?: EnvironmentScopeAccess["status"];
+  readonly canFind?: boolean;
   readonly branch: string | null;
   readonly projectFilter: {
     readonly label: string;
@@ -84,7 +89,7 @@ export interface ThreadActionMenuState {
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
   readonly isRegeneratingTitle: boolean;
-  /** Archive rejects a thread with an attached provider, so disable it here rather than let the action fail. */
+  /** Archive rejects attached providers, so disable it while running. */
   readonly isRunning: boolean;
   readonly supports: {
     readonly settlement: boolean;
@@ -94,17 +99,24 @@ export interface ThreadActionMenuState {
     readonly titleRegeneration: boolean;
   };
   readonly snoozePresets: ReadonlyArray<SnoozePreset>;
+  /** Guest links need their own grant, so the caller checks it instead of `canOperate`. */
+  readonly canShareWithGuest?: boolean;
+  /** A No project thread with its own folder, on a server that can promote it. */
+  readonly canTurnIntoProject?: boolean;
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
 export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean {
   return ![
+    "find",
     "new-thread-on-branch",
     "project-settings",
     "mark-unread",
+    "share-guest",
     "copy",
     "copy-path",
     "copy-branch",
+    "copy-thread",
     "copy-thread-id",
   ].includes(action);
 }
@@ -119,6 +131,9 @@ export function buildThreadActionMenuItems(
     scope_missing: "This connection can't change threads.",
   };
   const items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> = [
+    ...(state.canFind
+      ? [{ id: "find" as const, label: "Find in thread", icon: "text-search" }]
+      : []),
     ...(!state.canOperate &&
     state.environmentAccessStatus &&
     state.environmentAccessStatus !== "granted"
@@ -187,7 +202,11 @@ export function buildThreadActionMenuItems(
                     id: `snooze:${preset.id}` as const,
                     label: `${preset.label} (${preset.whenLabel})`,
                   })),
-                  { id: "snooze:custom" as const, label: "Custom…", separatorBefore: true },
+                  {
+                    id: "snooze:custom" as const,
+                    label: "Custom…",
+                    separatorBefore: state.snoozePresets.length > 0,
+                  },
                 ],
               },
         ]
@@ -196,7 +215,7 @@ export function buildThreadActionMenuItems(
       id: "stop-thread",
       label: "Stop thread",
       icon: "square",
-      // Session liveness is checked by the stop command when selected.
+      // Result dependencies can still need releasing without a live provider session.
       disabled: !state.canOperate,
       separatorBefore:
         !state.supports.titleRegeneration && !state.assignmentItems && !state.supports.snooze,
@@ -211,6 +230,9 @@ export function buildThreadActionMenuItems(
           },
         ]
       : []),
+    ...(state.canShareWithGuest
+      ? [{ id: "share-guest" as const, label: "Share with guest", icon: "user-plus" }]
+      : []),
     { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: !state.branch },
     ...(state.projectFilter
       ? [
@@ -223,6 +245,16 @@ export function buildThreadActionMenuItems(
           },
         ]
       : []),
+    ...(state.canTurnIntoProject
+      ? [
+          {
+            id: "turn-into-project" as const,
+            label: "Turn into project",
+            icon: "folder-plus",
+            disabled: state.isRunning,
+          },
+        ]
+      : []),
     ...(state.supports.autoSettleOptOut
       ? [
           {
@@ -232,12 +264,12 @@ export function buildThreadActionMenuItems(
             children: [
               {
                 id: "auto-settle:enabled" as const,
-                label: "Enabled",
+                label: "Follow settings",
                 checked: state.autoSettleEnabled,
               },
               {
                 id: "auto-settle:disabled" as const,
-                label: "Disabled",
+                label: "Never",
                 checked: !state.autoSettleEnabled,
               },
             ],
@@ -254,6 +286,7 @@ export function buildThreadActionMenuItems(
         ...(state.branch
           ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
           : []),
+        { id: "copy-thread", label: "Thread", icon: "message-square" },
         { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
       ],
     },

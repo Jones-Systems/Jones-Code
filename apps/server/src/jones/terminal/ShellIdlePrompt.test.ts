@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The live fixture drives exact stdin/stdout callback boundaries and owns the captured child through its finalizer.
 import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Registration-time executable availability decides the platform gate before an Effect test context exists.
@@ -162,6 +164,6 @@ for (const name of ["bash", "zsh"]) {
           child.stdin.end("exit\n");
           await exited;
         });
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 }

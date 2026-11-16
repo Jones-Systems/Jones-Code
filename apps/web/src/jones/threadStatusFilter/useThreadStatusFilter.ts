@@ -1,5 +1,5 @@
 import { useClientSettings } from "../../hooks/useSettings";
-import { useNowMinute } from "../../hooks/useNowMinute";
+import { useNowSecond } from "../../hooks/useNowSecond";
 import { useState } from "react";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
@@ -54,9 +54,8 @@ export function useThreadStatusSelection(
     threadActivityWindowAmount: amount,
     threadActivityWindowUnit: unit,
   };
-  useNowMinute();
+  const currentTimeMs = useNowSecond();
   const suppliedNow = Date.parse(now ?? "");
-  const currentTimeMs = new Date().getTime();
   const observedNowMs = suppliedNow > currentTimeMs ? suppliedNow : currentTimeMs;
   const windowIdentity = `${activityWindow.threadActivityWindowEnabled}:${activityWindow.threadActivityWindowAmount}:${activityWindow.threadActivityWindowUnit}`;
   const [retention, setRetention] = useState({

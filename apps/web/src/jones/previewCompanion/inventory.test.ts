@@ -43,6 +43,19 @@ const renders = (
     companion,
   });
 describe("immutable companion bindings", () => {
+  it("does not mount headless fallbacks through direct inventory consumers", () => {
+    for (const query of [{ status: "unsupported" as const }, binding(null), binding("mini")]) {
+      expect(
+        nativeCompanionRendering({
+          environmentId,
+          primaryEnvironmentId: environmentId,
+          snapshot: { ...snapshot, headless: true },
+          binding: query,
+          companion: state,
+        }),
+      ).toBe(false);
+    }
+  });
   it("waits on unresolved/error endpoints but preserves explicit older-server 404", () => {
     expect(renders(null)).toBe(false);
     expect(renders({ status: "unavailable" })).toBe(false);

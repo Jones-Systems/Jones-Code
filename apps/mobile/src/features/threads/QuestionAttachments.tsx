@@ -2,20 +2,20 @@ import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime
 import { AsyncResult } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
 import { TextInputWrapper } from "expo-paste-input";
-import { AppTextInput as TextInput } from "../../components/ui/AppText";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
 import { useNativePaste } from "../../lib/useNativePaste";
 import { convertPastedImagesToAttachments } from "../../lib/composerImages";
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS, type UserInputQuestion } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { View } from "react-native";
+import { View, type TextInputInstance } from "react-native";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { ComposerAttachmentButton } from "./ComposerAttachmentButton";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
 import { pickComposerFiles, pickComposerMedia } from "../../lib/composerImages";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { useNavigation } from "@react-navigation/native";
-import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
-import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
+import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
+import { VideoPreviewModal, type VideoPreviewSource } from "../../components/ui/VideoPreviewModal";
 import { useServerConfigs } from "../../state/entities";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
@@ -31,6 +31,8 @@ import {
 } from "../../state/question-attachments";
 
 export function QuestionAttachments(props: {
+  messageMode?: boolean;
+  hasChoice?: boolean;
   requestId: string;
   question: UserInputQuestion;
   questions: ReadonlyArray<UserInputQuestion>;
@@ -45,28 +47,37 @@ export function QuestionAttachments(props: {
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const configs = useServerConfigs();
   const drafts = useAtomValue(composerDraftsAtom);
-  const scopeKey = JSON.stringify([
-    selectedThread?.environmentId,
-    selectedThread?.id,
-    props.requestId,
-    props.question.id,
-  ]);
-  // A focused input that unmounts never delivers its onBlur, so release focus here or
-  // the screen would keep treating the keyboard as owned by a removed input.
   const focusedRef = useRef(false);
   const onInputFocusChange = props.onInputFocusChange;
-  const releaseFocus = useEffectEvent(() => {
-    if (focusedRef.current) onInputFocusChange?.(false);
-  });
-  useEffect(() => () => releaseFocus(), []);
-  const pickerScope = useRef<{ key: string; active: boolean } | null>(null);
+  // The caller keys this component by request and question, so unmounting ends any open
+  // picker's scope.
+  const pickerScope = useRef<{ active: boolean }>({ active: false });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens a scope that native picker and paste callbacks check, and closes it on unmount
   useEffect(() => {
-    const scope = { key: scopeKey, active: true };
+    const scope = { active: true };
     pickerScope.current = scope;
     return () => {
       scope.active = false;
     };
-  }, [scopeKey]);
+  }, []);
+  // Unmounted inputs never emit onBlur; explicitly release keyboard ownership.
+  const releaseFocus = useEffectEvent(() => {
+    if (focusedRef.current) onInputFocusChange?.(false);
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- releases keyboard ownership on unmount, since an unmounted native input never emits blur
+  useEffect(() => () => releaseFocus(), []);
+  // A controlled value makes Fabric rebuild the native text on every keystroke, which discards
+  // iOS's pending autocorrection. The input owns its text; the only outside write is an option
+  // selection clearing the draft.
+  const inputRef = useRef<TextInputInstance>(null);
+  const [initialText] = useState(props.value);
+  const nativeText = useRef(props.value);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pushes an option selection's cleared draft into the uncontrolled native input
+  useEffect(() => {
+    if (props.value !== "" || nativeText.current === "") return;
+    nativeText.current = "";
+    inputRef.current?.clear();
+  }, [props.value]);
   const append = (
     key: string,
     attachments: Parameters<typeof appendComposerDraftAttachments>[1],
@@ -88,12 +99,7 @@ export function QuestionAttachments(props: {
   };
   const paste = useNativePaste((uris) => {
     const scope = pickerScope.current;
-    if (
-      !selectedThread ||
-      props.disabled ||
-      !configs.get(selectedThread.environmentId)?.environment.capabilities.questionAttachments
-    )
-      return;
+    if (!selectedThread || props.disabled || !configs.get(selectedThread.environmentId)) return;
     const key = questionAttachmentDraftKey(
       selectedThread.environmentId,
       selectedThread.id,
@@ -107,7 +113,7 @@ export function QuestionAttachments(props: {
     })
       .then(async (images) => {
         if (
-          scope?.active &&
+          scope.active &&
           (appAtomRegistry.get(questionAttachmentPreparationAtom)[key] ?? 0) > 0
         ) {
           if (append(key, images) > 0)
@@ -125,7 +131,7 @@ export function QuestionAttachments(props: {
   if (!selectedThread || props.question.allowCustomAnswer === false) return null;
   const { environmentId, id: threadId } = selectedThread;
   const capabilities = configs.get(environmentId)?.environment.capabilities;
-  const canAttach = capabilities?.questionAttachments === true;
+  const canAttach = capabilities !== undefined;
   const key = questionAttachmentDraftKey(
     environmentId,
     threadId,
@@ -151,7 +157,7 @@ export function QuestionAttachments(props: {
       const picked = "files" in result ? result.files : result.attachments;
       // Resolution on another client clears the reservation while the picker is open.
       if (
-        !scope?.active ||
+        !scope.active ||
         (appAtomRegistry.get(questionAttachmentPreparationAtom)[key] ?? 0) === 0
       ) {
         await releaseUnusedComposerAttachmentFiles(picked);
@@ -172,7 +178,7 @@ export function QuestionAttachments(props: {
       {canAttach ? (
         <ComposerAttachmentButton
           disabled={props.disabled}
-          supportsFiles={Boolean(capabilities?.fileAttachments)}
+          supportsFiles
           onPickMedia={() => pick("media")}
           onPickFiles={() => pick("files")}
         />
@@ -201,13 +207,24 @@ export function QuestionAttachments(props: {
       />
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
       <VideoPreviewModal source={previewVideo} onRequestClose={() => setPreviewVideo(null)} />
+      {!(props.messageMode && props.hasChoice) ? (
+        <Text className="font-sans text-xs text-foreground-muted">
+          {props.messageMode ? "Your answer" : "Your answer · Typing replaces your choice"}
+        </Text>
+      ) : null}
       <TextInputWrapper onPaste={paste}>
         <TextInput
-          value={props.value}
-          multiline={props.question.initialAnswer !== undefined}
-          submitBehavior={props.question.initialAnswer !== undefined ? "newline" : undefined}
+          ref={inputRef}
+          defaultValue={initialText}
+          multiline={props.messageMode || props.question.initialAnswer !== undefined}
+          submitBehavior={
+            props.messageMode || props.question.initialAnswer !== undefined ? "newline" : undefined
+          }
           editable={!props.disabled}
-          onChangeText={props.onChangeText}
+          onChangeText={(text) => {
+            nativeText.current = text;
+            props.onChangeText(text);
+          }}
           onFocus={() => {
             focusedRef.current = true;
             onInputFocusChange?.(true);
@@ -216,8 +233,12 @@ export function QuestionAttachments(props: {
             focusedRef.current = false;
             onInputFocusChange?.(false);
           }}
-          placeholder="Or type a custom answer"
-          className="min-h-[54px] rounded-2xl border border-input-border bg-input px-3.5 py-3 font-sans text-base text-foreground"
+          placeholder={
+            props.messageMode && props.hasChoice
+              ? "Add a note (optional)"
+              : "Or type a custom answer"
+          }
+          className="max-h-[220px] min-h-[54px] rounded-2xl border border-input-border bg-input px-3.5 py-3 font-sans text-base text-foreground"
         />
       </TextInputWrapper>
     </View>

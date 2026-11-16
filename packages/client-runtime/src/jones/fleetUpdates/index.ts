@@ -8,4 +8,7 @@ export {
   advanceFleetCampaigns,
   type FleetCampaignDriver,
   type FleetCommittedSource,
+  type FleetPublication,
+  type FleetPublicationReport,
+  type FleetPublicationReceipt,
 } from "./campaignController.ts";

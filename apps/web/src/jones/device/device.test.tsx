@@ -87,7 +87,7 @@ function currentManager() {
   return state.managers.at(-1)!;
 }
 
-async function mount(retire = vi.fn()) {
+async function mount(retire: HookInput["retire"] = vi.fn()) {
   input = {
     environmentId: EnvironmentId.make("environment-a"),
     hostId: "host-a",
@@ -167,6 +167,7 @@ it.each([
   const original = input;
   const previous = currentManager();
   await act(() => previous.publish(mediaRoute(previous.input.proxy)));
+  const oldLifecycle = latest().lifecycle;
 
   await update(patch);
   expect(committed.every((view) => view.route === null)).toBe(true);
@@ -177,6 +178,9 @@ it.each([
   expect(committed.every((view) => view.route === null)).toBe(true);
   expect(intervening.stop).toHaveBeenCalledOnce();
   expect(currentManager()).not.toBe(previous);
+  const resumed = currentManager();
+  await act(() => resumed.publish(mediaRoute(previous.input.proxy)));
+  expect(latest().lifecycle).not.toBe(oldLifecycle);
 });
 
 it("shares the automatic refresh cap across access renewal and resets on connection or retry", async () => {
@@ -249,4 +253,37 @@ it("uses the latest committed retirement callback before route publication and d
     manager.input.refreshAccess();
   });
   expect(state.refresh).not.toHaveBeenCalled();
+});
+
+it("keeps the atom lifecycle stable across channel reports and retires it before a new route", async () => {
+  const order: string[] = [];
+  await mount(() => order.push("input retired"));
+  const manager = currentManager();
+  const firstRoute = mediaRoute(manager.input.proxy);
+  await act(() => manager.publish(firstRoute));
+  const lifecycle = latest().lifecycle!;
+  const stop = vi.fn(() => order.push("stream retired"));
+  const unbind = lifecycle.bind(stop);
+  lifecycle.report("video", true);
+  lifecycle.report("input", false, "input lost");
+  lifecycle.unauthorized();
+  expect(manager.report).toHaveBeenCalledWith(firstRoute.access, "video", true, undefined);
+  expect(manager.report).toHaveBeenCalledWith(firstRoute.access, "input", false, "input lost");
+  expect(manager.unauthorized).toHaveBeenCalledWith(firstRoute.access);
+
+  await act(() => manager.input.onRoute({ ...firstRoute, phase: "connected" }));
+  expect(latest().lifecycle).toBe(lifecycle);
+  expect(stop).not.toHaveBeenCalled();
+  order.length = 0;
+  const nextRoute = mediaRoute(access("next"));
+  await act(() => manager.publish(nextRoute));
+  expect(order).toEqual(["stream retired", "input retired"]);
+  expect(latest().lifecycle).not.toBe(lifecycle);
+
+  const nextStop = vi.fn();
+  latest().lifecycle!.bind(nextStop);
+  unbind();
+  await update({ visible: false });
+  expect(nextStop).toHaveBeenCalledOnce();
+  expect(stop).toHaveBeenCalledOnce();
 });

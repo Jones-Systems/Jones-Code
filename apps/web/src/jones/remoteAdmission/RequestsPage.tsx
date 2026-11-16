@@ -135,6 +135,7 @@ export function EnvironmentRequests({
           {group.records.map((record) => (
             <RequestReviewRow
               key={admissionBindingKey(record)}
+              environmentId={environmentId}
               record={record}
               policyRevision={snapshot!.policy.revision}
               blocked={requestBlockedReason(state, admissionBindingKey(record))}

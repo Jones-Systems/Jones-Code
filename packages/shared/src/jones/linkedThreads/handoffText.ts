@@ -30,13 +30,13 @@ export function renderThreadHandoff({
   readonly linkId: LinkedThreadId | null;
   readonly message?: string | undefined;
 }): string {
-  const origin = `${escape(h.origin.title)} — thread ${code(h.origin.threadId)} on ${escape(h.origin.environmentLabel)} (environment ${code(h.origin.environmentId)})`;
+  const origin = `${escape(h.origin.title)}. thread ${code(h.origin.threadId)} on ${escape(h.origin.environmentLabel)} (environment ${code(h.origin.environmentId)})`;
   const destination =
     h.destination === null
       ? "not assigned (portable)"
       : h.destination.threadId === null
         ? "this thread"
-        : `${escape(h.destination.title ?? "Untitled thread")} — thread ${code(h.destination.threadId)} on ${escape(h.destination.environmentLabel)} (environment ${code(h.destination.environmentId)})`;
+        : `${escape(h.destination.title ?? "Untitled thread")}. thread ${code(h.destination.threadId)} on ${escape(h.destination.environmentLabel)} (environment ${code(h.destination.environmentId)})`;
   const target = `threadId=${code(h.returnRoute.threadId)}`;
   const route =
     h.returnRoute.kind === "manual_relay"

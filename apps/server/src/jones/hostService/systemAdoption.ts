@@ -67,6 +67,12 @@ import {
   type SystemUnitInspection,
 } from "./systemServiceControl.ts";
 
+import {
+  bootstrapLauncherPointer,
+  launcherPointerBootstrapPlan,
+  readLauncherPointer,
+} from "../cloud/launcherPointer.ts";
+
 const SHA = /^[a-f0-9]{64}$/;
 const SOURCE = /^[a-f0-9]{40}$/;
 const UNIT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}\.service$/;
@@ -98,6 +104,7 @@ export interface SystemAdoptInput {
   readonly launcherArtifactDir: string;
   readonly launcherSourceCommit: string;
   readonly acceptUnattestedChildCapability?: boolean;
+  readonly launcherPointer?: boolean;
   /** Apply runs only when the freshly derived plan has exactly this SHA-256. */
   readonly approvedPlanSha256?: string;
 }
@@ -140,6 +147,7 @@ export interface SystemAdoptionPlan {
   readonly schema: 1;
   readonly kind: "system-unit";
   readonly baseDir: string;
+  readonly launcherPointer?: ReturnType<typeof launcherPointerBootstrapPlan>;
   readonly systemUnit: string;
   readonly user: string;
   readonly uid: number;
@@ -548,14 +556,33 @@ async function inspectSystemAdoption(input: SystemAdoptInput, host: SystemAdopti
   const ownedText = renderOwnedSystemDropin({
     base: baseDir,
     launcherVersion: launcher.metadata.version,
+    ...(input.launcherPointer === true ? { launcherPointer: true } : {}),
     serve,
   });
   const ownedPath = NodePath.join(preimage.directory, OWNED_SYSTEM_DROPIN);
   const statePath = NodePath.join(runtime, SERVICE_STATE_FILE);
+  const launcherPointerPreviousService = JSON.stringify({
+    unitDigest: preimage.digest,
+    records: preimage.records,
+    ownedDropin: "absent",
+  });
+  const pointerPlan =
+    input.launcherPointer === true
+      ? launcherPointerBootstrapPlan(
+          baseDir,
+          launcher.metadata.version,
+          launcherPointerPreviousService,
+        )
+      : undefined;
+  if (pointerPlan !== undefined && (await readLauncherPointer(baseDir)) !== undefined)
+    return refuse(
+      "Launcher pointer already exists; reconcile its prior bootstrap before system adoption.",
+    );
   const plan: SystemAdoptionPlan = {
     schema: 1,
     kind: "system-unit",
     baseDir,
+    ...(pointerPlan === undefined ? {} : { launcherPointer: pointerPlan }),
     systemUnit: input.systemUnit,
     user: host.user,
     uid: host.uid,
@@ -620,6 +647,7 @@ async function inspectSystemAdoption(input: SystemAdoptInput, host: SystemAdopti
   const [worker, policy] = await Promise.all(bootstrapChecks);
   return {
     plan,
+    launcherPointerPreviousService,
     planSha256: sha256(JSON.stringify(plan)),
     bootstrap: { worker, policy },
     manifest: renderSystemBootstrapManifest({
@@ -646,11 +674,9 @@ export async function planSystemAdoption(
 }
 
 /**
- * The worker's stopped state as reported: exactly `inactive dead`, or the
- * `failed failed` a retained process leaves when it exits unclean on stop,
- * with no main process and no cgroup. A complete worker `stop` result also
- * carries its private job and original-cgroup checks; `install-launcher`
- * checks its private job. An inspection alone never proves quiescence.
+ * Reported stopped state is inactive/dead or retained failed/failed, with no main process or cgroup.
+ * Complete stop proof also checks the private job and original cgroup; install-launcher checks its private job.
+ * Inspection alone never proves quiescence.
  */
 const stoppedUnit = (inspection: SystemUnitInspection) =>
   ((inspection.activeState === "inactive" && inspection.subState === "dead") ||
@@ -692,11 +718,9 @@ async function createServiceState(path: string, activeVersion: string): Promise<
 }
 
 /**
- * Applies only the approved plan. Each step records its phase first. A failure
- * whose effects are all known records `partial`: the completed setup effects
- * up to its recorded phase remain, so it never means that nothing changed. A
- * failure during an attempt whose result is not settled records `unknown`.
- * Neither is retried, reversed or restarted here.
+ * Apply only the approved plan and record each phase first. partial retains known completed effects
+ * through that phase; it never means no change. Unsettled attempted effects are unknown.
+ * Neither outcome is retried, reversed or restarted here.
  */
 export async function adoptSystemHost(
   input: SystemAdoptInput,
@@ -807,7 +831,8 @@ export async function adoptSystemHost(
         (value) =>
           unchangedUnit(value) &&
           value.owned === plan.ownedDropin.sha256 &&
-          value.exec === `launcher ${plan.launcher.version}` &&
+          value.exec ===
+            `${plan.launcherPointer === undefined ? "launcher" : "pointer"} ${plan.launcher.version}` &&
           value.activeState === "active" &&
           value.mainPid > 0,
         "readback",
@@ -1019,23 +1044,56 @@ export async function adoptSystemHost(
       }
       await step("state-initialized", false);
 
+      if (plan.launcherPointer !== undefined) {
+        await step("pointer-bootstrap-requested", true);
+        const pointer = await bootstrapLauncherPointer(
+          plan.baseDir,
+          plan.launcher.version,
+          inspected.launcherPointerPreviousService,
+        );
+        if (
+          pointer.shimSha256 !== plan.launcherPointer.shimSha256 ||
+          pointer.previousServiceSha256 !== plan.launcherPointer.previousServiceSha256
+        )
+          refuse("Launcher pointer bootstrap readback differs; effect requires reconciliation.");
+        await step("pointer-bootstrapped", false);
+      }
       await step("launcher-install-requested", true);
-      const installed = await host.control({
-        operation: "install-launcher",
+      const preimage = {
         unitDigest: plan.unit.digest,
         owned: "absent",
         launcherVersion: plan.launcher.version,
-      });
+      };
+      const installed = await host.control(
+        plan.launcherPointer === undefined
+          ? { operation: "install-launcher", ...preimage }
+          : {
+              operation: "install-launcher-pointer",
+              ...preimage,
+              shimSha256: plan.launcherPointer.shimSha256,
+            },
+      );
       if (installed.status === "rejected") outcome = "partial";
       expectInspection(
         installed,
         (inspection) =>
           unchangedUnit(inspection) &&
           inspection.owned === plan.ownedDropin.sha256 &&
-          inspection.exec === `launcher ${plan.launcher.version}` &&
+          inspection.exec ===
+            `${plan.launcherPointer === undefined ? "launcher" : "pointer"} ${plan.launcher.version}` &&
           stoppedUnit(inspection),
         "launcher installation",
       );
+      if (plan.launcherPointer !== undefined) {
+        const pointer = await readLauncherPointer(plan.baseDir);
+        if (
+          pointer?.currentVersion !== plan.launcher.version ||
+          pointer.shimSha256 !== plan.launcherPointer.shimSha256
+        )
+          refuse(
+            "Launcher pointer changed during system adoption; effect requires reconciliation.",
+          );
+      }
       await step("launcher-installed", false);
 
       releaseStateOwnership?.();

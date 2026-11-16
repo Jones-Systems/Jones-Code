@@ -10,10 +10,15 @@ it("preserves historical sorted-object JSON bytes, arrays and unicode", () => {
     '{"a":[null,null]}',
   );
 });
+const compiledEncodeSync1 = Schema.encodeSync(
+  Schema.Struct({ at: Schema.DateTimeUtc, label: Schema.String }),
+);
+
 it("canonicalizes schema-encoded DateTime rather than DateTime internals", () => {
-  const encoded = Schema.encodeSync(
-    Schema.Struct({ at: Schema.DateTimeUtc, label: Schema.String }),
-  )({ at: DateTime.makeUnsafe("2026-10-07T12:34:56.000Z"), label: "synthetic" });
+  const encoded = compiledEncodeSync1({
+    at: DateTime.makeUnsafe("2026-10-07T12:34:56.000Z"),
+    label: "synthetic",
+  });
   expect(importedHistoryCanonicalJson(encoded)).toBe(
     '{"at":"2026-10-07T12:34:56.000Z","label":"synthetic"}',
   );

@@ -1,3 +1,4 @@
+import * as CheckoutRecreation from "../workspaceRecreation/Runtime.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -107,6 +108,7 @@ export const beforeUse = Effect.fn("WorkspaceLifecycle.beforeNativeUse")(functio
     if (Option.isSome(configured)) return yield* new LifecycleError({ reason: "unavailable" });
     return;
   }
+  if (yield* CheckoutRecreation.recreatedDetached(input.threadId)) return;
   if (original === undefined) return yield* new LifecycleError({ reason: "identity" });
   yield* service.value.resume({
     transitionId: `${original.id}:${input.boundary}`,
@@ -196,8 +198,9 @@ const beforeCommand = Effect.fn("WorkspaceLifecycle.beforeCommand")(function* (
   const transitions = [];
   for (const transition of commandTransitions(command, events))
     if (
-      (yield* managedThread(transition.threadId)) ||
-      (yield* originalIsManaged(transition.transitionId))
+      !(yield* CheckoutRecreation.deferRestore(transition.threadId)) &&
+      ((yield* managedThread(transition.threadId)) ||
+        (yield* originalIsManaged(transition.transitionId)))
     )
       transitions.push(transition);
   if (transitions.length === 0) return;
@@ -230,8 +233,9 @@ export const validateCommand = Effect.fn("WorkspaceLifecycle.validateCommand")(f
   const transitions = [];
   for (const transition of commandTransitions(command, events))
     if (
-      (yield* managedThread(transition.threadId)) ||
-      (yield* originalIsManaged(transition.transitionId))
+      !(yield* CheckoutRecreation.deferRestore(transition.threadId)) &&
+      ((yield* managedThread(transition.threadId)) ||
+        (yield* originalIsManaged(transition.transitionId)))
     )
       transitions.push(transition);
   if (transitions.length === 0) return;

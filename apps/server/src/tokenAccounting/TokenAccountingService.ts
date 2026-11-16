@@ -6,6 +6,7 @@ import {
   TokenAccountingReport,
   TokenAccountingUnavailable,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -29,6 +30,21 @@ export class TokenAccountingService extends Context.Service<
     readonly read: Effect.Effect<TokenAccountingReadResult>;
   }
 >()("t3/tokenAccounting/TokenAccountingService") {}
+
+/**
+ * The binding check and the archive read have separate budgets, so a slow check cannot
+ * starve the read. A server config load asks for availability on every connection; the
+ * answer is reused for this long so those loads do not each re-run the check.
+ */
+const BINDING_CHECK_BUDGET = "5 seconds";
+const READ_BUDGET = "5 seconds";
+const AVAILABILITY_TTL_MILLIS = 30_000;
+
+type BindingCheck =
+  | { readonly kind: "checked"; readonly binding: TokenAccountingReaderBinding }
+  | { readonly kind: "unverified" }
+  | { readonly kind: "failed" }
+  | { readonly kind: "timeout" };
 
 const decodeReport = Schema.decodeUnknownEffect(TokenAccountingReport);
 const decodeUnavailable = Schema.decodeUnknownEffect(TokenAccountingUnavailable);
@@ -58,15 +74,50 @@ export const make = Effect.fn("makeTokenAccountingService")(function* (
 ) {
   const scope = yield* Scope.Scope;
   let pending: Deferred.Deferred<TokenAccountingReadResult> | undefined;
+  let availabilityPending: Deferred.Deferred<boolean> | undefined;
+  let availabilityCache: { readonly value: boolean; readonly expiresAt: number } | undefined;
 
   const binding = reader.checkBinding.pipe(Effect.flatMap(decodeBinding));
-  const isAvailable = binding.pipe(
+  const probeAvailability = binding.pipe(
     Effect.map((value) => value.status === "bound"),
-    Effect.catch(() => Effect.succeed(false)),
+    Effect.orElseSucceed(() => false),
     Effect.catchDefect(() => Effect.succeed(false)),
-    Effect.timeoutOption("5 seconds"),
+    Effect.timeoutOption(BINDING_CHECK_BUDGET),
     Effect.map((value) => Option.getOrElse(value, () => false)),
   );
+
+  // Concurrent callers share one probe, and its answer is cached until the TTL expires.
+  // The server scope owns the probe, so one disconnected caller cannot cancel the others.
+  const isAvailable = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (availabilityCache !== undefined && now < availabilityCache.expiresAt) {
+      return availabilityCache.value;
+    }
+    const flight = yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        if (availabilityPending !== undefined) return availabilityPending;
+        const created = Deferred.makeUnsafe<boolean>();
+        availabilityPending = created;
+        yield* probeAvailability.pipe(
+          Effect.tap((value) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((finishedAt) => {
+                availabilityCache = { value, expiresAt: finishedAt + AVAILABILITY_TTL_MILLIS };
+              }),
+            ),
+          ),
+          Effect.onExit((exit) =>
+            Effect.sync(() => {
+              availabilityPending = undefined;
+            }).pipe(Effect.andThen(Deferred.done(created, exit))),
+          ),
+          Effect.forkIn(scope),
+        );
+        return created;
+      }),
+    );
+    return yield* Deferred.await(flight);
+  });
 
   const readOnce = Effect.gen(function* () {
     const readAt = DateTime.formatIso(yield* DateTime.now);
@@ -78,20 +129,31 @@ export const make = Effect.fn("makeTokenAccountingService")(function* (
       readAt,
     });
 
-    const observe = Effect.gen(function* () {
-      const selected = yield* binding.pipe(Effect.option);
-      if (Option.isNone(selected)) {
-        return unavailable({ status: "unconfigured", reason: "host_binding_unverified" });
-      }
-      configuredReportId = selected.value.configuredReportId;
-      if (selected.value.status !== "bound")
-        return unavailable({
-          status: selected.value.status,
-          reason: selected.value.reason,
-        });
+    const checked = yield* binding.pipe(
+      Effect.map((value): BindingCheck => ({ kind: "checked", binding: value })),
+      Effect.orElseSucceed((): BindingCheck => ({ kind: "unverified" })),
+      Effect.catchDefect(() => Effect.succeed<BindingCheck>({ kind: "failed" })),
+      Effect.timeoutOption(BINDING_CHECK_BUDGET),
+      Effect.map((value) => Option.getOrElse(value, (): BindingCheck => ({ kind: "timeout" }))),
+    );
+    if (checked.kind === "unverified") {
+      return unavailable({ status: "unconfigured", reason: "host_binding_unverified" });
+    }
+    if (checked.kind !== "checked") {
+      return unavailable({
+        status: "reader_failed",
+        reason: checked.kind === "timeout" ? "reader_timeout" : "reader_failed",
+      });
+    }
+    const selected = checked.binding;
+    configuredReportId = selected.configuredReportId;
+    if (selected.status !== "bound") {
+      return unavailable({ status: selected.status, reason: selected.reason });
+    }
 
+    const observe = Effect.gen(function* () {
       const response = yield* reader.readSummary({
-        reportId: selected.value.configuredReportId,
+        reportId: selected.configuredReportId,
         limits: TOKEN_ACCOUNTING_READER_LIMITS,
       });
       if (typeof response !== "string") {
@@ -112,7 +174,7 @@ export const make = Effect.fn("makeTokenAccountingService")(function* (
       if (Option.isNone(decoded)) {
         return unavailable({ status: "invalid", reason: "projection_invalid" });
       }
-      if (decoded.value.report_id !== selected.value.configuredReportId) {
+      if (decoded.value.report_id !== selected.configuredReportId) {
         return unavailable({ status: "invalid", reason: "configured_report_id_mismatch" });
       }
       const result: TokenAccountingReadResult = {
@@ -125,13 +187,11 @@ export const make = Effect.fn("makeTokenAccountingService")(function* (
       }
       return result;
     }).pipe(
-      Effect.catch(() =>
-        Effect.succeed(unavailable({ status: "reader_failed", reason: "reader_failed" })),
-      ),
+      Effect.orElseSucceed(() => unavailable({ status: "reader_failed", reason: "reader_failed" })),
       Effect.catchDefect(() =>
         Effect.succeed(unavailable({ status: "reader_failed", reason: "reader_failed" })),
       ),
-      Effect.timeoutOption("5 seconds"),
+      Effect.timeoutOption(READ_BUDGET),
     );
     return Option.getOrElse(yield* observe, () =>
       unavailable({ status: "reader_failed", reason: "reader_timeout" }),

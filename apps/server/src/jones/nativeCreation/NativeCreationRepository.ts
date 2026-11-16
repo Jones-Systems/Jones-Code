@@ -84,6 +84,16 @@ import type {
   NativeCreationEffectV2,
 } from "./NativeCreationExecutionTypes.ts";
 
+export interface NativeExecutionProcessClaim {
+  readonly workerId: string;
+  readonly expectedAttempt: number;
+  readonly claimedAt: string;
+  readonly commandId: string;
+  readonly threadId: string;
+  readonly runId: string;
+  readonly requestDigest: string;
+}
+
 export class NativeCreationRepository extends Context.Service<
   NativeCreationRepository,
   {
@@ -123,6 +133,7 @@ export class NativeCreationRepository extends Context.Service<
       reference: NativeCreationExecutionReferenceV2,
       timestamp: string,
       authorize: Effect.Effect<NativeCreationHistoricalBinding, NativeCreationAuthorityError>,
+      expectedClaim: NativeExecutionProcessClaim,
     ) => Effect.Effect<
       {
         readonly status: "started";
@@ -140,11 +151,16 @@ export class NativeCreationRepository extends Context.Service<
       readonly eventId: import("@t3tools/contracts").EventId;
       readonly sequence: number;
     }) => Effect.Effect<void, NativeCreationRepositoryError>;
+    readonly recordExecutionBinding?: (input: {
+      readonly reference: NativeCreationExecutionReferenceV2;
+      readonly expectedClaim: NativeExecutionProcessClaim;
+      readonly binding: import("@t3tools/contracts").ProviderRuntimeBinding;
+    }) => Effect.Effect<void, NativeCreationRepositoryError>;
     readonly confirmExecution?: (input: {
       readonly reference: NativeCreationExecutionReferenceV2;
       readonly workerId: string;
       readonly expectedAttempt: number;
-      readonly leaseExpiresAt: string;
+      readonly claimedAt: string;
       readonly evidence: import("./NativeCreationExecutionTypes.ts").NativeCreationWholeOperationEvidence;
     }) => Effect.Effect<void, NativeCreationRepositoryError>;
     readonly holdExecution?: (

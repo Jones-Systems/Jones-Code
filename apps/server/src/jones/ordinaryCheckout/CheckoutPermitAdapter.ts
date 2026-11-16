@@ -94,10 +94,11 @@ export const makeCheckoutPermitAdapter = Effect.fn(
   // These services never escape the single repository call they authorize.
   const authority = (issued: Evidence, admission: () => boolean) =>
     CheckoutExecutorAuthority.of({
-      assertCurrent: (candidate) =>
+      assertCurrent: Effect.fn("CheckoutExecutorAuthority.assertCurrent")((candidate) =>
         canonical(candidate) === bindingKey && matchesIdentity()
           ? current
           : Effect.fail(new CheckoutError({ reason: "identity" })),
+      ),
       reconcile: Effect.fn("CheckoutPermitAdapter.reconcile")(function* (candidate, evidence) {
         if (
           canonical(candidate) !== bindingKey ||

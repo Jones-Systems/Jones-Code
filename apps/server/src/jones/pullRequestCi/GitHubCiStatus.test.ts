@@ -7,7 +7,21 @@ import * as Schema from "effect/Schema";
 import { PullRequestCiStatusResult } from "@t3tools/contracts";
 import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import * as GitHubRequestPolicy from "@t3tools/source-control-github/server/GitHubRequestPolicy";
-import { readGitHubCiStatus } from "./GitHubCiStatus.ts";
+import * as GitHubPullRequestProvider from "@t3tools/source-control-github/server/GitHubPullRequestProvider";
+import { readGitHubCiStatus as readCiStatus } from "./GitHubCiStatus.ts";
+
+const readGitHubCiStatus = (
+  github: Pick<GitHubRest.GitHubRest["Service"], "rest">,
+  input: Parameters<typeof readCiStatus>[1],
+) =>
+  GitHubPullRequestProvider.makeCiReader.pipe(
+    Effect.provideService(GitHubRest.GitHubRest, {
+      ...github,
+      credential: () => Effect.die("CI reads must use the pinned credential"),
+      appCredential: () => Effect.die("CI reads must use the pinned credential"),
+    }),
+    Effect.flatMap((reader) => readCiStatus(reader, input)),
+  );
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -67,6 +81,7 @@ function empty(endpoint: string) {
       ? { total_count: 0, jobs: [] }
       : { total_count: 0, workflow_runs: [] };
 }
+const decodePullRequestCiStatusResult = Schema.decodeEffect(PullRequestCiStatusResult);
 
 it.effect("normalizes active jobs and runners and separates unmaterialized waiting runs", () =>
   Effect.gen(function* () {
@@ -115,7 +130,7 @@ it.effect("normalizes active jobs and runners and separates unmaterialized waiti
     assert.equal(result.runners.items[1]!.status, "offline");
     assert.equal(result.jobs.state, "available");
     assert.equal(result.runners.state, "available");
-    yield* Schema.decodeEffect(PullRequestCiStatusResult)(result);
+    yield* decodePullRequestCiStatusResult(result);
   }),
 );
 

@@ -30,6 +30,7 @@ import {
   DecisionSnapshotCollector,
 } from "./collector.ts";
 
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const filesystemDelay = vi.hoisted(() => ({ path: null as string | null }));
 const decodeUsageFixtureState = Schema.decodeUnknownSync(
   Schema.fromJsonString(
@@ -638,7 +639,7 @@ if __name__ == '__main__':
   it("bounds the actual composer and usage lifecycle through delayed startup, nested cleanup and a concurrent loser", async () => {
     await lifecycleRelease(async (binding) => {
       const scratch = NodePath.dirname(binding.releaseDirectory);
-      const native = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+      const native = encodeUnknownJson({
         schema: "codex.decision-snapshot-native/v1",
         authority_effect: "none",
         provenance: "fixture",
@@ -762,54 +763,33 @@ if __name__ == '__main__':
     });
   });
   effectIt.effect(
-    "starts an actual native account child before a held registry count packet is released",
+    "starts an actual native account child before a held thread count packet is released",
     () =>
       lifecycleEffect(
         (binding) =>
           Effect.gen(function* () {
             const scratch = NodePath.dirname(binding.releaseDirectory);
-            let releaseRegistry!: () => void;
-            const registry = new Promise<void>((resolve) => {
-              releaseRegistry = resolve;
+            let releaseThreads!: () => void;
+            const threads = new Promise<void>((resolve) => {
+              releaseThreads = resolve;
             });
-            const counts = {
-              context: { owner_id: "fixture-owner", server_generation: 1, registry_version: 7 },
-              principal_id: "fixture-principal",
-              observed_at: DateTime.formatIso(DateTime.nowUnsafe()),
-              authority_effect: "none",
-              total: 2,
-              active: 1,
-              unknown_lifecycle: 0,
-            };
+            const observedAt = DateTime.formatIso(DateTime.nowUnsafe());
             const dependencies = Layer.mergeAll(
               Layer.succeed(DecisionSnapshotNativeCounts, {
                 readOperatingCounts: () =>
-                  Effect.succeed({
-                    total: 4,
-                    operating: 2,
-                    foregroundWaitingApproval: 0,
-                    foregroundWaitingInput: 0,
-                    foregroundWaitingPlan: 0,
-                    backgroundOperating: 0,
-                    backgroundUnknown: 0,
-                    snapshotSequence: 1,
-                    backgroundSampledAt: counts.observed_at,
-                    observedAt: counts.observed_at,
-                  }),
-                readRegistryCounts: () =>
                   Effect.promise(async () => {
-                    await registry;
+                    await threads;
                     return {
-                      counts,
-                      complete: true,
-                      binding: {
-                        registryId: "https://registry.example.invalid",
-                        ownerId: "fixture-owner",
-                        principalId: "fixture-principal",
-                        authorizationRevision: 1,
-                        serverGeneration: 1,
-                        registryVersion: 7,
-                      },
+                      total: 4,
+                      operating: 2,
+                      foregroundWaitingApproval: 0,
+                      foregroundWaitingInput: 0,
+                      foregroundWaitingPlan: 0,
+                      backgroundOperating: 0,
+                      backgroundUnknown: 0,
+                      snapshotSequence: 1,
+                      backgroundSampledAt: observedAt,
+                      observedAt,
                     };
                   }),
               }),
@@ -847,14 +827,18 @@ if __name__ == '__main__':
             const running = yield* Effect.forkChild(program);
             try {
               const beforeRelease = yield* Effect.promise(() => receiptOwner.observe());
-              releaseRegistry();
+              releaseThreads();
               expect(beforeRelease).toBe(true);
               const result = yield* Fiber.join(running);
               expect(result).toMatchObject({
                 coverage: "partial",
                 sources: {
                   threads: { values: { total: 4, operating: 2 } },
-                  workstreams: { values: { total: 2, active: 1 } },
+                  workstreams: {
+                    status: "unavailable",
+                    reason: "registry_counts_unavailable",
+                    values: {},
+                  },
                   host: { status: "observed" },
                 },
               });
@@ -875,7 +859,7 @@ if __name__ == '__main__':
               expect(() => process.kill(-probe.pid, 0)).toThrow();
               expect(() => process.kill(-probe.parent_pid, 0)).toThrow();
             } finally {
-              releaseRegistry();
+              releaseThreads();
               receiptOwner.close();
               yield* Fiber.interrupt(running);
               filesystemDelay.path = null;

@@ -28,6 +28,7 @@ export class CompanionBrowserChannel extends Context.Service<
       readonly attachmentGeneration: number;
     } | null>;
     readonly endpoint: (key: DesktopTabKey) => Effect.Effect<string, never, Scope.Scope>;
+    readonly turn: (threadId: string, active: boolean) => Effect.Effect<void>;
     readonly pointer: (
       key: DesktopTabKey,
       pointer: { readonly phase: "move" | "click"; readonly x: number; readonly y: number },
@@ -51,6 +52,7 @@ const make = Effect.gen(function* () {
   >();
   const inbound = new Map<string, Queue.Queue<string>>();
   let attachmentGeneration = 0;
+  const activeTurns = new Set<string>();
   const detach = Effect.fn("CompanionBrowserChannel.detach")(function* (key: DesktopTabKey) {
     attached.delete(keyOf(key));
     const queue = inbound.get(keyOf(key));
@@ -82,10 +84,21 @@ const make = Effect.gen(function* () {
             attachmentGeneration: ++attachmentGeneration,
             runtimeIdentity: status.runtimeIdentity,
           });
+          if (activeTurns.has(key.threadId))
+            yield* registry
+              .send(
+                message.hostId,
+                {
+                  type: "browser",
+                  command: { type: "turn", threadId: key.threadId, active: true },
+                },
+                message.generation,
+              )
+              .pipe(Effect.ignore);
           yield* PubSub.publish(changes, { key, attached: true });
         } else if (event.type === "detached") {
           yield* detach(key);
-        } else {
+        } else if (event.type === "cdp") {
           const current = attached.get(keyOf(key));
           const queue = inbound.get(keyOf(key));
           if (
@@ -100,12 +113,17 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
   return CompanionBrowserChannel.of({
-    availableFor: (hostId) =>
+    availableFor: Effect.fn("CompanionBrowserChannel.availableFor")((hostId) =>
       registry.status(hostId).pipe(Effect.map((status) => status?.online ?? false)),
+    ),
     mount: registry.assign,
-    unmount: (hostId, key) => detach(key).pipe(Effect.andThen(registry.unassign(hostId, key))),
-    isAttached: (key) => Effect.sync(() => attached.has(keyOf(key))),
-    awaitAttached: (key, timeout) =>
+    unmount: Effect.fn("CompanionBrowserChannel.unmount")((hostId, key) =>
+      detach(key).pipe(Effect.andThen(registry.unassign(hostId, key))),
+    ),
+    isAttached: Effect.fn("CompanionBrowserChannel.isAttached")((key) =>
+      Effect.sync(() => attached.has(keyOf(key))),
+    ),
+    awaitAttached: Effect.fn("CompanionBrowserChannel.awaitAttached")((key, timeout) =>
       Effect.scoped(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(changes);
@@ -119,11 +137,12 @@ const make = Effect.gen(function* () {
           );
         }),
       ),
+    ),
     detached: Stream.fromPubSub(changes).pipe(
       Stream.filter((change) => !change.attached),
       Stream.map((change) => change.key),
     ),
-    runtimeEvidence: (key) =>
+    runtimeEvidence: Effect.fn("CompanionBrowserChannel.runtimeEvidence")((key) =>
       Effect.sync(() => {
         const entry = attached.get(keyOf(key));
         return entry
@@ -133,7 +152,8 @@ const make = Effect.gen(function* () {
             }
           : null;
       }),
-    endpoint: (key) =>
+    ),
+    endpoint: Effect.fn("CompanionBrowserChannel.endpoint")((key) =>
       Effect.suspend(() => {
         const entry = attached.get(keyOf(key));
         return makeTabCdpEndpoint({
@@ -150,7 +170,27 @@ const make = Effect.gen(function* () {
             ),
         });
       }),
-    pointer: (key, pointer) =>
+    ),
+    turn: Effect.fn("CompanionBrowserChannel.turn")(function* (threadId, active) {
+      if (active) activeTurns.add(threadId);
+      else activeTurns.delete(threadId);
+      const hosts = new Map<string, number>();
+      for (const entry of attached.values())
+        if (entry.key.threadId === threadId) hosts.set(entry.hostId, entry.generation);
+      yield* Effect.forEach(
+        hosts,
+        ([hostId, generation]) =>
+          registry
+            .send(
+              hostId,
+              { type: "browser", command: { type: "turn", threadId, active } },
+              generation,
+            )
+            .pipe(Effect.ignore),
+        { discard: true },
+      );
+    }),
+    pointer: Effect.fn("CompanionBrowserChannel.pointer")((key, pointer) =>
       Effect.suspend(() => {
         const entry = attached.get(keyOf(key));
         return entry
@@ -163,6 +203,7 @@ const make = Effect.gen(function* () {
               .pipe(Effect.ignore)
           : Effect.void;
       }),
+    ),
   });
 });
 export const layer = Layer.effect(CompanionBrowserChannel, make);

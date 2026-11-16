@@ -484,11 +484,14 @@ describe("ResourceTelemetry", () => {
         );
         const resultFiber = yield* Effect.gen(function* () {
           const telemetry = yield* ResourceTelemetry.ResourceTelemetry;
-          while (true) {
-            const snapshot = yield* telemetry.latest;
-            if (snapshot.health.desktop.status === "degraded") return snapshot;
-            yield* Effect.yieldNow;
-          }
+          const subscription = yield* telemetry.subscribe;
+          if (subscription.latest.health.desktop.status === "degraded") return subscription.latest;
+          return Option.getOrThrow(
+            yield* subscription.changes.pipe(
+              Stream.filter((snapshot) => snapshot.health.desktop.status === "degraded"),
+              Stream.runHead,
+            ),
+          );
         }).pipe(Effect.provide(layerTelemetry), Effect.timeout("1 second"), Effect.forkChild);
 
         yield* Deferred.await(healthSubscribed);

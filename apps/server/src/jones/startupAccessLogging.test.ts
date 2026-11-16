@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -143,16 +144,16 @@ it.effect("keeps real browser-launch failures out of local and delegated traces"
         if (!ChildProcess.isStandardCommand(command)) {
           return yield* Effect.die(new Error("Expected a standard browser command"));
         }
-        spawnedArgs.push(command.args);
-        return yield* Effect.fail(
-          PlatformError.systemError({
-            _tag: "PermissionDenied",
-            module: "ChildProcessSpawner",
-            method: "spawn",
-            pathOrDescriptor: target,
-            description: `SYNTHETIC_FAILURE ${target}`,
-          }),
+        spawnedArgs.push(
+          command.args.map((word) => (Redacted.isRedacted(word) ? Redacted.value(word) : word)),
         );
+        return yield* PlatformError.systemError({
+          _tag: "PermissionDenied",
+          module: "ChildProcessSpawner",
+          method: "spawn",
+          pathOrDescriptor: target,
+          description: `SYNTHETIC_FAILURE ${target}`,
+        });
       }).pipe(Effect.withSpan("startup-test.spawn")),
     ),
   );

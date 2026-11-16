@@ -40,21 +40,21 @@ const descriptor = {
 };
 
 const decodeServerConfig = Schema.decodeUnknownSync(ServerConfig);
-// The schema as it was before this field existed, standing in for an older client build.
-const { nativeStoreAuthority: _, ...previousFields } = ServerConfig.fields;
-const decodePreviousServerConfig = Schema.decodeUnknownSync(Schema.Struct(previousFields));
+// Both a current client and a pre-authority client ignore the retired optional wire field.
+const decodePreviousServerConfig = Schema.decodeUnknownSync(Schema.Struct(ServerConfig.fields));
 
-describe("ServerConfig native store authority", () => {
+describe("ServerConfig retired native store authority compatibility", () => {
   it("decodes a config without the descriptor as unknown authority", () => {
     const config = decodeServerConfig(encodedConfig);
 
     expect("nativeStoreAuthority" in config).toBe(false);
   });
 
-  it("decodes the advertised descriptor", () => {
+  it("ignores a retained legacy descriptor without restoring the active feature", () => {
     const config = decodeServerConfig({ ...encodedConfig, nativeStoreAuthority: descriptor });
 
-    expect(config.nativeStoreAuthority).toEqual(descriptor);
+    expect("nativeStoreAuthority" in config).toBe(false);
+    expect(config.cwd).toBe("/workspace");
   });
 
   it("lets a client built before the field decode a config that carries it", () => {

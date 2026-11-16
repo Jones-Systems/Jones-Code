@@ -140,7 +140,6 @@ describe("ProcessDiagnostics", () => {
               cause: new Error("collector unavailable"),
             }),
           ),
-          validateProcessIdentity: () => Effect.die("unused"),
           retry: Effect.die("unused"),
         }),
       );

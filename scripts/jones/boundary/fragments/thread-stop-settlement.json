@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-stop-settlement",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/WaitingRunSettlement.ts"
+    }
+  ]
+}

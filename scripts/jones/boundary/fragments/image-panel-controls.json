@@ -1,0 +1,24 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "image-panel-controls",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/filePreview/imageView.ts",
+    "apps/web/src/jones/filePreview/imageView.test.ts",
+    "apps/web/src/jones/filePreview/ImagePanelToolbar.tsx"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/chat/ZoomableImage.tsx",
+    "apps/web/src/components/files/PreviewImageContent.tsx"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/ZoomableImage.tsx",
+      "to": "apps/web/src/jones/filePreview/imageView.ts"
+    },
+    {
+      "from": "apps/web/src/components/files/PreviewImageContent.tsx",
+      "to": "apps/web/src/jones/filePreview/ImagePanelToolbar.tsx"
+    }
+  ]
+}

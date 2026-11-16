@@ -15,7 +15,6 @@ vi.mock("~/localApi", async (importOriginal) => ({
 vi.mock("../../components/settings/settingsLayout", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../components/settings/settingsLayout")>()),
   SETTINGS_PICKER_TRIGGER_CLASSNAME: "",
-  SettingsPageContainer: ({ children }: { children: ReactNode }) => children,
   SettingsSection: ({ children, title }: { children: ReactNode; title: string }) => (
     <section>
       <h2>{title}</h2>
@@ -94,7 +93,7 @@ describe("PromptsSettings persistence", () => {
         await root.rerender(<PromptsSettings />);
       });
       expect(container.querySelector("select")?.value).toBe("pending");
-      expect(container.querySelector("h2")?.textContent).toBe("Jones Code");
+      expect(container.querySelector("h2")?.textContent).toBe("Prompts");
       const control = container.querySelector("select")!;
       const saved = new Promise<void>((resolve) => {
         storage.setClientSettings.mockImplementationOnce(async (settings) => {

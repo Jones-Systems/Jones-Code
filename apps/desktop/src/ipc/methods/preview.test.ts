@@ -10,7 +10,7 @@ import * as Schema from "effect/Schema";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import * as PreviewManager from "../../preview/Manager.ts";
-import * as BrowserImport from "../../preview/BrowserImport/BrowserImport.ts";
+
 import { unwrapPreviewAutomationResult } from "../../preview/AutomationResult.ts";
 import * as PreviewIpc from "./preview.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";

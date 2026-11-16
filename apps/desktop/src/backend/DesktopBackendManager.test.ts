@@ -1,4 +1,5 @@
 import {
+  SERVER_EXIT_CODE_MANAGED_POLICY,
   SERVER_EXIT_CODE_STATE_DIR_OWNED,
   DesktopBackendBootstrap,
   type DesktopBackendBootstrap as DesktopBackendBootstrapValue,
@@ -35,9 +36,6 @@ import { build } from "vite-plus/pack";
 import * as IdentityFixture from "../../../../scripts/jones/updates/native-fixture-support.mjs";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
-import type { JonesColdBackendPermit } from "../jones/updates/jonesColdBackendCustody.ts";
-import * as DesktopApp from "../app/DesktopApp.ts";
-import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
 import * as DesktopBrowserHost from "../preview/DesktopBrowserHost.ts";
@@ -138,6 +136,9 @@ interface MakeInstanceInput {
   readonly onReady?: Effect.Effect<void>;
   readonly onShutdown?: Effect.Effect<void>;
   readonly onStateDirOwned?: Effect.Effect<void>;
+  readonly onStartupFailure?: (
+    failure: DesktopBackendManager.BackendStartupFailure,
+  ) => Effect.Effect<void>;
   readonly onPreflightFailed?: (
     failure: DesktopBackendManager.PreflightFailure,
   ) => Effect.Effect<boolean>;
@@ -197,6 +198,7 @@ function makeTestInstance(input: MakeInstanceInput) {
     ...(input.onShutdown ? { onShutdown: () => input.onShutdown! } : {}),
     ...(input.onStateDirOwned ? { onStateDirOwned: () => input.onStateDirOwned! } : {}),
     ...(input.onPreflightFailed ? { onPreflightFailed: input.onPreflightFailed } : {}),
+    ...(input.onStartupFailure ? { onStartupFailure: input.onStartupFailure } : {}),
   });
 
   return instance.pipe(Effect.provide(layerServices));
@@ -409,41 +411,49 @@ describe("DesktopBackendManager", () => {
       });
     },
   );
-  it.effect("refuses forged cold custody without spawning or scheduling a warm restart", () =>
+  it.effect("notifies readiness waiters on HTTP readiness and stop without clock advancement", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const finalized = yield* Deferred.make<void>();
-        let starts = 0;
+        const probe = yield* Deferred.make<void>();
+        const ready = yield* Deferred.make<void>();
+        const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
         const instance = yield* makeTestInstance({
-          config: {
-            ...baseConfig,
-            bootstrap: { ...baseConfig.bootstrap, desktopBrowserFd: 6, desktopBrowserControlFd: 7 },
-            jonesColdBackendPermit: {} as JonesColdBackendPermit,
-          },
           spawnerLayer: Layer.succeed(
             ChildProcessSpawner.ChildProcessSpawner,
             ChildProcessSpawner.make(() =>
-              Effect.sync(() => {
-                starts++;
-                return makeProcess();
-              }),
+              Effect.acquireRelease(
+                Effect.succeed(
+                  makeProcess({
+                    exitCode: Deferred.await(exit),
+                    kill: () =>
+                      Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)).pipe(Effect.asVoid),
+                  }),
+                ),
+                () => Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)),
+              ),
             ),
           ),
-          desktopTelemetryPublisher: {
-            removeControlSource: () => Deferred.succeed(finalized, undefined).pipe(Effect.asVoid),
-          },
+          httpClientLayer: Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make((request) =>
+              Deferred.succeed(probe, undefined).pipe(
+                Effect.andThen(Deferred.await(ready)),
+                Effect.as(HttpClientResponse.fromWeb(request, new Response("{}"))),
+              ),
+            ),
+          ),
         });
         yield* instance.start;
-        yield* Deferred.await(finalized);
-        yield* TestClock.adjust(Duration.seconds(1));
-        const snapshot = yield* instance.snapshot;
-        assert.equal(starts, 0);
-        assert.isFalse(snapshot.desiredRunning);
-        assert.isFalse(snapshot.restartScheduled);
-        assert.isFalse(snapshot.ready);
-      }).pipe(Effect.provide(TestClock.layer())),
+        yield* Deferred.await(probe);
+        const waiter = yield* instance.waitForReady(Duration.seconds(15)).pipe(Effect.forkChild);
+        yield* Deferred.succeed(ready, undefined);
+        assert.isTrue(yield* Fiber.join(waiter));
+        yield* instance.stop();
+        assert.isFalse(yield* instance.waitForReady(Duration.seconds(15)));
+      }),
     ),
   );
+
   it.effect("spawns the backend with fd3 bootstrap and fd4 telemetry", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -832,587 +842,176 @@ describe("DesktopBackendManager", () => {
     ),
   );
 
-  it.effect("does not notify shutdown when a scheduled restart starts from non-ready state", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        let shutdownCount = 0;
-
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("unexpected backend spawn")),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          config: {
-            ...baseConfig,
-            preflightFailure: Option.some({ reason: "preflight failed", fatal: false }),
-          },
-          onShutdown: Effect.sync(() => {
-            shutdownCount += 1;
-          }),
-        });
-
-        yield* instance.start;
-        assert.equal(shutdownCount, 0);
-
-        yield* TestClock.adjust(Duration.millis(500));
-        assert.equal(shutdownCount, 0);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("surfaces a fatal preflight failure once and stops looping after the cap", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const failures: string[] = [];
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("unexpected backend spawn")),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          config: {
-            ...baseConfig,
-            preflightFailure: Option.some({ reason: "Node.js not found", fatal: true }),
-          },
-          onPreflightFailed: (failure) =>
-            Effect.sync(() => {
-              failures.push(failure.reason);
-            }).pipe(Effect.as(false)),
-        });
-
-        yield* instance.start;
-        assert.deepEqual(failures, []);
-
-        yield* TestClock.adjust(Duration.millis(500));
-        yield* TestClock.adjust(Duration.seconds(1));
-        yield* TestClock.adjust(Duration.seconds(2));
-        yield* TestClock.adjust(Duration.seconds(4));
-        assert.deepEqual(failures, ["Node.js not found"]);
-
-        yield* TestClock.adjust(Duration.seconds(8));
-        yield* TestClock.adjust(Duration.seconds(30));
-        assert.deepEqual(failures, ["Node.js not found"]);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("can be started again after a fatal preflight cap once config recovers", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const failing = yield* Ref.make(true);
-        const starts = yield* Queue.unbounded<number>();
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() =>
-            Queue.offer(starts, 123).pipe(
-              Effect.as(
-                makeProcess({
-                  exitCode: Effect.never,
-                }),
-              ),
-            ),
-          ),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          configResolve: Ref.get(failing).pipe(
-            Effect.map((isFailing) =>
-              isFailing
-                ? {
-                    ...baseConfig,
-                    preflightFailure: Option.some({
-                      reason: "Node.js not found",
-                      fatal: true,
-                    }),
-                  }
-                : baseConfig,
-            ),
-          ),
-        });
-
-        yield* instance.start;
-        yield* TestClock.adjust(Duration.millis(500));
-        yield* TestClock.adjust(Duration.seconds(1));
-        yield* TestClock.adjust(Duration.seconds(2));
-        yield* TestClock.adjust(Duration.seconds(4));
-        yield* TestClock.adjust(Duration.seconds(8));
-
-        const parked = yield* instance.snapshot;
-        assert.equal(parked.desiredRunning, false);
-        assert.equal(parked.ready, false);
-        assert.isTrue(Option.isNone(parked.activePid));
-        assert.equal(parked.restartScheduled, false);
-        assert.equal(yield* Queue.size(starts), 0);
-
-        yield* Ref.set(failing, false);
-        yield* instance.start;
-
-        assert.equal(yield* Queue.take(starts), 123);
-        const running = yield* instance.snapshot;
-        assert.equal(running.desiredRunning, true);
-        assert.deepEqual(running.activePid, Option.some(123));
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("keeps retrying a transient (non-fatal) preflight failure without surfacing", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const failures: string[] = [];
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("unexpected backend spawn")),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          config: {
-            ...baseConfig,
-            preflightFailure: Option.some({ reason: "wslpath conversion failed", fatal: false }),
-          },
-          onPreflightFailed: (failure) =>
-            Effect.sync(() => {
-              failures.push(failure.reason);
-            }).pipe(Effect.as(false)),
-        });
-
-        yield* instance.start;
-
-        yield* TestClock.adjust(Duration.minutes(2));
-        assert.deepEqual(failures, []);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("surfaces a bounded transient preflight failure after its retry limit", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const failures: string[] = [];
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("unexpected backend spawn")),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          config: {
-            ...baseConfig,
-            preflightFailure: Option.some({
-              reason: "WSL toolchain probe timed out",
-              fatal: false,
-              retryLimit: 3,
-            }),
-          },
-          onPreflightFailed: (failure) =>
-            Effect.sync(() => {
-              failures.push(failure.reason);
-            }).pipe(Effect.as(false)),
-        });
-
-        yield* instance.start;
-        yield* TestClock.adjust(Duration.millis(500));
-        assert.deepEqual(failures, []);
-
-        yield* TestClock.adjust(Duration.seconds(1));
-        assert.deepEqual(failures, ["WSL toolchain probe timed out"]);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("cancels a scheduled restart when start is requested manually", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const starts = yield* Queue.unbounded<number>();
-        const secondClosed = yield* Deferred.make<void>();
-        let startCount = 0;
-
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() =>
-            Effect.gen(function* () {
-              startCount += 1;
-              yield* Queue.offer(starts, startCount);
-
-              if (startCount === 1) {
-                return makeProcess({
-                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
-                });
-              }
-
-              const scope = yield* Scope.Scope;
-              const close = Deferred.succeed(secondClosed, void 0).pipe(Effect.asVoid);
-              yield* Scope.addFinalizer(scope, close);
-              return makeProcess({
-                exitCode: Deferred.await(secondClosed).pipe(
-                  Effect.as(ChildProcessSpawner.ExitCode(0)),
-                ),
-                kill: () => close,
-              });
-            }),
-          ),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          httpClientLayer: layerHttpClient(() => Effect.never),
-        });
-
-        yield* instance.start;
-
-        assert.equal(yield* Queue.take(starts), 1);
-        let restartScheduled = false;
-        while (!restartScheduled) {
-          restartScheduled = (yield* instance.snapshot).restartScheduled;
-          if (!restartScheduled) {
-            yield* Effect.yieldNow;
-          }
-        }
-
-        yield* instance.start;
-        assert.equal(yield* Queue.take(starts), 2);
-
-        yield* instance.stop();
-        yield* TestClock.adjust(Duration.millis(500));
-
-        assert.equal(yield* Queue.size(starts), 0);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("does not restart after stop cancels a scheduled restart", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const starts = yield* Queue.unbounded<number>();
-        let startCount = 0;
-
-        const layerSpawner = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() =>
-            Effect.sync(() => {
-              startCount += 1;
-              return makeProcess({
-                exitCode: Queue.offer(starts, startCount).pipe(
-                  Effect.as(ChildProcessSpawner.ExitCode(1)),
-                ),
-              });
-            }),
-          ),
-        );
-
-        const instance = yield* makeTestInstance({
-          spawnerLayer: layerSpawner,
-          httpClientLayer: layerHttpClient(() => Effect.never),
-        });
-
-        yield* instance.start;
-        assert.equal(yield* Queue.take(starts), 1);
-
-        let restartScheduled = false;
-        while (!restartScheduled) {
-          restartScheduled = (yield* instance.snapshot).restartScheduled;
-          if (!restartScheduled) {
-            yield* Effect.yieldNow;
-          }
-        }
-
-        yield* instance.stop();
-        yield* TestClock.adjust(Duration.millis(500));
-
-        assert.equal(yield* Queue.size(starts), 0);
-        assert.equal((yield* instance.snapshot).desiredRunning, false);
-      }).pipe(Effect.provide(TestClock.layer())),
-    ),
-  );
-
-  it.effect("stopAllPoolInstances waits for every backend to finish teardown", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const teardownStarted = yield* Queue.unbounded<string>();
-        const teardownFinished = yield* Queue.unbounded<string>();
-        const allowFirstTeardown = yield* Deferred.make<void>();
-        const allowSecondTeardown = yield* Deferred.make<void>();
-
-        const makeInstance = (name: string) =>
-          makeTestInstance({
-            id: DesktopBackendManager.BackendInstanceId(name),
+  // A policy refusal is reported on the first exit, since retrying cannot fix it.
+  it.effect.each([
+    { code: 1, exits: 3, managedPolicy: false },
+    { code: SERVER_EXIT_CODE_MANAGED_POLICY, exits: 1, managedPolicy: true },
+  ])(
+    "reports exit $code with the server output after $exits exits",
+    ({ code, exits, managedPolicy }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const message = "Error: Cannot find module 'zod/v4' in /Users/René";
+          let exitCount = 0;
+          const firstExit = yield* Deferred.make<void>();
+          const reports = yield* Queue.unbounded<{
+            readonly exitCount: number;
+            readonly failure: DesktopBackendManager.BackendStartupFailure;
+          }>();
+          const instance = yield* makeTestInstance({
             spawnerLayer: Layer.succeed(
               ChildProcessSpawner.ChildProcessSpawner,
               ChildProcessSpawner.make(() =>
-                Effect.gen(function* () {
-                  const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
-                  const scope = yield* Scope.Scope;
-                  yield* Scope.addFinalizer(
-                    scope,
-                    Queue.offer(teardownStarted, name).pipe(
-                      Effect.andThen(
-                        Deferred.await(
-                          name === "instance1" ? allowFirstTeardown : allowSecondTeardown,
-                        ),
+                Effect.succeed(
+                  makeProcess({
+                    // "é" split across chunks must not decode as U+FFFD, and the 4,000-char cut
+                    // lands inside the emoji's surrogate pair.
+                    stderr: Stream.make(
+                      new TextEncoder().encode(
+                        `😀${"x".repeat(3_999 - message.length)}${message.slice(0, -1)}`,
                       ),
-                      Effect.andThen(Queue.offer(teardownFinished, name)),
-                      Effect.andThen(Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0))),
-                      Effect.asVoid,
+                      new Uint8Array([0xc3]),
+                      new Uint8Array([0xa9]),
                     ),
-                  );
-                  return makeProcess({ exitCode: Deferred.await(exited) });
-                }),
+                    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(code)),
+                  }),
+                ),
               ),
             ),
             httpClientLayer: layerHttpClient(() => Effect.never),
+            backendOutputLog: {
+              persistFailure: () => {
+                exitCount += 1;
+                return Deferred.succeed(firstExit, undefined).pipe(Effect.asVoid);
+              },
+            },
+            onStartupFailure: (failure) =>
+              Queue.offer(reports, { exitCount, failure }).pipe(Effect.asVoid),
           });
+          yield* instance.start;
+          yield* Deferred.await(firstExit);
+          yield* TestClock.adjust(Duration.minutes(1));
+          const { exitCount: exitsWhenReported, failure } = yield* Queue.take(reports);
+          assert.equal(exitsWhenReported, exits);
+          assert.equal(failure.reason, `The server could not start (code=${code}).`);
+          assert.equal(failure.managedPolicy, managedPolicy);
+          assert.isTrue(failure.output.endsWith(message));
+          assert.isTrue(failure.output.isWellFormed());
+        }).pipe(Effect.provide(TestClock.layer())),
+      ),
+  );
 
-        const instance1 = yield* makeInstance("instance1");
-        const instance2 = yield* makeInstance("instance2");
-
-        yield* instance1.start;
-        yield* instance2.start;
-
-        const layerMockPool = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
-          list: Effect.succeed([instance1, instance2]),
-          get: () => Effect.succeedNone,
-          primary: Effect.die(new Error("primary not implemented")),
-          register: () => Effect.die(new Error("register not implemented")),
-          unregister: () => Effect.die(new Error("unregister not implemented")),
+  it.effect("waits out a slow startup and reports one that never becomes ready", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
+        const startInstance = Effect.fn("test.startReadinessInstance")(function* (
+          status: Ref.Ref<number>,
+          onReady?: Effect.Effect<void>,
+        ) {
+          const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+          return yield* makeTestInstance({
+            spawnerLayer: Layer.succeed(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.make(() =>
+                Effect.acquireRelease(
+                  Effect.succeed(
+                    makeProcess({
+                      exitCode: Deferred.await(exit),
+                      kill: () =>
+                        Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)).pipe(Effect.asVoid),
+                    }),
+                  ),
+                  () => Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)),
+                ),
+              ),
+            ),
+            httpClientLayer: layerHttpClient((request) =>
+              Ref.get(status).pipe(Effect.map((code) => responseForRequest(request, code))),
+            ),
+            onStartupFailure: (failure) => Queue.offer(reports, failure).pipe(Effect.asVoid),
+            ...(onReady ? { onReady } : {}),
+          }).pipe(Effect.tap((instance) => instance.start));
         });
 
-        const quitFiber = yield* Effect.scoped(
-          Effect.addFinalizer(() => DesktopApp.stopAllPoolInstances()),
-        ).pipe(Effect.provide(layerMockPool), Effect.forkChild);
+        const slowStatus = yield* Ref.make(503);
+        const ready = yield* Deferred.make<void>();
+        const first = yield* startInstance(
+          slowStatus,
+          Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+        );
+        yield* TestClock.adjust(Duration.seconds(66));
+        yield* Ref.set(slowStatus, 200);
+        yield* TestClock.adjust(Duration.millis(100));
+        yield* Deferred.await(ready);
+        assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
 
-        const started = yield* Queue.takeN(teardownStarted, 2);
-        assert.deepEqual(started.toSorted(), ["instance1", "instance2"]);
+        yield* first.stop();
+        assert.isFalse(yield* first.waitForReady(Duration.seconds(1)));
+        yield* startInstance(yield* Ref.make(503));
+        yield* TestClock.adjust(Duration.seconds(179));
+        assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
+        yield* TestClock.adjust(Duration.seconds(1));
+        const failure = yield* Queue.take(reports);
+        assert.equal(failure.reason, "The server started but did not become ready in time.");
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
 
-        yield* TestClock.adjust(Duration.seconds(6));
-        assert.isUndefined(quitFiber.pollUnsafe());
-        assert.equal(yield* Queue.size(teardownFinished), 0);
+  it.effect("the quit stop deadline waits for a backend that only exits at the force kill", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const spawned = yield* Deferred.make<void>();
+        const teardownStarted = yield* Deferred.make<void>();
+        const teardownFinished = yield* Deferred.make<void>();
+        // The real spawner sends SIGTERM, waits the grace, then SIGKILLs. A backend that
+        // ignores SIGTERM therefore finishes tearing down just after the grace.
+        const instance = yield* makeTestInstance({
+          spawnerLayer: Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              Effect.gen(function* () {
+                const scope = yield* Scope.Scope;
+                yield* Deferred.succeed(spawned, undefined);
+                yield* Scope.addFinalizer(
+                  scope,
+                  Deferred.succeed(teardownStarted, undefined).pipe(
+                    Effect.andThen(Effect.sleep(Duration.seconds(6))),
+                    Effect.andThen(Deferred.succeed(teardownFinished, undefined)),
+                    Effect.asVoid,
+                  ),
+                );
+                return makeProcess({
+                  exitCode: Deferred.await(teardownFinished).pipe(
+                    Effect.as(ChildProcessSpawner.ExitCode(0)),
+                  ),
+                });
+              }),
+            ),
+          ),
+          httpClientLayer: layerHttpClient(() => Effect.never),
+        });
+        yield* instance.start;
+        yield* Deferred.await(spawned);
 
-        yield* Deferred.succeed(allowFirstTeardown, undefined);
-        assert.equal(yield* Queue.take(teardownFinished), "instance1");
-        assert.isUndefined(quitFiber.pollUnsafe());
-        yield* Deferred.succeed(allowSecondTeardown, undefined);
+        // App quit and the updater stop every backend with this deadline.
+        const quitDone = yield* Deferred.make<void>();
+        const quitFiber = yield* instance
+          .stop({ timeout: DesktopBackendManager.BACKEND_QUIT_STOP_TIMEOUT })
+          .pipe(Effect.andThen(Deferred.succeed(quitDone, undefined)), Effect.forkChild);
+
+        yield* Deferred.await(teardownStarted);
+        // Past the SIGTERM grace but before the force kill lands: quit must still be waiting.
+        yield* TestClock.adjust(Duration.millis(5_500));
+        assert.isFalse(yield* Deferred.isDone(quitDone));
+
+        yield* TestClock.adjust(Duration.millis(500));
         yield* Fiber.join(quitFiber);
-        assert.equal(yield* Queue.take(teardownFinished), "instance2");
-        for (const instance of [instance1, instance2]) {
-          const snapshot = yield* instance.snapshot;
-          assert.isTrue(Option.isNone(snapshot.activePid));
-          assert.isFalse(snapshot.ready);
-        }
+        assert.isTrue(yield* Deferred.isDone(teardownFinished));
       }).pipe(Effect.provide(TestClock.layer())),
     ),
   );
 });
 
-it.for(["ordinary", "trial", "live-enrollment"] as const)(
-  "joins the production Manager and bundled backend owner channel after %s admission",
-  async (scenario, { signal }) => {
-    await IdentityFixture.withNativeFixtureScratch(async (root: string) => {
-      const managerPath = NodeURL.fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts");
-      const backendPath = NodePath.resolve(
-        NodePath.dirname(managerPath),
-        "../../../server/src/jones/workstreams/DesktopNativeOwner.ts",
-      );
-      const home = await NodeFSP.realpath(root);
-      const profile = NodePath.join(home, "profile");
-      const databasePath = NodePath.join(home, "userdata/statev2.sqlite");
-      await NodeFSP.mkdir(profile);
-      await NodeFSP.mkdir(NodePath.dirname(databasePath), { mode: 0o700 });
-      await NodeFSP.mkdir(NodePath.join(home, "runtime"));
-      await NodeFSP.writeFile(databasePath, scenario === "live-enrollment" ? "" : "opaque state", {
-        mode: 0o600,
-      });
-      const metadata = {
-        name: "t3code",
-        jonesSource: {
-          repository: "Jones-Systems/Jones-Code",
-          sha: "a".repeat(40),
-          tree: "b".repeat(40),
-        },
-      };
-      const active = {
-        protocol: 1,
-        owner: "desktop",
-        home,
-        databasePath,
-        profile,
-        environmentId: "fixture",
-        version: "fixture",
-        sourceSha: metadata.jonesSource.sha,
-        sourceTree: metadata.jonesSource.tree,
-      };
-      const manifest = NodePath.join(home, "runtime/jones-active-install.json");
-      const tx = NodePath.join(home, "runtime/jones-updates/transactions", "f".repeat(64));
-      const descriptorPath =
-        scenario === "trial" ? NodePath.join(tx, "trial-descriptor.json") : undefined;
-      await NodeFSP.writeFile(
-        manifest,
-        JSON.stringify(
-          scenario === "trial"
-            ? {
-                ...active,
-                version: "previous",
-                sourceSha: "c".repeat(40),
-                sourceTree: "d".repeat(40),
-              }
-            : active,
-        ),
-        { mode: 0o600 },
-      );
-      if (descriptorPath !== undefined) {
-        await NodeFSP.mkdir(tx, { recursive: true });
-        await NodeFSP.writeFile(
-          descriptorPath,
-          JSON.stringify({
-            ...active,
-            startupGateProtocol: 1,
-            transactionId: "f".repeat(64),
-            stagedHandle: "e".repeat(64),
-          }),
-        );
-        await NodeFSP.writeFile(
-          NodePath.join(tx, "journal.json"),
-          JSON.stringify({
-            phase: "trial",
-            intent: {
-              protocol: 1,
-              transactionId: "f".repeat(64),
-              staged: { ...active, handle: "e".repeat(64) },
-            },
-          }),
-        );
-      }
-      const fixture = {
-        scenario,
-        home,
-        databasePath,
-        profile,
-        metadata,
-        active,
-        manifest,
-        tx,
-        descriptorPath,
-      };
-      await NodeFSP.writeFile(NodePath.join(root, "input.json"), JSON.stringify(fixture));
-      const parentHarness = [
-        "import * as OwnerFixtureFS from 'node:fs';",
-        "import * as OwnerFixtureAssert from 'node:assert/strict';",
-        "import * as OwnerFixtureServices from '@effect/platform-node/NodeServices';",
-        "import * as OwnerFixtureStartup from '../jones/updates/jonesNativeStartup.ts';",
-        "const fixture = JSON.parse(OwnerFixtureFS.readFileSync(process.argv[2] + '/input.json', 'utf8'));",
-        "OwnerFixtureStartup.holdJonesDesktopNativeWriterFence({ platform:'darwin', env:{ T3CODE_HOME:fixture.home, T3CODE_DESKTOP_USER_DATA_DIR:fixture.profile, T3CODE_JONES_TRIAL_DESCRIPTOR:fixture.descriptorPath }, homeDirectory:fixture.home, appDataDirectory:fixture.home, version:'fixture', metadata:fixture.metadata });",
-        "const ownerResolver = OwnerFixtureStartup.currentJonesDesktopOwner();",
-        "let output = ''; let committed = false;",
-        "const outcome = await Effect.runPromise(Effect.scoped(runBackendProcess({",
-        "executablePath:process.execPath,args:[fixture.home+'/backend.mjs',fixture.home],entryPath:fixture.home+'/backend.mjs',cwd:fixture.home,env:{},extendEnv:true,",
-        "bootstrap:{mode:'desktop',noBrowser:true,port:3773,t3Home:fixture.home,host:'127.0.0.1',desktopBootstrapToken:'fixture',tailscaleServeEnabled:false,tailscaleServePort:443,desktopNativeOwnerInputFd:8,desktopNativeOwnerOutputFd:9},",
-        "bootstrapDelivery:'fd3',httpBaseUrl:new URL('http://127.0.0.1:3773'),captureOutput:true,preflightFailure:Option.none(),jonesDesktopOwner:ownerResolver,desktopTelemetryStream:Stream.empty,",
-        "onOutput:(kind,bytes)=>Effect.sync(()=>{ output += new TextDecoder().decode(bytes); if(fixture.descriptorPath && output.includes('pending') && !committed){ committed=true; OwnerFixtureFS.writeFileSync(fixture.manifest,JSON.stringify(fixture.active)); const journal=JSON.parse(OwnerFixtureFS.readFileSync(fixture.tx+'/journal.json','utf8')); journal.phase='resumed'; OwnerFixtureFS.writeFileSync(fixture.tx+'/journal.json',JSON.stringify(journal)); OwnerFixtureFS.writeFileSync(fixture.home+'/commit-ready','ready'); } })",
-        "}).pipe(Effect.provide(OwnerFixtureServices.layer), Effect.provideService(HttpClient.HttpClient, HttpClient.make(()=>Effect.never)))));",
-        "OwnerFixtureFS.writeFileSync(fixture.home+'/settled.json',JSON.stringify({settled:true}));",
-        "OwnerFixtureAssert.equal(Option.getOrUndefined(outcome.code),0,output);",
-        "OwnerFixtureAssert.ok(output.includes('qualified'),output);",
-        "if(fixture.descriptorPath) OwnerFixtureAssert.ok(output.includes('pending'),output);",
-        "OwnerFixtureFS.writeFileSync(fixture.home+'/settled.json',JSON.stringify({settled:true}));",
-      ].join("\n");
-      const childHarness = [
-        "import * as LiveFixtureSqlite from 'node:sqlite';",
-        "import * as LiveFixtureProcess from 'node:child_process';",
-        "import * as LiveFixtureModule from 'node:module';",
-        "import * as LiveFixtureAssert from 'node:assert/strict';",
-        "import * as LiveFixtureSqlClient from '@t3tools/shared/nodeSqliteClient';",
-        "import { runDesktopNativeOwnerOperation as liveOwnerOperation } from './enrollment/desktopOwner.ts';",
-        "const fixture = JSON.parse(NodeFS.readFileSync(process.argv[2] + '/input.json','utf8'));",
-        "const owner = openDesktopNativeOwnerSession({ home:fixture.home,databasePath:fixture.databasePath,authorityDir:fixture.home+'/native-store-authority',version:'fixture',buildMetadata:fixture.metadata,descriptorPath:fixture.descriptorPath,inputFd:8,outputFd:9 });",
-        "try {",
-        "if(fixture.descriptorPath){ let refused=false; try{ await owner.refresh(); }catch{refused=true;} if(!refused||owner.available)throw new Error('Trial prematurely qualified'); process.stdout.write('pending\\n');",
-        "await new Promise((resolve,reject)=>{ const deadline=Date.now()+10000; const check=()=>{if(NodeFS.existsSync(fixture.home+'/commit-ready'))resolve();else if(Date.now()>deadline)reject(new Error('Commit not observed'));else NodeTimers.setTimeout(check,10);};check();}); }",
-        "await owner.refresh(); owner.assertCurrent(); if(owner.binding?.version!=='fixture')throw new Error('Wrong generation'); process.stdout.write('qualified\\n');",
-        "if(fixture.scenario==='live-enrollment'){",
-        "NodeFS.writeFileSync(fixture.home+'/userdata/environment-id','fixture',{mode:0o600});",
-        "const writer=new LiveFixtureSqlite.DatabaseSync(fixture.databasePath);writer.exec('PRAGMA journal_mode=DELETE; CREATE TABLE fixture_writes(value INTEGER);');",
-        "const reader=new LiveFixtureSqlite.DatabaseSync(fixture.databasePath,{readOnly:true});",
-        "const nativeFs=LiveFixtureModule.createRequire(import.meta.url)('node:fs');const originalOpen=nativeFs.openSync;let rawOpens=0;nativeFs.openSync=function(path,...args){if(path===fixture.databasePath)rawOpens++;return originalOpen.call(this,path,...args);};LiveFixtureModule.syncBuiltinESMExports();",
-        "let timer;let writes=0;const probe=()=>{const result=LiveFixtureProcess.spawnSync('python3',['-c',\"import sqlite3,sys\\nc=sqlite3.connect(sys.argv[1],timeout=0,isolation_level=None)\\ntry:\\n c.execute('BEGIN IMMEDIATE');c.execute('ROLLBACK');sys.exit(1)\\nexcept sqlite3.OperationalError as e:\\n sys.exit(0 if 'locked' in str(e) else 2)\\nfinally:c.close()\",fixture.databasePath],{encoding:'utf8',timeout:5000});LiveFixtureAssert.equal(result.status,0,'Competing writer entered; raw main-file opens='+rawOpens+' '+result.stderr);};",
-        "try{await Effect.runPromise(Effect.scoped(Effect.gen(function*(){",
-        "writer.exec('BEGIN IMMEDIATE; INSERT INTO fixture_writes VALUES(1)');probe();",
-        "timer=NodeTimers.setInterval(()=>{writer.prepare('INSERT INTO fixture_writes VALUES(?)').run(++writes);},5);",
-        "const currentOwner={binding:owner.binding,assertCurrent:owner.assertCurrent,refresh:Effect.tryPromise({try:owner.refresh,catch:()=>unavailable()})};const location={baseDir:fixture.home,authorityDir:fixture.home+'/native-store-authority',environmentId:'fixture'};",
-        "yield* liveOwnerOperation({operation:'authority-enroll'},currentOwner,location);probe();",
-        "yield* Effect.promise(()=>new Promise(resolve=>NodeTimers.setTimeout(resolve,25)));",
-        "const prepared=yield* Effect.result(liveOwnerOperation({operation:'provider-prepare',enrollmentId:'live',ownerId:'owner',principalId:'principal',registryOrigin:'https://registry.example',lifetimeDays:1},currentOwner,location));probe();LiveFixtureAssert.equal(prepared._tag,'Success','prepare failed; raw main-file opens='+rawOpens);",
-        "LiveFixtureAssert.equal(rawOpens,0,'Raw main-file inspection is forbidden in the running backend');LiveFixtureAssert.ok(writes>0);",
-        "clearInterval(timer);timer=undefined;writer.exec('COMMIT');LiveFixtureAssert.ok(reader.prepare('SELECT count(*) AS count FROM fixture_writes').get().count>1);",
-        "}).pipe(Effect.provide(LiveFixtureSqlClient.layer({filename:fixture.databasePath})))));",
-        "}finally{if(timer!==undefined)clearInterval(timer);nativeFs.openSync=originalOpen;LiveFixtureModule.syncBuiltinESMExports();try{writer.exec('ROLLBACK');}catch{}reader.close();writer.close();}}",
-        "}finally{owner.close();}",
-      ].join("\n");
-      const sources = new Map([
-        [managerPath, (await NodeFSP.readFile(managerPath, "utf8")) + "\n" + parentHarness],
-        [backendPath, (await NodeFSP.readFile(backendPath, "utf8")) + "\n" + childHarness],
-      ]);
-      await NodeFSP.writeFile(
-        NodePath.join(root, "settled.json"),
-        JSON.stringify({ settled: false }),
-      );
-      let launched = false;
-      try {
-        for (const [name, entry] of Object.entries({ fixture: managerPath, backend: backendPath }))
-          await build({
-            config: false,
-            cwd: root,
-            entry: { [name]: entry },
-            outDir: root,
-            clean: false,
-            format: "esm",
-            dts: false,
-            sourcemap: false,
-            tsconfig: false,
-            outExtensions: () => ({ js: ".mjs" }),
-            outputOptions: { codeSplitting: false },
-            deps: { alwaysBundle: (id) => !id.startsWith("node:"), onlyBundle: false },
-            plugins: [
-              {
-                name: "owned-desktop-owner-integration",
-                resolveId(id) {
-                  if (id === "electron") return "\0owner-fixture-electron.cjs";
-                },
-                load(id) {
-                  if (id === "\0owner-fixture-electron.cjs") return "module.exports = {};";
-                  if (
-                    id === NodePath.resolve(NodePath.dirname(backendPath), "../../../package.json")
-                  )
-                    return JSON.stringify({
-                      version: "fixture",
-                      jonesSource: metadata.jonesSource,
-                    });
-                  return sources.get(id);
-                },
-              },
-            ],
-            logLevel: "silent",
-          });
-        launched = true;
-        const result = await IdentityFixture.runNativeFixtureCommand(
-          NodeProcess.execPath,
-          [NodePath.join(root, "fixture.mjs"), root],
-          root,
-          { signal },
-        );
-        assert.equal(result.code, 0, result.stderr);
-        assert.equal(
-          JSON.parse(await NodeFSP.readFile(NodePath.join(root, "settled.json"), "utf8")).settled,
-          true,
-        );
-      } catch (cause) {
-        const settled = await NodeFSP.readFile(NodePath.join(root, "settled.json"), "utf8")
-          .then((raw) => JSON.parse(raw).settled)
-          .catch(() => false);
-        if (launched && !settled) Object.assign(cause as object, { preserveScratch: true });
-        throw cause;
-      }
-    });
-  },
-);
+// The retired Workstreams fd8/9 owner-channel/enrollment integration was removed.
+// Generic startup, updater, process custody and readiness coverage remains above and in jones/updates.

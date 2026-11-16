@@ -66,9 +66,8 @@ const unavailable = () =>
     message: "Linked threads are unavailable in this server embedding.",
   });
 const service = Effect.serviceOption(Links.LinkedThreads).pipe(
-  Effect.flatMap((value) =>
-    Option.isSome(value) ? Effect.succeed(value.value) : Effect.fail(unavailable()),
-  ),
+  Effect.flatMap(Effect.fromOption),
+  Effect.mapError(unavailable),
 );
 const invalid = (message: string) =>
   new OrchestratorMcpFailure({ code: "invalid_request", message });

@@ -1,23 +1,19 @@
-import { buildCodexDeveloperInstructions } from "./CodexDeveloperInstructions.ts";
 import * as NodeAssert from "node:assert/strict";
 
+import {
+  T3_CODE_BROWSER_TOOL_INSTRUCTIONS,
+  T3_CODE_DEVICE_TOOL_INSTRUCTIONS,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
+import { describe, it } from "vite-plus/test";
 import {
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
   T3_CODE_ORCHESTRATION_SECTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
-import { describe, it } from "vite-plus/test";
 
 import {
   buildCodexAdditionalContext,
   CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
 } from "./CodexDeveloperInstructions.ts";
-
-function toolInstructions(
-  runtime: Parameters<typeof buildCodexAdditionalContext>[0],
-  available: boolean,
-) {
-  return buildCodexAdditionalContext(runtime, available).t3_code_tools?.value ?? "";
-}
 
 describe("buildCodexAdditionalContext", () => {
   describe.each([
@@ -46,31 +42,9 @@ describe("buildCodexAdditionalContext", () => {
       }
     });
   });
+});
 
-  it("delivers all orchestration sections in authored order when keys are sorted", () => {
-    const context = buildCodexAdditionalContext({
-      model: "gpt-5.3-codex",
-      reasoningEffort: "high",
-    });
-    const sections = Object.keys(context)
-      .filter((key) => key.startsWith("t3_code_orchestration_"))
-      .sort()
-      .map((key) => context[key]!);
-
-    NodeAssert.deepEqual(
-      sections,
-      T3_CODE_ORCHESTRATION_SECTIONS.map((value) => ({ kind: "application", value })),
-    );
-    NodeAssert.equal(
-      sections.map((entry) => entry.value).join("\n\n"),
-      T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
-    );
-    const instructions = context.t3_code_runtime!.value;
-    NodeAssert.match(instructions, /running in Jones Code/);
-    NodeAssert.match(instructions, /Codex harness/);
-    NodeAssert.match(instructions, /as gpt-5\.3-codex with high reasoning effort/);
-  });
-
+describe("Codex runtime context", () => {
   it("describes Markdown media support in the runtime context in both modes", () => {
     {
       const instructions = runtimeInstructions({
@@ -79,36 +53,11 @@ describe("buildCodexAdditionalContext", () => {
       });
       NodeAssert.match(
         instructions,
-        /<runtime_info>.*embed images and videos.*Markdown.*<\/runtime_info>/,
+        /<runtime_info>.*embed images, video, and audio.*Markdown image syntax with absolute file paths.*Link any other file.*absolute path.*files viewer.*<\/runtime_info>/,
       );
     }
   });
 
-  it("includes runtime info alongside plan mode instructions", () => {
-    const instructions = runtimeInstructions({
-      model: "gpt-5.3-codex",
-      reasoningEffort: "medium",
-    });
-
-    NodeAssert.match(buildCodexDeveloperInstructions("plan"), /^<collaboration_mode># Plan Mode/);
-    NodeAssert.match(instructions, /as gpt-5\.3-codex with medium reasoning effort/);
-  });
-
-  it("varies with the model and effort of each turn", () => {
-    const first = runtimeInstructions({
-      model: "gpt-5.3-codex",
-      reasoningEffort: "medium",
-    });
-    const second = runtimeInstructions({
-      model: "gpt-5.4",
-      reasoningEffort: "high",
-    });
-
-    NodeAssert.notEqual(first, second);
-  });
-});
-
-describe("buildCodexDeveloperInstructions", () => {
   it("flattens multiline metadata into single-line runtime info", () => {
     const instructions = runtimeInstructions({
       model: "gpt\n5.3\ncodex",
@@ -120,35 +69,147 @@ describe("buildCodexDeveloperInstructions", () => {
   });
 });
 
-describe("T3 browser developer instructions", () => {
+describe("Codex orchestration context", () => {
+  it("preserves Jones delegation ownership and model options in Codex context", () => {
+    const context = buildCodexAdditionalContext({
+      model: "gpt-5.3-codex",
+      reasoningEffort: "high",
+    });
+    const sections = Object.entries(context)
+      .filter(([key]) => key.startsWith("t3_code_orchestration_"))
+      .map(([, entry]) => entry);
+    const orchestration = Object.entries(buildCodexAdditionalContext({ model: "gpt-6.1-sol" }))
+      .filter(([key]) => key.startsWith("t3_code_orchestration_"))
+      .map(([, entry]) => entry.value)
+      .join("\n");
+
+    NodeAssert.ok(
+      orchestration.includes(
+        "Use `delegate_task` for every Claude child, including same-provider work such as Claude to Claude: " +
+          "when you are a Claude agent asked to make subagents, or the child should be a Claude agent, " +
+          "create app-owned `delegate_task` children with a Claude target even when a native Claude subagent tool supports the chosen model.",
+      ),
+    );
+
+    NodeAssert.ok(
+      orchestration.includes(
+        "For other providers, prefer native subagent tools for same-provider work only when they support the chosen model " +
+          "and no model options are requested or inherited, and neither the user nor the workstream asks for a separate session " +
+          "or rules out native subagents; use `delegate_task` with that provider instance and model in every other case.",
+      ),
+    );
+
+    NodeAssert.ok(
+      orchestration.includes(
+        "Also use `delegate_task` for cross-provider or explicitly T3-owned child tasks.",
+      ),
+    );
+
+    NodeAssert.ok(
+      orchestration.includes(
+        "When model options are requested or the child keeps the parent's provider instance and model with nonempty `inheritedOptions` " +
+          "from `orchestrator_capabilities`, use `delegate_task` even for native-supported models. " +
+          "Native subagents cannot reliably apply T3 model options. " +
+          "Read the selected model's descriptors from `orchestrator_capabilities` and put settings in `target.options`, not only in the prompt. " +
+          'Claude commonly uses {"effort":"max","fastMode":true}; Codex uses {"reasoningEffort":"max","serviceTier":"priority"}. ' +
+          "Do not translate max to high or ignore unsupported settings: report a capability mismatch. " +
+          "Options inherit only for the same provider instance and model; explicit entries override individual values, and [] or {} clears them. " +
+          "Check the returned providerInstanceId, model, and options against the requested selection.",
+      ),
+    );
+
+    NodeAssert.ok(
+      orchestration.includes(
+        "For an independent T3 delegated review round, call `delegate_task` again. " +
+          "Include the original brief, prior findings, responses, and unresolved objections in the new task prompt. " +
+          "Track each round by its own `taskId` and use a distinct `clientRequestId`, stable across retries of that round.",
+      ),
+    );
+    NodeAssert.equal(
+      sections.map((entry) => entry.value).join("\n\n"),
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
+    );
+    NodeAssert.match(context.t3_code_runtime!.value, /running in Jones Code/);
+    NodeAssert.match(context.t3_code_runtime!.value, /product ID: jones-code/);
+    NodeAssert.match(
+      context.t3_code_runtime!.value,
+      /as gpt-5\.3-codex with high reasoning effort/,
+    );
+  });
+  it("delivers all authored sections in key order with the actual app identity", () => {
+    const context = buildCodexAdditionalContext({
+      model: "gpt-5.3-codex",
+      reasoningEffort: "high",
+    });
+    const sections = Object.keys(context)
+      .filter((key) => key.startsWith("t3_code_orchestration_"))
+      .sort()
+      .map((key) => context[key]!);
+    NodeAssert.deepEqual(
+      sections,
+      T3_CODE_ORCHESTRATION_SECTIONS.map((value) => ({ kind: "application", value })),
+    );
+    NodeAssert.equal(
+      sections.map((entry) => entry.value).join("\n\n"),
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
+    );
+    NodeAssert.match(context.t3_code_runtime!.value, /running in Jones Code/);
+    NodeAssert.match(context.t3_code_runtime!.value, /product ID: jones-code/);
+    NodeAssert.match(
+      context.t3_code_runtime!.value,
+      /as gpt-5\.3-codex with high reasoning effort/,
+    );
+  });
+});
+
+describe("Jones browser developer instructions", () => {
   const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
-
-  it("prefers the product-native preview tools in both collaboration modes", () => {
-    {
-      const instructions = toolInstructions(runtime, true);
-      NodeAssert.match(instructions, /t3-code/);
-      NodeAssert.match(instructions, /preview_status/);
-      NodeAssert.match(instructions, /preview_open/);
-      NodeAssert.match(instructions, /Do not switch to global browser skills/);
-    }
+  it("prefers attached product-native preview tools", () => {
+    const instructions = buildCodexAdditionalContext(runtime, true).t3_code_tools!.value;
+    for (const text of [
+      "Jones Code collaborative browser",
+      "preview_status",
+      "preview_open",
+      "Do not switch to global browser skills",
+    ])
+      NodeAssert.ok(instructions.includes(text));
   });
-
-  it("omits the browser block entirely when the preview tools are not attached", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = toolInstructions(runtime, false);
-      NodeAssert.doesNotMatch(instructions, /preview_status/);
-      NodeAssert.doesNotMatch(instructions, /preview_open/);
-      NodeAssert.doesNotMatch(instructions, /T3 Code collaborative browser/);
-      NodeAssert.doesNotMatch(instructions, /Jones Code collaborative browser/);
-      NodeAssert.doesNotMatch(instructions, /Do not switch to global browser skills/);
-      NodeAssert.match(buildCodexDeveloperInstructions(mode), /<collaboration_mode>/);
-      NodeAssert.match(buildCodexDeveloperInstructions(mode), /<\/collaboration_mode>/);
-    }
+  it("tracks browser and device MCP configuration per turn", () => {
+    NodeAssert.equal(buildCodexAdditionalContext(runtime, false).t3_code_tools, undefined);
+    const deviceOnly = buildCodexAdditionalContext(runtime, { browser: false, device: true })
+      .t3_code_tools!.value;
+    NodeAssert.doesNotMatch(deviceOnly, /preview_open/);
+    NodeAssert.match(deviceOnly, /device_open/);
+    const browserOnly = buildCodexAdditionalContext(runtime, { browser: true, device: false })
+      .t3_code_tools!.value;
+    NodeAssert.match(browserOnly, /preview_open/);
+    NodeAssert.doesNotMatch(browserOnly, /device_open/);
   });
+});
 
-  it("tracks the turn's MCP configuration rather than defaulting to on", () => {
-    NodeAssert.match(toolInstructions(runtime, true), /preview_open/);
-    NodeAssert.doesNotMatch(toolInstructions(runtime, false), /preview_open/);
+describe("Codex device context", () => {
+  it("delivers both complete tool blocks when their combined value exceeds the native cap", () => {
+    const context = buildCodexAdditionalContext(
+      { model: "custom-model" },
+      { browser: true, device: true },
+    );
+    const toolValues = Object.entries(context)
+      .filter(([key]) => key.startsWith("t3_code_tools"))
+      .map(([, entry]) => entry.value);
+    const delivered = toolValues.join("\n\n");
+    NodeAssert.ok(delivered.includes(T3_CODE_BROWSER_TOOL_INSTRUCTIONS));
+    NodeAssert.ok(delivered.includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS));
+    NodeAssert.equal(delivered.split(T3_CODE_BROWSER_TOOL_INSTRUCTIONS).length - 1, 1);
+    NodeAssert.equal(delivered.split(T3_CODE_DEVICE_TOOL_INSTRUCTIONS).length - 1, 1);
+  });
+  it("adds the shared device block only when the session holds device access", () => {
+    const tools = (device: boolean) =>
+      buildCodexAdditionalContext({ model: "gpt-6.1-sol" }, { browser: true, device }).t3_code_tools
+        ?.value ?? "";
+
+    NodeAssert.ok(tools(true).includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS));
+    NodeAssert.ok(!tools(true).includes("ToolSearch"));
+    NodeAssert.ok(!tools(false).includes("## T3 Code devices"));
   });
 });
 

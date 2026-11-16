@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
+import { withRuntimeUseInstallationAdmission } from "../cleanup/RuntimeUseInstallation.ts";
 
 const originalNames = [
   "WorktreeOwnershipLeases",
@@ -46,7 +47,7 @@ export const runJonesMigrations = Effect.fn("runJonesMigrations")(function* (
         originalNames.some((name, index) => manifestNames.get(index + 1) !== name) ||
         manifest.some(([id]) => !Number.isSafeInteger(id) || id < 1 || (id > 6 && id < 100))
       ) {
-        return yield* Effect.fail(badHistory("invalid rebuild manifest"));
+        return yield* badHistory("invalid rebuild manifest");
       }
 
       const tables = yield* sql`SELECT name FROM sqlite_master
@@ -70,25 +71,23 @@ export const runJonesMigrations = Effect.fn("runJonesMigrations")(function* (
               : foreignV2Names[id - 7]
             : manifestNames.get(id);
         if (!Number.isSafeInteger(id) || expected === undefined || expected !== name) {
-          return yield* Effect.fail(badHistory(`unrecognized ${id}_${name}`));
+          return yield* badHistory(`unrecognized ${id}_${name}`);
         }
         if (id <= 6 || id >= 100) {
           for (const [priorId] of manifest) {
             if (priorId >= id) break;
             if (!recordedIds.has(priorId)) {
-              return yield* Effect.fail(
-                badHistory(`missing rebuild migration ${priorId} before ${id}`),
-              );
+              return yield* badHistory(`missing rebuild migration ${priorId} before ${id}`);
             }
           }
         }
       }
       if (foreign.length > 0) {
         if (originalNames.some((_, index) => !recordedIds.has(index + 1))) {
-          return yield* Effect.fail(badHistory("foreign history is missing original migrations"));
+          return yield* badHistory("foreign history is missing original migrations");
         }
         if (foreign.some(({ migration_id }, index) => migration_id !== index + 7)) {
-          return yield* Effect.fail(badHistory("foreign history has a missing prefix"));
+          return yield* badHistory("foreign history has a missing prefix");
         }
         yield* Effect.logWarning(
           "Preserving known foreign Jones migration history without adopting its features",
@@ -101,12 +100,15 @@ export const runJonesMigrations = Effect.fn("runJonesMigrations")(function* (
 
       // Migrator uses the maximum applied ID. The prefix checks above must precede
       // even its tracking-table creation, or a gap could silently skip an effect.
-      return yield* Migrator.make({})({
+      const migrate = Migrator.make({})({
         table: "jones_sql_migrations",
         loader: Migrator.fromRecord(
           Object.fromEntries(manifest.map(([id, name, migration]) => [`${id}_${name}`, migration])),
         ),
       });
+      return yield* manifest.some(([id]) => id === 139)
+        ? withRuntimeUseInstallationAdmission(migrate)
+        : migrate;
     }),
   );
 });

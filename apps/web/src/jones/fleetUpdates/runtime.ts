@@ -1,5 +1,8 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import type { FleetDesktopState } from "@t3tools/contracts/jones/fleet-updates";
+import type {
+  FleetDesktopRequest,
+  FleetDesktopState,
+} from "@t3tools/contracts/jones/fleet-updates";
 import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import {
   requestFleetHost,
@@ -14,6 +17,17 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 
 export const fleetDesktopState = Atom.make<FleetDesktopState | null>(null);
 export const fleetStatusError = Atom.make<string | null>(null);
+let desktopRequestVersion = 0;
+
+export async function fleetDesktop(request: FleetDesktopRequest, cancelled = () => false) {
+  const bridge = window.desktopBridge?.fleetUpdates;
+  if (bridge === undefined) throw new Error("Fleet desktop bridge is unavailable.");
+  const version = ++desktopRequestVersion;
+  const state = await bridge(request);
+  if (!cancelled() && version === desktopRequestVersion)
+    appAtomRegistry.set(fleetDesktopState, state);
+  return state;
+}
 interface FleetHostCommandInput {
   readonly environmentId: EnvironmentId;
   readonly request: FleetHostRequest;
@@ -46,8 +60,7 @@ export async function fleetHost(environmentId: EnvironmentId, request: FleetHost
 export async function refreshFleetDesktopState() {
   const bridge = window.desktopBridge?.fleetUpdates;
   if (bridge === undefined) return null;
-  const state = await bridge({ action: "read" });
-  appAtomRegistry.set(fleetDesktopState, state);
+  const state = await fleetDesktop({ action: "read" });
   appAtomRegistry.set(fleetStatusError, null);
   return state;
 }

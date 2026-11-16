@@ -361,15 +361,10 @@ function runIdentity(header: CaptureHeader): string {
 }
 
 /**
- * Combines every shard's capture into one complete wall-time weights envelope.
- *
- * A file's weight is the wall time between the previous file's end and its own
- * end in the same shard; the first file is timed from when it was queued. That
- * charges collection and imports to the file that caused them. Run startup and
- * the tail after the last file are reported separately as overhead.
- *
- * Throws `TimingRejection` unless the captures are exactly `shardCount` passing
- * serial shards of one unfiltered run whose files cover the discovered list once.
+ * Weight each file by wall time since its predecessor ended (or since the first file was queued),
+ * charging collection/imports to that file; report startup and final tail separately as overhead.
+ * Throw TimingRejection unless exactly shardCount passing serial shards from one unfiltered run
+ * cover the discovered files exactly once.
  */
 export function aggregateServerShardCaptures(
   texts: string[],

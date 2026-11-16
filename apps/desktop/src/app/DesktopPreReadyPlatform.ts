@@ -2,9 +2,11 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as Electron from "electron";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -15,6 +17,7 @@ import {
 } from "../jones/previewCompanion/CompanionProduct.ts";
 import { holdJonesDesktopNativeWriterFence } from "../jones/updates/jonesNativeStartup.ts";
 import * as DesktopEarlyElectronStartup from "./DesktopEarlyElectronStartup.ts";
+import { trimmedString } from "./DesktopConfig.ts";
 import { resolveDesktopAppBranding } from "./DesktopEnvironment.ts";
 import { renderUrlHandlerDesktopEntry } from "./DesktopLinuxUrlHandler.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
@@ -54,10 +57,17 @@ export class DesktopPreReadyElectronOptions extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopPreReadyPlatform/DesktopPreReadyElectronOptions") {}
 
-/** @public Service construction is part of the canonical Effect module API. */
+const LinuxDesktopEntryConfig = Config.all({
+  xdgDataHome: trimmedString("XDG_DATA_HOME"),
+  launcherPath: trimmedString("T3CODE_DESKTOP_LAUNCHER_PATH"),
+  appImagePath: trimmedString("APPIMAGE"),
+});
+
+/** @public */
 export const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
   const homeDirectory = yield* HostProcess.HomeDirectory;
+  const linuxDesktopEntryConfig = yield* LinuxDesktopEntryConfig;
   return yield* Effect.sync((): DesktopPreReadyElectronOptions["Service"] => {
     if (platform === "darwin") {
       holdJonesDesktopNativeWriterFence({
@@ -97,12 +107,12 @@ export const make = Effect.gen(function* () {
       });
       // The portal also requires a valid desktop entry. An AppImage update may
       // have removed the executable referenced by the previous launch's entry.
-      // Companion ships its own launcher and never installs an OS URL handler.
       if (!companion) {
         try {
           const applicationsDir = NodePath.posix.join(
-            process.env.XDG_DATA_HOME?.trim() ||
+            Option.getOrElse(linuxDesktopEntryConfig.xdgDataHome, () =>
               NodePath.posix.join(homeDirectory, ".local", "share"),
+            ),
             "applications",
           );
           NodeFS.mkdirSync(applicationsDir, { recursive: true });
@@ -124,9 +134,7 @@ export const make = Effect.gen(function* () {
                 ),
                 iconPath,
               );
-            } catch {
-              // Icon installation is optional; registration retries after readiness.
-            }
+            } catch {}
           }
           NodeFS.writeFileSync(
             NodePath.posix.join(applicationsDir, linux.linuxDesktopEntryName),
@@ -135,20 +143,23 @@ export const make = Effect.gen(function* () {
                 isDevelopment: linux.isDevelopment,
                 appVersion: Electron.app.getVersion(),
               }).displayName,
-              execTarget: process.env.APPIMAGE?.trim() || process.execPath,
+              execTarget:
+                Option.getOrUndefined(
+                  Option.orElse(
+                    linuxDesktopEntryConfig.launcherPath,
+                    () => linuxDesktopEntryConfig.appImagePath,
+                  ),
+                ) ?? process.execPath,
               scheme: ElectronProtocol.getDesktopScheme(linux.isDevelopment),
               ...(iconPath === undefined ? {} : { iconPath }),
             }),
             "utf8",
           );
-        } catch {
-          // The URL handler retries with the full environment and logs failures.
-        }
+        } catch {}
       }
-      // Chromium caches its portal registration during startup. Set the identity
-      // before any asynchronous work can initialize it with Electron's default.
+      // Chromium caches portal identity; set it before any asynchronous initialization.
       Electron.app.setDesktopName(linux.linuxDesktopEntryName);
-      Electron.app.commandLine.appendSwitch("class", linux.linuxWmClass);
+      if (companion) Electron.app.commandLine.appendSwitch("class", "jones-preview-companion");
       if (linux.passwordStore !== null && linuxPasswordStoreCommandLine === null) {
         Electron.app.commandLine.appendSwitch("password-store", linux.passwordStore);
       }
@@ -175,8 +186,7 @@ export const make = Effect.gen(function* () {
   });
 }).pipe(Effect.withSpan("desktop.electron.configureBeforeReady"));
 
-// Keep Electron's strict pre-ready setup isolated so later runtime layers cannot
-// observe app readiness before scheme privileges and command-line switches exist.
+// Complete scheme privileges and switches before later layers can observe app readiness.
 export const layer = Layer.mergeAll(
   ElectronProtocol.layerSchemePrivileges,
   Layer.effect(DesktopPreReadyElectronOptions, make),

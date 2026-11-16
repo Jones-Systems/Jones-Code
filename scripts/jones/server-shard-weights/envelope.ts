@@ -251,11 +251,9 @@ export function serializeWeightsEnvelope(envelope: WeightsEnvelope): string {
 }
 
 /**
- * The per-file cost the server sequencer uses. With no weights file it reads the
- * checked-in map the original way: recorded test time plus fixed overhead. With
- * one it reads measured wall seconds and charges unknown files a typical cost. A
- * file that is named but missing, invalid, or does not match its digest throws,
- * so a shard can never quietly fall back to different weights than its peers.
+ * Without a weights file, use recorded test time plus fixed overhead.
+ * With one, use measured wall seconds and a typical cost for unknown files.
+ * A named file that is missing, invalid or digest-mismatched throws; shards never silently use different weights.
  */
 export function resolveSequencerWeight(
   env: Readonly<Record<string, string | undefined>>,

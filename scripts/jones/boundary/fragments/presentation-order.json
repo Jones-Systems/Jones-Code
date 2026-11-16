@@ -11,7 +11,7 @@
     "apps/web/src/jones/presentationOrder/projectOrder.ts"
   ],
   "hookPaths": [],
-  "tombstones": [],
+  "tombstones": ["apps/web/src/components/LegacySidebar.tsx"],
   "allowedImports": [
     {
       "from": "apps/web/src/hooks/useSidebarProjectGroups.ts",
@@ -24,10 +24,6 @@
     {
       "from": "apps/web/src/components/CommandPalette.tsx",
       "to": "apps/web/src/jones/presentationOrder/environmentOrder.ts"
-    },
-    {
-      "from": "apps/web/src/components/LegacySidebar.tsx",
-      "to": "apps/web/src/jones/presentationOrder/projectOrder.ts"
     }
   ]
 }

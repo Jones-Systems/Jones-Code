@@ -34,22 +34,20 @@ export function goalNotificationMaySteer(input: {
   );
 }
 
+const compiledIs1 = Schema.is(GoalNotificationNotDelivered);
+
 export function isGoalNotificationNotDelivered(cause: unknown): boolean {
   return (
-    Schema.is(GoalNotificationNotDelivered)(cause) ||
-    (typeof cause === "object" &&
-      cause !== null &&
-      "cause" in cause &&
-      Schema.is(GoalNotificationNotDelivered)(cause.cause))
+    compiledIs1(cause) ||
+    (typeof cause === "object" && cause !== null && "cause" in cause && compiledIs1(cause.cause))
   );
 }
 
+const compiledIs2 = Schema.is(GoalNotificationDeliveryUnknown);
+
 export function isGoalNotificationDeliveryUnknown(cause: unknown): boolean {
   return (
-    Schema.is(GoalNotificationDeliveryUnknown)(cause) ||
-    (typeof cause === "object" &&
-      cause !== null &&
-      "cause" in cause &&
-      Schema.is(GoalNotificationDeliveryUnknown)(cause.cause))
+    compiledIs2(cause) ||
+    (typeof cause === "object" && cause !== null && "cause" in cause && compiledIs2(cause.cause))
   );
 }

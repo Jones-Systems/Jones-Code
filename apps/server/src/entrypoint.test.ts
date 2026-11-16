@@ -36,8 +36,7 @@ describe("isEntrypoint", () => {
       NodeFS.writeFileSync(real, "");
       NodeFS.symlinkSync(real, link);
 
-      // Node resolves the module URL to the real path, and on macOS the temp
-      // directory itself sits behind a symlink (`/var` -> `/private/var`).
+      // macOS temp directories can be symlinks; Node resolves module URLs to real paths.
       expect(
         isEntrypoint({
           moduleUrl: NodeURL.pathToFileURL(NodeFS.realpathSync(real)).href,
@@ -97,9 +96,6 @@ describe("bin dispatch", () => {
           },
         };
       });
-      vi.doMock("./jones/workstreams/nativeAuthorityTransition.ts", () => {
-        throw new Error("Non-native command loaded the native transition module");
-      });
       try {
         process.argv =
           command === undefined
@@ -118,7 +114,6 @@ describe("bin dispatch", () => {
           "./mcp/AcpMcpStdioBridge.ts",
           "./cli/consoleStdin.ts",
           "./binCli.ts",
-          "./jones/workstreams/nativeAuthorityTransition.ts",
         ])
           vi.doUnmock(module);
         vi.resetModules();

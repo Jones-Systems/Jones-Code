@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
-import { EnvironmentWorkstreamOperationConflictError } from "./environmentHttpGroups.ts";
 import { EnvironmentId, TrimmedNonEmptyString } from "../baseSchemas.ts";
 import { JonesBuildStartedAt } from "./fleetUpdates/source.ts";
+import {
+  JonesOperationReceipt,
+  JonesOperationReadResult,
+  JonesRecoveryPreflight,
+} from "./jonesOperations.ts";
 
-import { EnvironmentAuthenticatedAuth, EnvironmentHttpApi } from "../environmentHttp.ts";
-import v2Conformance from "../../contracts/workstreams-registration-context/v2/fixtures/conformance.json" with { type: "json" };
+import {
+  EnvironmentAuthenticatedAuth,
+  EnvironmentHttpApi,
+  EnvironmentHttpConflictError,
+} from "../environmentHttp.ts";
 import {
   JonesNativePrepareInput,
   JonesQuitPreparation,
@@ -17,6 +24,9 @@ import {
   JonesUpdateReconcileInput,
   JonesUpdateRecordRetiredInput,
 } from "./jonesUpdates.ts";
+
+const decodeUpdateInstall = Schema.decodeSync(JonesUpdateInstallInput);
+const decodeUpdateCapability = Schema.decodeSync(JonesUpdateCapability);
 
 // The public API metadata is also consumed by independently upgraded clients.
 // Keep the Jones routes and authentication identity stable through relocation.
@@ -36,8 +46,8 @@ describe("Jones environment HTTP registration", () => {
       "orchestration",
       "pullRequests",
       "workstreams",
-      "workstreamsNative",
       "projects",
+      "voice",
       "connect",
       "conversationLibrary",
       "jonesUpdates",
@@ -60,7 +70,6 @@ describe("Jones environment HTTP registration", () => {
       ...Object.values(groups.conversationLibrary.endpoints),
       ...Object.values(groups.workstreams.endpoints),
       ...Object.values(groups.jonesUpdates.endpoints),
-      ...Object.values(groups.workstreamsNative.endpoints),
     ];
     expect(routes.map(({ identifier, method, path }) => [identifier, method, path])).toEqual([
       ["recent", "GET", "/api/voice-review/recent"],
@@ -91,6 +100,9 @@ describe("Jones environment HTTP registration", () => {
       ["operationRead", "POST", "/api/workstreams/operations/read"],
       ["setupStatus", "GET", "/api/workstreams/setup-status"],
       ["threadPlacements", "POST", "/api/workstreams/thread-placements"],
+      ["nativeRead", "POST", "/api/workstreams/native/v1/read"],
+      ["nativeExport", "GET", "/api/workstreams/native/v1/export"],
+      ["legacyReceiptLookup", "POST", "/api/workstreams/legacy-receipts/v1/lookup"],
       ["list", "GET", "/api/workstreams"],
       ["references", "GET", "/api/workstreams/references"],
       ["reference", "GET", "/api/workstreams/references/:nativeReferenceId"],
@@ -111,25 +123,45 @@ describe("Jones environment HTTP registration", () => {
       ["download", "POST", "/api/jones-updates/download"],
       ["downloadExact", "POST", "/api/jones-updates/download-exact"],
       ["install", "POST", "/api/jones-updates/install"],
-      ["ownerOperations", "POST", "/api/workstreams/native/owner/v1/operations"],
-      ["context", "GET", "/api/workstreams/native/v1/context"],
-      ["attestations", "POST", "/api/workstreams/native/v1/attestations"],
-      ["settlements", "POST", "/api/workstreams/native/v1/settlements"],
-      ["settlementLookup", "POST", "/api/workstreams/native/v1/settlements/lookup"],
-      ["contextV2", "GET", "/api/workstreams/native/v2/context"],
-      ["attestationsV2", "POST", "/api/workstreams/native/v2/attestations"],
-      ["settlementsV2", "POST", "/api/workstreams/native/v2/settlements"],
-      ["settlementLookupV2", "POST", "/api/workstreams/native/v2/settlements/lookup"],
+      ["operationStart", "POST", "/api/jones-updates/operations/start"],
+      ["operationStop", "POST", "/api/jones-updates/operations/stop"],
+      ["operationFence", "POST", "/api/jones-updates/operations/fence"],
+      ["operationRead", "POST", "/api/jones-updates/operations/read"],
+      ["recoverCleanup", "POST", "/api/jones-updates/operations/recover-cleanup"],
+      ["recoveryPreflight", "POST", "/api/jones-updates/recovery-preflight"],
     ]);
     const bearerHeaders = Schema.Struct({
       authorization: Schema.optionalKey(Schema.String),
       dpop: Schema.optionalKey(Schema.String),
     });
+
     for (const endpoint of routes) {
       expect(endpoint.middlewares.has(EnvironmentAuthenticatedAuth)).toBe(true);
       expect(endpoint.headers?.ast).toEqual(bearerHeaders.ast);
     }
   });
+});
+
+it("returns operation refusals as authenticated receipt successes, including read and preflight", () => {
+  const endpoints = EnvironmentHttpApi.groups.jonesUpdates.endpoints;
+  for (const endpoint of [
+    endpoints.operationStart,
+    endpoints.operationStop,
+    endpoints.operationFence,
+  ]) {
+    expect([...endpoint.success].map((schema) => schema.ast)).toEqual([
+      Schema.toCodecJson(JonesOperationReceipt).ast,
+    ]);
+    expect([...endpoint.error].map((schema) => schema.ast)).toEqual(
+      [...endpoints.install.error].map((schema) => schema.ast),
+    );
+  }
+  expect([...endpoints.operationRead.success].map((schema) => schema.ast)).toEqual([
+    Schema.toCodecJson(JonesOperationReadResult).ast,
+  ]);
+  expect([...endpoints.recoveryPreflight.success].map((schema) => schema.ast)).toEqual([
+    Schema.toCodecJson(JonesRecoveryPreflight).ast,
+  ]);
 });
 
 it("requires a nonnegative integer count in quit preparation responses", () => {
@@ -150,7 +182,7 @@ it("requires an explicit native attempt without changing ordinary install reques
     ...base,
     transactionId: "b".repeat(64),
   });
-  expect(Schema.decodeUnknownSync(JonesUpdateInstallInput)(base)).toEqual(base);
+  expect(decodeUpdateInstall(base)).toEqual(base);
 });
 
 it("selects an exact source by full commit only and keeps older capability shapes decodable", () => {
@@ -161,10 +193,11 @@ it("selects an exact source by full commit only and keeps older capability shape
     expect(() => decode({ targetSource: invalid })).toThrow();
   expect(() => decode({})).toThrow();
   const legacy = { check: true, download: true, install: false };
-  expect(Schema.decodeUnknownSync(JonesUpdateCapability)(legacy)).toEqual(legacy);
-  expect(Schema.decodeUnknownSync(JonesUpdateCapability)({ ...legacy, exactSource: true })).toEqual(
-    { ...legacy, exactSource: true },
-  );
+  expect(decodeUpdateCapability(legacy)).toEqual(legacy);
+  expect(decodeUpdateCapability({ ...legacy, exactSource: true })).toEqual({
+    ...legacy,
+    exactSource: true,
+  });
 });
 
 it("requires the complete immutable binding for an optional staged replacement", () => {
@@ -200,47 +233,26 @@ it("requires the complete immutable binding for an optional staged replacement",
     exactSource: true,
     replaceStaged: true,
   };
-  expect(Schema.decodeUnknownSync(JonesUpdateCapability)(capability)).toEqual(capability);
+  expect(decodeUpdateCapability(capability)).toEqual(capability);
 });
 
-it("accepts both explicitly versioned registration responses on the local HTTP boundary", () => {
-  const responseSchema = [
-    ...EnvironmentHttpApi.groups.workstreams.endpoints.registrationContext.success,
-  ][0];
-  if (responseSchema === undefined) throw new Error("Missing registration response schema");
-  const accepts = Schema.is(responseSchema);
-  const v2 = v2Conformance.cases.find(
-    (fixture) => fixture.name === "legacy singleton shape with v2 protocol",
-  )?.value;
-  if (v2 === undefined) throw new Error("Missing singleton fixture");
-  expect(accepts(v2)).toBe(true);
-  expect(accepts({ ...v2, protocol: "workstreams-registration-context/1.0.0" })).toBe(true);
-  expect(accepts({ ...v2, protocol: "workstreams-registration-context/3.0.0" })).toBe(false);
-});
-
-it("keeps operation conflicts on HTTP 409 with the closed operation error shape", () => {
-  const endpoint = EnvironmentHttpApi.groups.workstreams.endpoints.operationSubmit;
-  const conflict = EnvironmentWorkstreamOperationConflictError;
+it("retains only authenticated unavailable legacy Workstreams endpoints", () => {
+  expect(Object.hasOwn(EnvironmentHttpApi.groups, "workstreamsNative")).toBe(false);
+  for (const endpoint of Object.values(EnvironmentHttpApi.groups.workstreams.endpoints)) {
+    expect(endpoint.middlewares.has(EnvironmentAuthenticatedAuth)).toBe(true);
+    expect(
+      [...endpoint.error].some(
+        (s) =>
+          SchemaAST.resolveAt<number>("httpApiStatus")(s.ast) === 409 &&
+          Schema.is(s)(new EnvironmentHttpConflictError({ message: "workstreams_not_configured" })),
+      ),
+    ).toBe(true);
+    for (const success of endpoint.success) expect(Schema.is(success)({})).toBe(false);
+  }
+  const decode = Schema.decodeUnknownSync(EnvironmentHttpConflictError);
   expect(
-    [...endpoint.error].some(
-      (schema) => SchemaAST.resolveAt<number>("httpApiStatus")(schema.ast) === 409,
-    ),
-  ).toBe(true);
-  expect(SchemaAST.resolveAt<number>("httpApiStatus")(conflict.ast)).toBe(409);
-  const decode = Schema.decodeUnknownSync(conflict);
-  for (const value of [
-    { code: "operation_id_conflict" },
-    { code: "thread_operation_in_progress", open_operation_id: "operation-00000001" },
-  ]) {
-    expect(decode(value)).toEqual(value);
-  }
-  for (const value of [
-    { code: "conflict" },
-    { code: "operation_id_conflict", message: "unexpected envelope" },
-    { code: "thread_operation_in_progress", open_operation_id: "" },
-  ]) {
-    expect(() => decode(value)).toThrow();
-  }
+    decode({ _tag: "EnvironmentHttpConflictError", message: "workstreams_not_configured" }).message,
+  ).toBe("workstreams_not_configured");
 });
 
 // Frozen wire decoder from 25b131a0af87b4ef868b6336fcf759a4c5a2acd8.
@@ -361,6 +373,131 @@ const decodeBaseJonesUpdateState = Schema.decodeUnknownSync(BaseJonesUpdateState
 const decodeJonesUpdateState = Schema.decodeUnknownSync(JonesUpdateState);
 const decodeJonesUpdateReconcileInput = Schema.decodeUnknownSync(JonesUpdateReconcileInput);
 const decodeJonesUpdateRecordRetiredInput = Schema.decodeUnknownSync(JonesUpdateRecordRetiredInput);
+
+it("keeps install-plan details additive for legacy update decoders and missing capabilities", () => {
+  const operationId = "11111111-1111-4111-8111-111111111111";
+  const source = "a".repeat(40);
+  const tree = "b".repeat(40);
+  const checkedAt = "2026-10-27T04:00:00Z";
+  const base = {
+    source: "jones-actions",
+    channel: "jones-main",
+    phase: "available",
+    capability: { check: true, download: true, install: true },
+    policy: { role: "follower", leaderSource: null },
+    recovery: { method: "clone", bytes: 1024, completedAt: checkedAt },
+  };
+  const additive = {
+    ...base,
+    capability: { ...base.capability, operations: 1, recoveryPolicy: 1 },
+    policy: { ...base.policy, reviewTarget: { source, tree, directiveId: operationId } },
+    recovery: { ...base.recovery, requested: "clone-required" },
+    operation: {
+      protocol: 1,
+      operationId,
+      environmentId: "synthetic-host",
+      action: { kind: "download-exact", targetSource: source },
+      expectedInstalledSource: tree,
+      phase: "held",
+      updatedAt: checkedAt,
+      code: "future-held-reason",
+    },
+    checkClassification: {
+      kind: "incomplete-discovery",
+      checkedAt,
+      discovery: {
+        termination: "window-ended",
+        bounded: true,
+        unresolvedLimits: ["ci-page"],
+      },
+      pendingCount: 2,
+      failedQualificationCount: 1,
+    },
+  };
+  expect(decodeBaseJonesUpdateState(additive)).toEqual(base);
+  expect(decodeJonesUpdateState(base)).toEqual(base);
+  expect(decodeJonesUpdateState(additive)).toEqual(additive);
+  expect(decodeJonesUpdateState(base).capability.operations).toBeUndefined();
+  expect(decodeJonesUpdateState(base).capability.recoveryPolicy).toBeUndefined();
+  for (const phase of [
+    "checking",
+    "building",
+    "no-new",
+    "available",
+    "downloading",
+    "verifying",
+    "staged",
+    "preparing",
+    "installing",
+    "committed",
+    "rolled-back",
+    "blocked",
+    "error",
+  ]) {
+    expect(decodeJonesUpdateState({ ...additive, phase }).phase).toBe(phase);
+    expect(decodeBaseJonesUpdateState({ ...additive, phase })).toEqual({ ...base, phase });
+  }
+  for (const phase of ["stop-requested", "stopped", "held", "fenced"])
+    expect(() => decodeJonesUpdateState({ ...base, phase })).toThrow();
+  for (const capability of [
+    { ...base.capability, operations: true },
+    { ...base.capability, operations: 2 },
+    { ...base.capability, recoveryPolicy: 2 },
+  ])
+    expect(() => decodeJonesUpdateState({ ...base, capability })).toThrow();
+});
+
+it("keeps bounded discovery classification distinct from the existing update phase", () => {
+  const state = {
+    source: "jones-actions",
+    channel: "jones-main",
+    phase: "no-new",
+    capability: { check: true, download: false, install: false },
+  };
+  const classification = {
+    kind: "no-eligible-package-in-window",
+    checkedAt: "2026-10-27T04:00:00Z",
+    discovery: {
+      termination: "window-ended",
+      bounded: true,
+      unresolvedLimits: ["producer-pages", "ci-page", "artifact-page", "unknown-terminal-evidence"],
+    },
+  };
+  expect(
+    decodeJonesUpdateState({ ...state, checkClassification: classification }).checkClassification,
+  ).toEqual(classification);
+  for (const kind of [
+    "available",
+    "target-already-running",
+    "qualification-pending",
+    "qualification-failed",
+    "no-eligible-package-in-window",
+    "incomplete-discovery",
+    "failure",
+  ])
+    expect(
+      decodeJonesUpdateState({ ...state, checkClassification: { ...classification, kind } })
+        .checkClassification?.kind,
+    ).toBe(kind);
+  expect(() =>
+    decodeJonesUpdateState({
+      ...state,
+      checkClassification: {
+        ...classification,
+        discovery: {
+          ...classification.discovery,
+          unresolvedLimits: [...classification.discovery.unresolvedLimits, "ci-page"],
+        },
+      },
+    }),
+  ).toThrow();
+  expect(() =>
+    decodeJonesUpdateState({
+      ...state,
+      checkClassification: { ...classification, kind: "exhaustive" },
+    }),
+  ).toThrow();
+});
 
 it("preserves old and new decoder compatibility without changing failed outcomes", () => {
   const oldState = {

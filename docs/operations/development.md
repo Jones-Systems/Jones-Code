@@ -92,6 +92,43 @@ Use an isolated, task-owned directory with a defined lifetime and cleanup owner.
 The [standing testing permission](./contributor-guidance.md#local-app-testing-permission)
 covers `--browser` for isolated synthetic verification.
 
+To stop a worktree's dev stack when its thread settles, import the **Dev** action from
+`t3.json` in Settings > Projects > Actions and start it through the action menu or its
+keybinding. Its `stopOnSettle` option lets T3 stop the terminal and its child processes.
+Running `vp run dev` through an agent's own shell tool does not attach it to this lifecycle.
+
+### Preview lifetime and cleanup
+
+The workflow launching a task-owned preview owns its cleanup on completion,
+failure, and cancellation. Register the cleanup path before launch. Keep a
+launch receipt with the task and cleanup owner, host, worktree/revision, isolated
+state directory, PID and process-start identity, ports, and graceful stop method.
+Record the process group or service and any separately owned terminal groups;
+stopping a server does not prove its terminals or watch supervisors have exited.
+Keep this working receipt outside the checkout, without credentials.
+
+Reuse an appropriate owned preview when its source and configuration still match
+the task. Stop a superseded instance after its replacement is verified, unless
+both have a recorded continuing purpose. Detached launch makes this ownership
+more important: the dev runner's child cleanup does not observe agent-task
+completion.
+
+At interruption, handoff, and completion, reconcile every launched or retained
+preview. Record either verified shutdown or a continuing retention duty:
+
+- For shutdown, freshly verify the captured process identities and ownership,
+  stop the owned runtime gracefully, and read back that its listeners, watch
+  supervisors, and owned terminals are gone. Report uncertain or failed cleanup.
+- For retention, name the concrete inspection or resume purpose, cleanup owner,
+  and end condition or next review point. A handoff must explicitly transfer
+  that duty; "available for resume" alone is not a complete disposition.
+
+Preserving dirty source, synthetic state, or qualification evidence does not
+require keeping its servers running. Classify those files separately before
+removal. A merged PR, completed thread, old process, or absent client connection
+does not itself authorize stopping another task's retained preview. A retention
+end condition calls for reconciliation, not an automatic sweep.
+
 ### State and ports
 
 The state-home precedence is an explicit `--home-dir`, then a linked worktree's
@@ -288,6 +325,14 @@ files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), a
 compares against the merge base with `origin/main`, or with a ref you pass. CI still runs the full
 test suites and the jobs the summary lists, so a local pass does not promise a green CI run.
 
+For provider lifecycle, thread admission, or selection hooks, also run the affected Jones
+integration commands from [the maintained check recipes](../../scripts/jones/boundary/checks.json)
+(`jones-provider-core-reliability`, plus the affected provider retirement and selection groups)
+at the implementation checkpoint and before publication. Keep the changed-file checks for quick
+iteration; `check:changed` does not automatically consume those integration recipes. Await the
+specific run or effect's completion in asynchronous tests; a worker drain alone does not join
+work already claimed by another daemon lane.
+
 While you iterate, run single checks:
 
 ```sh
@@ -300,60 +345,35 @@ In `apps/web`, a test that renders React or touches the DOM is named `*.browser.
 and runs in headless Chromium with the React Compiler on, like the app. There is no jsdom; other
 `*.test.ts` files run in Node.
 
-TypeScript workspaces typecheck with tsc-rs, which has Effect diagnostics built in.
-Keep `typescript`, `@effect/tsgo`, and the `effect-tsgo patch` prepare step: editors
-still use them for Effect quick fixes and refactors. Keep `@effect/tsgo` on the
-effect-tsgo version that tsc-rs ports (see the tsc-rs README), or the two disagree
-on rule names.
-Marketing keeps `astro check` for Astro files.
+TypeScript workspace commands run the verified official Effect-patched TSRS
+launcher. Root `typecheck` and `tc` first run uncached compiler admission, then
+Vite+'s cached recursive checks. The `typescript` catalog entry remains
+`npm:@tsc-rs/typescript@0.8.0` for editors and the pinned local fallback on
+unsupported hosts. Marketing keeps `astro check` for Astro files. See the
+[compiler guide](../internals/typecheck-compiler.md) for provenance, rationale,
+platform limits and installation repair. Candidate adoption remains subject to
+[complete qualification](https://github.com/Jones-Systems/Jones-Code/issues/711).
 
-For repeated local checks, use `pnpm typecheck:incremental packages/shared apps/server`
-(or `--all` for workspaces whose checker is exactly `tsc-rs --noEmit`). This opt-in
-command retains native incremental state while still running TypeScript and Effect
-checks every time. It excludes the root recursive command and Astro. Retained mode
-supports the repository base config and the qualified Expo base; use `--fresh` to
-bypass retained state for other config inheritance. Caches live in this worktree's
-`node_modules/.cache/jones/incremental-typecheck`; they last with the dependency
-cache. Interrupted runs clean their own files; crash residue is ignored and counted
-toward storage admission, without automatic reclamation. Admission and accepted
-payload limits are not a hard concurrent disk quota. Normal `typecheck` remains
-the authoritative fallback.
+For repeated local checks on supported TSRS hosts, use
+`pnpm typecheck:incremental packages/shared apps/server` (or `--all` for exact
+verified-launcher workspace scripts). This opt-in command retains native state
+while running TypeScript and Effect checks every time. It excludes Vite task
+entrypoints, the root recursive command and Astro. Retained mode supports the
+repository base config and qualified Expo base; `--fresh` bypasses retention
+for other config inheritance. The v2 namespace lives under this worktree's
+`node_modules/.cache/jones/incremental-typecheck/v2`, with the dependency-cache
+lifetime. Legacy v1 is ignored and preserved with an exact-path notice.
+Interrupted runs clean their owned files after process exit; crash residue is
+ignored and counted toward admission, without automatic reclamation. Admission
+and accepted payload limits are not a hard concurrent disk quota. Unsupported
+hosts use regular `typecheck`, whose local fallback includes Effect diagnostics.
 
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
 
-### Experimental tsrs checking
-
-For an optional TypeScript-only check of explicitly selected workspaces:
-
-```sh
-pnpm typecheck:tsrs:experimental packages/shared apps/server
-pnpm typecheck:tsrs:experimental @t3tools/shared --checkers 2
-```
-
-This uses the pinned local tsrs package and each selected project's existing
-`tsconfig.json`. Projects run serially with two checkers by default;
-`--checkers N` accepts a positive integer. Select package names or
-repository-relative workspace paths. Only the existing `tsc-rs --noEmit`
-script shape is supported; marketing's Astro check is outside coverage.
-Other compiler flags and implicit all-project selection are rejected.
-
-**This command omits configured Effect diagnostics.** Run the normal
-authoritative typecheck before accepting changes. The experimental compiler
-uses an older TypeScript snapshot and can fail projects that the normal checker
-accepts, including known web TS2883/TS4023 errors; diagnostics and nonzero exits
-are preserved. A passing result does not establish workspace parity.
-
-The runner prints selected projects, compiler/package versions and effective
-flags. It never downloads a compiler or falls back to the normal checker.
-It isolates incremental build information under an invocation-owned directory
-in root `node_modules`, leaving existing build information intact, and cleans
-that directory after success, failure, SIGINT or SIGTERM. Uncatchable process
-or host termination cannot run cleanup.
-
 ### Unused code
 
-`vp run knip:check` checks unused files and dependencies across the repo, then
+`vp run knip:check` checks unused files and dependencies across the repo and, at the same time,
 unused runtime exports in `apps/server`, `apps/desktop`, `apps/web`, and every internal package under
 `packages/`. CI enforces both checks.
 Exported types and Effect schemas are allowed without consumers. The schema preprocessor
@@ -368,6 +388,49 @@ The full export audit still has findings and is not a repo-wide CI gate. Extend 
 export check's workspace selectors as more workspaces become clean. Review callers before
 deleting code; production mode can also report development scripts and test fixtures.
 Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](../../knip.jsonc).
+
+### Server parallelism qualification
+
+Run the synthetic pool harness only on a host admitted for the repository's
+supported Node/native dependencies and storage budget. It writes disposable state,
+never live userdata. The source changes alone are not qualification evidence.
+
+Create a command manifest using `scripts/jones/serverParallelism/source-command.mjs`
+for the absolute source `apps/server/src/bin.ts`, or `artifact-command.mjs` for an
+actual bundled Node, Electron Node-mode or SEA installed layout. The latter takes
+`<bundle|electron|sea> <absolute executable> <absolute entry or -> <absolute manifest>`.
+Each manifest binds the hidden command and actual build identity; the harness
+reconstructs the production minimal child environment rather than accepting secrets.
+
+Invoke `qualify.mjs <manifest> <absolute report> <laptop|vps> [baseline-report]` for
+each profile/runtime form. It runs three steady combined reader/writer/control and
+productive-native windows with at least 500 acquisitions, then overflow and churn.
+Reports retain aggregate process samples and explicit missing capabilities.
+A passing source test or idle PID is not proof of N-way productive CPU overlap.
+No baseline means writer/throughput regression acceptance remains unknown. A failed
+retirement retains its exact scratch/journal for owner reconciliation; successful
+retirement permits the invoking harness to remove its own fixture.
+
+The advisory `Server parallel qualification` workflow defaults to bounded
+`source-evidence`: one unchanged baseline and one real source run for each
+profile, including churn and shutdown. It also runs matching-build and
+wrong-build dispatch checks. These reports cannot qualify the full matrix.
+After reviewing those prerequisites, select `scope: full` on the workflow's
+manual dispatch to exercise source, bundle, Electron and SEA on both platforms.
+Missing or failed cells remain explicit; a narrower diagnostic scope never
+substitutes for full performance qualification.
+
+Set `JONES_SP_COMMAND_MANIFEST` to the qualified manifest when running
+`nativeProcess.integration.test.ts`; absent manifests produce explicit skips.
+Run the native file separately for each of the four runtime forms. Its parent-loss
+case kills only its captured fixture parent, then proves child absence through the
+same conservative OS probe as restart admission. Source/bundle/Linux checks do not
+substitute for Electron/SEA/macOS packaging evidence.
+
+`snapshot.mjs <absolute report> [thread-count]` measures real shell capture, deferred
+decode, schema projection, synchronous JSON encoding and compression separately.
+Only measured contiguous encoding or qualified decode/projection/loop attribution
+activates a snapshot-offload follow-up. A payload-size guess does not activate it.
 
 ## Desktop artifacts
 
@@ -386,25 +449,30 @@ files for inspection. Run `vp run dist:desktop:artifact --help` for other option
 ### Linux AppImage prerequisites
 
 Build on Linux because the browser-secret helper links against the host's libsecret. Install
-Rust, C/C++ build tools, libsecret development headers, pkg-config, and ImageMagick.
+C/C++ build tools, libsecret development headers, pkg-config, and ImageMagick.
+Bytecode preparation also runs packaged Electron and requires GTK, NSS, ALSA, and GBM runtime libraries.
+Install Rust 1.95 or newer through [rustup](https://rust-lang.org/install), using the stable
+toolchain as release CI does.
 
-Ubuntu and Debian:
+Ubuntu 24.04 and Debian 13:
 
 ```sh
 sudo apt-get update
-sudo apt-get install cargo rustc build-essential libsecret-1-dev pkg-config imagemagick
+sudo apt-get install build-essential libsecret-1-dev pkg-config imagemagick libgtk-3-0t64 libnss3 libasound2t64 libgbm1
 ```
+
+On Ubuntu 22.04 and Debian 12, use `libgtk-3-0` and `libasound2` instead of the `t64` packages.
 
 Fedora:
 
 ```sh
-sudo dnf install rust cargo gcc gcc-c++ make libsecret-devel pkgconf-pkg-config ImageMagick
+sudo dnf install gcc gcc-c++ make libsecret-devel pkgconf-pkg-config ImageMagick gtk3 nss alsa-lib mesa-libgbm
 ```
 
 Arch Linux:
 
 ```sh
-sudo pacman -S rust base-devel libsecret pkgconf imagemagick
+sudo pacman -S base-devel libsecret pkgconf imagemagick gtk3 nss alsa-lib mesa
 ```
 
 The C toolchain, pkg-config, and libsecret headers are also needed for Linux desktop development.

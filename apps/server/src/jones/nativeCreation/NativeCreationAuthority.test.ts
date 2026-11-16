@@ -157,7 +157,6 @@ const sessions = (read: () => Effect.Effect<Option.Option<AuthSessions.AuthSessi
       revoke: () => Effect.succeed(false),
       revokeAllExcept: () => Effect.succeed([]),
       setLastConnectedAt: () => Effect.void,
-      setClientConnection: () => Effect.void,
     }),
   );
 
@@ -192,7 +191,7 @@ it.effect("production ports remain unavailable even with a current native operat
       Effect.provide(
         Authority.NativeCreationAuthorityUnavailable.pipe(
           Layer.provideMerge(repositoryLayer),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
         ),
       ),
     );
@@ -373,11 +372,15 @@ it.effect("unknown native enrollment lookup denies through the authority port", 
       Effect.provide(
         Authority.NativeCreationAuthorityUnavailable.pipe(
           Layer.provide(RepositorySqlite.layer.pipe(Layer.provide(memory))),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
         ),
       ),
     );
   }),
+);
+
+const decodeEffectNativeCreationExecutionReferenceV2 = Schema.decodeEffect(
+  NativeCreationExecutionReferenceV2,
 );
 
 it.effect("rejects forged contexts and unavailable durable execution storage", () =>
@@ -390,7 +393,7 @@ it.effect("rejects forged contexts and unavailable durable execution storage", (
       resources: value.resources,
     }).pipe(Effect.flip);
     assert.strictEqual(rejection.code, "unsupported_authority");
-    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+    const reference = yield* decodeEffectNativeCreationExecutionReferenceV2({
       version: 2,
       claimId: "fixture-claim",
       stageCommandId: "fixture-command",
@@ -403,12 +406,21 @@ it.effect("rejects forged contexts and unavailable durable execution storage", (
       return yield* authority.issueExecution!({
         reference,
         timestamp: "2026-10-02T12:34:56Z",
+        expectedClaim: {
+          workerId: "authority-worker",
+          expectedAttempt: 1,
+          claimedAt: "2026-10-02T12:34:56Z",
+          commandId: reference.stageCommandId,
+          threadId: value.preparation.command.threadId,
+          runId: "authority-run",
+          requestDigest: "a".repeat(64),
+        },
       }).pipe(Effect.flip);
     }).pipe(
       Effect.provide(
         Authority.NativeCreationAuthorityUnavailable.pipe(
           Layer.provide(repositoryLayer),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
         ),
       ),
     );
@@ -416,20 +428,26 @@ it.effect("rejects forged contexts and unavailable durable execution storage", (
   }),
 );
 
+const decodeEffectOrchestrationV2Command = Schema.decodeEffect(OrchestrationV2Command);
+const decodeEffectRepositoryNativeCreationStoredIntent = Schema.decodeEffect(
+  Repository.NativeCreationStoredIntent,
+);
+const decodeEffectIsoDateTime = Schema.decodeEffect(IsoDateTime);
+
 it.effect("issues only after a matching durable start and rechecks revoked authority", () =>
   Effect.gen(function* () {
     const value = yield* fixture;
     let revoked = false;
     let starts = 0;
     let mismatchedStart = false;
-    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+    const reference = yield* decodeEffectNativeCreationExecutionReferenceV2({
       version: 2,
       claimId: "fixture-claim",
       stageCommandId: "fixture-command",
       effectId: "fixture-effect",
       stage: "native_command",
     });
-    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+    const command = yield* decodeEffectOrchestrationV2Command({
       type: "thread.create",
       createdBy: "system",
       creationSource: "server",
@@ -454,7 +472,7 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
             Effect.gen(function* () {
               return {
                 history: {
-                  intent: yield* Schema.decodeUnknownEffect(Repository.NativeCreationStoredIntent)({
+                  intent: yield* decodeEffectRepositoryNativeCreationStoredIntent({
                     claimId: "fixture-claim",
                     claimedBootId: "fixture-boot",
                     claimedAt: "2026-10-02T12:34:56Z",
@@ -490,6 +508,7 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
                 nativeIdentity: { normalizedCommandDigest: "a".repeat(64) },
               };
             }),
+          recordExecutionBinding: () => Effect.void,
           startEffectV2: (ref, timestamp, authorize) =>
             Effect.gen(function* () {
               yield* authorize;
@@ -501,7 +520,7 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
                   kind: "native_command" as const,
                   phase: "started" as const,
                   ordinal: 0,
-                  timestamp: yield* Schema.decodeUnknownEffect(IsoDateTime)(timestamp).pipe(
+                  timestamp: yield* decodeEffectIsoDateTime(timestamp).pipe(
                     Effect.mapError(
                       () =>
                         new Repository.NativeCreationRepositoryError({
@@ -526,6 +545,15 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
       const context = yield* authority.issueExecution!({
         reference,
         timestamp: "2026-10-02T12:34:56Z",
+        expectedClaim: {
+          workerId: "authority-worker",
+          expectedAttempt: 1,
+          claimedAt: "2026-10-02T12:34:56Z",
+          commandId: reference.stageCommandId,
+          threadId: value.preparation.command.threadId,
+          runId: "authority-run",
+          requestDigest: "a".repeat(64),
+        },
       });
       assert.strictEqual(starts, 1);
       assert.deepEqual(Authority.getNativeCreationExecutionReference(context), reference);
@@ -538,6 +566,15 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
       const startMismatch = yield* authority.issueExecution!({
         reference,
         timestamp: "2026-10-02T12:34:56Z",
+        expectedClaim: {
+          workerId: "authority-worker",
+          expectedAttempt: 1,
+          claimedAt: "2026-10-02T12:34:56Z",
+          commandId: reference.stageCommandId,
+          threadId: value.preparation.command.threadId,
+          runId: "authority-run",
+          requestDigest: "a".repeat(64),
+        },
       }).pipe(Effect.flip);
       assert.strictEqual(startMismatch.code, "unresolved_claim");
       revoked = true;
@@ -551,7 +588,7 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
       Effect.provide(
         Authority.NativeCreationAuthorityLive.pipe(
           Layer.provide(executionOwner),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
           Layer.provide(
             Layer.succeed(Authority.NativeCreationGrantResolver, {
               resolveCurrent: () =>

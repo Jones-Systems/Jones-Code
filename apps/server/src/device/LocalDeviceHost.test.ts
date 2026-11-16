@@ -5,6 +5,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+import * as Ref from "effect/Ref";
 import * as FileSystem from "effect/FileSystem";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -42,7 +44,17 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-agent-start-" });
+  const hub = { running: true, spawnFails: false };
   const stateDir = agentDeviceStateDir(path, path.join(baseDir, "userdata"));
+  const daemonHealthy = yield* Ref.make(true);
+  // These daemon-lifecycle cases require a ready platform; Xcode refusal has
+  // separate real readiness cases. Supply only task-local executable fixtures.
+  yield* fs.makeDirectory(path.join(baseDir, "bin"));
+  for (const command of ["xcrun", "xcodebuild"]) {
+    const file = path.join(baseDir, "bin", command);
+    yield* fs.writeFileString(file, "#!/bin/sh\nexit 0\n");
+    yield* fs.chmod(file, 0o755);
+  }
   for (const [name, version, entry] of [
     ["expo-device-hub", DEVICE_HUB_VERSION, "dist/server/cli.mjs"],
     ["agent-device", AGENT_DEVICE_VERSION, "bin/agent-device.mjs"],
@@ -55,27 +67,36 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   }
   const host = yield* LocalDeviceHost.make().pipe(
     Effect.provide(Layer.mergeAll(ServerConfig.layerTest(baseDir, baseDir), NetService.layer)),
-    Effect.provideService(HostProcess.Environment, { HOME: baseDir, PATH: "" }),
+    Effect.provideService(HostProcess.Environment, { HOME: baseDir, PATH: `${baseDir}/bin` }),
     Effect.provideService(HostProcess.IsExecutable, false),
     Effect.provideService(HostProcess.Platform, "darwin"),
     Effect.provideService(
       ChildProcessSpawner.ChildProcessSpawner,
       ChildProcessSpawner.make(() =>
-        Effect.succeed(
-          ChildProcessSpawner.makeHandle({
-            pid: ChildProcessSpawner.ProcessId(123),
-            stdout: Stream.empty,
-            stderr: Stream.empty,
-            all: Stream.empty,
-            exitCode: Effect.never,
-            isRunning: Effect.succeed(true),
-            kill: () => Effect.void,
-            stdin: Sink.drain,
-            getInputFd: () => Sink.drain,
-            getOutputFd: () => Stream.empty,
-            unref: Effect.succeed(Effect.void),
-          }),
-        ),
+        hub.spawnFails
+          ? Effect.fail(
+              PlatformError.systemError({
+                _tag: "NotFound",
+                module: "ChildProcess",
+                method: "spawn",
+                description: "Hub entry missing",
+              }),
+            )
+          : Effect.succeed(
+              ChildProcessSpawner.makeHandle({
+                pid: ChildProcessSpawner.ProcessId(123),
+                stdout: Stream.empty,
+                stderr: Stream.empty,
+                all: Stream.empty,
+                exitCode: Effect.never,
+                isRunning: Effect.sync(() => hub.running),
+                kill: () => Effect.void,
+                stdin: Sink.drain,
+                getInputFd: () => Sink.drain,
+                getOutputFd: () => Stream.empty,
+                unref: Effect.succeed(Effect.void),
+              }),
+            ),
       ),
     ),
     Effect.provideService(ProcessRunner.ProcessRunner, {
@@ -87,15 +108,56 @@ const agentFixture = Effect.fn("agentFixture")(function* (
     Effect.provideService(
       HttpClient.HttpClient,
       HttpClient.make((request) =>
-        Effect.succeed(HttpClientResponse.fromWeb(request, new Response("ok"))),
+        Ref.get(daemonHealthy).pipe(
+          Effect.map((healthy) =>
+            HttpClientResponse.fromWeb(
+              request,
+              new Response("ok", {
+                status: request.url.endsWith("/health") && !healthy ? 503 : 200,
+              }),
+            ),
+          ),
+        ),
       ),
     ),
   );
   yield* host.ensureReady(() => Effect.void);
-  return { host, fs, stateDir };
+  return { host, fs, stateDir, hub, daemonHealthy };
 });
 
 describe("AgentDevice startup", () => {
+  it.effect("restarts a cached daemon that no longer answers its health check", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      let attempts = 0;
+      const { host, daemonHealthy } = yield* agentFixture((stateDir) =>
+        Effect.gen(function* () {
+          attempts++;
+          yield* fs
+            .writeFileString(
+              `${stateDir}/daemon.json`,
+              JSON.stringify({ httpPort: 12345 + attempts, token: `token-${attempts}` }),
+            )
+            .pipe(Effect.orDie);
+          return processOutput(0);
+        }),
+      );
+      const first = yield* host.ensureAgentReady(() => Effect.void);
+      expect((yield* host.ensureAgentReady(() => Effect.void)).agentDevice).toEqual(
+        first.agentDevice,
+      );
+      expect(attempts).toBe(1);
+
+      yield* Ref.set(daemonHealthy, false);
+      const restarted = yield* host.ensureAgentReady(() => Effect.void);
+      expect(attempts).toBe(2);
+      expect(restarted.agentDevice).toMatchObject({
+        baseUrl: "http://127.0.0.1:12347",
+        token: "token-2",
+      });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("reports an incompatible lock immediately and retains it for manual repair", () =>
     Effect.gen(function* () {
       const result = processOutput(
@@ -196,7 +258,30 @@ describe("AgentDevice startup", () => {
       expect((yield* host.ensureAgentReady(() => Effect.void)).agentDevice).toEqual(
         ready.agentDevice,
       );
+      expect((yield* host.current)?.releaseAgentSession).toBeTypeOf("function");
       expect(attempts).toBe(1);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps releasing agent sessions while a dead hub fails to restart and after", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { host, hub } = yield* agentFixture((stateDir) =>
+        fs
+          .writeFileString(
+            `${stateDir}/daemon.json`,
+            JSON.stringify({ httpPort: 12345, token: "test-token" }),
+          )
+          .pipe(Effect.orDie, Effect.as(processOutput(0))),
+      );
+      yield* host.ensureAgentReady(() => Effect.void);
+      hub.running = false;
+      hub.spawnFails = true;
+      expect((yield* host.ensureReady(() => Effect.void).pipe(Effect.result))._tag).toBe("Failure");
+      expect((yield* host.current)?.releaseAgentSession).toBeTypeOf("function");
+      hub.spawnFails = false;
+      yield* host.ensureReady(() => Effect.void);
+      expect((yield* host.current)?.releaseAgentSession).toBeTypeOf("function");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
@@ -207,6 +292,9 @@ const diagnose = (
   platform: NodeJS.Platform = "darwin",
 ) =>
   LocalDeviceHost.__testing.platformReason("android").pipe(
+    Effect.provideService(ProcessRunner.ProcessRunner, {
+      run: () => Effect.die("Android availability must not probe Xcode"),
+    }),
     Effect.provideService(HostProcess.Environment, environment),
     Effect.provideService(HostProcess.Platform, platform),
     Effect.provideService(
@@ -447,6 +535,8 @@ it.effect("keeps local Android and iOS available without ffmpeg", () =>
     yield* fs.makeDirectory(`${baseDir}/bin`);
     yield* fs.writeFileString(`${baseDir}/bin/xcrun`, "#!/bin/sh\nexit 0\n");
     yield* fs.chmod(`${baseDir}/bin/xcrun`, 0o755);
+    yield* fs.writeFileString(`${baseDir}/bin/xcodebuild`, "#!/bin/sh\nexit 0\n");
+    yield* fs.chmod(`${baseDir}/bin/xcodebuild`, 0o755);
     for (const [directory, tool] of [
       ["platform-tools", "adb"],
       ["emulator", "emulator"],
@@ -472,7 +562,10 @@ it.effect("keeps local Android and iOS available without ffmpeg", () =>
         HttpClient.make(() => Effect.die(new Error("Readiness must not make network requests"))),
       ),
       Effect.provideService(ProcessRunner.ProcessRunner, {
-        run: () => Effect.die("Platform availability must not probe emulator video"),
+        run: (input) =>
+          input.command === "xcodebuild" && input.args[0] === "-checkFirstLaunchStatus"
+            ? Effect.succeed(processOutput(0))
+            : Effect.die("Platform availability must not probe emulator video"),
       }),
     );
     expect((yield* onTestHost(host.summary)).platforms).toEqual([

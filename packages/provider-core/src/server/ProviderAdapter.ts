@@ -7,6 +7,7 @@ import type {
   ProviderGoalControlResult,
 } from "./jones/runtimeTypes.ts";
 import type { ProviderEventProducerOrigin } from "./jones/ProviderEventOrigin.ts";
+import type { GoalContinuityContext } from "./jones/GoalContinuityContext.ts";
 import { classifyProviderRuntimeBindingFailure } from "./jones/ProviderRuntimeBindingDiagnostics.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
@@ -66,7 +67,11 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   cwd: Schema.NullOr(Schema.String),
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
-  reasoningEffort: Schema.optional(Schema.String),
+  /**
+   * The administrator's ceiling, when a managed policy sets one. `runtimeMode` is already under
+   * it; adapters use it to refuse native mode choices a user makes beside T3 Code's own.
+   */
+  maxRuntimeMode: Schema.optional(RuntimeMode),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -117,6 +122,8 @@ export const ProviderAdapterV2Event = Schema.Union([
     driver: ProviderDriverKind,
     runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThread: OrchestrationV2ProviderThread,
+    /** Work remaining at this point in the event stream, including native continuations. */
+    pendingBackgroundWork: Schema.optional(Schema.Boolean),
     retainedNativeTurnIds: Schema.optional(Schema.Array(Schema.String)),
   }),
   Schema.Struct({
@@ -150,11 +157,16 @@ export const ProviderAdapterV2Event = Schema.Union([
     runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     turnItem: OrchestrationV2TurnItem,
   }),
-  /**
-   * Raw output from a running command. Never persisted: the session manager
-   * hands it to the command output hub, which only clients showing the row see.
-   * The item's final output still arrives in its `turn_item.updated`.
-   */
+  // Start before the root terminal; clear only after the final covered projection.
+  // Consumer lifetime cannot depend on a producer probe that runs ahead of its queue.
+  Schema.Struct({
+    type: Schema.Literal("background_work.updated"),
+    driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
+    providerTurnId: ProviderTurnId,
+    pending: Schema.Boolean,
+  }),
+  /** Unpersisted deltas go only to clients showing the row; final output arrives in turn_item.updated. */
   Schema.Struct({
     type: Schema.Literal("command_output.delta"),
     driver: ProviderDriverKind,
@@ -162,6 +174,14 @@ export const ProviderAdapterV2Event = Schema.Union([
     threadId: ThreadId,
     itemId: TurnItemId,
     chunk: Schema.String,
+  }),
+  /** Unpersisted predicted next prompt; arrives after the run's root terminal. */
+  Schema.Struct({
+    type: Schema.Literal("prompt_suggestion.updated"),
+    driver: ProviderDriverKind,
+    threadId: ThreadId,
+    runId: RunId,
+    text: Schema.String,
   }),
   Schema.Struct({
     type: Schema.Literal("runtime_request.updated"),
@@ -189,6 +209,7 @@ export const ProviderAdapterV2Event = Schema.Union([
     runOrdinal: PositiveInt,
     status: Schema.Literals(["completed", "interrupted", "cancelled"]),
     failure: Schema.Null,
+    reason: Schema.optional(Schema.String),
     threadDisposition: Schema.Literals(["reusable", "broken"]),
   }),
   Schema.Struct({
@@ -208,11 +229,7 @@ export const ProviderAdapterV2Event = Schema.Union([
     retry: Schema.optional(OrchestrationV2ProviderRetry),
     retryStartedAt: Schema.optional(Schema.DateTimeUtc),
     threadDisposition: Schema.Literals(["reusable", "broken"]),
-    /**
-     * Child turns the root started outlive its failure and will report their
-     * own terminals, as after a completed root. Without it, the run settles
-     * every child it still sees as open.
-     */
+    /** Child turns outlive root failure and report their own terminals; otherwise open children settle. */
     childTurnsContinue: Schema.optional(Schema.Literal(true)),
   }),
 ]);
@@ -235,6 +252,7 @@ export class ProviderAdapterOpenSessionError extends Schema.TaggedError<Provider
   {
     driver: ProviderDriverKind,
     providerSessionId: ProviderSessionId,
+    requiresSignIn: Schema.optional(Schema.Literal(true)),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -267,6 +285,24 @@ export class ProviderAdapterResumeThreadError extends Schema.TaggedError<Provide
 ) {
   override get message(): string {
     return `Failed to resume ${this.driver} provider thread ${this.providerThreadId}.`;
+  }
+}
+
+/**
+ * The native thread is live in another process that owns its writes. Starting
+ * a replacement would split the conversation, so callers must not fall back.
+ */
+export class ProviderAdapterThreadInUseError extends Schema.TaggedError<ProviderAdapterThreadInUseError>()(
+  "ProviderAdapterThreadInUseError",
+  {
+    driver: ProviderDriverKind,
+    providerThreadId: ProviderThreadId,
+    detail: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return this.detail;
   }
 }
 
@@ -378,6 +414,21 @@ export class ProviderAdapterInterruptError extends Schema.TaggedError<ProviderAd
   }
 }
 
+/** The provider did not confirm a stop in time; its processes may still be running. */
+export class ProviderAdapterInterruptTimeoutError extends Schema.TaggedError<ProviderAdapterInterruptTimeoutError>()(
+  "ProviderAdapterInterruptTimeoutError",
+  {
+    driver: ProviderDriverKind,
+    providerThreadId: ProviderThreadId,
+    providerTurnId: ProviderTurnId,
+    timeoutMs: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `The ${this.driver} provider did not confirm stopping turn ${this.providerTurnId} within ${this.timeoutMs} ms.`;
+  }
+}
+
 export class ProviderAdapterRuntimeRequestResponseError extends Schema.TaggedError<ProviderAdapterRuntimeRequestResponseError>()(
   "ProviderAdapterRuntimeRequestResponseError",
   {
@@ -444,12 +495,22 @@ export function hasUnknownRuntimeBinding(error: unknown): boolean {
   return false;
 }
 
+export class ProviderAdapterSessionStoppedError extends Schema.TaggedError<ProviderAdapterSessionStoppedError>()(
+  "ProviderAdapterSessionStoppedError",
+  { driver: ProviderDriverKind },
+) {
+  override get message(): string {
+    return `No running ${this.driver} session owns this thread.`;
+  }
+}
+
 export const ProviderAdapterV2Error = Schema.Union([
   ProviderRuntimeBindingError,
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
   ProviderAdapterCloseSessionError,
   ProviderAdapterResumeThreadError,
+  ProviderAdapterThreadInUseError,
   ProviderAdapterEnsureThreadError,
   ProviderAdapterReadThreadSnapshotError,
   ProviderAdapterRollbackThreadError,
@@ -458,9 +519,11 @@ export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterSteerRunUnsupportedError,
   ProviderAdapterSteerRunError,
   ProviderAdapterInterruptError,
+  ProviderAdapterInterruptTimeoutError,
   ProviderAdapterRuntimeRequestResponseError,
   ProviderAdapterEventStreamError,
   ProviderAdapterProtocolError,
+  ProviderAdapterSessionStoppedError,
 ]);
 export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
 
@@ -479,10 +542,21 @@ export interface ProviderRuntimeLifecycle {
     readonly producerOrigin?: ProviderEventProducerOrigin;
     readonly physicalProcess?: PhysicalProcessLease | undefined;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
+  // Completing this retained local publication never repeats a native request.
+  readonly prepareBindingPublication?: (
+    input: RuntimeBindingPublicationInput,
+  ) => Effect.Effect<CapturedRuntimeBindingPublication, ProviderAdapterV2Error>;
   readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly invalidate: (
     binding: ProviderRuntimeBinding,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+}
+
+export type RuntimeBindingPublicationInput = Parameters<ProviderRuntimeLifecycle["bind"]>[0];
+
+export interface CapturedRuntimeBindingPublication {
+  readonly binding: ProviderRuntimeBinding;
+  readonly complete: Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
 }
 
 export function requestedRuntimeIdentity(
@@ -562,6 +636,8 @@ export interface ProviderAdapterV2OpenSessionInput {
   readonly providerSessionId: ProviderSessionId;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
+  /** Labs flag, read live: emit `prompt_suggestion.updated` after completed turns, where the provider can. */
+  readonly promptSuggestions?: Effect.Effect<boolean>;
   readonly resumeFromSession?: OrchestrationV2ProviderSession;
   readonly initialNativeThreadId?: string;
   readonly initialProviderItemIdentityVersion?: 2;
@@ -575,6 +651,7 @@ export interface ProviderAdapterV2EnsureThreadInput {
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly providerSessionId?: ProviderSessionId;
   readonly existingProviderThread?: OrchestrationV2ProviderThread;
+  readonly forceNewNativeThread?: boolean;
 }
 
 export interface ProviderAdapterV2TurnInput {
@@ -596,6 +673,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly configuredReasoningEffort?: string;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  /** Jones-owned recovery callbacks; user checkpoint data remains untrusted context. */
+  readonly goalContinuityContext?: GoalContinuityContext;
 }
 
 export interface ProviderAdapterV2SteerInput {
@@ -617,8 +696,8 @@ export interface ProviderAdapterV2InterruptInput {
 export interface ProviderAdapterV2RuntimeRequestResponseInput {
   readonly requestId: RuntimeRequestId;
   readonly decision?: ProviderApprovalDecision;
+  readonly feedback?: string;
   readonly answers?: ProviderUserInputAnswers;
-  readonly response?: unknown;
 }
 
 export interface ProviderAdapterV2ThreadSnapshot {
@@ -644,6 +723,7 @@ export type ProviderAdapterV2RollbackTarget =
       readonly checkpointId: CheckpointId;
       readonly appRunOrdinal: number;
       readonly providerTurn: OrchestrationV2ProviderTurn;
+      readonly message?: Pick<OrchestrationV2ConversationMessage, "role" | "text" | "attachments">;
     };
 
 export interface ProviderAdapterV2RollbackThreadInput {
@@ -672,15 +752,31 @@ export interface ProviderAdapterV2HistoricalContext {
   readonly context: string;
 }
 
+export interface RuntimeRetirementReceipt {
+  readonly binding: ProviderRuntimeBinding;
+  readonly evidence: "thread_closed" | "producer_exited";
+}
+
+export interface CapturedRuntimeRetirement {
+  readonly binding: ProviderRuntimeBinding;
+  readonly awaitRetired: Effect.Effect<RuntimeRetirementReceipt, ProviderAdapterV2Error>;
+}
+
 export interface CapturedRuntimeStop {
   readonly binding: ProviderRuntimeBinding;
   readonly evidenceRevision: number;
   readonly isCurrent: Effect.Effect<boolean>;
   readonly stop: Effect.Effect<void, ProviderAdapterV2Error>;
+  // Observation stays bound to the captured retirement after new-work admission closes.
+  readonly retirement?: CapturedRuntimeRetirement & {
+    readonly started: Effect.Effect<boolean>;
+  };
 }
 
 export interface ProviderAdapterV2McpTool {
   readonly name: string;
+  // Apps reject a `hostContext.toolInfo.tool` without one.
+  readonly inputSchema: unknown;
   readonly _meta?: unknown;
   readonly annotations?: unknown;
 }
@@ -717,6 +813,12 @@ export type ProviderAdapterV2SubagentOutcome = {
 };
 
 export interface ProviderAdapterV2SessionRuntime {
+  readonly reconcileBindingPublication?: (input: {
+    readonly threadId: ThreadId;
+    readonly providerThreadId: ProviderThreadId;
+    readonly nativeThreadId: string | null;
+    readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;
+  }) => Effect.Effect<OrchestrationV2ProviderThread | null, ProviderAdapterV2Error>;
   readonly captureRuntimeStop?: (
     providerThread: OrchestrationV2ProviderThread,
   ) => Effect.Effect<CapturedRuntimeStop | null, ProviderAdapterV2Error>;
@@ -725,31 +827,21 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;
   readonly providerSession: OrchestrationV2ProviderSession;
+  /** False keeps conversations alive when the provider cannot restore them after a restart. */
+  readonly canResumeAfterRestart?: boolean;
   readonly events: Stream.Stream<ProviderAdapterV2Event, ProviderAdapterV2Error>;
-  /**
-   * Manager-owned runtimes expose a synchronous subscription so concurrent
-   * provider threads receive independent copies of the process event stream.
-   * Adapter runtimes may omit this and expose only their single-consumer event stream.
-   */
+  /** Manager runtimes broadcast independent subscriptions; adapters may expose only a single-consumer stream. */
   readonly subscribeEvents?: Effect.Effect<ProviderAdapterV2EventSubscription>;
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
   readonly readThreadActivity?: (
     providerThread: OrchestrationV2ProviderThread,
   ) => Effect.Effect<ProviderRuntimeObservation>;
-  /**
-   * When present, RunExecutionService uses only this probe (never the
-   * session-wide hasPendingBackgroundWork) so sibling native threads cannot pin
-   * an unrelated root subscription open.
-   */
+  /** Root-subscription probe; replacement checks opt in to subagents owned by the live process. */
   readonly hasPendingBackgroundWorkForThread?: (
     providerThread: OrchestrationV2ProviderThread,
+    options?: { readonly includeSubagents?: boolean },
   ) => Effect.Effect<boolean>;
-  /**
-   * Set when every background task this session lists on its provider threads
-   * runs inside the session's own process and ends when it closes. Leave unset
-   * when a task can outlive the session, for example on a shared server, so its
-   * thread keeps showing Waiting.
-   */
+  /** Set only if all session background tasks end with its process; otherwise threads must keep Waiting. */
   readonly backgroundTasksEndWithProcess?: true;
   readonly getModelContextWindow?: (
     modelSelection: ModelSelection,
@@ -792,9 +884,23 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly taskId: string;
   }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Marks or unmarks background tasks the agent will resume from, using the ids the agent saw.
+   * Ids not running on this provider thread come back unmatched and change nothing.
+   */
+  readonly awaitBackgroundTasks?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly taskIds: ReadonlyArray<string>;
+    readonly awaited: boolean;
+  }) => Effect.Effect<{ readonly matched: ReadonlyArray<string> }, ProviderAdapterV2Error>;
   readonly interruptTurn: (
     input: ProviderAdapterV2InterruptInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Whether this runtime is executing the turn now. False is positive evidence that the turn
+   * ended here or never started; a runtime without the probe leaves the question unknown.
+   */
+  readonly isTurnActive?: (providerTurnId: ProviderTurnId) => Effect.Effect<boolean>;
   readonly stopSubagent?: (input: {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly nativeTaskId: string;
@@ -804,6 +910,18 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly unloadThread?: (input: {
     readonly providerThread: OrchestrationV2ProviderThread;
   }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** Confirms writer release for the captured binding; an unsubscribe acknowledgement is insufficient. */
+  readonly retireThreadForTransfer?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    /** The manager must fence new attachments while granting exclusive producer retirement. */
+    readonly allowProducerRetirement: boolean;
+  }) => Effect.Effect<
+    {
+      readonly binding: ProviderRuntimeBinding;
+      readonly evidence: "thread_closed" | "producer_exited";
+    },
+    ProviderAdapterV2Error
+  >;
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
@@ -820,10 +938,7 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly reason?: string;
   }) => Effect.Effect<{ readonly feedbackId: string }, ProviderAdapterV2Error>;
-  /**
-   * Absent means apps from this provider are not interactive and their tool
-   * calls stay plain tool rows.
-   */
+  /** Absent means non-interactive apps with plain tool rows. */
   readonly mcpApps?: ProviderAdapterV2McpApps;
   readonly rollbackThread: (
     input: ProviderAdapterV2RollbackThreadInput,

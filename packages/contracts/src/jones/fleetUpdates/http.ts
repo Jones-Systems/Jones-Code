@@ -11,6 +11,7 @@ import {
   FleetHostStatus,
   FleetLeaderInput,
   FleetOperationId,
+  FleetPlanDirectiveInput,
   FleetStageInput,
   FleetRetireInput,
 } from "./host.ts";
@@ -26,7 +27,7 @@ export function makeFleetUpdatesHttpGroup({
     error: [
       EnvironmentScopeRequiredError,
       EnvironmentInternalError,
-      FleetHostError.pipe(HttpApiSchema.status(409)),
+      FleetHostError.annotate({ httpApiStatus: 409 }).pipe(HttpApiSchema.status(409)),
     ],
     success: FleetHostStatus,
   } as const;
@@ -65,6 +66,12 @@ export function makeFleetUpdatesHttpGroup({
       HttpApiEndpoint.put("leader", `${FLEET_UPDATES_HTTP_BASE}/leader`, {
         ...common,
         payload: FleetLeaderInput,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.put("planDirective", `${FLEET_UPDATES_HTTP_BASE}/plan-directive`, {
+        ...common,
+        payload: FleetPlanDirectiveInput,
       }).middleware(EnvironmentAuthenticatedAuth),
     );
 }

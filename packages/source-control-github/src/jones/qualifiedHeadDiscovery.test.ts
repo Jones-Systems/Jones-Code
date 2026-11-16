@@ -45,6 +45,7 @@ function run(
     Effect.provideService(
       GitHubRest.GitHubRest,
       GitHubRest.GitHubRest.of({
+        appCredential: () => Effect.succeedNone,
         credential: () => Effect.succeed(credential),
         rest: (request) =>
           Effect.gen(function* () {
@@ -150,6 +151,7 @@ describe("qualified head REST discovery", () => {
           Effect.provideService(
             GitHubRest.GitHubRest,
             GitHubRest.GitHubRest.of({
+              appCredential: () => Effect.succeedNone,
               credential: () => Effect.succeed(credential),
               rest: () => {
                 calls++;
@@ -204,6 +206,7 @@ describe("qualified head REST discovery", () => {
           Effect.provideService(
             GitHubRest.GitHubRest,
             GitHubRest.GitHubRest.of({
+              appCredential: () => Effect.succeedNone,
               credential: () => Effect.succeed(credential),
               rest: (request) => {
                 calls++;

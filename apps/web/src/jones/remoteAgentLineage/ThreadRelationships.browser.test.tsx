@@ -1,4 +1,4 @@
-import { cloneElement, type ReactElement, type ReactNode } from "react";
+import { cloneElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { act, render as renderTest, type Screen } from "../../../test/render";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -6,9 +6,18 @@ import { expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
 
+function expectCollapsedGroup(id: string, label: string, count: number) {
+  const toggle = container.querySelector(`[data-linked-group="${id}"] button`);
+  expect(toggle?.textContent).toContain(label);
+  expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+  expect(toggle?.querySelector(".tabular-nums")?.textContent?.trim()).toBe(String(count));
+}
+
 const state = vi.hoisted(() => ({
   stopWorkflowLabel: "environment-data:orchestration:stop-workflow",
   projection: null as unknown,
+  revision: 0,
+  listeners: new Set<() => void>(),
   navigate: vi.fn(),
   shells: [] as unknown[],
   projects: [] as unknown[],
@@ -20,6 +29,8 @@ const state = vi.hoisted(() => ({
   workflowCommand: vi.fn().mockResolvedValue({ _tag: "Success" }),
   toast: vi.fn(),
 }));
+
+vi.mock(import("../../env"), () => ({ isElectron: true }));
 
 vi.mock(import("../linkedThreads/useLinkedThreads"), () => ({
   useLinkedThreads: () => ({
@@ -50,17 +61,47 @@ vi.mock(import("@tanstack/react-router"), async (original) => ({
   ...(await original()),
   useNavigate: (() => state.navigate) as never,
 }));
-vi.mock(import("../../state/entities"), async (original) => ({
-  ...(await original()),
-  useThreadProjection: (() => ({ projection: state.projection })) as never,
-  useThreadRelationshipShells: ((ref: { readonly environmentId: string }) =>
-    (state.shells as ReadonlyArray<{ readonly environmentId: string; readonly source: unknown }>)
-      .filter((shell) => shell.environmentId === ref.environmentId)
-      .map((shell) => shell.source)) as never,
-  useProjects: (() => state.projects) as never,
-  useQuietThreadShell: ((ref: { environmentId: string; threadId: string } | null) =>
-    ref ? (state.quietShells.get(`${ref.environmentId}:${ref.threadId}`) ?? null) : null) as never,
-}));
+vi.mock(import("../../state/entities"), async (original) => {
+  const { useSyncExternalStore } = await import("react");
+  type FixtureThread = { id?: string; forkedFrom?: unknown; lineage?: Record<string, unknown> };
+  const sourceThread = (thread: FixtureThread) => ({
+    ...thread,
+    forkedFrom: thread.forkedFrom ?? null,
+    lineage: {
+      rootThreadId: thread.id,
+      parentThreadId: null,
+      relationshipToParent: null,
+      ...thread.lineage,
+    },
+  });
+  return {
+    ...(await original()),
+    useThreadProjection: (() => {
+      useSyncExternalStore(
+        (listener) => {
+          state.listeners.add(listener);
+          return () => state.listeners.delete(listener);
+        },
+        () => state.revision,
+      );
+      const projection = state.projection as
+        | ({ thread: FixtureThread } & Record<string, unknown>)
+        | null;
+      return {
+        projection: projection ? { ...projection, thread: sourceThread(projection.thread) } : null,
+      };
+    }) as never,
+    useThreadRelationshipShells: ((ref: { readonly environmentId: string }) =>
+      (state.shells as ReadonlyArray<{ readonly environmentId: string; readonly source: unknown }>)
+        .filter((shell) => shell.environmentId === ref.environmentId)
+        .map((shell) => sourceThread(shell.source as FixtureThread))) as never,
+    useProjects: (() => state.projects) as never,
+    useQuietThreadShell: ((ref: { environmentId: string; threadId: string } | null) =>
+      ref
+        ? (state.quietShells.get(`${ref.environmentId}:${ref.threadId}`) ?? null)
+        : null) as never,
+  };
+});
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
   useEnvironment: ((id: string) => state.environments.get(id) ?? null) as never,
@@ -111,6 +152,7 @@ vi.mock(import("../../components/ui/tooltip"), async () => {
 });
 
 import { ThreadRelationshipsPanel } from "../../components/chat/ThreadRelationshipsControl";
+import { RemoteSubagentRow } from "./RemoteRows";
 
 let root: Screen;
 let container: HTMLDivElement;
@@ -120,8 +162,13 @@ async function render(element: ReactElement) {
   current = element;
   await act(async () => root.rerender(element));
 }
-// The mocked hooks read `state` while rendering, so a new element picks up changes.
-const update = () => act(async () => root.rerender(cloneElement(current)));
+// Notify the synthetic projection subscription so compiler-memoized children observe fixture updates.
+const update = () =>
+  act(async () => {
+    state.revision++;
+    for (const listener of state.listeners) listener();
+    await root.rerender(cloneElement(current));
+  });
 const click = (element: HTMLElement) => act(async () => element.click());
 const buttons = () => [...container.querySelectorAll("button")];
 const allByLabel = (label: string) =>
@@ -212,6 +259,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   state.projection = projection;
   const panel = (
     <ThreadRelationshipsPanel
+      showSideChats={false}
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("parent")}
     />
@@ -224,6 +272,22 @@ it("shows the matching child agent details and refreshes them when the agent set
   expect(allByLabel("Stop subagent Checker")).toHaveLength(0);
   await click(linkedToggle());
   expect(text()).toContain("Checker");
+  state.environments.set("test", {
+    label: "Laptop",
+    connection: { phase: "connected" },
+    entry: { target: { _tag: "PrimaryConnectionTarget" } },
+  });
+  await update();
+  const checkerRow = () => buttons().find((button) => button.textContent?.includes("Checker"))!;
+  expect(checkerRow().textContent).toContain("Running");
+  expect(checkerRow().textContent).not.toContain("on LAP");
+  state.environments.set("test", {
+    label: "VPS",
+    connection: { phase: "connected" },
+    entry: { target: { _tag: "RelayConnectionTarget" } },
+  });
+  await update();
+  expect(checkerRow().textContent).toContain("on VPS");
   expect(text()).toContain("Linked · 3 running");
   expect(text()).toContain("running");
   expect(text()).not.toContain("gpt-5.4");
@@ -257,7 +321,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   };
   await update();
   expect(heading()).toBe("Linked (1)");
-  expect(text()).toContain("Previous agents (1)");
+  expectCollapsedGroup("previous", "Previous agents", 1);
   expect(text()).not.toContain("Checker");
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
@@ -275,7 +339,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   expect(text()).not.toContain("Worker");
   await click(sectionToggle(true));
   expect(text()).not.toContain("Checker");
-  expect(text()).toContain("Previous agents (1)");
+  expectCollapsedGroup("previous", "Previous agents", 1);
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
 
@@ -352,6 +416,7 @@ it("keeps fork ancestry navigable inside Linked and closes Linked when the selec
   };
   await render(
     <ThreadRelationshipsPanel
+      showSideChats={false}
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("selected")}
     />,
@@ -359,12 +424,7 @@ it("keeps fork ancestry navigable inside Linked and closes Linked when the selec
   expect(container.querySelectorAll("li")).toHaveLength(0);
   await click(linkedToggle());
   expect(textNodes(" ")).toContain("Forked from");
-  expect(
-    container
-      .querySelector('[data-linked-group="children"] button')
-      ?.textContent?.replace(/\s+/g, " ")
-      .trim(),
-  ).toBe("Children (1)");
+  expectCollapsedGroup("children", "Children", 1);
   await click(buttons().find((button) => button.textContent?.includes("Children"))!);
   expect(textNodes(" ")).not.toContain("Delegated tasks");
   const sourceButton = buttons().find((button) =>
@@ -383,6 +443,7 @@ it("keeps fork ancestry navigable inside Linked and closes Linked when the selec
   state.projection = { ...(state.projection as object), thread: child };
   await render(
     <ThreadRelationshipsPanel
+      showSideChats={false}
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("child")}
     />,
@@ -435,12 +496,13 @@ it("combines remote and local history before collapse and pagination, then resto
   });
   await render(
     <ThreadRelationshipsPanel
+      showSideChats={false}
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("parent")}
     />,
   );
   await click(linkedToggle());
-  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (7)");
+  expectCollapsedGroup("previous", "Previous agents", 7);
   expect(textNodes(" ").replace(/\s+/g, " ")).not.toContain("Remote task");
   await click(sectionToggle(false));
   expect(container.querySelectorAll("li")).toHaveLength(6);
@@ -467,7 +529,7 @@ it("combines remote and local history before collapse and pagination, then resto
   await update();
   expect(heading()).toBe("Linked · 1 running (7)");
   await click(sectionToggle(true));
-  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (6)");
+  expectCollapsedGroup("previous", "Previous agents", 6);
   expect(container.querySelectorAll("li")).toHaveLength(1);
   const resumed = buttons().find((button) => button.textContent?.includes("Remote task 0"))!;
   await click(resumed);
@@ -498,6 +560,7 @@ it("opens a scoped remote parent, retains its cached title offline, and preserve
   state.quietShells.set("test:equal-id", { title: "Wrong local title" });
   await render(
     <ThreadRelationshipsPanel
+      showSideChats={false}
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("child")}
     />,
@@ -568,12 +631,16 @@ it("keeps a long remote title ellipsized and full on hover beside unknown enviro
   };
   await render(
     <ThreadRelationshipsPanel
+      showSideChats={false}
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("parent")}
     />,
   );
   await click(linkedToggle());
-  const label = container.querySelector<HTMLElement>("span.truncate")!;
+  // Section headers truncate their labels too, so find the row's title by its text.
+  const label = [...container.querySelectorAll<HTMLElement>("button span.truncate")].find(
+    (span) => span.textContent === title,
+  )!;
   expect(label.closest("button")?.getAttribute("aria-label")).toContain(title);
   state.showTooltips = true;
   await update();
@@ -584,4 +651,36 @@ it("keeps a long remote title ellipsized and full on hover beside unknown enviro
   expect(buttons().find((button) => button.textContent?.includes("Other host"))?.disabled).toBe(
     true,
   );
+});
+
+it("hides the client-local location for tasks delegated back from another server", async () => {
+  await using _screen = await setup();
+  state.environments.set("laptop", {
+    label: "Laptop",
+    connection: { phase: "connected" },
+    entry: { target: { _tag: "PrimaryConnectionTarget" } },
+  });
+  const agent = {
+    id: "back-to-laptop",
+    title: "Local destination",
+    status: "running",
+    driver: "codex",
+    providerInstanceId: "codex",
+    remoteChild: { environmentId: "laptop", threadId: "child", label: "Laptop" },
+  } as ComponentProps<typeof RemoteSubagentRow>["agent"];
+  await render(<RemoteSubagentRow agent={agent} provider={undefined} />);
+  expect(byLabel("Local destination").textContent).toContain("Running");
+  expect(container.textContent).not.toContain("on LAP");
+  await click(byLabel("Local destination"));
+  expect(state.navigate).toHaveBeenLastCalledWith({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "laptop", threadId: "child" },
+  });
+  state.environments.set("laptop", {
+    label: "VPS",
+    connection: { phase: "connected" },
+    entry: { target: { _tag: "RelayConnectionTarget" } },
+  });
+  await update();
+  expect(byLabel("Local destination on VPS").textContent).toContain("on VPS");
 });

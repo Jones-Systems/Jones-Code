@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { layerFromPath } from "../../src/persistence/Sqlite.ts";
 import * as EventStore from "../../src/orchestration-v2/EventStore.ts";
@@ -15,6 +16,9 @@ import { assertCurrentCandidate } from "../../../../scripts/jones/performance/cu
 
 const root = NodeFS.realpathSync(process.cwd());
 let report,
+  candidate,
+  runtime,
+  measurements,
   databaseClosed = false;
 const phase = (name) =>
   NodeFS.appendFileSync(
@@ -28,12 +32,12 @@ try {
   NodeAssert.ok(requestInfo.isFile() && !requestInfo.isSymbolicLink() && requestInfo.size <= 16384);
   const request = JSON.parse(NodeFS.readFileSync(requestPath, "utf8"));
   NodeAssert.equal(request.root, root);
-  const candidate = assertCurrentCandidate(request.candidate);
+  candidate = assertCurrentCandidate(request.candidate);
   NodeAssert.equal(
     candidate.worktreePath,
     NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "../../../.."),
   );
-  const runtime = readRuntimeBinding();
+  runtime = readRuntimeBinding();
   NodeAssert.equal(runtime.executablePath, process.execPath);
   NodeAssert.equal(runtime.nodeVersion, process.versions.node);
   for (const key of ["HOME", "TMPDIR", "TMP", "TEMP", "XDG_CACHE_HOME"])
@@ -47,14 +51,26 @@ try {
   );
   const services = Layer.mergeAll(stores, EventSink.layer.pipe(Layer.provide(stores)));
   phase("workload-start");
+  const databaseScope = Effect.gen(function* () {
+    measurements = yield* runV2Workload(request.workload);
+    phase("workload-completed");
+    if (request.failureMode === "after-workload") {
+      phase("failure-injected");
+      return yield* Effect.fail(new Error("injected failure after completed workload"));
+    }
+    return measurements;
+  }).pipe(Effect.provide(services));
+  // Include layer acquisition and finalization: migrations must never pollute JSON stdout.
   const workloadExit = await Effect.runPromise(
-    runV2Workload(request.workload).pipe(Effect.exit, Effect.provide(services)),
+    databaseScope.pipe(
+      Effect.provide(Logger.layer([Logger.withConsoleError(Logger.formatJson)])),
+      Effect.exit,
+    ),
   );
   databaseClosed = true;
   phase("database-closed");
   if (workloadExit._tag === "Failure")
     throw new Error("synthetic workload failed", { cause: workloadExit.cause });
-  const measurements = workloadExit.value;
   NodeAssert.equal(measurements.journal[0]?.journal_mode, "wal");
   assertCurrentCandidate(candidate);
   report = {
@@ -68,6 +84,9 @@ try {
   report = {
     schema: "jones-sqlite-v2-benchmark/v1",
     outcome: "failed",
+    candidate,
+    runtime,
+    measurements,
     error: String(error?.stack ?? error).slice(0, 8192),
   };
 }

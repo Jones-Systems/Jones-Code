@@ -24,8 +24,7 @@ export const resolveTarget = Effect.fn("RemoteAdmissionTarget.resolveTarget")(fu
   let scheduledThreadId: string | null = null;
   if (typeof scheduledId === "string") {
     const scheduler = yield* Effect.serviceOption(ScheduledTasks.ScheduledTaskService);
-    if (Option.isNone(scheduler))
-      return yield* Effect.fail(new RemoteAdmissionTargetUnavailable({}));
+    if (Option.isNone(scheduler)) return yield* new RemoteAdmissionTargetUnavailable({});
     const tasks = yield* scheduler.value.list();
     const task = tasks.tasks.find((candidate) => candidate.id === scheduledId);
     scheduledProjectId = task?.projectId ?? null;

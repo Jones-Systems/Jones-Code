@@ -16,6 +16,7 @@
 #   inspect
 #   stop --expect-unit SHA --expect-owned absent|SHA --expect-main-pid PID --expect-main-birth TICKS
 #   install-launcher --expect-unit SHA --expect-owned absent|SHA --launcher-version VERSION
+#   install-launcher-pointer --expect-unit SHA --expect-owned absent|SHA --launcher-version VERSION --shim-sha256 SHA
 #   start --expect-unit SHA --expect-owned absent|SHA
 #   archive-launcher --expect-unit SHA --expect-owned SHA
 #
@@ -195,6 +196,7 @@ sub operation_arguments {
     "inspect" => [],
     "stop" => [qw(expect-unit expect-owned expect-main-pid expect-main-birth)],
     "install-launcher" => [qw(expect-unit expect-owned launcher-version)],
+    "install-launcher-pointer" => [qw(expect-unit expect-owned launcher-version shim-sha256)],
     "start" => [qw(expect-unit expect-owned)],
     "archive-launcher" => [qw(expect-unit expect-owned)],
   );
@@ -208,7 +210,7 @@ sub operation_arguments {
     my $value = $rest[2 * $index + 1];
     my $key = $keys[$index];
     my ($clean) =
-        $key eq "expect-unit" ? $value =~ $SHA
+        $key eq "expect-unit" || $key eq "shim-sha256" ? $value =~ $SHA
       : $key eq "expect-owned" ? ($value eq "absent" ? ("absent") : $value =~ $SHA)
       : $key eq "expect-main-pid" ? $value =~ /\A([1-9][0-9]{0,9})\z/
       : $key eq "expect-main-birth" ? $value =~ /\A([0-9]{1,20})\z/
@@ -404,12 +406,12 @@ sub launcher_entry {
 }
 
 sub render_owned {
-  my ($policy, $serve, $version) = @_;
+  my ($policy, $serve, $version, $pointer) = @_;
   my @lines = (
     $OWNED_MARKER,
     "[Service]",
     "ExecStart=",
-    "ExecStart=" . launcher_entry($policy, $version) . " __service-launcher",
+    "ExecStart=" . ($pointer ? "$policy->{base}/runtime/launcher/t3-launcher" : launcher_entry($policy, $version)) . " __service-launcher",
     "Environment=T3CODE_HOME=$policy->{base}",
   );
   push @lines, "Environment=T3CODE_PORT=$serve->{port}" if exists $serve->{port};
@@ -423,6 +425,14 @@ sub exec_kind {
   my ($argv) = $show->{ExecStart} =~ /argv\[\]=([^;]*?) ;/ or return "other";
   $argv =~ s/ +\z//;
   return "retained" if $argv eq $serve->{command};
+  if ($argv eq "$policy->{base}/runtime/launcher/t3-launcher __service-launcher") {
+    my $target = readlink("$policy->{base}/runtime/launcher/current");
+    if (defined $target && $target =~ m{\A\.\./versions/([^/]+)\z}) {
+      my ($version) = $1 =~ $VERSION;
+      return "pointer $version" if defined $version;
+    }
+    return "other";
+  }
   my $prefix = quotemeta("$policy->{base}/runtime/versions/");
   if ($argv =~ /\A$prefix([^\/ ]+)\/t3 __service-launcher\z/) {
     my ($version) = $1 =~ $VERSION;
@@ -583,14 +593,26 @@ sub stop {
 }
 
 sub install_launcher {
-  my ($policy, $values) = @_;
+  my ($policy, $values, $pointer) = @_;
   my ($preimage, $serve, $show) = compare_and_hold($policy, $values);
   reject("unit-active") unless stopped_unit($show);
   my $version = $values->{"launcher-version"};
   my @entry = lstat(launcher_entry($policy, $version));
   reject("launcher-entry")
     unless @entry && -f _ && !-l _ && $entry[4] == $policy->{uid} && !($entry[2] & 022);
-  my $text = render_owned($policy, $serve, $version);
+  if ($pointer) {
+    my $directory = "$policy->{base}/runtime/launcher";
+    my @directory = lstat($directory);
+    reject("pointer-trust") unless @directory && -d _ && !-l _ && $directory[4] == $policy->{uid} && ($directory[2] & 0777) == 0700;
+    my @shim = lstat("$directory/t3-launcher");
+    reject("pointer-trust") unless @shim && -f _ && !-l _ && $shim[4] == $policy->{uid} && ($shim[2] & 0777) == 0700;
+    reject("pointer-shim") unless sha256_hex(read_small("$directory/t3-launcher", 8192) // "") eq $values->{"shim-sha256"};
+    my $target = readlink("$directory/current");
+    reject("pointer-target") unless defined $target && $target eq "../versions/$version";
+    reject("pointer-pending") if lstat("$directory/pending") || $! != ENOENT;
+    reject("pointer-attempts") unless (read_small("$directory/attempts", 2) // "") eq "0\n";
+  }
+  my $text = render_owned($policy, $serve, $version, $pointer);
   my $owned = "$preimage->{directory}/$OWNED_NAME";
   if ($values->{"expect-owned"} ne sha256_hex($text)) {
     if (!lstat($preimage->{directory})) {
@@ -642,7 +664,7 @@ sub install_launcher {
   my $after = unit_preimage($policy);
   unknown("owned-readback") unless $after->{digest} eq $preimage->{digest} && $after->{owned} eq sha256_hex($text);
   my $readback = verified_show($policy, $after, $serve);
-  unknown("launcher-readback") unless exec_kind($policy, $serve, $readback) eq "launcher $version";
+  unknown("launcher-readback") unless exec_kind($policy, $serve, $readback) eq ($pointer ? "pointer $version" : "launcher $version");
   unknown("hardening-readback")
     unless $readback->{KillMode} eq $show->{KillMode} && $readback->{ControlGroup} eq $show->{ControlGroup};
   unknown("stopped-readback")
@@ -709,8 +731,8 @@ sub request {
     report($policy, $preimage, $serve, verified_show($policy, $preimage, $serve));
   } elsif ($operation eq "stop") {
     stop($policy, $values);
-  } elsif ($operation eq "install-launcher") {
-    install_launcher($policy, $values);
+  } elsif ($operation eq "install-launcher" || $operation eq "install-launcher-pointer") {
+    install_launcher($policy, $values, $operation eq "install-launcher-pointer");
   } elsif ($operation eq "start") {
     start($policy, $values);
   } else {

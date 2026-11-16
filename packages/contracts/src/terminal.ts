@@ -26,7 +26,7 @@ export const TerminalThreadInput = Schema.Struct({
 });
 export type TerminalThreadInput = typeof TerminalThreadInput.Type;
 
-/** Terminal ids are ALWAYS chosen by the client and sent explicitly — no server-side allocation. */
+// Terminal ids are client-chosen; the server never allocates them.
 const TerminalSessionInput = Schema.Struct({
   ...TerminalThreadInput.fields,
   terminalId: TerminalIdSchema,
@@ -41,6 +41,7 @@ export const TerminalOpenInput = Schema.Struct({
   rows: Schema.optional(TerminalRowsSchema),
   env: Schema.optional(TerminalEnvSchema),
   providerInstanceId: Schema.optional(ProviderInstanceId),
+  stopOnSettle: Schema.optional(Schema.Boolean),
 });
 export type TerminalOpenInput = typeof TerminalOpenInput.Type;
 
@@ -52,6 +53,7 @@ export const TerminalAttachInput = Schema.Struct({
   rows: Schema.optional(TerminalRowsSchema),
   env: Schema.optional(TerminalEnvSchema),
   providerInstanceId: Schema.optional(ProviderInstanceId),
+  stopOnSettle: Schema.optional(Schema.Boolean),
   restartIfNotRunning: Schema.optional(Schema.Boolean),
   // Resubscriptions preserve stopped terminals; unknown IDs recover after a server restart.
   resume: Schema.optional(Schema.Boolean),
@@ -64,6 +66,17 @@ export type TerminalObserveInput = Schema.Codec.Encoded<typeof TerminalObserveIn
 export const TerminalWriteInput = Schema.Struct({
   ...TerminalSessionInput.fields,
   data: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(65_536)),
+  observation: Schema.optional(
+    Schema.Struct({
+      invocationId: Schema.String.check(
+        Schema.isPattern(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        ),
+      ),
+      projectId: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256)),
+      scriptId: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256)),
+    }),
+  ),
 });
 export type TerminalWriteInput = Schema.Codec.Encoded<typeof TerminalWriteInput>;
 
@@ -76,17 +89,6 @@ export type TerminalResizeInput = Schema.Codec.Encoded<typeof TerminalResizeInpu
 
 export const TerminalClearInput = TerminalSessionInput;
 export type TerminalClearInput = Schema.Codec.Encoded<typeof TerminalClearInput>;
-
-export const TerminalRestartInput = Schema.Struct({
-  ...TerminalSessionInput.fields,
-  cwd: TrimmedNonEmptyStringSchema,
-  worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
-  cols: TerminalColsSchema,
-  rows: TerminalRowsSchema,
-  env: Schema.optional(TerminalEnvSchema),
-  providerInstanceId: Schema.optional(ProviderInstanceId),
-});
-export type TerminalRestartInput = typeof TerminalRestartInput.Type;
 
 export const TerminalCloseInput = Schema.Struct({
   ...TerminalThreadInput.fields,
@@ -111,6 +113,9 @@ export const TerminalSessionSnapshot = Schema.Struct({
   label: Schema.String.check(Schema.isMaxLength(128)),
   updatedAt: Schema.String,
   sequence: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  // The PTY grid every renderer of this terminal should draw; absent from older servers.
+  cols: Schema.optional(TerminalColsSchema),
+  rows: Schema.optional(TerminalRowsSchema),
 });
 export type TerminalSessionSnapshot = typeof TerminalSessionSnapshot.Type;
 
@@ -204,6 +209,9 @@ const TerminalActivityEvent = Schema.Struct({
   type: Schema.Literal("activity"),
   hasRunningSubprocess: Schema.Boolean,
   label: Schema.String.check(Schema.isMaxLength(128)),
+  // Shared PTY grid changes ride on activity because older clients reject unknown event types.
+  cols: Schema.optional(TerminalColsSchema),
+  rows: Schema.optional(TerminalRowsSchema),
 });
 
 export const TerminalEvent = Schema.Union([

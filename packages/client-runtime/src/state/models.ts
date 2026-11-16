@@ -4,7 +4,7 @@ import {
   type ThreadRuntimeSummary,
 } from "@t3tools/shared/jones/threadAttention";
 export type { ThreadRunSummary, ThreadRuntimeSummary } from "@t3tools/shared/jones/threadAttention";
-import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
+import { threadPullRequestsOf } from "../threadPullRequests.ts";
 import type {
   ThreadLinkedPullRequest,
   EnvironmentId,
@@ -34,7 +34,53 @@ export interface EnvironmentThread {
   readonly projection: OrchestrationV2ThreadProjection;
 }
 
-export function threadRuntimeIsActive(runtime: ThreadRuntimeSummary | null | undefined): boolean {
+type ProjectionTurnItem = OrchestrationV2ThreadProjection["turnItems"][number];
+type StreamedProjectionTurnItem = Extract<
+  ProjectionTurnItem,
+  { readonly type: "assistant_message" | "reasoning" }
+>;
+
+/** A turn item without the fields that move while it streams. */
+export type ThreadStructureTurnItem =
+  | Exclude<ProjectionTurnItem, StreamedProjectionTurnItem>
+  | Omit<Extract<ProjectionTurnItem, { readonly type: "assistant_message" }>, "text" | "updatedAt">
+  | Omit<Extract<ProjectionTurnItem, { readonly type: "reasoning" }>, "text" | "updatedAt">;
+
+export type ThreadStructureVisibleTurnItem = Omit<
+  OrchestrationV2ThreadProjection["visibleTurnItems"][number],
+  "item"
+> & {
+  readonly item: ThreadStructureTurnItem;
+};
+
+/**
+ * A thread projection without the fields that move while a reply streams, so a
+ * reader of the quiet thread cannot depend on them and go stale. A full
+ * projection is assignable to it.
+ */
+export type ThreadStructureThread = Omit<
+  OrchestrationV2ThreadProjection["thread"],
+  "updatedAt" | "lastVisitedAt"
+>;
+
+export type ThreadStructure = Omit<
+  OrchestrationV2ThreadProjection,
+  "thread" | "turnItems" | "visibleTurnItems" | "updatedAt"
+> & {
+  readonly thread: ThreadStructureThread;
+  readonly turnItems: ReadonlyArray<ThreadStructureTurnItem>;
+  readonly visibleTurnItems: ReadonlyArray<ThreadStructureVisibleTurnItem>;
+};
+
+export interface EnvironmentThreadStructure {
+  readonly environmentId: EnvironmentId;
+  readonly projection: ThreadStructure;
+}
+
+/** The runtime summary a thread's structure determines; see ThreadStructure. */
+export type ThreadStructureRuntime = Omit<ThreadRuntimeSummary, "updatedAt">;
+
+export function threadRuntimeIsActive(runtime: ThreadStructureRuntime | null | undefined): boolean {
   return runtime !== null && runtime !== undefined && threadRunStatusIsActive(runtime.status);
 }
 
@@ -71,7 +117,6 @@ export interface EnvironmentThreadShell {
   readonly worktreePath: string | null;
   readonly lineage: OrchestrationV2ThreadShell["lineage"];
   readonly forkedFrom: OrchestrationV2ThreadShell["forkedFrom"];
-  /** The linked environment that started this thread here, when one did. */
   readonly linkOrigin: OrchestrationV2ThreadShell["linkOrigin"] | null;
   /** The thread in a linked environment that delegated this one, if one did. */
   readonly delegatedFrom: OrchestrationV2ThreadShell["delegatedFrom"] | null;
@@ -83,7 +128,10 @@ export interface EnvironmentThreadShell {
   readonly latestUserAuthoredMessageAt?: string | null;
   readonly hasPendingApprovals: boolean;
   readonly hasPendingUserInput: boolean;
+  readonly pendingUserInputAt?: string | null;
   readonly pendingSubagentRequest?: PendingSubagentRequest | null;
+  /** Guest messages waiting for the owner to send or dismiss. */
+  readonly pendingGuestMessageCount?: number;
   readonly hasActionableProposedPlan: boolean;
   readonly pendingBackgroundTasks: ReadonlyArray<
     NonNullable<OrchestrationV2ThreadShell["pendingBackgroundTasks"]>[number]
@@ -114,6 +162,8 @@ export interface EnvironmentThreadShell {
    * local visited state they keep.
    */
   readonly lastVisitedAt?: string | null;
+  /** Server-tracked open history for search ranking. */
+  readonly opens?: import("@t3tools/contracts").OrchestrationV2ThreadOpens | null;
   readonly titleRegeneration?: { readonly requestId: string; readonly startedAt: string } | null;
   readonly deletedAt: string | null;
   readonly source: OrchestrationV2ThreadShell;
@@ -175,7 +225,12 @@ export function presentThreadShell(
       : { latestUserAuthoredMessageAt: nullableIso(thread.latestUserAuthoredMessageAt) }),
     hasPendingApprovals: attention.hasPendingApprovals,
     hasPendingUserInput: attention.hasPendingUserInput,
+    pendingUserInputAt:
+      thread.pendingRuntimeRequest?.kind === "user_input"
+        ? iso(thread.pendingRuntimeRequest.createdAt)
+        : null,
     pendingSubagentRequest,
+    pendingGuestMessageCount: thread.pendingGuestMessageCount ?? 0,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     pendingBackgroundTasks: thread.pendingBackgroundTasks ?? [],
     providerInstanceHistory: thread.providerInstanceHistory ?? [],
@@ -198,6 +253,7 @@ export function presentThreadShell(
     ...(thread.lastVisitedAt === undefined
       ? {}
       : { lastVisitedAt: nullableIso(thread.lastVisitedAt) }),
+    opens: thread.opens ?? null,
     titleRegeneration:
       thread.titleRegeneration == null
         ? null

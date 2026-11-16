@@ -18,6 +18,7 @@ import { useThreadShells } from "../../state/entities";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+import { usePersonalWorkstreams } from "../../state/workstreamsPersonal";
 import { loadDesignRequestRegistry, type DesignRequestRegistrySnapshot } from "./registry";
 
 const LOADING: DesignRequestRegistrySnapshot = { status: "loading", data: null, placements: null };
@@ -42,11 +43,12 @@ export interface DesignRequestRouter {
 }
 
 /**
- * Routes through the existing workstream registry and thread shells, and queues through the
- * shipped `startThreadTurn` command. Submit always re-reads the registry before dispatching.
+ * Routes through confirmed personal assignments and thread shells, and queues through the
+ * shipped `startThreadTurn` command. Submit re-reads controller state before dispatching.
  */
 export function useDesignRequestRouter(binding: DesignRequestBinding | null): DesignRequestRouter {
   const shells = useThreadShells();
+  const personal = usePersonalWorkstreams();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const startTurn = useOrchestrationCommand(threadEnvironment.startTurn, { reportFailure: false });
   const [revision, setRevision] = useState(0);
@@ -55,10 +57,18 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
     shells.map((thread) => [thread.environmentId, thread.id]).toSorted(),
   );
   const boundWorkstreamId = binding?.workstreamId ?? null;
-  const registryKey = JSON.stringify([revision, threadIdentityKey, boundWorkstreamId]);
+  const registryKey = JSON.stringify([
+    revision,
+    threadIdentityKey,
+    boundWorkstreamId,
+    personal.state.workstreams,
+    [...personal.state.assignmentsByThreadKey],
+    personal.state.environments,
+  ]);
   const [observation, setObservation] = useState({ key: registryKey, snapshot: LOADING });
   const registry = observation.key === registryKey ? observation.snapshot : LOADING;
   const latest = useRef({ shells, primaryEnvironmentId, binding, startTurn, registryKey });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed design-request routing inputs to asynchronous gallery submissions.
   useLayoutEffect(() => {
     latest.current = { shells, primaryEnvironmentId, binding, startTurn, registryKey };
   });
@@ -66,6 +76,7 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
     loadDesignRequestRegistry(shells, signal, boundWorkstreamId),
   );
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Load the current design registry and abort its response when its routing identity changes.
   useEffect(() => {
     const controller = new AbortController();
     loadRegistry(controller.signal).then(
@@ -86,19 +97,6 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
     return () => controller.abort();
   }, [registryKey]);
 
-  // Re-evaluate when the earliest placement expires so an expired primary is held, not shown.
-  useEffect(() => {
-    const expiries = (registry.placements?.items ?? [])
-      .map((item) => Date.parse(item.expires_at))
-      .filter((value) => value > now);
-    if (expiries.length === 0) return;
-    const timer = window.setTimeout(
-      () => setNow(Date.now()),
-      Math.min(2_147_483_647, Math.min(...expiries) - Date.now()),
-    );
-    return () => window.clearTimeout(timer);
-  }, [registry.placements, now]);
-
   const route = resolveDesignRequestRoute({
     binding,
     registry: registry.status,
@@ -110,6 +108,7 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
   });
 
   const gatewayRef = useRef<DesignRequestGateway | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Create the mounted submission gateway once so effect replay retains in-flight submission identities.
   useLayoutEffect(() => {
     // Keep the in-flight submission map when React replays effect setup.
     if (gatewayRef.current !== null) return;

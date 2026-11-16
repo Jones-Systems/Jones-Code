@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -18,6 +19,7 @@ import * as Settings from "../../serverSettings.ts";
 import * as Guard from "../nativeCreation/NativeCreationProviderGuard.ts";
 import * as Admission from "../orchestration/ControlAdmission.ts";
 import * as Restart from "../orchestration/RestartPreparation.ts";
+import * as ContinuityAdmissionTestkit from "../goals/continuity/admission.testkit.ts";
 import * as Boundary from "./NativeBoundary.ts";
 import { fixture } from "./ManagedConsumer.testkit.ts";
 import { nativeStartFixture } from "./NativeStart.testkit.ts";
@@ -42,6 +44,7 @@ it.effect.each(["current", "revoked", "retired"] as const)(
           });
           if (mode === "revoked") f.state.afterResume = native.revoke;
           const startLayer = Layer.fresh(Start.layer).pipe(
+            Layer.provide(ContinuityAdmissionTestkit.layerAbsent),
             Layer.provide(Admission.layer),
             Layer.provide(IdAllocator.layer),
             Layer.provide(f.configured),
@@ -104,6 +107,7 @@ it.effect.each(["current", "revoked", "retired"] as const)(
             Layer.provide(Settings.layerTest()),
             Layer.provide(
               Layer.mock(Instances.ProviderInstanceRegistry)({
+                getCatalogSource: (id) => (id === f.instance.instanceId ? f.instance : undefined),
                 getInstance: () => Effect.succeed(f.instance),
               }),
             ),
@@ -154,5 +158,5 @@ it.effect.each(["current", "revoked", "retired"] as const)(
             ).toBe(true);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

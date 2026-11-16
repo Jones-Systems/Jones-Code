@@ -26,8 +26,8 @@ import {
   type PreparationRequest,
   type PreparationResult,
 } from "./protocol.ts";
-import { stageQualifiedArtifact } from "./stageArtifact.ts";
 import { sweepPreparationLeftovers } from "./sweep.ts";
+import { preparationLifecycle } from "./lifecycle.ts";
 
 const HEARTBEAT_MS = 2_000;
 /** Below the supervisor's grace, so a worker that cannot unwind still ends its own group first. */
@@ -106,6 +106,8 @@ async function runJob(
     return { kind: "verify", staged };
   }
   phase("downloading");
+  const { stageQualifiedArtifact } = await import("./stageArtifact.ts");
+  signal.throwIfAborted();
   const artifact = await new JonesActionsClient().stage(job.candidate, job.cacheRoot);
   signal.throwIfAborted();
   phase("verifying");
@@ -117,6 +119,8 @@ async function runJob(
     host: job.host,
     scratchParent: jobDir,
     signal,
+    onNativeEffects: (phase) =>
+      preparationLifecycle(request.baseDir, request.jobId).effects(process.pid, phase),
   });
   const { migrationPlan, ...staged } = value;
   return {
@@ -185,6 +189,7 @@ async function runPreparationWorker(jobDir: string): Promise<number> {
   process.stdin.resume();
 
   let phase: PreparationPhase = "waiting";
+  const currentPhase = (): PreparationPhase => phase;
   emit({ type: "ready", protocol: PREPARATION_PROTOCOL, pid: process.pid, priority });
   timers.push(setInterval(() => emit({ type: "heartbeat", phase }), HEARTBEAT_MS));
   timers.push(setTimeout(() => abort("deadline"), request.deadlineMs));
@@ -195,6 +200,9 @@ async function runPreparationWorker(jobDir: string): Promise<number> {
 
   let result: PreparationResult;
   try {
+    // This is durable before any transfer or native effect; a lost result cannot erase the phase.
+    await preparationLifecycle(request.baseDir, request.jobId).effects(process.pid, "transfer");
+    controller.signal.throwIfAborted();
     const outcome = await withQualifiedRuntimeLock(request.baseDir, PREPARATION_LOCK, () =>
       runJob(request, jobDir, controller.signal, setPhase),
     );
@@ -205,7 +213,9 @@ async function runPreparationWorker(jobDir: string): Promise<number> {
       jobId: request.jobId,
       ok: false,
       error: describePreparationFailure(
-        controller.signal.aborted ? controller.signal.reason : error,
+        controller.signal.aborted && currentPhase() === "downloading"
+          ? controller.signal.reason
+          : error,
       ),
     };
   }

@@ -30,6 +30,7 @@ const makeRelay = (restricted = true) => {
         }
       }
     },
+    () => {},
     restricted ? companionCdpPolicy : undefined,
   );
   return {
@@ -113,7 +114,7 @@ describe("companion CDP policy", () => {
         JSON.stringify({ id: 1, method: "Page.navigate", params: { url }, sessionId: "child" }),
       );
       await settle();
-      expect(send).toHaveBeenCalledWith("Page.navigate", { url }, "child");
+      expect(send).toHaveBeenCalledWith("Page.navigate", { url }, "child", undefined);
     },
   );
 
@@ -134,9 +135,9 @@ describe("companion CDP policy", () => {
       );
     await settle();
     expect(send.mock.calls).toEqual([
-      ["Browser.setDownloadBehavior", { behavior: "deny" }, undefined],
-      ["Browser.setDownloadBehavior", { behavior: "deny" }, undefined],
-      ["Browser.setDownloadBehavior", { behavior: "deny" }, "child"],
+      ["Page.setDownloadBehavior", { behavior: "deny" }, undefined],
+      ["Browser.setDownloadBehavior", { behavior: "deny" }, undefined, undefined],
+      ["Browser.setDownloadBehavior", { behavior: "deny" }, "child", undefined],
     ]);
     expect(setDownloadDirectory.mock.calls).toEqual([[null]]);
   });
@@ -174,7 +175,9 @@ describe("companion CDP policy", () => {
     );
     await settle();
     expect(replies.find((reply) => reply.id === 1)).toHaveProperty("error");
-    expect(send.mock.calls).toEqual([[method, { url: "https://example.test/fixture" }, "child"]]);
+    expect(send.mock.calls).toEqual([
+      [method, { url: "https://example.test/fixture" }, "child", undefined],
+    ]);
   });
 
   it("creates Playwright's isolated world without universal origin access", async () => {
@@ -201,6 +204,7 @@ describe("companion CDP policy", () => {
         grantUniveralAccess: false,
       },
       "child",
+      undefined,
     );
   });
 
@@ -281,6 +285,7 @@ describe("companion CDP policy", () => {
     expect(ordinary.send).toHaveBeenCalledWith(
       "DOM.setFileInputFiles",
       { files: ["/local/fixture"] },
+      undefined,
       undefined,
     );
   });

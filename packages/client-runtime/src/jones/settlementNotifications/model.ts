@@ -84,3 +84,12 @@ export const decodeSettlementBaseline = Schema.decodeUnknownSync(
 export const encodeSettlementBaseline = Schema.encodeSync(
   Schema.fromJsonString(EnvironmentSettlementBaseline),
 );
+
+export function settlementRemainingRows(items: readonly string[] | undefined) {
+  const occurrences = new Map<string, number>();
+  return (items ?? []).map((label) => {
+    const occurrence = occurrences.get(label) ?? 0;
+    occurrences.set(label, occurrence + 1);
+    return { key: JSON.stringify([label, occurrence]), label };
+  });
+}

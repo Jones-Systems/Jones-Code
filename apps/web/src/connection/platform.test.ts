@@ -28,6 +28,9 @@ import {
   provisionDesktopSshEnvironment,
   secondaryRegistrationsToRetainAfterTopologyRead,
 } from "./platform.ts";
+import { Persistence } from "@t3tools/client-runtime/platform";
+import { monitorStore } from "../jones/threadMonitor/store";
+import { APP_VERSION } from "../branding.ts";
 
 const TARGET: DesktopSshEnvironmentTarget = {
   alias: "devbox",
@@ -67,6 +70,8 @@ function makeBridge(
   },
 ): DesktopBridge {
   return {
+    getClientPlatform: () => "linux",
+    getLocalEnvironmentEnabled: () => true,
     ensureSshEnvironment: async (
       target: DesktopSshEnvironmentTarget,
       ensureOptions?: { issuePairingToken?: boolean },
@@ -221,6 +226,41 @@ describe("desktop SSH pairing", () => {
       expect(ensure).toHaveBeenCalledTimes(2);
       expect(calls).toEqual(["disconnect", "ensure", "descriptor", "token"]);
       expect(exchange).toHaveBeenCalledExactlyOnceWith(SSH_BOOTSTRAP.httpBaseUrl, "pairing-token");
+    }),
+  );
+
+  const failPairing = (serverVersion: string, message: string) => {
+    const bridge = makeBridge([]);
+    const fetchDescriptor = bridge.fetchSshEnvironmentDescriptor;
+    vi.spyOn(bridge, "fetchSshEnvironmentDescriptor").mockImplementation(async (url) => ({
+      ...(await fetchDescriptor(url)),
+      serverVersion,
+    }));
+    vi.spyOn(bridge, "bootstrapSshBearerSession").mockRejectedValue(new Error(message));
+    return provisionDesktopSshEnvironment(bridge, TARGET).pipe(Effect.flip);
+  };
+  const PAIRING_500 =
+    "[ssh_http:500] SSH remote API request failed during bootstrap-bearer-session.";
+
+  it.effect("blocks with both versions when a server on another build rejects pairing", () =>
+    Effect.gen(function* () {
+      const error = yield* failPairing("0.0.46-nightly.20261004.2652", PAIRING_500);
+
+      expect(error).toBeInstanceOf(ConnectionBlockedError);
+      expect(error.detail).toContain("0.0.46-nightly.20261004.2652");
+      expect(error.detail).toContain(APP_VERSION);
+    }),
+  );
+
+  it.effect("keeps retrying pairing failures that are not a version mismatch", () =>
+    Effect.gen(function* () {
+      expect(yield* failPairing(APP_VERSION, PAIRING_500)).toBeInstanceOf(ConnectionTransientError);
+      expect(
+        yield* failPairing(
+          "0.0.46-nightly.20261004.2652",
+          "SSH remote API request failed during bootstrap-bearer-session.",
+        ),
+      ).toBeInstanceOf(ConnectionTransientError);
     }),
   );
 
@@ -411,4 +451,59 @@ describe("primary topology cache", () => {
       }),
     ).toBe(cached);
   });
+});
+
+describe("environment-owned monitor retirement", () => {
+  it.effect("awaits the monitor lifetime acknowledgment when clearing an environment", () =>
+    Effect.gen(function* () {
+      const storage = new Map<string, string>();
+      const localStorage = {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          storage.set(key, value);
+        },
+        removeItem: (key: string) => {
+          storage.delete(key);
+        },
+      };
+      vi.stubGlobal("window", Object.assign(new EventTarget(), { localStorage }));
+      vi.stubGlobal("localStorage", localStorage);
+      const environmentId = EnvironmentId.make("monitor-retirement-fixture");
+      let started!: () => void;
+      let release!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const acknowledgment = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const retire = vi.spyOn(monitorStore, "retire").mockImplementation(() => {
+        started();
+        return acknowledgment;
+      });
+      const cleanup = yield* Persistence.EnvironmentOwnedDataCleanup.pipe(Effect.provide(layer));
+      let completed = false;
+      const clearing = yield* Effect.forkChild(
+        cleanup.clear(environmentId).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              completed = true;
+            }),
+          ),
+        ),
+        { startImmediately: true },
+      );
+      try {
+        yield* Effect.promise(() => entered);
+        expect(retire).toHaveBeenCalledExactlyOnceWith(environmentId);
+        expect(completed).toBe(false);
+        release();
+        yield* Fiber.join(clearing);
+        expect(completed).toBe(true);
+      } finally {
+        release();
+        yield* Fiber.join(clearing);
+      }
+    }).pipe(Effect.scoped),
+  );
 });

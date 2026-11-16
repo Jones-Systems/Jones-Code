@@ -9,6 +9,8 @@ const threadIdentity = Schema.fromJsonString(
   Schema.Struct({ id: ThreadId, projectId: ProjectId, createdAt: Schema.String }),
 );
 
+const compiledIs1 = Schema.is(ImportedApplicationAttachmentBirthV1);
+
 export const readApplicationBirthRecord = Effect.fnUntraced(function* (threadId: ThreadId) {
   const sql = yield* SqlClient.SqlClient;
   const births = yield* sql<{
@@ -24,8 +26,8 @@ export const readApplicationBirthRecord = Effect.fnUntraced(function* (threadId:
     FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}
       AND json_extract(payload_json, '$.deletedAt') IS NULL`;
   if (current.length !== 1) return null;
-  const birth = Schema.decodeUnknownOption(threadIdentity)(births[0]!.payload_json);
-  const projection = Schema.decodeUnknownOption(threadIdentity)(current[0]!.payload_json);
+  const birth = Schema.decodeOption(threadIdentity)(births[0]!.payload_json);
+  const projection = Schema.decodeOption(threadIdentity)(current[0]!.payload_json);
   if (
     Option.isNone(birth) ||
     Option.isNone(projection) ||
@@ -41,5 +43,5 @@ export const readApplicationBirthRecord = Effect.fnUntraced(function* (threadId:
     eventId: EventId.make(births[0]!.event_id),
     sequence: births[0]!.sequence,
   };
-  return Schema.is(ImportedApplicationAttachmentBirthV1)(result) ? result : null;
+  return compiledIs1(result) ? result : null;
 });

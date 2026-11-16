@@ -3,7 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import { v2ThreadShell } from "../../state/orchestrationV2TestFixtures.ts";
-import type { EnvironmentShellState } from "../../state/shell.ts";
+import { EMPTY_SHELL_STATE, type EnvironmentShellState } from "../../state/shell.ts";
 import type { EnvironmentSettlementBaseline, SettlementEntry } from "./model.ts";
 import { settlementEntryId } from "./model.ts";
 
@@ -34,6 +34,8 @@ export function shell(
   status: EnvironmentShellState["status"] = "live",
 ): EnvironmentShellState {
   return {
+    ...EMPTY_SHELL_STATE,
+    generation: 1,
     status,
     error: Option.none(),
     snapshot: Option.some({

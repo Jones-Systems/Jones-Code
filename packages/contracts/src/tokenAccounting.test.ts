@@ -8,15 +8,18 @@ import {
   TokenAccountingReport,
 } from "./tokenAccounting.ts";
 
+const compiledDecodeSync1 = Schema.decodeSync(TokenAccountingMetric);
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(TokenAccountingReport);
+
 describe("saved token accounting projection", () => {
   it("preserves a known sum independently from an unknown complete total", () => {
     const metric = { known_sum: 42, total: null, known_requests: 1, missing_requests: 1 };
-    expect(Schema.decodeUnknownSync(TokenAccountingMetric)(metric)).toEqual(metric);
+    expect(compiledDecodeSync1(metric)).toEqual(metric);
   });
 
   it("preserves entirely unknown metrics instead of normalizing them to zero", () => {
     const metric = { known_sum: null, total: null, known_requests: 0, missing_requests: 2 };
-    expect(Schema.decodeUnknownSync(TokenAccountingMetric)(metric)).toEqual(metric);
+    expect(compiledDecodeSync1(metric)).toEqual(metric);
   });
 
   it("rejects unsafe counts and undeclared metric fields", () => {
@@ -28,7 +31,7 @@ describe("saved token accounting projection", () => {
 
   it("rejects an original report presented as the consumer projection", () => {
     expect(() =>
-      Schema.decodeUnknownSync(TokenAccountingReport)({
+      compiledDecodeUnknownSync2({
         schema: "programmatic-token-info.accounting-report/v1",
         report_id: "a".repeat(64),
       }),

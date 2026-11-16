@@ -95,15 +95,17 @@ export interface PreparationHome {
   readonly remove: () => Promise<void>;
 }
 
-/** Writes a runtime payload: an executable `t3` and a client, padded to at least `bytes`. */
+/** Writes an executable `t3` and, for the Linux fixture, a client padded to `bytes`. */
 async function writePayload(
   directory: string,
-  options: { readonly t3?: string; readonly bytes?: number } = {},
+  options: { readonly t3?: string; readonly bytes?: number; readonly darwin?: boolean } = {},
 ): Promise<void> {
-  await NodeFSP.mkdir(NodePath.join(directory, "client"), { recursive: true });
+  await NodeFSP.mkdir(directory, { recursive: true });
   await NodeFSP.writeFile(NodePath.join(directory, "t3"), options.t3 ?? "#!/bin/sh\nexit 0\n", {
     mode: 0o700,
   });
+  if (options.darwin) return;
+  await NodeFSP.mkdir(NodePath.join(directory, "client"));
   await NodeFSP.writeFile(NodePath.join(directory, "client", "index.html"), "fixture");
   const chunk = 8 * 1024 * 1024;
   for (let written = 0, index = 0; written < (options.bytes ?? 0); written += chunk, index += 1)
@@ -113,19 +115,25 @@ async function writePayload(
     );
 }
 
-/** A qualified home on `BASELINE` (installed from `INSTALLED`) with untouched synthetic state. */
-export async function makePreparationHome(): Promise<PreparationHome> {
+/** A qualified synthetic home, using the Linux fixture receipt by default. */
+export async function makePreparationHome(
+  activeReceipt: Omit<QualifiedRuntimeReceipt, "payloadSha256"> = receipt(BASELINE, INSTALLED),
+): Promise<PreparationHome> {
   const root = await NodeFSP.realpath(
     await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-preparation-test-")),
   );
   const base = NodePath.join(root, "home");
-  const active = NodePath.join(base, "runtime", "versions", BASELINE);
-  await writePayload(active);
+  const active = NodePath.join(base, "runtime", "versions", activeReceipt.version);
+  await writePayload(active, { darwin: activeReceipt.platform === "darwin" });
   await NodeFSP.writeFile(
     NodePath.join(active, QUALIFIED_RUNTIME_RECEIPT),
     JSON.stringify({
-      ...receipt(BASELINE, INSTALLED),
-      payloadSha256: await qualifiedPayloadDigest(active),
+      ...activeReceipt,
+      payloadSha256: await qualifiedPayloadDigest(
+        active,
+        activeReceipt.platform,
+        activeReceipt.workflow,
+      ),
     }),
     { mode: 0o600 },
   );

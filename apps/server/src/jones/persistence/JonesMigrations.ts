@@ -50,6 +50,39 @@ import JonesMigration0122 from "./Migrations/122_JonesThreadLinks.ts";
 
 import JonesMigration0123 from "./Migrations/123_JonesWorkspaceLifecycle.ts";
 import JonesMigration0124 from "./Migrations/124_JonesTaskContinuations.ts";
+import JonesMigration0129 from "./Migrations/129_JonesCodexFailover.ts";
+
+import JonesMigration0130 from "./Migrations/130_JonesThreadTitleRefinement.ts";
+
+import JonesMigration0132 from "./Migrations/132_JonesOwnerSelections.ts";
+import JonesMigration0133 from "./Migrations/133_JonesThreadResultDependencies.ts";
+import JonesMigration0134 from "./Migrations/134_JonesGoalContinuity.ts";
+import JonesMigration0135 from "./Migrations/135_JonesIdleWorktreeAdmission.ts";
+import JonesMigration0136 from "./Migrations/136_JonesWorkspaceProvenance.ts";
+import JonesMigration0137 from "./Migrations/137_JonesNativeCreationLeaseRenewal.ts";
+
+import JonesMigration0138 from "./Migrations/138_JonesWorkspaceRetirement.ts";
+import JonesMigration0139 from "./Migrations/139_JonesConversationWorkspace.ts";
+
+// These unpublished allocations follow canonical main. Keep the original
+// effect-module paths and bytes so the native transition fixtures stay pinned.
+import JonesMigration0140 from "./Migrations/125_JonesWorkstreamsNative.ts";
+import JonesMigration0141 from "./Migrations/126_JonesWorkstreamsSourceEnrollments.ts";
+import JonesMigration0142 from "./Migrations/127_JonesWorkstreamsRollupAttempts.ts";
+import JonesMigration0143 from "./Migrations/128_JonesWorkstreamsPeerSessionPins.ts";
+import JonesMigration0144 from "./Migrations/129_JonesWorkstreamsMemberBindings.ts";
+import JonesMigration0145 from "./Migrations/130_JonesWorkstreamsForwardReceipts.ts";
+
+import JonesMigration0146 from "./Migrations/146_JonesSettlementOriginRetention.ts";
+import JonesMigration0147 from "./Migrations/147_JonesQueueHolds.ts";
+import JonesMigration0148 from "./Migrations/148_JonesNativeExecutionProcessCustody.ts";
+import JonesMigration0149 from "./Migrations/149_JonesOrdinaryCheckoutProcessCustody.ts";
+import JonesMigration0150 from "./Migrations/150_JonesAuthSessionClientMetadata.ts";
+import JonesMigration0151 from "./Migrations/151_JonesWorkspaceRuntimeUses.ts";
+import JonesMigration0152 from "./Migrations/152_JonesPeerLinksAdoption.ts";
+import JonesMigration0153 from "./Migrations/153_JonesPersonalWorkstreams.ts";
+import JonesMigration0154 from "./Migrations/154_JonesStartRefusals.ts";
+import JonesMigration0155 from "./Migrations/155_JonesPeerWakeObligations.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -82,6 +115,32 @@ export const jonesMigrationEntries = [
   [122, "ThreadLinks", JonesMigration0122],
   [123, "WorkspaceLifecycle", JonesMigration0123],
   [124, "TaskContinuations", JonesMigration0124],
+  [129, "CodexFailover", JonesMigration0129],
+  [130, "ThreadTitleRefinement", JonesMigration0130],
+  [132, "OwnerSelections", JonesMigration0132],
+  [133, "ThreadResultDependencies", JonesMigration0133],
+  [134, "GoalContinuity", JonesMigration0134],
+  [135, "IdleWorktreeAdmission", JonesMigration0135],
+  [136, "WorkspaceProvenance", JonesMigration0136],
+  [137, "NativeCreationLeaseRenewal", JonesMigration0137],
+  [138, "WorkspaceRetirement", JonesMigration0138],
+  [139, "ConversationWorkspace", JonesMigration0139],
+  [140, "WorkstreamsNative", JonesMigration0140],
+  [141, "WorkstreamsSourceEnrollments", JonesMigration0141],
+  [142, "WorkstreamsRollupAttempts", JonesMigration0142],
+  [143, "WorkstreamsPeerSessionPins", JonesMigration0143],
+  [144, "WorkstreamsMemberBindings", JonesMigration0144],
+  [145, "WorkstreamsForwardReceipts", JonesMigration0145],
+  [146, "SettlementOriginRetention", JonesMigration0146],
+  [147, "QueueHolds", JonesMigration0147],
+  [148, "NativeExecutionProcessCustody", JonesMigration0148],
+  [149, "OrdinaryCheckoutProcessCustody", JonesMigration0149],
+  [150, "AuthSessionClientMetadata", JonesMigration0150],
+  [151, "WorkspaceRuntimeUses", JonesMigration0151],
+  [152, "PeerLinksAdoption", JonesMigration0152],
+  [153, "PersonalWorkstreams", JonesMigration0153],
+  [154, "StartRefusals", JonesMigration0154],
+  [155, "PeerWakeObligations", JonesMigration0155],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {

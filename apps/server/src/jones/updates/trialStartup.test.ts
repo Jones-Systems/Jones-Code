@@ -258,7 +258,7 @@ it.live(
         const client = launcher({
           requiresQualifiedTrialGate: false,
           prepareQualifiedTrial: () => Effect.die("Darwin must not prepare a qualified IPC trial."),
-          prepareTrial: Effect.succeed(undefined),
+          prepareTrial: Effect.undefined,
         });
         const startup = yield* withRuntime(
           root,

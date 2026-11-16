@@ -1,5 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off
 import * as NodeChildProcess from "node:child_process";
+import * as NodeEvents from "node:events";
+import * as NodeStream from "node:stream";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -9,11 +11,15 @@ import {
 } from "../../cloud/qualifiedRuntime.ts";
 import {
   PREPARATION_LOCK,
+  preparationJobLock,
   preparationJobsDirectory,
   type PreparationJob,
   type PreparationPhase,
 } from "./protocol.ts";
 import { adoptVerifiedStage } from "./rebind.ts";
+import { preparationLifecycle, readTerminalRelease } from "./lifecycle.ts";
+import { sweepPreparationLeftovers } from "./sweep.ts";
+import { PREPARATION_PROTOCOL, RESULT_FILE, writeDurableJson } from "./protocol.ts";
 import {
   makePreparationSupervisor,
   readPreparedRuntimeReceipt,
@@ -91,6 +97,156 @@ const blocked = (reason: QualifiedRuntimeBlockedError["reason"]) => (cause: unkn
 const stoppedFor = (reason: PreparationWorkerError["reason"]) => (cause: unknown) =>
   cause instanceof PreparationWorkerError && cause.reason === reason;
 
+it("locks only unresolved history among thousands of released jobs, without caching unknowns", async () => {
+  const fixture = await home();
+  const directory = NodePath.join(fixture.base, "runtime", "jones-preparation", "lifecycle");
+  await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+  const released = Array.from(
+    { length: 3000 },
+    (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+  );
+  const record = (id: string) =>
+    JSON.stringify({
+      schema: 1,
+      jobId: id,
+      kind: "stage",
+      state: "released",
+      worker: { pid: 54321, processGroup: 54321 },
+    });
+  for (let i = 0; i < released.length; i += 100)
+    await Promise.all(
+      released
+        .slice(i, i + 100)
+        .map((id) =>
+          NodeFSP.writeFile(NodePath.join(directory, `${id}.json`), record(id), { mode: 0o600 }),
+        ),
+    );
+  const unknown = "11111111-1111-4111-8111-111111111111";
+  const unreaped = "22222222-2222-4222-8222-222222222222";
+  const live = "33333333-3333-4333-8333-333333333333";
+  await NodeFSP.mkdir(NodePath.join(preparationJobsDirectory(fixture.base), unknown), {
+    recursive: true,
+  });
+  const launch = await preparationLifecycle(fixture.base, unreaped).reserve("stage");
+  await launch.started({ pid: process.pid, processGroup: process.pid });
+  await preparationLifecycle(fixture.base, live).reserve("stage");
+  const supervisor = makePreparationSupervisor({
+    baseDir: fixture.base,
+    cacheRoot: fixture.cacheRoot,
+    command: { file: "unused", args: [] },
+  });
+  await withQualifiedRuntimeLock(fixture.base, preparationJobLock(live), async () => {
+    expect((await supervisor.unreleasedJobs!()).toSorted()).toEqual([unknown, unreaped, live]);
+  });
+  const locks = (await NodeFSP.readdir(NodePath.join(fixture.base, "runtime", "jones-preparation")))
+    .filter((name) => name.startsWith("job-owner-"))
+    .toSorted();
+  expect(locks).toEqual(
+    [unknown, unreaped, live]
+      .map((id) => `${NodePath.basename(preparationJobLock(id))}.sqlite`)
+      .toSorted(),
+  );
+  await NodeFSP.writeFile(NodePath.join(directory, `${unknown}.json`), record(unknown), {
+    mode: 0o600,
+  });
+  expect(await supervisor.unreleasedJobs!()).toEqual([unreaped]);
+});
+
+it.each(["scratch", "reserved"])(
+  "keeps new %s under the owner lock during a concurrent sweep",
+  async (pause) => {
+    const fixture = await home();
+    const jobId = "44444444-4444-4444-8444-444444444444";
+    const jobDir = NodePath.join(preparationJobsDirectory(fixture.base), jobId);
+    let release!: () => void;
+    let entered!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reserved = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    // Native ESM namespace properties are not configurable in the CI runner. Import the
+    // supervisor and competing sweep through the same mocked module graph and lock owner.
+    vi.resetModules();
+    vi.doMock("node:fs/promises", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:fs/promises")>();
+      return {
+        ...actual,
+        mkdir: async (...args: Parameters<typeof actual.mkdir>) => {
+          const result = await actual.mkdir(...args);
+          if (String(args[0]) === (pause === "scratch" ? jobDir : NodePath.join(jobDir, "tmp"))) {
+            entered();
+            await barrier;
+          }
+          return result;
+        },
+      };
+    });
+    try {
+      const { makePreparationSupervisor: makeRacingSupervisor } = await import("./supervisor.ts");
+      const { sweepPreparationLeftovers: competingSweep } = await import("./sweep.ts");
+      const supervisor = makeRacingSupervisor({
+        baseDir: fixture.base,
+        cacheRoot: fixture.cacheRoot,
+        command: sourceWorkerCommand,
+      });
+      const controller = new AbortController();
+      const job = supervisor.start(
+        { kind: "sweep", cacheRoot: fixture.cacheRoot },
+        { jobId, signal: controller.signal },
+      );
+      const outcome = job.outcome.catch(() => undefined);
+      try {
+        await reserved;
+        expect(await readTerminalRelease(fixture.base, jobId)).toBe(false);
+        const swept = await competingSweep({
+          baseDir: fixture.base,
+          cacheRoot: fixture.cacheRoot,
+          keepJob: "55555555-5555-4555-8555-555555555555",
+        });
+        expect(swept.retainedJobIds).toEqual([jobId]);
+        expect(await NodeFSP.readdir(jobDir)).toEqual(pause === "scratch" ? [] : ["tmp"]);
+        controller.abort(new Error("Reservation race checked."));
+        release();
+        expect(await job.settled).toEqual({ jobId, kind: "not-started" });
+        await outcome;
+        expect(await jobsLeft(fixture)).toEqual([]);
+      } finally {
+        controller.abort();
+        release();
+        await job.settled;
+        await outcome;
+      }
+    } finally {
+      vi.doUnmock("node:fs/promises");
+      vi.resetModules();
+    }
+  },
+);
+
+it("leaves no reservation or scratch when the job lock is already owned", async () => {
+  const fixture = await home();
+  const jobId = "88888888-8888-4888-8888-888888888888";
+  const supervisor = makePreparationSupervisor({
+    baseDir: fixture.base,
+    cacheRoot: fixture.cacheRoot,
+    command: sourceWorkerCommand,
+  });
+  await NodeFSP.mkdir(preparationJobsDirectory(fixture.base), { recursive: true });
+  await withQualifiedRuntimeLock(fixture.base, preparationJobLock(jobId), async () => {
+    const job = supervisor.start({ kind: "sweep", cacheRoot: fixture.cacheRoot }, { jobId });
+    await expect(job.outcome).rejects.toSatisfy(blocked("busy"));
+    expect(await job.settled).toEqual({ jobId, kind: "not-started" });
+  });
+  expect(await jobsLeft(fixture)).toEqual([]);
+  await expect(
+    NodeFSP.stat(
+      NodePath.join(fixture.base, "runtime", "jones-preparation", "lifecycle", `${jobId}.json`),
+    ),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 describe("preparation worker command", () => {
   it("starts a single executable as itself and a script install through its entry", () => {
     expect(
@@ -145,6 +301,27 @@ describe("preparation worker command", () => {
 });
 
 describe("real preparation worker", () => {
+  it("sweeps once after successful stage settlement and then quiesces", async () => {
+    const fixture = await home();
+    const actions = await actionsFixture(fixture);
+    const exits: PreparationWorkerExit[] = [];
+    const supervisor = makePreparationSupervisor({
+      baseDir: fixture.base,
+      cacheRoot: fixture.cacheRoot,
+      command: sourceWorkerCommand,
+      env: actions.env,
+      observe: (exit) => exits.push(exit),
+    });
+    await expect(supervisor.run(stageJob(fixture, actions))).resolves.toMatchObject({
+      kind: "stage",
+    });
+    await supervisor.sweepIfNeeded?.();
+    expect(exits.map((exit) => exit.kind)).toEqual(["stage", "sweep"]);
+    for (let tick = 0; tick < 20; tick++) await supervisor.sweepIfNeeded?.();
+    expect(exits.map((exit) => exit.kind)).toEqual(["stage", "sweep"]);
+    expect(await jobsLeft(fixture)).toEqual([]);
+  });
+
   it("verifies a staged runtime in its own low-priority process and leaves no job storage", async () => {
     const fixture = await home();
     const staged = await stageFixtureRuntime(fixture);
@@ -443,4 +620,203 @@ it("fully verifies a runtime-only cache miss in the same-build worker and cleans
   expect(await jobsLeft(h)).toEqual([]);
   await readPreparedRuntimeReceipt(h.base, BASELINE, fixtureHost, supervisor);
   expect(observations).toHaveLength(1);
+});
+
+it("exposes a real settlement join independently of an aborted caller", async () => {
+  const fixture = await home();
+  const actions = await actionsFixture(fixture, { hang: true });
+  const exits: PreparationWorkerExit[] = [];
+  const supervisor = makePreparationSupervisor({
+    baseDir: fixture.base,
+    cacheRoot: fixture.cacheRoot,
+    command: sourceWorkerCommand,
+    env: actions.env,
+    observe: (exit) => exits.push(exit),
+  });
+  const jobId = "77777777-7777-4777-8777-777777777777";
+  const controller = new AbortController();
+  const job = supervisor.start(stageJob(fixture, actions), { jobId, signal: controller.signal });
+  const { gh, worker } = await hangingGh(actions);
+  try {
+    expect(supervisor.inspect(jobId)).toBe("running");
+    controller.abort(new Error("receipt-bound stop"));
+    await expect(job.outcome).rejects.toThrow("receipt-bound stop");
+    const joined = await job.settled;
+    expect(joined).toMatchObject({ jobId, kind: "stopped" });
+    expect(exits[0]).toMatchObject({ jobId, reaped: true, stopped: "cancelled" });
+    expect(alive(worker)).toBe(false);
+    expect(alive(gh)).toBe(false);
+    await supervisor.sweepIfNeeded?.();
+    expect(exits.map((exit) => exit.kind)).toEqual(["stage", "sweep"]);
+  } finally {
+    controller.abort();
+    await job.settled;
+  }
+});
+
+it("reports a never-spawned cancelled job without starting a worker", async () => {
+  const fixture = await home();
+  const exits: PreparationWorkerExit[] = [];
+  const supervisor = makePreparationSupervisor({
+    baseDir: fixture.base,
+    cacheRoot: fixture.cacheRoot,
+    command: sourceWorkerCommand,
+    observe: (exit) => exits.push(exit),
+  });
+  const controller = new AbortController();
+  controller.abort(new Error("before spawn"));
+  const jobId = "88888888-8888-4888-8888-888888888888";
+  const job = supervisor.start(
+    { kind: "sweep", cacheRoot: fixture.cacheRoot },
+    { jobId, signal: controller.signal },
+  );
+  await expect(job.outcome).rejects.toThrow("before spawn");
+  expect(await job.settled).toEqual({ jobId, kind: "not-started" });
+  expect(exits).toEqual([]);
+});
+
+it("retains an exited worker's still-live captured descendant through the reap deadline and later reconciles it", async () => {
+  const fixture = await home();
+  const jobId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const pid = 54321;
+  let descendantAlive = true;
+  let sweepPid = pid;
+  const exits: PreparationWorkerExit[] = [];
+  const supervisors: Array<ReturnType<typeof makePreparationSupervisor>> = [];
+  const workers: Promise<unknown>[] = [];
+  let completed = false;
+  const kill = vi.spyOn(process, "kill").mockImplementation((requested, signal) => {
+    if (signal !== 0) {
+      expect(requested).toBeLessThan(0);
+      return true;
+    }
+    if (requested === -pid && descendantAlive) return true;
+    throw Object.assign(new Error("Synthetic process absence."), { code: "ESRCH" });
+  });
+  const spawn = vi.fn((_file: string, args: string[]) => {
+    const jobDir = args.at(-1)!;
+    const id = NodePath.basename(jobDir);
+    const childPid = id === jobId ? pid : ++sweepPid;
+    const child = Object.assign(new NodeEvents.EventEmitter(), {
+      pid: childPid,
+      stdin: new NodeStream.PassThrough(),
+      stdout: new NodeStream.PassThrough(),
+      stderr: new NodeStream.PassThrough(),
+    });
+    queueMicrotask(() => {
+      const worker = (async () => {
+        child.stdout.write(
+          `${JSON.stringify({ type: "ready", protocol: PREPARATION_PROTOCOL, pid: childPid, priority: 19 })}\n`,
+        );
+        if (id === jobId)
+          await preparationLifecycle(fixture.base, id).effects(childPid, "transfer");
+        else
+          await writeDurableJson(
+            NodePath.join(jobDir, RESULT_FILE),
+            {
+              protocol: PREPARATION_PROTOCOL,
+              jobId: id,
+              ok: true,
+              outcome: {
+                kind: "sweep",
+                ...(await sweepPreparationLeftovers({
+                  baseDir: fixture.base,
+                  cacheRoot: fixture.cacheRoot,
+                  keepJob: id,
+                })),
+              },
+            },
+            256 * 1024,
+          );
+        child.emit("exit", 0, null);
+        child.emit("close", 0, null);
+      })().catch(() => child.emit("exit", 1, null));
+      workers.push(worker);
+    });
+    return child;
+  });
+  vi.resetModules();
+  vi.doMock("node:child_process", () => ({ spawn }));
+  vi.doMock("node:os", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("node:os")>()),
+    setPriority: vi.fn(),
+  }));
+  try {
+    const {
+      makePreparationSupervisor: makeSynthetic,
+      PreparationWorkerError: SyntheticPreparationWorkerError,
+    } = await import("./supervisor.ts");
+    const supervisor = makeSynthetic({
+      baseDir: fixture.base,
+      cacheRoot: fixture.cacheRoot,
+      command: { file: "synthetic", args: [] },
+      limits: { reapMs: 1 },
+      observe: (exit) => exits.push(exit),
+    });
+    supervisors.push(supervisor);
+    const job = supervisor.start(
+      {
+        kind: "stage",
+        candidate: {
+          schema: 1,
+          repository: "Jones-Systems/Jones-Code",
+          source: "b".repeat(40),
+          tree: "c".repeat(40),
+          installedSource: "a".repeat(40),
+          workflow: ".github/workflows/artifact-cli-linux.yml",
+          workflowId: 1,
+          runId: 2,
+          runAttempt: 1,
+          ciRunId: 3,
+          artifactId: 4,
+          artifactName: "synthetic",
+          artifactDigest: `sha256:${"d".repeat(64)}`,
+          artifactBytes: 1,
+          expiresAt: "2099-01-01T00:00:00Z",
+          version: VERSION,
+          platform: "linux",
+          architecture: "x64",
+        },
+        cacheRoot: fixture.cacheRoot,
+        dbPath: fixture.dbPath,
+        activeVersion: BASELINE,
+        host: fixtureHost,
+      },
+      { jobId },
+    );
+    await expect(job.outcome).rejects.toSatisfy(
+      (cause: unknown) =>
+        cause instanceof SyntheticPreparationWorkerError && cause.reason === "unreaped",
+    );
+    expect(await job.settled).toMatchObject({ jobId, kind: "unreaped" });
+    expect(exits[0]).toMatchObject({ jobId, pid, code: 0, reaped: false });
+    await supervisor.sweep();
+    expect(supervisor.inspect(jobId)).toMatchObject({ jobId, kind: "unreaped" });
+    expect(await jobsLeft(fixture)).toContain(jobId);
+    const restarted = makeSynthetic({
+      baseDir: fixture.base,
+      cacheRoot: fixture.cacheRoot,
+      command: { file: "synthetic", args: [] },
+    });
+    supervisors.push(restarted);
+    expect(await restarted.reconcile?.(jobId)).toMatchObject({ kind: "unreaped" });
+    descendantAlive = false;
+    await restarted.sweep();
+    expect(await restarted.reconcile?.(jobId)).toMatchObject({ kind: "stopped" });
+    expect(await jobsLeft(fixture)).not.toContain(jobId);
+    completed = true;
+  } finally {
+    // Drain queued sweeps before restoring their process mocks or disposing this synthetic home.
+    const drains: PromiseSettledResult<unknown>[] = [];
+    for (const supervisor of supervisors)
+      drains.push(...(await Promise.allSettled([supervisor.sweep()])));
+    const workerResults = await Promise.allSettled(workers);
+    kill.mockRestore();
+    vi.doUnmock("node:child_process");
+    vi.doUnmock("node:os");
+    vi.resetModules();
+    if (completed)
+      for (const result of [...drains, ...workerResults])
+        expect(result).toMatchObject({ status: "fulfilled" });
+  }
 });

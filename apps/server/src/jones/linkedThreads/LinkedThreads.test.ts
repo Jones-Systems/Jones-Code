@@ -2,6 +2,13 @@ import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ThreadId, type OrchestrationV2ThreadShell } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { RecordedAppThreadJson } from "../../orchestration-v2/RecordedTypes.ts";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Environment from "../../environment/ServerEnvironment.ts";
@@ -27,12 +34,19 @@ const a = endpoint("a"),
   b = endpoint("b"),
   c = endpoint("c");
 const user = { type: "user" } as const;
+const encodeThread = Schema.encodeSync(Schema.fromJsonString(RecordedAppThreadJson));
+const insertThread = (id: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const payload = encodeThread(idleThreadProjection(liveThreadShell(ThreadId.make(id))).thread);
+    yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${id}, NULL, ${payload})`;
+  });
 const setup = Effect.gen(function* () {
-  yield* migration;
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
-  for (const id of ["a", "b", "c"])
-    yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${id}, NULL)`;
+  yield* sql`PRAGMA journal_mode = WAL`;
+  yield* migration;
+  yield* sql`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT, payload_json TEXT NOT NULL)`;
+  for (const id of ["a", "b", "c"]) yield* insertThread(id);
 });
 const shell = (id: ThreadId) =>
   Effect.gen(function* () {
@@ -71,13 +85,22 @@ const dependencies = (overrides: Partial<Threads.ThreadManagementService["Servic
 const run = <A, E>(
   program: Effect.Effect<A, E, LinkedThreads.LinkedThreads | SqlClient.SqlClient>,
   overrides: Partial<Threads.ThreadManagementService["Service"]> = {},
+  filename = ":memory:",
 ) =>
   Effect.gen(function* () {
     yield* setup;
     return yield* program.pipe(
       Effect.provide(LinkedThreads.layer.pipe(Layer.provide(dependencies(overrides)))),
     );
-  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
+  }).pipe(
+    Effect.provide(
+      NodeSqliteClient.layer({
+        filename,
+        readerWorker: filename !== ":memory:",
+        readerFailureMode: "fail",
+      }),
+    ),
+  );
 
 it.effect("keeps launch claims invisible until creation, and never revives a removed claim", () =>
   run(
@@ -91,8 +114,7 @@ it.effect("keeps launch claims invisible until creation, and never revives a rem
       };
       const id = yield* service.claimLaunch(input);
       expect((yield* service.list(user, { thread: a })).links).toEqual([]);
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES ('pending', NULL)`;
+      yield* insertThread("pending");
       expect((yield* service.list(user, { thread: a })).links.map((link) => link.linkId)).toEqual([
         id,
       ]);
@@ -389,4 +411,89 @@ it.effect("records old-peer origins one-sided and retains tombstones on replay",
       expect((yield* service.list(user, { thread: a })).links).toEqual([]);
     }),
   ),
+);
+
+it.effect("authorizes list reads from metadata without constructing historical shells", () =>
+  run(
+    Effect.gen(function* () {
+      const service = yield* LinkedThreads.LinkedThreads;
+      const sql = yield* SqlClient.SqlClient;
+      const remote = endpoint("origin", away);
+      const actor = {
+        type: "linked",
+        sessionId: "session",
+        label: "Peer",
+        origin: remote,
+        fenced: true,
+      } as const;
+      expect(
+        (yield* service.list(user, { thread: endpoint("missing") }).pipe(Effect.flip)).reason,
+      ).toBe("endpoint_not_found");
+      expect((yield* service.list(actor, { thread: a }).pipe(Effect.flip)).reason).toBe(
+        "forbidden",
+      );
+      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = json_set(payload_json, '$.linkOrigin', json(${JSON.stringify({ sessionId: "session", label: "Peer" })})) WHERE thread_id = 'a'`;
+      expect((yield* service.list(actor, { thread: a })).links).toEqual([]);
+      expect(
+        (yield* service.list({ ...actor, sessionId: "other" }, { thread: a }).pipe(Effect.flip))
+          .reason,
+      ).toBe("forbidden");
+      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = json_set(payload_json, '$.deletedAt', '2026-01-01T00:00:00.000Z'), deleted_at = '2026-01-01T00:00:00.000Z' WHERE thread_id = 'a'`;
+      expect((yield* service.list(user, { thread: a }).pipe(Effect.flip)).reason).toBe(
+        "endpoint_not_found",
+      );
+    }),
+    { getThreadShell: () => Effect.die("List reads must not construct a shell") },
+  ),
+);
+
+it.effect(
+  "lists on the reader while the writer is occupied and preserves write-transaction affinity",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "linked-thread-reads-" });
+        yield* run(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const service = yield* LinkedThreads.LinkedThreads;
+            yield* service.link(user, { kind: "peer", from: a, to: b, basis: "manual" });
+            const acquired = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            const writer = yield* Effect.forkChild(
+              sql.withTransaction(
+                Effect.gen(function* () {
+                  yield* Deferred.succeed(acquired, undefined);
+                  yield* Deferred.await(release);
+                }),
+              ),
+            );
+            yield* Deferred.await(acquired);
+            const result = yield* service
+              .list(user, { thread: a })
+              .pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+            expect(result.links).toHaveLength(1);
+            yield* Fiber.join(writer);
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* insertThread("uncommitted");
+                yield* service.link(user, {
+                  kind: "peer",
+                  from: a,
+                  to: endpoint("uncommitted"),
+                  basis: "manual",
+                });
+                expect(
+                  (yield* service.list(user, { thread: endpoint("uncommitted") })).links,
+                ).toHaveLength(1);
+              }),
+            );
+          }),
+          {},
+          path.join(directory, "state.sqlite"),
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
 );

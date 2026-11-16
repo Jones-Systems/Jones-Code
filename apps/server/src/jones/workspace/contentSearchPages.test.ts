@@ -5,6 +5,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import { vi } from "vite-plus/test";
 
+import * as NativeSearchRuntime from "./nativeSearchRuntime.ts";
 import * as WorkspaceSearchIndex from "../../workspace/WorkspaceSearchIndex.ts";
 
 const pendingImmediates = new Set<NodeJS.Immediate>();
@@ -65,7 +66,7 @@ function makeIndex(grep: FileFinder["grep"]) {
     grep,
   } as unknown as FileFinder;
   vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
-  return { index: WorkspaceSearchIndex.make("/workspace/project", "content"), destroy };
+  return { index: NativeSearchRuntime.make("/workspace/project", "content"), destroy };
 }
 
 it.effect(
@@ -240,10 +241,22 @@ it.effect("preserves the result limit and first regex fallback across empty page
       expect(result.matches).toHaveLength(2);
       expect(result.truncated).toBe(true);
       expect(result.regexFallbackError).toBe("first compile failure");
-      expect(grep).toHaveBeenCalledTimes(2);
-      expect(grep).toHaveBeenCalledWith(
+      // An invalid case-insensitive regex retries the same page literally, so `(?i)` is not searched.
+      expect(grep).toHaveBeenCalledTimes(3);
+      expect(grep).toHaveBeenNthCalledWith(
+        1,
         "(?i)[",
-        expect.objectContaining({ mode: "regex", smartCase: false }),
+        expect.objectContaining({ mode: "regex", smartCase: false, cursor: null }),
+      );
+      expect(grep).toHaveBeenNthCalledWith(
+        2,
+        "[",
+        expect.objectContaining({ mode: "plain", smartCase: true, cursor: null }),
+      );
+      expect(grep).toHaveBeenNthCalledWith(
+        3,
+        "[",
+        expect.objectContaining({ mode: "plain", smartCase: true, cursor: next }),
       );
     }),
   ),

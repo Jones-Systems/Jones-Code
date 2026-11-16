@@ -1,3 +1,4 @@
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import { assert, it } from "@effect/vitest";
 import { CheckpointScopeId, CommandId, GitCommandError, RunId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -85,6 +86,9 @@ it.effect.each([
     Layer.provide(
       Layer.mergeAll(
         finalization,
+        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
+          getByCommandId: () => Effect.succeedNone,
+        }),
         Layer.mock(RestartPreparation.RestartPreparation)({}),
         Layer.mock(ProviderSessions.ProviderSessionManagerV2)({}),
         Layer.mock(ProviderTurnControl.ProviderTurnControlServiceV2)({}),

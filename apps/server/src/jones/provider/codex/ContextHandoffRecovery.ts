@@ -1,3 +1,4 @@
+import { HistoryNotApplied } from "./HistoryDeliveryOutcome.ts";
 import type { OrchestrationV2ProviderThread } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -7,8 +8,8 @@ import { deliverContextHandoffs } from "../../../orchestration-v2/ContextHandoff
 
 const isContextHandoffBudgetError = Schema.is(ContextHandoffBudgetError);
 
-// Only the local budget failure is recoverable. Persist/inject failures retain
-// their original semantics, and the second delivery has no recovery handler.
+// Only the local budget failure can trigger compaction. Delivery restores this
+// invocation's proved-unsent records without admitting another native operation.
 export const deliverWithHandoffRecovery = <
   InjectError = never,
   PersistError = never,
@@ -35,6 +36,8 @@ export const deliverWithHandoffRecovery = <
         deliverContextHandoffs({
           ...delivery,
           budget,
+          // Metadata restoration must not re-open native start admission.
+          restore: delivery.restore ?? delivery.persist,
           persist: (handoff) =>
             recovery.revalidate.pipe(
               Effect.andThen(markDelivery),
@@ -45,6 +48,7 @@ export const deliverWithHandoffRecovery = <
             : {
                 inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
                   recovery.revalidate.pipe(
+                    Effect.mapError((cause) => new HistoryNotApplied({ cause })),
                     Effect.andThen(markDelivery),
                     Effect.andThen(delivery.inject!(history)),
                   ),
@@ -53,38 +57,41 @@ export const deliverWithHandoffRecovery = <
       ),
     );
   return deliver(delivery.budget).pipe(
-    Effect.catch((error) => {
-      if (deliveryEffectsStarted || !isContextHandoffBudgetError(error)) return Effect.fail(error);
-      return Effect.gen(function* () {
-        const nativeId = delivery.providerThread.nativeThreadRef?.nativeId;
-        if (
-          delivery.deferInline ||
-          !recovery.compact ||
-          !nativeId ||
-          delivery.handoffs.some(
-            (handoff) =>
-              handoff.delivery?.nativeThreadId === nativeId &&
-              handoff.delivery.status === "pending",
+    Effect.catchIf(
+      (error): error is ContextHandoffBudgetError =>
+        !deliveryEffectsStarted && isContextHandoffBudgetError(error),
+      (error) => {
+        return Effect.gen(function* () {
+          const nativeId = delivery.providerThread.nativeThreadRef?.nativeId;
+          if (
+            delivery.deferInline ||
+            !recovery.compact ||
+            !nativeId ||
+            delivery.handoffs.some(
+              (handoff) =>
+                handoff.delivery?.nativeThreadId === nativeId &&
+                handoff.delivery.status === "pending",
+            )
           )
-        )
-          return yield* Effect.fail(error);
-        // A pure preview proves that the intact request plus reserves can fit
-        // after reclaiming history. Zero occupancy is a capacity bound, not telemetry.
-        yield* deliverContextHandoffs({
-          handoffs: delivery.handoffs,
-          providerThread: delivery.providerThread,
-          alreadyDeliveredItemIds: delivery.alreadyDeliveredItemIds,
-          budget: recovery.reclaimableBudget,
-          persist: () => Effect.void,
+            return yield* error;
+          // A pure preview proves that the intact request plus reserves can fit
+          // after reclaiming history. Zero occupancy is a capacity bound, not telemetry.
+          yield* deliverContextHandoffs({
+            handoffs: delivery.handoffs,
+            providerThread: delivery.providerThread,
+            alreadyDeliveredItemIds: delivery.alreadyDeliveredItemIds,
+            budget: recovery.reclaimableBudget,
+            persist: () => Effect.void,
+          });
+          yield* recovery.revalidate;
+          const usage = yield* recovery.compact({
+            ...recovery.input,
+            revalidateStartAdmission: recovery.revalidate,
+          });
+          yield* recovery.revalidate;
+          return yield* deliver(recovery.budgetAfter(usage));
         });
-        yield* recovery.revalidate;
-        const usage = yield* recovery.compact({
-          ...recovery.input,
-          revalidateStartAdmission: recovery.revalidate,
-        });
-        yield* recovery.revalidate;
-        return yield* deliver(recovery.budgetAfter(usage));
-      });
-    }),
+      },
+    ),
   );
 };

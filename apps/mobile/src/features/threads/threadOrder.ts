@@ -3,6 +3,7 @@ import {
   generateSpreadPinOrderKeys,
   pinOrderKeyBetween,
   planPinnedReorder,
+  planPinnedMove,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -98,7 +99,10 @@ export function createThreadMovePlanner(input: {
     if (!writableIds.has(movedId)) return null;
     const nextIds = threadOrderAfterMove(orderedIds, movedId, direction);
     if (nextIds === null) return null;
-    const assignments = planPinnedReorder({ orderedIds: nextIds, keysById, movedId });
+    const assignments =
+      typeof direction === "string"
+        ? planPinnedMove({ orderedIds, keysById, movedId, direction })
+        : planPinnedReorder({ orderedIds: nextIds, keysById, movedId });
     return assignments === null ||
       assignments.length === 0 ||
       assignments.some((assignment) => !writableIds.has(assignment.id))
@@ -112,12 +116,7 @@ export interface ThreadMoveAvailability {
   readonly canMoveDown: boolean;
 }
 
-/**
- * Batch form of "call `createThreadMovePlanner` once per card": one pass over
- * the section answers up/down availability for every ordered row, so list
- * construction stays linear instead of one full planner probe (array copies,
- * hidden-key rescans) per row on the minute-tick rebuild path.
- */
+/** Compute per section; per-card planner probes make minute ticks quadratic. */
 export function computeThreadMoveAvailability(input: {
   readonly ordered: readonly OrderRow[];
   readonly allThreads?: readonly OrderRow[];
@@ -150,10 +149,7 @@ export function computeThreadMoveAvailability(input: {
   keysById.forEach((key, id) => {
     if (key != null && !indexById.has(id)) reservedKeys.add(key);
   });
-  // A swap permutes two rows without changing the multiset, so the assignment
-  // set differs from the unswapped baseline at at most those two positions, and
-  // mismatch/writability tallies computed once per section answer each row with
-  // a constant-size delta.
+  // Swaps affect at most two positions; precomputed totals allow constant-size availability checks.
   const midpoints = new Map<string, string | null>();
   const fastPathKey = (beforeKey: string | null, afterKey: string | null): string | null => {
     const memoKey = `${beforeKey ?? ""}\u0000${afterKey ?? ""}`;

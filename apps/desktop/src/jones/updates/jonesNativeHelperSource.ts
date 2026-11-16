@@ -1,3 +1,4 @@
+import { jonesSigningSource } from "./jonesSigningSource.ts";
 import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";
 
 /** Kept outside the app bundle before handoff so quitting Electron cannot stop activation. */
@@ -9,6 +10,8 @@ STARTUP_GATE_PROTOCOL = 1
 SETTINGS = ('settings.json', 'desktop-settings.json', 'client-settings.json', 'saved-environments.json', 'environment-id')
 TRANSIENT_PROFILE = {'SingletonLock', 'SingletonCookie', 'SingletonSocket'}
 RECOVERY_HEADROOM = 256 * 1024 * 1024
+
+${jonesSigningSource}
 
 def read(path):
     with open(path, 'r', encoding='utf8') as stream:
@@ -41,7 +44,7 @@ def digest(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''): result.update(block)
     return result.hexdigest()
 
-def app_digest(root, opaque_profile=False):
+def app_digest(root, opaque_profile=False, original_directories=None):
     root = pathlib.Path(root).resolve()
     result = hashlib.sha256()
     entries = sorted(root.rglob('*'), key=lambda value: value.relative_to(root).as_posix().encode('utf8'))
@@ -58,12 +61,25 @@ def app_digest(root, opaque_profile=False):
             total_bytes += info.st_size
             if total_bytes > 8 * 1024 * 1024 * 1024: raise RuntimeError('Native app exceeds its payload-size bound.')
             record = ['file', relative, info.st_mode & 0o777, digest(entry)]
-        elif entry.is_dir(): record = ['directory', relative, info.st_mode & 0o777]
+        elif entry.is_dir():
+            mode = info.st_mode & 0o777
+            if original_directories is not None:
+                original = (original_directories / relative).lstat()
+                manual_check(stat.S_ISDIR(original.st_mode) and mode in (original.st_mode & 0o777, original.st_mode & 0o700))
+                mode = original.st_mode & 0o777
+            record = ['directory', relative, mode]
         else: raise RuntimeError('Unexpected app payload file type.')
         result.update((json.dumps(record, separators=(',', ':'), ensure_ascii=False) + '\n').encode())
     return result.hexdigest()
 
 ${jonesPairedStateSource.syncTree}
+
+def warm_intent_shape(value):
+    keys = {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'}
+    if 'stateRecovery' in value:
+        if value['stateRecovery'] != 'clone-required': return False
+        keys.add('stateRecovery')
+    return set(value) == keys
 
 def same_binding(left, right):
     return left == right and left.get('protocol') == PROTOCOL and left.get('owner') == 'desktop'
@@ -432,6 +448,7 @@ def prepare_bundle(expected, staged, transaction_id):
     return incoming, previous
 
 def swap_bundle(expected, incoming, previous):
+    verify_signing_transition(expected, incoming)
     stable = pathlib.Path(expected['appPath'])
     os.rename(stable, previous)
     sync_parent(stable)
@@ -448,6 +465,7 @@ def restore_bundle(expected, incoming, previous):
     stable = pathlib.Path(expected['appPath'])
     if not previous.exists(): return
     if incoming.exists(): raise RuntimeError('Occupied trial bundle path; rollback held.')
+    verify_rollback_signature(expected, previous)
     os.rename(stable, incoming)
     sync_parent(stable)
     os.rename(previous, stable)
@@ -471,11 +489,15 @@ def launch(active, descriptor=None):
     if type(pid) is not int or pid <= 0 or not (isinstance(bundle, str) and bundle and isinstance(executable, str) and executable) \
             or os.path.realpath(bundle) != os.path.realpath(active['appPath']) or os.path.realpath(executable) != os.path.realpath(active['executablePath']):
         raise RuntimeError('LaunchServices did not prove the launched Jones Code; launch effect is unknown.')
-    identity = process_identity(pid)
-    if identity is None: raise RuntimeError('Native app exited before its identity was captured; OS consent may be required.')
-    if not any((' ' + path + ' ') in (' ' + identity + ' ') for path in (active['executablePath'], executable)):
+    try: identity, _ = kernel_process_sample(pid)
+    except KernelProcessError as failure:
+        if failure.diagnostic['error'] != 'process-exited': raise
+        raise RuntimeError('Native app exited before its identity was captured; OS consent may be required.') from None
+    try: matches = os.path.samefile(identity['executable'], active['executablePath'])
+    except OSError: matches = False
+    if not matches:
         raise RuntimeError('Launched process identity does not match Jones Code; launch effect is unknown.')
-    return {'pid': pid, 'identity': identity}
+    return identity
 
 LAUNCH_SERVICES_SCRIPT = r'''ObjC.import("AppKit");
 function reply(value) {
@@ -646,7 +668,7 @@ def pre_swap_preparation_recovery(request, request_path, request_sha256, active,
         keys = {'intent', 'phase', 'message', 'storage', 'recoveryReserves', 'incomingBundle', 'previousBundle'} | ({'preSwapPreparationRecovery'} if terminal else set())
         if not set(journal) <= keys or (not terminal and (journal.get('phase') != 'blocked' or hashlib.sha256(journal_raw).hexdigest() != approval['journalSha256'])):
             raise SelectionRefused('activation-incomplete')
-        if set(intent) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != tx.name or intent['expected'] != active or journal['intent'] != intent or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(intent['processes']) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
+        if not warm_intent_shape(intent) or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != tx.name or intent['expected'] != active or journal['intent'] != intent or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(intent['processes']) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
             raise SelectionRefused('unknown-transaction')
         staged = intent['staged']
         claim, claim_raw, _ = records['prepare-intent.json']
@@ -959,7 +981,7 @@ def preparation_context(active, transaction_id, allow_dispatched=False):
         if 'continuation.json' in records and 'prepare-dispatched.json' not in records: raise SelectionRefused('unknown-state')
         if 'activation-request.json' in records:
             request = records['activation-request.json'][0]
-            if set(request) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['expected'] != active or request['staged'] != selection['app'] or request['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(request['processes']) or not isinstance(request['listener'], str) or not request['listener'].strip():
+            if not warm_intent_shape(request) or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['expected'] != active or request['staged'] != selection['app'] or request['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(request['processes']) or not isinstance(request['listener'], str) or not request['listener'].strip():
                 raise SelectionRefused('claim-mismatch')
         if 'prepare-failure.json' in records:
             failure = records['prepare-failure.json'][0]
@@ -1110,6 +1132,7 @@ def retirement_inventory(path, parent_device):
     return entries
 
 def retirement_context(active, transaction_id):
+    require_retention_exclusion()
     if not isinstance(transaction_id, str) or len(transaction_id) != 64 or any(char not in '0123456789abcdef' for char in transaction_id):
         raise SelectionRefused('unknown-transaction')
     root = manifest_path.parent / 'jones-updates' / 'transactions'
@@ -1117,6 +1140,9 @@ def retirement_context(active, transaction_id):
     if tx.is_symlink() or not tx.is_dir() or tx.resolve(strict=True) != tx:
         raise SelectionRefused('unknown-transaction')
     inspect_selection_transactions(active, retiring=transaction_id)
+    recovery = install_retention_plan(retiring=transaction_id)
+    if transaction_id in recovery['snapshot']['warmKeep']:
+        raise SelectionRefused('protected-recovery-parent')
     journals = {}
     for other in root.iterdir():
         if not (other / 'journal.json').exists(): continue
@@ -1157,11 +1183,12 @@ def retirement_context(active, transaction_id):
     for directory, marker, database_name in ((tx / 'previous-pair', 'pair.json', 'state.sqlite'), (tx / 'advanced-state', 'retained.json', pathlib.Path(prior['databasePath']).name)):
         if not directory.exists(): continue
         if directory.is_symlink() or directory.resolve(strict=True) != directory: raise SelectionRefused('unknown-state')
-        evidence, _, _ = bounded_native_json(directory / marker)
+        evidence, pair_raw, _ = bounded_native_json(directory / marker)
         if evidence.get('expected' if marker == 'pair.json' else 'previous') != prior:
             raise SelectionRefused('unknown-state')
+        if marker == 'pair.json': database_marker_state(directory, 'warm', transaction_id, pair_raw)
         names = [database_name + suffix for suffix in ('', '-wal', '-shm')] + list(SETTINGS) + ['profile']
-        if any(child.name not in names + [marker] for child in directory.iterdir()): raise SelectionRefused('unknown-payload')
+        if any(child.name not in names + [marker] + ([DATABASE_RETIREMENT_MARKER] if marker == 'pair.json' else []) for child in directory.iterdir()): raise SelectionRefused('unknown-payload')
         allowed.extend((directory / name, None) for name in names)
     allowed.extend((derived[key], None) for key in ('incomingBundle', 'previousBundle') if key in journal)
     for reserve in journal.get('recoveryReserves', []):
@@ -1184,13 +1211,14 @@ def retirement_context(active, transaction_id):
         targets.append({'path': str(path), 'kind': first['kind'], 'device': first['device'], 'inode': first['inode'],
                         'bytes': sum(entry['bytes'] for entry in entries), 'parentDevice': str(parent.st_dev), 'parentInode': str(parent.st_ino), 'entries': entries})
     if sum(len(target['entries']) for target in targets) > 200000: raise SelectionRefused('payload-bound')
-    return tx, {'protocol': PROTOCOL, 'transactionId': transaction_id, 'activeBinding': active, 'journalSha256': journal_digest, 'targets': targets}
+    return tx, {'protocol': PROTOCOL, 'transactionId': transaction_id, 'activeBinding': active, 'journalSha256': journal_digest,
+                'closureGeneration': recovery['closureGeneration'], 'targets': targets}
 
 def retirement_digest(plan):
     return hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 def reconcile_retirement(original, current):
-    if any(original.get(key) != current[key] for key in ('protocol', 'transactionId', 'activeBinding', 'journalSha256')):
+    if any(original.get(key) != current[key] for key in ('protocol', 'transactionId', 'activeBinding', 'journalSha256', 'closureGeneration')):
         raise SelectionRefused('plan-changed')
     approved = {target['path']: target for target in original['targets']}
     if len(approved) != len(original['targets']): raise SelectionRefused('plan-changed')
@@ -1275,8 +1303,25 @@ def retirement_command(operation, active, transaction_id, plan_sha=None):
         if plan_sha != approved_sha: raise SelectionRefused('plan-changed')
         if len(json.dumps(approved)) > 31 * 1024 * 1024: raise SelectionRefused('payload-bound')
         changed = True
-        if not intent_path.exists(): durable(intent_path, {'protocol': PROTOCOL, 'planSha256': approved_sha, 'plan': approved}, True)
-        for target in current['targets']: remove_retirement_payload(target)
+        expected_intent = {'protocol': PROTOCOL, 'planSha256': approved_sha, 'plan': approved}
+        if not intent_path.exists(): durable(intent_path, expected_intent, True)
+        intent_value, intent_raw, intent_info = bounded_native_json(intent_path, 32 * 1024 * 1024)
+        if intent_value != expected_intent: raise SelectionRefused('plan-changed')
+        def validate_intent():
+            value, raw, info = bounded_native_json(intent_path, 32 * 1024 * 1024)
+            if raw != intent_raw or (info.st_dev, info.st_ino) != (intent_info.st_dev, intent_info.st_ino):
+                raise SelectionRefused('plan-changed')
+        for target in current['targets']:
+            # Re-read both stores after intent publication and before every
+            # disposal, while the shared install/recovery exclusion is held.
+            _, fresh = retirement_context(active, transaction_id)
+            reconcile_retirement(approved, fresh)
+            validate_intent()
+            if target not in fresh['targets']: raise SelectionRefused('plan-changed')
+            remove_retirement_payload(target)
+        _, fresh = retirement_context(active, transaction_id)
+        reconcile_retirement(approved, fresh)
+        validate_intent()
         # A reconciled all-absent result still syncs every approved parent before
         # recording completion, including an unlink whose prior fsync failed.
         for parent in sorted({str(pathlib.Path(target['path']).parent) for target in approved['targets']}):
@@ -1310,7 +1355,7 @@ def selection_command(operation, active, handle, selection_path, expected_digest
             if request != transaction / 'activation-request.json' or request.resolve(strict=True) != request:
                 raise SelectionRefused('selection-mismatch')
             intent, _, _ = bounded_native_json(request)
-            if type(intent.get('protocol')) is not int or intent['protocol'] != PROTOCOL or intent.get('transactionId') != transaction_id or intent.get('expected') != active or intent.get('staged') != selection['app'] or intent.get('continuationReceipt') != str(transaction / 'continuation.json'):
+            if not warm_intent_shape(intent) or type(intent.get('protocol')) is not int or intent['protocol'] != PROTOCOL or intent.get('transactionId') != transaction_id or intent.get('expected') != active or intent.get('staged') != selection['app'] or intent.get('continuationReceipt') != str(transaction / 'continuation.json'):
                 raise SelectionRefused('selection-mismatch')
             verify_app(intent['staged'], active)
             continuation, _, _ = bounded_native_json(transaction / 'continuation.json')
@@ -1402,7 +1447,7 @@ def settle_interrupted_activation(transaction_id):
                    'recovery-reserve.bin', 'recovery-journal-reserve.bin', 'previous-pair'}
         if not names <= allowed: raise SelectionRefused('unknown-state')
         intent, intent_raw, intent_info = bounded_native_json(tx / 'intent.json')
-        if set(intent) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != transaction_id or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(intent['processes']) or not isinstance(intent['staged'], dict) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
+        if not warm_intent_shape(intent) or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != transaction_id or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(intent['processes']) or not isinstance(intent['staged'], dict) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
             raise SelectionRefused('unknown-state')
         active, manifest_raw, manifest_info = bounded_native_json(manifest_path)
         if not same_binding(active, intent['expected']): raise SelectionRefused('manifest-changed')
@@ -1443,8 +1488,116 @@ def settle_interrupted_activation(transaction_id):
     except Exception:
         return {'protocol': PROTOCOL, 'status': 'uncertain'}
 
+def recovery_directory(path):
+    path = pathlib.Path(path)
+    if not path.is_absolute() or path.resolve(strict=True) != path:
+        raise RuntimeError('Recovery path is not a confined real directory.')
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    info = os.fstat(descriptor)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        os.close(descriptor)
+        raise RuntimeError('Recovery directory ownership or permissions are unknown.')
+    return descriptor, (info.st_dev, info.st_ino)
+
+def strict_recovery_probe(state, recovery):
+    import ctypes, errno, tempfile
+    descriptors, directories, files = [], [], []
+    try:
+        for parent in (state, recovery):
+            descriptor, identity = recovery_directory(parent)
+            descriptors.append((descriptor, pathlib.Path(parent), identity))
+            directory = pathlib.Path(tempfile.mkdtemp(prefix='.jones-recovery-probe-', dir=parent))
+            info = directory.lstat()
+            directories.append((directory, (info.st_dev, info.st_ino)))
+        source, target = directories[0][0] / 'source', directories[1][0] / 'clone'
+        descriptor = os.open(source, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(descriptor)
+            files.append((source, (info.st_dev, info.st_ino)))
+            payload = b'jones-strict-clone-probe-v1\n'
+            if os.write(descriptor, payload) != len(payload):
+                raise RuntimeError('Recovery probe write was incomplete.')
+            os.fsync(descriptor)
+        finally: os.close(descriptor)
+        if source.stat().st_dev != recovery.stat().st_dev:
+            return {'status': 'unsupported', 'reason': 'State and recovery require the same volume. Stop; free space before retrying.'}
+        function = darwin_clonefile()
+        if function(os.fsencode(source), os.fsencode(target), 1) != 0:
+            code = ctypes.get_errno()
+            if code in (errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.ENOSYS):
+                return {'status': 'unsupported', 'reason': 'Strict clonefile is unsupported in the actual recovery topology. Stop; free space before retrying.'}
+            return {'status': 'unknown', 'reason': 'Strict clonefile did not prove recovery capability. Stop; free space before retrying.'}
+        cloned, original = target.lstat(), source.lstat()
+        files.append((target, (cloned.st_dev, cloned.st_ino)))
+        if not stat.S_ISREG(cloned.st_mode) or cloned.st_nlink != 1 or cloned.st_uid != os.getuid() or cloned.st_size != original.st_size or cloned.st_dev != original.st_dev or cloned.st_ino == original.st_ino:
+            raise RuntimeError('Strict clonefile probe identity is unknown.')
+        for descriptor, path, identity in descriptors:
+            info = path.lstat()
+            if (info.st_dev, info.st_ino) != identity: raise RuntimeError('Recovery topology changed during the probe.')
+        return {'status': 'proved'}
+    except (AttributeError, OSError, RuntimeError):
+        return {'status': 'unknown', 'reason': 'Strict clonefile capability or topology is unknown. Stop; free space before retrying.'}
+    finally:
+        # Exact inode checks never consume retained state or an unexpected file.
+        cleanup_failed = False
+        for path, identity in reversed(files):
+            try:
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != identity or info.st_nlink != 1:
+                    raise RuntimeError('Recovery probe file ownership changed.')
+                path.unlink()
+            except (OSError, RuntimeError): cleanup_failed = True
+        for path, identity in reversed(directories):
+            try:
+                info = path.lstat()
+                if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != identity:
+                    raise RuntimeError('Recovery probe directory ownership changed.')
+                path.rmdir()
+            except (OSError, RuntimeError): cleanup_failed = True
+        for descriptor, _, _ in descriptors: os.close(descriptor)
+        if cleanup_failed: raise RuntimeError('Recovery probe cleanup ownership could not be proved; Stop.')
+
+def inspect_recovery(active, handle, selection_path, selection_sha256):
+    _, selection, raw, _ = selection_binding(active, handle, selection_path, selection_sha256)
+    inspect_selection_transactions(active, staged_handle=handle)
+    staged = selection['app']
+    verify_app(staged, active)
+    state = pathlib.Path(active['databasePath']).parent
+    if not state.is_relative_to(pathlib.Path(active['home'])):
+        raise RuntimeError('Recovery state escapes the native home.')
+    recovery = manifest_path.parent / 'jones-updates' / 'transactions'
+    # A not-yet-created transaction inherits this exact, checked ancestor volume.
+    while not recovery.exists() and not recovery.is_symlink(): recovery = recovery.parent
+    app_parent = pathlib.Path(active['appPath']).parent
+    descriptors = []
+    try:
+        for path in (state, recovery): descriptors.append(recovery_directory(path)[0])
+        if state.stat().st_dev != recovery.stat().st_dev:
+            raise RuntimeError('Native state and recovery require the same volume; installation is unsupported in this topology. Stop.')
+        if app_parent.resolve(strict=True) != app_parent or not app_parent.is_dir():
+            raise RuntimeError('Candidate destination topology is unknown.')
+        state_bytes = recovery_state_bytes(active)
+        database = pathlib.Path(active['databasePath'])
+        first_install = not any(path.exists() or path.is_symlink() for path in [pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm')] + [state / name for name in SETTINGS])
+        candidate_bytes = tree_storage_size(staged['appPath'])
+        requirements = {}
+        for path, role, copy_bytes, clone_bytes in ((recovery, 'state', state_bytes, 0), (app_parent, 'candidate', candidate_bytes, candidate_bytes)):
+            device = path.stat().st_dev
+            if device not in requirements: requirements[device] = {'role': role, 'availableBytes': os.statvfs(path).f_bavail * os.statvfs(path).f_frsize, 'copyRequiredBytes': RECOVERY_HEADROOM, 'cloneRequiredBytes': RECOVERY_HEADROOM}
+            requirements[device]['copyRequiredBytes'] += copy_bytes
+            requirements[device]['cloneRequiredBytes'] += clone_bytes
+        clone = {'status': 'unsupported', 'reason': 'No existing state to back up; no clone choice is available.'} if first_install else strict_recovery_probe(state, recovery)
+        if read(manifest_path) != active or selection_binding(active, handle, selection_path, selection_sha256)[2] != raw:
+            raise RuntimeError('Native selection or generation changed during recovery inspection.')
+        return {'protocol': 1, 'firstInstall': first_install, 'stateBytes': state_bytes, 'candidateBytes': candidate_bytes, 'volumes': list(requirements.values()), 'clone': clone}
+    finally:
+        for descriptor in descriptors: os.close(descriptor)
+
 def activate(intent_file):
     intent = read(intent_file)
+    if 'stateRecovery' in intent and intent['stateRecovery'] != 'clone-required':
+        raise RuntimeError('Unknown recovery policy; activation refused before effects.')
+    clone_required = intent.get('stateRecovery') == 'clone-required'
     expected, staged = intent['expected'], intent['staged']
     tx = pathlib.Path(intent_file).parent
     transaction_id = intent.get('transactionId')
@@ -1483,7 +1636,8 @@ def activate(intent_file):
         try: launch(expected)
         except Exception as relaunch_failure:
             detail = 'Native reopen could not be proved.' if 'preEffect' in journal else str(relaunch_failure)
-            try: record('rolled-back', relaunch='failed', message=journal.get('message', '') + ' Jones Code was not reopened automatically: ' + detail)
+            diagnostics = {'relaunchDiagnostics': {key: value for key, value in relaunch_failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(relaunch_failure, KernelProcessError) else {}
+            try: record('rolled-back', relaunch='failed', message=journal.get('message', '') + ' Jones Code was not reopened automatically: ' + detail, **diagnostics)
             except Exception: pass
         else:
             if 'preEffect' in journal: record('rolled-back', preEffect=dict(journal['preEffect'], relaunch='started'))
@@ -1499,7 +1653,9 @@ def activate(intent_file):
     try:
         captured_processes = capture_activation_processes(intent, original_activation_proofs(intent, tx, claim))
         preparation_step = 'storage'
-        storage = storage_preflight(expected, staged, tx)
+        storage = storage_preflight(expected, staged, tx, clone_required)
+        if clone_required and strict_recovery_probe(pathlib.Path(expected['databasePath']).parent, tx)['status'] != 'proved':
+            raise RuntimeError('Strict recovery cloning is no longer proved; installation held before shutdown.')
         record('preparing', storage=storage)
         preparation_step = 'reserve'
         recovery_reserves = reserve_recovery_capacity(expected, tx, storage)
@@ -1517,8 +1673,9 @@ def activate(intent_file):
         if recovery_state_bytes(expected) > storage['stateBytes'] + RECOVERY_HEADROOM // 2:
             raise RuntimeError('Native state grew beyond reserved recovery capacity before shutdown.')
         preparation_step = 'pair'
-        pair_state(expected, tx / 'previous-pair')
-        record('paired', pairedState=str(tx / 'previous-pair'), recovery=read(tx / 'previous-pair' / 'pair.json')['recovery'])
+        pair_state(expected, tx / 'previous-pair', clone_required)
+        pair = read(tx / 'previous-pair' / 'pair.json')
+        record('paired', pairedState=str(tx / 'previous-pair'), **({'recovery': pair['recovery']} if 'recovery' in pair else {}))
         record('swap-intent')
         swap_bundle(expected, incoming, previous)
         record('swapped')
@@ -1543,6 +1700,7 @@ def activate(intent_file):
             time.sleep(0.1)
         startup_unknown = True
         receipt = read(tx / 'trial-receipt.json')
+        receipt_written_ns = (tx / 'trial-receipt.json').stat().st_mtime_ns
         if not isinstance(receipt, dict) or type(receipt.get('startupGateProtocol')) is not int or receipt['startupGateProtocol'] != STARTUP_GATE_PROTOCOL:
             raise RuntimeError('Candidate startup dispatch has unknown effects; the required gate was not proved.')
         startup_unknown = False
@@ -1554,8 +1712,20 @@ def activate(intent_file):
         proof = receipt.get('backendProcess')
         if not isinstance(proof, dict) or set(proof) != {'pid', 'identity'} or type(proof.get('pid')) is not int or proof['pid'] <= 0 or not isinstance(proof.get('identity'), str) or not proof['identity'].strip():
             raise RuntimeError('Candidate did not prove the exact backend process.')
-        backend_process = proof
         record('validated', trialReceipt=receipt)
+        # The persisted server receipt stays legacy for independent builds. Bind
+        # its live writer here, before keeping any authority to stop that PID.
+        try: backend, parent = kernel_process_sample(proof['pid'])
+        except KernelProcessError as failure:
+            if failure.diagnostic['error'] != 'process-exited': raise
+            raise RuntimeError('Candidate backend stopped before commit.') from None
+        backend_started_ns = backend['startSec'] * 1000000000 + backend['startUsec'] * 1000
+        candidate_started_ns = candidate['startSec'] * 1000000000 + candidate['startUsec'] * 1000
+        if parent != candidate['pid'] or not candidate_started_ns <= backend_started_ns <= receipt_written_ns:
+            raise RuntimeError('Candidate did not prove the exact backend process.')
+        if not alive(candidate): raise RuntimeError('Candidate app stopped.')
+        backend_process = backend
+        record('validated', backendWriter=backend_process)
         if not alive(backend_process): raise RuntimeError('Candidate backend stopped before commit.')
         if not same_binding(read(manifest_path), expected): raise RuntimeError('Active manifest changed before commit.')
         durable(manifest_path, next_active)
@@ -1565,7 +1735,10 @@ def activate(intent_file):
         durable(tx / 'commit-grant.json', dict(generation=intent['transactionId'],
                     **{key: descriptor[key] for key in ('protocol', 'startupGateProtocol', 'transactionId', 'stagedHandle', 'home', 'databasePath', 'profile', 'environmentId', 'version', 'sourceSha', 'sourceTree', 'listener')}), True)
         record('resumed')
+        propose_install_retention()
     except Exception as failure:
+        if isinstance(failure, KernelProcessError):
+            journal['diagnostics'] = {key: value for key, value in failure.diagnostic.items() if isinstance(value, (str, int))}
         try:
             # Error evidence has its own small reserve. Before durable resume,
             # retain recovery headroom until candidate shutdown is proved.
@@ -1609,7 +1782,7 @@ def activate(intent_file):
         try:
             record('rollback-intent')
             proofs = [candidate] if candidate else []
-            # Only a validated startup-gate receipt supplies the backend proof, independently of app ownership.
+            # Only a validated receipt joined to its live kernel writer supplies backend authority.
             if backend_process is not None: proofs.append(backend_process)
             preserve_restart_tunnel(expected, intent['transactionId'])
             stop_exact(proofs)
@@ -1621,7 +1794,8 @@ def activate(intent_file):
             if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
             record('rolled-back', message='Update rolled back: ' + str(failure))
         except Exception as recovery_failure:
-            record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation: ' + str(recovery_failure))
+            diagnostics = {'recoveryDiagnostics': {key: value for key, value in recovery_failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(recovery_failure, KernelProcessError) else {}
+            record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation: ' + str(recovery_failure), **diagnostics)
         else:
             release_writer_exclusion(exclusive_writers)
             relaunch_previous()
@@ -1633,6 +1807,850 @@ def activate(intent_file):
             record('resumed', recoveryReserveCleanup='held', message='Update resumed; recovery reserve cleanup is held for reconciliation.')
     finally:
         release_writer_exclusion(exclusive_writers)
+
+def retention_identity(path):
+    info = path.lstat()
+    if info.st_uid != os.getuid() or not stat.S_ISDIR(info.st_mode) or path.resolve(strict=True) != path:
+        raise RuntimeError('Retention directory identity is unknown; preserved.')
+    return [info.st_dev, info.st_ino]
+
+def retention_references(value, records, stores, payloads=()):
+    result = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in ('generation', 'transactionId') and isinstance(child, str):
+                if child.startswith('manual-') and child not in records:
+                    raise RuntimeError('Missing manual recovery generation; preserved.')
+                if key == 'transactionId' and len(child) == 64 and child not in records and 'manual-' + child not in records:
+                    raise RuntimeError('Missing warm recovery generation; preserved.')
+                for identifier in (child, 'manual-' + child):
+                    if identifier in records: result.add(identifier)
+            result.update(retention_references(child, records, stores, payloads))
+    elif isinstance(value, list):
+        for child in value: result.update(retention_references(child, records, stores, payloads))
+    elif isinstance(value, str):
+        # Embedded original manifests are JSON strings in the released protocol.
+        if value.startswith('{'):
+            try: result.update(retention_references(json.loads(value), records, stores, payloads))
+            except (ValueError, RecursionError): raise RuntimeError('Unknown retained manifest.')
+        else:
+            for root, prefix in stores:
+                if value.startswith(str(root) + os.sep):
+                    identifier = prefix + pathlib.Path(value).relative_to(root).parts[0]
+                    if identifier not in records: raise RuntimeError('Missing transitive recovery payload.')
+                    result.add(identifier)
+            for path, identifier in payloads:
+                if value == path or value.startswith(path + os.sep): result.add(identifier)
+    return result
+
+def warm_retention_inventory(retiring=None):
+    root = manifest_path.parent / 'jones-updates' / 'transactions'
+    records, snapshot = {}, []
+    if not root.exists() and not root.is_symlink(): return root, records, snapshot
+    snapshot.append({'rootIdentity': retention_identity(root)})
+    entries = sorted(root.iterdir())
+    if len(entries) > 1000: raise RuntimeError('Warm recovery inventory exceeds its bound.')
+    allowed = set(PREPARATION_RECORDS + DISPATCHED_RECORDS + WITHDRAWAL_RECORDS) | {
+        'previous-pair', 'advanced-state', 'advanced-state-authority-guard.json',
+        'recovery-reserve.bin', 'recovery-journal-reserve.bin', 'trial-descriptor.json', 'trial-receipt.json',
+        'commit-grant.json', 'resume-dispatched.json', 'retirement-intent.json', 'retirement-receipt.json'}
+    for directory in entries:
+        identifier = directory.name
+        if len(identifier) != 64 or any(c not in '0123456789abcdef' for c in identifier):
+            raise RuntimeError('Unknown warm recovery entry; retention held.')
+        identity = retention_identity(directory)
+        names = {child.name for child in directory.iterdir()}
+        if names - allowed or not {'intent.json', 'journal.json', 'prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'} <= names:
+            raise RuntimeError('Incomplete or unknown warm recovery records; retention held.')
+        values, bindings = {}, []
+        paths = [directory / name for name in sorted(names) if name.endswith('.json')]
+        for name, marker in (('previous-pair', 'pair.json'), ('advanced-state', 'retained.json')):
+            if name in names:
+                bindings.append([name, retention_identity(directory / name)])
+                paths.append(directory / name / marker)
+        for path in paths:
+            value, raw, info = bounded_native_json(path, 32 * 1024 * 1024 if identifier == retiring and path.name == 'retirement-intent.json' else 1024 * 1024)
+            # The selected warm retirement owns these two effect records. Its
+            # immutable approved plan is checked by retirement_command itself.
+            if identifier == retiring and path.name in ('retirement-intent.json', 'retirement-receipt.json'): continue
+            values[str(path.relative_to(directory))] = value
+            bindings.append([str(path.relative_to(directory)), [info.st_dev, info.st_ino], hashlib.sha256(raw).hexdigest()])
+        intent, journal = values['intent.json'], values['journal.json']
+        if not warm_intent_shape(intent) or type(intent.get('protocol')) is not int or intent['protocol'] != PROTOCOL or intent.get('transactionId') != identifier or not isinstance(intent.get('expected'), dict) or journal.get('intent') != intent or intent.get('continuationReceipt') != str(directory / 'continuation.json') or not valid_activation_processes(intent.get('processes')) or not isinstance(intent.get('listener'), str) or not intent['listener'].strip():
+            raise RuntimeError('Warm recovery binding is unknown; retention held.')
+        expected, staged, claim = intent['expected'], intent['staged'], values['prepare-intent.json']
+        if pathlib.Path(expected['home']) / 'runtime' / 'jones-active-install.json' != manifest_path or claim != preparation_claim(expected, staged['handle'], identifier, claim['selectionPath'], claim['selectionSha256'], claim['preparationClaimProtocol']) or values['prepare-dispatched.json'] != claim or values['continuation.json'] != dict(claim, prepared=True):
+            raise RuntimeError('Incomplete warm preparation binding; retention held.')
+        if journal.get('phase') not in ('resumed', 'rolled-back') or (identifier != retiring and 'retirement-intent.json' in names and 'retirement-receipt.json' not in names):
+            raise RuntimeError('Unsettled warm recovery; retention held.')
+        if 'activation-request.json' in values and values['activation-request.json'] != intent:
+            raise RuntimeError('Warm activation request changed; retention held.')
+        stable = pathlib.Path(expected['appPath'])
+        for field, path in (('incomingBundle', stable.with_name(stable.name + '.jones-incoming-' + identifier)),
+                            ('previousBundle', stable.with_name(stable.name + '.jones-previous-' + expected['generation']))):
+            if field in journal and journal[field] != str(path):
+                raise RuntimeError('Warm recovery app binding changed; retention held.')
+        for name, field in (('previous-pair/pair.json', 'expected'), ('advanced-state/retained.json', 'previous')):
+            if name in values and values[name].get(field) != intent['expected']:
+                raise RuntimeError('Warm recovery pair changed; retention held.')
+        if 'pairedState' in journal and ('previous-pair/pair.json' not in values or journal['pairedState'] != str(directory / 'previous-pair')):
+            raise RuntimeError('Incomplete warm recovery pair; retention held.')
+        if journal['phase'] == 'resumed' and 'pairedState' not in journal:
+            raise RuntimeError('Completed warm recovery pair is missing; retention held.')
+        if 'advanced-state-authority-guard.json' in values and 'advanced-state/retained.json' not in values:
+            raise RuntimeError('Incomplete advanced warm recovery; retention held.')
+        for name, marker, database in (('previous-pair', 'pair.json', 'state.sqlite'),
+                                      ('advanced-state', 'retained.json', pathlib.Path(expected['databasePath']).name)):
+            if name not in names: continue
+            if name == 'previous-pair':
+                pair_path = directory / name / marker
+                _, pair_raw, _ = bounded_native_json(pair_path)
+                if database_marker_state(directory / name, 'warm', identifier, pair_raw) == 'retired':
+                    bindings.append([name + '/' + DATABASE_RETIREMENT_MARKER, digest(directory / name / DATABASE_RETIREMENT_MARKER)])
+            allowed_payload = {database + suffix for suffix in ('', '-wal', '-shm')} | set(SETTINGS) | {'profile', marker} | ({DATABASE_RETIREMENT_MARKER} if name == 'previous-pair' else set())
+            if any(child.name not in allowed_payload for child in (directory / name).iterdir()):
+                raise RuntimeError('Unknown warm recovery payload; retention held.')
+        for name in ('recovery-reserve.bin', 'recovery-journal-reserve.bin'):
+            if name not in names: continue
+            info = (directory / name).lstat()
+            if info.st_uid != os.getuid() or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise RuntimeError('Unknown warm reserve; retention held.')
+            if identifier != retiring: bindings.append([name, [info.st_dev, info.st_ino, info.st_size]])
+        records[identifier] = values
+        snapshot.append({'transactionId': identifier, 'identity': identity, 'records': bindings})
+    return root, records, snapshot
+
+DATABASE_RETIREMENT_MARKER = 'database-retirement.json'
+DATABASE_RETIREMENT_STORE = 'jones-database-retirement'
+DATABASE_SUFFIXES = ('', '-wal', '-shm')
+
+def database_hex(value):
+    return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
+
+def database_canon(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+
+def database_file(path):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_dev != path.parent.stat().st_dev:
+        raise SelectionRefused('pair-inventory-changed')
+    return {'name': path.name, 'device': str(info.st_dev), 'inode': str(info.st_ino), 'bytes': info.st_size,
+            'mode': stat.S_IMODE(info.st_mode), 'mtimeNs': info.st_mtime_ns}
+
+def database_read(path, limit=1024 * 1024):
+    value, raw, _ = bounded_native_json(path, limit)
+    database_file(path)
+    return value, raw
+
+def database_binding(active):
+    if type(active.get('protocol')) is not int or active['protocol'] != PROTOCOL or active.get('owner') != 'desktop' or pathlib.Path(active['home']) / 'runtime' / 'jones-active-install.json' != manifest_path:
+        raise SelectionRefused('unknown-state')
+    return {key: active[key] for key in ('protocol', 'owner', 'home', 'databasePath', 'profile', 'environmentId')}
+
+def database_directory(store, identifier):
+    if store not in ('manual', 'warm') or not database_hex(identifier): raise SelectionRefused('invalid-snapshot')
+    return manifest_path.parent / ('jones-manual-installs' if store == 'manual' else 'jones-updates/transactions') / identifier
+
+def database_selection(selection):
+    if not selection or len(selection) > 1000: raise SelectionRefused('invalid-snapshot')
+    parsed = []
+    for item in selection:
+        parts = item.split(':')
+        if len(parts) != 2: raise SelectionRefused('invalid-snapshot')
+        if parts[0] not in ('manual', 'warm') or not database_hex(parts[1]): raise SelectionRefused('invalid-snapshot')
+        parsed.append(tuple(parts))
+    if len(set(parsed)) != len(parsed): raise SelectionRefused('invalid-snapshot')
+    return sorted(parsed)
+
+def database_record(plan, p, status):
+    value = {'protocol': 1, 'operation': 'database-retirement', 'status': status, 'planSha256': p, 'plan': plan}
+    if status == 'retired': value['logicalBytes'] = sum(t['bytes'] for s in plan['snapshots'] for t in s['targets'])
+    return database_canon(value)
+
+def database_marker(snap, p, status):
+    return database_canon(dict({key: snap[key] for key in ('store', 'transactionId', 'pairIdentity', 'pairFile', 'pairSha256', 'targets')},
+                               protocol=1, operation='database-retirement', status=status, planSha256=p))
+
+def database_scratch(target, p, status):
+    return target.with_name('.' + target.name + '.' + status + '-' + p + '.pending')
+
+def database_artifacts(target, p, raws, recover=False):
+    found = []
+    for path in sorted(target.parent.iterdir()):
+        if not path.name.startswith('.' + target.name + '.'): continue
+        matches = [raw for status, raw in raws.items() if path == database_scratch(target, p, status)]
+        if len(matches) != 1: raise SelectionRefused('unknown-publication-artifact')
+        raw = matches[0]
+        metadata = database_file(path)
+        if metadata['bytes'] > len(raw): raise SelectionRefused('unknown-publication-artifact')
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(descriptor)
+            if (str(info.st_dev), str(info.st_ino)) != (metadata['device'], metadata['inode']): raise SelectionRefused('unknown-publication-artifact')
+            content = os.read(descriptor, len(raw) + 1)
+        finally: os.close(descriptor)
+        if not raw.startswith(content): raise SelectionRefused('unknown-publication-artifact')
+        found.append(path.name)
+        if recover:
+            parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                if [os.fstat(parent).st_dev, os.fstat(parent).st_ino] != retention_identity(path.parent) or database_file(path) != metadata:
+                    raise SelectionRefused('unknown-publication-artifact')
+                os.unlink(path.name, dir_fd=parent)
+                os.fsync(parent)
+            finally: os.close(parent)
+    return found
+
+def database_publish(target, raw, p, status, first=False):
+    if first and (target.exists() or target.is_symlink()): raise SelectionRefused('unknown-retirement')
+    scratch = database_scratch(target, p, status)
+    descriptor = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'wb') as stream:
+        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+    os.replace(scratch, target)
+    sync_parent(target)
+    _, actual = database_read(target, max(1024 * 1024, len(raw)))
+    if actual != raw: raise SelectionRefused('unknown-publication-artifact')
+
+def database_records():
+    directory = manifest_path.parent / DATABASE_RETIREMENT_STORE
+    if not directory.exists() and not directory.is_symlink(): return directory, {}, []
+    retention_identity(directory)
+    entries = sorted(directory.iterdir())
+    if len(entries) > 2000: raise SelectionRefused('database-retirement-pending')
+    records, scratches = {}, []
+    for path in entries:
+        if path.name.startswith('.'):
+            parts = path.name.split('.')
+            if len(parts) != 5 or parts[0] != '' or parts[2] != 'json' or parts[4] != 'pending' or not database_hex(parts[1]) or parts[3] not in ('intent-' + parts[1], 'retired-' + parts[1]):
+                raise SelectionRefused('unknown-publication-artifact')
+            database_file(path)
+            scratches.append((parts[1], path.name))
+            continue
+        p = path.stem
+        if path.name != p + '.json' or not database_hex(p): raise SelectionRefused('unknown-publication-artifact')
+        value, raw = database_read(path, 32 * 1024 * 1024)
+        plan, status = value.get('plan'), value.get('status')
+        if not isinstance(plan, dict) or status not in ('intent', 'retired') or retirement_digest(plan) != p or raw != database_record(plan, p, status):
+            raise SelectionRefused('unknown-retirement')
+        records[p] = value
+    return directory, records, scratches
+
+def database_retirement_pending():
+    try:
+        _, records, scratches = database_records()
+        if scratches or any(v['status'] != 'retired' for v in records.values()): raise SelectionRefused('database-retirement-pending')
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, SelectionRefused):
+        raise RuntimeError('Unsettled database retirement; retention held.')
+
+def database_marker_state(pair, store, identifier, pair_raw):
+    marker = pair / DATABASE_RETIREMENT_MARKER
+    if not marker.exists() and not marker.is_symlink() and not any(c.name.startswith('.' + DATABASE_RETIREMENT_MARKER + '.') for c in pair.iterdir()): return None
+    try:
+        if any(c.name.startswith('.' + DATABASE_RETIREMENT_MARKER + '.') for c in pair.iterdir()): raise ValueError()
+        value, raw = database_read(marker)
+        advertised = json.loads(pair_raw).get('files', {})
+        names = ['state.sqlite' + suffix for suffix, exists in advertised.items() if exists is True and suffix in DATABASE_SUFFIXES]
+        targets = value['targets']
+        if value.get('protocol') != 1 or value.get('operation') != 'database-retirement' or value.get('status') != 'retired' or not database_hex(value.get('planSha256')) or value.get('store') != store or value.get('transactionId') != identifier or value.get('pairSha256') != hashlib.sha256(pair_raw).hexdigest() or value.get('pairIdentity') != retention_identity(pair) or value.get('pairFile') != database_file(pair / 'pair.json') or not isinstance(targets, list): raise ValueError()
+        if sorted(t['name'] for t in targets) != sorted(names) or any((pair / name).exists() or (pair / name).is_symlink() for name in names): raise ValueError()
+        return 'retired'
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, SelectionRefused):
+        raise RuntimeError('Unsettled database retirement; retention held.')
+
+def database_admission(active, exempt=None):
+    require_retention_exclusion()
+    database_binding(active)
+    maintenance = manifest_path.parent / 'jones-maintenance'
+    if maintenance.exists() or maintenance.is_symlink(): raise SelectionRefused('maintenance-pending')
+    inspect_selection_transactions(active)
+    warm = manifest_path.parent / 'jones-updates' / 'transactions'
+    if warm.exists():
+        for directory in warm.iterdir():
+            if not (directory / 'journal.json').exists(): raise SelectionRefused('activation-pending')
+            for name in ('intent.json', 'journal.json'):
+                path = directory / name
+                if not path.exists(): continue
+                value, _ = database_read(path)
+                if (name == 'intent.json' and any(k in value for k in ('kind', 'maintenanceGeneration', 'handoffSha256', 'stateTransaction'))) or (name == 'journal.json' and value.get('recoveryReserveCleanup') == 'held'):
+                    raise SelectionRefused('reconciliation-required')
+    manual = manifest_path.parent / 'jones-manual-installs'
+    if manual.exists() or manual.is_symlink():
+        retention_identity(manual)
+        entries = list(manual.iterdir())
+        if len(entries) > 1000: raise SelectionRefused('unknown-state')
+        for directory in entries:
+            if not database_hex(directory.name): raise SelectionRefused('unknown-state')
+            retention_identity(directory)
+            value, _ = database_read(directory / 'receipt.json')
+            if value.get('protocol') != 1 or value.get('operation') != 'manual-install' or value.get('transactionId') != directory.name or value.get('phase') != 'launched' or value.get('recoveryReserveCleanup') == 'held': raise SelectionRefused('reconciliation-required')
+    audit = manifest_path.parent / 'jones-install-retention'
+    if audit.exists() or audit.is_symlink():
+        retention_identity(audit)
+        entries = list(audit.iterdir())
+        if len(entries) > 1000: raise SelectionRefused('unknown-state')
+        for path in entries:
+            value, _ = database_read(path)
+            if value.get('protocol') != 1 or value.get('status') != 'removed': raise SelectionRefused('reconciliation-required')
+    directory, records, scratches = database_records()
+    if any(p != exempt and v['status'] == 'intent' for p, v in records.items()) or any(p != exempt for p, _ in scratches): raise SelectionRefused('database-retirement-pending')
+    return directory, records, scratches
+
+def database_pair_metadata(active, store, identifier):
+    directory = database_directory(store, identifier)
+    identity = retention_identity(directory)
+    if store == 'manual':
+        receipt, raw = database_read(directory / 'receipt.json')
+        if receipt.get('protocol') != 1 or receipt.get('operation') != 'manual-install' or receipt.get('transactionId') != identifier or receipt.get('phase') != 'launched' or receipt.get('recoveryReserveCleanup') == 'held': raise SelectionRefused('reconciliation-required')
+        expected, record_sha = json.loads(receipt['originalManifest']), hashlib.sha256(raw).hexdigest()
+        record = receipt
+    else:
+        intent, intent_raw = database_read(directory / 'intent.json')
+        journal, journal_raw = database_read(directory / 'journal.json')
+        if journal.get('intent') != intent or intent.get('protocol') != 1 or intent.get('transactionId') != identifier or journal.get('phase') != 'resumed' or journal.get('recoveryReserveCleanup') == 'held': raise SelectionRefused('reconciliation-required')
+        expected, record = intent['expected'], journal
+        record_sha = retirement_digest([hashlib.sha256(intent_raw).hexdigest(), hashlib.sha256(journal_raw).hexdigest()])
+    pair = directory / 'previous-pair'
+    if (store == 'warm' or 'pairedState' in record) and record.get('pairedState') != str(pair): raise SelectionRefused('pair-inventory-changed')
+    if any(expected.get(k) != active[k] for k in ('home', 'databasePath', 'profile', 'environmentId')): raise SelectionRefused('plan-changed')
+    pair_identity = retention_identity(pair)
+    value, raw = database_read(pair / 'pair.json')
+    if value.get('stateScope') != 'database-settings' or value.get('expected') != expected: raise SelectionRefused('pair-inventory-changed')
+    for field, keys in (('files', set(DATABASE_SUFFIXES)), ('settings', set(SETTINGS))):
+        flags = value.get(field)
+        if not isinstance(flags, dict) or set(flags) != keys or any(type(v) is not bool for v in flags.values()): raise SelectionRefused('pair-inventory-changed')
+    if not value['files'][''] and (value['files']['-wal'] or value['files']['-shm']): raise SelectionRefused('pair-inventory-changed')
+    preserved = [database_file(pair / name) for name in sorted(SETTINGS) if value['settings'][name]]
+    snap = {'store': store, 'transactionId': identifier, 'directoryIdentity': identity, 'recordSha256': record_sha,
+            'pairIdentity': pair_identity, 'pairFile': database_file(pair / 'pair.json'), 'pairSha256': hashlib.sha256(raw).hexdigest(), 'preserved': preserved}
+    return pair, value, snap
+
+def database_live_exclusion(active, pair, targets):
+    database = pathlib.Path(active['databasePath'])
+    state = database.parent.resolve(strict=True)
+    runtime = manifest_path.parent
+    if state == runtime or state.is_relative_to(runtime) or pair == state or pair.is_relative_to(state) or state.is_relative_to(pair): raise SelectionRefused('live-topology-overlap')
+    if len({pair.stat().st_dev, state.stat().st_dev, runtime.stat().st_dev}) != 1: raise SelectionRefused('pair-inventory-changed')
+    for suffix in DATABASE_SUFFIXES:
+        try: info = pathlib.Path(str(database) + suffix).stat()
+        except FileNotFoundError: continue
+        if any((str(info.st_dev), str(info.st_ino)) == (t['device'], t['inode']) for t in targets): raise SelectionRefused('live-identity-collision')
+
+def database_fresh_plan(active, selection):
+    snapshots = []
+    for store, identifier in selection:
+        pair, value, snap = database_pair_metadata(active, store, identifier)
+        names = {'state.sqlite' + s for s in DATABASE_SUFFIXES if value['files'][s]}
+        allowed = names | {v['name'] for v in snap['preserved']} | {'pair.json'}
+        actual = {c.name for c in pair.iterdir()}
+        if DATABASE_RETIREMENT_MARKER in actual or any(n.startswith('.' + DATABASE_RETIREMENT_MARKER + '.') for n in actual): raise SelectionRefused('unknown-retirement')
+        if actual != allowed: raise SelectionRefused('pair-inventory-changed')
+        snap['targets'] = [database_file(pair / name) for name in sorted(names)]
+        database_live_exclusion(active, pair, snap['targets'])
+        snapshots.append(snap)
+    return {'protocol': 1, 'operation': 'database-retirement', 'stateBinding': database_binding(active), 'snapshots': snapshots}
+
+def database_reconcile(plan, snap, p, inspecting=False):
+    require_retention_exclusion()
+    active, _ = database_read(manifest_path)
+    if database_binding(active) != plan['stateBinding']: raise SelectionRefused('plan-changed')
+    pair, value, current = database_pair_metadata(active, snap['store'], snap['transactionId'])
+    if current != {k: v for k, v in snap.items() if k != 'targets'}: raise SelectionRefused('plan-changed')
+    advertised = sorted('state.sqlite' + s for s in DATABASE_SUFFIXES if value['files'][s])
+    if sorted(t['name'] for t in snap['targets']) != advertised: raise SelectionRefused('plan-changed')
+    marker = pair / DATABASE_RETIREMENT_MARKER
+    raws = {status: database_marker(snap, p, status) for status in ('retiring', 'retired')}
+    artifacts = database_artifacts(marker, p, raws)
+    if artifacts and not inspecting: raise SelectionRefused('unknown-publication-artifact')
+    actual = {c.name for c in pair.iterdir()}
+    if actual - (set(advertised) | {v['name'] for v in snap['preserved']} | {'pair.json', DATABASE_RETIREMENT_MARKER} | set(artifacts)): raise SelectionRefused('pair-inventory-changed')
+    status = None
+    if marker.exists() or marker.is_symlink():
+        _, raw = database_read(marker)
+        matches = [s for s, wanted in raws.items() if raw == wanted]
+        if len(matches) != 1: raise SelectionRefused('unknown-retirement')
+        status = matches[0]
+    remaining = []
+    for target in snap['targets']:
+        path = pair / target['name']
+        if path.exists() or path.is_symlink():
+            if database_file(path) != target or status == 'retired': raise SelectionRefused('plan-changed')
+            remaining.append(target['name'])
+        elif status is None: raise SelectionRefused('reconciliation-required')
+    database_live_exclusion(active, pair, snap['targets'])
+    return {'store': snap['store'], 'transactionId': snap['transactionId'], 'marker': status, 'remaining': remaining, 'artifacts': artifacts,
+            'role': 'active-rollback' if (snap['store'] == 'manual' and active.get('transactionId') == 'manual-' + snap['transactionId']) or active.get('transactionId') == snap['transactionId'] else 'historical'}
+
+def database_unlink(pair, identity, target):
+    descriptor = os.open(pair, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if [opened.st_dev, opened.st_ino] != identity: raise SelectionRefused('plan-changed')
+        info = os.stat(target['name'], dir_fd=descriptor, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or {'name': target['name'], 'device': str(info.st_dev), 'inode': str(info.st_ino), 'bytes': info.st_size, 'mode': stat.S_IMODE(info.st_mode), 'mtimeNs': info.st_mtime_ns} != target: raise SelectionRefused('plan-changed')
+        os.unlink(target['name'], dir_fd=descriptor)
+        os.fsync(descriptor)
+    finally: os.close(descriptor)
+
+def database_retirement_command(execute, snapshots, plan_sha=None):
+    result = {'protocol': 1, 'operation': 'database-retirement'}
+    affected = False
+    try:
+        selection = database_selection(snapshots)
+        active, _ = database_read(manifest_path)
+        directory, records, scratches = database_records()
+        matches = [(p, r) for p, r in records.items() if [(s['store'], s['transactionId']) for s in r['plan']['snapshots']] == selection]
+        if len(matches) > 1: raise SelectionRefused('unknown-retirement')
+        if matches:
+            p, record = matches[0]
+            if execute and plan_sha != p: raise SelectionRefused('database-retirement-pending')
+            plan = record['plan']; affected = True
+        else:
+            record = None
+            plan = None
+            p = plan_sha if execute else None
+            # A scratch-only intent still has a reproducible fresh plan.
+            if not execute and scratches:
+                pending = {key for key, _ in scratches}
+                if len(pending) != 1: raise SelectionRefused('database-retirement-pending')
+                p = next(iter(pending))
+        database_admission(active, exempt=p)
+        if plan is None:
+            plan = database_fresh_plan(active, selection)
+            expected = retirement_digest(plan)
+            if p is not None and p != expected: raise SelectionRefused('plan-changed')
+            p = expected
+        result['planSha256'] = p
+        if plan.get('protocol') != 1 or plan.get('operation') != 'database-retirement' or plan['stateBinding'] != database_binding(active): raise SelectionRefused('plan-changed')
+        rec = directory / (p + '.json')
+        raws = {s: database_record(plan, p, s) for s in ('intent', 'retired')}
+        artifacts = database_artifacts(rec, p, raws) if directory.exists() else []
+        affected = affected or bool(artifacts)
+        states = [database_reconcile(plan, snap, p, inspecting=True) for snap in plan['snapshots']]
+        if record is None and any(s['marker'] is not None or s['artifacts'] for s in states): raise SelectionRefused('unknown-retirement')
+        if record is not None and record['status'] == 'retired' and (artifacts or any(s['marker'] != 'retired' or s['remaining'] or s['artifacts'] for s in states)): raise SelectionRefused('reconciliation-required')
+        result.update(logicalBytes=sum(t['bytes'] for s in plan['snapshots'] for t in s['targets']), snapshots=[dict(state, targets=[{k: t[k] for k in ('name', 'bytes', 'device', 'inode')} for t in snap['targets']]) for state, snap in zip(states, plan['snapshots'])], artifacts=artifacts)
+        if not execute:
+            return dict(result, status='retired' if record and record['status'] == 'retired' else 'ready', reconciliation=bool(record or artifacts or directory.exists()))
+        if not database_hex(plan_sha) or p != plan_sha: raise SelectionRefused('plan-changed')
+        before = os.statvfs(manifest_path.parent)
+        if not directory.exists():
+            affected = True
+            directory.mkdir(mode=0o700)
+        sync_parent(directory)
+        retention_identity(directory)
+        database_artifacts(rec, p, raws, recover=True)
+        if record is None:
+            affected = True
+            database_publish(rec, raws['intent'], p, 'intent', first=True)
+            record = json.loads(raws['intent'])
+        else: sync_parent(rec)
+        if record['status'] != 'retired':
+            for snap in plan['snapshots']:
+                pair = database_directory(snap['store'], snap['transactionId']) / 'previous-pair'
+                marker = pair / DATABASE_RETIREMENT_MARKER
+                marker_raws = {s: database_marker(snap, p, s) for s in ('retiring', 'retired')}
+                database_reconcile(plan, snap, p, inspecting=True)
+                database_artifacts(marker, p, marker_raws, recover=True)
+                state = database_reconcile(plan, snap, p)
+                if state['marker'] is None: database_publish(marker, marker_raws['retiring'], p, 'retiring', first=True)
+                sync_parent(marker)
+                for target in snap['targets']:
+                    current, _ = database_read(rec, 32 * 1024 * 1024)
+                    if current != record: raise SelectionRefused('plan-changed')
+                    state = database_reconcile(plan, snap, p)
+                    if target['name'] in state['remaining']: database_unlink(pair, snap['pairIdentity'], target)
+                state = database_reconcile(plan, snap, p)
+                if state['remaining']: raise SelectionRefused('reconciliation-required')
+                if state['marker'] != 'retired': database_publish(marker, marker_raws['retired'], p, 'retired')
+            database_publish(rec, raws['retired'], p, 'retired')
+        states = [database_reconcile(plan, snap, p) for snap in plan['snapshots']]
+        after = os.statvfs(manifest_path.parent)
+        return dict(result, status='retired', snapshots=states, availableBytesBefore=before.f_bavail * before.f_frsize, availableBytesAfter=after.f_bavail * after.f_frsize)
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, SelectionRefused) as error:
+        return dict(result, status='uncertain' if execute and affected else 'refused', reason=error.reason if isinstance(error, SelectionRefused) else 'plan-changed')
+
+def install_retention_plan(in_progress=None, retiring=None):
+    require_retention_exclusion()
+    database_retirement_pending()
+    active, manifest_raw, manifest_info = bounded_native_json(manifest_path)
+    if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop' or pathlib.Path(active['home']) / 'runtime' / 'jones-active-install.json' != manifest_path:
+        raise RuntimeError('Unknown manual retention binding; preserved.')
+    if (manifest_path.parent / 'jones-maintenance').exists() or (manifest_path.parent / 'jones-maintenance').is_symlink():
+        raise RuntimeError('Cold maintenance recovery is outside manual retention; preserved.')
+    settings_path = pathlib.Path(active['home']) / 'userdata' / 'settings.json'
+    mode, settings_sha = 'propose', None
+    if settings_path.exists() or settings_path.is_symlink():
+        settings, raw, _ = bounded_native_json(settings_path)
+        mode = settings.get('storageCleanup', {}).get('installRetention', 'propose')
+        settings_sha = hashlib.sha256(raw).hexdigest()
+    if mode not in ('propose', 'retire'): raise RuntimeError('Unknown install retention setting; preserved.')
+    root = manifest_path.parent / 'jones-manual-installs'
+    records, snapshots, roots, failed = {}, [], set(), []
+    if root.exists() or root.is_symlink():
+        root_identity = retention_identity(root)
+        entries = sorted(root.iterdir())
+        if len(entries) > 1000: raise RuntimeError('Manual retention inventory exceeds its bound.')
+        for directory in entries:
+            identifier = directory.name
+            if len(identifier) != 64 or any(c not in '0123456789abcdef' for c in identifier):
+                raise RuntimeError('Unknown manual recovery entry; retention held.')
+            identity = retention_identity(directory)
+            if set(child.name for child in directory.iterdir()) - {'receipt.json', 'previous-pair', 'recovery-reserve.bin', 'recovery-journal-reserve.bin', 'manual-install.log'}:
+                raise RuntimeError('Unknown manual recovery payload; retention held.')
+            receipt_path = directory / 'receipt.json'
+            try:
+                receipt, raw, receipt_info = bounded_native_json(receipt_path)
+            except FileNotFoundError:
+                # No receipt means effects and dependencies cannot be determined.
+                raise RuntimeError('Unfinished manual receipt; retention held.')
+            if receipt.get('protocol') != 1 or receipt.get('operation') != 'manual-install' or receipt.get('transactionId') != identifier:
+                raise RuntimeError('Unknown manual receipt; retention held.')
+            pair, pair_digest, pair_identity, database_marker_sha = None, None, None, None
+            pair_path = directory / 'previous-pair' / 'pair.json'
+            if pair_path.exists() or pair_path.is_symlink():
+                retention_identity(pair_path.parent)
+                pair, pair_raw, pair_info = bounded_native_json(pair_path)
+                pair_digest = hashlib.sha256(pair_raw).hexdigest()
+                pair_identity = [pair_info.st_dev, pair_info.st_ino]
+                if pair.get('stateScope') != 'database-settings' or pair.get('expected') != json.loads(receipt.get('originalManifest', 'null')):
+                    raise RuntimeError('Manual recovery pair no longer binds its receipt; preserved.')
+                if database_marker_state(pair_path.parent, 'manual', identifier, pair_raw) == 'retired':
+                    database_marker_sha = digest(pair_path.parent / DATABASE_RETIREMENT_MARKER)
+            elif receipt.get('phase') == 'launched':
+                raise RuntimeError('Completed manual receipt lacks its recovery pair; preserved.')
+            snapshots.append({'transactionId': identifier, 'identity': identity, 'receiptIdentity': [receipt_info.st_dev, receipt_info.st_ino],
+                              'receiptSha256': hashlib.sha256(raw).hexdigest(), 'pairIdentity': pair_identity, 'pairSha256': pair_digest, 'databaseMarkerSha256': database_marker_sha})
+            records['manual-' + identifier] = {'receipt': receipt, 'pair': pair}
+            if receipt.get('phase') != 'launched' or receipt.get('recoveryReserveCleanup') == 'held': roots.add('manual-' + identifier)
+            if receipt.get('phase') in ('held', 'failed'):
+                failed.append((receipt_path.stat().st_mtime_ns, identifier))
+        roots.update('manual-' + identifier for _, identifier in sorted(failed, reverse=True)[:3])
+    else: root_identity = None
+    # Both the app and state preimages are reached through the entire receipt,
+    # not merely the directory whose name happens to contain "previous".
+    transactions, warm_records, warm_snapshot = warm_retention_inventory(retiring)
+    records.update(warm_records)
+    # Resumed activation can still hold recovery material for reconciliation.
+    # Root the transaction so both retention consumers preserve its dependencies.
+    roots.update(identifier for identifier, record in warm_records.items()
+                 if record['journal.json'].get('recoveryReserveCleanup') == 'held')
+    stores = ((root, 'manual-'), (transactions, ''))
+    payloads = [(value[field], identifier) for identifier, record in records.items()
+                for value in (record['receipt'] if identifier.startswith('manual-') else record['journal.json'],)
+                for field in ('incomingBundle', 'previousBundle') if isinstance(value.get(field), str)]
+    roots.update(retention_references(active, records, stores, payloads))
+    superseded = manifest_path.with_name(manifest_path.name + '.superseded')
+    bindings = []
+    if superseded.exists() or superseded.is_symlink():
+        value, raw, _ = bounded_native_json(superseded)
+        roots.update(retention_references(value, records, stores, payloads))
+        bindings.append(hashlib.sha256(raw).hexdigest())
+    for name in ('staging', 'attempt-selections'):
+        reference_root = manifest_path.parent / 'jones-updates' / name
+        if not reference_root.exists() and not reference_root.is_symlink(): continue
+        retention_identity(reference_root)
+        entries = sorted(reference_root.iterdir())
+        if len(entries) > 1000: raise RuntimeError('Native reference inventory exceeds its bound.')
+        for path in entries:
+            value, raw, _ = bounded_native_json(path)
+            bindings.append([str(path), hashlib.sha256(raw).hexdigest()])
+            roots.update(retention_references(value, records, stores, payloads))
+    audit = manifest_path.parent / 'jones-install-retention'
+    if audit.exists() or audit.is_symlink():
+        retention_identity(audit)
+        entries = sorted(audit.iterdir())
+        if len(entries) > 1000: raise RuntimeError('Retention reconciliation inventory exceeds its bound.')
+        for path in entries:
+            value, raw, _ = bounded_native_json(path)
+            if in_progress is not None and (path, value) == in_progress: continue
+            if value.get('protocol') != 1 or value.get('status') not in ('intent', 'held', 'removed'):
+                raise RuntimeError('Unknown retention effect; reconciliation required.')
+            identifier = value.get('candidate', {}).get('transactionId')
+            if value['status'] != 'removed':
+                # Never resume a possibly partial removal from an intent alone.
+                raise RuntimeError('Interrupted retention effect; reconciliation required: ' + str(identifier))
+    def closure(seeds):
+        keep, pending = set(seeds), list(seeds)
+        while pending:
+            identifier = pending.pop()
+            for dependency in retention_references(records[identifier], records, stores, payloads):
+                if dependency not in keep:
+                    keep.add(dependency); pending.append(dependency)
+        return keep
+    # Every retained warm transaction can consume manual recovery material.
+    manual_keep = {identifier for identifier in closure(roots | set(warm_records)) if identifier.startswith('manual-')}
+    warm_keep = sorted(identifier for identifier in closure(roots | manual_keep) if not identifier.startswith('manual-'))
+    keep = sorted(identifier.removeprefix('manual-') for identifier in manual_keep)
+    snapshot = {'manifestSha256': hashlib.sha256(manifest_raw).hexdigest(), 'manifestIdentity': [manifest_info.st_dev, manifest_info.st_ino],
+                'settingsSha256': settings_sha, 'rootIdentity': root_identity,
+                'records': snapshots, 'bindings': bindings, 'warmRecords': warm_snapshot, 'warmKeep': warm_keep, 'keep': keep}
+    return {'protocol': 1, 'operation': 'install-retention', 'mode': mode,
+            'execution': 'exact-plan-approval-required' if mode == 'retire' else 'proposal-only',
+            'snapshot': snapshot, 'closureGeneration': retirement_digest(snapshot),
+            'keep': sorted(keep), 'candidates': [value for value in snapshots if value['transactionId'] not in keep],
+            'externalBundles': 'held-uninventoried-consumers'}
+
+def require_retention_exclusion():
+    if not globals().get('retention_exclusion_held', False):
+        raise RuntimeError('Retention requires the install admission and startup recovery exclusion.')
+    held = os.fstat(retention_exclusion_descriptor)
+    current = manifest_path.with_name('jones-activation.lock').lstat()
+    if not stat.S_ISREG(current.st_mode) or current.st_uid != os.getuid() or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+        raise RuntimeError('Install/recovery exclusion identity changed; retention held.')
+
+def remove_retention_tree(path, identity):
+    # Descriptor-relative traversal never follows a substituted directory or link.
+    if retention_identity(path) != identity: raise RuntimeError('Retention candidate identity changed.')
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        if [info.st_dev, info.st_ino] != identity: raise RuntimeError('Retention candidate replaced.')
+        def remove_children(parent, device, depth=0):
+            if depth > 32: raise RuntimeError('Retention tree depth exceeds its bound.')
+            names = os.listdir(parent)
+            if len(names) > 10000: raise RuntimeError('Retention tree exceeds its bound.')
+            for name in names:
+                before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                if before.st_dev != device or before.st_uid != os.getuid(): raise RuntimeError('Retention payload ownership changed.')
+                if stat.S_ISDIR(before.st_mode):
+                    child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                    try:
+                        current = os.fstat(child)
+                        if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino): raise RuntimeError('Retention payload replaced.')
+                        remove_children(child, device, depth + 1)
+                    finally: os.close(child)
+                    current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino): raise RuntimeError('Retention directory replaced.')
+                    os.rmdir(name, dir_fd=parent)
+                elif stat.S_ISREG(before.st_mode) and before.st_nlink == 1:
+                    os.unlink(name, dir_fd=parent)
+                else: raise RuntimeError('Retention link or special payload held.')
+            os.fsync(parent)
+        remove_children(descriptor, info.st_dev)
+        if retention_identity(path) != identity: raise RuntimeError('Retention candidate replaced before final removal.')
+        path.rmdir()
+        sync_parent(path)
+    finally: os.close(descriptor)
+
+def apply_install_retention(plan):
+    require_retention_exclusion()
+    if plan.get('mode') != 'retire': raise RuntimeError('Propose mode cannot remove install material.')
+    # Every candidate gets its own fresh closure/identity comparison. Publication
+    # of an intent precedes effects; any failure holds instead of replaying it.
+    expected = plan
+    removed = []
+    for candidate in plan['candidates']:
+        current = install_retention_plan()
+        if current != expected or candidate not in current['candidates']:
+            raise RuntimeError('Retention closure generation or candidate changed.')
+        audit = manifest_path.parent / 'jones-install-retention'
+        audit.mkdir(mode=0o700, exist_ok=True)
+        retention_identity(audit)
+        marker = audit / (candidate['transactionId'] + '.json')
+        path = manifest_path.parent / 'jones-manual-installs' / candidate['transactionId']
+        retained_receipt, retained_raw, _ = bounded_native_json(path / 'receipt.json')
+        if hashlib.sha256(retained_raw).hexdigest() != candidate['receiptSha256']:
+            raise RuntimeError('Retention receipt changed before intent publication.')
+        intent = {'protocol': 1, 'status': 'intent', 'candidate': candidate, 'receipt': retained_receipt, 'closureGeneration': current['closureGeneration']}
+        durable(marker, intent, True)
+        try:
+            if install_retention_plan((marker, intent)) != current:
+                raise RuntimeError('Retention closure changed immediately before removal.')
+            _, receipt_raw, _ = bounded_native_json(path / 'receipt.json')
+            if retention_identity(path) != candidate['identity'] or hashlib.sha256(receipt_raw).hexdigest() != candidate['receiptSha256']:
+                raise RuntimeError('Retention candidate changed immediately before removal.')
+            remove_retention_tree(path, candidate['identity'])
+            durable(marker, dict(intent, status='removed'))
+            removed.append(candidate['transactionId'])
+            expected = dict(expected, candidates=[value for value in expected['candidates'] if value != candidate],
+                            snapshot=dict(expected['snapshot'], records=[value for value in expected['snapshot']['records'] if value != candidate]))
+            expected['closureGeneration'] = retirement_digest(expected['snapshot'])
+            if install_retention_plan() != expected: raise RuntimeError('Retention closure changed after removal.')
+        except Exception:
+            durable(marker, dict(intent, status='held'))
+            raise
+    return {'protocol': 1, 'status': 'removed', 'transactions': removed}
+
+def propose_install_retention():
+    try:
+        plan = install_retention_plan()
+        durable(manifest_path.parent / 'jones-install-retention-plan.json', plan)
+        return plan
+    except Exception as error:
+        return {'protocol': 1, 'operation': 'install-retention', 'status': 'held', 'reason': str(error)}
+
+# A held receipt remains an accurate history. Only this companion, committed after
+# comparing the stopped live preimage, can classify an interrupted copy as aborted.
+MANUAL_ABORT = 'aborted-before-swap.json'
+MANUAL_EVIDENCE = 'manual-settlement-proof-'
+
+def manual_check(condition):
+    if not condition: raise RuntimeError('Manual pre-swap settlement evidence changed; preserved.')
+
+def manual_pair_inventory(pair_path, expected, recovery, check_live):
+    pair, raw = database_read(pair_path / 'pair.json')
+    manual_check(pair.get('expected') == expected and pair.get('stateScope') == 'database-settings' and pair.get('recovery') == recovery)
+    manual_check(recovery['method'] == 'clone' and recovery['strictClone'] is True and recovery['copyFallback'] is False)
+    database = pathlib.Path(expected['databasePath'])
+    files, settings = pair['files'], pair['settings']
+    manual_check(set(files) == set(DATABASE_SUFFIXES) and files[''] is True and set(settings) == set(SETTINGS))
+    items = [('state.sqlite' + suffix, pathlib.Path(str(database) + suffix), files[suffix]) for suffix in DATABASE_SUFFIXES]
+    items += [(name, database.parent / name, settings[name]) for name in SETTINGS]
+    names = {name for name, _, present in items if present}
+    manual_check({p.name for p in pair_path.iterdir()} == names | {'pair.json'})
+    inventory, live = [], []
+    for name, original, present in items:
+        manual_check(type(present) is bool)
+        if check_live: manual_check(os.path.lexists(original) == present)
+        if not present: continue
+        target = database_file(pair_path / name)
+        inventory.append(target)
+        if check_live:
+            source = database_file(original)
+            manual_check(target['device'] == source['device'] and target['inode'] != source['inode'] and
+                         all(target[k] == source[k] for k in ('bytes', 'mtimeNs')))
+            live.append(source)
+    manual_check(sum(item['bytes'] for item in inventory) == recovery['bytes'])
+    return {'identity': retention_identity(pair_path), 'metadata': database_file(pair_path / 'pair.json'),
+            'sha256': hashlib.sha256(raw).hexdigest(), 'files': inventory}, live
+
+def manual_retained(directory, check_live=False):
+    identity = retention_identity(directory)
+    manual_check(stat.S_IMODE(directory.stat().st_mode) == 0o700)
+    witnesses = [p for p in directory.iterdir() if p.name.startswith(MANUAL_EVIDENCE)]
+    manual_check(len(witnesses) <= 1 and all(p.suffix == '.json' and database_hex(p.stem[len(MANUAL_EVIDENCE):]) for p in witnesses))
+    manual_check(not {p.name for p in directory.iterdir()} - (
+        {'receipt.json', 'previous-pair', 'recovery-reserve.bin', MANUAL_ABORT} | {p.name for p in witnesses}))
+    receipt, raw = database_read(directory / 'receipt.json')
+    manual_check(set(receipt) == {'protocol','operation','transactionId','phase','stoppedAt','message','planSha256',
+        'originalManifest','installed','candidate','automaticContinuationRequested','stateRecovery','pairedState','recovery','recoveryReserves','storage'})
+    manual_check(receipt['protocol'] == 1 and receipt['operation'] == 'manual-install' and receipt['transactionId'] == directory.name
+        and receipt['phase'] == 'held' and receipt['stoppedAt'] == 'paired' and receipt['stateRecovery'] == 'clone-required'
+        and receipt['automaticContinuationRequested'] is False and receipt['message'] == 'Staged app integrity changed during bundle preparation.')
+    expected = json.loads(receipt['originalManifest'])
+    manual_check(receipt['installed'] == expected and receipt['pairedState'] == str(directory / 'previous-pair'))
+    database_binding(expected)
+    stable = pathlib.Path(expected['appPath'])
+    incoming = stable.with_name(stable.name + '.jones-incoming-' + directory.name)
+    pair, live = manual_pair_inventory(directory / 'previous-pair', expected, receipt['recovery'], check_live)
+    reserves = receipt['recoveryReserves']
+    # Only the same-volume clone case: the failure released its journal reserve.
+    manual_check(len(reserves) == 2 and [item['purpose'] for item in reserves] == ['journal','recovery']
+        and reserves[0]['path'] == str(directory / 'recovery-journal-reserve.bin')
+        and stable.parent.stat().st_dev == directory.stat().st_dev)
+    reserve = database_file(directory / 'recovery-reserve.bin')
+    manual_check(reserves[1] == dict({k: reserve[k] for k in ('device','inode','bytes')},
+                                      path=str(directory / 'recovery-reserve.bin'), purpose='recovery'))
+    retained = {'transactionId': directory.name, 'directoryIdentity': identity, 'receipt': database_file(directory / 'receipt.json'),
+        'receiptSha256': hashlib.sha256(raw).hexdigest(), 'pair': pair, 'reserve': reserve,
+        'incomingIdentity': retention_identity(incoming), 'incomingDigest': app_digest(incoming)}
+    return receipt, retained, live
+
+def manual_request(receipt, raw):
+    request = json.loads(raw)
+    manual_check(hashlib.sha256(raw).hexdigest() == receipt['planSha256'] and request['protocol'] == 1
+        and request['restart'] == 'ordinary' and request.get('stateRecovery') == 'clone-required'
+        and request['expectedManifestSha256'] == hashlib.sha256(receipt['originalManifest'].encode()).hexdigest()
+        and request['installed'] == receipt['installed'] and request['candidate'] == receipt['candidate']
+        and valid_kernel_processes(request['processes']) and all(p['executable'] == request['installed']['executablePath'] for p in request['processes']))
+    return request
+
+def manual_abort_record(directory):
+    # An exclusive hard link is the commit point. Both names remain as evidence.
+    # A lone evidence file, including a short write after a crash, never admits an install.
+    receipt, retained, _ = manual_retained(directory)
+    value, raw, info = bounded_native_json(directory / MANUAL_ABORT)
+    manual_check(database_hex(value.get('proofSha256')))
+    witness = (directory / (MANUAL_EVIDENCE + value['proofSha256'] + '.json')).lstat()
+    manual_check(stat.S_ISREG(witness.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 2 and
+                 (info.st_dev, info.st_ino) == (witness.st_dev, witness.st_ino))
+    proof = value['proof']
+    manual_check(value == {'protocol': 1, 'status': 'aborted-before-swap', 'proofSha256': retirement_digest(proof), 'proof': proof}
+        and raw == database_canon(value) and proof['retained'] == retained)
+    manual_request(receipt, proof['requestRaw'].encode())
+    return value
+
+def manual_aborted_before_swap(directory):
+    return os.path.lexists(directory / MANUAL_ABORT) and bool(manual_abort_record(directory))
+
+def publish_manual_abort(directory, record):
+    evidence = directory / (MANUAL_EVIDENCE + record['proofSha256'] + '.json')
+    marker = directory / MANUAL_ABORT
+    raw = database_canon(record)
+    try: fd = os.open(evidence, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except FileExistsError: fd = os.open(evidence, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'r+b') as stream:
+        info = os.fstat(fd)
+        manual_check(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1 and
+                     stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= len(raw) and os.path.samestat(info, evidence.lstat()))
+        prefix = stream.read(len(raw) + 1)
+        manual_check(raw.startswith(prefix))
+        stream.write(raw[len(prefix):]); stream.flush(); os.fsync(fd)
+        manual_check(os.path.samestat(os.fstat(fd), evidence.lstat()))
+        os.link(evidence, marker, follow_symlinks=False)
+    sync_parent(marker)
+
+def manual_settlement(identifier, plan_path, expected_proof=None):
+    require_retention_exclusion()
+    manual_check(database_hex(identifier))
+    root = manifest_path.parent / 'jones-manual-installs'
+    retention_identity(root)
+    directory = root / identifier
+    retention_identity(directory)
+    raw = bounded_native_json(pathlib.Path(plan_path))[1]
+    request_file = database_file(pathlib.Path(plan_path))
+    if os.path.lexists(directory / MANUAL_ABORT):
+        record = manual_abort_record(directory)
+        manual_check(record['proof']['requestRaw'] == raw.decode() and record['proof']['requestFile'] == request_file
+                     and (expected_proof is None or expected_proof == record['proofSha256']))
+        if expected_proof is not None: sync_parent(directory / MANUAL_ABORT)
+        return {'status': 'settled', 'proofSha256': record['proofSha256'], 'transactionId': identifier}
+    receipt = database_read(directory / 'receipt.json')[0]
+    request = manual_request(receipt, raw)
+    active, manifest_raw = database_read(manifest_path)
+    manual_check(manifest_raw == receipt['originalManifest'].encode() and active == request['installed'] and
+                 not os.path.lexists(manifest_path.parent / 'jones-maintenance'))
+    inspect_selection_transactions(active)
+    prove_quiescence(active)
+    writers = acquire_writer_exclusion(active, initialize=False)
+    try:
+        prove_quiescence(active)
+        receipt, retained, live = manual_retained(directory, check_live=True)
+        manual_check(manual_request(receipt, raw) == request and database_read(manifest_path)[1] == manifest_raw)
+        stable, candidate = pathlib.Path(active['appPath']), request['candidate']
+        previous = stable.with_name(stable.name + '.jones-previous-' + active['generation'])
+        manual_check(not os.path.lexists(previous))
+        for bundle, installed in ((active,True),(candidate,False)):
+            bundle_identity(bundle, stable=installed)
+            manual_check(app_digest(bundle['appPath']) == bundle['appDigest'])
+        manual_check(digest(request['artifact']['path']) == request['artifact']['sha256'])
+        incoming = stable.with_name(stable.name + '.jones-incoming-' + identifier)
+        manual_check(retained['incomingDigest'] != candidate['appDigest'] and
+                     app_digest(incoming, original_directories=pathlib.Path(candidate['appPath'])) == candidate['appDigest'])
+        for process in request['processes']:
+            try: kernel_process_identity(process['pid'])
+            except KernelProcessError as error:
+                if error.diagnostic['error'] == 'process-exited': continue
+                raise
+            raise RuntimeError('Manual process still exists; settlement held.')
+        proof = {'retained': retained, 'requestRaw': raw.decode(), 'requestFile': request_file, 'liveFiles': live,
+                 'manifest': database_file(manifest_path), 'stableIdentity': retention_identity(stable),
+                 'candidateIdentity': retention_identity(pathlib.Path(candidate['appPath']))}
+        sha = retirement_digest(proof)
+        record = {'protocol': 1, 'status': 'aborted-before-swap', 'proofSha256': sha, 'proof': proof}
+        evidence = directory / (MANUAL_EVIDENCE + sha + '.json')
+        for partial in directory.glob(MANUAL_EVIDENCE + '*'):
+            manual_check(partial == evidence)
+            metadata = database_file(partial)
+            expected_bytes = database_canon(record)
+            manual_check(metadata['bytes'] <= len(expected_bytes) and expected_bytes.startswith(partial.read_bytes()))
+        if expected_proof is not None:
+            manual_check(expected_proof == sha)
+            publish_manual_abort(directory, record)
+            manual_check(manual_abort_record(directory) == record)
+        return {'status': 'ready' if expected_proof is None else 'settled', 'proofSha256': sha, 'transactionId': identifier}
+    finally: release_writer_exclusion(writers)
 
 def manual_install_plan(plan_path, plan_sha256, clone_required=False):
     plan, raw, _ = bounded_native_json(pathlib.Path(plan_path))
@@ -1658,6 +2676,9 @@ def manual_install_plan(plan_path, plan_sha256, clone_required=False):
         for directory in manual_root.iterdir():
             if directory.is_symlink() or not directory.is_dir() or not (directory / 'receipt.json').is_file():
                 raise RuntimeError('Unfinished manual installation requires reconciliation.')
+            if os.path.lexists(directory / MANUAL_ABORT) or any(directory.glob(MANUAL_EVIDENCE + '*')):
+                if manual_aborted_before_swap(directory): continue
+                raise RuntimeError('Unfinished manual settlement requires reconciliation.')
             if read(directory / 'receipt.json').get('phase') != 'launched':
                 raise RuntimeError('Unfinished manual installation requires reconciliation.')
     installed, candidate = plan['installed'], plan['candidate']
@@ -1734,7 +2755,8 @@ def manual_install(plan_path, plan_sha256, apply=False, clone_required=False):
         if manifest_path.read_bytes() != manifest_raw or app_digest(plan['installed']['appPath']) != plan['installed']['appDigest']:
             raise RuntimeError('Manual installation preimage changed after shutdown.')
         pair_state(expected, directory / 'previous-pair', clone_required)
-        record('paired', pairedState=str(directory / 'previous-pair'), recovery=read(directory / 'previous-pair' / 'pair.json')['recovery'])
+        pair = read(directory / 'previous-pair' / 'pair.json')
+        record('paired', pairedState=str(directory / 'previous-pair'), **({'recovery': pair['recovery']} if 'recovery' in pair else {}))
         incoming, previous = prepare_bundle(expected, plan['candidate'], transaction_id)
         record('swap-intent', incomingBundle=str(incoming), previousBundle=str(previous))
         if manifest_path.read_bytes() != manifest_raw:
@@ -1763,7 +2785,8 @@ def manual_install(plan_path, plan_sha256, apply=False, clone_required=False):
         message = str(failure)
         try: release_recovery_reserve(reserves, 'journal')
         except Exception: message += '; recovery reserve ownership uncertain'
-        record('held', stoppedAt=receipt['phase'], message=message)
+        diagnostics = {'diagnostics': {key: value for key, value in failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(failure, KernelProcessError) else {}
+        record('held', stoppedAt=receipt['phase'], message=message, **diagnostics)
         raise
     finally:
         release_writer_exclusion(writers)
@@ -1781,10 +2804,17 @@ parser.add_argument('--manifest')
 action = parser.add_mutually_exclusive_group(required=True)
 action.add_argument('--process-identity', type=kernel_process_pid)
 action.add_argument('--activate')
+action.add_argument('--inspect-recovery')
 action.add_argument('--settle-interrupted-activation')
 action.add_argument('--reconcile-running')
+action.add_argument('--inspect-manual-settlement')
+action.add_argument('--settle-manual-install')
 action.add_argument('--inspect-manual-install')
 action.add_argument('--manual-install')
+action.add_argument('--inspect-install-retention', action='store_true')
+action.add_argument('--retire-install-retention')
+action.add_argument('--inspect-database-retirement', action='store_true')
+action.add_argument('--retire-database-snapshots', action='store_true')
 action.add_argument('--launch', action='store_true')
 action.add_argument('--cli', action='store_true')
 action.add_argument('--discard-staged')
@@ -1803,6 +2833,8 @@ parser.add_argument('--staged-handle')
 parser.add_argument('--selection')
 parser.add_argument('--selection-sha256')
 parser.add_argument('--plan-sha256')
+parser.add_argument('--manual-plan')
+parser.add_argument('--snapshot', action='append')
 parser.add_argument('--require-clone', action='store_true')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
 args = parser.parse_args()
@@ -1817,22 +2849,66 @@ if args.process_identity is not None:
     print(json.dumps(identity, separators=(',', ':')))
     raise SystemExit(0)
 if args.manifest is None: parser.error('--manifest is required for this action')
+settlement = args.inspect_manual_settlement or args.settle_manual_install
+if args.manual_plan and not settlement: parser.error('--manual-plan requires a manual settlement action')
+if settlement is not None:
+    allowed = {'manifest','manual_plan','inspect_manual_settlement','settle_manual_install','plan_sha256'}
+    if not database_hex(settlement) or not args.manual_plan or any(value not in (None, False, []) for key,value in vars(args).items() if key not in allowed):
+        parser.error('Manual settlement requires the exact transaction and original manual plan.')
+    if (args.settle_manual_install and not database_hex(args.plan_sha256)) or (args.inspect_manual_settlement and args.plan_sha256 is not None):
+        parser.error('Manual settlement apply requires the inspected proof digest.')
+database_action = args.inspect_database_retirement or args.retire_database_snapshots
+if args.snapshot is not None and not database_action: parser.error('--snapshot requires a database retirement action')
+if database_action:
+    if not args.snapshot: parser.error('--snapshot is required for database retirement')
+    allowed = {'manifest', 'snapshot', 'inspect_database_retirement', 'retire_database_snapshots', 'plan_sha256'}
+    if any(value not in (None, False, []) for key, value in vars(args).items() if key not in allowed): parser.error('unrelated flags are not allowed for database retirement')
+    if args.retire_database_snapshots and not database_hex(args.plan_sha256): parser.error('--retire-database-snapshots requires --plan-sha256 with 64 lowercase hex characters')
+    if args.inspect_database_retirement and args.plan_sha256 is not None: parser.error('--plan-sha256 requires --retire-database-snapshots')
+    try: database_selection(args.snapshot)
+    except SelectionRefused: parser.error('--snapshot must be a unique manual:ID or warm:ID with 64 lowercase hex characters')
 if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
 manifest_path = pathlib.Path(args.manifest).resolve(strict=True)
+if (args.inspect_recovery or settlement) and pathlib.Path(args.manifest) != manifest_path:
+    raise SystemExit('Recovery manifest must be an exact confined native path.')
 if sys.platform != 'darwin': raise SystemExit('The Jones native helper requires macOS.')
+if args.inspect_recovery:
+    active, manifest_raw, _ = bounded_native_json(manifest_path)
+    if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop':
+        raise SystemExit('Native recovery binding is unavailable.')
+    result = inspect_recovery(active, args.inspect_recovery, args.selection, args.selection_sha256)
+    if manifest_path.read_bytes() != manifest_raw: raise SystemExit('Native recovery generation changed.')
+    print(json.dumps(result))
+    raise SystemExit(0)
 lock_path = manifest_path.with_name('jones-activation.lock')
-try:
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    os.write(descriptor, b'jones-activation-lock-v1\n')
-    os.fsync(descriptor)
-except FileExistsError:
-    descriptor = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+readonly_lock = bool(database_action or settlement)
+lock_operation = 'manual-settlement' if settlement else 'database-retirement'
+if readonly_lock:
+    try: descriptor = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        print(json.dumps({'protocol': 1, 'operation': lock_operation, 'status': 'refused', 'reason': 'activation-lock-absent'}))
+        raise SystemExit(0)
+    except OSError:
+        print(json.dumps({'protocol': 1, 'operation': lock_operation, 'status': 'refused', 'reason': 'activation-lock-unknown'}))
+        raise SystemExit(0)
     info = os.fstat(descriptor)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or os.read(descriptor, 256) != b'jones-activation-lock-v1\n':
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or os.read(descriptor, 256) != b'jones-activation-lock-v1\n':
         os.close(descriptor)
-        raise SystemExit('An occupied native activation lock is unknown and was preserved.')
-with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
+        print(json.dumps({'protocol': 1, 'operation': lock_operation, 'status': 'refused', 'reason': 'activation-lock-unknown'}))
+        raise SystemExit(0)
+else:
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        os.write(descriptor, b'jones-activation-lock-v1\n')
+        os.fsync(descriptor)
+    except FileExistsError:
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or os.read(descriptor, 256) != b'jones-activation-lock-v1\n':
+            os.close(descriptor)
+            raise SystemExit('An occupied native activation lock is unknown and was preserved.')
+with os.fdopen(descriptor, 'r' if readonly_lock else 'r+', encoding='utf8') as lock:
     operation = 'discard-staged' if args.discard_staged else 'claim-activation' if args.claim_activation else 'claim-preparation' if args.claim_preparation else None
     retirement_operation = 'inspect-retirement' if args.inspect_retirement else 'retire-transaction' if args.retire_transaction else None
     preparation_operation = 'inspect-preparation' if args.inspect_preparation else 'retire-preparation' if args.retire_preparation else None
@@ -1840,6 +2916,12 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     transaction_id = args.transaction if args.claim_preparation else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        if readonly_lock:
+            print(json.dumps({'protocol': 1, 'operation': lock_operation, 'status': 'refused', 'reason': 'busy'}))
+            raise SystemExit(0)
+        if args.inspect_install_retention or args.retire_install_retention:
+            print(json.dumps({'protocol': 1, 'operation': 'install-retention', 'status': 'held', 'reason': 'busy'}))
+            raise SystemExit(0)
         if args.settle_interrupted_activation:
             print(json.dumps({'protocol': PROTOCOL, 'status': 'refused', 'reason': 'activation-running'}))
             raise SystemExit(0)
@@ -1861,11 +2943,30 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
             print(json.dumps(result))
             raise SystemExit(0)
         raise
+    retention_exclusion_held = True
+    retention_exclusion_descriptor = lock.fileno()
+    if settlement:
+        print(json.dumps(manual_settlement(settlement, args.manual_plan, args.plan_sha256)))
+        raise SystemExit(0)
+    if database_action:
+        print(json.dumps(database_retirement_command(args.retire_database_snapshots, args.snapshot, args.plan_sha256)))
+        raise SystemExit(0)
     if args.settle_interrupted_activation:
         print(json.dumps(settle_interrupted_activation(args.settle_interrupted_activation)))
         raise SystemExit(0)
     if args.reconcile_running:
-        print(json.dumps(reconcile_running(args.reconcile_running, args.plan_sha256)))
+        result = reconcile_running(args.reconcile_running, args.plan_sha256)
+        if result.get('status') == 'reconciled': propose_install_retention()
+        print(json.dumps(result))
+        raise SystemExit(0)
+    if args.inspect_install_retention:
+        print(json.dumps(propose_install_retention()))
+        raise SystemExit(0)
+    if args.retire_install_retention:
+        plan, raw, _ = bounded_native_json(pathlib.Path(args.retire_install_retention))
+        if hashlib.sha256(raw).hexdigest() != args.plan_sha256:
+            raise SystemExit('Exact retention plan approval changed; preserved.')
+        print(json.dumps(apply_install_retention(plan)))
         raise SystemExit(0)
     active = read(manifest_path)
     if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop':

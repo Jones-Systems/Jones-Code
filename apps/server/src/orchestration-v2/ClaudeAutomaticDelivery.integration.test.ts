@@ -14,8 +14,10 @@ import {
   ThreadId,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
+import type * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -25,6 +27,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -137,9 +140,11 @@ it.effect.each(deliveries)(
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("claude-automatic-delivery");
-        const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+        const sdkMessages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
+        const syntheticTermination = yield* Deferred.make<void>();
         const offers: SDKUserMessage[] = [];
         const nativeQueue: SDKUserMessage[] = [];
+        // @effect-diagnostics-next-line abortControllerInEffect:off - The fake SDK interrupts its batch independently of the test fiber.
         const batchAbort = new AbortController();
         const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
           instanceId: modelSelection.instanceId,
@@ -148,7 +153,7 @@ it.effect.each(deliveries)(
           attachmentsDir: cwd,
           fileSystem: yield* FileSystem.FileSystem,
           path: yield* Path.Path,
-          crypto: yield* Crypto.Crypto,
+          random: yield* SecureRandom.SecureRandom,
           idAllocator: yield* IdAllocator.IdAllocatorV2,
           queryRunner: {
             allocateSessionId: Effect.succeed(sessionId),
@@ -159,8 +164,7 @@ it.effect.each(deliveries)(
                   Effect.sync(() => {
                     offers.push(message);
                     nativeQueue.push(message);
-                    // Claude Code 2.1.289's queue watcher aborts when a now-priority
-                    // command arrives, including while Bash blocks pending reads.
+                    // Claude Code 2.1.289 aborts on now-priority commands even while Bash blocks reads.
                     if (nativeQueue.some((command) => command.priority === "now")) {
                       batchAbort.abort({ kind: "interrupt" });
                     }
@@ -169,9 +173,17 @@ it.effect.each(deliveries)(
                 applyFlagSettings: () => Effect.void,
                 setPermissionMode: () => Effect.void,
                 backgroundTasks: () => Effect.succeed(false),
+                mcpServerStatus: Effect.succeed([]),
+                readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
+                termination: Deferred.await(syntheticTermination),
                 interrupt: Effect.die("automatic delivery must never interrupt"),
-                close: Effect.void,
+                close: Queue.end(sdkMessages).pipe(
+                  Effect.andThen(Deferred.succeed(syntheticTermination, undefined)),
+                  Effect.asVoid,
+                ),
               }),
             forkSession: () => Effect.die("unused"),
             subagentLaunchToolUseId: () => Effect.succeed(null),
@@ -332,6 +344,7 @@ it.effect.each(deliveries)(
                     }),
                   ),
                   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+                  Layer.provide(ManagedPolicy.layerTest()),
                   Layer.provide(
                     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
                       namedProjectsRoot: "/projects",
@@ -414,8 +427,6 @@ it.effect.each(deliveries)(
               queuedRunId: queuedRun.id,
               targetRunId: parent.id,
             });
-            // Promotion cancels the queued run and moves its message into the
-            // running run as a steer that remembers where it came from.
             const promoted = yield* orchestrator.getThreadProjection(threadId);
             assert.equal(promoted.runs.find((run) => run.id === queuedRun.id)?.status, "cancelled");
             assert.equal(
@@ -518,7 +529,12 @@ it.effect.each(deliveries)(
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
     ),

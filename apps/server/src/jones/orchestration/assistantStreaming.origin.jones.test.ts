@@ -81,7 +81,7 @@ it.effect("preserves the original producer through both actual streaming clone b
         producer: producer.origin,
       });
       const wire = yield* encodeProviderEvent(original);
-      const filtered = makeAssistantStreamingFilter("paragraph")(original, 0);
+      const filtered = makeAssistantStreamingFilter("paragraph").filter(original, 0);
       assert.isNotNull(filtered);
       assert.notStrictEqual(filtered, original);
       const captured = ProviderEventOrigin.readProviderEventOrigin(filtered!);
@@ -92,7 +92,7 @@ it.effect("preserves the original producer through both actual streaming clone b
     }
     producer.retire();
     for (const sample of samples) {
-      const filtered = makeAssistantStreamingFilter("paragraph")(sample, 0)!;
+      const filtered = makeAssistantStreamingFilter("paragraph").filter(sample, 0)!;
       assert.equal(
         (yield* ProviderEventOrigin.revalidateProviderEventOrigin(filtered, runtime).pipe(
           Effect.flip,

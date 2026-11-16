@@ -12,6 +12,15 @@ export function composerSelectionForDispatch(
   };
 }
 
+export function requiredComposerProvider(
+  draft: Parameters<typeof hasExplicitComposerModelSelection>[0],
+  saved: ModelSelection | null | undefined,
+  isLocalDraftThread: boolean,
+) {
+  if (isLocalDraftThread) return undefined;
+  return hasExplicitComposerModelSelection(draft) ? draft?.activeProvider : saved?.instanceId;
+}
+
 // Consume only the accepted pick; a newer picker change must survive the send acknowledgement.
 export function acknowledgeComposerSelection(
   target: ComposerThreadTarget,

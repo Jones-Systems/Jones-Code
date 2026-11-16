@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
+import { withCommandMetrics } from "../observability/Metrics.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
@@ -84,6 +85,16 @@ export class ProjectNotEmptyError extends Schema.TaggedError<ProjectNotEmptyErro
   }
 }
 
+/** A change the project's rules refuse, such as an invalid script ID: the caller's input is wrong, nothing failed. */
+export class ProjectInvalidError extends Schema.TaggedError<ProjectInvalidError>()(
+  "ProjectInvalidError",
+  { projectId: ProjectId, detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export class ProjectOperationError extends Schema.TaggedError<ProjectOperationError>()(
   "ProjectOperationError",
   {
@@ -109,6 +120,7 @@ export type ProjectServiceError =
   | ProjectNotFoundError
   | ProjectConflictError
   | ProjectNotEmptyError
+  | ProjectInvalidError
   | ProjectOperationError;
 
 export class ProjectService extends Context.Service<
@@ -180,6 +192,8 @@ export const make = Effect.gen(function* () {
     autoPull: row.autoPull,
     projectIcon: row.projectIcon,
     scripts: row.scripts,
+    pinnedAt: row.pinnedAt,
+    archivedAt: row.archivedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
@@ -279,8 +293,7 @@ export const make = Effect.gen(function* () {
         `Command ${command.commandId} was already used by ${receipt.commandType} for ${receipt.projectId}.`,
       );
     }
-    // A retried command re-plans against the state it already produced, so its
-    // first receipt, not the new plan, decides the outcome.
+    // Retries re-plan against their own effects; the first receipt determines the outcome.
     if (receipt.status === "accepted") return;
     const rejection = Option.getOrUndefined(decodeProjectCommandRejection(receipt.error));
     switch (rejection?._tag) {
@@ -292,12 +305,14 @@ export const make = Effect.gen(function* () {
         });
       case "ProjectCommandMissingProjectError":
         return yield* new ProjectNotFoundError({ projectId });
+      case "ProjectCommandInvariantError":
+        return yield* new ProjectInvalidError({ projectId, detail: rejection.detail });
       default:
         return yield* dispatchError(
           rejection ?? receipt.error ?? "The command was previously rejected.",
         );
     }
-  });
+  }, withCommandMetrics);
 
   const readCommitted = Effect.fn("ProjectService.readCommitted")(function* (projectId: ProjectId) {
     const row = yield* readRow(projectId, { includeDeleted: true });
@@ -388,6 +403,8 @@ export const make = Effect.gen(function* () {
           ? {}
           : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
+        ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
+        ...(input.archived === undefined ? {} : { archived: input.archived }),
       });
       if (workspaceRoot !== previousRoot) {
         yield* projectEnrichment.invalidate([previousRoot, workspaceRoot]);
@@ -484,11 +501,7 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  // A machine-disabled provider instance that a deleted project's override
-  // once turned on must not stay probed and alive forever. Nothing else
-  // removes the entry, so deletion is where it goes; best-effort because a
-  // settings write failure should not block the deletion it is cleaning up
-  // after, and a server crash before a replay never revisits this project.
+  // Best-effort cleanup releases disabled instances kept alive by overrides; crashes have no replay to revisit deletion.
   const clearProjectSettingsOverrides = (projectId: ProjectId) =>
     serverSettings.updateSettings({ projectSettingsOverrides: { [projectId]: null } }).pipe(
       Effect.asVoid,
@@ -503,8 +516,7 @@ export const make = Effect.gen(function* () {
   const deleteProject: ProjectService["Service"]["delete"] = Effect.fn("ProjectService.delete")(
     function* (input) {
       const { projectId } = input;
-      // A deleted row still reaches commit, so a retried command id replays its
-      // receipt and any other command id is rejected as not found.
+      // Read deleted rows so retries replay receipts and other command ids fail as not found.
       const existing = yield* readRow(projectId, { includeDeleted: true });
       if (Option.isNone(existing)) {
         return yield* new ProjectNotFoundError({ projectId });
@@ -557,14 +569,14 @@ export const make = Effect.gen(function* () {
     return yield* Effect.forEach(shells, enrichShell, { concurrency: 16 });
   });
 
+  const listRows = projects
+    .list()
+    .pipe(
+      Effect.mapError((cause) => new ProjectOperationError({ operation: "list-projects", cause })),
+    );
+
   const snapshot = Effect.gen(function* () {
-    const rows = yield* projects
-      .list()
-      .pipe(
-        Effect.mapError(
-          (cause) => new ProjectOperationError({ operation: "list-projects", cause }),
-        ),
-      );
+    const rows = yield* listRows;
     const hydrated = yield* Effect.forEach(rows, hydrate, { concurrency: 8 });
     return {
       projects: hydrated,
@@ -574,15 +586,19 @@ export const make = Effect.gen(function* () {
 
   const listPage: ProjectService["Service"]["listPage"] = Effect.fn("ProjectService.listPage")(
     function* ({ cursor, limit }) {
-      const rows = (yield* snapshot).projects.filter((project) => project.deletedAt === null);
+      const rows = (yield* listRows).filter((project) => project.deletedAt === null);
       const projects = yield* Effect.forEach(
         rows.slice(cursor, cursor + limit),
-        (project) =>
-          project.repositoryIdentity !== null
-            ? Effect.succeed(project)
-            : projectEnrichment
-                .readRepositoryIdentity(project.workspaceRoot)
-                .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
+        (row) =>
+          hydrate(row).pipe(
+            Effect.filterOrElse(
+              (project) => project.repositoryIdentity !== null,
+              (project) =>
+                projectEnrichment
+                  .readRepositoryIdentity(project.workspaceRoot)
+                  .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
+            ),
+          ),
         { concurrency: 8 },
       );
       return { projects, nextCursor: cursor + limit < rows.length ? cursor + limit : null };

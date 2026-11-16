@@ -21,6 +21,13 @@ export const fleetUpdatesHttpApiLayer = HttpApiBuilder.group(
     Effect.gen(function* () {
       const fleet = yield* FleetUpdates;
       return handlers
+        .handle("planDirective", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* fleet.planDirective(payload);
+          }),
+        )
         .handle("status", ({ query }) =>
           Effect.gen(function* () {
             yield* requireEnvironmentScope(AuthOrchestrationReadScope);

@@ -3,7 +3,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/model
 import { dropPinnedThreadOnWorkstream } from "../jones/workstreams/sidebarThreadDrop";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { useState } from "react";
-import { SidebarDragLifecycle, SidebarPointerSensor } from "./Sidebar.pointer";
+import { SidebarPointerSensor } from "./Sidebar.pointer";
 import { act, render, fakeTimers } from "../../test/render";
 
 const sensors: SidebarPointerSensor[] = [];
@@ -201,7 +201,7 @@ describe("pinned Workstream viewport pointer drops", () => {
       );
     }
     const sensorsToCancel: SidebarPointerSensor[] = [];
-    await using screen = await render(<Harness />, { container });
+    await using _screen = await render(<Harness />, { container });
     try {
       const shelf = container.querySelector<HTMLElement>("[data-scroll-shelf]")!;
       const source = container.querySelector<HTMLElement>("[data-pinned-source]")!;

@@ -428,7 +428,7 @@ const make = Effect.gen(function* () {
       const uses = yield* sql<{
         operation_id: string;
         revision: number;
-      }>`SELECT operation_id,revision FROM jones_ordinary_checkout_uses WHERE admission_id=${admission.admission_id} AND state IN ('reserved','started','draining')`;
+      }>`SELECT operation_id,revision FROM jones_ordinary_checkout_all_uses WHERE admission_id=${admission.admission_id} AND state IN ('reserved','started','draining')`;
       const basis = committed.storedEvents
         .filter(
           (e) =>

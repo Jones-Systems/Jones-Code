@@ -155,6 +155,9 @@ it.effect.each(["leaf", "service"] as const)(
     }).pipe(Effect.provide(layer)),
 );
 
+const compiledIs1 = Schema.is(Enqueue.EffectOutboxError);
+const compiledIs2 = Schema.is(SqlError.SqlError);
+
 it.effect.each(["leaf", "service"] as const)(
   "%s keeps the SQL failure cause and rolls back preceding inserts",
   (path) =>
@@ -165,10 +168,10 @@ it.effect.each(["leaf", "service"] as const)(
         .withTransaction(enqueueWith(path, [pending("before-failure"), pending("refused")]))
         .pipe(Effect.flip);
       assert.instanceOf(error, Enqueue.EffectOutboxError);
-      if (!Schema.is(Enqueue.EffectOutboxError)(error)) return;
+      if (!compiledIs1(error)) return;
       assert.equal(error.operation, "enqueue");
       assert.equal(error.message, "Orchestration effect outbox enqueue failed.");
-      assert.isTrue(Schema.is(SqlError.SqlError)(error.cause));
+      assert.isTrue(compiledIs2(error.cause));
       assert.deepEqual(yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox`, []);
     }).pipe(Effect.provide(layer)),
 );

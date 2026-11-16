@@ -1,10 +1,13 @@
 import { PREPARED_TIMEOUT_MS } from "./serviceLauncher.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - observes the children the launcher spawns with Node built-ins.
 import * as NodeChildProcess from "node:child_process";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - the free-space probe is a plain Promise callback.
+import * as NodeFS from "node:fs";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { SERVER_EXIT_CODE_STATE_DIR_OWNED } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -19,7 +22,6 @@ import {
   readServiceEnvironment,
   type BackupSpaceProbe,
   readServiceState,
-  validateDatabasePathForBaseDir,
   writeServiceState,
 } from "./serviceLauncher.ts";
 import {
@@ -534,7 +536,7 @@ if (context.update?.status === "pending") {
         { token: "initial", update: "pending" },
         { token: "initial", update: "rolled-back" },
       ]);
-      assert.equal(process.env.T3CODE_TEST_SERVICE_TOKEN, "inherited");
+      assert.equal((yield* HostProcess.Environment).T3CODE_TEST_SERVICE_TOKEN, "inherited");
       assert.equal(yield* fs.readFileString(envPath), "T3CODE_TEST_SERVICE_TOKEN=changed\n");
     }),
   );
@@ -910,6 +912,35 @@ setInterval(() => {}, 1_000);
     }),
   );
 
+  it.effect("reclaims partial backups left by killed updates before checking space", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-orphan-" });
+      const databasePath = path.join(root, "state.sqlite");
+      yield* writeSparseFile(databasePath, 10 * 1024 ** 3);
+      const backupRoot = path.join(root, "runtime", "db-backup");
+      const orphan = path.join(backupRoot, "earlier-update.staging");
+      const completed = path.join(backupRoot, "completed-update");
+      yield* fs.makeDirectory(orphan, { recursive: true });
+      yield* fs.writeFileString(path.join(orphan, "database"), "partial copy");
+      yield* fs.makeDirectory(completed);
+      yield* fs.writeFileString(path.join(completed, "database"), "complete copy");
+
+      // The orphan is what keeps this disk too full for a full copy.
+      const blocker = yield* Effect.promise(() =>
+        databaseBackupBlocker(root, databasePath, {
+          readFreeBytes: () => Promise.resolve((NodeFS.existsSync(orphan) ? 8 : 11) * 1024 ** 3),
+          canClone: () => Promise.resolve(false),
+        }),
+      );
+
+      assert.isUndefined(blocker);
+      assert.isFalse(yield* fs.exists(orphan));
+      assert.isTrue(yield* fs.exists(path.join(completed, "database")));
+    }),
+  );
+
   it.effect("checks database backup space against clone or full-copy needs", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -1155,4 +1186,89 @@ setInterval(() => {}, 1_000);
       assert.equal(yield* fs.readFileString(previousStarted), "started");
     }),
   );
+});
+
+it("round-trips the historical stage explicitly and refuses legacy or malformed capability claims", () => {
+  const binding = {
+    baseDir: "/synthetic",
+    dbPath: "/synthetic/userdata/statev2.sqlite",
+    environmentId: "synthetic-environment",
+    activeVersion: "0.0.0-preview.20261002.100",
+    activeSourceSha: "a".repeat(40),
+  };
+  const qualified = {
+    protocol: 2,
+    stagedHandle: "12345678-1234-4234-8234-123456789abc",
+    binding,
+    receipt: {
+      protocol: 1,
+      repository: "Jones-Systems/Jones-Code",
+      channel: "jones-main",
+      version: "0.0.0-preview.20261002.101.1",
+      sourceSha: "b".repeat(40),
+      sourceTree: "c".repeat(40),
+      installedSourceSha: "9".repeat(40),
+      workflow: ".github/workflows/artifact-cli-linux.yml",
+      runId: 101,
+      runAttempt: 1,
+      artifactId: 102,
+      artifactDigest: `sha256:${"d".repeat(64)}`,
+      archiveSha256: "e".repeat(64),
+      payloadSha256: "f".repeat(64),
+      platform: "linux",
+      architecture: "x64",
+    },
+  };
+  const update = {
+    id: qualified.stagedHandle,
+    fromVersion: "0.0.0-preview.20261002.100",
+    targetVersion: "0.0.0-preview.20261002.101.1",
+    dbPath: binding.dbPath,
+    status: "pending",
+    phase: "accepted",
+    qualified,
+  };
+  const state = {
+    protocol: SERVICE_LAUNCHER_PROTOCOL,
+    activeVersion: "0.0.0-preview.20261002.100",
+    update,
+  };
+  assert.deepEqual<unknown>(decodeServiceState(state), state);
+  const context = {
+    protocol: SERVICE_LAUNCHER_PROTOCOL,
+    childVersion: update.targetVersion,
+    qualifiedUpdatesProtocol: 1,
+    qualifiedRecoveryProtocol: 1,
+    update: { ...update, phase: "trial-ready" },
+  };
+  assert.deepEqual<unknown>(decodeServiceLauncherContext(JSON.stringify(context)), context);
+  assert.isUndefined(decodeServiceLauncherContext(JSON.stringify({ ...context, update })));
+  assert.isUndefined(
+    decodeServiceLauncherContext(
+      JSON.stringify({ ...context, qualifiedRecoveryProtocol: undefined }),
+    ),
+  );
+  assert.isUndefined(
+    decodeServiceState({
+      ...state,
+      update: { ...update, qualified: { ...qualified, protocol: 1 } },
+    }),
+  );
+  const request = {
+    type: "request-update",
+    targetVersion: "0.0.0-preview.20261002.101.1",
+    dbPath: binding.dbPath,
+    stagedHandle: qualified.stagedHandle,
+    qualifiedRecoveryProtocol: 1,
+  };
+  assert.deepEqual<unknown>(decodeServiceLauncherChildMessage(request), request);
+  for (const qualifiedRecoveryProtocol of [undefined, null, 0, 2, "1", true]) {
+    assert.isUndefined(
+      decodeServiceLauncherContext(JSON.stringify({ ...context, qualifiedRecoveryProtocol })),
+    );
+    assert.isUndefined(
+      decodeServiceLauncherChildMessage({ ...request, qualifiedRecoveryProtocol }),
+    );
+  }
+  assert.isUndefined(decodeServiceLauncherChildMessage({ ...request, stagedHandle: undefined }));
 });

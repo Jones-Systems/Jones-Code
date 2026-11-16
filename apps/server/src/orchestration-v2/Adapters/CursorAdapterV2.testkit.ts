@@ -22,13 +22,12 @@ import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/
 import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
-import { CursorAdapterV2Driver } from "@t3tools/provider-cursor/server";
 import * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk";
 import {
   CURSOR_DEFAULT_INSTANCE_ID,
-  CURSOR_DRIVER_KIND,
   cursorSdkModelSelection,
   makeCursorAgentOptions,
+  makeCursorAdapterV2,
 } from "@t3tools/provider-cursor/testing";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type { RuntimePolicyV2Override } from "../RuntimePolicy.ts";
@@ -417,37 +416,57 @@ export function makeCursorAgentSdkReplayRunner(
             options: CursorAgentSdk.loggedCursorAgentOptions(input.options),
           });
           const opened = consumeInbound("agent.opened");
+          let lastReader: { running: boolean } | undefined;
           const session: CursorAgentSdk.CursorAgentSdkSession = {
             agentId: opened.agentId,
             send: (sendInput) =>
-              Effect.try({
-                try: () => {
-                  assertOutbound({
-                    type: "run.start",
-                    message: sendInput.message,
-                    options: CursorAgentSdk.loggedCursorSendOptions(sendInput.options),
-                  });
-                  const started = consumeInbound("run.started");
-                  const run: CursorAgentSdk.CursorAgentSdkRun = {
-                    runId: started.runId,
-                    agentId: started.agentId,
-                    wait: waitForRun(started.runId, sendInput).pipe(
-                      Effect.mapError((cause) =>
-                        replayRunnerError(transcript, cause, "replay.run.wait"),
-                      ),
+              Effect.gen(function* () {
+                const started = yield* Effect.try({
+                  try: () => {
+                    assertOutbound({
+                      type: "run.start",
+                      message: sendInput.message,
+                      options: CursorAgentSdk.loggedCursorSendOptions(sendInput.options),
+                    });
+                    return consumeInbound("run.started");
+                  },
+                  catch: (cause) => replayRunnerError(transcript, cause, "replay.session.send"),
+                });
+                // Retain one reader independently of wait callers, as the real SDK runner does.
+                // A replay failure is no native-success witness.
+                const nativeWait = yield* Effect.cached(
+                  waitForRun(started.runId, sendInput).pipe(
+                    Effect.mapError((cause) =>
+                      replayRunnerError(transcript, cause, "replay.run.wait"),
                     ),
-                    cancel: Effect.try({
-                      try: () =>
-                        assertOutbound({
-                          type: "run.cancel",
-                          runId: started.runId,
-                        }),
-                      catch: (cause) => replayRunnerError(transcript, cause, "replay.run.cancel"),
+                  ),
+                );
+                const reader = { running: true };
+                lastReader = reader;
+                yield* nativeWait.pipe(
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      reader.running = false;
+                      if (lastReader === reader) cursorAdvanced.resolve();
                     }),
-                  };
-                  return run;
-                },
-                catch: (cause) => replayRunnerError(transcript, cause, "replay.session.send"),
+                  ),
+                  Effect.exit,
+                  Effect.forkDetach({ startImmediately: true }),
+                );
+                return {
+                  runId: started.runId,
+                  agentId: started.agentId,
+                  nativeWait,
+                  wait: nativeWait,
+                  cancel: Effect.try({
+                    try: () =>
+                      assertOutbound({
+                        type: "run.cancel",
+                        runId: started.runId,
+                      }),
+                    catch: (cause) => replayRunnerError(transcript, cause, "replay.run.cancel"),
+                  }),
+                } satisfies CursorAgentSdk.CursorAgentSdkRun;
               }),
             listMessages: Effect.try({
               try: () => {
@@ -459,13 +478,23 @@ export function makeCursorAgentSdkReplayRunner(
               },
               catch: (cause) => replayRunnerError(transcript, cause, "replay.agent.messages.list"),
             }),
-            close: Effect.try({
-              try: () =>
-                assertOutbound({
-                  type: "agent.close",
-                  agentId: opened.agentId,
-                }),
-              catch: (cause) => replayRunnerError(transcript, cause, "replay.agent.close"),
+            close: Effect.gen(function* () {
+              // Let the owned reader deliver recorded inbound completion before close.
+              // An expected outbound call (including cancel) must still match immediately.
+              while (lastReader?.running === true && failure === null) {
+                const entry = transcript.entries[cursor];
+                if (entry?.type !== "emit_inbound" && entry?.type !== "runtime_exit") break;
+                const signal = cursorAdvanced;
+                yield* Effect.promise(() => signal.promise);
+              }
+              yield* Effect.try({
+                try: () =>
+                  assertOutbound({
+                    type: "agent.close",
+                    agentId: opened.agentId,
+                  }),
+                catch: (cause) => replayRunnerError(transcript, cause, "replay.agent.close"),
+              });
             }),
           };
           return session;
@@ -478,11 +507,13 @@ export function makeCursorAgentSdkReplayRunner(
           throw failure;
         }
         if (cursor !== transcript.entries.length) {
-          throw new CursorReplayIncompleteError({
-            scenario: transcript.scenario,
-            cursor,
-            remaining: transcript.entries.length - cursor,
-          });
+          throw recordFailure(
+            new CursorReplayIncompleteError({
+              scenario: transcript.scenario,
+              cursor,
+              remaining: transcript.entries.length - cursor,
+            }),
+          );
         }
       },
       catch: (cause) => replayRunnerError(transcript, cause, "replay.assertComplete"),
@@ -506,7 +537,13 @@ function layerCursorAgentSdkReplay(
           ? Effect.void
           : runner.assertComplete.pipe(Effect.orDie),
       );
-      return CursorAgentSdk.CursorAgentSdkRunner.of(runner);
+      // Adapter shutdown also checks completeness. A shared restart transcript is
+      // complete only after its final runtime; its owner asserts the original runner.
+      return CursorAgentSdk.CursorAgentSdkRunner.of(
+        options?.assertCompleteOnFinalize === false
+          ? { ...runner, assertComplete: Effect.void }
+          : runner,
+      );
     }),
   );
 }
@@ -518,8 +555,7 @@ export function layer(
     readonly assertCompleteOnFinalize?: boolean;
   },
 ) {
-  // Skill discovery also scans user roots under HOME; an empty HOME keeps
-  // replays from picking up the host's own skills.
+  // Empty HOME prevents skill discovery from using the host's skills.
   const layerHostEnvironment = Layer.effect(
     HostProcess.Environment,
     Effect.gen(function* () {
@@ -528,14 +564,15 @@ export function layer(
       return { HOME: home };
     }).pipe(Effect.orDie),
   ).pipe(Layer.provide(NodeServices.layer));
-  return ProviderAdapterRegistry.layerFromDrivers({
-    drivers: [CursorAdapterV2Driver],
-    configMap: {
-      [CURSOR_DEFAULT_INSTANCE_ID]: {
-        driver: CURSOR_DRIVER_KIND,
-      },
-    },
-  }).pipe(
+  return ProviderAdapterRegistry.layerFromAdaptersEffect(
+    Effect.gen(function* () {
+      const adapter = yield* makeCursorAdapterV2({
+        instanceId: CURSOR_DEFAULT_INSTANCE_ID,
+        environment: yield* HostProcess.Environment,
+      });
+      return [adapter];
+    }),
+  ).pipe(
     Layer.provide(
       Layer.mergeAll(
         layerCursorAgentSdkReplay(transcript, options),
@@ -722,8 +759,7 @@ export const recordCursorAgentSdkReplayTranscript = Effect.fn(
     model: cursorSdkModelSelection(input.modelSelection),
     mode: interactionMode === "plan" ? "plan" : "agent",
   } as const;
-  // Agents sometimes search the workspace's parent too; map it to /tmp so the
-  // recording host's temp layout stays out of the fixture.
+  // Agents search parent directories too; normalize the recording host's temp layout.
   const replacements: ReadonlyArray<readonly [string, string]> = [
     [input.cwd, input.transcriptCwd ?? `/tmp/cursor-replay-${input.scenario}`],
     [input.cwd.slice(0, input.cwd.lastIndexOf("/")), "/tmp"],
@@ -765,10 +801,7 @@ export const recordCursorAgentSdkReplayTranscript = Effect.fn(
     }
   };
 
-  // In a mid-tool interrupt recording, frames after the first tool-call-started
-  // are held until run.cancel is recorded, so the cancel directly follows its
-  // trigger. Holding appends rather than waits: updates can arrive while send
-  // is still flushing them, and blocking there would never return.
+  // Hold frames after tool-call-started until run.cancel. Append without waiting because updates can arrive during send.
   let awaitingToolStart = input.interruptAfterToolStart === true;
   let heldUntilCancel: Array<ProviderReplayEntry> | undefined;
 
@@ -847,10 +880,7 @@ export const recordCursorAgentSdkReplayTranscript = Effect.fn(
     }
     if (input.interruptAfterToolStart === true) {
       yield* awaitSignal(toolStarted, "Cursor SDK tool-call-started before interrupt");
-      // Cancelling synchronously from the SDK's tool-call-started callback
-      // leaves an unhandled AbortError inside @cursor/sdk that kills the
-      // process (reproduced on 1.0.22, 1.0.31, and 1.0.32). Cancelling from a
-      // later timer was clean in the same probes; 10 ms is that deferral.
+      // Synchronous tool-call-started cancellation crashes @cursor/sdk with AbortError (1.0.22, 1.0.31, 1.0.32); defer 10 ms.
       yield* Effect.sleep("10 millis");
       const cancelling = yield* run.cancel.pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.succeed(cancelSent, undefined);

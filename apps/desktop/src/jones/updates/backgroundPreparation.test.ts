@@ -305,6 +305,26 @@ describe("JonesBackgroundPreparation", () => {
     });
   });
 
+  it("retains referenced handles with hourly backoff until cleanup is proved", async () => {
+    const handle = "9".repeat(64);
+    const h = harness({ enabled: true, unreclaimed: [handle] });
+    h.reclaim.result = { status: "referenced" };
+    await h.background.start();
+    await h.background.idle();
+    expect(h.store.record?.unreclaimed).toEqual([handle]);
+    await h.background.tick();
+    expect(h.reclaims).toEqual([handle]);
+    h.clock.now += 60 * 60_000;
+    await h.background.tick();
+    expect(h.reclaims).toEqual([handle, handle]);
+    expect(h.store.record?.unreclaimed).toEqual([handle]);
+    h.reclaim.result = { status: "absent" };
+    h.clock.now += 60 * 60_000;
+    await h.background.tick();
+    expect(h.store.record?.unreclaimed).toEqual([]);
+    h.background.close();
+  });
+
   it("does not remove payloads while an install or reconciliation holds the controller", async () => {
     const h = harness({ enabled: true, unreclaimed: ["9".repeat(64)] });
     h.controller.preparationHold = { kind: "install" };
@@ -508,4 +528,39 @@ describe("fileBackgroundPreparationStore", () => {
     await expect(store.read()).rejects.toThrow("bounded file");
     await expect(store.write({ enabled: true, unreclaimed: ["../escape"] })).rejects.toThrow();
   });
+});
+
+it("keeps a stopped target suppressed after check and scheduler recreation, while a different source can prepare", async () => {
+  const controller = new FakeController();
+  const { store } = memoryStore({ enabled: true, unreclaimed: [] });
+  let clock = 1_000_000;
+  const suppressed = vi.fn(async (source: string) => source === build(1).source);
+  const create = () =>
+    new JonesBackgroundPreparation({
+      controller,
+      store,
+      suppressed,
+      now: () => clock,
+      settleMs: 0,
+      reclaim: async () => ({ status: "absent" }),
+    });
+  let background = create();
+  controller.published = build(1);
+  await background.start();
+  await background.check();
+  await background.idle();
+  expect(controller.downloads).toEqual([]);
+  background.close();
+  background = create();
+  clock += SETTLE;
+  await background.start();
+  await background.check();
+  await background.idle();
+  expect(controller.downloads).toEqual([]);
+  controller.published = build(2);
+  await background.check();
+  await background.idle();
+  expect(controller.downloads).toEqual([build(2).version]);
+  expect(suppressed).toHaveBeenCalledWith(build(1).source);
+  background.close();
 });

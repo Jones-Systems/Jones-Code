@@ -17,9 +17,7 @@ import {
   isServerUpdateFailureDismissed,
   isVersionMismatchDismissed,
   manualServerUpdateCommand,
-  resolveServerConfigVersionMismatch,
   resolveServerConfigClientUpdateNotice,
-  resolveServerSelfUpdateCapability,
   resolveVersionMismatch,
 } from "./versionSkew";
 

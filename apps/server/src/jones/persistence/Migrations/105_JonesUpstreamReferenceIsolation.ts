@@ -2,12 +2,9 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { ConstraintError, SqlError } from "effect/sql/SqlError";
 
-// Earlier Jones tables declared foreign keys to upstream tables. With
-// foreign_keys on, those keys reject upstream deletes and table rebuilds, such
-// as settled-effect pruning. Each table is rebuilt with the same columns, rows,
-// rowids, indexes and triggers; only the upstream references are removed.
-// References between Jones tables remain. Callers already verify the upstream
-// row in the transaction that writes the Jones row.
+// Old Jones foreign keys can reject upstream deletes/rebuilds when foreign_keys is enabled.
+// Rebuild with identical columns, rows, rowids, indexes and triggers, removing only upstream references.
+// Keep Jones-to-Jones references; writers already verify the upstream row in their transaction.
 const rebuilt = [
   [
     "workstreams_native_enrollments",
@@ -108,15 +105,13 @@ export default Effect.gen(function* () {
         ({ table: target }) => !target.startsWith("jones_") && target !== "native_creation_intents",
       )
     ) {
-      return yield* Effect.fail(
-        new SqlError({
-          reason: new ConstraintError({
-            cause: undefined,
-            operation: "Jones migration 105 self-check",
-            message: "Jones migration 105 did not preserve rows or isolate upstream references.",
-          }),
+      return yield* new SqlError({
+        reason: new ConstraintError({
+          cause: undefined,
+          operation: "Jones migration 105 self-check",
+          message: "Jones migration 105 did not preserve rows or isolate upstream references.",
         }),
-      );
+      });
     }
   }
 });

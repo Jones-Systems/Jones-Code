@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
@@ -121,8 +122,10 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
             '{"models":["shared"]}\n',
           );
           yield* writeTextFile(path.join(sharedHome, "auth.json"), '{"shared":true}\n');
+          yield* writeTextFile(path.join(sharedHome, "auth.lock"), "");
           yield* fileSystem.makeDirectory(shadowHome, { recursive: true });
           yield* writeTextFile(path.join(shadowHome, "auth.json"), '{"shadow":true}\n');
+          yield* writeTextFile(path.join(shadowHome, "auth.lock"), "");
           yield* fileSystem.symlink(
             path.join(sharedHome, "models_cache.json"),
             path.join(shadowHome, "models_cache.json"),
@@ -149,6 +152,9 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
             .readLink(path.join(shadowHome, "auth.json"))
             .pipe(Effect.result);
           const authContents = yield* fileSystem.readFileString(path.join(shadowHome, "auth.json"));
+          const authLockLinkResult = yield* fileSystem
+            .readLink(path.join(shadowHome, "auth.lock"))
+            .pipe(Effect.result);
 
           expect(sessionsTarget).toBe(path.join(sharedHome, "sessions"));
           expect(configTarget).toBe(path.join(sharedHome, "config.toml"));
@@ -156,6 +162,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           expect(modelsCacheExists).toBe(false);
           expect(authLinkResult._tag).toBe("Failure");
           expect(authContents).toContain("shadow");
+          expect(authLockLinkResult._tag).toBe("Failure");
         }),
     );
 
@@ -229,7 +236,41 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
     );
 
     it.effect.skipIf(!symlinksSupported)(
-      "accepts Codex-created shadow-local runtime directories",
+      "shares local thread writer locks once no writer still holds one",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+          const shadowHome = path.join(shadowRoot, "shadow");
+          const shadowLocks = path.join(shadowHome, "thread-writer-locks");
+          const threadLock = path.join(shadowLocks, "019a0000-0000-7000-8000-000000000000.lock");
+
+          yield* writeTextFile(path.join(shadowLocks, ".coordination.lock"), "");
+          yield* writeTextFile(path.join(shadowLocks, ".DS_Store"), "");
+          yield* writeTextFile(threadLock, "");
+
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({
+              homePath: sharedHome,
+              shadowHomePath: shadowHome,
+            }),
+          );
+
+          yield* materializeCodexShadowHome(layout);
+          expect(yield* fileSystem.exists(threadLock)).toBe(true);
+
+          yield* fileSystem.remove(threadLock);
+          yield* materializeCodexShadowHome(layout);
+          expect(yield* fileSystem.readLink(shadowLocks)).toBe(
+            path.join(sharedHome, "thread-writer-locks"),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "accepts Codex-created local runtime files and directories",
       () =>
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
@@ -246,6 +287,10 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           yield* fileSystem.makeDirectory(path.join(shadowHome, "log"), { recursive: true });
           yield* fileSystem.makeDirectory(path.join(shadowHome, "memories"), { recursive: true });
           yield* fileSystem.makeDirectory(path.join(shadowHome, "tmp"), { recursive: true });
+          const localMemoryLock = path.join(shadowHome, "memories.lock");
+          const sharedMemoryLock = path.join(sharedHome, "memories.lock");
+          yield* writeTextFile(localMemoryLock, "profile-memory-lock");
+          const localLockInode = Option.getOrThrow((yield* fileSystem.stat(localMemoryLock)).ino);
 
           const layout = yield* resolveCodexHomeLayout(
             decodeCodexSettings({
@@ -254,6 +299,11 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
             }),
           );
 
+          yield* materializeCodexShadowHome(layout);
+
+          yield* writeTextFile(sharedMemoryLock, "shared-memory-lock");
+          const sharedLockInode = Option.getOrThrow((yield* fileSystem.stat(sharedMemoryLock)).ino);
+          yield* materializeCodexShadowHome(layout);
           yield* materializeCodexShadowHome(layout);
 
           const configTarget = yield* fileSystem.readLink(path.join(shadowHome, "config.toml"));
@@ -271,6 +321,14 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           expect(logLinkResult._tag).toBe("Failure");
           expect(memoriesLinkResult._tag).toBe("Failure");
           expect(tmpLinkResult._tag).toBe("Failure");
+          expect(yield* fileSystem.readFileString(localMemoryLock)).toBe("profile-memory-lock");
+          expect(yield* fileSystem.readFileString(sharedMemoryLock)).toBe("shared-memory-lock");
+          expect(Option.getOrThrow((yield* fileSystem.stat(localMemoryLock)).ino)).toBe(
+            localLockInode,
+          );
+          expect(Option.getOrThrow((yield* fileSystem.stat(sharedMemoryLock)).ino)).toBe(
+            sharedLockInode,
+          );
         }),
     );
 

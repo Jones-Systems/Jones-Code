@@ -1,6 +1,7 @@
 import type { Tool } from "effect/ai";
 import { claimForCaller } from "../../../jones/linkedThreads/launch.ts";
 import * as ClientLaunch from "../../../jones/mcp/clientLaunch/ClientLaunchService.ts";
+import { inheritsLinkedDelegationModes } from "../../../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 import {
   CommandId,
   MessageId,
@@ -8,38 +9,50 @@ import {
   OrchestratorMcpFailure,
   ProjectId,
 } from "@t3tools/contracts";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
+import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
+import * as CommandReceipts from "../../../orchestration-v2/CommandReceiptStore.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
+import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
+import { mutateProjectWithClone } from "../../../project/ProjectMutation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import * as DateTime from "effect/DateTime";
+import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
 
+const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
+
 function projectFailure(error: Project.ProjectServiceError) {
   if (error._tag === "ProjectOperationError") return unavailable();
   const message =
-    error._tag === "ProjectNotFoundError"
-      ? "The project was not found."
-      : error._tag === "ProjectConflictError"
-        ? "The workspace is already registered to a project."
-        : "The project is not empty; force=true is required to delete it.";
+    error._tag === "ProjectInvalidError"
+      ? error.detail
+      : error._tag === "ProjectNotFoundError"
+        ? "The project was not found."
+        : error._tag === "ProjectConflictError"
+          ? "The workspace is already registered to a project."
+          : "The project is not empty; force=true is required to delete it.";
   return new OrchestratorMcpFailure({ code: "invalid_request", message });
 }
 
-/**
- * Without this check a launch could point an agent at any directory on the machine.
- */
+/** Require project worktrees so launches cannot target arbitrary host directories. */
 const assertProjectWorktree = Effect.fn("mcp.assertProjectWorktree")(function* (
   workspaceRoot: string,
   worktreePath: string,
@@ -59,22 +72,68 @@ const assertProjectWorktree = Effect.fn("mcp.assertProjectWorktree")(function* (
     });
 });
 
+/** A fixed-length id, so a long key fits in the scratch folder name derived from it. */
+const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
+  namespace: string,
+  key: string,
+) {
+  const crypto = yield* Digest.Digest;
+  // @effect-diagnostics-next-line preferSchemaOverJson:off - a JSON pair keeps the caller apart from the key.
+  const bytes = new TextEncoder().encode(JSON.stringify([namespace, key]));
+  const digest = yield* crypto.digest(Digest.sha256, bytes).pipe(Effect.mapError(unavailable));
+  return CommandId.make(`mcp:launch:${Hex.encode(digest)}`);
+});
+
 const access = Effect.gen(function* () {
   yield* readCaller();
   return yield* Project.ProjectService;
 });
+/**
+ * The id a linked keyed launch derives from the caller's namespace and key:
+ * upstream's `launchCommandId`, so the id stays within what thread-id
+ * consumers accept.
+ */
+export const linkedLaunchCommandId = launchCommandId;
+
+/**
+ * The id earlier builds derived for a linked keyed launch. It carries
+ * percent-encoded separators and, for a client or forwarded key, runs to
+ * about 127 characters, so it is never issued for a new launch; it is only
+ * recognised on retry.
+ */
+export const legacyLinkedLaunchCommandId = (namespace: string, key: string) =>
+  CommandId.make(`mcp:launch:${encodeURIComponent(namespace)}:${encodeURIComponent(key)}`);
+
+/**
+ * Resolves the command id of a linked keyed launch. A retry of a launch that
+ * an earlier build accepted under the legacy id keeps that id, so the launch
+ * service replays it instead of creating a second thread. Every other key
+ * uses the hashed id.
+ */
+const linkedKeyedLaunchCommandId = Effect.fn("mcp.linkedKeyedLaunchCommandId")(function* (
+  namespace: string,
+  key: string,
+) {
+  const legacy = legacyLinkedLaunchCommandId(namespace, key);
+  const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+  // A failed read stops the launch: guessing could create a duplicate thread.
+  const accepted = yield* receipts.getByCommandId(legacy).pipe(Effect.mapError(unavailable));
+  return Option.isSome(accepted) ? legacy : yield* linkedLaunchCommandId(namespace, key);
+});
+
 export const launchThread = Effect.fn("mcp.launchThread")(function* (
   input: Tool.Parameters<typeof ProjectToolkit.tools.t3_thread_launch>,
   gate: McpToolAccess.ThreadStartGate,
 ) {
   const keyedCaller = input.clientRequestId === undefined ? undefined : yield* readCaller();
   const modes = yield* gate.start;
-  // Jones replay owns local keyed launches; linked launches retain upstream IDs and origin.
+  // Jones replay owns local keyed launches; linked keyed launches use upstream's hashed id
+  // below and keep their origin.
   if (
     keyedCaller !== undefined &&
     input.clientRequestId !== undefined &&
     modes.linkOrigin === undefined
-  ) {
+  )
     return yield* ClientLaunch.launch(
       { ...input, clientRequestId: input.clientRequestId },
       keyedCaller,
@@ -82,8 +141,8 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
       gate,
       input.delegatedFrom !== undefined,
     );
-  }
   const { runtimeMode, interactionMode, linkOrigin } = modes;
+
   const scope = yield* McpInvocationContext.McpInvocationContext;
   const context = yield* readCaller();
   const { caller } = context;
@@ -93,9 +152,7 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
   const commandId =
     input.clientRequestId === undefined
       ? yield* newCommandId()
-      : CommandId.make(
-          `mcp:launch:${encodeURIComponent(scope.requestNamespace)}:${encodeURIComponent(input.clientRequestId)}`,
-        );
+      : yield* linkedKeyedLaunchCommandId(scope.requestNamespace, input.clientRequestId);
   const threadId = ThreadId.make(commandId);
   const messageId = MessageId.make(commandId);
   const attachments = input.attachments ?? [];
@@ -131,7 +188,17 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
     Effect.mapError(unavailable),
     Effect.map(Option.getOrUndefined),
   );
-  if (input.workspaceStrategy?.type === "existing_worktree") {
+  // A retry of an accepted launch replays it: it keeps the model it started
+  // with and skips the checks only a new launch needs, which the project
+  // may no longer pass, such as a base branch deleted since.
+  const launched =
+    input.clientRequestId === undefined
+      ? null
+      : yield* context.threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+  const launchedModel =
+    launched === null || launched.deletedAt !== null ? undefined : launched.modelSelection;
+  const replaying = launchedModel !== undefined;
+  if (!replaying && input.workspaceStrategy?.type === "existing_worktree") {
     const project = yield* readProject;
     if (project === undefined)
       return yield* new OrchestratorMcpFailure({
@@ -140,10 +207,9 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
       });
     yield* assertProjectWorktree(project.workspaceRoot, input.workspaceStrategy.worktreePath);
   }
-  // A launch is accepted before its worktree is provisioned, so a base
-  // ref that cannot resolve is refused while the agent can still act on it.
+  // Reject unresolved base refs before accepting a launch; worktree provisioning happens later.
   const strategy = input.workspaceStrategy;
-  if (strategy?.type === "worktree")
+  if (!replaying && strategy?.type === "worktree")
     yield* ThreadLaunch.ThreadLaunchService.pipe(
       Effect.flatMap((launches) =>
         launches.checkWorktreeBase({ projectId, workspaceStrategy: strategy }),
@@ -164,7 +230,7 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
   // project's effective defaults, as the composer does. Its mode stays
   // within the ceiling it was approved with.
   const projectDefaults =
-    caller === undefined
+    caller === undefined && !replaying
       ? yield* ServerSettings.ServerSettingsService.pipe(
           Effect.flatMap((settings) => settings.getSettings),
           Effect.mapError(unavailable),
@@ -178,8 +244,20 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
       : undefined;
   const modelSelection =
     input.modelSelection ??
+    launchedModel ??
     caller?.modelSelection ??
-    projectDefaults?.defaultModelSelection ??
+    (projectDefaults
+      ? resolveNewThreadModelSelection({
+          defaultSelection: projectDefaults.defaultModelSelection,
+          fallbackSelection: projectDefaults.fallbackModelSelection,
+          providers: yield* ProviderRegistry.ProviderRegistry.pipe(
+            Effect.flatMap((registry) => registry.getProviders),
+          ),
+          settings: projectDefaults,
+          projectId,
+          now: DateTime.toEpochMillis(yield* DateTime.now),
+        }).selection
+      : null) ??
     undefined;
   if (modelSelection === undefined)
     return yield* new OrchestratorMcpFailure({
@@ -187,12 +265,27 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
       message:
         "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
     });
-  const startedRuntimeMode =
-    projectDefaults !== undefined && input.runtimeMode === undefined
+  let startedRuntimeMode =
+    projectDefaults !== undefined &&
+    input.runtimeMode === undefined &&
+    !inheritsLinkedDelegationModes({
+      delegatedFrom: input.delegatedFrom,
+      linkOrigin,
+      narrowedTo: scope.client?.narrowedTo,
+    })
       ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
           Effect.orElseSucceed(() => runtimeMode),
         )
       : runtimeMode;
+  if (!replaying) {
+    const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
+    startedRuntimeMode = yield* resolveRuntimeMode(startedRuntimeMode, input.runtimeMode, {
+      modelSelection,
+      supportedRuntimeModes: providers.find(
+        (provider) => provider.instanceId === modelSelection.instanceId,
+      )?.supportedRuntimeModes,
+    });
+  }
   const originLink = yield* claimForCaller(
     context,
     threadId,
@@ -237,6 +330,13 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
           message: error.message,
         });
       }
+      // The administrator's ceiling refuses the mode; say so rather than "unavailable".
+      if (error._tag === "ThreadLaunchError" && isAboveCeilingError(error.cause)) {
+        return new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: error.cause.message,
+        });
+      }
       return unavailable();
     }),
   );
@@ -245,6 +345,7 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
   return {
     ...(originLink === undefined ? {} : { originLink }),
     threadId: thread.id,
+    link: McpInvocationContext.threadLinkFor(scope, thread.id, thread.title),
     projectId: thread.projectId,
     modelSelection: thread.modelSelection,
     runId: run?.id ?? null,
@@ -252,14 +353,13 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
   };
 });
 
-const launchThreadHandler = McpToolAccess.startsOrContinuesThreads(
-  (input: Tool.Parameters<typeof ProjectToolkit.tools.t3_thread_launch>) => input,
-  launchThread,
-  "stamped",
-);
-
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
-  t3_thread_launch: launchThreadHandler,
+  t3_thread_launch: McpToolAccess.startsOrContinuesThreads(
+    (input: Tool.Parameters<typeof ProjectToolkit.tools.t3_thread_launch>) => input,
+    launchThread,
+    // The launched thread carries the caller's link, if it has one.
+    "stamped",
+  ),
   // Jones hook: capability checks precede every launch-state read or fence write.
   t3_thread_launch_lookup: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
@@ -299,8 +399,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
       Effect.gen(function* () {
         const projects = yield* Project.ProjectService;
         if (workspaceRoot === undefined) {
-          // Project creation records no model default (only an update does), so
-          // reject what this mode would otherwise drop silently.
+          // Only updates record model defaults; reject defaults that creation would silently drop.
           if (
             input.scripts !== undefined ||
             input.createWorkspaceRootIfMissing !== undefined ||
@@ -354,9 +453,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_project_delete: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
       const projects = yield* Project.ProjectService;
-      return yield* projects
-        .delete({ ...input, commandId: yield* newCommandId() })
-        .pipe(Effect.mapError(projectFailure));
+      const clones = yield* ProjectCloneTracker.ProjectCloneTracker;
+      return yield* mutateProjectWithClone(projects, clones, {
+        ...input,
+        type: "project.delete",
+        commandId: yield* newCommandId(),
+      }).pipe(Effect.mapError(projectFailure));
     }),
   ),
   t3_project_clone: McpToolAccess.writesEnvironment(

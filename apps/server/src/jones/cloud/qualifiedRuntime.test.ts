@@ -11,9 +11,11 @@ import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeUtil from "node:util";
+import * as NodeModule from "node:module";
 import * as NodeURL from "node:url";
 import {
   bundleFileSystem,
+  enrollQualifiedRuntime,
   currentQualifiedRuntimeBinding,
   decodeStagedQualifiedRuntime,
   QualifiedRuntimeBlockedError,
@@ -125,6 +127,11 @@ it("stages a fixed source and payload without changing live state or active runt
     assert.equal(staged.binding.activeSourceSha, "c".repeat(40));
     assert.equal(staged.receipt.sourceSha, "a".repeat(40));
     assert.lengthOf(validated, 1);
+    assert.isFalse(
+      (await NodeFSP.readdir(NodePath.join(base, "runtime", "versions"))).some((name) =>
+        name.startsWith(".jones-stage-"),
+      ),
+    );
     assert.equal(await NodeFSP.readFile(binding.dbPath, "utf8"), "untouched state");
     assert.equal(
       await NodeFSP.readFile(NodePath.join(base, "userdata", "settings.json"), "utf8"),
@@ -901,3 +908,233 @@ it("persists attempt timings exclusively and retains only the newest 64 owned re
     );
   });
 });
+
+it("reuses an enrolled immutable receipt while binding staging to the current source", async () => {
+  await fixture(async (base, payload, artifact) => {
+    const historical = await enrollQualifiedRuntime({
+      artifact: { ...artifact, installedSourceSha: "9".repeat(40) },
+      baseDir: base,
+      host: fixtureHost,
+      validate: async () => {},
+    });
+    const cache = NodePath.join(base, "runtime", "versions", artifact.version);
+    const receiptPath = NodePath.join(cache, QUALIFIED_RUNTIME_RECEIPT);
+    const before = await NodeFSP.readFile(receiptPath);
+    const inode = (await NodeFSP.stat(NodePath.join(cache, "t3"))).ino;
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
+    const stagedHandle = NodeCrypto.randomUUID();
+    const staged = await stageQualifiedRuntime({
+      stagedHandle,
+      artifact: { ...artifact, payloadDirectory: cache },
+      binding,
+      host: fixtureHost,
+      validate: async () => {},
+    });
+    assert.equal(staged.protocol, 2);
+    assert.deepEqual(decodeStagedQualifiedRuntime(staged), staged);
+    assert.equal(decodeStagedQualifiedRuntime({ ...staged, protocol: 1 }), undefined);
+    assert.deepEqual(staged.receipt, historical);
+    await NodeAssert.rejects(
+      stageQualifiedRuntime({
+        stagedHandle,
+        artifact: { ...artifact, version: "0.0.0-preview.20261002.102.1", runId: 102 },
+        binding,
+        host: fixtureHost,
+        validate: async () => {},
+      }),
+      (cause: unknown) =>
+        cause instanceof QualifiedRuntimeBlockedError && cause.reason === "occupied-cache",
+    );
+
+    assert.deepEqual(
+      await stageQualifiedRuntime({
+        stagedHandle,
+        artifact: { ...artifact, payloadDirectory: cache },
+        binding,
+        host: fixtureHost,
+        validate: async () => {},
+      }),
+      staged,
+    );
+    assert.deepEqual(await NodeFSP.readFile(receiptPath), before);
+    assert.equal((await NodeFSP.stat(NodePath.join(cache, "t3"))).ino, inode);
+    assert.deepEqual(
+      await verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost),
+      staged,
+    );
+    for (const changed of [
+      { artifactId: artifact.artifactId + 1 },
+      { installedSourceSha: "8".repeat(40) },
+    ]) {
+      await NodeAssert.rejects(
+        stageQualifiedRuntime({
+          artifact: { ...artifact, ...changed },
+          binding,
+          host: fixtureHost,
+          validate: async () => {},
+        }),
+      );
+    }
+    await NodeFSP.writeFile(NodePath.join(payload, "client", "index.html"), "changed input");
+    await NodeAssert.rejects(
+      stageQualifiedRuntime({ artifact, binding, host: fixtureHost, validate: async () => {} }),
+    );
+  });
+});
+
+it("rejects every changed immutable cache field and stale incoming binding", async () => {
+  await fixture(async (base, _payload, artifact) => {
+    await enrollQualifiedRuntime({
+      artifact: { ...artifact, installedSourceSha: "9".repeat(40) },
+      baseDir: base,
+      host: fixtureHost,
+      validate: async () => {},
+    });
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
+    const changes: ReadonlyArray<Partial<QualifiedRuntimeArtifact>> = [
+      { repository: "foreign" as QualifiedRuntimeArtifact["repository"] },
+      { channel: "foreign" as QualifiedRuntimeArtifact["channel"] },
+      { sourceSha: "8".repeat(40) },
+      { sourceTree: "8".repeat(40) },
+      { runId: artifact.runId + 1 },
+      { runAttempt: artifact.runAttempt + 1 },
+      { artifactId: artifact.artifactId + 1 },
+      { workflow: ".github/workflows/artifact-desktop-mac.yml" },
+      { artifactDigest: `sha256:${"8".repeat(64)}` },
+      { archiveSha256: "8".repeat(64) },
+      { platform: "darwin" },
+      { architecture: artifact.architecture === "arm64" ? "x64" : "arm64" },
+    ];
+    for (const changed of changes) {
+      await NodeAssert.rejects(
+        stageQualifiedRuntime({
+          artifact: { ...artifact, ...changed },
+          binding,
+          host: fixtureHost,
+          validate: async () => {
+            throw new Error("invalid candidate reached validation");
+          },
+        }),
+        (cause: unknown) => cause instanceof QualifiedRuntimeBlockedError,
+      );
+    }
+    for (const changed of [{ environmentId: "stale" }, { activeSourceSha: "8".repeat(40) }]) {
+      await NodeAssert.rejects(
+        stageQualifiedRuntime({
+          artifact,
+          binding: { ...binding, ...changed },
+          host: fixtureHost,
+          validate: async () => {},
+        }),
+        (cause: unknown) =>
+          cause instanceof QualifiedRuntimeBlockedError && cause.reason === "binding-mismatch",
+      );
+    }
+    const cache = NodePath.join(base, "runtime", "versions", artifact.version);
+    await NodeFSP.writeFile(NodePath.join(cache, "client", "index.html"), "changed cached payload");
+    await NodeAssert.rejects(
+      stageQualifiedRuntime({ artifact, binding, host: fixtureHost, validate: async () => {} }),
+      (cause: unknown) =>
+        cause instanceof QualifiedRuntimeBlockedError && cause.reason === "occupied-cache",
+    );
+  });
+});
+
+it.each([
+  ["stage", "validated"],
+  ["stage", "failed"],
+  ["stage", "cancelled"],
+  ["stage", "copy-failed"],
+  ["adopt", "validated"],
+  ["adopt", "failed"],
+  ["adopt", "copy-failed"],
+] as const)(
+  "preserves %s %s outcome when owned scratch removal fails",
+  async (operation, outcome) => {
+    await fixture(async (base, _payload, artifact) => {
+      const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
+      const primary = new Error(`${operation} ${outcome}`);
+      const cleanup = Object.assign(new Error("owned scratch removal refused"), {
+        code: "ENOTEMPTY",
+      });
+      const controller = new AbortController();
+      const versions = NodePath.join(base, "runtime", "versions");
+      const prefix = operation === "stage" ? ".jones-stage-" : ".jones-adopt-";
+      const prior = NodePath.join(versions, `${prefix}earlier`);
+      await NodeFSP.mkdir(prior);
+      await NodeFSP.writeFile(NodePath.join(prior, "keep"), "earlier invocation");
+      const removed: string[] = [];
+      const rm = NodeFS.promises.rm.bind(NodeFS.promises);
+      const removal = vi.spyOn(NodeFS.promises, "rm").mockImplementation(async (path, options) => {
+        if (typeof path === "string" && NodePath.basename(path).startsWith(prefix)) {
+          removed.push(path);
+          throw cleanup;
+        }
+        return rm(path, options);
+      });
+      const cp = NodeFS.promises.cp.bind(NodeFS.promises);
+      const copy = vi.spyOn(NodeFS.promises, "cp").mockImplementation(async (...args) => {
+        if (outcome === "copy-failed") throw primary;
+        return cp(...args);
+      });
+      const warning = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      NodeModule.syncBuiltinESMExports();
+      try {
+        const validate = async () => {
+          if (outcome === "failed") throw primary;
+          if (outcome === "cancelled") controller.abort(primary);
+        };
+        const pending =
+          operation === "stage"
+            ? stageQualifiedRuntime({
+                artifact,
+                binding,
+                host: fixtureHost,
+                validate,
+                options: { signal: controller.signal },
+              })
+            : enrollQualifiedRuntime({ artifact, baseDir: base, host: fixtureHost, validate });
+        if (outcome === "validated") {
+          const result = await pending;
+          const expected = "receipt" in result ? result.receipt : result;
+          assert.deepEqual(
+            await readQualifiedRuntimeReceipt(base, artifact.version, fixtureHost),
+            expected,
+          );
+          if ("stagedHandle" in result) {
+            assert.deepEqual(
+              await verifyStagedQualifiedRuntime(base, baseline, result.stagedHandle, fixtureHost),
+              result,
+            );
+          }
+        } else {
+          await NodeAssert.rejects(pending, (cause) => cause === primary);
+          await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(versions, artifact.version)), {
+            code: "ENOENT",
+          });
+        }
+        assert.lengthOf(removed, 1);
+        assert.equal(NodePath.dirname(removed[0]!), versions);
+        assert.notEqual(removed[0], prior);
+        assert.equal(
+          await NodeFSP.readFile(NodePath.join(prior, "keep"), "utf8"),
+          "earlier invocation",
+        );
+        assert.isTrue(
+          warning.mock.calls.some(
+            (call) =>
+              typeof call[0] === "string" &&
+              call[0].includes("Qualified runtime scratch cleanup failed; outcome preserved.") &&
+              call[0].includes(JSON.stringify({ path: removed[0], cause: cleanup.message })),
+          ),
+        );
+        assert.isTrue((await NodeFSP.lstat(removed[0]!)).isDirectory());
+      } finally {
+        removal.mockRestore();
+        copy.mockRestore();
+        warning.mockRestore();
+        NodeModule.syncBuiltinESMExports();
+      }
+    });
+  },
+);

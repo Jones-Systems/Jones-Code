@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   deleted: vi.fn(),
   download: vi.fn(),
   copy: vi.fn(),
+  write: vi.fn(),
   share: vi.fn(),
   shareFromSource: vi.fn(),
   available: vi.fn(),
@@ -47,6 +48,9 @@ vi.mock("expo-file-system", () => {
 
   class File {
     static downloadFileAsync = mocks.download;
+    write(bytes: Uint8Array): void {
+      mocks.write(bytes);
+    }
     readonly uri: string;
 
     constructor(source: Directory | string, name?: string) {
@@ -72,6 +76,7 @@ vi.mock("./uuid", () => ({ uuidv4: mocks.uuid }));
 vi.mock("./shareFileFromSource", () => ({ shareFileFromSource: mocks.shareFromSource }));
 
 import {
+  shareGeneratedAttachment,
   downloadAndShareAttachment,
   downloadAttachmentForPreview,
   shareLocalAttachment,
@@ -92,6 +97,7 @@ beforeEach(() => {
   mocks.deleted.mockReset();
   mocks.download.mockReset();
   mocks.copy.mockReset();
+  mocks.write.mockReset();
   mocks.share.mockReset();
   mocks.shareFromSource.mockReset();
   mocks.available.mockReset();
@@ -342,5 +348,67 @@ describe("attachment preview files", () => {
     await task;
     expect(mocks.share).not.toHaveBeenCalled();
     expect(mocks.deleted).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("shareGeneratedAttachment", () => {
+  it("writes exact completed bytes and uses the original native handoff source", async () => {
+    const bytes = new TextEncoder().encode('{"name":"雪"}\r\n{"complete":true}\n');
+    await shareGeneratedAttachment({
+      bytes,
+      attachment: { name: "workstreams.ndjson", mimeType: "application/x-ndjson" },
+      signal: new AbortController().signal,
+      sourceIdentifier: "workstreams-export",
+    });
+    expect(mocks.write).toHaveBeenCalledWith(bytes);
+    expect(mocks.download).not.toHaveBeenCalled();
+    expect(mocks.shareFromSource).toHaveBeenCalledWith(
+      expect.stringMatching(/workstreams.ndjson$/),
+      { dialogTitle: "workstreams.ndjson", mimeType: "application/x-ndjson" },
+      "workstreams-export",
+    );
+    // The receiving app can keep reading after its chooser returns.
+    expect(mocks.deleted).not.toHaveBeenCalled();
+  });
+  it("does not create or write a file when sharing is unavailable", async () => {
+    mocks.available.mockResolvedValue(false);
+    await expect(
+      shareGeneratedAttachment({
+        bytes: new Uint8Array([1]),
+        attachment: input.attachment,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBe(false);
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.uuid).not.toHaveBeenCalled();
+  });
+  it("checks cancellation after sharing availability before allocating a file", async () => {
+    const abort = new AbortController();
+    mocks.available.mockImplementation(async () => {
+      abort.abort();
+      return true;
+    });
+    await shareGeneratedAttachment({
+      bytes: new Uint8Array([1]),
+      attachment: input.attachment,
+      signal: abort.signal,
+    });
+    expect(mocks.uuid).not.toHaveBeenCalled();
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+  it("removes only its unshared file after a write failure and opens no share sheet", async () => {
+    mocks.write.mockImplementation(() => {
+      throw new Error("write-failed");
+    });
+    await expect(
+      shareGeneratedAttachment({
+        bytes: new Uint8Array([1]),
+        attachment: input.attachment,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("write-failed");
+    expect(mocks.deleted).toHaveBeenCalledTimes(1);
+    expect(mocks.share).not.toHaveBeenCalled();
+    expect(mocks.shareFromSource).not.toHaveBeenCalled();
   });
 });

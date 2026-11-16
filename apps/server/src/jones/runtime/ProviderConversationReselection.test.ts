@@ -25,7 +25,6 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Persistence from "../../persistence/Sqlite.ts";
@@ -214,10 +213,13 @@ const fixture = Effect.fnUntraced(function* (attachmentAvailable = true) {
   };
   const manager = Layer.succeed(ProviderSessions.ProviderSessionManagerV2, {
     isMcpCallerAttached: () => Effect.succeed(false),
+    releaseUnlessBusy: () => Effect.die("Unexpected releaseUnlessBusy"),
+    otherWorkingThreads: () => Effect.die("Unexpected otherWorkingThreads"),
+    subscribePromptSuggestion: () => Stream.empty,
     shutdown: Effect.void,
     isLive: () => Effect.die("unexpected_isLive"),
     open: () => Effect.die("unexpected_open"),
-    get: () => Effect.succeed(Option.none()),
+    get: () => Effect.succeedNone,
     close: () => Effect.die("unexpected_close"),
     closeInstance: () => Effect.die("unexpected_close_instance"),
     release: () => Effect.die("unexpected_release"),
@@ -297,6 +299,14 @@ it.effect(
           "providerThreads",
           "runs",
         ]);
+        const selectedOld = before.providerThreads.find((row) => row.id === f.old.id);
+        if (selectedOld === undefined)
+          return yield* Effect.die("Missing original selected provider metadata");
+        assert.deepEqual(
+          (yield* f.projections.getRuntimeRecoveryProjection(f.input.threadId)).providerThreads,
+          [selectedOld],
+        );
+        assert.deepEqual(yield* f.projections.getRecoveryThreadIds("runtime"), []);
         const result = yield* service.reselect(
           {
             ...f.input,
@@ -318,6 +328,11 @@ it.effect(
         const updated = after.providerThreads.find((row) => row.id === f.target.id)!;
         assert.deepEqual({ ...updated, updatedAt: f.target.updatedAt }, f.target);
         assert.deepEqual(after.runs, before.runs);
+        assert.deepEqual(
+          (yield* f.projections.getRuntimeRecoveryProjection(f.input.threadId)).providerThreads,
+          [updated],
+        );
+        assert.deepEqual(yield* f.projections.getRecoveryThreadIds("runtime"), []);
         const events = yield* (yield* EventStore.EventStoreV2)
           .readByCommandId({ commandId: result.commandId })
           .pipe(Stream.runCollect);

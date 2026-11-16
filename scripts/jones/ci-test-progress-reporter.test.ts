@@ -6,7 +6,13 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import type { TestModule, TestSpecification, Vitest } from "vite-plus/test/node";
+import type {
+  ReportedHookContext,
+  TestCase,
+  TestModule,
+  TestSpecification,
+  Vitest,
+} from "vite-plus/test/node";
 
 import CiTestProgressReporter from "./ci-test-progress-reporter.ts";
 import {
@@ -51,6 +57,25 @@ function testModule(path: string, state = "passed", errors: { message: string }[
       environmentSetupDuration: 1,
     }),
   } as unknown as TestModule;
+}
+
+function testCase(
+  path: string,
+  name: string,
+  state = "passed",
+  errors: { message: string }[] = [],
+) {
+  return {
+    type: "test",
+    id: `${path}#${name}`,
+    fullName: name,
+    module: testModule(path),
+    result: () => ({ state, errors }),
+  } as unknown as TestCase;
+}
+
+function hookOn(entity: TestCase) {
+  return { name: "beforeEach", entity } as unknown as ReportedHookContext;
 }
 
 interface SetupOptions {
@@ -268,5 +293,56 @@ describe("CI progress reporter", () => {
       /serially/,
     );
     expect(NodeFS.readdirSync(root)).toEqual([]);
+  });
+
+  it("keeps per-case and per-hook events out of the log when capture is off", () => {
+    const { reporter, root, specs, log } = setup({ capture: false });
+    const test = testCase("src/first.test.ts", "works");
+    reporter.onTestRunStart(specs);
+    reporter.onTestCaseReady(test);
+    reporter.onHookStart(hookOn(test));
+    reporter.onHookEnd(hookOn(test));
+    reporter.onTestCaseResult(test);
+
+    expect(log.mock.calls.map(([line]) => JSON.parse(line).event)).toEqual(["run-start"]);
+    expect(NodeFS.readdirSync(root)).toEqual([]);
+  });
+
+  it("writes per-case and per-hook events to a separate file and logs only failed cases", () => {
+    const { reporter, root, path, specs, log } = setup();
+    const passing = testCase("src/first.test.ts", "works");
+    const failing = testCase("src/first.test.ts", "breaks", "failed", [{ message: "boom" }]);
+    reporter.onTestRunStart(specs);
+    reporter.onTestCaseReady(passing);
+    reporter.onHookStart(hookOn(passing));
+    reporter.onHookEnd(hookOn(passing));
+    reporter.onTestCaseResult(passing);
+    reporter.onTestCaseReady(failing);
+    reporter.onTestCaseResult(failing);
+    reporter.onTestRunEnd([], [], "failed");
+
+    expect(log.mock.calls.map(([line]) => JSON.parse(line).event)).toEqual([
+      "run-start",
+      "case-result",
+      "run-end",
+    ]);
+    expect(JSON.parse(log.mock.calls[1]![0])).toMatchObject({
+      entityName: "breaks",
+      state: "failed",
+      errors: ["boom"],
+    });
+    const caseEvents = lines(NodePath.join(root, "server-case-events.ndjson"));
+    expect(caseEvents.map((event) => event.event)).toEqual([
+      "case-ready",
+      "hook-start",
+      "hook-end",
+      "case-result",
+      "case-ready",
+      "case-result",
+    ]);
+    expect(caseEvents[1]).toMatchObject({ hookName: "beforeEach", entityName: "works" });
+    // Aggregation reads only the timings file, which never carries case events.
+    expect(() => parseCapture(NodeFS.readFileSync(path, "utf8"))).not.toThrow();
+    expect(NodeFS.readFileSync(path, "utf8")).not.toContain("case-ready");
   });
 });

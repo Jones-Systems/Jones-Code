@@ -1,3 +1,4 @@
+import { captureFollowUpModelSelection } from "../jones/threadConfiguration/modelSelection";
 import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentNotRegisteredError } from "@t3tools/client-runtime/connection";
 import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime/errors";
@@ -329,6 +330,8 @@ describe("thread outbox", () => {
       },
       runtimeMode: "approval-required",
       interactionMode: "plan",
+      dispatchMode: "queue",
+      compactBeforeSend: true,
     } satisfies QueuedThreadMessage;
 
     expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(selectedMessage))).toEqual(
@@ -346,6 +349,57 @@ describe("thread outbox", () => {
       interactionMode: selectedMessage.interactionMode,
     });
   });
+
+  it.each(["inherited", "explicit", "legacy"] as const)(
+    "preserves %s selection intent across offline persistence and changed thread settings",
+    (origin) => {
+      const saved = {
+        instanceId: ProviderInstanceId.make("account-before"),
+        model: "original-model",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      };
+      const current = {
+        instanceId: ProviderInstanceId.make("account-after"),
+        model: "replacement-model",
+        options: [{ id: "reasoningEffort", value: "low" }],
+      };
+      const selection =
+        origin === "legacy"
+          ? { modelSelection: saved }
+          : captureFollowUpModelSelection(origin === "explicit" ? saved : undefined, saved);
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({ messageId: origin, createdAt: "2026-10-26T12:00:00.000Z" }),
+        ...selection,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        dispatchMode: "queue",
+      };
+      const stored = JSON.parse(JSON.stringify(encodeQueuedThreadMessage(message)));
+      expect(stored.schemaVersion).toBe(3);
+      const reloaded = decodeQueuedThreadMessage(stored);
+      expect(reloaded).toEqual(message);
+      expect(reloaded.modelSelectionExplicit).toBe(
+        origin === "legacy" ? undefined : origin === "explicit",
+      );
+      const settings = resolveQueuedThreadSettings(
+        reloaded,
+        {
+          modelSelection: current,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        },
+        [
+          { instanceId: saved.instanceId, showInteractionModeToggle: true },
+          { instanceId: current.instanceId, showInteractionModeToggle: false },
+        ],
+      );
+      expect(settings).toEqual({
+        modelSelection: origin === "inherited" ? current : saved,
+        runtimeMode: "approval-required",
+        interactionMode: origin === "inherited" ? "default" : "plan",
+      });
+    },
+  );
 
   it("normalizes queued plan mode against the queued provider, not the current thread", () => {
     const codex = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
@@ -1101,7 +1155,6 @@ describe("thread outbox", () => {
         threadExists: false,
         shellStatus: "synchronizing",
         environmentConnected: true,
-        threadBusy: false,
       }),
     ).toBe("wait");
     expect(
@@ -1110,7 +1163,6 @@ describe("thread outbox", () => {
         threadExists: false,
         shellStatus: "live",
         environmentConnected: true,
-        threadBusy: false,
       }),
     ).toBe("remove");
     expect(
@@ -1119,9 +1171,20 @@ describe("thread outbox", () => {
         threadExists: true,
         shellStatus: "live",
         environmentConnected: true,
-        threadBusy: false,
       }),
     ).toBe("send");
+  });
+
+  it("removes a missing-thread message only after a settled family read when idle children can be omitted", () => {
+    const missing = {
+      isCreation: false,
+      threadExists: false,
+      shellStatus: "live",
+      environmentConnected: true,
+    } as const;
+    expect(resolveThreadOutboxDeliveryAction({ ...missing, familyRead: "pending" })).toBe("wait");
+    expect(resolveThreadOutboxDeliveryAction({ ...missing, familyRead: "failed" })).toBe("wait");
+    expect(resolveThreadOutboxDeliveryAction({ ...missing, familyRead: "settled" })).toBe("remove");
   });
 
   it("sends existing-thread messages whenever connected so queued messages can steer", () => {
@@ -1131,7 +1194,6 @@ describe("thread outbox", () => {
         threadExists: true,
         shellStatus: "live",
         environmentConnected: true,
-        threadBusy: true,
       }),
     ).toBe("send");
     expect(
@@ -1140,7 +1202,6 @@ describe("thread outbox", () => {
         threadExists: true,
         shellStatus: "live",
         environmentConnected: false,
-        threadBusy: true,
       }),
     ).toBe("wait");
   });
@@ -1152,7 +1213,6 @@ describe("thread outbox", () => {
         threadExists: false,
         shellStatus: "cached",
         environmentConnected: false,
-        threadBusy: false,
       }),
     ).toBe("wait");
     expect(
@@ -1161,7 +1221,6 @@ describe("thread outbox", () => {
         threadExists: false,
         shellStatus: "synchronizing",
         environmentConnected: true,
-        threadBusy: false,
       }),
     ).toBe("wait");
     expect(
@@ -1170,7 +1229,6 @@ describe("thread outbox", () => {
         threadExists: false,
         shellStatus: "live",
         environmentConnected: true,
-        threadBusy: false,
       }),
     ).toBe("send");
     expect(
@@ -1179,7 +1237,6 @@ describe("thread outbox", () => {
         threadExists: true,
         shellStatus: "live",
         environmentConnected: true,
-        threadBusy: true,
       }),
     ).toBe("remove");
   });

@@ -7,7 +7,6 @@ import { Atom } from "effect/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { createEnvironmentRpcCommand, createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
 
-/** Links to other environments, kept by one environment's server. */
 export function createPeerLinkEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
@@ -31,10 +30,21 @@ export function createPeerLinkEnvironmentAtoms<R, E>(
       onSuccess: ({ environmentId }, registry) =>
         Effect.sync(() => registry.refresh(list({ environmentId, input: {} }))),
     }),
+    // An agent's link card. One answer per card at a time.
+    answerRequest: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:peer-links:answer-request",
+      tag: WS_METHODS.peerLinksAnswerRequest,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, input.turnItemId]),
+      },
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => registry.refresh(list({ environmentId, input: {} }))),
+    }),
   };
 }
 
-/** Links expire after 30 days and cannot be renewed yet, so warn this long before. */
 const EXPIRY_WARNING_DAYS = 5;
 
 export type PeerLinkHealth =
@@ -44,8 +54,6 @@ export type PeerLinkHealth =
   | { readonly kind: "expired" };
 
 /**
- * What a link's row says about it. `expiresInDays` is set only inside the
- * warning window, while the link still works but has to be renewed soon.
  * Listing only checks that the peer answers, so a link whose last call failed
  * (the peer revoked it, say) is `failing` with the recorded reason; the next
  * successful call clears it.

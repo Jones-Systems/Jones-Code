@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Direct lstat distinguishes ENOENT from unreadable targets.
+import * as RetirementGate from "../workspaceRetirement/RemovalGate.ts";
+import { RetirementError } from "../workspaceRetirement/Receipts.ts";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import type { GitCommandError } from "@t3tools/contracts";
@@ -79,6 +81,7 @@ export interface DeletionWorktreeRemovalProducer {
     start: DeletionWorktreeRemovalStartV1,
     startOrdinal: number,
     revalidateStart: DeletionWorktreeStartRevalidation,
+    checkRetainedStart: DeletionWorktreeStartRevalidation,
   ) => Effect.Effect<
     DeletionWorktreeRemovalObservationV1,
     DeletionWorktreeRemovalPreconditionError
@@ -154,9 +157,11 @@ const assertOrdinal = (startOrdinal: number) =>
     : Effect.fail(
         new DeletionWorktreeRemovalPreconditionError({ reason: "invalid_start_ordinal" }),
       );
+const decodeDeletionWorktreeRemovalStartV1 = Schema.decodeEffect(DeletionWorktreeRemovalStartV1);
 
 /** Reports observations only. Durable start, consent, reservation and outcome qualification belong to EventSink. */
 const makeDeletionWorktreeRemoval = Effect.gen(function* () {
+  const retirement = yield* RetirementGate.RemovalGate;
   const filesystem = yield* DeletionWorktreeFilesystem;
   const attemptedStarts = new Set<string>();
   const git = yield* DeletionWorktreeGit;
@@ -215,8 +220,8 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
             entries,
           } as const);
     },
-    Effect.catch(() =>
-      Effect.succeed({ status: "unavailable", reason: "registration_read_failed" } as const),
+    Effect.orElseSucceed(
+      () => ({ status: "unavailable", reason: "registration_read_failed" }) as const,
     ),
     Effect.map((registration) => Object.freeze(registration)),
   );
@@ -254,10 +259,10 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
 
   const executeStarted: DeletionWorktreeRemovalProducer["executeStarted"] = Effect.fn(
     "DeletionWorktreeRemoval.executeStarted",
-  )(function* (original, startOrdinal, revalidateStart) {
+  )(function* (original, startOrdinal, revalidateStart, checkRetainedStart) {
     yield* assertOrdinal(startOrdinal);
     const start = frozenStart(
-      yield* Schema.decodeUnknownEffect(DeletionWorktreeRemovalStartV1)(original, {
+      yield* decodeDeletionWorktreeRemovalStartV1(original, {
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(
@@ -327,24 +332,24 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
         before,
         yield* inspectTarget(target),
       );
-    const operation = yield* git
-      .execute({
-        operation: "DeletionWorktreeRemoval.executeStarted",
-        cwd: target.projectRoot,
-        args: ["worktree", "remove", ...(target.force ? ["--force"] : []), "--", target.path],
-        timeoutMs: 30_000,
-        maxOutputBytes: 65_536,
-        appendTruncationMarker: true,
-        allowNonZeroExit: true,
-      })
+    const operation = yield* retirement
+      .remove(
+        start,
+        checkRetainedStart(start, startOrdinal).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RetirementError({
+                target: target.path,
+                reason: "recorded_start_revalidation_failed",
+                cause,
+              }),
+          ),
+        ),
+      )
       .pipe(
-        Effect.map((result): DeletionWorktreeRemovalObservationV1["operation"] => ({
-          kind: "executed",
-          exitCode: result.exitCode,
-          completion: result.stdoutTruncated || result.stderrTruncated ? "unknown" : "exited",
-        })),
-        Effect.catch(() =>
-          Effect.succeed({ kind: "executed", exitCode: null, completion: "unknown" } as const),
+        Effect.map((result) => ({ kind: "executed" as const, ...result })),
+        Effect.mapError(
+          (cause) => new DeletionWorktreeRemovalPreconditionError({ reason: cause.reason, cause }),
         ),
       );
     return yield* observation(start, startOrdinal, operation, before, yield* inspectTarget(target));
@@ -354,7 +359,7 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
   )(function* (original, startOrdinal) {
     yield* assertOrdinal(startOrdinal);
     const start = frozenStart(
-      yield* Schema.decodeUnknownEffect(DeletionWorktreeRemovalStartV1)(original, {
+      yield* decodeDeletionWorktreeRemovalStartV1(original, {
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(
@@ -457,6 +462,9 @@ export class QualifiedDeletionWorktreeRemoval extends Context.Service<
     >;
   }
 >()("t3/jones/cleanup/DeletionWorktreeRemoval/QualifiedDeletionWorktreeRemoval") {}
+const isDeletionWorktreeRemovalPreconditionError = Schema.is(
+  DeletionWorktreeRemovalPreconditionError,
+);
 
 // Only the durable EventSink owner can admit a start or qualify an observation.
 // Missing owner composition denies before Git; recovery only observes the original start.
@@ -475,7 +483,13 @@ export const layer = Layer.effect(
         const read = sink.readDeletionWorktreeRemovalStart;
         const revalidate = sink.revalidateDeletionWorktreeRemovalStart;
         const qualify = sink.qualifyDeletionWorktreeRemovalObservation;
-        if (read === undefined || revalidate === undefined || qualify === undefined) {
+        const checkRetained = sink.checkRetainedDeletionWorktreeRemovalStart;
+        if (
+          read === undefined ||
+          revalidate === undefined ||
+          qualify === undefined ||
+          (execute && checkRetained === undefined)
+        ) {
           return yield* new DeletionWorktreeRemovalPreconditionError({
             reason: "native_deletion_owner_unavailable",
           });
@@ -487,23 +501,42 @@ export const layer = Layer.effect(
           });
         }
         const observed = execute
-          ? yield* producer.executeStarted(admitted.start, admitted.ordinal, (start, ordinal) =>
-              revalidate(start, ordinal, currentRules, currentLive).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new DeletionWorktreeRemovalPreconditionError({
-                      reason: "workspace_preservation_hold",
-                      cause,
-                    }),
+          ? yield* producer.executeStarted(
+              admitted.start,
+              admitted.ordinal,
+              (start, ordinal) =>
+                revalidate(start, ordinal, currentRules, currentLive).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new DeletionWorktreeRemovalPreconditionError({
+                        reason: "workspace_preservation_hold",
+                        cause,
+                      }),
+                  ),
                 ),
-              ),
+              (start, ordinal) =>
+                checkRetained === undefined
+                  ? Effect.fail(
+                      new DeletionWorktreeRemovalPreconditionError({
+                        reason: "native_deletion_owner_unavailable",
+                      }),
+                    )
+                  : checkRetained(start, ordinal, currentRules, currentLive).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new DeletionWorktreeRemovalPreconditionError({
+                            reason: "original_start_readback_failed",
+                            cause,
+                          }),
+                      ),
+                    ),
             )
           : yield* producer.observeStarted(admitted.start, admitted.ordinal);
         yield* qualify(observed);
         return observed;
       },
       Effect.mapError((cause) =>
-        Schema.is(DeletionWorktreeRemovalPreconditionError)(cause)
+        isDeletionWorktreeRemovalPreconditionError(cause)
           ? cause
           : new DeletionWorktreeRemovalPreconditionError({
               reason: "native_deletion_owner_refused",
@@ -512,8 +545,10 @@ export const layer = Layer.effect(
       ),
     );
     return QualifiedDeletionWorktreeRemoval.of({
-      execute: (id, rules, live) => run(id, true, rules, live),
-      observe: (id) => run(id, false),
+      execute: Effect.fn("QualifiedDeletionWorktreeRemoval.execute")((id, rules, live) =>
+        run(id, true, rules, live),
+      ),
+      observe: Effect.fn("QualifiedDeletionWorktreeRemoval.observe")((id) => run(id, false)),
     });
   }),
 );
@@ -523,6 +558,8 @@ export const gitLayer = Layer.effect(
   DeletionWorktreeGit,
   Effect.gen(function* () {
     const git = yield* GitDriver.GitVcsDriver;
-    return DeletionWorktreeGit.of({ execute: (input) => git.execute(input) });
+    return DeletionWorktreeGit.of({
+      execute: Effect.fn("DeletionWorktreeGit.execute")((input) => git.execute(input)),
+    });
   }),
 );

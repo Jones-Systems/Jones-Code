@@ -4,6 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
 import { importedHistoryIdentity } from "./commands.ts";
+const encodeImportedHistoryStart = Schema.encodeEffect(ImportedHistoryStart);
+
 it.effect("binds schema-encoded message command and delivery to fixed SHA256 golden bytes", () =>
   Effect.gen(function* () {
     const command: ImportedHistoryStart = {
@@ -26,7 +28,7 @@ it.effect("binds schema-encoded message command and delivery to fixed SHA256 gol
         },
       },
     };
-    const encoded = yield* Schema.encodeEffect(ImportedHistoryStart)(command);
+    const encoded = yield* encodeImportedHistoryStart(command);
     expect(importedHistoryCanonicalJson(encoded)).toBe(
       '{"commandId":"command:test","delivery":{"command":{"attachments":[],"commandId":"command:test","createdBy":"user","creationSource":"web","dispatchMode":{"type":"start_immediately"},"messageId":"message:test","text":"Synthetic π 😀","threadId":"thread:test","type":"message.dispatch"},"type":"message"},"reviewedBasis":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","threadId":"thread:test","type":"thread.imported-history.start"}',
     );

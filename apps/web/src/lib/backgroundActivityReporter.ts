@@ -1,3 +1,7 @@
+import {
+  monitorMainActivity,
+  subscribeMonitorNativeState,
+} from "../jones/threadMonitor/nativeState";
 import { makeReportLanes } from "@t3tools/client-runtime/jones/activity/report-lanes";
 import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import {
@@ -94,14 +98,17 @@ function createActivityReport(
       scopes.push(entry.scope);
     }
   }
+  const native = monitorMainActivity();
+  const visible = native?.visible ?? document.visibilityState === "visible";
+  const focused = native?.focused ?? document.hasFocus();
   return {
     environmentId,
     clientId: getClientId(),
     clientKind: resolveClientKind(),
-    visible: document.visibilityState === "visible",
-    focused: document.hasFocus(),
+    visible,
+    focused,
     recentlyInteracted: wasRecentlyInteracted(lastInteractionAtMs, observedAtMs),
-    appState: document.visibilityState === "visible" ? "active" : "background",
+    appState: visible ? "active" : "background",
     scopes,
     ttlMs: LEASE_TTL_MS,
     observedAt: DateTime.makeUnsafe(observedAtMs),
@@ -190,6 +197,8 @@ export const layer = Layer.effectDiscard(
         requestReport();
       }
     };
+    const stopNativeActivity = subscribeMonitorNativeState(requestReport);
+    yield* Effect.addFinalizer(() => Effect.sync(stopNativeActivity));
     const passiveListenerOptions = { passive: true } as const;
 
     const lanes = yield* makeReportLanes(

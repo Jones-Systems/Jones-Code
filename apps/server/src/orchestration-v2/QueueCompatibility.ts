@@ -60,6 +60,12 @@ export class QueueCompatibility extends Context.Service<
   }
 >()("t3/orchestration-v2/QueueCompatibility") {}
 
+const compiledDecodeUnknownEffect1 = Schema.decodeUnknownEffect(QueueDispatchCommand, {
+  onExcessProperty: "error",
+});
+const compiledIs2 = Schema.is(Launch.ThreadLaunchError);
+const compiledIs3 = Schema.is(QueueCompatibilityError);
+
 const make = Effect.gen(function* () {
   const threads = yield* Threads.ThreadManagementService;
   const launch = yield* Launch.ThreadLaunchService;
@@ -80,9 +86,9 @@ const make = Effect.gen(function* () {
           cause: unknown,
           reason: QueueCompatibilityError["reason"] = "invalid_command",
         ) => new QueueCompatibilityError({ reason, cause });
-        const input = yield* Schema.decodeUnknownEffect(QueueDispatchCommand, {
-          onExcessProperty: "error",
-        })(payload).pipe(Effect.mapError((cause) => invalid(cause)));
+        const input = yield* compiledDecodeUnknownEffect1(payload).pipe(
+          Effect.mapError((cause) => invalid(cause)),
+        );
         if (
           input.type === "thread.turn.start" &&
           input.bootstrap !== undefined &&
@@ -388,9 +394,7 @@ const make = Effect.gen(function* () {
           }),
           Effect.mapError((cause) => {
             const dispatchCause =
-              Schema.is(Launch.ThreadLaunchError)(cause) && cause.operation === "release-run"
-                ? cause.cause
-                : cause;
+              compiledIs2(cause) && cause.operation === "release-run" ? cause.cause : cause;
             const guarded =
               input.dispatchGuard !== undefined &&
               typeof dispatchCause === "object" &&
@@ -403,7 +407,7 @@ const make = Effect.gen(function* () {
                   dispatchCause.cause !== null &&
                   "_tag" in dispatchCause.cause &&
                   dispatchCause.cause._tag === "DispatchGuardRejected"));
-            const launchFailure = Schema.is(Launch.ThreadLaunchError)(cause) ? cause : undefined;
+            const launchFailure = compiledIs2(cause) ? cause : undefined;
             const websocketBootstrapDetail =
               transport === "legacy_websocket" && input.bootstrap !== undefined && launchFailure
                 ? launchFailure.cause instanceof Error
@@ -425,7 +429,7 @@ const make = Effect.gen(function* () {
                     cause,
                   })
                 : cause;
-            return Schema.is(QueueCompatibilityError)(cause)
+            return compiledIs3(cause)
               ? cause
               : invalid(
                   disposition,
@@ -435,7 +439,7 @@ const make = Effect.gen(function* () {
         );
       },
       Effect.mapError((cause) =>
-        Schema.is(QueueCompatibilityError)(cause)
+        compiledIs3(cause)
           ? cause
           : new QueueCompatibilityError({ reason: "orchestration_dispatch_failed", cause }),
       ),

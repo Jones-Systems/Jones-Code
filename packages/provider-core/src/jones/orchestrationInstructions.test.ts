@@ -8,11 +8,19 @@ import {
   t3AcpPromptWithInstructions,
 } from "../server/orchestrationInstructions.ts";
 
+const decodeDelegateTask = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
+
 it("routes actual owner actions to durable open input without plan mode or duplicate permissions", () => {
   for (const text of [
     "t3_request_user_response",
+    "up to five brief Markdown questions",
+    "put involved context in chat first",
     "Free text is always available",
     "omit choices unless real alternatives exist",
+    'suffix its label with "(Recommended)"',
+    "Apply this to native input tools too",
+    "Do not invent a recommendation for action-status or action-result choices",
+    "or a request with only one option",
     "Only claim it was created after acceptance",
     "Do not create a request for finished results",
     "never enter app/provider Plan mode",
@@ -46,8 +54,7 @@ it("routes separate-session delegation through delegate_task with valid workspac
     ),
   ];
   assert.lengthOf(examples, 3);
-  const decode = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
-  const decoded = examples.map(([, json]) => decode(JSON.parse(json ?? "")));
+  const decoded = examples.map(([, json]) => decodeDelegateTask(JSON.parse(json ?? "")));
   assert.deepEqual(
     decoded.map((input) => input.workspaceStrategy?.type),
     ["worktree", "existing_worktree", "worktree"],
@@ -83,6 +90,9 @@ it("distinguishes independent review from a guarded original-session follow-up",
   assert.include(instructions, "use `t3_task_continue` with the source `taskId`");
   assert.include(instructions, "It resumes the original provider session or refuses");
   assert.include(instructions, "Acceptance is not proof of continuation");
+  assert.include(instructions, "nativeSession.nativeSessionId");
+  assert.include(instructions, "expectedNativeSessionId");
+  assert.include(instructions, "Capture is not verified continuation");
   assert.include(instructions, "Repeat the same request and key to read current evidence");
   assert.include(instructions, "Do not use `t3_thread_send` on `childThreadId`");
   assert.notInclude(instructions, "For every T3 delegated review round");
@@ -111,7 +121,7 @@ it("carries handoff provenance and requires receiver acceptance before taking ow
 it("retains Jones identity and whole upstream-sized instruction segments", () => {
   const injected = t3AcpPromptWithInstructions({
     prompt: "Inspect the repository.",
-    state: { interactionMode: "default", hasT3Mcp: true },
+    state: { interactionMode: "default", hasT3Mcp: true, hasDeviceTools: false },
   });
   assert.include(injected, "Jones Code interaction mode: Default");
   assert.include(injected, "Jones Code collaborative browser");
@@ -122,7 +132,11 @@ it("retains Jones identity and whole upstream-sized instruction segments", () =>
 
 it("reinjects ACP guidance only when mode or tool availability changes", () => {
   const prompt = "Continue.";
-  const defaultState = { interactionMode: "default", hasT3Mcp: true } as const;
+  const defaultState = {
+    interactionMode: "default",
+    hasT3Mcp: true,
+    hasDeviceTools: false,
+  } as const;
 
   assert.equal(
     t3AcpPromptWithInstructions({ prompt, state: defaultState, previousState: defaultState }),
@@ -138,9 +152,30 @@ it("reinjects ACP guidance only when mode or tool availability changes", () => {
   );
   const withoutMcp = t3AcpPromptWithInstructions({
     prompt,
-    state: { interactionMode: "default", hasT3Mcp: false },
+    state: { interactionMode: "default", hasT3Mcp: false, hasDeviceTools: false },
   });
   assert.include(withoutMcp, "Jones Code interaction mode: Default");
   assert.notInclude(withoutMcp, "Jones Code collaborative browser");
   assert.notInclude(withoutMcp, "Jones Code orchestration");
+});
+
+it("keeps compatible upstream delivery and cancellation rules", () => {
+  for (const text of [
+    "Follow a running delegate's `next` instruction",
+    "Start no subagents unless your task says to",
+    '`delivery: "file"`',
+    "cancel it and start no replacement",
+    "Use a PNG file and its path",
+  ])
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, text);
+});
+
+it("inherits delegated modes unless the user explicitly asks for supervision", () => {
+  assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Omit `runtimeMode` and `interactionMode`");
+  assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "`supervisionRequestedByUser: true`");
+  assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "A role or read-only scope is not a reason");
+  assert.include(
+    T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+    "never add the flag automatically after a refusal",
+  );
 });

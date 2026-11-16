@@ -1,3 +1,4 @@
+import { installSelectedSyntheticPresentation } from "./jones/testing/SyntheticPresentation.ts";
 import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Option from "effect/Option";
@@ -9,6 +10,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_SERVER_SETTINGS,
+  isListedThreadLineage,
   type ModelSelection,
   type Project,
   ProjectId,
@@ -19,7 +21,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -54,6 +56,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { getServerOwners } from "./telemetry/Identify.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as JonesTrialStartup from "./jones/updates/trialStartup.ts";
+import { startLauncherHandoff } from "./jones/updates/launcherHandoff.ts";
 import {
   logStartupPairingIssued,
   maybeOpenBrowser as maybeOpenJonesBrowser,
@@ -178,9 +181,9 @@ const recordStartupHeartbeat = Effect.gen(function* () {
 
   const { threadCount, projectCount } = yield* Effect.all({
     projects: projects.snapshot,
-    threads: metadata.count.pipe(NodeSqliteClient.readOnly),
+    threadCount: metadata.count.pipe(NodeSqliteClient.readOnly),
   }).pipe(
-    Effect.map(({ projects: projectSnapshot, threads: threadCount }) => ({
+    Effect.map(({ projects: projectSnapshot, threadCount }) => ({
       projectCount: projectSnapshot.projects.length,
       threadCount,
     })),
@@ -285,8 +288,8 @@ const resolveWelcomeBase = Effect.gen(function* () {
 });
 
 const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
-  const crypto = yield* Crypto.Crypto;
-  const randomUUID = crypto.randomUUIDv4();
+  const random = yield* SecureRandom.SecureRandom;
+  const randomUUID = random.uuidV4();
   const serverConfig = yield* ServerConfig.ServerConfig;
   const projects = yield* ProjectService.ProjectService;
   const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
@@ -304,10 +307,10 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
       title: path.basename(serverConfig.cwd) || "project",
       workspaceRoot: serverConfig.cwd,
     });
-    const snapshot = yield* metadata.list({ projectId: project.id, location: "active" });
-    const existingThread = snapshot.threads.find(
-      (thread) => thread.lineage.relationshipToParent !== "subagent",
-    );
+    const existingThread = (yield* metadata.list({
+      projectId: project.id,
+      location: "active",
+    })).threads.find((thread) => isListedThreadLineage(thread.lineage));
     if (existingThread === undefined) {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const settings = yield* serverSettings.getSettings;
@@ -322,7 +325,7 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: resolveProjectSettings(settings, project.id, project).settings
             .defaultRuntimeMode,
-          workspaceStrategy: { type: "root" },
+          workspaceStrategy: { type: "auto" },
           createdBy: "system",
           creationSource: "server",
         })
@@ -369,19 +372,13 @@ const resolveStartupBrowserTarget = Effect.gen(function* () {
     : yield* serverAuth.issueStartupPairingUrl(baseTarget);
 });
 
-/**
- * Prints the startup pairing URL to stdout, where `t3` users and the dev runner
- * read it. The URL carries a one-time admin token, so it skips the logger: log
- * records also land in the trace file and any configured OTLP collector.
- */
+/** Prints the one-time admin pairing URL to stdout only; logger records reach trace files and collectors. */
 export const announceStartupPairingUrl = (pairingUrl: string) =>
   Effect.logInfo("Authentication required. Open T3 Code using the pairing URL.").pipe(
-    // Indented to match the annotation line the pretty logger printed before.
     Effect.andThen(Console.log(`  pairingUrl: ${pairingUrl}`)),
   );
 
-// No URL here: the browser target carries the pairing token, which
-// announceStartupPairingUrl has already printed to stdout.
+// Pairing tokens belong only in announceStartupPairingUrl's stdout output.
 export const logBrowserAutoOpenUnavailable = Effect.logInfo("browser auto-open unavailable", {
   hint: "Open the pairing URL above in your browser.",
 });
@@ -405,9 +402,7 @@ export const maybeOpenBrowser = Effect.fn("serverRuntimeStartup.maybeOpenBrowser
 
 const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
-    // Attributes on the span itself, not annotateSpans: an annotation follows
-    // every fiber forked inside the phase, such as the effect worker, for the
-    // life of the server.
+    // Use span attributes; annotations would follow long-lived forked fibers for the server's lifetime.
     Effect.withSpan(`server.startup.${phase}`, { attributes: { "startup.phase": phase } }),
   );
 
@@ -464,6 +459,7 @@ export const runOrderedV2StartupPhases = Effect.fn(
   readonly awaitTrialCommit?: Effect.Effect<void, TrialError, TrialContext>;
   readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
   readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
+  readonly recoverCodexFailover?: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
   readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
@@ -471,6 +467,7 @@ export const runOrderedV2StartupPhases = Effect.fn(
   yield* input.awaitTrialCommit ?? Effect.void;
   yield* input.importLegacyShells;
   const recovery = yield* input.recover;
+  yield* input.recoverCodexFailover ?? Effect.void;
   yield* input.recoverDelegatedTasks;
   yield* input.startEffectWorker;
   const bootstrap = yield* input.autoBootstrap;
@@ -507,7 +504,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
 
   const plannedContinuity = yield* Effect.serviceOption(
@@ -561,6 +558,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           ),
       });
     }).pipe(
+      Effect.withSpan("server.shutdown"),
       Effect.catchCause((cause) =>
         Effect.logWarning("V2 orchestration shutdown reconciliation failed", {
           cause: Cause.pretty(cause),
@@ -647,6 +645,10 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           return yield* providerRuntimeRecovery.recover;
         }),
       ),
+      recoverCodexFailover: runStartupPhase(
+        "orchestration-v2.codex-failover.recover",
+        orchestrator.recoverCodexFailover ?? Effect.void,
+      ),
       recoverDelegatedTasks: runStartupPhase(
         "orchestration-v2.delegated-tasks.recover",
         orchestrator.recoverDelegatedTasks.pipe(
@@ -664,7 +666,9 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       autoBootstrap: (serverConfig.autoBootstrapProjectFromCwd
         ? runStartupPhase(
             "welcome.autobootstrap",
-            resolveAutoBootstrapWelcomeTargets.pipe(Effect.provideService(Crypto.Crypto, crypto)),
+            resolveAutoBootstrapWelcomeTargets.pipe(
+              Effect.provideService(SecureRandom.SecureRandom, random),
+            ),
           )
         : Effect.succeed({})
       ).pipe(Effect.map((targets): AutoBootstrapWelcomeTargets => targets)),
@@ -742,6 +746,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     yield* runStartupPhase("auxiliary-roots.parked", options?.awaitAuxiliaryParked ?? Effect.void);
 
     const updateOutcome = yield* launcher.prepareTrial;
+    yield* installSelectedSyntheticPresentation();
 
     yield* Effect.logDebug("startup phase: publishing welcome event", {
       environmentId: environment.environmentId,
@@ -784,6 +789,8 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     );
     yield* Effect.logDebug("startup phase: complete");
     yield* flushCompileCache;
+    yield* launcher.markRuntimeReady ?? Effect.void;
+    yield* startLauncherHandoff(launcher);
   }).pipe(
     Effect.withSpan("server.startup", {
       kind: "server",
@@ -846,5 +853,3 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
 
 export const layerWithOptions = (options?: StartupOptions) =>
   Layer.effect(ServerRuntimeStartup, make(options));
-
-const layer = layerWithOptions();

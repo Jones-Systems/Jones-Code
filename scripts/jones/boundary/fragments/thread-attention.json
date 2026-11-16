@@ -42,6 +42,10 @@
     {
       "from": "packages/client-runtime/src/state/threadShell.ts",
       "to": "packages/shared/src/jones/threadAttention.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "packages/shared/src/jones/threadAttention.ts"
     }
   ]
 }

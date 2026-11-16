@@ -150,7 +150,7 @@ export const make = Effect.gen(function* () {
     );
 
   return PlannedUpdateContinuity.of({
-    capture: (input) =>
+    capture: Effect.fn("PlannedUpdateContinuity.capture")((input) =>
       safe(
         Effect.gen(function* () {
           const preferences = yield* settings.getSettings;
@@ -194,7 +194,7 @@ export const make = Effect.gen(function* () {
                 const latestControl = (yield* sql<{ command_type: string }>`
             SELECT command_type FROM orchestration_command_receipts
             WHERE aggregate_kind='thread' AND aggregate_id=${shell.id} AND status='accepted'
-              AND command_type IN ('message.dispatch','queue.resume','turn.interrupt','thread.stop','provider-session.detach')
+              AND command_type IN ('message.dispatch','queue.resume','run.interrupt','thread.stop','provider-session.detach')
             ORDER BY rowid DESC LIMIT 1`)[0]?.command_type;
                 if (
                   latestControl !== undefined &&
@@ -224,9 +224,7 @@ export const make = Effect.gen(function* () {
               }>`SELECT binding_json FROM jones_planned_update_continuity WHERE operation_id=${input.operationId}`;
               if (prior[0] !== undefined) {
                 if (prior[0].binding_json !== bindingJson)
-                  return yield* Effect.fail(
-                    new PlannedContinuityBindingError({ reason: "operation-changed" }),
-                  );
+                  return yield* new PlannedContinuityBindingError({ reason: "operation-changed" });
                 return;
               }
               yield* sql`INSERT INTO jones_planned_update_continuity(operation_id,binding_json)
@@ -240,7 +238,8 @@ export const make = Effect.gen(function* () {
           );
         }),
       ),
-    activate: (proof) =>
+    ),
+    activate: Effect.fn("PlannedUpdateContinuity.activate")((proof) =>
       safe(
         Effect.gen(function* () {
           yield* Ref.set(active, undefined);
@@ -262,9 +261,7 @@ export const make = Effect.gen(function* () {
             proof.current.activeVersion !== expectedVersion ||
             proof.current.activeSourceSha !== expectedSource
           )
-            return yield* Effect.fail(
-              new PlannedContinuityBindingError({ reason: "generation-mismatch" }),
-            );
+            return yield* new PlannedContinuityBindingError({ reason: "generation-mismatch" });
           const claimed = yield* sql`UPDATE jones_planned_update_continuity SET activated=1
         WHERE operation_id=${proof.operationId} AND activated=0 RETURNING operation_id`;
           if (claimed.length === 0) return;
@@ -285,8 +282,9 @@ export const make = Effect.gen(function* () {
           });
         }),
       ),
+    ),
     queueThreadIds: Ref.get(active).pipe(Effect.map((value) => value?.queueThreadIds ?? [])),
-    queueCommand: (projection) =>
+    queueCommand: Effect.fn("PlannedUpdateContinuity.queueCommand")((projection) =>
       safe(
         Effect.gen(function* () {
           const row = yield* read(projection.thread.id);
@@ -302,8 +300,11 @@ export const make = Effect.gen(function* () {
           );
         }),
       ),
-    finishQueue: (threadId) => finish(threadId, "queue_done"),
-    hasWork: (threadId) =>
+    ),
+    finishQueue: Effect.fn("PlannedUpdateContinuity.finishQueue")((threadId) =>
+      finish(threadId, "queue_done"),
+    ),
+    hasWork: Effect.fn("PlannedUpdateContinuity.hasWork")((threadId) =>
       safe(
         read(threadId).pipe(
           Effect.map(
@@ -312,7 +313,8 @@ export const make = Effect.gen(function* () {
           ),
         ),
       ),
-    admitWork: (projection, candidate, nowMs) =>
+    ),
+    admitWork: Effect.fn("PlannedUpdateContinuity.admitWork")((projection, candidate, nowMs) =>
       safe(
         Effect.gen(function* () {
           const row = yield* read(projection.thread.id);
@@ -330,8 +332,11 @@ export const make = Effect.gen(function* () {
           return owner !== null && workOwnerIdentity(owner) === row.snapshot.workOwner;
         }),
       ),
-    finishWork: (threadId) => finish(threadId, "work_done"),
-    allowWorkStart: (threadId, messageId) =>
+    ),
+    finishWork: Effect.fn("PlannedUpdateContinuity.finishWork")((threadId) =>
+      finish(threadId, "work_done"),
+    ),
+    allowWorkStart: Effect.fn("PlannedUpdateContinuity.allowWorkStart")((threadId, messageId) =>
       safe(
         Effect.gen(function* () {
           const row = yield* read(threadId);
@@ -356,6 +361,7 @@ export const make = Effect.gen(function* () {
           );
         }),
       ),
+    ),
   });
 });
 

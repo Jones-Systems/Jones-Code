@@ -113,7 +113,7 @@ function RecentPromptRow({
     const key = `${record.subject}|${record.workstream_ref}`;
     if ((associations.get(key)?.revision ?? 0) < record.revision) associations.set(key, record);
   }
-  const native = thread?.native_memberships ?? [];
+  const native = [...(thread?.native_memberships ?? []), ...(thread?.personal_memberships ?? [])];
   const refs = new Set([...entry.workstream_refs, ...native.map((item) => item.workstream_ref)]);
   for (const record of associations.values()) {
     if (record.state === "active") refs.add(record.workstream_ref);
@@ -170,8 +170,8 @@ function RecentPromptRow({
   const summary = textField(thread?.summary ?? null, "text");
   const options = new Map<string, string>();
   for (const record of registry?.threads ?? []) {
-    for (const item of record.native_memberships)
-      options.set(item.workstream_ref, item.placement.workstream_id);
+    for (const item of record.personal_memberships ?? [])
+      options.set(item.workstream_ref, item.name);
   }
   for (const label of workstreams?.workstreams ?? []) {
     if (label.state === "active") options.set(label.label_id, label.name);

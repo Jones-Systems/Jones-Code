@@ -10,6 +10,7 @@ import type { ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import type { EnvironmentPresentation } from "~/state/environments";
+import { usePreparedConnection } from "~/state/session";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 
@@ -48,13 +49,22 @@ export function environmentTransportLabel(
   return environment.displayUrl ?? "Remote link";
 }
 
-/**
- * One machine in a grouped settings list: icon, name, a single subtitle line,
- * and controls on the right. Every environment list on the Connections page
- * uses this so the lists share one rhythm. A row with content `below` keeps
- * its icon and controls on the name's line, as the header of a taller row,
- * and gives the subtitle and that content the row's full width.
- */
+export function useEnvironmentTransportLabel(environment: EnvironmentPresentation): string {
+  const prepared = usePreparedConnection(environment.environmentId);
+  return environmentTransportLabel(
+    environment,
+    environment.connection.phase === "connected" && prepared._tag === "Some"
+      ? prepared.value.target
+      : null,
+  );
+}
+
+export function EnvironmentTransportLabel(props: {
+  readonly environment: EnvironmentPresentation;
+}) {
+  return useEnvironmentTransportLabel(props.environment);
+}
+
 export function EnvironmentRow({
   kind,
   label,

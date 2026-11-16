@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // The parent owns this synthetic child, its IPC lifetime and scratch directory.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -16,7 +18,7 @@ const store = await Effect.runPromise(
       encryptString: (value) => Effect.succeed(new TextEncoder().encode(`fixture:${value}`)),
       decryptString: (value) => Effect.succeed(new TextDecoder().decode(value).slice(8)),
     },
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 let pending = Promise.resolve();
 process.on("error", () => {

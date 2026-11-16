@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { shallow } from "zustand/vanilla/shallow";
 import {
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
   type TimelineEntriesInput,
@@ -6,22 +7,28 @@ import {
 } from "../session-logic";
 
 function sameInput(left: TimelineEntriesInput, right: TimelineEntriesInput): boolean {
+  // Local feedback rows are reconstructed from immutable submissions. Their scalar fields,
+  // rather than the allocation of a row or array, determine whether the projection changed.
+  const sameMessages = (
+    a: TimelineEntriesInput["anchoredMessages"],
+    b: TimelineEntriesInput["anchoredMessages"],
+  ) =>
+    a === b ||
+    (a !== undefined &&
+      b !== undefined &&
+      a.length === b.length &&
+      a.every((row, index) => shallow(row, b[index])));
   return (
-    left.visibleTurnItems === right.visibleTurnItems &&
-    left.optimisticMessages === right.optimisticMessages &&
-    left.anchoredMessages === right.anchoredMessages &&
-    left.attachmentUrlById === right.attachmentUrlById &&
-    left.attempts === right.attempts &&
-    left.nodes === right.nodes &&
-    left.plans === right.plans
+    shallow(left.visibleTurnItems, right.visibleTurnItems) &&
+    sameMessages(left.optimisticMessages, right.optimisticMessages) &&
+    sameMessages(left.anchoredMessages, right.anchoredMessages) &&
+    shallow(left.attachmentUrlById, right.attachmentUrlById) &&
+    shallow(left.attempts, right.attempts) &&
+    shallow(left.nodes, right.nodes) &&
+    shallow(left.plans, right.plans)
   );
 }
 
-/**
- * Timeline entries for a thread, derived from the previous projection so
- * unchanged rows keep their identity and memoized rows skip rendering. A new
- * thread starts from scratch.
- */
 export function useIncrementalTimelineEntries(
   threadKey: string | null,
   input: TimelineEntriesInput,

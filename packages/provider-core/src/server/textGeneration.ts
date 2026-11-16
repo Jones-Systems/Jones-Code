@@ -15,6 +15,7 @@ export type { RemoteRequestEvaluationInput } from "./jones/remoteRequestEvaluati
 export { RemoteRequestEvaluationResult } from "./jones/remoteRequestEvaluation.ts";
 
 import type { TextGenerationPolicy } from "./textGenerationPolicy.ts";
+import type { ThreadTitleForkSource } from "./textGenerationPrompts.ts";
 
 export interface CommitMessageGenerationInput {
   cwd: string;
@@ -63,17 +64,21 @@ export interface BranchNameGenerationResult {
 }
 
 export interface ThreadTitleGenerationInput {
+  titleAssessment?: boolean | undefined;
   linkedContext?: string | undefined;
   cwd: string;
   message: string;
   previousTitle?: string | undefined;
+  forkSource?: ThreadTitleForkSource | undefined;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  instructions?: string | undefined;
   modelSelection: ModelSelection;
 }
 
 export interface ThreadTitleGenerationResult {
   title: string;
   needsRefinement?: boolean | undefined;
+  assessment?: import("./jones/ThreadTitleAssessment.ts").ThreadTitleVerdict | undefined;
 }
 
 export interface ReviewGuideStackLayer {
@@ -101,10 +106,23 @@ export type ReviewGuideGenerationResult = Omit<
   "headSha" | "generatedAt" | "modelSelection"
 >;
 
+export interface TranscriptionPostProcessingInput {
+  cwd: string;
+  prompt: string;
+  modelSelection: ModelSelection;
+}
+
+export interface TranscriptionPostProcessingResult {
+  transcription: string;
+}
+
 export interface ProviderTextGeneration {
   readonly evaluateRemoteRequest: (
     input: RemoteRequestEvaluationInput,
   ) => Effect.Effect<RemoteRequestEvaluationResult, TextGenerationError>;
+  readonly generateTranscriptionPostProcessing: (
+    input: TranscriptionPostProcessingInput,
+  ) => Effect.Effect<TranscriptionPostProcessingResult, TextGenerationError>;
 
   readonly generateCommitMessage: (
     input: CommitMessageGenerationInput,

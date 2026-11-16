@@ -1,3 +1,5 @@
+import * as Redacted from "effect/Redacted";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ApplicationEvents from "../persistence/OrchestrationEventStore.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -100,6 +102,8 @@ class FailureFixturePty implements PtyAdapter.PtyProcess {
     };
   }
 }
+const decodeLegacyNoTerminalControl = Schema.decodeEffect(LegacyNoTerminalControl);
+const encodeOrchestrationV2ThreadStreamItem = Schema.encodeEffect(OrchestrationV2ThreadStreamItem);
 
 it.layer(NodeServices.layer, { excludeTestServices: true })(
   "Legacy absent C actual owner and SQL",
@@ -198,7 +202,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             Effect.gen(function* () {
               if (!ChildProcess.isStandardCommand(command))
                 return yield* Effect.die("Unexpected synthetic pipeline");
-              const args = [...command.args];
+              const args = command.args.map((word) =>
+                Redacted.isRedacted(word) ? Redacted.value(word) : word,
+              );
               commands.push(args);
               const entered = args.includes("add");
               if (entered) {
@@ -535,7 +541,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
           WHEN NEW.event_type = 'thread.deleted'
           BEGIN SELECT RAISE(ABORT, 'synthetic atomic D persistence failure'); END`;
               const commandId = CommandId.make(`${createCommandId}:failure-delete`);
-              const control = yield* Schema.decodeEffect(LegacyNoTerminalControl)({
+              const control = yield* decodeLegacyNoTerminalControl({
                 version: 1,
                 type: "no_control",
                 policy: receivingPolicy,
@@ -560,14 +566,14 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                 legacyBootstrap: receivingPolicy,
                 legacyNoControl: control,
               }).pipe(
-                Effect.flatMap((result) =>
-                  scenario === "lost_reply"
-                    ? new Orchestrator.OrchestratorDispatchError({
-                        commandId,
-                        commandType: "legacy-bootstrap.failure-delete",
-                        cause: "Synthetic lost reply after commit",
-                      })
-                    : Effect.succeed(result),
+                Effect.filterOrFail(
+                  () => scenario !== "lost_reply",
+                  () =>
+                    new Orchestrator.OrchestratorDispatchError({
+                      commandId,
+                      commandType: "legacy-bootstrap.failure-delete",
+                      cause: "Synthetic lost reply after commit",
+                    }),
                 ),
                 Effect.result,
                 Effect.ensuring(
@@ -766,7 +772,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                   );
                   for (const frames of [replayFrames, snapshotFrames, liveFrames]) {
                     const publicFrames = yield* Effect.forEach(frames, (frame) =>
-                      Schema.encodeEffect(OrchestrationV2ThreadStreamItem)(frame),
+                      encodeOrchestrationV2ThreadStreamItem(frame),
                     );
                     const publicJson = yield* encodeJson(publicFrames);
                     assert.notInclude(publicJson, "legacyPreparationFailureDecision");
@@ -879,7 +885,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                 assert.deepEqual(yield* fs.readFile(uploaded), originalBytes);
               }).pipe(Effect.provide(layer)),
             );
-        }),
+        }).pipe(Effect.provide(NodeCrypto.layer)),
     );
   },
 );

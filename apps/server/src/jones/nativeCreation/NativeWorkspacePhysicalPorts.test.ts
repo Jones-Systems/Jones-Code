@@ -6,7 +6,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Git from "../../vcs/GitVcsDriver.ts";
 import * as Projects from "../../orchestration-v2/ProjectStore.ts";
@@ -17,6 +16,7 @@ import * as Physical from "./NativeWorkspacePhysicalPorts.ts";
 import type { NativeWorkspaceBasis } from "./NativeCreationWorkspaceTypes.ts";
 import { nativeCreationCanonicalJson as canonical } from "./NativeCreationPreparation.ts";
 
+const decodeFixtureHistoryBinding = Schema.decodeSync(NativeCreationHistoricalBinding);
 const fixtureClaim = (setup = false): Repository.NativeCreationStoredIntent => ({
   claimId: "fixture-claim",
   claimedBootId: "fixture-boot",
@@ -34,7 +34,7 @@ const fixtureClaim = (setup = false): Repository.NativeCreationStoredIntent => (
   threadId: "fixture-thread",
   messageId: "fixture-message",
   canonicalPreparation: "{}",
-  binding: Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+  binding: decodeFixtureHistoryBinding({
     backendInstance: "fixture-backend",
     environmentId: "fixture-environment",
     projectId: "fixture-project",
@@ -215,7 +215,7 @@ const scenario = (
         }
         yield* hooks.beforeEffect({
           ...step,
-          args: ["config", "branch.fixture-branch.gh-merge-base", "main"],
+          args: ["config", "branch.fixture-branch.t3-merge-base", "main"],
           kind: "worktree.base-config",
         });
         calls.push("config");
@@ -223,7 +223,7 @@ const scenario = (
           yield* hooks.afterEffect(
             {
               ...step,
-              args: ["config", "branch.fixture-branch.gh-merge-base", "main"],
+              args: ["config", "branch.fixture-branch.t3-merge-base", "main"],
               kind: "worktree.base-config",
             },
             "failed_or_unknown",
@@ -234,7 +234,7 @@ const scenario = (
         yield* hooks.afterEffect(
           {
             ...step,
-            args: ["config", "branch.fixture-branch.gh-merge-base", "main"],
+            args: ["config", "branch.fixture-branch.t3-merge-base", "main"],
             kind: "worktree.base-config",
           },
           "settled_success",
@@ -284,14 +284,12 @@ const scenario = (
     Layer.succeed(Git.GitVcsDriver, git as unknown as Git.GitVcsDriver["Service"]),
     Layer.succeed(Projects.ProjectStoreV2, {
       get: () =>
-        Effect.succeed(
-          Option.some({
-            projectId: ProjectId.make("fixture-project"),
-            workspaceRoot: claim.resources.projectCwd,
-            scripts: [],
-            deletedAt: null,
-          }),
-        ),
+        Effect.succeedSome({
+          projectId: ProjectId.make("fixture-project"),
+          workspaceRoot: claim.resources.projectCwd,
+          scripts: [],
+          deletedAt: null,
+        }),
     } as unknown as Projects.ProjectStoreV2["Service"]),
     Layer.mock(Settings.ServerSettingsService)({
       getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),

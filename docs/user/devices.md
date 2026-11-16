@@ -73,6 +73,8 @@ connected to the thread, the same way an agent-driven browser does. Turn off
 **Auto-show floating preview** in **Settings → Integrations → Browser** to open a
 right-panel tab instead. In the mobile app, open the agent's thread and tap the
 device button above the composer to watch the live screen and control it.
+On iOS layouts with an inspector, the device opens beside the thread. Maximize
+it to fill the screen; closing the full-screen view returns to the inspector.
 If the thread has several devices open, choose one in the viewer. Closing the
 viewer stops streaming and leaves the device available to the agent. Device
 activity also appears in the thread timeline.
@@ -106,6 +108,8 @@ not supported.
 anything, with a result for each selected environment. Targets that resolve to
 the environment’s own machine are skipped, since its devices are already local.
 The first device listing installs pinned device tools on the host.
+SSH device hosts currently need macOS or Linux. To use devices on a Windows
+machine, run T3 Code on that machine and connect to its environment.
 Node 22 or newer and npm must be available to non-interactive SSH commands.
 T3 checks common Homebrew and Android SDK locations; custom installations need
 the appropriate PATH and ANDROID_HOME on the host. Android emulator video needs

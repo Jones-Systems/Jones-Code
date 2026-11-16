@@ -21,6 +21,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -154,6 +155,24 @@ const tracePayloadStatements = () => {
   const statements: string[] = [];
   const metadataStatements: string[] = [];
   const transactions: string[] = [];
+  const metadataEvidence: Array<{
+    text: string;
+    parameters: ReadonlyArray<unknown>;
+    spanName: string;
+  }> = [];
+  const isMetadata = (query: string) =>
+    query
+      .replace(/\s+/g, " ")
+      .trim()
+      .startsWith(
+        "SELECT item.turn_item_id, item.run_id, item.node_id, item.parent_item_id, item.type, item.status, item.ordinal,",
+      ) && query.includes("FROM orchestration_v2_projection_turn_items AS item");
+  const capture: Statement.Transformer = (statement, _sql, _fiber, span) => {
+    const [text, parameters] = statement.compile();
+    if (isMetadata(text))
+      metadataEvidence.push({ text, parameters: [...parameters], spanName: span.name });
+    return Effect.succeed(statement);
+  };
   const tracer = Tracer.make({
     span(options) {
       const span = new Tracer.NativeSpan(options);
@@ -163,7 +182,7 @@ const tracePayloadStatements = () => {
         if (span.name === "sql.transaction" && span.attributes.get("db.connection") !== undefined) {
           transactions.push(span.name);
         }
-        if (typeof query === "string" && /SELECT turn_item_id, run_id, node_id, type/.test(query)) {
+        if (typeof query === "string" && isMetadata(query)) {
           metadataStatements.push(query);
         }
         if (
@@ -179,7 +198,7 @@ const tracePayloadStatements = () => {
       return span;
     },
   });
-  return { statements, metadataStatements, transactions, tracer };
+  return { statements, metadataStatements, metadataEvidence, transactions, tracer, capture };
 };
 
 it.effect.each([0, 1, 2, 64, 100])(
@@ -455,6 +474,7 @@ it.effect("excerpt capture shares one SQL index, payload union and transaction",
         ),
       ),
       Effect.withTracer(trace.tracer),
+      Effect.provideService(Statement.CurrentTransformer, trace.capture),
     );
     assert.equal(result.excerpt.status, "captured");
     if (result.excerpt.status !== "captured") return;
@@ -464,6 +484,14 @@ it.effect("excerpt capture shares one SQL index, payload union and transaction",
     assert.equal(trace.metadataStatements.length, 1);
     assert.equal(trace.statements.length, 1);
     assert.equal(trace.transactions.length, 1);
+    assert.equal(trace.metadataEvidence.length, 1);
+    assert.deepEqual(trace.metadataEvidence[0]?.parameters, [source]);
+    assert.include(trace.metadataEvidence[0]!.text, "WHERE item.thread_id = ?");
+    assert.isBelow(trace.metadataEvidence[0]!.text.length, 8192);
+    yield* Effect.logInfo("Bounded timeline metadata SQL witness", {
+      metadata: trace.metadataEvidence,
+      transactionCount: trace.transactions.length,
+    });
   }).pipe(Effect.provide(testLayer)),
 );
 
@@ -486,11 +514,22 @@ it.effect(
       const trace = tracePayloadStatements();
       const actual = yield* store
         .getTimelinePages(source, selections)
-        .pipe(Effect.withTracer(trace.tracer));
+        .pipe(
+          Effect.withTracer(trace.tracer),
+          Effect.provideService(Statement.CurrentTransformer, trace.capture),
+        );
       assert.deepEqual(actual, expected);
       assert.equal(trace.statements.length, 1);
       assert.equal(trace.metadataStatements.length, 1);
       assert.equal(trace.transactions.length, 1);
+      assert.equal(trace.metadataEvidence.length, 1);
+      assert.deepEqual(trace.metadataEvidence[0]?.parameters, [source]);
+      assert.include(trace.metadataEvidence[0]!.text, "WHERE item.thread_id = ?");
+      assert.isBelow(trace.metadataEvidence[0]!.text.length, 8192);
+      yield* Effect.logInfo("Bounded timeline metadata SQL witness", {
+        metadata: trace.metadataEvidence,
+        transactionCount: trace.transactions.length,
+      });
       assert.equal(actual[2]?.snapshotSequence, undefined);
     }).pipe(Effect.provide(testLayer)),
 );

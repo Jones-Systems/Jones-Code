@@ -185,6 +185,8 @@ export async function extractQualifiedLinuxArchive(
         } else if (kind === "0" || kind === "\0") {
           const executable = octal(header.subarray(100, 108)) & 0o111;
           entry = await NodeFSP.open(target, "wx", 0o600 | executable);
+          // Restore only bounded executable bits after umask, on the exclusively created handle.
+          await entry.chmod(0o600 | executable);
           if (size === 0) await finish();
         } else return fail("Runtime archive contains an unsupported entry type.");
       }
