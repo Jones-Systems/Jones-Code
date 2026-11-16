@@ -14,6 +14,9 @@ export const releasePackageFiles = [
  * builds must all resolve through here, or the client reports a different version than its server.
  */
 export function resolveTaggedSourceVersion(repoRoot: string, manifestVersion: string): string {
+  // Jones preview stamps bind an Actions artifact even when its source also has a stable tag.
+  if (manifestVersion.includes("-preview.")) return manifestVersion;
+
   const git = (...args: ReadonlyArray<string>) =>
     NodeChildProcess.execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", stdio: "pipe" });
 

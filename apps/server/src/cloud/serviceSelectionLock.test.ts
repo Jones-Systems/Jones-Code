@@ -7,6 +7,23 @@ import * as Path from "effect/Path";
 import { acquireServiceSelectionLock } from "./serviceSelectionLock.ts";
 
 it.layer(NodeServices.layer)("service selection lock", (it) => {
+  it.effect("does not release a replacement owner's selection lease", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-selection-replacement-" });
+      const selectionPath = path.join(root, "service-state.json");
+      const lock = `${selectionPath}.selection-lock`;
+      const release = yield* Effect.promise(() => acquireServiceSelectionLock(selectionPath));
+      const owners = yield* fs.readDirectory(lock);
+      yield* fs.remove(path.join(lock, owners[0]!));
+      const replacement = `${process.pid}.1.replacement`;
+      yield* fs.writeFileString(path.join(lock, replacement), "");
+      assert.throws(release);
+      assert.deepEqual(yield* fs.readDirectory(lock), [replacement]);
+    }),
+  );
+
   it.effect("reclaims a lease from an earlier boot even when its PID is live again", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

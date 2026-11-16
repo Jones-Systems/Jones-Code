@@ -1,6 +1,8 @@
 import "vite-plus/test/config";
 import * as NodeOS from "node:os";
 
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite resolves the fixed custody artifact synchronously outside an Effect runtime.
+import * as NodePath from "node:path";
 import { defaultInclude, defineConfig } from "vite-plus";
 
 import { isDesktopRuntimeExternalDependency } from "../../scripts/lib/desktop-external-packages.ts";
@@ -12,6 +14,26 @@ const domTests = ["src/preview/PickPreload.test.ts"];
 // Install only bundle externals; the server bundle already carries its dependency tree.
 const isMainProcessExternal = (id: string) =>
   id === "electron" || id.startsWith("electron/") || isDesktopRuntimeExternalDependency(id);
+// Both independently bundled entry points must use Node's one module cache entry.
+const coldCustodyExternal = {
+  name: "jones-cold-custody-single-instance",
+  resolveId(id: string, importer?: string) {
+    if (!importer || !id.startsWith(".")) return null;
+    const normalizedImporter = importer.replaceAll("\\", "/");
+    const offset = normalizedImporter.lastIndexOf("/src/");
+    if (offset < 0) return null;
+    const canonical = NodePath.posix.join(
+      normalizedImporter.slice(0, offset),
+      "src/jones/updates/jonesColdBackendCustody.ts",
+    );
+    return NodePath.posix.join(
+      NodePath.posix.dirname(normalizedImporter),
+      id.replaceAll("\\", "/"),
+    ) === canonical
+      ? { id: "./jones-cold-backend-custody.cjs", external: true }
+      : null;
+  },
+};
 const shouldLaunchElectronAfterPack = process.env.T3CODE_DESKTOP_DEV === "1";
 // tsdown runs onSuccess through a shell. dash forks instead of exec'ing the last command, which
 // would leave an `sh` between `vp pack` and the supervisor and hide `vp pack` dying from it.
@@ -74,6 +96,7 @@ export default defineConfig({
       define: publicConfigDefine,
       outputOptions: { codeSplitting: false },
       entry: ["src/main.ts"],
+      plugins: [coldCustodyExternal],
       clean: true,
       deps: {
         alwaysBundle: (id) => !id.startsWith("node:") && !isMainProcessExternal(id),
@@ -94,6 +117,7 @@ export default defineConfig({
         "src/snapShot/GlobalShiftShortcutWorker.ts",
         "src/snapShot/RegionSnapShotWorker.ts",
         "src/snapShot/SnapShotAccessibilityWorker.ts",
+        "src/jones/updates/jonesStagingWorker.ts",
       ],
       clean: false,
       deps: {
@@ -103,16 +127,66 @@ export default defineConfig({
       },
     },
     {
-      // boot.cjs requires the other two at runtime, so all three stay separate files.
       format: "cjs",
       outDir: "dist-electron",
       dts: false,
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
-      entry: ["src/boot.ts", "src/compileCache.ts", "src/serverCompileCache.ts"],
+      define: publicConfigDefine,
+      entry: {
+        "jones/updates/pickerVerificationMain": "src/jones/updates/pickerVerificationMain.ts",
+      },
+      clean: false,
+      outputOptions: { codeSplitting: false },
+      deps: {
+        alwaysBundle: (id) => id !== "electron" && !id.startsWith("node:"),
+        neverBundle: (id) => id === "electron" || id.startsWith("node:"),
+        onlyBundle: false,
+      },
+    },
+    {
+      format: "cjs",
+      outDir: "dist-electron",
+      dts: false,
+      sourcemap: true,
+      outExtensions: () => ({ js: ".cjs" }),
+      define: publicConfigDefine,
+      entry: {
+        "jones/updates/pickerVerificationPreload": "src/jones/updates/pickerVerificationPreload.ts",
+      },
+      clean: false,
+      outputOptions: { codeSplitting: false, banner: "(() => {", footer: "})();" },
+      deps: {
+        alwaysBundle: (id) => id !== "electron" && !id.startsWith("node:"),
+        neverBundle: (id) => id === "electron" || id.startsWith("node:"),
+        onlyBundle: false,
+      },
+    },
+    {
+      // boot and main require the same custody artifact; its private permits must never be duplicated.
+      format: "cjs",
+      outDir: "dist-electron",
+      dts: false,
+      sourcemap: true,
+      outExtensions: () => ({ js: ".cjs" }),
+      entry: {
+        boot: "src/boot.ts",
+        compileCache: "src/compileCache.ts",
+        serverCompileCache: "src/serverCompileCache.ts",
+        "jones-cold-backend-custody": "src/jones/updates/jonesColdBackendCustody.ts",
+      },
+      plugins: [coldCustodyExternal],
       clean: false,
       deps: {
-        neverBundle: (id) => id === "./main.cjs" || id === "./compileCache.cjs",
+        alwaysBundle: (id) =>
+          id === "@t3tools/shared/jones/previewCompanionProduct" ||
+          id === "@t3tools/shared/jones/nativeWriterFence",
+        neverBundle: (id) =>
+          id === "ffi-rs" ||
+          id.startsWith("@yuuang/ffi-rs-") ||
+          id === "./main.cjs" ||
+          id === "./compileCache.cjs" ||
+          id === "./jones-cold-backend-custody.cjs",
       },
     },
     {
@@ -123,9 +197,19 @@ export default defineConfig({
       outExtensions: () => ({ js: ".cjs" }),
       define: publicConfigDefine,
       entry: ["src/preload.ts"],
+      // Electron's sandbox wrapper already binds setImmediate/clearImmediate.
+      // Keep bundled Effect internals inside a separate lexical scope.
+      outputOptions: { codeSplitting: false, banner: "(() => {", footer: "})();" },
       deps: {
-        // Sandboxed preloads cannot resolve imports inside ASAR; bundle Clerk's bridge.
-        alwaysBundle: (id) => id === "@clerk/electron" || id.startsWith("@clerk/electron/"),
+        // Sandboxed Electron preloads cannot reliably resolve package imports
+        // from inside the packaged ASAR. Bundle Clerk's preload bridge into the
+        // preload artifact instead of leaving a runtime require() behind.
+        alwaysBundle: (id) =>
+          id === "@clerk/electron" ||
+          id.startsWith("@clerk/electron/") ||
+          id === "effect" ||
+          id.startsWith("effect/") ||
+          id.startsWith("@t3tools/contracts"),
       },
     },
     {

@@ -8,7 +8,11 @@ import {
   type BackgroundPreparationController,
 } from "./backgroundPreparation.ts";
 import type { JonesDesktopUpdateOptions } from "./JonesDesktopUpdates.ts";
-import { createJonesStagingWorker, forkJonesStagingChild } from "./stagingWorkerClient.ts";
+import {
+  createJonesStagingWorker,
+  forkJonesStagingChild,
+  type JonesStagingWorker,
+} from "./stagingWorkerClient.ts";
 
 /** Built beside the main bundle from `jonesStagingWorker.ts`. */
 const JONES_STAGING_WORKER_FILE = NodePath.join("jones", "updates", "jonesStagingWorker.cjs");
@@ -23,10 +27,13 @@ export function createJonesDesktopPreparation(input: {
   readonly bundleDirectory: string;
   readonly stateDirectory: string;
   readonly platform: NodeJS.Platform;
+  readonly worker?: JonesStagingWorker;
 }) {
-  const worker = createJonesStagingWorker(() =>
-    forkJonesStagingChild(NodePath.join(input.bundleDirectory, JONES_STAGING_WORKER_FILE)),
-  );
+  const worker =
+    input.worker ??
+    createJonesStagingWorker(() =>
+      forkJonesStagingChild(NodePath.join(input.bundleDirectory, JONES_STAGING_WORKER_FILE)),
+    );
   const controllerOptions = {
     prepareStage: (candidate, roots, onVerifying, { token, onStarted }) =>
       worker.run(

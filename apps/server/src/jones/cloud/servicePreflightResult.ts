@@ -1,14 +1,14 @@
 // Decodes a candidate's `service-preflight` output. The service launcher reads this, so it must not
 // import the preflight itself: that pulls the migration manifest, Effect and the contracts into the
 // executable bootstrap, which `scripts/cli.ts` holds under 1 MiB.
-import { SERVICE_LAUNCHER_PROTOCOL } from "../../cloud/serviceProtocol.ts";
+import { SERVICE_LAUNCHER_PROTOCOL, isSupportedLauncherProtocol, type SupportedLauncherProtocol } from "../../cloud/serviceProtocol.ts";
 import { decodeMigrationPlan, type MigrationPlan } from "../updates/migrationPlan.ts";
 
 export type ServicePreflightResult =
   | {
       readonly status: "ready";
       readonly version: string;
-      readonly launcherProtocol: typeof SERVICE_LAUNCHER_PROTOCOL;
+      readonly launcherProtocol: SupportedLauncherProtocol;
       readonly startupGateProtocol?: 1;
       readonly qualifiedRecoveryProtocol?: 1;
       readonly migrationPlan?: MigrationPlan;
@@ -19,11 +19,18 @@ export type ServicePreflightResult =
       readonly reason: string;
     };
 
-export function decodeServicePreflightResult(value: unknown): ServicePreflightResult | undefined {
+export function decodeServicePreflightResult(
+  value: unknown,
+  launcherProtocol: SupportedLauncherProtocol = SERVICE_LAUNCHER_PROTOCOL,
+): ServicePreflightResult | undefined {
+  if (!isSupportedLauncherProtocol(launcherProtocol)) return undefined;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return undefined;
   }
   const record = value as Record<string, unknown>;
+  // Protocol-3 ordinary IPC compatibility does not establish a qualified startup gate.
+  if (launcherProtocol !== SERVICE_LAUNCHER_PROTOCOL &&
+      ("startupGateProtocol" in record || "qualifiedRecoveryProtocol" in record)) return undefined;
   const migrationPlan =
     "migrationPlan" in record ? decodeMigrationPlan(record.migrationPlan) : undefined;
   if ("migrationPlan" in record && migrationPlan === undefined) return undefined;
@@ -32,13 +39,13 @@ export function decodeServicePreflightResult(value: unknown): ServicePreflightRe
     return undefined;
   if (
     record.status === "ready" &&
-    record.launcherProtocol === SERVICE_LAUNCHER_PROTOCOL &&
+    record.launcherProtocol === launcherProtocol &&
     typeof record.version === "string"
   ) {
     return {
       status: "ready",
       version: record.version,
-      launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+      launcherProtocol,
       ...(migrationPlan === undefined ? {} : { migrationPlan }),
       ...(record.startupGateProtocol === undefined ? {} : { startupGateProtocol: 1 as const }),
       ...(record.qualifiedRecoveryProtocol === undefined
