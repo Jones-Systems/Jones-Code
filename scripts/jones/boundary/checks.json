@@ -2,6 +2,17 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-snooze-menu-pointer-isolation",
+      "tests": ["apps/web/src/jones/snoozeMenu/SidebarSnooze.browser.test.tsx"],
+      "commands": [
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/snoozeMenu/SidebarSnooze.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/web/src/jones/snoozeMenu/SidebarSnooze.browser.test.tsx apps/web/src/components/sidebar/SidebarThreadRow.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
       "id": "jones-linux-runtime-library-layout",
       "tests": ["scripts/jones/packaging/linuxRuntimeLibraries.test.ts"],
       "commands": [
