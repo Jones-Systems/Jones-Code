@@ -466,20 +466,22 @@ export const runOrderedV2StartupPhases = Effect.fn(
   readonly awaitTrialCommit?: Effect.Effect<void, TrialError, TrialContext>;
   readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
   readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
-  readonly recoverCodexFailover?: Effect.Effect<void, DelegationError, DelegationContext>;
+  readonly recoverCodexFailover: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly recoverSelfSettlements: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
-  readonly recoverPlannedUpdateQueues?: Effect.Effect<void, DelegationError, DelegationContext>;
+  readonly recoverRemoteTaskQuestions: Effect.Effect<void, DelegationError, DelegationContext>;
+  readonly recoverPlannedUpdateQueues: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
   readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
 }) {
   yield* input.awaitTrialCommit ?? Effect.void;
   yield* input.importLegacyShells;
   const recovery = yield* input.recover;
-  yield* input.recoverCodexFailover ?? Effect.void;
+  yield* input.recoverCodexFailover;
   yield* input.recoverSelfSettlements;
   yield* input.recoverDelegatedTasks;
-  yield* input.recoverPlannedUpdateQueues ?? Effect.void;
+  yield* input.recoverRemoteTaskQuestions;
+  yield* input.recoverPlannedUpdateQueues;
   yield* input.startEffectWorker;
   const bootstrap = yield* input.autoBootstrap;
   return { recovery, bootstrap } as const;
@@ -671,6 +673,10 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       recoverPlannedUpdateQueues: runStartupPhase(
         "orchestration-v2.planned-update-queues.recover",
         orchestrator.recoverPlannedUpdateQueues,
+      ),
+      recoverRemoteTaskQuestions: runStartupPhase(
+        "orchestration-v2.remote-task-questions.recover",
+        orchestrator.recoverRemoteTaskQuestions,
       ),
       startEffectWorker: runStartupPhase(
         "orchestration-v2.effect-worker.start",

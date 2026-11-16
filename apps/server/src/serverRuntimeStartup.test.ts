@@ -202,6 +202,7 @@ it.effect.each([
           recoverCodexFailover: Effect.void,
           recoverSelfSettlements: Effect.void,
           recoverDelegatedTasks: Effect.void,
+          recoverRemoteTaskQuestions: Effect.void,
           recoverPlannedUpdateQueues: Effect.void,
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ shutdown: Effect.void }),
@@ -508,6 +509,7 @@ it.effect("holds recovery, activation and queued commands before the trial grant
         recoverCodexFailover: record("codex-failover"),
         recoverSelfSettlements: record("self-settlements"),
         recoverDelegatedTasks: record("delegated"),
+        recoverRemoteTaskQuestions: record("remote-questions"),
         recoverPlannedUpdateQueues: record("planned-queues"),
         startEffectWorker: record("worker"),
         autoBootstrap: record("bootstrap"),
@@ -528,6 +530,7 @@ it.effect("holds recovery, activation and queued commands before the trial grant
         "codex-failover",
         "self-settlements",
         "delegated",
+        "remote-questions",
         "planned-queues",
         "worker",
         "bootstrap",
@@ -555,8 +558,11 @@ it.effect("a failed native trial fails readiness and leaves every recovery step 
         awaitTrialCommit: Effect.fail(failure),
         importLegacyShells: record,
         recover: record,
+        recoverCodexFailover: record,
         recoverSelfSettlements: record,
         recoverDelegatedTasks: record,
+        recoverRemoteTaskQuestions: record,
+        recoverPlannedUpdateQueues: record,
         startEffectWorker: record,
         autoBootstrap: record,
       }).pipe(
@@ -604,7 +610,7 @@ it.effect(
 );
 
 
-it.effect.each(["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "planned-queues"] as const)(
+it.effect.each(["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "remote-questions", "planned-queues"] as const)(
   "does not start workers or bootstrap when %s recovery fails",
   (failedPhase) => Effect.gen(function* () {
     const phases: string[] = [];
@@ -618,12 +624,13 @@ it.effect.each(["trial", "legacy", "provider", "failover", "self-settlements", "
       recoverCodexFailover: phase("failover"),
       recoverSelfSettlements: phase("self-settlements"),
       recoverDelegatedTasks: phase("delegated"),
+      recoverRemoteTaskQuestions: phase("remote-questions"),
       recoverPlannedUpdateQueues: phase("planned-queues"),
       startEffectWorker: phase("worker"),
       autoBootstrap: phase("bootstrap"),
     }).pipe(Effect.result);
     assert.equal(result._tag, "Failure");
-    assert.deepEqual(phases, ["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "planned-queues"].slice(0,
-      ["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "planned-queues"].indexOf(failedPhase) + 1));
+    assert.deepEqual(phases, ["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "remote-questions", "planned-queues"].slice(0,
+      ["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "remote-questions", "planned-queues"].indexOf(failedPhase) + 1));
   }),
 );

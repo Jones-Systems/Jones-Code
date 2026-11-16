@@ -141,6 +141,7 @@ it.effect("parks automatic pull until activation without delaying command readin
           recoverCodexFailover: Effect.void,
           recoverSelfSettlements: Effect.void,
           recoverDelegatedTasks: Effect.void,
+          recoverRemoteTaskQuestions: Effect.void,
           recoverPlannedUpdateQueues: Effect.void,
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ shutdown: Effect.void }),
