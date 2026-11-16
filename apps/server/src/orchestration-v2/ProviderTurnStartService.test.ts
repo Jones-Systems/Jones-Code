@@ -1,8 +1,13 @@
+import * as StartAdmission from "../jones/provider/StartAdmission.ts";
+import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
+  EnvironmentId,
   CheckpointScopeId,
   CommandId,
   ContextHandoffId,
@@ -389,6 +394,8 @@ it.each([
 });
 
 function makeLocalCommandHarness(input: {
+  readonly resumeDisposition?: "unsent" | "native_resume" | "held";
+
   readonly text: string;
   readonly manualContinuation?: boolean;
   readonly nativeResumeUnsupported?: boolean;
@@ -1226,9 +1233,33 @@ function makeLocalCommandHarness(input: {
       projection.runs.find((candidate) => candidate.id === id),
     ),
   );
+  let admissionOpen = true;
+  const revalidateAdmission = Effect.suspend(() => admissionOpen ? Effect.void : Effect.fail(
+    new ProviderAdapter.ProviderRuntimeBindingError({
+      driver: providerThread.driver, detail: "Original Stop receipt withdrew this start.",
+    }),
+  ));
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.succeed(StartAdmission.StartAdmission, {
+          capture: () => Effect.succeed({
+            revalidate: revalidateAdmission,
+            classifyResume: Effect.succeed(input.resumeDisposition ??
+              (input.sideChat?.unsentResume || input.sideChat?.restartedResume ? "unsent" : "native_resume")),
+          }),
+        }),
+        Layer.mock(GoalContinuity.GoalContinuity)({
+          requirementFor: () => Effect.succeed({
+            outcome: "absent", gate: { outcome: "clear", fenceRevision: "0" },
+          }),
+          context: (capability) => ({ capability } as never),
+        }),
+        Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("start-admission-test")),
+        }),
+        ControlAdmission.layer,
+
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: (handoff) =>
             input.sideChat?.nativeForkFrom === undefined
@@ -1319,6 +1350,7 @@ function makeLocalCommandHarness(input: {
   );
   return {
     layer,
+    withdrawAdmission: () => { admissionOpen = false; },
     interruptRun,
     settledRuns,
     getThreadRecords,
@@ -2997,3 +3029,33 @@ for (const cause of [new Error("native resume failed"), new Error("")]) {
     }),
   );
 }
+
+effectIt.effect("production start carries original admission through Resume and refuses Stop after an adapter wait", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "", manualContinuation: true,
+      sideChat: { contextRun: "delivered", acceptedResume: true }, resumeDisposition: "native_resume" });
+    let dispatched = 0;
+    harness.startTurn.mockImplementation((input) => Effect.gen(function* () {
+      expect(input.revalidateStartAdmission).toBeDefined();
+      expect(input.goalContinuityContext).toBeDefined();
+      harness.withdrawAdmission();
+      yield* input.revalidateStartAdmission!;
+      dispatched++;
+    }));
+    yield* harness.start.pipe(Effect.exit);
+    expect(harness.startRootRun).toHaveBeenCalledTimes(1);
+    expect(harness.startTurn).toHaveBeenCalledTimes(1);
+    expect(dispatched).toBe(0);
+  }),
+);
+
+effectIt.effect("production Resume holds an unknown original prefix before opening or resending", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "", manualContinuation: true,
+      sideChat: { contextRun: "failed", unsentResume: true }, resumeDisposition: "held" });
+    yield* harness.start.pipe(Effect.exit);
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startTurn).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+  }),
+);

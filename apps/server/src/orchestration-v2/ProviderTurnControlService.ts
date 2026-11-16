@@ -473,6 +473,7 @@ export const layer: Layer.Layer<
             });
           }
           let batchPayload: { text: string; attachments: typeof message.attachments } | undefined;
+          let capturedMessages: ReadonlyArray<typeof message> = [message];
           if (input.messageIds !== undefined) {
             const records = yield* projections.getThreadRecords(input.threadId, ["messages"], {
               messageIds: input.messageIds,
@@ -514,7 +515,26 @@ export const layer: Layer.Layer<
                 cause: "The persisted batch exceeds the steering budget.",
               });
             batchPayload = plan;
+            capturedMessages = messages.map((row) => row!);
           }
+          const fresh = yield* projections.getProviderControlContext(input.threadId, input);
+          const live = yield* sessions.get(input.providerSessionId);
+          const persisted = yield* projections.getThreadRecords(input.threadId, ["messages"], {
+            messageIds: capturedMessages.map((row) => row.id),
+          });
+          if (fresh.run?.id !== run.id || fresh.run.activeAttemptId !== run.activeAttemptId ||
+              fresh.run.status !== "running" ||
+              fresh.providerTurn?.id !== loaded.providerTurn.id ||
+              fresh.providerThread?.providerSessionId !== loaded.providerThread.providerSessionId ||
+              fresh.providerThread?.runtimeIdentity?.runtimeGeneration !== loaded.providerThread.runtimeIdentity?.runtimeGeneration ||
+              fresh.providerThread?.runtimeIdentity?.evidenceRevision !== loaded.providerThread.runtimeIdentity?.evidenceRevision ||
+              fresh.providerThread?.nativeThreadRef?.nativeId !== loaded.providerThread.nativeThreadRef?.nativeId ||
+              Option.isNone(live) || live.value !== loaded.session.value ||
+              capturedMessages.some((row) => JSON.stringify(persisted.messages.find((next) => next.id === row.id)) !== JSON.stringify(row)))
+            return yield* new ProviderTurnControlError({
+              threadId: input.threadId, operation: "steer", providerTurnId: input.providerTurnId,
+              cause: "The captured steering target or persisted batch changed before dispatch.",
+            });
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
