@@ -1,7 +1,19 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Read-only Git/filesystem qualification adapter; exclusion and removal belong to J3.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { canonical, exists, git, inside, readBounded, sha256 } from "./Filesystem.ts";
+import * as NodeOS from "node:os";
+import * as NodeChildProcess from "node:child_process";
+import {
+  canonical,
+  exists,
+  fdPath,
+  git,
+  inside,
+  openAbsolute,
+  readBounded,
+  sha256,
+  snapshot,
+} from "./Filesystem.ts";
 import { binding, incarnation, type Binding } from "./OutputAttestation.ts";
 import {
   classifyIgnored,
@@ -94,29 +106,197 @@ function errorClass(cause: unknown): ObservationErrorClass {
   return "unexpected";
 }
 
-// Read only the carrier that Git removes with this checkout. Common branch and
-// other-checkout reflogs survive removal. Keep both ends of every record: an old
-// tip may have no later entry after expiry or a rewritten reflog.
-async function candidateReflog(admin: string): Promise<string[]> {
-  let bytes: Buffer;
-  try {
-    bytes = await readBounded(NodePath.join(admin, "logs/HEAD"), 1024 * 1024);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw cause;
-  }
+// Git makes every pseudoref and these three ref namespaces worktree-local.
+const localRefNamespaces = ["refs/bisect/", "refs/worktree/", "refs/rewritten/"];
+const localRef = (ref: string) => localRefNamespaces.some((prefix) => ref.startsWith(prefix));
+const reflogByteLimit = 1024 * 1024;
+
+async function candidateReflog(
+  current: Binding,
+  head: string,
+  g: (args: string[]) => Promise<Buffer>,
+  remaining: () => number,
+): Promise<string[]> {
+  let bytesRead = 0;
+  const read = async (path: string) => {
+    if (remaining() <= 0) throw new ObservationError("timeout");
+    const bytes = await readBounded(path, reflogByteLimit - bytesRead);
+    bytesRead += bytes.length;
+    return bytes;
+  };
   const tips = new Set<string>();
-  for (const line of bytes.toString().split("\n")) {
-    if (!line) continue;
-    const record =
-      /^(?<old>[a-f0-9]{40}|[a-f0-9]{64}) (?<next>[a-f0-9]{40}|[a-f0-9]{64}) [^\0\n\t]+ -?\d+ [+-]\d{4}(?:\t[^\0\n]*)?$/.exec(
-        line,
-      )?.groups;
-    if (!record || record.old!.length !== record.next!.length)
-      throw new ObservationError("malformed");
-    for (const tip of [record.old!, record.next!]) if (!/^0+$/.test(tip)) tips.add(tip);
+  const add = (tip: string) => {
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(tip)) throw new ObservationError("malformed");
+    if (!/^0+$/.test(tip)) tips.add(tip);
     if (tips.size > 1000) throw new ObservationError("bounds");
+  };
+  const format = (await g(["rev-parse", "--show-ref-format"])).toString().trim();
+  // Older Git echoes unknown rev-parse flags. Its files backend remains observable.
+  const backend =
+    format === "--show-ref-format"
+      ? (
+          await g(["config", "--get", "extensions.refStorage"]).catch((cause: unknown) => {
+            if ((cause as { code?: number }).code === 1) return Buffer.from("files");
+            throw cause;
+          })
+        )
+          .toString()
+          .trim()
+      : format;
+  if (!["files", "reftable"].includes(backend)) throw new ObservationError("malformed");
+  // Root refs can carry a unique current tip even without a reflog. Git's native
+  // enumeration supports both backends, including symbolic root refs.
+  let roots: string[];
+  try {
+    roots = (await g(["for-each-ref", "--include-root-refs", "--format=%(objectname)", "[A-Z]*"]))
+      .toString()
+      .split("\n")
+      .filter(Boolean);
+  } catch (cause) {
+    if (backend !== "files" || (cause as { code?: number }).code !== 129) throw cause;
+    // Files-only Git predating --include-root-refs: discover root-ref names,
+    // then let Git resolve their contents. Other admin files are not refs.
+    const directory = await openAbsolute(current.git_dir, true);
+    roots = [];
+    try {
+      const listing = await NodeFSP.opendir(fdPath(directory.fd));
+      let entries = 0;
+      for await (const entry of listing) {
+        if (++entries > 1000) throw new ObservationError("bounds");
+        if (
+          /^[A-Z_-]+$/.test(entry.name) &&
+          (entry.name.endsWith("_HEAD") ||
+            [
+              "HEAD",
+              "AUTO_MERGE",
+              "BISECT_EXPECTED_REV",
+              "NOTES_MERGE_PARTIAL",
+              "NOTES_MERGE_REF",
+              "MERGE_AUTOSTASH",
+            ].includes(entry.name))
+        )
+          roots.push((await g(["rev-parse", "--verify", entry.name])).toString().trim());
+      }
+    } finally {
+      await directory.close();
+    }
   }
+  for (const tip of roots) add(tip);
+  if (backend === "files") {
+    const logs = NodePath.join(current.git_dir, "logs");
+    if (!(await exists(logs))) return [...tips].sort();
+    let entries = 0;
+    const scan = async (path: string, depth: number): Promise<void> => {
+      if (depth > 32 || remaining() <= 0)
+        throw new ObservationError(depth > 32 ? "bounds" : "timeout");
+      const directory = await openAbsolute(path, true);
+      try {
+        const before = snapshot(await directory.stat({ bigint: true }));
+        const listing = await NodeFSP.opendir(fdPath(directory.fd));
+        for await (const entry of listing) {
+          if (++entries > 1000) throw new ObservationError("bounds");
+          const child = NodePath.join(path, entry.name);
+          if (entry.isDirectory()) await scan(child, depth + 1);
+          else if (entry.isFile()) {
+            // Keep both ends, including disconnected old-only records and logs
+            // whose current ref has disappeared. Git's log walk can omit these.
+            for (const line of (await read(child)).toString().split("\n")) {
+              if (!line) continue;
+              const record =
+                /^(?<old>[a-f0-9]{40}|[a-f0-9]{64}) (?<next>[a-f0-9]{40}|[a-f0-9]{64}) [^\0\n\t]+ -?\d+ [+-]\d{4}(?:\t[^\0\n]*)?$/.exec(
+                  line,
+                )?.groups;
+              if (!record || record.old!.length !== record.next!.length)
+                throw new ObservationError("malformed");
+              add(record.old!);
+              add(record.next!);
+            }
+          } else throw new ObservationError("malformed");
+        }
+        if (before !== snapshot(await directory.stat({ bigint: true })))
+          throw new ObservationError("native_read");
+      } finally {
+        await directory.close();
+      }
+    };
+    await scan(logs, 0);
+  } else if (backend === "reftable") {
+    const objectFormat = (await g(["rev-parse", "--show-object-format"])).toString().trim();
+    if (!["sha1", "sha256"].includes(objectFormat)) throw new ObservationError("malformed");
+    const source = NodePath.join(current.git_dir, "reftable");
+    const manifest = await read(NodePath.join(source, "tables.list"));
+    const tables = manifest.toString().split("\n").filter(Boolean);
+    if (tables.length > 1000) throw new ObservationError("bounds");
+    if (tables.some((name) => !/^[a-zA-Z0-9][a-zA-Z0-9.-]*\.ref$/.test(name)))
+      throw new ObservationError("malformed");
+    // A disposable standalone view exposes only the candidate's stack. --reflog
+    // on the original repository would also enumerate the shared reflogs. Git
+    // decodes both record endpoints; no binary reftable parser is duplicated.
+    // Small, bounded scratch stays off /tmp; this call owns its exact cleanup.
+    const view = await NodeFSP.mkdtemp(NodePath.join(NodeOS.homedir(), ".jones-ref-observation-"));
+    try {
+      await NodeFSP.mkdir(NodePath.join(view, "refs"));
+      await NodeFSP.mkdir(NodePath.join(view, "reftable"));
+      await NodeFSP.writeFile(NodePath.join(view, "HEAD"), "ref: refs/heads/.invalid\n");
+      await NodeFSP.writeFile(
+        NodePath.join(view, "config"),
+        `[core]\nrepositoryformatversion = 1\nbare = true\n[extensions]\nrefStorage = reftable\nobjectFormat = ${objectFormat}\n`,
+      );
+      await NodeFSP.symlink(
+        NodePath.join(current.git_common_dir, "objects"),
+        NodePath.join(view, "objects"),
+      );
+      for (const name of tables)
+        await NodeFSP.writeFile(
+          NodePath.join(view, "reftable", name),
+          await read(NodePath.join(source, name)),
+        );
+      await NodeFSP.writeFile(NodePath.join(view, "reftable/tables.list"), manifest);
+      if (
+        !manifest.equals(await readBounded(NodePath.join(source, "tables.list"), reflogByteLimit))
+      )
+        throw new ObservationError("native_read");
+      const timeout = Math.min(10000, remaining());
+      if (timeout <= 0) throw new ObservationError("timeout");
+      const output = await new Promise<Buffer>((resolve, reject) => {
+        NodeChildProcess.execFile(
+          "git",
+          [
+            "--no-optional-locks",
+            `--git-dir=${view}`,
+            "rev-list",
+            "--no-walk",
+            "--single-worktree",
+            "--reflog",
+            // Empty reflogs otherwise leave rev-list with no revision input.
+            head,
+          ],
+          {
+            timeout,
+            maxBuffer: reflogByteLimit,
+            encoding: "buffer",
+            env: {
+              PATH: process.env.PATH,
+              GIT_CONFIG_NOSYSTEM: "1",
+              GIT_CONFIG_GLOBAL: "/dev/null",
+              GIT_OPTIONAL_LOCKS: "0",
+              GIT_NO_LAZY_FETCH: "1",
+              GIT_TERMINAL_PROMPT: "0",
+            },
+          },
+          (error, stdout, stderr) => {
+            // Git warns and skips pruned/corrupt objects; that is not empty history.
+            if (error) reject(error);
+            else if (stderr.length) reject(new ObservationError("native_command"));
+            else resolve(stdout);
+          },
+        );
+      });
+      for (const tip of output.toString().split("\n").filter(Boolean)) add(tip);
+    } finally {
+      await NodeFSP.rm(view, { recursive: true, force: true });
+    }
+  } else throw new ObservationError("malformed");
   return [...tips].sort();
 }
 
@@ -381,6 +561,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     stage = "operation_state";
     for (const file of [
       "MERGE_HEAD",
+      "FETCH_HEAD",
       "CHERRY_PICK_HEAD",
       "REVERT_HEAD",
       "REBASE_HEAD",
@@ -390,7 +571,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       "BISECT_LOG",
     ])
       if (await exists(NodePath.join(current.git_dir, file))) reasons.add("operation_in_progress");
-    if ((await g(["for-each-ref", "--format=%(refname)", "refs/worktree/", "refs/bisect/"])).length)
+    if ((await g(["for-each-ref", "--format=%(refname)", ...localRefNamespaces])).length)
       reasons.add("per_worktree_refs");
     const anchored =
       input.durableRepositories.includes(current.git_common_dir) &&
@@ -406,11 +587,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     // but must not change this candidate's containment comparison during removal.
     const ownRecovery = `refs/retired-worktrees/${incarnation(current)}/`;
     const other = containing.filter(
-      (ref) =>
-        ref !== result.branch &&
-        !ref.startsWith(ownRecovery) &&
-        !ref.startsWith("refs/worktree/") &&
-        !ref.startsWith("refs/bisect/"),
+      (ref) => ref !== result.branch && !ref.startsWith(ownRecovery) && !localRef(ref),
     );
     result.containingRefs = other;
     if (!anchored && !other.some((ref) => ref.startsWith("refs/remotes/"))) {
@@ -419,7 +596,12 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     }
     result.level = other.length ? "contained" : "branch-retained";
     stage = "candidate_reflog";
-    const tips = await candidateReflog(current.git_dir);
+    const tips = await candidateReflog(
+      current,
+      result.head,
+      g,
+      () => 60000 - (performance.now() - started),
+    );
     stage = "reflog_containment";
     const orphan: string[] = [];
     for (const tip of tips)
