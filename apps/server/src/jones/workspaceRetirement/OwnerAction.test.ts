@@ -13,6 +13,8 @@ import * as Projects from "../../orchestration-v2/ProjectStore.ts";
 import * as Settings from "../../serverSettings.ts";
 import * as OwnerAction from "./OwnerAction.ts";
 
+const isSettingsError = Schema.is(ServerSettingsError);
+const isProjectionReadError = Schema.is(Projections.ProjectionStoreReadError);
 const threadId = ThreadId.make("synthetic-thread");
 const worktreePath = "/synthetic/checkout";
 const fixture = (failure?: ServerSettingsError | Projections.ProjectionStoreReadError) =>
@@ -23,13 +25,13 @@ const fixture = (failure?: ServerSettingsError | Projections.ProjectionStoreRead
         Layer.mergeAll(
           Layer.mock(Projects.ProjectStoreV2)({}),
           Layer.mock(Settings.ServerSettingsService)({
-            getSettings: Schema.is(ServerSettingsError)(failure)
+            getSettings: isSettingsError(failure)
               ? Effect.fail(failure)
               : Effect.succeed(DEFAULT_SERVER_SETTINGS),
           }),
           Layer.mock(Projections.ProjectionStoreV2)({
             getThreadWorktreePaths: () =>
-              Schema.is(Projections.ProjectionStoreReadError)(failure)
+              isProjectionReadError(failure)
                 ? Effect.fail(failure)
                 : Effect.succeed([{ threadId, worktreePath }]),
             getThread: () =>
