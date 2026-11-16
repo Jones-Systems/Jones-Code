@@ -4,7 +4,7 @@ import * as Invocation from "../../mcp/McpInvocationContext.ts";
 import * as Service from "../../mcp/OrchestratorMcpService.ts";
 import type { ReceiptLookupInput } from "./SendIngress.ts";
 
-/** Read-only declaration; root registers it with F's shared receipt schema.
+/** Read-only declaration; registered with F's shared strict receipt schema.
  * Namespace and origin authority come only from the authenticated invocation.
  */
 export const lookupSendReceiptHandler = McpToolAccess.reads((input: ReceiptLookupInput) => Effect.gen(function* () {

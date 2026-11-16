@@ -1,3 +1,5 @@
+import * as ThreadActivityProjection from "../jones/mcp/ThreadActivityProjection.ts";
+import * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import type { RecordedServerCommand as OrchestrationV2ServerCommand } from "./RecordedTypes.ts";
 import * as SelfSettlementCaller from "../jones/mcp/SelfSettlementCaller.ts";
@@ -405,6 +407,7 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape extends ObservationPorts, SendIngressPorts, SelfSettlementCaller.Ports {
+  readonly observeThreadActivity?: (threadId: ThreadId) => Effect.Effect<RuntimeObservation.ProviderThreadActivityObservation>;
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
   ) => Stream.Stream<OrchestrationV2SearchThreadResult, Orchestrator.OrchestratorV2Error>;
@@ -673,6 +676,51 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => Option.none()),
       Effect.map(Option.isSome),
     );
+
+  const observationSessions = yield* Effect.serviceOption(ProviderSessionManager.ProviderSessionManagerV2);
+  const activitySessions = Option.isSome(observationSessions) ? observationSessions.value as typeof observationSessions.value & {
+    readonly observeThreadActivity?: (threadId: ThreadId) => Effect.Effect<RuntimeObservation.ProviderRuntimeObservation>;
+  } : undefined;
+  const observeThreadActivity = Effect.fn("ThreadManagementService.observeThreadActivity")(
+    (threadId: ThreadId) =>
+      Effect.gen(function* () {
+        const shell = yield* orchestrator.getThreadShell(threadId);
+        if (shell === null)
+          return {
+            foreground: null,
+            background: null,
+            backgroundStatus: "unknown" as const,
+            reason: "thread_unavailable",
+          };
+        if (shell.archivedAt !== null || shell.deletedAt !== null)
+          return { foreground: null, background: null, backgroundStatus: "known" as const };
+        const sampledAt = yield* Clock.currentTimeMillis;
+        const native =
+          activitySessions !== undefined &&
+          Object.hasOwn(activitySessions, "observeThreadActivity") &&
+          activitySessions.observeThreadActivity !== undefined
+            ? yield* activitySessions.observeThreadActivity(threadId)
+            : null;
+        const current = yield* orchestrator.getThreadShell(threadId);
+        if (current === null)
+          return {
+            foreground: null,
+            background: null,
+            backgroundStatus: "unknown" as const,
+            reason: "thread_unavailable",
+          };
+        return ThreadActivityProjection.project(current, native, sampledAt);
+      }).pipe(
+        Effect.catchCause(() =>
+          Effect.succeed({
+            foreground: null,
+            background: null,
+            backgroundStatus: "unknown" as const,
+            reason: "native_activity_unavailable",
+          }),
+        ),
+      ),
+  );
 
   const ensureLegacyTranscript = Effect.fn(
     "orchestrationV2.threadManagement.ensureLegacyTranscript",
@@ -1836,6 +1884,7 @@ const make = Effect.gen(function* () {
     getThreadTranscript,
     getThreadSnapshotWindow,
     getProjectThreadRecords,
+    observeThreadActivity,
     getAgentAwarenessSnapshot: orchestrator.getAgentAwarenessSnapshot,
     getShellSnapshot: orchestrator.getShellSnapshot,
     listActiveSubagentThreadIds: orchestrator.listActiveSubagentThreadIds,

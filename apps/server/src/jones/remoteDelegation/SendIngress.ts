@@ -1,19 +1,17 @@
-import { CommandId, MessageId, OrchestratorMcpFailure, type OrchestratorMcpThreadSendInput,
+import { CommandId, MessageId, OrchestratorMcpFailure, OrchestratorMcpThreadSendInput, OrchestratorMcpThreadSendReceiptLookupInput,
+  OrchestratorMcpThreadSendReceiptLookupResult, REMOTE_FOLLOW_UP_RECEIPT_VERSION,
   type OrchestratorMcpThreadSendResult, type ThreadId } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { isReceiptError, type RemoteSendReceiptError, type SendPreparationPorts } from "./SendPreparation.ts";
 import { canonicalJson } from "./shared.ts";
-export const receiptVersion = "jones.remote-followup-receipt/v1";
+export const receiptVersion = REMOTE_FOLLOW_UP_RECEIPT_VERSION;
 
-export type SendInput = OrchestratorMcpThreadSendInput & {readonly expectedThreadCreatedAt?: string};
-export interface ReceiptLookupInput {
-  readonly threadId: ThreadId;
-  readonly clientRequestId: string;
-  readonly requestDigest: string;
-}
+export type SendInput = OrchestratorMcpThreadSendInput;
+export type ReceiptLookupInput = OrchestratorMcpThreadSendReceiptLookupInput;
 export interface SendCapture {
   readonly originNamespace: string;
   readonly clientRequestId: string;
@@ -59,7 +57,8 @@ export const make = (owner: SendIngressPorts) => Effect.gen(function* () {
         return yield* unavailable();
       // Match the forwarding sender's final wire arguments, with routing removed.
       // No caller-supplied namespace is accepted or included as authority.
-      const {environmentId: _routing, ...arguments_} = input;
+      const encoded = yield* Schema.encodeUnknownEffect(OrchestratorMcpThreadSendInput)(input).pipe(Effect.mapError(failed));
+      const {environmentId: _routing, ...arguments_} = encoded;
       const requestDigest = Hex.encode(yield* digest.digest(Digest.sha256,
         new TextEncoder().encode(canonicalJson(arguments_))).pipe(Effect.mapError(failed)));
       return yield* owner.remoteSendReceipts.withSendCommit({originNamespace, clientRequestId: identity.key,
@@ -70,13 +69,16 @@ export const make = (owner: SendIngressPorts) => Effect.gen(function* () {
           Effect.mapError((error) => isReceiptError(error) ? failed() : error));
     }),
     lookup: Effect.fn("RemoteSendIngress.lookup")(function* (scope: McpInvocationScope, input: ReceiptLookupInput) {
+      yield* Schema.decodeUnknownEffect(OrchestratorMcpThreadSendReceiptLookupInput)(input).pipe(Effect.mapError(failed));
       const originNamespace = namespace(scope);
       if (originNamespace === undefined || owner.remoteSendReceipts === undefined) return yield* unavailable();
       if (input.clientRequestId.length === 0 || !/^[0-9a-f]{64}$/.test(input.requestDigest))
         return yield* new OrchestratorMcpFailure({code: "invalid_request", message: "Exact command key and SHA-256 digest are required."});
       const receipt = yield* owner.remoteSendReceipts.lookup({...input, originNamespace}).pipe(Effect.mapError(failed));
-      return {version: receiptVersion, environmentId: scope.environmentId, threadId: input.threadId,
-        clientRequestId: input.clientRequestId, requestDigest: input.requestDigest, ...receipt} as const;
+      return yield* Schema.decodeUnknownEffect(OrchestratorMcpThreadSendReceiptLookupResult)({
+        version: receiptVersion, environmentId: scope.environmentId, threadId: input.threadId,
+        clientRequestId: input.clientRequestId, requestDigest: input.requestDigest, ...receipt,
+      }).pipe(Effect.mapError(failed));
     }),
   };
 });

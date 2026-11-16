@@ -62,6 +62,7 @@ import {
   type OrchestratorMcpThreadReadResult,
   type OrchestratorMcpThreadRun,
   type OrchestratorMcpThreadSendResult,
+  type OrchestratorMcpThreadSendReceiptLookupResult,
   type OrchestratorMcpThreadSettleInput,
   type OrchestratorMcpThreadSettleResult,
   type OrchestratorMcpThreadTimelineItem,
@@ -248,11 +249,7 @@ export interface OrchestratorMcpServiceShape {
   readonly lookupSendReceipt: (
     scope: McpInvocationScope,
     input: SendIngress.ReceiptLookupInput,
-  ) => Effect.Effect<{
-    readonly version: typeof SendIngress.receiptVersion; readonly environmentId: McpInvocationScope["environmentId"];
-    readonly threadId: ThreadId; readonly clientRequestId: string; readonly requestDigest: string;
-    readonly outcome: "accepted" | "unknown"; readonly sent: OrchestratorMcpThreadSendResult | null;
-  }, OrchestratorMcpFailure>;
+  ) => Effect.Effect<OrchestratorMcpThreadSendReceiptLookupResult, OrchestratorMcpFailure>;
   readonly waitForThread: (
     scope: McpInvocationScope,
     input: OrchestratorMcpThreadWaitInput,
