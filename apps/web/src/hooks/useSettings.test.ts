@@ -340,7 +340,7 @@ it("uses the environment's model preferences after migration, including empty li
 });
 
 const decodeWorkButtonClientSettings = Schema.decodeSync(ClientSettingsSchema);
-const decodeWorkButtonClientPatch = Schema.decodeSync(ClientSettingsPatch);
+const decodeWorkButtonClientPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 
 describe("Work button client preference", () => {
   it("defaults old settings to visible and decodes partial visibility patches", () => {
