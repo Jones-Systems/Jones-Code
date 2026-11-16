@@ -1,3 +1,4 @@
+import { PanelFindScope } from "./find/PanelFind";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
@@ -328,7 +329,14 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           )}
           <SidebarRail onDoubleClick={resetSidebarWidth} />
         </Sidebar>
-        {children}
+        <PanelFindScope
+          label="page"
+          resetKey={pathname}
+          data-find-default
+          className="relative flex min-h-0 min-w-0 flex-1"
+        >
+          {children}
+        </PanelFindScope>
         <SidebarControl />
         <NavigationHistoryShortcuts />
         <MainAppLocationTracker />

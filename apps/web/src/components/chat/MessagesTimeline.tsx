@@ -1,3 +1,5 @@
+import { messageFindText } from "../find/messageFindText";
+import { usePanelFindSource, usePanelFindTarget } from "../find/PanelFind";
 import { ArrowUpIcon, ClockIcon } from "lucide-react";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
 import { useRightPanelStore } from "~/rightPanelStore";
@@ -810,6 +812,34 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     worktreeSetup,
     queuedMessages,
   ]);
+  const revealFindMessage = useCallback(
+    (id: string) => {
+      const entry = timelineEntries.find(
+        (entry) => entry.kind === "message" && entry.message.id === id,
+      );
+      if (entry?.kind === "message" && entry.message.turnId) expandCitedTurn(entry.message.turnId);
+      onManualNavigation();
+    },
+    [timelineEntries, expandCitedTurn, onManualNavigation],
+  );
+  const findSource = useMemo(
+    () => ({
+      getItems: () =>
+        timelineEntries.flatMap((entry) =>
+          entry.kind === "message" &&
+          (entry.message.role === "user" || entry.message.role === "assistant")
+            ? [{ id: entry.message.id, text: messageFindText(entry.message) }]
+            : [],
+        ),
+      reveal: revealFindMessage,
+      loading: citationHistoryLoading || loadEarlier?.loading === true,
+      ...(loadEarlier
+        ? { history: { cursor: loadEarlier.cursor ?? "first", load: loadEarlier.onLoadEarlier } }
+        : {}),
+    }),
+    [timelineEntries, revealFindMessage, citationHistoryLoading, loadEarlier],
+  );
+  const panelFind = usePanelFindSource(findSource);
   const rows = useStableRows(rawRows, listIdentityKey);
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const restoreRowIndex =
@@ -958,7 +988,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onManualNavigation,
   });
   const [minimapHasPersistentGutter, setMinimapHasPersistentGutter] = useState(false);
-  const alwaysRender = citationAlwaysRender ?? restoringAlwaysRender;
+  const findRowIndex =
+    panelFind.selectedId === null
+      ? -1
+      : rows.findIndex((row) => row.kind === "message" && row.message.id === panelFind.selectedId);
+  const alwaysRender =
+    findRowIndex >= 0
+      ? { keys: [rows[findRowIndex]!.id] }
+      : (citationAlwaysRender ?? restoringAlwaysRender);
+  useEffect(() => {
+    if (findRowIndex < 0) return;
+    onManualNavigation();
+    void listRef.current?.scrollToIndex({
+      index: findRowIndex,
+      animated: false,
+      viewPosition: 0.5,
+    });
+  }, [findRowIndex, panelFind.selectedId, listRef, onManualNavigation]);
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
   const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
   const handleAnchorReady = useCallback(
@@ -1299,12 +1345,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             estimatedItemSize={90}
             initialScrollAtEnd={citationRequest === null && rememberedPosition?.atEnd !== false}
             // Legend needs a data refresh to mount new pins without a scroll event.
-            dataVersion={readyCitationRequest?.key ?? listIdentityKey}
+            dataVersion={`${readyCitationRequest?.key ?? listIdentityKey}:${panelFind.selectedId ?? ""}`}
             {...(alwaysRender ? { alwaysRender } : {})}
             onLoad={onCitationListLoad}
             {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
             contentInsetEndAdjustment={anchoredEndSpace ? contentInsetEndAdjustment : 0}
             maintainScrollAtEnd={
+              panelFind.query.length > 0 ||
               citationPositioning ||
               (restoringThreadPosition && rememberedPosition?.atEnd === false) ||
               anchoredEndSpace ||
@@ -1316,6 +1363,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   : TIMELINE_MAINTAIN_SCROLL_AT_END
             }
             maintainVisibleContentPosition={
+              panelFind.query.length > 0 ||
               citationPositioning ||
               (restoringThreadPosition && rememberedPosition?.atEnd === false)
                 ? false
@@ -1714,6 +1762,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       )}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
+      data-find-item={row.kind === "message" ? row.message.id : undefined}
       data-message-id={
         row.kind === "message" || row.kind === "assistant-meta" ? row.message.id : undefined
       }
@@ -2215,6 +2264,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         ) : null}
         <div onCopyCapture={onBodyCopyCapture}>
           <CollapsibleUserMessageBody
+            messageId={row.message.id}
             text={resolvedContext.text}
             renderContextReference={renderContextReference}
             skills={ctx.skills}
@@ -3933,6 +3983,7 @@ function shouldCollapseUserMessage(text: string): boolean {
 }
 
 const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(props: {
+  messageId: string;
   text: string;
   renderContextReference: (reference: ChatMarkdownContextReference) => ReactNode;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
@@ -3942,7 +3993,8 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   const [expanded, setExpanded] = useState(false);
   const hasVisibleBody = props.text.trim().length > 0;
   const canCollapse = hasVisibleBody && shouldCollapseUserMessage(props.text);
-  const isCollapsed = canCollapse && !expanded;
+  const isFindTarget = usePanelFindTarget(props.messageId);
+  const isCollapsed = canCollapse && !expanded && !isFindTarget;
 
   return (
     <div>

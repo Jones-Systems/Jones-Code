@@ -1,3 +1,4 @@
+import { PanelFindScope } from "../find/PanelFind";
 import {
   type ReactNode,
   type RefObject,
@@ -51,6 +52,7 @@ export function getPreviewPanelMaxWidth(viewportWidth: number, containerWidth?: 
 export function PreviewPanelShell(props: {
   mode: PreviewPanelMode;
   maximized?: boolean;
+  findResetKey?: string;
   open?: boolean;
   /**
    * Overrides the localStorage key used to persist the panel width. Callers
@@ -143,12 +145,16 @@ export function PreviewPanelShell(props: {
     >
       {isInline && !maximized ? <RightPanelResizeHandle handlers={handlers} /> : null}
       <div className={cn("h-full min-h-0 w-full", collapsible && "overflow-clip")}>
-        <div
-          className="flex h-full min-h-0 min-w-0 flex-col"
+        <PanelFindScope
+          data-find-default
+          label="side panel"
+          enabled={open}
+          resetKey={props.findResetKey}
+          className="relative flex h-full min-h-0 min-w-0 flex-col"
           style={collapsible && !maximized ? { width: `calc(${width}px - 1px)` } : undefined}
         >
           {props.children}
-        </div>
+        </PanelFindScope>
       </div>
     </div>
   );

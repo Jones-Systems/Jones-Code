@@ -1,3 +1,4 @@
+import { PanelFindProvider } from "../components/find/PanelFind";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -181,9 +182,11 @@ function RootRouteView() {
           <ProviderAuthCallbackCoordinator />
           <CustomSnoozeDialogHost />
           <CommandPalette>
-            <AppSidebarLayout>
-              <Outlet />
-            </AppSidebarLayout>
+            <PanelFindProvider>
+              <AppSidebarLayout>
+                <Outlet />
+              </AppSidebarLayout>
+            </PanelFindProvider>
           </CommandPalette>
         </AnchoredToastProvider>
       </ToastProvider>
@@ -201,9 +204,11 @@ function RootRouteView() {
 
   const appShell = (
     <CommandPalette>
-      <AppSidebarLayout>
-        <Outlet />
-      </AppSidebarLayout>
+      <PanelFindProvider>
+        <AppSidebarLayout>
+          <Outlet />
+        </AppSidebarLayout>
+      </PanelFindProvider>
     </CommandPalette>
   );
 

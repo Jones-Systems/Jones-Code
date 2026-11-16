@@ -2262,3 +2262,13 @@ code {
 .composer-tiptap li[data-checked] > div > p {
   margin: 0;
 }
+
+::highlight(panel-find) {
+  background-color: #facc1566;
+  color: inherit;
+}
+
+::highlight(panel-find-active) {
+  background-color: #fb923c;
+  color: #171717;
+}
