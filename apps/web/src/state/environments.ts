@@ -1,3 +1,4 @@
+import { deviceDisplayLabel } from "@t3tools/contracts/jones/devicePresentation";
 import { useAtomValue } from "@effect/atom-react";
 import {
   connectionCatalogDisplayUrl,
@@ -22,6 +23,7 @@ import { usePreparedConnection } from "./session";
 export interface EnvironmentPresentation extends BaseEnvironmentPresentation {
   readonly environmentId: EnvironmentId;
   readonly label: string;
+  readonly displayLabel: string;
   readonly displayUrl: string | null;
   readonly relayManaged: boolean;
 }
@@ -34,6 +36,11 @@ function projectEnvironmentPresentation(
     ...presentation,
     environmentId,
     label: presentation.entry.target.label,
+    displayLabel: deviceDisplayLabel(
+      presentation.entry.target.label,
+      presentation.serverConfig?.environment.platform.machine,
+      presentation.serverConfig?.settings.deviceDisplayName,
+    ),
     displayUrl: connectionCatalogDisplayUrl(presentation.entry),
     relayManaged: hasRelayRoute(presentation.entry),
   };

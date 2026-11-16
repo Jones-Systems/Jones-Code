@@ -280,7 +280,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   await update();
   const checkerRow = () => buttons().find((button) => button.textContent?.includes("Checker"))!;
   expect(checkerRow().textContent).toContain("Running");
-  expect(checkerRow().textContent).not.toContain("on LAP");
+  expect(checkerRow().textContent).not.toContain("on Laptop");
   state.environments.set("test", {
     label: "VPS",
     connection: { phase: "connected" },
@@ -509,7 +509,7 @@ it("combines remote and local history before collapse and pagination, then resto
   const more = buttons().find((button) => button.textContent?.includes("Show 1 more"))!;
   await click(more);
   expect(container.querySelectorAll("li")).toHaveLength(7);
-  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("on TSV");
+  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("on Test Server");
   state.projection = {
     ...projection,
     subagents: [
@@ -670,7 +670,7 @@ it("hides the client-local location for tasks delegated back from another server
   } as ComponentProps<typeof RemoteSubagentRow>["agent"];
   await render(<RemoteSubagentRow agent={agent} provider={undefined} />);
   expect(byLabel("Local destination").textContent).toContain("Running");
-  expect(container.textContent).not.toContain("on LAP");
+  expect(container.textContent).not.toContain("on Laptop");
   await click(byLabel("Local destination"));
   expect(state.navigate).toHaveBeenLastCalledWith({
     to: "/$environmentId/$threadId",

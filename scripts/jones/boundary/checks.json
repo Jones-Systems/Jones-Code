@@ -2,6 +2,25 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-device-presentation",
+      "tests": [
+        "apps/web/src/jones/devicePresentation/identityProtection.test.ts",
+        "apps/web/src/jones/devicePresentation/SidebarDevice.browser.test.tsx",
+        "apps/web/src/jones/devicePresentation/DeviceDisplayNameEditor.browser.test.tsx",
+        "apps/server/src/jones/devicePresentation/settings.test.ts",
+        "packages/contracts/src/jones/devicePresentation.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/devicePresentation.test.ts apps/server/src/jones/devicePresentation/settings.test.ts apps/web/src/jones/devicePresentation/identityProtection.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/devicePresentation/SidebarDevice.browser.test.tsx src/jones/devicePresentation/DeviceDisplayNameEditor.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-snooze-menu-pointer-isolation",
       "tests": ["apps/web/src/jones/snoozeMenu/SidebarSnooze.browser.test.tsx"],
       "commands": [

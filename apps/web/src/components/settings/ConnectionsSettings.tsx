@@ -1,3 +1,4 @@
+import { DeviceDisplayNameEditor } from "../../jones/devicePresentation/DeviceDisplayNameEditor";
 import { clientServerBuildLabels } from "../../jones/updates/buildPairs";
 import { RemoteAdmissionConfigurations } from "../../jones/remoteAdmission/RemoteAdmissionSettings";
 import { SessionPermissions } from "./SessionPermissions";
@@ -1140,10 +1141,13 @@ function ConnectionsSettingsContent({
           <SettingsSection
             {...searchableSetting("connections-environment")}
             title={
-              accessEnvironment?.label ?? (desktopBridge ? "This machine" : "Primary environment")
+              accessEnvironment?.displayLabel ??
+              (desktopBridge ? "This machine" : "Primary environment")
             }
             icon={
               <EnvironmentMachineIcon
+                label={accessEnvironment?.label}
+                override={accessServerConfig?.settings.environmentIcon != null}
                 aria-hidden
                 kind={
                   accessServerConfig ? resolveEnvironmentMachineKind(accessServerConfig) : "desktop"
@@ -1167,6 +1171,7 @@ function ConnectionsSettingsContent({
                     <EllipsisIcon className="size-3.5" />
                   </MenuTrigger>
                   <MenuPopup align="end">
+                    <DeviceDisplayNameEditor environmentId={accessEnvironmentId} />
                     <EnvironmentIconMenu
                       environmentId={accessEnvironmentId}
                       serverConfig={accessServerConfig}
