@@ -132,6 +132,41 @@ describe("personal Workstream header controls", () => {
     expect(counter(screen.container, "Done").getAttribute("aria-label")).toContain("selected");
   });
 
+  it("keeps counters compact and gives their spare spacing to a long title", async () => {
+    await using screen = await render(<Header width={420} />);
+    const counters = () =>
+      counter(screen.container, "Working").closest<HTMLElement>(
+        "[data-workstream-header-control]",
+      )!;
+    const roomyWidth = counters().getBoundingClientRect().width;
+    expect(roomyWidth).toBeLessThanOrEqual(56);
+    expect(getComputedStyle(counter(screen.container, "Working")).fontSize).toBe("12px");
+
+    for (const width of [200, 260, 360]) {
+      await screen.rerender(
+        <Header width={width} name="A long Workstream title that needs the available space" />,
+      );
+      const header = screen.container.querySelector<HTMLElement>("[data-personal-group-header]")!;
+      const group = counters();
+      const title = header.querySelector(".line-clamp-2")!;
+      expect(group.getBoundingClientRect().width).toBeLessThan(roomyWidth - 2);
+      expect(group.scrollWidth).toBeLessThanOrEqual(group.clientWidth + 1);
+      expect(header.scrollWidth).toBeLessThanOrEqual(header.clientWidth);
+      expect(title.getBoundingClientRect().right).toBeLessThanOrEqual(
+        group.getBoundingClientRect().left,
+      );
+      for (const name of ["Working", "Needs input", "Done"]) {
+        const button = counter(header, name);
+        expect(button.getBoundingClientRect().width).toBeGreaterThan(8);
+        expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(
+          group.getBoundingClientRect().right,
+        );
+      }
+    }
+    await screen.rerender(<Header width={420} />);
+    expect(counters().getBoundingClientRect().width).toBeCloseTo(roomyWidth, 1);
+  });
+
   it.each([260, 360])(
     "places failed metadata below the action at the full right edge at %s px",
     async (width) => {
