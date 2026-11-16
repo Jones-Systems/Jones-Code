@@ -194,6 +194,25 @@ describe("DesktopApplicationMenu", () => {
     }),
   );
 
+  it.effect("routes Find in Panel through the focused renderer", () =>
+    Effect.gen(function* () {
+      const selectedAction = yield* Deferred.make<string>();
+      const applicationMenuTemplate =
+        yield* Deferred.make<readonly Electron.MenuItemConstructorOptions[]>();
+      yield* configureMenu(selectedAction, applicationMenuTemplate);
+      const template = yield* Deferred.await(applicationMenuTemplate);
+      const edit = template.find((item) => item.label === "Edit");
+      if (!Array.isArray(edit?.submenu)) throw new Error("Expected Edit submenu");
+      const find = edit.submenu.find((item) => item.label === "Find in Panel…");
+      assert.equal(find?.accelerator, "CmdOrCtrl+F");
+      if (typeof find?.click !== "function") throw new Error("Expected Find handler");
+      find.click({} as Electron.MenuItem, undefined, {
+        triggeredByAccelerator: true,
+      } as Electron.KeyboardEvent);
+      assert.equal(yield* Deferred.await(selectedAction), "find-in-panel");
+    }),
+  );
+
   it.effect("owns Paste as Text and routes it through the renderer", () =>
     Effect.gen(function* () {
       const selectedAction = yield* Deferred.make<string>();
