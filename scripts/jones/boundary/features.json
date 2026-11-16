@@ -1782,6 +1782,7 @@
         "apps/server/src/jones/remoteAdmission/evaluationDiagnostic.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/LaunchRecovery.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/PeerProtocol.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/protocolTools.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/RecoveryStore.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/RequestContextAdmission.http.test.ts",

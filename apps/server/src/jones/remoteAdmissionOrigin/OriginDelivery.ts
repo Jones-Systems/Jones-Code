@@ -96,27 +96,21 @@ const make = Effect.gen(function* () {
         }),
       );
     },
-    Effect.mapError((error) =>
-      isOrchestratorMcpFailure(error) ? error : originConflict(),
-    ),
+    Effect.mapError((error) => (isOrchestratorMcpFailure(error) ? error : originConflict())),
   );
   const pending = Effect.fn("OriginDelivery.pending")(
     function* (key: string, phase: "held" | "sent_unknown") {
       yield* sql.withTransaction(store.pending(key, phase, yield* now));
       yield* changed;
     },
-    Effect.mapError((error) =>
-      isOrchestratorMcpFailure(error) ? error : originConflict(),
-    ),
+    Effect.mapError((error) => (isOrchestratorMcpFailure(error) ? error : originConflict())),
   );
   const release = Effect.fn("OriginDelivery.release")(
     function* (key: string) {
       yield* sql.withTransaction(store.release(key, yield* now));
       yield* changed;
     },
-    Effect.mapError((error) =>
-      isOrchestratorMcpFailure(error) ? error : originConflict(),
-    ),
+    Effect.mapError((error) => (isOrchestratorMcpFailure(error) ? error : originConflict())),
   );
   return OriginDelivery.of({ prepare, pending, release, isSending: (key) => sending.has(key) });
 });

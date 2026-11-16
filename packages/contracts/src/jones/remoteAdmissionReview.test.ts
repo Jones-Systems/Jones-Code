@@ -40,7 +40,9 @@ const decodeUnknownStatus = Schema.decodeUnknownSync(RemoteAdmissionStatus);
 const decodeUnknownEvaluation = Schema.decodeUnknownSync(RemoteAdmissionEvaluation);
 const decodeUnknownReviewDecision = Schema.decodeUnknownSync(RemoteAdmissionReviewDecision);
 const decodeUnknownDecision = Schema.decodeUnknownSync(RemoteAdmissionDecision);
-const decodeUnknownReviewDecisionResult = Schema.decodeUnknownSync(RemoteAdmissionReviewDecisionResult);
+const decodeUnknownReviewDecisionResult = Schema.decodeUnknownSync(
+  RemoteAdmissionReviewDecisionResult,
+);
 const decodeRecord = Schema.decodeSync(RemoteAdmissionRecord);
 const decodeUnknownReviewCapabilities = Schema.decodeUnknownSync(RemoteAdmissionReviewCapabilities);
 const decodeReviewCounts = Schema.decodeSync(RemoteAdmissionReviewCounts);
@@ -216,9 +218,7 @@ describe("remote admission review compatibility", () => {
       { blockedHeldAdmissions: -1 },
       { activeThreads: 1.5 },
     ])
-      expect(() =>
-        decodeReviewCounts({ ...counts, ...delta }),
-      ).toThrow();
+      expect(() => decodeReviewCounts({ ...counts, ...delta })).toThrow();
     const decode = decodeUnknownReviewQuery;
     for (const view of ["current", "blocked", "done", "unresolved", "inflight", "access"])
       expect(decode({ view, cursor: "opaque-token", limit: 100 })).toEqual({
@@ -232,9 +232,10 @@ describe("remote admission review compatibility", () => {
   });
 
   it("decodes numeric HTTP query strings without changing local numeric DTOs", () => {
-    expect(
-      decodeReviewHttpQuery({ view: "current", limit: "50" }),
-    ).toEqual({ view: "current", limit: 50 });
+    expect(decodeReviewHttpQuery({ view: "current", limit: "50" })).toEqual({
+      view: "current",
+      limit: 50,
+    });
     expect(decodeGrantHttpQuery({ limit: "100" })).toEqual({
       limit: 100,
     });
@@ -242,9 +243,7 @@ describe("remote admission review compatibility", () => {
       timeoutMs: 50000,
     });
     for (const limit of ["0", "101", "1.5", "NaN"])
-      expect(() =>
-        decodeReviewHttpQuery({ view: "current", limit }),
-      ).toThrow();
+      expect(() => decodeReviewHttpQuery({ view: "current", limit })).toThrow();
   });
 
   it("returns known current state on conflicts and preserves unavailable versus neutral 401", () => {
@@ -268,20 +267,14 @@ describe("remote admission review compatibility", () => {
       current,
     };
     expect(decodeUnknownReviewConflict(conflict)).toEqual(conflict);
-    expect(() =>
-      decodeUnknownReviewConflict({ ...conflict, current: undefined }),
-    ).toThrow();
+    expect(() => decodeUnknownReviewConflict({ ...conflict, current: undefined })).toThrow();
     const unavailable = { code: "history_unavailable", message: "Refresh required" };
-    expect(decodeUnknownReviewUnavailable(unavailable)).toEqual(
-      unavailable,
-    );
+    expect(decodeUnknownReviewUnavailable(unavailable)).toEqual(unavailable);
     const unauthorized = {
       code: "review_unavailable",
       message: "Request review is unavailable for this session",
     };
-    expect(decodeUnknownReviewUnauthorized(unauthorized)).toEqual(
-      unauthorized,
-    );
+    expect(decodeUnknownReviewUnauthorized(unauthorized)).toEqual(unauthorized);
     expect(
       decodeReviewError({
         code: "owner_required",

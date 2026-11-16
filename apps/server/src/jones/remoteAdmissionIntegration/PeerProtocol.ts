@@ -75,10 +75,7 @@ export const makePeerProtocol = (
       scopes: string;
     }>`SELECT scopes FROM auth_sessions WHERE session_id=${scope.client.sessionId}
       AND subject='mcp-client' AND method='bearer-access-token' AND revoked_at IS NULL AND expires_at>${yield* nowIso}`;
-    if (
-      !rows[0] ||
-      !(yield* decodeScopesJson(rows[0].scopes)).includes("orchestration:operate")
-    )
+    if (!rows[0] || !(yield* decodeScopesJson(rows[0].scopes)).includes("orchestration:operate"))
       return yield* unavailable();
     return scope.client.sessionId;
   });

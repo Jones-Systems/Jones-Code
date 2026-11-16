@@ -1,3 +1,4 @@
+import "../../index.css";
 import type { ReactNode } from "react";
 import { EnvironmentId } from "@t3tools/contracts";
 import type {
@@ -129,6 +130,8 @@ it("collapses an incoming row independently and uses compact controls and an exa
     screen.container.querySelector('[aria-label="Open exact request"]')?.getAttribute("href"),
   ).toBe(requestHref(receiver, f.item.record.id, f.item.record.bindingDigest));
   const duration = screen.container.querySelector<HTMLButtonElement>('[aria-label="Duration"]')!;
+  // Geometry assertions must exercise the app stylesheet, not browser-default buttons.
+  expect(getComputedStyle(duration).display).toBe("inline-flex");
   const buttons = [...screen.container.querySelectorAll("button")];
   const approve = buttons.find((button) => button.textContent === "Approve")!;
   const deny = buttons.find((button) => button.textContent === "Deny")!;

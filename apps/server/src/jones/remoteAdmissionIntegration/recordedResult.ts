@@ -59,8 +59,7 @@ export const recordedLaunchResult = Effect.fn("AdmissionRecovery.recordedResult"
     FROM jones_remote_admissions a LEFT JOIN jones_remote_admission_results r ON r.admission_id=a.id
     WHERE a.id=${id}`)[0];
   if (!row || row.operation !== "t3_thread_launch") return null;
-  if (row.launch_result !== null)
-    return yield* decodeLaunchResultJson(row.launch_result);
+  if (row.launch_result !== null) return yield* decodeLaunchResultJson(row.launch_result);
   if (row.result_json === null && !["denied", "cancelled", "dispatched"].includes(row.status))
     return null;
   return terminalLaunchResult({

@@ -9,6 +9,84 @@ import * as Access from "../../mcp/McpToolAccess.ts";
 import { type makePeerProtocol } from "./PeerProtocol.ts";
 import { ReceiverInspection } from "./Inspection.ts";
 
+// MCP requires an object root. Keep the contract's exact field schemas and decode
+// back into its union after checking the raw keys, before optional JSON fields
+// can normalize null to absence or Struct decoding can discard another selector.
+const observationFields = {
+  clientRequestId: Schema.optionalKey(
+    DTO.RemoteAdmissionObservationInput.members[0].fields.clientRequestId,
+  ),
+  attemptId: Schema.optionalKey(DTO.RemoteAdmissionObservationInput.members[1].fields.attemptId),
+  observationKey: Schema.optionalKey(
+    DTO.RemoteAdmissionObservationInput.members[1].fields.observationKey,
+  ),
+};
+const observationSelector = Schema.makeFilter<{
+  readonly clientRequestId?: string;
+  readonly attemptId?: string;
+  readonly observationKey?: string;
+}>(
+  (input) =>
+    Object.hasOwn(input, "clientRequestId")
+      ? !Object.hasOwn(input, "attemptId") && !Object.hasOwn(input, "observationKey")
+      : Object.hasOwn(input, "attemptId") && Object.hasOwn(input, "observationKey"),
+  {
+    expected: "either clientRequestId or both attemptId and observationKey, never mixed selectors",
+    toJsonSchema: () => ({
+      oneOf: [
+        {
+          required: ["clientRequestId"],
+          not: { anyOf: [{ required: ["attemptId"] }, { required: ["observationKey"] }] },
+        },
+        { required: ["attemptId", "observationKey"], not: { required: ["clientRequestId"] } },
+      ],
+    }),
+  },
+);
+const ObservationParameters = Schema.flip(
+  Schema.flip(Schema.Struct(observationFields)).check(observationSelector),
+).pipe(Schema.decodeTo(DTO.RemoteAdmissionObservationInput));
+const AckParameters = Schema.flip(
+  Schema.flip(
+    Schema.Struct({
+      ...observationFields,
+      disposition: DTO.RemoteAdmissionAckInput.members[0].fields.disposition,
+    }),
+  ).check(observationSelector),
+).pipe(Schema.decodeTo(DTO.RemoteAdmissionAckInput));
+const RecoveryStatusParameters = Schema.flip(
+  Schema.flip(
+    Schema.Struct({
+      locator: Schema.optionalKey(DTO.RemoteAdmissionRecoveryStatusInput.members[0].fields.locator),
+      clientRequestId: Schema.optionalKey(
+        DTO.RemoteAdmissionRecoveryStatusInput.members[1].fields.clientRequestId,
+      ),
+      originThreadId: Schema.optionalKey(
+        DTO.RemoteAdmissionRecoveryStatusInput.members[1].fields.originThreadId,
+      ),
+    }),
+  ).check(
+    Schema.makeFilter(
+      (input) =>
+        Object.hasOwn(input, "locator")
+          ? !Object.hasOwn(input, "clientRequestId") && !Object.hasOwn(input, "originThreadId")
+          : Object.hasOwn(input, "clientRequestId") && Object.hasOwn(input, "originThreadId"),
+      {
+        expected: "either locator or both clientRequestId and originThreadId, never mixed selectors",
+        toJsonSchema: () => ({
+          oneOf: [
+            {
+              required: ["locator"],
+              not: { anyOf: [{ required: ["clientRequestId"] }, { required: ["originThreadId"] }] },
+            },
+            { required: ["clientRequestId", "originThreadId"], not: { required: ["locator"] } },
+          ],
+        }),
+      },
+    ),
+  ),
+).pipe(Schema.decodeTo(DTO.RemoteAdmissionRecoveryStatusInput));
+
 export class ReceiverPeerProtocol extends Context.Service<
   ReceiverPeerProtocol,
   ReturnType<typeof makePeerProtocol>
@@ -17,7 +95,7 @@ const dependencies = [Invocation.McpInvocationContext, ReceiverPeerProtocol];
 const ObserveTool = Tool.make("t3_remote_admission_observe", {
   description:
     "Read this linked session’s exact retained launch observation. Reading registers or acknowledges nothing.",
-  parameters: DTO.RemoteAdmissionObservationInput,
+  parameters: ObservationParameters,
   success: DTO.RemoteAdmissionObservation,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
@@ -26,7 +104,7 @@ const ObserveTool = Tool.make("t3_remote_admission_observe", {
 const AckTool = Tool.make("t3_remote_admission_ack", {
   description:
     "Explicit acknowledgement after a committed original/retry wake or recorded suppression, bound to this exact session and observation.",
-  parameters: DTO.RemoteAdmissionAckInput,
+  parameters: AckParameters,
   success: DTO.RemoteAdmissionAckResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
@@ -77,7 +155,7 @@ const NoticeAckTool = Tool.make("t3_remote_admission_notice_ack", {
 const RecoveryStatusTool = Tool.make("t3_remote_admission_recovery_status", {
   description:
     "Authorized pure inspection of an exact request. A copied locator confers no access. Retry, Recheck and Restore remain owner UI actions.",
-  parameters: DTO.RemoteAdmissionRecoveryStatusInput,
+  parameters: RecoveryStatusParameters,
   success: DTO.RemoteAdmissionRecoveryStatus,
   failure: OrchestratorMcpFailure,
   failureMode: "return",

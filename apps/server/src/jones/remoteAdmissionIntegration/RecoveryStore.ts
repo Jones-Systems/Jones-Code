@@ -91,9 +91,7 @@ export const attemptView = (
   state: row.state,
   createdAt: row.created_at,
   expiresAt: row.expires_at,
-  grantIntent: row.grant_intent_json
-    ? decodeGrantIntentJson(row.grant_intent_json)
-    : null,
+  grantIntent: row.grant_intent_json ? decodeGrantIntentJson(row.grant_intent_json) : null,
 });
 export const makeRecoveryStore = (
   sql: SqlClient.SqlClient,

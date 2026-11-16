@@ -33,9 +33,7 @@ export const managedAccessGrantId = Effect.fn("AdmissionReview.managedAccessLink
     LEFT JOIN jones_remote_admission_blocked_marks b ON b.admission_id=a.id
     LEFT JOIN jones_remote_admission_grants g ON g.admission_id=a.id
     WHERE a.id=${record.id}`)[0];
-  const binding = stored?.binding_json
-    ? yield* decodeAccessBindingJson(stored.binding_json)
-    : null;
+  const binding = stored?.binding_json ? yield* decodeAccessBindingJson(stored.binding_json) : null;
   const scopes = stored?.managed_scope_id
     ? yield* sql<ManagedScope>`SELECT * FROM jones_remote_managed_scopes
         WHERE managed_scope_id=${stored.managed_scope_id}`

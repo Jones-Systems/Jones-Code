@@ -62,14 +62,11 @@ describe("remote admission access contracts", () => {
       }),
     ).toEqual({ grantId: "grant", expectedGeneration: 1 });
     for (const expectedGeneration of [undefined, 0, -1, 1.5])
-      expect(() =>
-        decodeUnknownGrantUpdate({ ...update, expectedGeneration }),
-      ).toThrow();
+      expect(() => decodeUnknownGrantUpdate({ ...update, expectedGeneration })).toThrow();
     expect(() => decodeUnknownGrantRestore(update)).toThrow();
-    expect(
-      decodeUnknownGrantRestore({ ...update, commandKey: "command" })
-        .commandKey,
-    ).toBe("command");
+    expect(decodeUnknownGrantRestore({ ...update, commandKey: "command" }).commandKey).toBe(
+      "command",
+    );
   });
 
   it("can return the current revoked successor on an idempotent restore replay", () => {

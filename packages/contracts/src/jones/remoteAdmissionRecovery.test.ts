@@ -45,12 +45,16 @@ const decodeUnknownCapabilitiesRegisterInput = Schema.decodeUnknownSync(
 );
 const decodeUnknownRecoveredResult = Schema.decodeUnknownSync(RemoteAdmissionRecoveredResult);
 const decodeUnknownRecoveryStatus = Schema.decodeUnknownSync(RemoteAdmissionRecoveryStatus);
-const decodeUnknownRecoveryStatusInput = Schema.decodeUnknownSync(RemoteAdmissionRecoveryStatusInput);
+const decodeUnknownRecoveryStatusInput = Schema.decodeUnknownSync(
+  RemoteAdmissionRecoveryStatusInput,
+);
 const decodeUnknownObservationInput = Schema.decodeUnknownSync(RemoteAdmissionObservationInput);
 const decodeUnknownRetryInput = Schema.decodeUnknownSync(RemoteAdmissionRetryInput);
 const decodeAttemptRegisterInput = Schema.decodeSync(RemoteAdmissionAttemptRegisterInput);
 const decodeNoticeRegisterInput = Schema.decodeSync(RemoteAdmissionNoticeRegisterInput);
-const decodeUnknownNoticeRegisterInput = Schema.decodeUnknownSync(RemoteAdmissionNoticeRegisterInput);
+const decodeUnknownNoticeRegisterInput = Schema.decodeUnknownSync(
+  RemoteAdmissionNoticeRegisterInput,
+);
 const decodeUnknownNoticeAckInput = Schema.decodeUnknownSync(RemoteAdmissionNoticeAckInput);
 
 describe("remote admission recovery wire separation", () => {
@@ -123,9 +127,7 @@ describe("remote admission recovery wire separation", () => {
       result,
     };
     expect(decodeUnknownRecoveredResult(recovered)).toEqual(recovered);
-    expect(() =>
-      decodeUnknownRecoveredResult({ ...recovered, revision: 0 }),
-    ).toThrow();
+    expect(() => decodeUnknownRecoveredResult({ ...recovered, revision: 0 })).toThrow();
     const status = {
       receiverEnvironmentId: "receiver",
       state: "created",

@@ -551,10 +551,7 @@ const make = Effect.gen(function* () {
                 { environmentId: peer.environmentId },
               );
               // Auth failures pause this exact generation. No refresh/re-pair/admin path.
-              if (
-                isOrchestratorMcpFailure(error) &&
-                ["capability_denied"].includes(error.code)
-              )
+              if (isOrchestratorMcpFailure(error) && ["capability_denied"].includes(error.code))
                 return;
               if (running.get(peer.environmentId) === entry) running.delete(peer.environmentId);
             }),
