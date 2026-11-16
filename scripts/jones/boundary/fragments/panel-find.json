@@ -11,31 +11,22 @@
     "apps/desktop/src/window/DesktopApplicationMenu.ts",
     "apps/desktop/src/window/DesktopApplicationMenu.test.ts",
     "apps/web/src/components/AppSidebarLayout.tsx",
-    "apps/web/src/components/ChatView.tsx",
     "apps/web/src/components/RightPanelTabs.tsx",
     "apps/web/src/components/preview/PreviewPanelShell.tsx"
   ],
   "tombstones": [],
   "allowedImports": [
     {
-      "from": "apps/web/src/jones/panelFind/PanelFind.tsx",
-      "to": "apps/web/src/components/ui/button.tsx"
+      "from": "apps/web/src/components/AppSidebarLayout.tsx",
+      "to": "apps/web/src/jones/panelFind/PanelFind.tsx"
     },
     {
-      "from": "apps/web/src/jones/panelFind/PanelFind.tsx",
-      "to": "apps/web/src/components/ui/input.tsx"
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/panelFind/PanelFind.tsx"
     },
     {
-      "from": "apps/web/src/jones/panelFind/PanelFind.tsx",
-      "to": "apps/web/src/lib/utils.ts"
-    },
-    {
-      "from": "apps/web/src/jones/panelFind/PanelFind.browser.test.tsx",
-      "to": "apps/web/test/render.tsx"
-    },
-    {
-      "from": "apps/web/src/jones/panelFind/PanelFind.tsx",
-      "to": "apps/web/src/hooks/useStableCallback.ts"
+      "from": "apps/web/src/components/preview/PreviewPanelShell.tsx",
+      "to": "apps/web/src/jones/panelFind/PanelFind.tsx"
     }
   ]
 }
