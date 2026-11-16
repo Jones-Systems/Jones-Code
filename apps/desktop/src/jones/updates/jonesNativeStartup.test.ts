@@ -324,7 +324,13 @@ async function interruptedStartupFixture(
       { mode: 0o600 },
     );
     const transactionId = "c".repeat(64);
-    const directory = NodePath.join(home, "runtime", "jones-updates", "transactions", transactionId);
+    const directory = NodePath.join(
+      home,
+      "runtime",
+      "jones-updates",
+      "transactions",
+      transactionId,
+    );
     await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
     const intent = {
       protocol: 1,
