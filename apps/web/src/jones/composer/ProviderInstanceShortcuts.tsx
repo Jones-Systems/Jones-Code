@@ -167,7 +167,7 @@ export function ProviderInstanceShortcuts({
           <ComposerControl
             key={entry.instanceId}
             size="xs"
-            className="w-9"
+            className="w-9 sm:h-7"
             aria-label={label}
             aria-description={disabledReason ?? undefined}
             aria-pressed={props.activeInstanceId === entry.instanceId}

@@ -722,10 +722,18 @@ it.each([320, 380, 620, 900])(
             ),
           ];
           for (const element of elements) {
+            const context = JSON.stringify({
+              width,
+              height,
+              codex,
+              element: element.tagName,
+              label: element.getAttribute("aria-label"),
+              className: element.className,
+            });
             expect(element.getBoundingClientRect().height).toBeGreaterThan(0);
             expectContained(element.getBoundingClientRect(), bounds);
-            expect(element.scrollWidth).toBeLessThanOrEqual(element.clientWidth + 1);
-            expect(element.scrollHeight).toBeLessThanOrEqual(element.clientHeight + 1);
+            expect(element.scrollWidth, context).toBeLessThanOrEqual(element.clientWidth + 1);
+            expect(element.scrollHeight, context).toBeLessThanOrEqual(element.clientHeight + 1);
           }
           const accounts = band.querySelectorAll<HTMLButtonElement>(
             '[aria-label="Provider accounts"] button',
