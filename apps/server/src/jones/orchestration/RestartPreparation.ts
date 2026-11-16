@@ -395,15 +395,18 @@ const make = Effect.gen(function* () {
               const receipt = yield* retirement.awaitRetired.pipe(
                 Effect.timeout("2 minutes"),
                 Effect.catchCause((observationCause) =>
-                  Effect.failCause(
-                    Cause.hasInterruptsOnly(observationCause) ? observationCause : cause,
-                  ),
+                  Cause.hasInterruptsOnly(observationCause)
+                    ? Effect.failCause(
+                        Cause.fromReasons<never>(
+                          observationCause.reasons.filter(Cause.isInterruptReason),
+                        ),
+                      )
+                    : Effect.failCause(cause),
                 ),
               );
               if (
                 !Object.entries(binding).every(
-                  ([key, value]) =>
-                    receipt.binding[key as keyof ProviderRuntimeBinding] === value,
+                  ([key, value]) => receipt.binding[key as keyof ProviderRuntimeBinding] === value,
                 )
               )
                 return yield* Effect.failCause(cause);

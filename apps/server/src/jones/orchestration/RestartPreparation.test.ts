@@ -779,13 +779,14 @@ it.effect.each([false, true])(
       yield* Deferred.await(observing);
       assert.deepEqual(calls, ["detach"]);
       yield* TestClock.adjust("64 seconds");
-      yield* Deferred.succeed(closed, {
+      const receipt: RuntimeRetirementReceipt = {
         binding: wrongReceipt ? { ...f.binding, runtimeGeneration: "successor" } : f.binding,
         evidence: "thread_closed",
-      });
+      };
+      yield* Deferred.succeed(closed, receipt);
       const result = yield* Fiber.join(worker);
       assert.equal(result._tag, wrongReceipt ? "Failure" : "Success");
       assert.deepEqual(calls, wrongReceipt ? ["detach"] : ["detach", "start"]);
       if (!wrongReceipt) yield* f.preparation.assertThreadOpen(f.target.threadId);
     }).pipe(Effect.provide(testLayer)),
-  );
+);
