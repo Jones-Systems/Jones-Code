@@ -68,9 +68,9 @@ vi.mock("@react-navigation/native", () => ({
   }),
 }));
 
-import { PendingUserInputCard } from "./PendingUserInputCard";
+import { PendingUserInputCard, type PendingUserInputCardProps } from "./PendingUserInputCard";
 
-function setup(questionMarkdown: string) {
+function setup(questionMarkdown: string, overrides: Partial<PendingUserInputCardProps> = {}) {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   harness.navigate = [];
   harness.openedUrls = [];
@@ -106,14 +106,16 @@ function setup(questionMarkdown: string) {
         drafts={{}}
         answers={null}
         respondingUserInputId={null}
-        onSelectOption={() => {}}
+        onSelectOption={() => undefined}
         onChangeCustomAnswer={() => {}}
         onSubmit={async () => {}}
         onDismiss={async () => {}}
+        {...overrides}
       />,
     ),
   );
   return {
+    container,
     async pressLink(label: string) {
       const link = [...container.querySelectorAll("button")].find(
         (button) => button.textContent === label,
@@ -138,5 +140,34 @@ it("opens a workspace file link in a question in the thread's file viewer", asyn
       "ThreadFile",
       { environmentId: "env-1", threadId: "thread-1", path: ["docs", "probe.md"], line: "12" },
     ],
+  ]);
+});
+
+
+it("advances after the request owner selects the literal option value and keeps preview links scoped", async () => {
+  const select = vi.fn(() => 1);
+  using screen = setup("", {
+    pendingUserInput: {
+      requestId: "request-sequential" as RuntimeRequestId,
+      responseCapability: "resumable",
+      questions: [
+        { id: "first", header: "First", question: "Choose", allowCustomAnswer: false,
+          options: [{ label: "Friendly label", value: "native-value", preview: "[preview](docs/preview.md)" }] },
+        { id: "second", header: "Second", question: "[next](docs/next.md)", allowCustomAnswer: false, options: [] },
+      ],
+    } as unknown as PendingUserInput,
+    onSelectOption: select,
+  });
+  await screen.pressLink("preview");
+  expect(select).not.toHaveBeenCalled();
+  const option = [...screen.container.querySelectorAll("div")].find(
+    (node) => node.textContent === "Friendly label" && node.parentElement?.textContent === "Friendly label",
+  );
+  if (!option) throw new Error("Missing option");
+  await act(async () => option.click());
+  expect(select).toHaveBeenCalledWith("request-sequential", expect.objectContaining({ id: "first" }), "native-value");
+  await screen.pressLink("next");
+  expect(harness.navigate.at(-1)).toEqual([
+    "ThreadFile", { environmentId: "env-1", threadId: "thread-1", path: ["docs", "next.md"] },
   ]);
 });

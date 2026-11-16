@@ -1,3 +1,5 @@
+import { undoSettleThread } from "../../jones/settlementRestore/runtime";
+import { settlementRestoreMenuItems } from "../../jones/settlementRestore/menu";
 import { ChildThreadApprovals } from "./ChildThreadApprovals";
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
 import { useSidebarWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
@@ -12,10 +14,16 @@ import * as Dialog from "../../components/ui/Dialog";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
-import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-visits";
+import { createMobileThreadVisitTracker } from "../../jones/threadVisits/tracker";
+import { useDescendantApproval } from "../../jones/descendantApproval/useDescendantApproval";
+import { DescendantApprovalCard } from "../../jones/descendantApproval/DescendantApprovalCard";
+import {
+  PendingApprovalStack,
+  descendantApprovalStackHeight,
+} from "../../jones/descendantApproval/PendingApprovalStack";
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
-import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused, useNavigation } from "@react-navigation/native";
 import {
   effectiveSnoozed,
   threadWokeAt,
@@ -315,7 +323,7 @@ export interface ThreadDetailScreenProps {
     requestId: RuntimeRequestId,
     question: ThreadUserInputQuestion,
     value: string,
-  ) => void;
+  ) => number | undefined;
   readonly onChangeUserInputCustomAnswer: (
     requestId: RuntimeRequestId,
     questionId: string,
@@ -371,7 +379,7 @@ const wakeAwareVisitShell = Atom.family((key: string) => {
   }).pipe(Atom.withLabel(`mobile-thread-visit-shell:${key}`));
 });
 
-const threadVisitTracker = createThreadVisitTracker({
+const threadVisitTracker = createMobileThreadVisitTracker({
   threadShellAtom: (ref) => wakeAwareVisitShell(threadKey(ref)),
   sessionGenerationAtom: environmentCatalog.sessionGenerationAtom,
   visit: threadEnvironment.visit,
@@ -504,6 +512,10 @@ function ThreadDetailBody(
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
   });
+  const descendantApproval = useDescendantApproval(props.selectedThreadDetailRef);
+  const floatingChildThreadInputs = descendantApproval.state
+    ? childThreadInputs.filter((child) => !child.hasPendingApprovals)
+    : childThreadInputs;
   const composerError = useAtomValue(threadComposerErrorsAtom)[selectedThreadKey]?.message ?? null;
   const preferences = useAtomValue(mobilePreferencesAtom);
   const toolCallVisibility = AsyncResult.isSuccess(preferences)
@@ -677,6 +689,35 @@ function ThreadDetailBody(
     lastVisitedAt: props.selectedThread.lastVisitedAt,
     latestRunCompletedAt: props.selectedThread.latestRun?.completedAt ?? null,
   });
+  const restoreMenuItems = settlementRestoreMenuItems({
+    settled,
+    canOperate: props.canOperateThread,
+    capabilities: props.serverConfig?.environment.capabilities,
+  });
+  const runUndoSettle = async () => {
+    if (statusPending || !props.canOperateThread) return;
+    const request: BackgroundWorkStopRequest = {
+      threadKey: selectedThreadKey,
+      taskIds: [],
+      retryAt: null,
+    };
+    props.setStatusRequests((current) => ({ ...current, [request.threadKey]: request }));
+    try {
+      await undoSettleThread({ environmentId: props.environmentId, id: props.selectedThread.id });
+    } catch (cause) {
+      props.setStatusRequests((current) =>
+        current[request.threadKey] === request
+          ? { ...current, [request.threadKey]: undefined }
+          : current,
+      );
+      throw cause;
+    }
+    props.setStatusRequests((current) =>
+      current[request.threadKey] === request
+        ? { ...current, [request.threadKey]: undefined }
+        : current,
+    );
+  };
   const runStatusAction = async (action: "stop" | "wake" | "unsettle" | "dismiss") => {
     if (statusPending || !props.canOperateThread) return;
     const request: BackgroundWorkStopRequest = {
@@ -798,11 +839,11 @@ function ThreadDetailBody(
     if (props.creationState?.kind === "failed") {
       return null;
     }
-    const childInput = childThreadInputs[0];
+    const childInput = floatingChildThreadInputs[0];
     if (childInput && contentPresentationKind === "ready") {
       return {
         kind: "child-input",
-        label: childThreadInputsTitle(childThreadInputs),
+        label: childThreadInputsTitle(floatingChildThreadInputs),
         accessibilityLabel: `Open ${childInput.hasPendingApprovals ? "approval" : "question"} from ${childInput.title}`,
         onPress: () => {
           Keyboard.dismiss();
@@ -851,7 +892,14 @@ function ThreadDetailBody(
           : settled
             ? "Settled"
             : "Woke from snooze";
-      const actionLabel = lifecycleSnoozed ? "Wake now" : settled ? "Un-settle" : "Dismiss";
+      const restoreAvailable = settled && restoreMenuItems.length > 0;
+      const actionLabel = lifecycleSnoozed
+        ? "Wake now"
+        : restoreAvailable
+          ? "Actions"
+          : settled
+            ? "Un-settle"
+            : "Dismiss";
       return {
         kind: "lifecycle",
         state,
@@ -866,8 +914,21 @@ function ThreadDetailBody(
             : actionLabel,
           accessibilityLabel: actionLabel,
           disabled: !props.canOperateThread || statusPending,
-          onPress: () =>
-            void runStatusAction(lifecycleSnoozed ? "wake" : settled ? "unsettle" : "dismiss"),
+          onPress: () => {
+            if (restoreAvailable) {
+              Dialog.alert(
+                "Settled thread",
+                "Undo settle restores the position saved by the server.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Undo settle", onPress: () => void runUndoSettle() },
+                  { text: "Un-settle", onPress: () => void runStatusAction("unsettle") },
+                ],
+              );
+              return;
+            }
+            void runStatusAction(lifecycleSnoozed ? "wake" : settled ? "unsettle" : "dismiss");
+          },
         },
       };
     }
@@ -967,7 +1028,7 @@ function ThreadDetailBody(
   const activeUserInputRequestId = props.activePendingUserInput?.requestId ?? null;
   const questionInFlow = Platform.OS === "android" && activeUserInputRequestId !== null;
   const composerSlotHidden =
-    activeUserInputRequestId !== null || props.creationState?.kind === "failed";
+    props.creationState?.kind === "failed";
   const pendingMessageEditBlocked =
     queuedRunEditBlockedReason({ openQuestionCount: activeUserInputRequestId === null ? 0 : 1 }) !==
     null;
@@ -1058,10 +1119,15 @@ function ThreadDetailBody(
       windowHeight: screenAreaHeight,
       keyboardHeight: keyboardStickyEnabled ? -keyboardTranslation.value : 0,
       navigationHeaderHeight,
-      // An in-flow question shares the room above it with the floating control.
-      composerOverlapHeight:
-        composerBottomInset +
-        (questionInFlow && showFloatingStatus ? FLOATING_WORKING_CONTROL_COVERAGE : 0),
+      composerOverlapHeight,
+    }),
+  );
+  const pendingApprovalStackMaxHeight = useDerivedValue(() =>
+    descendantApprovalStackHeight({
+      windowHeight: screenAreaHeight,
+      keyboardHeight: keyboardStickyEnabled ? -keyboardTranslation.value : 0,
+      navigationHeaderHeight,
+      composerOverlapHeight,
     }),
   );
   // A question pads itself clear of the bottom inset, below the card's own height limit.
@@ -1080,6 +1146,14 @@ function ThreadDetailBody(
     }),
     flexGrow: 0,
   }));
+  const pendingApprovalCard = props.activePendingApproval ? (
+    <PendingApprovalCard
+      canOperateThread={props.canOperateThread}
+      approval={props.activePendingApproval}
+      respondingApprovalId={props.respondingApprovalId}
+      onRespond={props.onRespondToApproval}
+    />
+  ) : null;
   // The usage panel stacks with the composer and any approval card, so it gets
   // whatever room they leave below the header. Measured only while it is open
   // so typing in the composer does not re-render the screen.
@@ -1142,7 +1216,8 @@ function ThreadDetailBody(
     () => withTiming(floatingCoverageTarget, { duration: 180, reduceMotion: ReduceMotion.System }),
     [floatingCoverageTarget],
   );
-  const userInputCoverageApplies = Platform.OS === "ios" && activeUserInputRequestId !== null;
+  const userInputCoverageApplies =
+    Platform.OS === "ios" && activeUserInputRequestId !== null && descendantApproval.state === null;
   const questionStatusSpace = useAnimatedStyle(() => ({ height: floatingControlCoverage.value }));
   const combinedContentInsetEndAdjustment = useSharedValue(estimatedOverlayHeight);
   useAnimatedReaction(
@@ -1196,10 +1271,19 @@ function ThreadDetailBody(
     }
   };
   const showContent = props.showContent ?? true;
+  const focused = useIsFocused();
+  const [appActive, setAppActive] = useState(AppState.currentState === "active");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Subscribe read dwell ownership to native app visibility.
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) =>
+      setAppActive(state === "active"),
+    );
+    return () => subscription.remove();
+  }, []);
   // Showing the thread counts as viewing it, before its live shell arrives too.
   useAtomMount(
     threadVisitTracker(
-      showContent && !props.draftMode
+      showContent && focused && appActive && !props.draftMode
         ? { environmentId: props.environmentId, threadId: props.selectedThread.id }
         : null,
     ),
@@ -1671,6 +1755,9 @@ function ThreadDetailBody(
                       environmentId={props.environmentId}
                     />
                     <ChildThreadApprovals
+                      excludedThreads={descendantApproval.state?.candidates.map(
+                        (candidate) => candidate.ref,
+                      )}
                       threadRef={props.selectedThreadDetailRef}
                       maxHeight={pendingUserInputMaxHeight}
                     />
@@ -1749,7 +1836,9 @@ function ThreadDetailBody(
                         />
                       </Animated.View>
                     ) : null}
-                    {props.activePendingApproval || props.activePendingUserInput ? (
+                    {descendantApproval.state ||
+                    props.activePendingApproval ||
+                    props.activePendingUserInput ? (
                       <Animated.View
                         className="shrink-0 gap-3 px-4 pb-3"
                         style={
@@ -1760,49 +1849,68 @@ function ThreadDetailBody(
                         entering={FadeInDown.duration(220)}
                         exiting={FadeOut.duration(140)}
                       >
-                        {props.activePendingApproval ? (
-                          <Animated.ScrollView
-                            key={props.activePendingApproval.requestId}
-                            style={approvalHeightStyle}
-                            keyboardShouldPersistTaps="handled"
-                            nestedScrollEnabled
-                          >
-                            <PendingApprovalCard
-                              canOperateThread={props.canOperateThread}
-                              approval={props.activePendingApproval}
-                              respondingApprovalId={props.respondingApprovalId}
-                              onRespond={props.onRespondToApproval}
+                        <PendingApprovalStack
+                          enabled={descendantApproval.state !== null}
+                          maxHeight={pendingApprovalStackMaxHeight}
+                        >
+                          {descendantApproval.state ? (
+                            <DescendantApprovalCard
+                              state={descendantApproval.state}
+                              onRespond={descendantApproval.onRespond}
+                              onNext={descendantApproval.onNext}
+                              onOpen={openLinkedThread}
                             />
-                          </Animated.ScrollView>
-                        ) : null}
-                        {props.activePendingUserInput ? (
-                          <PendingUserInputCard
-                            environmentId={props.environmentId}
-                            threadId={props.selectedThread.id}
-                            workspaceRoot={props.threadCwd}
-                            canOperateThread={props.canOperateThread}
-                            pendingUserInput={props.activePendingUserInput}
-                            maxHeight={pendingUserInputMaxHeight}
-                            collapsed={userInputCollapsed}
-                            onToggleCollapsed={handleToggleUserInputCollapsed}
-                            onStopThread={props.onStopThread}
-                            cardProgress={userInputCardProgress}
-                            cardCoverage={userInputCardCoverage}
-                            onInputFocusChange={handleOwnedInputFocusChange}
-                            drafts={props.activePendingUserInputDrafts}
-                            answers={props.activePendingUserInputAnswers}
-                            respondingUserInputId={props.respondingUserInputId}
-                            onSelectOption={props.onSelectUserInputOption}
-                            onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
-                            onSubmit={props.onSubmitUserInput}
-                            onDismiss={props.onDismissUserInput}
-                          />
-                        ) : null}
+                          ) : null}
+                          {props.activePendingApproval ? (
+                            descendantApproval.state !== null ? (
+                              pendingApprovalCard
+                            ) : (
+                              // The stack scrolls when a descendant approval is also pending; alone,
+                              // the approval scrolls itself within the room the composer leaves.
+                              <Animated.ScrollView
+                                key={props.activePendingApproval.requestId}
+                                style={approvalHeightStyle}
+                                keyboardShouldPersistTaps="handled"
+                                nestedScrollEnabled
+                              >
+                                {pendingApprovalCard}
+                              </Animated.ScrollView>
+                            )
+                          ) : null}
+                          {props.activePendingUserInput ? (
+                            <PendingUserInputCard
+                              environmentId={props.environmentId}
+                              threadId={props.selectedThread.id}
+                              workspaceRoot={props.threadCwd}
+                              canOperateThread={props.canOperateThread}
+                              pendingUserInput={props.activePendingUserInput}
+                              maxHeight={pendingUserInputMaxHeight}
+                              collapsed={userInputCollapsed}
+                              expandedInFlow={descendantApproval.state !== null}
+                              onToggleCollapsed={handleToggleUserInputCollapsed}
+                              onStopThread={props.onStopThread}
+                              cardProgress={userInputCardProgress}
+                              cardCoverage={userInputCardCoverage}
+                              onInputFocusChange={handleOwnedInputFocusChange}
+                              drafts={props.activePendingUserInputDrafts}
+                              answers={props.activePendingUserInputAnswers}
+                              respondingUserInputId={props.respondingUserInputId}
+                              onSelectOption={props.onSelectUserInputOption}
+                              onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
+                              onSubmit={props.onSubmitUserInput}
+                              onDismiss={props.onDismissUserInput}
+                            />
+                          ) : null}
+                        </PendingApprovalStack>
                       </Animated.View>
                     ) : null}
                   </ComposerPanels>
                 </View>
 
+                {/*
+                 * Hide failed thread creation without unmounting the editor, so its draft and
+                 * editor state survive. Pending questions keep this ordinary composer visible.
+                 */}
                 <View style={composerSlotHidden ? { display: "none" } : undefined}>
                   {isProviderSubagent ? (
                     <View

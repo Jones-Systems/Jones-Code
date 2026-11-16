@@ -1,3 +1,4 @@
+import { undoSettleThread } from "../../jones/settlementRestore/runtime";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
@@ -222,6 +223,7 @@ export function useThreadListActions(): {
   readonly settleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly snoozeThread: (thread: EnvironmentThreadShell, snoozedUntil: string) => Promise<boolean>;
   readonly unsnoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  readonly undoSettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly unsettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly pinThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly unpinThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
@@ -635,9 +637,9 @@ export function useThreadListActions(): {
     if (section === "settled") {
       if (!environmentConfigLoaded(thread.environmentId)) return false;
       appAtomRegistry.set(threadDropBusyAtom, true);
-      const settled = await settleThread(thread);
-      appAtomRegistry.set(threadDropBusyAtom, false);
-      return settled;
+      return await settleThread(thread).finally(() => {
+        appAtomRegistry.set(threadDropBusyAtom, false);
+      });
     }
     const configs = appAtomRegistry.get(environmentServerConfigsAtom);
     const connectedEnvironmentIds = new Set(appAtomRegistry.get(connectedEnvironmentIdsAtom));
@@ -693,7 +695,8 @@ export function useThreadListActions(): {
           }),
         );
     const reorder = section === "pinned" ? reorderPinnedMutation : reorderActiveMutation;
-    const moved = await (async () => {
+    let succeeded = false;
+    return await (async () => {
       if (crossSection) {
         if (section === "pinned") {
           const orderKey = assignments.find(
@@ -745,12 +748,13 @@ export function useThreadListActions(): {
           return false;
         }
       }
+      succeeded = true;
       pending?.complete();
       return true;
-    })();
-    if (!moved) pending?.cancel();
-    appAtomRegistry.set(threadDropBusyAtom, false);
-    return moved;
+    })().finally(() => {
+      if (!succeeded) pending?.cancel();
+      appAtomRegistry.set(threadDropBusyAtom, false);
+    });
   };
 
   const confirmDeleteThread = (thread: EnvironmentThreadShell) =>
@@ -767,6 +771,7 @@ export function useThreadListActions(): {
     pinThread: (thread) => pinThread(liveThread(thread)),
     unpinThread: (thread) => unpinThread(liveThread(thread)),
     setThreadAutoSettle: (thread, enabled) => setThreadAutoSettle(liveThread(thread), enabled),
+    undoSettleThread: (thread) => undoSettleThread(liveThread(thread)),
     moveThread,
     renameThread: (thread) => renameThread(liveThread(thread)),
     regenerateThreadTitle: (thread) => regenerateThreadTitle(liveThread(thread)),
