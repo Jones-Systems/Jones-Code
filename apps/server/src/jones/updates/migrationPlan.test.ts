@@ -14,7 +14,57 @@ import { runJonesMigrations } from "../persistence/JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../persistence/JonesMigrations.ts";
 import nativeLeaseRenewal from "../persistence/Migrations/137_JonesNativeCreationLeaseRenewal.ts";
 import workspaceRetirement from "../persistence/Migrations/138_JonesWorkspaceRetirement.ts";
-import { readMigrationPlan } from "./migrationPlan.ts";
+import { decodeMigrationPlan, readMigrationPlan } from "./migrationPlan.ts";
+
+it("decodes exact pending arrays without sorting, deduplicating, or replacing them", () => {
+  const pendingUpstream = [54, 53, 54, 96];
+  const pendingJones = [156, 1, 105];
+  const decoded = decodeMigrationPlan({ pendingUpstream, pendingJones });
+  expect(decoded).toEqual({ pendingUpstream, pendingJones });
+  expect(decoded?.pendingUpstream).toBe(pendingUpstream);
+  expect(decoded?.pendingJones).toBe(pendingJones);
+  expect(decodeMigrationPlan({ pendingUpstream: [], pendingJones: [] })).toEqual({
+    pendingUpstream: [],
+    pendingJones: [],
+  });
+});
+
+it("rejects malformed, sparse, and non-array pending IDs on either ledger", () => {
+  const sparse = [1, 2];
+  delete sparse[0];
+  for (const values of [
+    undefined,
+    null,
+    {},
+    "1",
+    new Uint32Array([1]),
+    sparse,
+    [undefined],
+    [null],
+    [true],
+    ["1"],
+    [0],
+    [-1],
+    [1.5],
+    [NaN],
+    [Infinity],
+    [Number.MAX_SAFE_INTEGER + 1],
+  ]) {
+    expect(decodeMigrationPlan({ pendingUpstream: values, pendingJones: [] })).toBeUndefined();
+    expect(decodeMigrationPlan({ pendingUpstream: [], pendingJones: values })).toBeUndefined();
+  }
+  for (const value of [
+    undefined,
+    null,
+    true,
+    "plan",
+    {},
+    [],
+    Object.assign([], { pendingUpstream: [96], pendingJones: [156] }),
+  ]) {
+    expect(decodeMigrationPlan(value)).toBeUndefined();
+  }
+});
 
 /** Upstream migration IDs from `first` through the newest one this build ships. */
 const upstreamFrom = (first: number) =>

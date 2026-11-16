@@ -91,10 +91,17 @@ export function readMigrationPlan(input: {
 }
 
 export function decodeMigrationPlan(value: unknown): MigrationPlan | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  const ids = (values: unknown): values is number[] =>
-    Array.isArray(values) && values.every((id) => Number.isSafeInteger(id) && id > 0);
+  const ids = (values: unknown): values is number[] => {
+    if (!Array.isArray(values)) return false;
+    for (let index = 0; index < values.length; index++) {
+      if (!Object.hasOwn(values, index) || !Number.isSafeInteger(values[index]) || values[index] <= 0) {
+        return false;
+      }
+    }
+    return true;
+  };
   return ids(record.pendingUpstream) && ids(record.pendingJones)
     ? { pendingUpstream: record.pendingUpstream, pendingJones: record.pendingJones }
     : undefined;
