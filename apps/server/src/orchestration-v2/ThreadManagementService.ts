@@ -716,7 +716,8 @@ const make = Effect.gen(function* () {
         return {
           ...activity,
           foreground:
-            native === null || native.status === "unknown"
+            native === null ||
+            (native.status === "unknown" && native.reason !== "runtime_not_resident")
               ? RuntimeObservation.providerThreadForegroundActivity(current)
               : activity.foreground,
         };
