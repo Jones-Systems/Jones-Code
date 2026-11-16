@@ -12,6 +12,7 @@ import {
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderTurnId,
   RunAttemptId,
   RunId,
   RuntimeRequestId,
@@ -39,6 +40,7 @@ import { environmentThreadDetails } from "../../state/threads";
 import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { MessagesTimeline } from "./MessagesTimeline";
+import { hasThreadProviderActivity } from "@t3tools/client-runtime/jones/thread-activity-label";
 import { makeStreamingTimelineFixture } from "../../test-fixtures";
 import {
   type PendingApproval,
@@ -225,9 +227,11 @@ it("distinguishes a pending send, accepted startup, and confirmed provider work"
   await using screen = await renderElement(<MessagesTimeline {...props} />);
   await vi.waitFor(() => expect(text()).toContain("Connecting"));
   expect(text()).not.toContain("Thinking");
+  expect(text()).toContain("Connecting for");
+  expect(text()).not.toContain("Working for");
 
   const run = {
-    runId: RunId.make("activity-run"),
+    runId: RunId.make("synthetic-run-26"),
     startedAt: null,
     completedAt: null,
     providerActivityStarted: false,
@@ -236,6 +240,8 @@ it("distinguishes a pending send, accepted startup, and confirmed provider work"
   await vi.waitFor(() => expect(text()).toContain("Starting"));
   expect(text()).not.toContain("Connecting");
   expect(text()).not.toContain("Thinking");
+  expect(text()).toContain("Starting for");
+  expect(text()).not.toContain("Working for");
 
   await screen.rerender(
     <MessagesTimeline
@@ -245,7 +251,39 @@ it("distinguishes a pending send, accepted startup, and confirmed provider work"
   );
   await vi.waitFor(() => expect(text()).toContain("Starting"));
   expect(text()).not.toContain("Thinking");
+  expect(text()).toContain("Starting for");
+  expect(text()).not.toContain("Working for");
 
+  const providerTurnId = ProviderTurnId.make("synthetic-turn-26");
+  const nativeItem = {
+    runId: run.runId,
+    providerTurnId,
+    type: "reasoning" as const,
+    nativeItemRef: {
+      driver: ProviderDriverKind.make("codex"),
+      nativeId: "synthetic-reasoning",
+      strength: "strong" as const,
+    },
+  };
+  for (const item of [
+    { ...nativeItem, runId: RunId.make("synthetic-run-25") },
+    { ...nativeItem, providerTurnId: ProviderTurnId.make("previous-provider-turn") },
+    { ...nativeItem, runId: RunId.make("synthetic-run-27") },
+  ]) {
+    await screen.rerender(
+      <MessagesTimeline
+        {...props}
+        latestRun={{
+          ...run,
+          status: "running",
+          startedAt: CREATED_AT,
+          providerActivityStarted: hasThreadProviderActivity([item], run.runId, providerTurnId),
+        }}
+      />,
+    );
+    await vi.waitFor(() => expect(text()).toContain("Starting for"));
+    expect(text()).not.toContain("Working for");
+  }
   await screen.rerender(
     <MessagesTimeline
       {...props}
@@ -253,12 +291,13 @@ it("distinguishes a pending send, accepted startup, and confirmed provider work"
         ...run,
         status: "running",
         startedAt: CREATED_AT,
-        providerActivityStarted: true,
+        providerActivityStarted: hasThreadProviderActivity([nativeItem], run.runId, providerTurnId),
       }}
     />,
   );
   await vi.waitFor(() => expect(text()).toContain("Thinking"));
   expect(text()).not.toContain("Starting");
+  expect(text()).toContain("Working for");
 
   await screen.rerender(
     <MessagesTimeline

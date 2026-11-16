@@ -1,3 +1,4 @@
+import { DeviceDisplayName } from "./jones/devicePresentation.ts";
 import { WorkspaceRetirementOutcome } from "./jones/workspaceRetirement.ts";
 import {
   threadActivitySettingsFields,
@@ -1511,6 +1512,9 @@ export const ServerSettings = Schema.Struct({
   defaultThemeSetAt: Schema.String.check(Schema.isMaxLength(64)).pipe(
     Schema.withDecodingDefault(Effect.succeed("")),
   ),
+  deviceDisplayName: ForwardCompatibleNullable(DeviceDisplayName).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   environmentIcon: ForwardCompatibleNullable(EnvironmentMachineKind).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -1927,6 +1931,7 @@ export const ServerSettingsPatch = Schema.Struct({
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),
   providerHealthRefreshInterval: Schema.optionalKey(Schema.DurationFromMillis),
   backgroundActivityProfile: Schema.optionalKey(BackgroundActivityProfile),
+  deviceDisplayName: Schema.optionalKey(Schema.NullOr(DeviceDisplayName)),
   environmentIcon: Schema.optionalKey(Schema.NullOr(EnvironmentMachineKind)),
   defaultThreadEnvMode: Schema.optionalKey(Schema.NullOr(ThreadEnvMode)),
   worktreeAllocation: Schema.optionalKey(Schema.Literals(["on-write", "eager"])),

@@ -110,6 +110,10 @@
     "./jones/authClientPresentation": {
       "types": "./src/jones/authClientPresentation.ts",
       "import": "./src/jones/authClientPresentation.ts"
+    },
+    "./jones/devicePresentation": {
+      "types": "./src/jones/devicePresentation.ts",
+      "import": "./src/jones/devicePresentation.ts"
     }
   },
   "scripts": {

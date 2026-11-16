@@ -52,13 +52,15 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   const activeEnvironment =
     availableEnvironments.find((env) => env.environmentId === environmentId) ?? null;
 
+  const activeDisplayLabel = activeEnvironment?.displayLabel ?? activeEnvironment?.label;
+
   const environmentItems = [
     ...(onAutoEnvironment
       ? [{ value: AUTO_VALUE, label: autoEnvironmentLabel ?? "Auto balance" }]
       : []),
     ...availableEnvironments.map((env) => ({
       value: environmentValue(env.environmentId),
-      label: env.label,
+      label: env.displayLabel ?? env.label,
     })),
     ...(onAddToMachine ? [{ value: ADD_MACHINE_VALUE, label: "Add to another machine" }] : []),
   ];
@@ -73,15 +75,16 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
       >
         <EnvironmentMachineIcon
           kind={activeEnvironment?.machine ?? "server"}
+          label={activeEnvironment?.label}
           className="size-3 shrink-0"
         />
-        <ComposerContextLabel>{activeEnvironment?.label ?? "Run on"}</ComposerContextLabel>
+        <ComposerContextLabel>{activeDisplayLabel ?? "Run on"}</ComposerContextLabel>
       </span>
     );
     return (
       <Tooltip>
         <TooltipTrigger render={lockedRow} />
-        <TooltipPopup>{activeEnvironment?.label ?? "Run on"}</TooltipPopup>
+        <TooltipPopup>{activeDisplayLabel ?? "Run on"}</TooltipPopup>
       </Tooltip>
     );
   }
@@ -118,6 +121,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
           ) : (
             <EnvironmentMachineIcon
               kind={activeEnvironment?.machine ?? "server"}
+              label={activeEnvironment?.label}
               className="size-3 shrink-0"
             />
           )}
@@ -126,7 +130,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
           </ComposerContextLabel>
         </TooltipTrigger>
         <TooltipPopup>
-          {autoEnvironmentLabel ?? activeEnvironment?.label ?? "Run on"}
+          {autoEnvironmentLabel ?? activeDisplayLabel ?? "Run on"}
           {shortcutLabel ? ` · ${shortcutLabel}` : null}
         </TooltipPopup>
       </Tooltip>
@@ -153,8 +157,8 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
               disabled={onEnvironmentChange === undefined && env.environmentId !== environmentId}
             >
               <span className="inline-flex items-center gap-1.5">
-                <EnvironmentMachineIcon kind={env.machine} className="size-3" />
-                {env.label}
+                <EnvironmentMachineIcon kind={env.machine} label={env.label} className="size-3" />
+                {env.displayLabel ?? env.label}
               </span>
             </SelectItem>
           ))}

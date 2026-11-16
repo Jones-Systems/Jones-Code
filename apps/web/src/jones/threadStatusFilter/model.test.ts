@@ -47,6 +47,50 @@ const runtime = (status: NonNullable<StatusThread["runtime"]>["status"]) => ({
 });
 
 describe("sidebar status filter", () => {
+  it.each(["current", "legacy"] as const)(
+    "excludes snoozed input from %s counts until wake",
+    (layout) => {
+      const now = Date.parse(completed);
+      const input = { ...base, hasPendingUserInput: true, pendingUserInputAt: visited };
+      const snoozed = { ...input, snoozedAt: completed, snoozedUntil: "2026-10-17T13:00:00.000Z" };
+      for (const activityWindow of [
+        undefined,
+        {
+          threadActivityWindowEnabled: false,
+          threadActivityWindowAmount: 3,
+          threadActivityWindowUnit: "hours" as const,
+        },
+      ]) {
+        const classify = (row: StatusThread) =>
+          classifyThreadStatus(row, layout, false, activityWindow, now);
+        expect(selectThreadStatus([input, snoozed], "input", classify)).toEqual({
+          counts: { working: 0, input: 1, done: 0 },
+          threads: [input],
+        });
+        expect(selectThreadStatus([snoozed], "input", classify)).toEqual({
+          counts: { working: 0, input: 0, done: 0 },
+          threads: [],
+        });
+        expect(selectThreadStatus([snoozed], "all", classify).threads).toEqual([snoozed]);
+      }
+      expect(
+        classifyThreadStatus(snoozed, layout, false, undefined, Date.parse(snoozed.snoozedUntil)),
+      ).toBe("input");
+      expect(
+        classifyThreadStatus({ ...snoozed, snoozedUntil: null }, layout, false, undefined, now),
+      ).toBe("input");
+      expect(
+        classifyThreadStatus(
+          { ...snoozed, pendingUserInputAt: "2026-10-17T12:01:00.000Z" },
+          layout,
+          false,
+          undefined,
+          now,
+        ),
+      ).toBe("input");
+    },
+  );
+
   it("schedules the earliest scoped wake even when its status is filtered out", () => {
     const now = Date.parse(visited);
     const roster = [

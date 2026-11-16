@@ -2,7 +2,7 @@ import { useClientSettings } from "../../hooks/useSettings";
 import { useNowSecond } from "../../hooks/useNowSecond";
 import { useState } from "react";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
+import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import { resolveThreadLastVisitedAt } from "../../components/Sidebar.logic";
 import type { SidebarThreadSummary } from "../../types";
 import { useUiStateStore } from "../../uiStateStore";
@@ -103,7 +103,8 @@ export function useThreadStatusSelection(
     topLevelThreads.some(
       (thread) =>
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === activeThreadKey &&
-        threadIsInActivityWindow(thread, activityWindow, observedNowMs),
+        threadIsInActivityWindow(thread, activityWindow, observedNowMs) &&
+        !effectiveSnoozed(thread, { now: new Date(observedNowMs).toISOString() }),
     );
   const activeQualifies = selection.threads.some(
     (thread) =>
