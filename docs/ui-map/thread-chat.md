@@ -173,6 +173,9 @@ The active thread composer exposes
 Its header uses the [batch action](../../apps/web/src/jones/queue/QueuedSteerBatchAction.tsx)
 and the [shared selector](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.ts);
 native mobile consumes the same selector through its own queue sheet.
+The layout regression in the Jones browser test exercises long queued content,
+control alignment and containment at 800px and 320px browser widths. Full-app
+Browser-panel navigation and packaged clients require separate runtime evidence.
 
 For the account-change journey, start a synthetic active Codex turn and queue
 four ordinary messages whose saved account, provider thread and model differ
