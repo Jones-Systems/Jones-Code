@@ -1,4 +1,5 @@
-import { decodeMigrationPlan, type MigrationPlan, type MigrationPlanResult, readMigrationPlan } from "../jones/updates/migrationPlan.ts";
+import { readMigrationPlan, type MigrationPlanResult } from "../jones/updates/migrationPlan.ts";
+import type { ServicePreflightResult } from "../jones/cloud/servicePreflightResult.ts";
 import { jonesMigrationEntries } from "../jones/persistence/JonesMigrations.ts";
 import { migrationManifest } from "../persistence/Migrations.ts";
 import packageJson from "../../package.json" with { type: "json" };
@@ -8,26 +9,14 @@ import { reconciledV2PreviewHistory } from "../persistence/reconcileV2PreviewMig
 import {
   isSupportedLauncherProtocol,
   SERVICE_LAUNCHER_PROTOCOL,
-  type SupportedLauncherProtocol,
 } from "./serviceProtocol.ts";
 
-export { qualifiedServicePreflightFailure } from "../jones/cloud/servicePreflightResult.ts";
-
-export type ServicePreflightResult =
-  | {
-      readonly status: "ready";
-      readonly version: string;
-      /** The launcher protocol the server named; it accepts no other in reply. */
-      readonly launcherProtocol: SupportedLauncherProtocol;
-      readonly startupGateProtocol?: 1;
-      readonly qualifiedRecoveryProtocol?: 1;
-      readonly migrationPlan?: MigrationPlan;
-    }
-  | {
-      readonly status: "blocked";
-      readonly version: string;
-      readonly reason: string;
-    };
+// The launcher decodes output without importing this module's migration graph.
+export {
+  decodeServicePreflightResult,
+  qualifiedServicePreflightFailure,
+  type ServicePreflightResult,
+} from "../jones/cloud/servicePreflightResult.ts";
 
 export function runServicePreflight(input: {
   readonly databasePath: string;
@@ -39,7 +28,11 @@ export function runServicePreflight(input: {
 }): ServicePreflightResult {
   const version = input.version ?? packageJson.version;
   const { launcherProtocol } = input;
-  if (!isSupportedLauncherProtocol(launcherProtocol)) {
+  if (
+    !isSupportedLauncherProtocol(launcherProtocol) ||
+    (launcherProtocol !== SERVICE_LAUNCHER_PROTOCOL &&
+      (input.startupGateProtocol !== undefined || input.qualifiedRecoveryProtocol !== undefined))
+  ) {
     return {
       status: "blocked",
       version,
@@ -85,46 +78,29 @@ export function runServicePreflight(input: {
     };
   }
 
-  const plan = readMigrationPlan({ databasePath: input.databasePath,
-    upstream: migrationManifest, jones: jonesMigrationEntries.map(([id, name]) => [id, name]) });
-  if (plan.status === "blocked") return { status: "blocked", version, reason: plan.reason };
-  if (input.migrationPlanResult?.status === "blocked") return { status: "blocked", version, reason: input.migrationPlanResult.reason };
-  return { status: "ready", version, launcherProtocol,
-    ...(input.migrationPlanResult?.status === "ready" ? { migrationPlan: input.migrationPlanResult.migrationPlan } : {}),
-    ...(input.startupGateProtocol === undefined ? {} : { startupGateProtocol: input.startupGateProtocol }),
-    ...(input.qualifiedRecoveryProtocol === undefined ? {} : { qualifiedRecoveryProtocol: input.qualifiedRecoveryProtocol }),
+  const plan = readMigrationPlan({
+    databasePath: input.databasePath,
+    upstream: migrationManifest,
+    jones: jonesMigrationEntries.map(([id, name]) => [id, name] as const),
+  });
+  if (plan.status === "blocked") {
+    return { status: "blocked", version, reason: plan.reason };
+  }
+  if (input.migrationPlanResult?.status === "blocked") {
+    return { status: "blocked", version, reason: input.migrationPlanResult.reason };
+  }
+  return {
+    status: "ready",
+    version,
+    launcherProtocol,
+    ...(input.migrationPlanResult?.status === "ready"
+      ? { migrationPlan: input.migrationPlanResult.migrationPlan }
+      : {}),
+    ...(input.startupGateProtocol === undefined
+      ? {}
+      : { startupGateProtocol: input.startupGateProtocol }),
+    ...(input.qualifiedRecoveryProtocol === undefined
+      ? {}
+      : { qualifiedRecoveryProtocol: input.qualifiedRecoveryProtocol }),
   };
-}
-
-export function decodeServicePreflightResult(
-  value: unknown,
-  launcherProtocol: SupportedLauncherProtocol = SERVICE_LAUNCHER_PROTOCOL,
-): ServicePreflightResult | undefined {
-  if (typeof value !== "object" || value === null) {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  const migrationPlan = "migrationPlan" in record ? decodeMigrationPlan(record.migrationPlan) : undefined;
-  if (("migrationPlan" in record && migrationPlan === undefined) ||
-      ("startupGateProtocol" in record && record.startupGateProtocol !== 1) ||
-      ("qualifiedRecoveryProtocol" in record && record.qualifiedRecoveryProtocol !== 1)) return undefined;
-  if (
-    record.status === "ready" &&
-    record.launcherProtocol === launcherProtocol &&
-    typeof record.version === "string"
-  ) {
-    return { status: "ready", version: record.version, launcherProtocol,
-      ...(migrationPlan === undefined ? {} : { migrationPlan }),
-      ...(record.startupGateProtocol === undefined ? {} : { startupGateProtocol: 1 as const }),
-      ...(record.qualifiedRecoveryProtocol === undefined ? {} : { qualifiedRecoveryProtocol: 1 as const }),
-    };
-  }
-  if (
-    record.status === "blocked" &&
-    typeof record.version === "string" &&
-    typeof record.reason === "string"
-  ) {
-    return { status: "blocked", version: record.version, reason: record.reason };
-  }
-  return undefined;
 }

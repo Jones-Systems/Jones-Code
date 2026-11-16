@@ -1,3 +1,12 @@
+import * as Clock from "effect/Clock";
+import {
+  QUALIFIED_RECOVERY_PROTOCOL,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
+  type StagedQualifiedRuntime,
+} from "../jones/cloud/qualifiedRuntime.ts";
+export { withRunningThreadContinuation } from "../jones/updateContinuity/Runtime.ts";
+// @effect-diagnostics nodeBuiltinImport:off
+// Qualified Install delegates to the Node-only launcher boundary; staging runs off-process.
 import {
   DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
   ServerSelfUpdateError,
@@ -14,6 +23,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -45,9 +55,20 @@ import {
   prunePinnedRuntimes,
 } from "./pinnedRuntime.ts";
 import { bootServiceProgramOf, bootServiceUnitPath } from "./bootService.ts";
-import { decodeServicePreflightResult } from "./servicePreflight.ts";
+import {
+  decodeServicePreflightResult,
+  qualifiedServicePreflightFailure,
+} from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion } from "./serviceProtocol.ts";
+
+export type QualifiedStageVerifier = (input: {
+  readonly stagedHandle: string;
+  readonly activeVersion: string;
+  readonly signal: AbortSignal;
+}) => Promise<StagedQualifiedRuntime>;
+
+const decodePreflightJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 // A staged runtime's cold start can take over a minute on a loaded, swapping host.
 const PREFLIGHT_TIMEOUT = Duration.minutes(3);
@@ -69,6 +90,20 @@ export class ServerSelfUpdate extends Context.Service<
         stage: ServerSelfUpdateProgressStage,
       ) => Effect.Effect<void, ServerSelfUpdateError>,
       onHandoffAccepted?: () => Effect.Effect<void>,
+    ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
+    readonly installQualified?: (
+      input: {
+        readonly stagedHandle: string;
+        readonly continueRunningThreads?: boolean;
+        readonly operationId?: string;
+        readonly verifyStaged: QualifiedStageVerifier;
+      },
+      onHandoffAccepted?: () => Effect.Effect<void>,
+      onPrepared?: (staged: StagedQualifiedRuntime) => Effect.Effect<void, ServerSelfUpdateError>,
+      reportStep?: (
+        step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
+      ) => Effect.Effect<void>,
+      onPreparationRefused?: () => Effect.Effect<void>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -138,6 +173,54 @@ export function trackSwitchBlockReason(input: {
   return input.targetDatabaseMigration < databaseMigration
     ? `This database has changes t3@${input.targetVersion} does not support yet; it stays on this release.`
     : null;
+}
+
+const timedQualifiedStep = Effect.fn("ServerSelfUpdate.timedQualifiedStep")(function* <A, E, R>(
+  step: string,
+  operationId: string | undefined,
+  effect: Effect.Effect<A, E, R>,
+) {
+  const started = yield* Clock.currentTimeMillis;
+  return yield* effect.pipe(
+    Effect.ensuring(
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap((completed) =>
+          Effect.logInfo("Qualified installation timing", {
+            operationId,
+            step,
+            durationMs: completed - started,
+          }),
+        ),
+      ),
+    ),
+  );
+});
+
+/** The deadline owns preparation only; launcher handoff can have an uncertain external effect. */
+export function runQualifiedInstallPhases<A, B, R, R2>(input: {
+  readonly prepare: Effect.Effect<A, ServerSelfUpdateError, R>;
+  readonly handoff: (prepared: A) => Effect.Effect<B, ServerSelfUpdateError, R2>;
+  readonly onPreparationRefused?: () => Effect.Effect<void>;
+}): Effect.Effect<B, ServerSelfUpdateError, R | R2> {
+  return Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const prepared = yield* restore(
+        input.prepare.pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.minutes(20),
+            orElse: () =>
+              Effect.fail(
+                new ServerSelfUpdateError({
+                  reason:
+                    "Installation preparation timed out after 20 minutes; the launcher was not contacted. Retry Install.",
+                }),
+              ),
+          }),
+        ),
+      ).pipe(Effect.onError(() => input.onPreparationRefused?.() ?? Effect.void));
+      return yield* input.handoff(prepared);
+    }),
+  );
 }
 
 export const make = Effect.fn("cloud.server_self_update.make")(function* () {
@@ -212,6 +295,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     const unsafeCrossing = crossesTrackUnsafely(input);
     if (unsafeCrossing !== null) return yield* failWith(unsafeCrossing);
     const targetVersion = input.targetVersion.trim();
+    if (targetVersion.includes("-preview.") || launcher.currentVersion?.includes("-preview.")) {
+      return yield* failWith(
+        "Jones main previews require qualified Download staging and a separate explicit Install action.",
+      );
+    }
     if (!isExactServiceVersion(targetVersion)) {
       return yield* failWith(`'${targetVersion}' is not an exact t3 version.`);
     }
@@ -306,6 +394,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
           if (error._tag === "PinnedRuntimePreflightBlockedError") {
             return failWith(error.reason, error);
           }
+          if (error._tag === "JonesRuntimePolicyError") {
+            return failWith(error.message, error);
+          }
           if (mirror !== undefined && isUnpublishedRelease(error)) {
             return failWith(
               `${mirror.organization}'s update mirror has no t3@${targetVersion} for this machine.`,
@@ -360,8 +451,162 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }).pipe(Effect.onError(() => Ref.set(inFlight, false)));
   });
 
+  const requireQualifiedLauncher = () => {
+    if (
+      capability !== "boot-service" ||
+      launcher.qualifiedUpdates !== true ||
+      launcher.currentVersion === undefined
+    ) {
+      throw new Error(
+        "bootstrap-required: This host needs a qualified Jones runtime and launcher before installing Actions artifacts.",
+      );
+    }
+    return launcher.currentVersion;
+  };
+  const validateQualifiedCandidate = Effect.fn("ServerSelfUpdate.validateQualifiedCandidate")(
+    function* (
+      entryPath: string,
+      databasePath: string,
+      version: string,
+      requiredQualifiedRecoveryProtocol?: 1,
+    ) {
+      const result = yield* runner
+        .run({
+          command: entryPath,
+          args: [
+            "__service-preflight",
+            "--database-path",
+            databasePath,
+            "--launcher-protocol",
+            String(SERVICE_LAUNCHER_PROTOCOL),
+          ],
+          timeout: PREFLIGHT_TIMEOUT,
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            failWith(
+              "startup-gate-unavailable: Could not preflight the qualified candidate.",
+              cause,
+            ),
+          ),
+        );
+      if (result.timedOut || result.stdoutTruncated || result.stdoutInvalidUtf8)
+        return yield* failWith(
+          "startup-gate-unavailable: The candidate preflight response was incomplete.",
+        );
+      const reason = qualifiedServicePreflightFailure({
+        code: result.code,
+        stdout: result.stdout,
+        version,
+        ...(requiredQualifiedRecoveryProtocol === undefined
+          ? {}
+          : { requiredQualifiedRecoveryProtocol }),
+      });
+      if (reason !== undefined) return yield* failWith(reason);
+      const parsed = yield* decodePreflightJson(result.stdout.trim()).pipe(
+        Effect.mapError((cause) =>
+          failWith(
+            "startup-gate-unavailable: The candidate returned an invalid service preflight.",
+            cause,
+          ),
+        ),
+      );
+      const decoded = decodeServicePreflightResult(parsed);
+      return decoded?.status === "ready" ? decoded.migrationPlan : undefined;
+    },
+  );
+  const installQualified: NonNullable<ServerSelfUpdate["Service"]["installQualified"]> = (
+    input,
+    onHandoffAccepted = () => Effect.void,
+    onPrepared = () => Effect.void,
+    reportStep = () => Effect.void,
+    onPreparationRefused = () => Effect.void,
+  ) =>
+    runQualifiedInstallPhases({
+      onPreparationRefused,
+      prepare: Effect.gen(function* () {
+        yield* reportStep("verifying");
+        const staged = yield* timedQualifiedStep(
+          "verifying",
+          input.operationId,
+          Effect.tryPromise({
+            try: (signal) =>
+              input.verifyStaged({
+                stagedHandle: input.stagedHandle,
+                activeVersion: requireQualifiedLauncher(),
+                signal,
+              }),
+            catch: (cause) =>
+              failWith(
+                cause instanceof Error ? cause.message : "The staged update binding is invalid.",
+                cause,
+              ),
+          }),
+        );
+        if (
+          staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+          launcher.qualifiedRecovery !== true
+        )
+          return yield* failWith(
+            "bootstrap-required: The launcher cannot activate historical enrollment receipts. Refresh it on this host first.",
+          );
+        const actualDatabase = yield* fs
+          .realPath(serverConfig.dbPath)
+          .pipe(
+            Effect.mapError((cause) => failWith("Could not bind the running database.", cause)),
+          );
+        if (staged.binding.dbPath !== actualDatabase)
+          return yield* failWith("The staged update belongs to a different running database.");
+        yield* reportStep("preflight");
+        yield* timedQualifiedStep(
+          "preflight",
+          input.operationId,
+          validateQualifiedCandidate(
+            path.join(staged.binding.baseDir, "runtime", "versions", staged.receipt.version, "t3"),
+            staged.binding.dbPath,
+            staged.receipt.version,
+            staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+              ? QUALIFIED_RECOVERY_PROTOCOL
+              : undefined,
+          ),
+        );
+        yield* reportStep("capturing");
+        yield* timedQualifiedStep("capturing", input.operationId, onPrepared(staged));
+        return staged;
+      }),
+      handoff: Effect.fn("ServerSelfUpdate.handoffQualified")(function* (
+        staged: StagedQualifiedRuntime,
+      ) {
+        yield* reportStep("handoff");
+        const updateId = yield* timedQualifiedStep(
+          "handoff",
+          input.operationId,
+          launcher
+            .requestUpdate({
+              targetVersion: staged.receipt.version,
+              dbPath: staged.binding.dbPath,
+              stagedHandle: staged.stagedHandle,
+              ...(staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+                ? { qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL }
+                : {}),
+              ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+            })
+            .pipe(
+              Effect.mapError((cause) => failWith(cause.message, cause)),
+              Effect.tap(() => onHandoffAccepted()),
+            ),
+        );
+        return {
+          targetVersion: staged.receipt.version,
+          method: "boot-service" as const,
+          updateId,
+        };
+      }),
+    });
+
   return ServerSelfUpdate.of({
     update,
+    installQualified,
     commitDesktopUpdate: Effect.fn("ServerSelfUpdate.commitDesktopUpdate")(
       function (requestId, onHandoffAccepted) {
         return desktopAppUpdate.commit(requestId, onHandoffAccepted);

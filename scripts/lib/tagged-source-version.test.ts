@@ -57,3 +57,15 @@ it("keeps the manifest version in a source archive without Git metadata", () => 
   using repo = makeRoot();
   expect(resolveTaggedSourceVersion(repo.root, "0.1.5")).toBe("0.1.5");
 });
+
+
+it("retains a committed Jones preview stamp on a stably tagged source", () => {
+  using repo = makeRoot();
+  const version = "0.1.8-preview.20261116.123.1";
+  for (const file of releasePackageFiles) repo.writeManifest(file, version);
+  repo.git("init", "--quiet");
+  repo.git("add", ".");
+  repo.git("commit", "--quiet", "--no-gpg-sign", "-m", "preview");
+  repo.git("tag", "v0.1.8");
+  expect(resolveTaggedSourceVersion(repo.root, version)).toBe(version);
+});

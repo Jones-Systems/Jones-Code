@@ -11,6 +11,11 @@ import "vite-plus/test/config";
 import { defineConfig, type Connect, type Plugin } from "vite-plus";
 import * as Hash from "effect/Hash";
 import pkg from "./package.json" with { type: "json" };
+import serverPackage from "../server/package.json" with { type: "json" };
+import {
+  readJonesBuildSource,
+  readJonesBuildStartedAt,
+} from "@t3tools/contracts/jones/fleet-updates";
 import pdfjsPkg from "pdfjs-dist/package.json" with { type: "json" };
 
 import {
@@ -304,6 +309,12 @@ export default defineConfig(({ command }) => {
     (command === "build" && !builtDev
       ? resolveTaggedSourceVersion(`${import.meta.dirname}/../..`, pkg.version)
       : pkg.version);
+  const configuredBuildStartedAt =
+    serverPackage.version === configuredAppVersion
+      ? readJonesBuildStartedAt(serverPackage)
+      : undefined;
+  const configuredSource =
+    serverPackage.version === configuredAppVersion ? readJonesBuildSource(serverPackage)?.sha : undefined;
   return {
     run: {
       tasks: {
@@ -372,6 +383,8 @@ export default defineConfig(({ command }) => {
       "import.meta.env.T3CODE_FEATURE_SECRETS": JSON.stringify(configuredFeatureSecrets),
       "import.meta.env.VITE_RELEASE_CHANNEL": JSON.stringify(configuredReleaseChannel),
       "import.meta.env.APP_VERSION": JSON.stringify(configuredAppVersion),
+      "import.meta.env.APP_SOURCE_SHA": JSON.stringify(configuredSource),
+      "import.meta.env.APP_BUILD_STARTED_AT": JSON.stringify(configuredBuildStartedAt),
     },
     resolve: {
       tsconfigPaths: true,
