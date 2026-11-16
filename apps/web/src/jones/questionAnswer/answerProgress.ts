@@ -98,3 +98,5 @@ export function setPendingUserInputCustomAnswer(
 
 export { carryDisplacedCustomAnswerIntoPrompt, withdrawDisplacedCustomAnswerFromPrompt } from "../../pendingUserInput";
 export { buildPendingUserInputAnswers, togglePendingUserInputOptionSelection } from "./pendingAnswers";
+
+export { projectPendingUserInputAnswer } from "./threadReferenceAnswer";

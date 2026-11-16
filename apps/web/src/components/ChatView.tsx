@@ -1,3 +1,5 @@
+import { resolveComposerProviderSelection } from "../jones/composer/providerSelection";
+import { provenPendingThread, canSendAfterInitialMessageRejection } from "../jones/pendingSends/newThread";
 import type { EnvironmentContextRecord } from "@t3tools/contracts";
 import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
 import { usePendingUserInputDraft } from "./chat/usePendingThreadRequests";
@@ -370,7 +372,6 @@ import {
   shouldRenderPreviewMiniPlayer,
   deriveLockedProvider,
   resolveFileAttachmentUrl,
-  resolveComposerProviderSelection,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   startNewThreadForProject,
@@ -524,14 +525,15 @@ export default function ChatView(props: ChatViewProps) {
   const fallbackDetailRef = serverThreadShell === null ? routeThreadDetailRef : null;
   const fallbackUpdatedAt = useThreadUpdatedAt(fallbackDetailRef);
   const fallbackLastVisitedAt = useThreadLastVisitedAt(fallbackDetailRef);
-  const serverThread =
+  const pendingSendEntries = usePendingSends();
+  const projectedServerThread =
     serverThreadShell !== null || serverProjection === null || fallbackUpdatedAt === null
       ? serverThreadShell
       : presentThreadShellFromProjection(environmentId, threadId, serverProjection, {
           updatedAt: fallbackUpdatedAt,
           lastVisitedAt: fallbackLastVisitedAt,
         });
-  const pendingSendEntries = usePendingSends();
+  const serverThread = projectedServerThread ?? provenPendingThread(pendingSendEntries, environmentId, threadId) ?? null;
   const promptRef = useRef("");
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
@@ -555,6 +557,7 @@ export default function ChatView(props: ChatViewProps) {
     status: threadStatus,
   });
   const threadDetailLoading = threadSyncPhase === "loading";
+  const sendBlockedByThreadDetail = threadDetailLoading && (serverThreadShell !== null || !canSendAfterInitialMessageRejection(pendingSendEntries, environmentId, threadId));
   // Held back briefly, so a quick sync does not flash a status line at the end of the timeline.
   const delayedThreadSyncPhase = useDelayedStatus(routeThreadKey, threadSyncPhase);
   const activeProviderThread = serverProjection?.providerThreads.find(
@@ -702,10 +705,9 @@ export default function ChatView(props: ChatViewProps) {
     optimisticBlobPreviews.handOff(optimisticState);
     setHeldOptimisticUserMessages(optimisticState);
   }
-  const optimisticUserMessages = [...new Map([
-    ...pendingSendEntries.filter((entry) => entry.environmentId === environmentId && entry.threadId === threadId && !entry.visible).map((entry) => entry.message),
-    ...optimisticState.messages,
-  ].map((message) => [message.id, message])).values()];
+  const optimisticUserMessages = pendingSendEntries
+    .filter((entry) => entry.environmentId === environmentId && entry.threadId === threadId && !entry.visible)
+    .map((entry) => entry.message);
   const setOptimisticUserMessages = (action: SetStateAction<ChatMessage[]>) => {
     const next = typeof action === "function" ? action(optimisticUserMessages) : action;
     for (const message of next) pendingSends.admit(environmentId, threadId, message);
@@ -1369,6 +1371,7 @@ export default function ChatView(props: ChatViewProps) {
   const activeThreadModelInstanceId = activeThread?.modelSelection.instanceId;
   const { selectedProviderEntry, requestedDriverKind, lockedContinuationGroupKey } = resolveComposerProviderSelection({
     entries: providerInstanceEntries,
+    requiredInstanceId: isLocalDraftThread ? undefined : composerModelSelectionExplicit ? composerActiveProvider : activeThreadModelInstanceId,
     candidateInstanceIds: [
       selectedProviderByThreadId,
       activeRuntime?.providerInstanceId,
@@ -2986,7 +2989,7 @@ export default function ChatView(props: ChatViewProps) {
     feedbackUploadsInFlightRef,
     queuedRunEdit,
     isRevertingCheckpoint,
-    threadDetailLoading,
+    threadDetailLoading: sendBlockedByThreadDetail,
     activeEnvironmentUnavailable,
     isSendBusy,
     sendQueuesBehindSetup,
@@ -3100,7 +3103,7 @@ export default function ChatView(props: ChatViewProps) {
           optimisticMessages={optimisticUserMessages}
           editingRunId={queuedRunEdit.editingRunId}
           editBlockedReason={queuedRunEditBlockedReason({
-            openQuestionCount: pendingUserInputs.length,
+            openQuestionCount: 0,
           })}
           onEditQueuedRun={queuedRunEdit.beginEdit}
           onCancelEdit={queuedRunEdit.cancelEdit}

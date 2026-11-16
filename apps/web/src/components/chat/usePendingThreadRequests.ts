@@ -1,3 +1,4 @@
+import { projectPendingUserInputAnswer as projectJonesAnswer } from "../../jones/questionAnswer/threadReferenceAnswer";
 import { DisplacedAnswerLedger } from "../../jones/questionAnswer/displacedAnswer";
 import { derivePendingUserInputProgress } from "../../jones/questionAnswer/answerProgress";
 import { supportsUserResponseAnswerNotes } from "@t3tools/contracts/jones/userResponseRequest";
@@ -413,7 +414,7 @@ export function usePendingThreadRequests(input: {
       for (const { question, target, draft } of questionDrafts) {
         if ((useQuestionAttachmentPreparation.getState().counts[target] ?? 0) > 0) return;
         providerAnswers[question.id] = projectPendingUserInputAnswer(
-          answers[question.id],
+          projectJonesAnswer(answers[question.id], draft?.threadContexts ?? [], environmentId),
           answerContextRecords(draft, threadDraft),
         );
         const attachments = draft ? [...draft.images, ...draft.files] : [];
@@ -579,11 +580,16 @@ export function usePendingThreadRequests(input: {
     const nextPrompt = displacedAnswers.current.withdraw(displacedDraftKey, key, value, currentPrompt);
     if (nextPrompt !== currentPrompt) setComposerDraftPrompt(composerDraftTarget, nextPrompt);
   });
-  const onChangeActivePendingUserInputCustomAnswer = makePendingCustomAnswerSetter({
+  const changeAnswer = makePendingCustomAnswerSetter({
     activePendingUserInput,
     activePendingRequestKey,
     withdrawRestoredAnswer,
     setPendingUserInputAnswersByRequestId,
+  });
+
+  const onChangeActivePendingUserInputCustomAnswer = useStableCallback((questionId: string, value: string) => {
+    if (!activePendingUserInput || activePendingIsResponding || userInputResponsesInFlight.current.has(JSON.stringify([environmentId, activeThreadId, activePendingUserInput.requestId]))) return;
+    changeAnswer(questionId, value);
   });
 
   const onAdvanceActivePendingUserInput = () => {
@@ -621,7 +627,7 @@ export function usePendingThreadRequests(input: {
     activePendingApproval,
     activePendingUserInput,
     activePendingIsResponding,
-    respondingRequestIds,
+    respondingRequestIds: [...respondingRequestIds, ...respondingUserInputRequestIds],
     onRespondToApproval: onRespondToApprovalStable,
     onDismissUserInput: onDismissUserInputStable,
     onSelectActivePendingUserInputQuestion: setActivePendingUserInputQuestionIndex,

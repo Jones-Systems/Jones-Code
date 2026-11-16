@@ -1,5 +1,5 @@
 import { useThreadReferenceCapture } from "../threadReferenceExcerpt/useThreadReferenceCapture";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
@@ -65,6 +65,12 @@ export function useQuestionAnswerAttachments(input: {
   const { threadRef, prompt, questionId, disabled, capabilities } = input;
   const { environmentId, threadId } = threadRef;
   const target = questionAttachmentDraftId(environmentId, threadId, prompt.requestId, questionId);
+  const lifetime = useMemo(() => ({ active: true }), [target]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fence asynchronous file preparation to the mounted request and question, including route switches.
+  useLayoutEffect(() => {
+    lifetime.active = true;
+    return () => { lifetime.active = false; };
+  }, [lifetime]);
   const keys = prompt.questions.map((q) =>
     questionAttachmentDraftId(environmentId, threadId, prompt.requestId, q.id),
   );
@@ -126,6 +132,7 @@ export function useQuestionAnswerAttachments(input: {
     changeQuestionAttachmentPreparation(target, 1);
     return {
       active: () =>
+        lifetime.active &&
         preparations.get(target)?.has(token) === true &&
         (useQuestionAttachmentPreparation.getState().counts[target] ?? 0) > 0,
       release: () => {
