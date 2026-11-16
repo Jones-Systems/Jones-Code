@@ -8,9 +8,12 @@ import {
   type PersonalWorkstreamsController,
   type PersonalWorkstreamsState,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
+import { makeThreadFixture } from "../../test-fixtures";
+import { summarizePersonalThreads } from "./personalPresentation";
 import { act, render } from "../../../test/render";
 import { WorkstreamPicker } from "./WorkstreamPicker";
+import { PersonalSidebarGroupHeader } from "./PersonalSidebarGroupHeader";
 import {
   WorkstreamNativeSidebar,
   type NativeThreadExternalDrop,
@@ -70,6 +73,55 @@ function fixture() {
   };
 }
 describe("personal Workstreams native presentation", () => {
+  it("deduplicates header totals without treating idle or read completions as Done", () => {
+    const visited = "2026-11-12T11:00:00.000Z";
+    const completed = "2026-11-12T12:00:00.000Z";
+    const base = makeThreadFixture();
+    const runtime = {
+      status: "running" as const,
+      providerName: "Codex",
+      providerInstanceId: base.providerInstanceId,
+      activeRunId: null,
+      lastError: null,
+      updatedAt: visited,
+    };
+    const done = makeThreadFixture({
+      id: ThreadId.make("done"),
+      runtime: null,
+      lastVisitedAt: visited,
+      latestRun: {
+        runId: RunId.make("completed-run"),
+        status: "completed",
+        assistantMessageId: null,
+        requestedAt: visited,
+        startedAt: visited,
+        completedAt: completed,
+      },
+    });
+    const approval = makeThreadFixture({
+      id: ThreadId.make("approval"),
+      hasPendingApprovals: true,
+    });
+    const roster = [
+      base,
+      done,
+      { ...done, id: ThreadId.make("read"), lastVisitedAt: completed },
+      { ...base, id: ThreadId.make("working"), runtime },
+      { ...base, id: ThreadId.make("failed"), runtime: { ...runtime, status: "failed" as const } },
+      approval,
+      approval,
+      { ...approval, environmentId: EnvironmentId.make("another-env") },
+      { ...base, id: ThreadId.make("request"), pendingGuestMessageCount: 1 },
+    ];
+    expect(summarizePersonalThreads(roster)).toEqual({
+      total: 8,
+      running: 1,
+      attention: 3,
+      failed: 1,
+      done: 1,
+    });
+  });
+
   it("collapses Unassigned independently and restores the choice after remount", async () => {
     using setup = fixture();
     const { registry, controller, initial, state } = setup;
@@ -102,6 +154,9 @@ describe("personal Workstreams native presentation", () => {
       </RegistryContext.Provider>
     );
     await using screen = await render(sidebar());
+    await expect
+      .element(page.getByRole("button", { name: "Collapse Unassigned", exact: true }))
+      .toMatchTextContent(/1 thread$/);
     await userEvent.click(page.getByRole("button", { name: "Collapse Unassigned", exact: true }));
     await expect.element(page.getByText(thread.title, { exact: true })).not.toBeInTheDocument();
     await expect.element(page.getByText(assigned.title, { exact: true })).toBeVisible();
@@ -161,11 +216,35 @@ describe("personal Workstreams native presentation", () => {
     await userEvent.click(page.getByRole("button", { name: "Collapse Alpha", exact: true }));
     const header = page.getByRole("button", { name: "Expand Alpha", exact: true });
     await expect.element(header).toMatchTextContent(/3 threads/);
-    await expect.element(header).toMatchTextContent(/1 running/);
+    await expect.element(header).toMatchTextContent(/1 working/);
     await expect.element(header).toMatchTextContent(/1 need attention/);
     await expect.element(header).toMatchTextContent(/1 failed/);
-    const element = _screen.container.querySelector<HTMLElement>('[aria-label="Expand Alpha"]')!;
-    expect(element.getBoundingClientRect().height).toBeGreaterThanOrEqual(64);
+  });
+  it("keeps attention in the accessible summary and numbers, with only failures in metadata", async () => {
+    const summary = { total: 4, running: 1, attention: 2, done: 1, failed: 0 };
+    await using screen = await render(
+      <PersonalSidebarGroupHeader name="Alpha" collapsed onToggle={() => {}} summary={summary} />,
+    );
+    const header = page.getByRole("button", { name: "Expand Alpha", exact: true });
+    await expect
+      .element(header)
+      .toHaveAccessibleDescription("4 threads, 1 working, 2 need attention, 1 done, 0 failed.");
+    await expect.element(page.getByText("4 threads", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("2", { exact: true })).toBeVisible();
+    await expect.element(page.getByText(/^[0-9]+ needs? attention$/)).not.toBeInTheDocument();
+    await expect.element(page.getByText("0 failed", { exact: true })).not.toBeInTheDocument();
+    await screen.rerender(
+      <PersonalSidebarGroupHeader
+        name="Alpha"
+        collapsed
+        onToggle={() => {}}
+        summary={{ ...summary, failed: 1 }}
+      />,
+    );
+    await expect.element(page.getByText("1 failed", { exact: true })).toBeVisible();
+    await expect
+      .element(header)
+      .toHaveAccessibleDescription("4 threads, 1 working, 2 need attention, 1 done, 1 failed.");
   });
   it("creates from the native form and uses the picker for assign, unassign and create-and-assign", async () => {
     using setup = fixture();
