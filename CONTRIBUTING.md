@@ -1,5 +1,8 @@
 # Contributing
 
+Jones Code contributions follow [the contributor guidance](docs/operations/contributor-guidance.md).
+The upstream contribution policy below describes `pingdotgg/t3code`.
+
 T3 Code is a project built by and for the community of agentic devs pushing the absolute limits of
 modern AI tools.
 
