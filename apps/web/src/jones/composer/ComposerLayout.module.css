@@ -80,6 +80,18 @@
   gap: 0;
 }
 
+/* Put model names above their options so a narrow pane keeps the full button
+   width even when the window uses desktop breakpoints. */
+.layout[data-short="true"] [data-composer-shortcut-group="effort"] > [role="group"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  row-gap: 0;
+}
+
+.layout[data-short="true"] [data-composer-shortcut-group="effort"] > [role="group"] > span {
+  grid-column: 1 / -1;
+  line-height: 1rem;
+}
+
 .layout[data-short="true"]
   [data-composer-shortcut-group="effort"]
   > button:last-child:nth-child(3n + 1) {
