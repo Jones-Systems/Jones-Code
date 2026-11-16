@@ -27,10 +27,13 @@ import {
   isProjectScopedSettingKey,
   listProjectOverrides,
   type ProjectOverrideEntry,
-  scopedSettingsAreMixed,
   scopedSettingsSource,
 } from "./scopedSettings";
-import { useClearProjectOverrides, useClearScopedSettings } from "./useScopedSettings";
+import {
+  useClearProjectOverrides,
+  useClearScopedSettings,
+  useScopedSettingsMixed,
+} from "./useScopedSettings";
 import {
   SettingInheritance,
   type SettingInheritanceState,
@@ -375,8 +378,8 @@ export function SettingsRow({
   const scopedKeys = settingKeys.filter(isProjectScopedSettingKey);
   const environmentWide = isProjectScope && serverScoped && scopedKeys.length === 0;
   const deviceReadOnly = isProjectScope && devicePreference;
-  const mixed =
-    mixedOverride ?? (context !== null && scopedSettingsAreMixed(context.targets, settingKeys));
+  const scopedMixed = useScopedSettingsMixed(settingKeys);
+  const mixed = mixedOverride ?? scopedMixed;
   const source =
     context && isProjectScope ? scopedSettingsSource(context.targets, scopedKeys) : null;
   const unavailable =

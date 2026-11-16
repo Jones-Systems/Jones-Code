@@ -187,6 +187,7 @@ const RunContextSelector = memo(function RunContextSelector({
   const composerFloatingLayerProps = useComposerMenuProps();
   const activeEnvironment =
     availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null;
+  const activeDisplayLabel = activeEnvironment?.displayLabel ?? activeEnvironment?.label;
   const WorkspaceIcon =
     effectiveEnvMode === "worktree"
       ? FolderGit2Icon
@@ -246,6 +247,7 @@ const RunContextSelector = memo(function RunContextSelector({
         ) : (
           <EnvironmentMachineIcon
             kind={activeEnvironment?.machine ?? "server"}
+            label={activeEnvironment?.label}
             // Wide machine glyphs need a little more box to match the square row icons.
             className={
               isPanel ? cn(THREAD_DETAILS_PANEL_ICON_CLASS, "-mx-px size-4.5") : "size-3 shrink-0"
@@ -253,7 +255,7 @@ const RunContextSelector = memo(function RunContextSelector({
           />
         )}
       </TooltipTrigger>
-      <TooltipPopup>{autoEnvironmentLabel ?? activeEnvironment?.label ?? "Run on"}</TooltipPopup>
+      <TooltipPopup>{autoEnvironmentLabel ?? activeDisplayLabel ?? "Run on"}</TooltipPopup>
     </Tooltip>
   );
   const icon = showEnvironmentIndicator ? environmentIcon : workspaceIcon;
@@ -262,7 +264,7 @@ const RunContextSelector = memo(function RunContextSelector({
       {icon}
       <ComposerContextLabel displayMode={displayMode}>
         {autoEnvironmentLabel ??
-          (showEnvironmentIndicator ? (activeEnvironment?.label ?? "Run on") : workspaceLabel)}
+          (showEnvironmentIndicator ? (activeDisplayLabel ?? "Run on") : workspaceLabel)}
       </ComposerContextLabel>
       {/* Trailing in the panel, so every row label starts on the same edge. */}
       {isPanel && showEnvironmentIndicator ? workspaceIcon : null}
@@ -281,7 +283,7 @@ const RunContextSelector = memo(function RunContextSelector({
         onContextMenu={handleContextMenu}
         aria-label={
           isPanel
-            ? `Run context: ${[autoEnvironmentLabel ?? activeEnvironment?.label, workspaceLabel].filter(Boolean).join(", ")}`
+            ? `Run context: ${[autoEnvironmentLabel ?? activeDisplayLabel, workspaceLabel].filter(Boolean).join(", ")}`
             : undefined
         }
         data-composer-context-control
@@ -306,7 +308,7 @@ const RunContextSelector = memo(function RunContextSelector({
         }
         aria-label={
           isPanel
-            ? `Run context: ${[autoEnvironmentLabel ?? activeEnvironment?.label, workspaceLabel].filter(Boolean).join(", ")}`
+            ? `Run context: ${[autoEnvironmentLabel ?? activeDisplayLabel, workspaceLabel].filter(Boolean).join(", ")}`
             : undefined
         }
         data-composer-context-control
@@ -369,8 +371,12 @@ const RunContextSelector = memo(function RunContextSelector({
                     closeOnClick
                   >
                     <span className="flex min-w-0 items-center gap-1.5">
-                      <EnvironmentMachineIcon kind={env.machine} className="size-3" />
-                      <span className="min-w-0 truncate">{env.label}</span>
+                      <EnvironmentMachineIcon
+                        kind={env.machine}
+                        label={env.label}
+                        className="size-3"
+                      />
+                      <span className="min-w-0 truncate">{env.displayLabel ?? env.label}</span>
                     </span>
                   </MenuRadioItem>
                 ))}
@@ -390,8 +396,14 @@ const RunContextSelector = memo(function RunContextSelector({
                         onClick={() => onAddToMachine(target.environmentId)}
                       >
                         <span className="flex min-w-0 items-center gap-1.5">
-                          <EnvironmentMachineIcon kind={target.machine} className="size-3" />
-                          <span className="min-w-0 truncate">{target.label}</span>
+                          <EnvironmentMachineIcon
+                            kind={target.machine}
+                            label={target.label}
+                            className="size-3"
+                          />
+                          <span className="min-w-0 truncate">
+                            {target.displayLabel ?? target.label}
+                          </span>
                         </span>
                       </MenuItem>
                     ))}

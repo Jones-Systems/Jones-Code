@@ -1,3 +1,4 @@
+import { PersonalMachineSymbol } from "../jones/devicePresentation/PersonalMachineSymbol";
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
 import { CloudIcon, LaptopIcon, MonitorIcon, ServerIcon, type LucideProps } from "lucide-react";
 import type { FunctionComponent, SVGProps } from "react";
@@ -66,8 +67,16 @@ export function environmentMachineIcon(
 
 export function EnvironmentMachineIcon({
   kind,
+  label,
+  override = false,
   ...props
-}: LucideProps & { readonly kind: EnvironmentMachineKind }) {
+}: LucideProps & {
+  readonly kind: EnvironmentMachineKind;
+  readonly label?: string | null | undefined;
+  readonly override?: boolean | undefined;
+}) {
   const Icon = ICON_BY_KIND[kind];
-  return <Icon {...props} />;
+  return (
+    <PersonalMachineSymbol kind={kind} label={override ? null : label} fallback={Icon} {...props} />
+  );
 }

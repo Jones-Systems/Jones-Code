@@ -1,3 +1,4 @@
+import { resolveNavigationAttentionPill as resolveThreadStatusPill } from "../jones/threadStatusFilter/attention";
 import { pipe } from "effect/Function";
 import {
   scopeProjectRef,
@@ -43,14 +44,12 @@ import { sourceControlClients } from "@t3tools/client-runtime/source-control-cli
 import {
   pullRequestMatchesSearchQuery,
   resolveThreadLastVisitedAt,
-  resolveThreadStatusPill,
   type ThreadStatusPill,
   useRetainedValue,
   useSidebarRowSubscriptionLease,
 } from "./Sidebar.logic";
 
 import type { SidebarThreadSummary } from "../types";
-import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import {
   PULL_REQUEST_STATE_PRESENTATION,
@@ -610,7 +609,7 @@ export function ThreadWorktreeIndicator({
     return null;
   }
 
-  const displayPath = formatWorktreePathForDisplay(worktreePath);
+  const displayPath = worktreePath;
   const tooltip = thread.branch
     ? `Worktree: ${displayPath} (${thread.branch})`
     : `Worktree: ${displayPath}`;
@@ -623,7 +622,8 @@ export function ThreadWorktreeIndicator({
             role="img"
             aria-label={tooltip}
             data-testid={`thread-worktree-${thread.id}`}
-            className="inline-flex items-center justify-center"
+            tabIndex={0}
+            className="inline-flex cursor-default items-center justify-center rounded-sm focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           />
         }
       >

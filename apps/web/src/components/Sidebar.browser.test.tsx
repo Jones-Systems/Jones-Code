@@ -36,6 +36,10 @@ vi.mock(import("../state/olderSettledShelf"), async (original) => {
   return { ...actual, useOlderSettledShelf: vi.fn(actual.useOlderSettledShelf) };
 });
 vi.mock("../state/entities", { spy: true });
+vi.mock("../jones/navigation/steadySidebar", () => ({
+  useSteadySidebarThreads: () => useQuietThreadShells(),
+  sidebarRowsAreHeld: () => false,
+}));
 vi.mock("../hooks/useHandleNewThread", { spy: true });
 vi.mock("../hooks/useNowMinute", { spy: true });
 vi.mock("../hooks/useThreadRouteTarget", { spy: true });

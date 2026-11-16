@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { ChevronRightIcon } from "lucide-react";
-import { Fragment, type RefObject, useRef } from "react";
+import { Fragment, type ReactNode, type RefObject, useRef } from "react";
 
 import { environmentThreadShells } from "~/state/threads";
 import {
@@ -18,7 +18,11 @@ import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ScrollArea } from "../ui/scroll-area";
-import type { RestartingMachine, UpdateEverythingRow } from "./updateEverything.logic";
+import {
+  updateEverythingRowHasWork,
+  type RestartingMachine,
+  type UpdateEverythingRow,
+} from "./updateEverything.logic";
 
 const isRunning = (status: string) =>
   status === "preparing" || status === "starting" || status === "running";
@@ -47,6 +51,8 @@ interface UpdateEverythingDialogProps {
   readonly rows: ReadonlyArray<UpdateEverythingRow>;
   readonly restarts: ReadonlyArray<RestartingMachine>;
   readonly onConfirm: () => void;
+  readonly onProvidersOnly?: () => void;
+  readonly buildReview?: ReactNode;
   /** Overrides the "Update N machines?" title, for an update-track switch. */
   readonly title?: string;
   readonly confirmLabel?: string;
@@ -98,6 +104,8 @@ function UpdateEverythingDialogContent({
   rows,
   restarts,
   onConfirm,
+  onProvidersOnly,
+  buildReview,
   cancelRef,
   title,
   confirmLabel = "Update",
@@ -125,7 +133,7 @@ function UpdateEverythingDialogContent({
   const running = stopped + continuing;
   const threads = `${running} running ${running === 1 ? "thread" : "threads"}`;
   const restarting = new Set(restarts.map((machine) => machine.environmentId));
-  const updating = rows.filter((row) => row.app !== null || row.providers.length > 0);
+  const updating = rows.filter(updateEverythingRowHasWork);
   const skipped = rows.filter((row) => row.skipped !== null);
 
   return (
@@ -151,6 +159,7 @@ function UpdateEverythingDialogContent({
       </AlertDialogHeader>
       <ScrollArea scrollFade>
         <div className="flex flex-col gap-3 px-6 pb-4">
+          {buildReview}
           {notes.map((note) => (
             <p key={note} className="text-muted-foreground text-sm">
               {note}
@@ -181,7 +190,11 @@ function UpdateEverythingDialogContent({
                   <MiddleTruncate value={row.label} aria-hidden />
                 </span>
                 <span role="cell">
-                  {row.app !== null ? APP_LABELS[row.app] : null}
+                  {row.app !== null
+                    ? APP_LABELS[row.app]
+                    : row.jonesHandoffNotice
+                      ? "Install status"
+                      : null}
                   {row.app === null && row.skipped !== null ? (
                     <span className="text-muted-foreground">Skipped</span>
                   ) : null}
@@ -190,6 +203,11 @@ function UpdateEverythingDialogContent({
                   ) : null}
                 </span>
                 <span role="cell">
+                  {row.jonesHandoffNotice ? (
+                    <span className="block text-muted-foreground text-xs">
+                      {row.jonesHandoffNotice}
+                    </span>
+                  ) : null}
                   {row.providers.map((provider, index) => (
                     <Fragment key={provider}>
                       <span className="whitespace-nowrap">{provider}</span>
@@ -244,6 +262,11 @@ function UpdateEverythingDialogContent({
         <AlertDialogClose ref={cancelRef} render={<Button variant="outline" disabled={busy} />}>
           Cancel
         </AlertDialogClose>
+        {onProvidersOnly !== undefined ? (
+          <Button variant="outline" disabled={busy} onClick={onProvidersOnly}>
+            Update providers only
+          </Button>
+        ) : null}
         <Button disabled={disabledReason !== null || busy} onClick={onConfirm}>
           {confirmLabel}
         </Button>

@@ -7,6 +7,7 @@ import {
   resolveBranchSelectionTarget,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
+  resolveAutomaticWorktreeBaseBranch,
   resolveBranchToolbarPrBranch,
   resolveConfirmedSelectedRef,
   resolveDefaultWorktreeBaseBranch,
@@ -18,6 +19,16 @@ import {
 } from "./BranchToolbar.logic";
 
 describe("resolveDraftEnvModeAfterBranchChange", () => {
+  it("keeps conversation selection when choosing its recorded source base", () => {
+    expect(
+      resolveDraftEnvModeAfterBranchChange({
+        nextWorktreePath: null,
+        currentWorktreePath: null,
+        effectiveEnvMode: "auto",
+      }),
+    ).toBe("auto");
+  });
+
   it("switches to local mode when returning from an existing worktree to the main worktree", () => {
     expect(
       resolveDraftEnvModeAfterBranchChange({
@@ -430,5 +441,56 @@ describe("resolveConfirmedSelectedRef", () => {
     expect(resolveConfirmedSelectedRef(listed, refs === null ? null : { refs }).worktreePath).toBe(
       expected,
     );
+  });
+});
+
+describe("resolveAutomaticWorktreeBaseBranch", () => {
+  const pendingSelection = {
+    effectiveEnvMode: "worktree" as const,
+    envLocked: false,
+    activeWorktreePath: null,
+    activeThreadBranch: null,
+    worktreeBaseBranchCandidate: null,
+  };
+
+  it("suppresses a late default during submission and after bootstrap writes the worktree", () => {
+    const metadataWrites: Array<{ branch: string; worktreePath: null }> = [];
+    const applyAutomaticSelection = (
+      input: Parameters<typeof resolveAutomaticWorktreeBaseBranch>[0],
+    ) => {
+      const branch = resolveAutomaticWorktreeBaseBranch(input);
+      if (branch !== null) metadataWrites.push({ branch, worktreePath: null });
+    };
+    applyAutomaticSelection(pendingSelection);
+    applyAutomaticSelection({
+      ...pendingSelection,
+      envLocked: true,
+      worktreeBaseBranchCandidate: "develop",
+    });
+    applyAutomaticSelection({
+      ...pendingSelection,
+      activeWorktreePath: "/repo/worktree",
+      worktreeBaseBranchCandidate: "develop",
+    });
+    expect(metadataWrites).toEqual([]);
+    applyAutomaticSelection({ ...pendingSelection, worktreeBaseBranchCandidate: "develop" });
+    expect(metadataWrites).toEqual([{ branch: "develop", worktreePath: null }]);
+  });
+
+  it("keeps an explicit choice and never auto-selects in the local checkout", () => {
+    expect(
+      resolveAutomaticWorktreeBaseBranch({
+        ...pendingSelection,
+        activeThreadBranch: "chosen/base",
+        worktreeBaseBranchCandidate: "develop",
+      }),
+    ).toBeNull();
+    expect(
+      resolveAutomaticWorktreeBaseBranch({
+        ...pendingSelection,
+        effectiveEnvMode: "local",
+        worktreeBaseBranchCandidate: "develop",
+      }),
+    ).toBeNull();
   });
 });

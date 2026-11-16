@@ -97,6 +97,7 @@ it("shows destination identity and a quiet origin independently of the project w
         environmentId: EnvironmentId.make("local"),
         projectId: ProjectId.make("unrelated-project"),
         label: "VPS",
+        displayLabel: "Office",
         machine: "server",
         isPrimary: true,
       },
@@ -104,6 +105,8 @@ it("shows destination identity and a quiet origin independently of the project w
   });
   const row = container.querySelector<HTMLElement>('[aria-label^="Run context:"]')!;
   expect(row.textContent).toContain("🧠");
+  expect(row.textContent).toContain("Office");
+  expect(row.textContent).not.toContain("VPS");
   expect(row.textContent).toContain("from 🏡");
   expect(row.textContent).not.toContain("unrelated-project");
   const origin = row.querySelector<HTMLElement>('[aria-label="From Laptop"]')!;
