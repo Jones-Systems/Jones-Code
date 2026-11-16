@@ -335,12 +335,14 @@ async function injectedWorker(
     runChild: async (options) => {
       path = options.owner.creationReceipt.canonicalRootPath;
       const readyPath = NodePath.join(path, "ready");
-      const watcher = NodeFS.watch(path, { persistent: false }, () => {
+      const onMarker = () => {
         if (!ready && NodeFS.existsSync(readyPath)) {
           ready = true;
           onReady?.();
         }
-      });
+      };
+      // Observe the actual marker: directory notifications can be coalesced on macOS.
+      NodeFS.watchFile(readyPath, { persistent: false, interval: 10 }, onMarker);
       try {
         const child = await runOwnedChild({
           ...options,
@@ -350,7 +352,7 @@ async function injectedWorker(
         ready ||= NodeFS.existsSync(readyPath);
         return child;
       } finally {
-        watcher.close();
+        NodeFS.unwatchFile(readyPath, onMarker);
       }
     },
   });
