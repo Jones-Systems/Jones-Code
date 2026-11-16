@@ -3437,7 +3437,9 @@
       "id": "panel-find",
       "tests": [
         "apps/web/src/jones/panelFind/PanelFind.browser.test.tsx",
-        "apps/desktop/src/window/DesktopApplicationMenu.test.ts"
+        "apps/desktop/src/window/DesktopApplicationMenu.test.ts",
+        "apps/web/src/components/AppRouteModal.browser.test.tsx",
+        "apps/web/src/components/usage/UsagePage.jones.browser.test.tsx"
       ],
       "scope": "Focused-panel Cmd/Ctrl+F and native Edit menu route threads and side chats into existing full-history ThreadFind, with DOM text find for Settings and other panels. Small accepted layout hooks register scopes; ChatView command routes through coordinator. Desktop menu insertion and native menu regression remain in the existing upstream menu harness because extraction would duplicate menu construction. CSS Highlight API avoids DOM mutations; observers run only while open. No wire, stored data, providers, mobile or installed runtime changes."
     }
