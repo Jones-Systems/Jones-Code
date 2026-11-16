@@ -1,6 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Reproduces the released idempotency key for synthetic legacy rows.
 import * as NodeCrypto from "node:crypto";
-import { syntheticReceiverAuth, syntheticReceiverLayers, awaitDispatched } from "./receiver.testkit.ts";
+import {
+  syntheticReceiverAuth,
+  syntheticReceiverLayers,
+  awaitDispatched,
+} from "./receiver.testkit.ts";
 import { expect, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -92,9 +96,9 @@ const owner: EnvironmentSessionPrincipalShape = {
 };
 const pass = { verdict: "pass", category: "none", reason: "Ordinary work" };
 const hold = { verdict: "hold", category: "risky", reason: "Needs the receiving owner" };
-const memory = Layer.effectDiscard(migrateCore.pipe(Effect.andThen(migrateIntegration),Effect.andThen(syntheticReceiverAuth))).pipe(
-  Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
-);
+const memory = Layer.effectDiscard(
+  migrateCore.pipe(Effect.andThen(migrateIntegration), Effect.andThen(syntheticReceiverAuth)),
+).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 const sessions = Layer.succeed(EnvironmentAuth.EnvironmentAuth, {
   listSessions: () =>
     Effect.succeed([{ sessionId: AuthSessionId.make("remote") } as AuthClientSession]),
@@ -102,7 +106,11 @@ const sessions = Layer.succeed(EnvironmentAuth.EnvironmentAuth, {
 // The same schema plus thread-result requests, which add the columns that tie an admission
 // to a result request.
 const memoryWithResultRequests = Layer.effectDiscard(
-  migrateCore.pipe(Effect.andThen(migrateIntegration), Effect.andThen(migrateResults),Effect.andThen(syntheticReceiverAuth)),
+  migrateCore.pipe(
+    Effect.andThen(migrateIntegration),
+    Effect.andThen(migrateResults),
+    Effect.andThen(syntheticReceiverAuth),
+  ),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 const fixture = <E>(
   evaluate: Admission.RemoteAdmissionEvaluator<E>,
@@ -111,7 +119,8 @@ const fixture = <E>(
   Intake.layer.pipe(
     Layer.provide(providers),
     Layer.provideMerge(Admission.layerWithEvaluator(evaluate)),
-    Layer.provide(sessions), Layer.provide(syntheticReceiverLayers),
+    Layer.provide(sessions),
+    Layer.provide(syntheticReceiverLayers),
     Layer.provideMerge(database),
   );
 const enable = (intake: Intake.RemoteAdmissionIntake["Service"]) =>
@@ -266,7 +275,7 @@ it.effect.each(["browser-session-cookie", "bearer-access-token"] as const)(
       expect(forbidden._tag).toBe("Failure");
       expect(received).toHaveLength(0);
       const committed = yield* intake.decide(decision, { ...owner, method });
-      expect(committed.status).toBe('approved');
+      expect(committed.status).toBe("approved");
       const completed = yield* awaitDispatched(committed.id);
       expect(completed.status).toBe("dispatched");
       yield* rejectUnboundWithdrawal(intake, completed);
@@ -415,7 +424,10 @@ it.effect(
       const before = yield* bindings;
       const [completed, withdrawal] = yield* Effect.all(
         [
-          intake.decide({ ...held, decision: "approve" }, owner).pipe(Effect.tap(committed => Effect.sync(() => expect(committed.status).toBe('approved'))),Effect.flatMap(committed => awaitDispatched(committed.id))),
+          intake.decide({ ...held, decision: "approve" }, owner).pipe(
+            Effect.tap((committed) => Effect.sync(() => expect(committed.status).toBe("approved"))),
+            Effect.flatMap((committed) => awaitDispatched(committed.id)),
+          ),
           Effect.gen(function* () {
             yield* Deferred.await(entered);
             const claimed = (yield* admissions.get(held.id))!;
@@ -488,7 +500,11 @@ it.effect("withdrawal preserves not-found and storage failures", () =>
 it.effect("restart resumes approved work with stored scope exactly once", () =>
   Effect.gen(function* () {
     const admissions = yield* Admission.RemoteAdmission;
-    const firstLayer = Intake.layer.pipe(Layer.provide(sessions), Layer.provide(syntheticReceiverLayers), Layer.provide(providers));
+    const firstLayer = Intake.layer.pipe(
+      Layer.provide(sessions),
+      Layer.provide(syntheticReceiverLayers),
+      Layer.provide(providers),
+    );
     const id = yield* Effect.gen(function* () {
       const intake = yield* Intake.RemoteAdmissionIntake;
       yield* enable(intake);
@@ -520,7 +536,15 @@ it.effect("restart resumes approved work with stored scope exactly once", () =>
       yield* awaitDispatched(id);
       expect((yield* admissions.get(id))?.status).toBe("dispatched");
       expect(calls).toBe(1);
-    }).pipe(Effect.provide(Intake.layer.pipe(Layer.provide(sessions), Layer.provide(syntheticReceiverLayers), Layer.provide(providers))));
+    }).pipe(
+      Effect.provide(
+        Intake.layer.pipe(
+          Layer.provide(sessions),
+          Layer.provide(syntheticReceiverLayers),
+          Layer.provide(providers),
+        ),
+      ),
+    );
   }).pipe(
     Effect.provide(
       Admission.layerWithEvaluator(() => Effect.succeed(hold)).pipe(Layer.provideMerge(memory)),
@@ -1152,8 +1176,8 @@ it.effect(
       const record = (yield* intake.snapshot()).pending[0]!;
       projectTitle = "Renamed receiver project";
       threadTitle = "Renamed receiver thread";
-      const committed=yield* intake.decide({ ...record, decision: "approve" }, owner);
-      expect(committed.status).toBe('approved');
+      const committed = yield* intake.decide({ ...record, decision: "approve" }, owner);
+      expect(committed.status).toBe("approved");
       expect((yield* awaitDispatched(committed.id)).status).toBe("dispatched");
       expect(calls).toBe(1);
     }).pipe(
@@ -1519,25 +1543,53 @@ it.effect("startup keeps a terminal admission while its thread-result request is
   }).pipe(Effect.provide(fixture(() => Effect.succeed(hold), memoryWithResultRequests))),
 );
 
-it.effect('owner decision commits outside request lifetime and unrelated denial does not await a slow launch',() => Effect.gen(function* () {
-  const intake=yield* Intake.RemoteAdmissionIntake;
-  yield* enable(intake);
-  const entered=yield* Deferred.make<void>(),release=yield* Deferred.make<void>();
-  intake.register('t3_thread_launch',() => Effect.gen(function* () {
-    yield* Deferred.succeed(entered,undefined);yield* Deferred.await(release);return {threadId:'created'};
-  }),target);
-  yield* intake.invoke('t3_thread_launch',{...input,clientRequestId:'slow'},invocation).pipe(Effect.ignore);
-  yield* intake.invoke('t3_thread_launch',{...input,clientRequestId:'independent'},invocation).pipe(Effect.ignore);
-  const held=(yield* intake.snapshot()).pending;
-  const slow=held.find(record => (record.envelope.payload as {params:{clientRequestId:string}}).params.clientRequestId === 'slow')!;
-  const independent=held.find(record => record.id !== slow.id)!;
-  try {
-    const committed=yield* Effect.scoped(intake.decide({...slow,decision:'approve'},owner));
-    expect(committed.status).toBe('approved');
-    yield* Deferred.await(entered);
-    // This denial must finish while release is still blocked.
-    expect((yield* intake.decide({...independent,decision:'deny'},owner)).status).toBe('denied');
-    expect((yield* (yield* Admission.RemoteAdmission).get(slow.id))?.status).toBe('dispatching');
-  } finally {yield* Deferred.succeed(release,undefined);}
-  expect((yield* awaitDispatched(slow.id)).status).toBe('dispatched');
-}).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))));
+it.effect(
+  "owner decision commits outside request lifetime and unrelated denial does not await a slow launch",
+  () =>
+    Effect.gen(function* () {
+      const intake = yield* Intake.RemoteAdmissionIntake;
+      yield* enable(intake);
+      const entered = yield* Deferred.make<void>(),
+        release = yield* Deferred.make<void>();
+      intake.register(
+        "t3_thread_launch",
+        () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+            return { threadId: "created" };
+          }),
+        target,
+      );
+      yield* intake
+        .invoke("t3_thread_launch", { ...input, clientRequestId: "slow" }, invocation)
+        .pipe(Effect.ignore);
+      yield* intake
+        .invoke("t3_thread_launch", { ...input, clientRequestId: "independent" }, invocation)
+        .pipe(Effect.ignore);
+      const held = (yield* intake.snapshot()).pending;
+      const slow = held.find(
+        (record) =>
+          (record.envelope.payload as { params: { clientRequestId: string } }).params
+            .clientRequestId === "slow",
+      )!;
+      const independent = held.find((record) => record.id !== slow.id)!;
+      try {
+        const committed = yield* Effect.scoped(
+          intake.decide({ ...slow, decision: "approve" }, owner),
+        );
+        expect(committed.status).toBe("approved");
+        yield* Deferred.await(entered);
+        // This denial must finish while release is still blocked.
+        expect((yield* intake.decide({ ...independent, decision: "deny" }, owner)).status).toBe(
+          "denied",
+        );
+        expect((yield* (yield* Admission.RemoteAdmission).get(slow.id))?.status).toBe(
+          "dispatching",
+        );
+      } finally {
+        yield* Deferred.succeed(release, undefined);
+      }
+      expect((yield* awaitDispatched(slow.id)).status).toBe("dispatched");
+    }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);

@@ -18,7 +18,14 @@ interface Input {
 }
 const command = createRuntimeCommand(connectionAtomRuntime, {
   label: "jones:remote-admission",
-  concurrency: { mode: "serial", key: (input: Input) => JSON.stringify([input.environmentId, input.request.action === "decide" ? input.request.input.id : input.request.action]) },
+  concurrency: {
+    mode: "serial",
+    key: (input: Input) =>
+      JSON.stringify([
+        input.environmentId,
+        input.request.action === "decide" ? input.request.input.id : input.request.action,
+      ]),
+  },
   execute: Effect.fn(function* (input: Input) {
     const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const entry = (yield* SubscriptionRef.get(registry.entries)).get(input.environmentId);

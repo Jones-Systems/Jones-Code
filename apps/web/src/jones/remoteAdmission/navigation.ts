@@ -6,4 +6,5 @@ export function requestHref(receiver: string, id?: string, digest?: string, acce
   if (access) search.set("access", access);
   return `/requests?${search}`;
 }
-export const threadHref = (receiver: string, thread: string) => `/${encodeURIComponent(receiver)}/${encodeURIComponent(thread)}`;
+export const threadHref = (receiver: string, thread: string) =>
+  `/${encodeURIComponent(receiver)}/${encodeURIComponent(thread)}`;

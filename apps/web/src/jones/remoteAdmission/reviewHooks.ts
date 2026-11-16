@@ -7,7 +7,10 @@ const noSubscription = () => () => {};
 const noSnapshot = () => null;
 export function useOptionalReviewState(receiver: EnvironmentId) {
   const controller = useReviewController(receiver);
-  const state = useSyncExternalStore<ReviewState | null>(controller?.subscribe ?? noSubscription, controller?.getSnapshot ?? noSnapshot);
+  const state = useSyncExternalStore<ReviewState | null>(
+    controller?.subscribe ?? noSubscription,
+    controller?.getSnapshot ?? noSnapshot,
+  );
   return { controller, state };
 }
 
@@ -15,7 +18,9 @@ export function useReview(receiver: EnvironmentId) {
   const controller = reviewControllerFor(receiver);
   if (!controller) throw new Error("Review client is not installed");
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-  useEffect(() => { void controller.load(); }, [controller]);
+  useEffect(() => {
+    void controller.load();
+  }, [controller]);
   return { ...state, controller };
 }
 
@@ -30,9 +35,15 @@ export function useFrozenRows<T>(rows: readonly T[], key: (item: T) => string) {
     frozen,
     isGone: (row: T) => !rows.some((current) => key(current) === key(row)),
     handlers: {
-      onPointerEnter: () => { if (!frozen) setPinned(rows); setPointer(true); },
+      onPointerEnter: () => {
+        if (!frozen) setPinned(rows);
+        setPointer(true);
+      },
       onPointerLeave: () => setPointer(false),
-      onFocusCapture: () => { if (!frozen) setPinned(rows); setFocus(true); },
+      onFocusCapture: () => {
+        if (!frozen) setPinned(rows);
+        setFocus(true);
+      },
       onBlurCapture: (event: FocusEvent<HTMLElement>) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setFocus(false);
       },

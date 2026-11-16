@@ -41,9 +41,9 @@ const policy = {
   revision: "synthetic-policy",
   modelSelection: { instanceId: ProviderInstanceId.make("synthetic"), model: "synthetic" },
 };
-const memory = Layer.effectDiscard(migrateCore.pipe(Effect.andThen(migrateIntegration),Effect.andThen(syntheticReceiverAuth))).pipe(
-  Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
-);
+const memory = Layer.effectDiscard(
+  migrateCore.pipe(Effect.andThen(migrateIntegration), Effect.andThen(syntheticReceiverAuth)),
+).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 const fixture = (messages: string[]) =>
   Registration.servicesLayer.pipe(
     Layer.provide(syntheticReceiverLayers),

@@ -19,8 +19,16 @@ vi.mock("../../state/environments", () => ({
   useEnvironments: () => ({
     isReady: true,
     environments: [
-      { environmentId: EnvironmentId.make("requests-linked"), label: "Linked receiver", displayLabel: "Linked receiver" },
-      { environmentId: EnvironmentId.make("requests-primary"), label: "Primary receiver", displayLabel: "Primary receiver" },
+      {
+        environmentId: EnvironmentId.make("requests-linked"),
+        label: "Linked receiver",
+        displayLabel: "Linked receiver",
+      },
+      {
+        environmentId: EnvironmentId.make("requests-primary"),
+        label: "Primary receiver",
+        displayLabel: "Primary receiver",
+      },
     ],
   }),
 }));

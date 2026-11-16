@@ -15,10 +15,13 @@ export const REMOTE_ADMISSION_REVIEW_BASE = "/api/jones/remote-admission";
 export const REMOTE_ADMISSION_REVIEW_VERSION = "jones.remote-admission-review/v2";
 export const REMOTE_ADMISSION_OBSERVATION_VERSION = "jones.remote-admission-observation/v1";
 export const REMOTE_ADMISSION_PEER_STATUS_VERSION = "jones.remote-admission-peer-status/v1";
-export const REMOTE_ADMISSION_RETRY_OBSERVATION_VERSION = "jones.remote-admission-retry-observation/v1";
+export const REMOTE_ADMISSION_RETRY_OBSERVATION_VERSION =
+  "jones.remote-admission-retry-observation/v1";
 export const REMOTE_ADMISSION_RECOVERY_STATUS_VERSION = "jones.remote-admission-recovery-status/v1";
-export const REMOTE_ADMISSION_RECOVERED_RESULT_VERSION = "jones.remote-admission-recovered-result/v1";
-export const REMOTE_ADMISSION_CAPABILITIES_REGISTER_VERSION = "jones.remote-admission-capabilities-register/v1";
+export const REMOTE_ADMISSION_RECOVERED_RESULT_VERSION =
+  "jones.remote-admission-recovered-result/v1";
+export const REMOTE_ADMISSION_CAPABILITIES_REGISTER_VERSION =
+  "jones.remote-admission-capabilities-register/v1";
 export const REMOTE_ADMISSION_DEFAULT_PAGE_SIZE = 50;
 export const REMOTE_ADMISSION_MAX_PAGE_SIZE = 100;
 
@@ -29,7 +32,9 @@ const Time = Schema.String;
 // Cursors are server-issued capabilities for a view/auth/order snapshot, never offsets.
 export const RemoteAdmissionReviewCursor = Schema.NonEmptyString.check(Schema.isMaxLength(4096));
 export const RemoteAdmissionGrantDuration = Schema.Literals([3600, 86400, 172800, 259200, 604800]);
-export const RemoteAdmissionGrantIntent = Schema.Struct({ durationSeconds: RemoteAdmissionGrantDuration });
+export const RemoteAdmissionGrantIntent = Schema.Struct({
+  durationSeconds: RemoteAdmissionGrantDuration,
+});
 export const RemoteAdmissionReviewFeatures = Schema.Struct({
   reviewV2: Schema.Boolean,
   grants: Schema.Boolean,
@@ -57,18 +62,28 @@ export const RemoteAdmissionReviewCounts = Schema.Struct({
   unresolvedAdmissions: Count,
   activeAccessScopes: Count,
   activeThreads: Count,
-}).check(Schema.makeFilter((counts) =>
-  counts.heldAdmissions === counts.currentHeldAdmissions + counts.blockedHeldAdmissions
-    ? true : "Held admissions must be the disjoint current and blocked sum.",
-));
+}).check(
+  Schema.makeFilter((counts) =>
+    counts.heldAdmissions === counts.currentHeldAdmissions + counts.blockedHeldAdmissions
+      ? true
+      : "Held admissions must be the disjoint current and blocked sum.",
+  ),
+);
 export const RemoteAdmissionBlockedReason = Schema.Literals([
-  "access_revoked", "access_expired", "session_not_bound", "mode_exceeds",
-  "operation_not_covered", "identity_unresolved",
+  "access_revoked",
+  "access_expired",
+  "session_not_bound",
+  "mode_exceeds",
+  "operation_not_covered",
+  "identity_unresolved",
 ]);
 /** Audit facts include malicious holds; those remain ordinary owner holds and
  * never receive an access-blocked mark or automatic lease approval.
  */
-export const RemoteAdmissionBlockedAuditReason = Schema.Union([RemoteAdmissionBlockedReason, Schema.Literal("malicious")]);
+export const RemoteAdmissionBlockedAuditReason = Schema.Union([
+  RemoteAdmissionBlockedReason,
+  Schema.Literal("malicious"),
+]);
 export const RemoteAdmissionAccessBinding = Schema.Struct({
   receiverEnvironmentId: Id,
   sessionId: Id,
@@ -103,7 +118,11 @@ export const RemoteAdmissionManagedScope = Schema.Struct({
 });
 export const RemoteAdmissionAccessBasis = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("lease"), grantId: Id, generation: Generation }),
-  Schema.Struct({ kind: Schema.Literal("permit"), bindingDigest: RemoteAdmissionDigest, scopeRevision: Generation }),
+  Schema.Struct({
+    kind: Schema.Literal("permit"),
+    bindingDigest: RemoteAdmissionDigest,
+    scopeRevision: Generation,
+  }),
 ]);
 export const RemoteAdmissionBlockedMark = Schema.Struct({
   admissionId: Id,
@@ -134,7 +153,9 @@ export const RemoteAdmissionBlockedSummary = Schema.Struct({
   lastAt: Time,
 });
 export const RemoteAdmissionBlockedDiagnosticCounts = Schema.Struct({
-  logicalEvents: Count, repeatArrivals: Count, summaryRows: Count,
+  logicalEvents: Count,
+  repeatArrivals: Count,
+  summaryRows: Count,
 });
 
 // Creation, availability, message acceptance and provider work are independent observations.
@@ -160,10 +181,16 @@ export const RemoteAdmissionRecoveryEvidence = Schema.Struct({
   initialMessageCommandId: Schema.NullOr(Id),
   abandonedClaim: Schema.Boolean,
   readsComplete: Schema.Boolean,
-  contradictions: Schema.Array(Schema.Literals([
-    "both_identities", "invalid_receipt", "shell_without_creation", "project_mismatch",
-    "message_without_creation", "rejected_creation_with_effect",
-  ])),
+  contradictions: Schema.Array(
+    Schema.Literals([
+      "both_identities",
+      "invalid_receipt",
+      "shell_without_creation",
+      "project_mismatch",
+      "message_without_creation",
+      "rejected_creation_with_effect",
+    ]),
+  ),
 });
 export const RemoteAdmissionRecoveredResult = Schema.Struct({
   admissionId: Id,
@@ -190,7 +217,12 @@ export const RemoteAdmissionReviewItem = Schema.Struct({
   extension: RemoteAdmissionReviewExtension,
 });
 export const RemoteAdmissionReviewView = Schema.Literals([
-  "current", "blocked", "done", "unresolved", "inflight", "access",
+  "current",
+  "blocked",
+  "done",
+  "unresolved",
+  "inflight",
+  "access",
 ]);
 export const RemoteAdmissionReviewQuery = Schema.Struct({
   view: RemoteAdmissionReviewView,
@@ -213,7 +245,12 @@ export const RemoteAdmissionReviewPage = Schema.Struct({
 });
 export const RemoteAdmissionReviewItemQuery = Schema.Struct({ id: Id });
 export const RemoteAdmissionReviewDecision = Schema.Union([
-  Schema.Struct({ id: Id, bindingDigest: RemoteAdmissionDigest, decision: Schema.Literal("approve"), grant: Schema.optionalKey(RemoteAdmissionGrantIntent) }),
+  Schema.Struct({
+    id: Id,
+    bindingDigest: RemoteAdmissionDigest,
+    decision: Schema.Literal("approve"),
+    grant: Schema.optionalKey(RemoteAdmissionGrantIntent),
+  }),
   Schema.Struct({ id: Id, bindingDigest: RemoteAdmissionDigest, decision: Schema.Literal("deny") }),
 ]);
 export const RemoteAdmissionReviewDecisionResult = Schema.Struct({
@@ -235,17 +272,29 @@ export const RemoteAdmissionGrantsPage = Schema.Struct({
   serverNow: Time,
 });
 export const RemoteAdmissionGrantUpdate = Schema.Struct({
-  grantId: Id, expectedGeneration: Generation, durationSeconds: RemoteAdmissionGrantDuration,
+  grantId: Id,
+  expectedGeneration: Generation,
+  durationSeconds: RemoteAdmissionGrantDuration,
 });
-export const RemoteAdmissionGrantRevoke = Schema.Struct({ grantId: Id, expectedGeneration: Generation });
+export const RemoteAdmissionGrantRevoke = Schema.Struct({
+  grantId: Id,
+  expectedGeneration: Generation,
+});
 export const RemoteAdmissionGrantRestore = Schema.Struct({
-  grantId: Id, expectedGeneration: Generation, durationSeconds: RemoteAdmissionGrantDuration, commandKey: Id,
+  grantId: Id,
+  expectedGeneration: Generation,
+  durationSeconds: RemoteAdmissionGrantDuration,
+  commandKey: Id,
 });
 export const RemoteAdmissionGrantRestoreResult = Schema.Struct({
-  predecessorGrantId: Id, commandKey: Id, successor: RemoteAdmissionGrant,
+  predecessorGrantId: Id,
+  commandKey: Id,
+  successor: RemoteAdmissionGrant,
 });
 export const RemoteAdmissionRetryInput = Schema.Struct({
-  id: Id, bindingDigest: RemoteAdmissionDigest, commandKey: Id,
+  id: Id,
+  bindingDigest: RemoteAdmissionDigest,
+  commandKey: Id,
   grant: Schema.optionalKey(RemoteAdmissionGrantIntent),
 });
 export const RemoteAdmissionRetryAttempt = Schema.Struct({
@@ -255,12 +304,22 @@ export const RemoteAdmissionRetryAttempt = Schema.Struct({
   childAdmissionId: Id,
   receiverEnvironmentId: Id,
   locator: Id,
-  state: Schema.Literals(["prepared", "origin_registered", "claimed", "completed", "refused", "expired"]),
+  state: Schema.Literals([
+    "prepared",
+    "origin_registered",
+    "claimed",
+    "completed",
+    "refused",
+    "expired",
+  ]),
   createdAt: Time,
   expiresAt: Time,
   grantIntent: Schema.NullOr(RemoteAdmissionGrantIntent),
 });
-export const RemoteAdmissionRecheckInput = Schema.Struct({ id: Id, bindingDigest: RemoteAdmissionDigest });
+export const RemoteAdmissionRecheckInput = Schema.Struct({
+  id: Id,
+  bindingDigest: RemoteAdmissionDigest,
+});
 export const RemoteAdmissionRecheckResult = Schema.Struct({
   item: RemoteAdmissionReviewItem,
   recoveredResult: Schema.NullOr(RemoteAdmissionRecoveredResult),
@@ -283,22 +342,41 @@ export const RemoteAdmissionChanges = Schema.Struct({
 });
 
 export const RemoteAdmissionReviewBadRequest = Schema.Struct({
-  code: Schema.Literal("invalid_request"), message: Schema.String,
-}).annotate({ httpApiStatus: 400 }).pipe(HttpApiSchema.status(400));
+  code: Schema.Literal("invalid_request"),
+  message: Schema.String,
+})
+  .annotate({ httpApiStatus: 400 })
+  .pipe(HttpApiSchema.status(400));
 export const RemoteAdmissionReviewUnauthorized = Schema.Struct({
-  code: Schema.Literal("review_unavailable"), message: Schema.String,
+  code: Schema.Literal("review_unavailable"),
+  message: Schema.String,
   cause: Schema.optionalKey(Schema.Literals(["session_expired", "session_revoked"])),
-}).annotate({ httpApiStatus: 401 }).pipe(HttpApiSchema.status(401));
+})
+  .annotate({ httpApiStatus: 401 })
+  .pipe(HttpApiSchema.status(401));
 export const RemoteAdmissionReviewForbidden = Schema.Struct({
-  code: Schema.Literal("owner_required"), message: Schema.String,
-}).annotate({ httpApiStatus: 403 }).pipe(HttpApiSchema.status(403));
+  code: Schema.Literal("owner_required"),
+  message: Schema.String,
+})
+  .annotate({ httpApiStatus: 403 })
+  .pipe(HttpApiSchema.status(403));
 export const RemoteAdmissionReviewUnavailable = Schema.Struct({
   code: Schema.Literals(["history_unavailable", "grant_unavailable", "item_unavailable"]),
   message: Schema.String,
-}).annotate({ httpApiStatus: 404 }).pipe(HttpApiSchema.status(404));
+})
+  .annotate({ httpApiStatus: 404 })
+  .pipe(HttpApiSchema.status(404));
 export const RemoteAdmissionReviewConflict = Schema.Struct({
   code: Schema.Literal("conflict"),
-  reason: Schema.Literals(["state_changed", "binding_changed", "generation_changed", "grant_ineligible", "command_changed", "retry_ineligible", "authority_changed"]),
+  reason: Schema.Literals([
+    "state_changed",
+    "binding_changed",
+    "generation_changed",
+    "grant_ineligible",
+    "command_changed",
+    "retry_ineligible",
+    "authority_changed",
+  ]),
   message: Schema.String,
   current: Schema.Struct({
     admission: Schema.NullOr(RemoteAdmissionPublicStatus),
@@ -306,10 +384,15 @@ export const RemoteAdmissionReviewConflict = Schema.Struct({
     chainHead: Schema.NullOr(RemoteAdmissionGrant),
     attempt: Schema.NullOr(RemoteAdmissionRetryAttempt),
   }),
-}).annotate({ httpApiStatus: 409 }).pipe(HttpApiSchema.status(409));
+})
+  .annotate({ httpApiStatus: 409 })
+  .pipe(HttpApiSchema.status(409));
 export const RemoteAdmissionReviewError = Schema.Union([
-  RemoteAdmissionReviewBadRequest, RemoteAdmissionReviewUnauthorized,
-  RemoteAdmissionReviewForbidden, RemoteAdmissionReviewUnavailable, RemoteAdmissionReviewConflict,
+  RemoteAdmissionReviewBadRequest,
+  RemoteAdmissionReviewUnauthorized,
+  RemoteAdmissionReviewForbidden,
+  RemoteAdmissionReviewUnavailable,
+  RemoteAdmissionReviewConflict,
 ]);
 
 // No supports/registration input belongs on these pure reads.
@@ -318,20 +401,28 @@ export const RemoteAdmissionPeerVersions = Schema.Struct({
   peerProjection: Schema.optionalKey(Schema.Literal(REMOTE_ADMISSION_PEER_STATUS_VERSION)),
   peerLongPoll: Schema.optionalKey(Schema.Literal(REMOTE_ADMISSION_PEER_STATUS_VERSION)),
   retryObservation: Schema.optionalKey(Schema.Literal(REMOTE_ADMISSION_RETRY_OBSERVATION_VERSION)),
-  recoveredResultObservation: Schema.optionalKey(Schema.Literal(REMOTE_ADMISSION_RECOVERED_RESULT_VERSION)),
+  recoveredResultObservation: Schema.optionalKey(
+    Schema.Literal(REMOTE_ADMISSION_RECOVERED_RESULT_VERSION),
+  ),
   recoveryInspection: Schema.optionalKey(Schema.Literal(REMOTE_ADMISSION_RECOVERY_STATUS_VERSION)),
 });
 export const RemoteAdmissionCapabilitiesRegisterInput = Schema.Struct({
-  coordinatorGeneration: Id, versions: RemoteAdmissionPeerVersions,
+  coordinatorGeneration: Id,
+  versions: RemoteAdmissionPeerVersions,
 });
 export const RemoteAdmissionCapabilitiesRegisterResult = Schema.Struct({
-  coordinatorGeneration: Id, versions: RemoteAdmissionPeerVersions,
+  coordinatorGeneration: Id,
+  versions: RemoteAdmissionPeerVersions,
 });
 export const RemoteAdmissionReturnBinding = Schema.Struct({
-  rootObservationKey: Id, originThreadId: Id, returnRouteKey: Id,
+  rootObservationKey: Id,
+  originThreadId: Id,
+  returnRouteKey: Id,
 });
 export const RemoteAdmissionRecoveredNoticeIdentity = Schema.Struct({
-  receiverEnvironmentId: Id, admissionId: Id, recoveredRevision: Generation,
+  receiverEnvironmentId: Id,
+  admissionId: Id,
+  recoveredRevision: Generation,
 });
 export const RemoteAdmissionRecoveredNotice = Schema.Struct({
   ...RemoteAdmissionRecoveredNoticeIdentity.fields,
@@ -339,7 +430,14 @@ export const RemoteAdmissionRecoveredNotice = Schema.Struct({
   returnBinding: RemoteAdmissionReturnBinding,
   evidenceDigest: RemoteAdmissionDigest,
   result: RemoteAdmissionLaunchResult,
-  deliveryState: Schema.Literals(["awaiting_support", "unregistered", "registered", "undeliverable", "delivered", "suppressed"]),
+  deliveryState: Schema.Literals([
+    "awaiting_support",
+    "unregistered",
+    "registered",
+    "undeliverable",
+    "delivered",
+    "suppressed",
+  ]),
 });
 export const RemoteAdmissionPeerStatus = Schema.Struct({
   after: RemoteAdmissionReviewCursor,
@@ -363,14 +461,26 @@ export const RemoteAdmissionObservation = Schema.Struct({
 });
 export const RemoteAdmissionAckInput = Schema.Union([
   Schema.Struct({ clientRequestId: Id, disposition: Schema.Literals(["delivered", "suppressed"]) }),
-  Schema.Struct({ attemptId: Id, observationKey: Id, disposition: Schema.Literals(["delivered", "suppressed"]) }),
+  Schema.Struct({
+    attemptId: Id,
+    observationKey: Id,
+    disposition: Schema.Literals(["delivered", "suppressed"]),
+  }),
 ]);
-export const RemoteAdmissionAttemptRegisterInput = Schema.Struct({ attemptId: Id, observationKey: Id });
-export const RemoteAdmissionAttemptRegisterResult = Schema.Struct({ attempt: RemoteAdmissionRetryAttempt });
-export const RemoteAdmissionNoticeRegisterInput = Schema.Struct({
-  ...RemoteAdmissionRecoveredNoticeIdentity.fields, observationKey: Id,
+export const RemoteAdmissionAttemptRegisterInput = Schema.Struct({
+  attemptId: Id,
+  observationKey: Id,
 });
-export const RemoteAdmissionNoticeRegisterResult = Schema.Struct({ notice: RemoteAdmissionRecoveredNotice });
+export const RemoteAdmissionAttemptRegisterResult = Schema.Struct({
+  attempt: RemoteAdmissionRetryAttempt,
+});
+export const RemoteAdmissionNoticeRegisterInput = Schema.Struct({
+  ...RemoteAdmissionRecoveredNoticeIdentity.fields,
+  observationKey: Id,
+});
+export const RemoteAdmissionNoticeRegisterResult = Schema.Struct({
+  notice: RemoteAdmissionRecoveredNotice,
+});
 export const RemoteAdmissionNoticeAckInput = Schema.Struct({
   ...RemoteAdmissionRecoveredNoticeIdentity.fields,
   disposition: Schema.Literals(["delivered", "suppressed"]),
@@ -382,7 +492,15 @@ export const RemoteAdmissionRecoveryStatusInput = Schema.Union([
 ]);
 export const RemoteAdmissionRecoveryStatus = Schema.Struct({
   receiverEnvironmentId: Id,
-  state: Schema.Literals(["awaiting_confirmation", "created", "refused", "not_created", "unknown", "superseded", "history_unavailable"]),
+  state: Schema.Literals([
+    "awaiting_confirmation",
+    "created",
+    "refused",
+    "not_created",
+    "unknown",
+    "superseded",
+    "history_unavailable",
+  ]),
   reasonCode: Id,
   stages: RemoteAdmissionLaunchStages,
   confirmedThreadId: Schema.NullOr(Id),
@@ -390,66 +508,120 @@ export const RemoteAdmissionRecoveryStatus = Schema.Struct({
 });
 
 // HTTP query strings decode to the same numeric DTO used by local and MCP callers.
-const HttpPageLimit = Schema.optionalKey(Schema.FiniteFromString.check(
-  Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 }),
-));
+const HttpPageLimit = Schema.optionalKey(
+  Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 })),
+);
 export const RemoteAdmissionReviewHttpQuery = Schema.Struct({
-  ...RemoteAdmissionReviewQuery.fields, limit: HttpPageLimit,
+  ...RemoteAdmissionReviewQuery.fields,
+  limit: HttpPageLimit,
 });
 export const RemoteAdmissionGrantHttpQuery = Schema.Struct({
-  ...RemoteAdmissionGrantQuery.fields, limit: HttpPageLimit,
+  ...RemoteAdmissionGrantQuery.fields,
+  limit: HttpPageLimit,
 });
 export const RemoteAdmissionChangesHttpQuery = Schema.Struct({
   ...RemoteAdmissionChangesQuery.fields,
-  timeoutMs: Schema.optionalKey(Schema.FiniteFromString.check(
-    Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 50000 }),
-  )),
+  timeoutMs: Schema.optionalKey(
+    Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 50000 })),
+  ),
 });
 
 export function makeRemoteAdmissionReviewHttpGroup({
-  OptionalBearerHeaders, EnvironmentAuthenticatedAuth, EnvironmentInternalError,
-}: Pick<Parameters<typeof makeJonesHttpGroups>[0],
-  "OptionalBearerHeaders" | "EnvironmentAuthenticatedAuth" | "EnvironmentInternalError">) {
+  OptionalBearerHeaders,
+  EnvironmentAuthenticatedAuth,
+  EnvironmentInternalError,
+}: Pick<
+  Parameters<typeof makeJonesHttpGroups>[0],
+  "OptionalBearerHeaders" | "EnvironmentAuthenticatedAuth" | "EnvironmentInternalError"
+>) {
   const common = {
     headers: OptionalBearerHeaders,
-    error: [RemoteAdmissionReviewBadRequest, RemoteAdmissionReviewUnauthorized,
-      RemoteAdmissionReviewForbidden, RemoteAdmissionReviewUnavailable,
-      RemoteAdmissionReviewConflict, EnvironmentInternalError],
+    error: [
+      RemoteAdmissionReviewBadRequest,
+      RemoteAdmissionReviewUnauthorized,
+      RemoteAdmissionReviewForbidden,
+      RemoteAdmissionReviewUnavailable,
+      RemoteAdmissionReviewConflict,
+      EnvironmentInternalError,
+    ],
   } as const;
   return HttpApiGroup.make("remoteAdmissionReview")
-    .add(HttpApiEndpoint.get("capabilities", `${REMOTE_ADMISSION_REVIEW_BASE}/capabilities`, {
-      ...common, success: RemoteAdmissionReviewCapabilities,
-    }).middleware(EnvironmentAuthenticatedAuth))
-    .add(HttpApiEndpoint.get("review", `${REMOTE_ADMISSION_REVIEW_BASE}/review`, {
-      ...common, query: RemoteAdmissionReviewHttpQuery, success: RemoteAdmissionReviewPage,
-    }).middleware(EnvironmentAuthenticatedAuth))
-    .add(HttpApiEndpoint.get("item", `${REMOTE_ADMISSION_REVIEW_BASE}/review/item`, {
-      ...common, query: RemoteAdmissionReviewItemQuery, success: RemoteAdmissionReviewItem,
-    }).middleware(EnvironmentAuthenticatedAuth))
-    .add(HttpApiEndpoint.post("decision", `${REMOTE_ADMISSION_REVIEW_BASE}/review/decision`, {
-      ...common, payload: RemoteAdmissionReviewDecision, success: RemoteAdmissionReviewDecisionResult,
-    }).middleware(EnvironmentAuthenticatedAuth))
-    .add(HttpApiEndpoint.get("grants", `${REMOTE_ADMISSION_REVIEW_BASE}/grants`, {
-      ...common, query: RemoteAdmissionGrantHttpQuery, success: RemoteAdmissionGrantsPage,
-    }).middleware(EnvironmentAuthenticatedAuth))
-    .add(HttpApiEndpoint.post("updateGrant", `${REMOTE_ADMISSION_REVIEW_BASE}/grants/update`, {
-      ...common, payload: RemoteAdmissionGrantUpdate, success: RemoteAdmissionGrant,
-    }).middleware(EnvironmentAuthenticatedAuth))
-    .add(HttpApiEndpoint.post("revokeGrant", `${REMOTE_ADMISSION_REVIEW_BASE}/grants/revoke`, {
-      ...common, payload: RemoteAdmissionGrantRevoke, success: RemoteAdmissionGrant,
-    }).middleware(EnvironmentAuthenticatedAuth))
-    .add(HttpApiEndpoint.post("restoreGrant", `${REMOTE_ADMISSION_REVIEW_BASE}/grants/restore`, {
-      ...common, payload: RemoteAdmissionGrantRestore, success: RemoteAdmissionGrantRestoreResult,
-    }).middleware(EnvironmentAuthenticatedAuth))
-    .add(HttpApiEndpoint.post("retry", `${REMOTE_ADMISSION_REVIEW_BASE}/review/retry`, {
-      ...common, payload: RemoteAdmissionRetryInput, success: RemoteAdmissionRetryAttempt,
-    }).middleware(EnvironmentAuthenticatedAuth))
-    .add(HttpApiEndpoint.post("recheck", `${REMOTE_ADMISSION_REVIEW_BASE}/review/recheck`, {
-      ...common, payload: RemoteAdmissionRecheckInput, success: RemoteAdmissionRecheckResult,
-    }).middleware(EnvironmentAuthenticatedAuth))
-    .add(HttpApiEndpoint.get("changes", `${REMOTE_ADMISSION_REVIEW_BASE}/changes`, {
-      ...common, query: RemoteAdmissionChangesHttpQuery, success: RemoteAdmissionChanges,
-    }).middleware(EnvironmentAuthenticatedAuth));
+    .add(
+      HttpApiEndpoint.get("capabilities", `${REMOTE_ADMISSION_REVIEW_BASE}/capabilities`, {
+        ...common,
+        success: RemoteAdmissionReviewCapabilities,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("review", `${REMOTE_ADMISSION_REVIEW_BASE}/review`, {
+        ...common,
+        query: RemoteAdmissionReviewHttpQuery,
+        success: RemoteAdmissionReviewPage,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("item", `${REMOTE_ADMISSION_REVIEW_BASE}/review/item`, {
+        ...common,
+        query: RemoteAdmissionReviewItemQuery,
+        success: RemoteAdmissionReviewItem,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("decision", `${REMOTE_ADMISSION_REVIEW_BASE}/review/decision`, {
+        ...common,
+        payload: RemoteAdmissionReviewDecision,
+        success: RemoteAdmissionReviewDecisionResult,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("grants", `${REMOTE_ADMISSION_REVIEW_BASE}/grants`, {
+        ...common,
+        query: RemoteAdmissionGrantHttpQuery,
+        success: RemoteAdmissionGrantsPage,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("updateGrant", `${REMOTE_ADMISSION_REVIEW_BASE}/grants/update`, {
+        ...common,
+        payload: RemoteAdmissionGrantUpdate,
+        success: RemoteAdmissionGrant,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("revokeGrant", `${REMOTE_ADMISSION_REVIEW_BASE}/grants/revoke`, {
+        ...common,
+        payload: RemoteAdmissionGrantRevoke,
+        success: RemoteAdmissionGrant,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("restoreGrant", `${REMOTE_ADMISSION_REVIEW_BASE}/grants/restore`, {
+        ...common,
+        payload: RemoteAdmissionGrantRestore,
+        success: RemoteAdmissionGrantRestoreResult,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("retry", `${REMOTE_ADMISSION_REVIEW_BASE}/review/retry`, {
+        ...common,
+        payload: RemoteAdmissionRetryInput,
+        success: RemoteAdmissionRetryAttempt,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recheck", `${REMOTE_ADMISSION_REVIEW_BASE}/review/recheck`, {
+        ...common,
+        payload: RemoteAdmissionRecheckInput,
+        success: RemoteAdmissionRecheckResult,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("changes", `${REMOTE_ADMISSION_REVIEW_BASE}/changes`, {
+        ...common,
+        query: RemoteAdmissionChangesHttpQuery,
+        success: RemoteAdmissionChanges,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    );
 }
 
 export type RemoteAdmissionReviewCursor = typeof RemoteAdmissionReviewCursor.Type;
@@ -468,7 +640,8 @@ export type RemoteAdmissionBlockedMark = typeof RemoteAdmissionBlockedMark.Type;
 export type RemoteAdmissionReviewLink = typeof RemoteAdmissionReviewLink.Type;
 export type RemoteAdmissionBlockedEvent = typeof RemoteAdmissionBlockedEvent.Type;
 export type RemoteAdmissionBlockedSummary = typeof RemoteAdmissionBlockedSummary.Type;
-export type RemoteAdmissionBlockedDiagnosticCounts = typeof RemoteAdmissionBlockedDiagnosticCounts.Type;
+export type RemoteAdmissionBlockedDiagnosticCounts =
+  typeof RemoteAdmissionBlockedDiagnosticCounts.Type;
 export type RemoteAdmissionLaunchStages = typeof RemoteAdmissionLaunchStages.Type;
 export type RemoteAdmissionLaunchResult = typeof RemoteAdmissionLaunchResult.Type;
 export type RemoteAdmissionRecoveryEvidence = typeof RemoteAdmissionRecoveryEvidence.Type;
@@ -502,10 +675,13 @@ export type RemoteAdmissionReviewConflict = typeof RemoteAdmissionReviewConflict
 export type RemoteAdmissionReviewError = typeof RemoteAdmissionReviewError.Type;
 export type RemoteAdmissionPeerStatusInput = typeof RemoteAdmissionPeerStatusInput.Type;
 export type RemoteAdmissionPeerVersions = typeof RemoteAdmissionPeerVersions.Type;
-export type RemoteAdmissionCapabilitiesRegisterInput = typeof RemoteAdmissionCapabilitiesRegisterInput.Type;
-export type RemoteAdmissionCapabilitiesRegisterResult = typeof RemoteAdmissionCapabilitiesRegisterResult.Type;
+export type RemoteAdmissionCapabilitiesRegisterInput =
+  typeof RemoteAdmissionCapabilitiesRegisterInput.Type;
+export type RemoteAdmissionCapabilitiesRegisterResult =
+  typeof RemoteAdmissionCapabilitiesRegisterResult.Type;
 export type RemoteAdmissionReturnBinding = typeof RemoteAdmissionReturnBinding.Type;
-export type RemoteAdmissionRecoveredNoticeIdentity = typeof RemoteAdmissionRecoveredNoticeIdentity.Type;
+export type RemoteAdmissionRecoveredNoticeIdentity =
+  typeof RemoteAdmissionRecoveredNoticeIdentity.Type;
 export type RemoteAdmissionRecoveredNotice = typeof RemoteAdmissionRecoveredNotice.Type;
 export type RemoteAdmissionPeerStatus = typeof RemoteAdmissionPeerStatus.Type;
 export type RemoteAdmissionObservationInput = typeof RemoteAdmissionObservationInput.Type;

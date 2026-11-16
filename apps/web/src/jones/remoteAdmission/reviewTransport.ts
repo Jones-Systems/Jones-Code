@@ -1,5 +1,8 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import { EnvironmentRegistry, type ConnectionCatalogEntry } from "@t3tools/client-runtime/connection";
+import {
+  EnvironmentRegistry,
+  type ConnectionCatalogEntry,
+} from "@t3tools/client-runtime/connection";
 import { reviewHttp } from "@t3tools/client-runtime/jones/remoteAdmission/reviewHttp";
 import type { ReviewTransport } from "@t3tools/client-runtime/jones/remoteAdmission/adapter";
 import { createRuntimeCommand, runAtomCommand } from "@t3tools/client-runtime/state/runtime";
@@ -10,7 +13,10 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 
 type ReviewServices = Effect.Services<ReturnType<typeof reviewHttp.capabilities>>;
-function makeRequest<I, A, E>(label: string, execute: (entry: ConnectionCatalogEntry, input: I) => Effect.Effect<A, E, ReviewServices>) {
+function makeRequest<I, A, E>(
+  label: string,
+  execute: (entry: ConnectionCatalogEntry, input: I) => Effect.Effect<A, E, ReviewServices>,
+) {
   const command = createRuntimeCommand(connectionAtomRuntime, {
     label: `jones:admission-review:${label}`,
     // Conflicting writes are serialized by the controller's exact binding lock.
@@ -19,19 +25,31 @@ function makeRequest<I, A, E>(label: string, execute: (entry: ConnectionCatalogE
     execute: Effect.fn(function* (input: { receiver: EnvironmentId; value: I }) {
       const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
       const entry = (yield* SubscriptionRef.get(registry.entries)).get(input.receiver);
-      if (!entry) return yield* new EnvironmentRegistry.EnvironmentNotRegisteredError({ environmentId: input.receiver });
+      if (!entry)
+        return yield* new EnvironmentRegistry.EnvironmentNotRegisteredError({
+          environmentId: input.receiver,
+        });
       return yield* execute(entry, input.value);
     }),
   });
   return async (receiver: EnvironmentId, value: I, signal?: AbortSignal): Promise<A> => {
-    const result = await runAtomCommand(appAtomRegistry, command, { receiver, value }, {
-      reportFailure: false, reportDefect: false, ...(signal ? { signal } : {}),
-    });
+    const result = await runAtomCommand(
+      appAtomRegistry,
+      command,
+      { receiver, value },
+      {
+        reportFailure: false,
+        reportDefect: false,
+        ...(signal ? { signal } : {}),
+      },
+    );
     if (result._tag !== "Success") throw Cause.squash(result.cause);
     return result.value;
   };
 }
-const capabilities = makeRequest("capabilities", (entry: ConnectionCatalogEntry, _input: void) => reviewHttp.capabilities(entry));
+const capabilities = makeRequest("capabilities", (entry: ConnectionCatalogEntry, _input: void) =>
+  reviewHttp.capabilities(entry),
+);
 const review = makeRequest("review", reviewHttp.review);
 const item = makeRequest("item", reviewHttp.item);
 const grants = makeRequest("grants", reviewHttp.grants);
@@ -41,7 +59,13 @@ const revokeGrant = makeRequest("revoke", reviewHttp.revokeGrant);
 const restoreGrant = makeRequest("restore", reviewHttp.restoreGrant);
 const retry = makeRequest("retry", reviewHttp.retry);
 const recheck = makeRequest("recheck", reviewHttp.recheck);
-const changes = makeRequest("changes", (entry: ConnectionCatalogEntry, input: { query: Parameters<typeof reviewHttp.changes>[1]; signal?: AbortSignal }) => reviewHttp.changes(entry, input.query, input.signal));
+const changes = makeRequest(
+  "changes",
+  (
+    entry: ConnectionCatalogEntry,
+    input: { query: Parameters<typeof reviewHttp.changes>[1]; signal?: AbortSignal },
+  ) => reviewHttp.changes(entry, input.query, input.signal),
+);
 
 export function createReviewTransport(receiver: EnvironmentId): ReviewTransport {
   return {

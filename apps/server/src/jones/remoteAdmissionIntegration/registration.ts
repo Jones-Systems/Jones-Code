@@ -12,7 +12,7 @@ import * as RemoteAdmissionIntake from "./RemoteAdmissionIntake.ts";
 import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as ServerConfig from "../../config.ts";
 
-export const admissionLayer = Layer.unwrap(
+const admissionLayer = Layer.unwrap(
   Effect.gen(function* () {
     const generation = yield* TextGeneration.TextGeneration;
     const config = yield* ServerConfig.ServerConfig;
@@ -63,39 +63,79 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSettings from "../../serverSettings.ts";
 import { ReceiverRecoveryEvidence } from "./RecoveryStore.ts";
-import { ReceiverReviewReaders, RemoteAdmissionReviewService, makeReviewService } from "./ReviewService.ts";
+import {
+  ReceiverReviewReaders,
+  RemoteAdmissionReviewService,
+  makeReviewService,
+} from "./ReviewService.ts";
 import { ReceiverPeerProtocol } from "./protocolTools.ts";
 import { makePeerProtocol } from "./PeerProtocol.ts";
 import { ReceiverInspection, inspectionStatus } from "./Inspection.ts";
 
 /** Parent supplies evidence/read adapters bound to this same receiver; no orchestrator construction cycle. */
-export const reviewServicesLayer = Layer.mergeAll(
-  Layer.effect(RemoteAdmissionReviewService,Effect.gen(function* () {
-    const changes=yield* Effect.serviceOption(ReviewChanges.ReviewChanges);
-    return makeReviewService(yield* SqlClient.SqlClient,yield* RemoteAdmission.RemoteAdmission,
-      yield* RemoteAdmissionIntake.RemoteAdmissionIntake,yield* ServerSettings.ServerSettingsService,
-      yield* ReceiverRecoveryEvidence,yield* ReceiverReviewReaders,Option.getOrUndefined(changes));
-  })),
-  Layer.effect(ReceiverPeerProtocol,Effect.gen(function* () {
-    const sql=yield* SqlClient.SqlClient;
-    const changes=yield* Effect.serviceOption(ReviewChanges.ReviewChanges);
-    return makePeerProtocol(sql,yield* RemoteAdmission.RemoteAdmission,
-      makeKeyedLaunchResultReader(sql,yield* Receipts.CommandReceiptStoreV2,yield* Projections.ProjectionStoreV2),Option.getOrUndefined(changes));
-  })),
-  Layer.effect(ReceiverInspection,Effect.gen(function* () {
-    const context=yield* Effect.context<SqlClient.SqlClient|RemoteAdmission.RemoteAdmission|ReceiverRecoveryEvidence|ThreadManagement.ThreadManagementService>();
-    return {status:input => Effect.gen(function* () {
-      const scope=yield* Invocation.McpInvocationContext;
-      return yield* inspectionStatus(input).pipe(Effect.provideService(Invocation.McpInvocationContext,scope),Effect.provide(context));
-    })};
-  })),
+const reviewServicesLayer = Layer.mergeAll(
+  Layer.effect(
+    RemoteAdmissionReviewService,
+    Effect.gen(function* () {
+      const changes = yield* Effect.serviceOption(ReviewChanges.ReviewChanges);
+      return makeReviewService(
+        yield* SqlClient.SqlClient,
+        yield* RemoteAdmission.RemoteAdmission,
+        yield* RemoteAdmissionIntake.RemoteAdmissionIntake,
+        yield* ServerSettings.ServerSettingsService,
+        yield* ReceiverRecoveryEvidence,
+        yield* ReceiverReviewReaders,
+        Option.getOrUndefined(changes),
+      );
+    }),
+  ),
+  Layer.effect(
+    ReceiverPeerProtocol,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const changes = yield* Effect.serviceOption(ReviewChanges.ReviewChanges);
+      return makePeerProtocol(
+        sql,
+        yield* RemoteAdmission.RemoteAdmission,
+        makeKeyedLaunchResultReader(
+          sql,
+          yield* Receipts.CommandReceiptStoreV2,
+          yield* Projections.ProjectionStoreV2,
+        ),
+        Option.getOrUndefined(changes),
+      );
+    }),
+  ),
+  Layer.effect(
+    ReceiverInspection,
+    Effect.gen(function* () {
+      const context = yield* Effect.context<
+        | SqlClient.SqlClient
+        | RemoteAdmission.RemoteAdmission
+        | ReceiverRecoveryEvidence
+        | ThreadManagement.ThreadManagementService
+      >();
+      return {
+        status: (input) =>
+          Effect.gen(function* () {
+            const scope = yield* Invocation.McpInvocationContext;
+            return yield* inspectionStatus(input).pipe(
+              Effect.provideService(Invocation.McpInvocationContext, scope),
+              Effect.provide(context),
+            );
+          }),
+      };
+    }),
+  ),
 );
-export { claimTrackingLayer } from "./ClaimTracker.ts";
-export { makeLaunchEvidenceReader, makeKeyedLaunchResultReader } from "./EvidenceReader.ts";
-export { makeReturnBindingReader } from "./returnBinding.ts";
 
 /** One receiver graph; all domain/read/claim services share the already-provided SQL client. */
-const receiverDomainLayer=Layer.merge(admissionLayer,claimTrackingLayer);
-const receiverAdaptersLayer=runtimeAdaptersLayer.pipe(Layer.provideMerge(receiverDomainLayer));
-const receiverIntakeLayer=RemoteAdmissionIntake.layer.pipe(Layer.provideMerge(receiverAdaptersLayer));
-export const runtimeLayer=reviewServicesLayer.pipe(Layer.provideMerge(receiverIntakeLayer),Layer.provideMerge(ReviewChanges.layer));
+const receiverDomainLayer = Layer.merge(admissionLayer, claimTrackingLayer);
+const receiverAdaptersLayer = runtimeAdaptersLayer.pipe(Layer.provideMerge(receiverDomainLayer));
+const receiverIntakeLayer = RemoteAdmissionIntake.layer.pipe(
+  Layer.provideMerge(receiverAdaptersLayer),
+);
+export const runtimeLayer = reviewServicesLayer.pipe(
+  Layer.provideMerge(receiverIntakeLayer),
+  Layer.provideMerge(ReviewChanges.layer),
+);

@@ -19,7 +19,11 @@ let notificationMode = "off";
 vi.mock("../../components/ui/toast", () => ({ toastManager: mocks }));
 vi.mock("../../state/entities", () => ({ useProject: () => null, useThreadShell: () => null }));
 vi.mock("../../state/environments", () => ({
-  useEnvironments: () => ({ environments: [{ environmentId, label: "Synthetic receiver", displayLabel: "Synthetic receiver" }] }),
+  useEnvironments: () => ({
+    environments: [
+      { environmentId, label: "Synthetic receiver", displayLabel: "Synthetic receiver" },
+    ],
+  }),
 }));
 vi.mock("../../hooks/useSettings", () => ({
   useClientSettings: (
@@ -47,7 +51,8 @@ it("uses one incoming stack, dismisses immutable keys, and re-raises only for un
   const first = admissionFixture({ id: "dismiss-first" });
   const second = admissionFixture({ id: "dismiss-second", category: "evaluation_unavailable" });
   const request = vi.fn().mockResolvedValue(admissionSnapshot([first, second]));
-  store = createAdmissionStore(request); await store.refresh();
+  store = createAdmissionStore(request);
+  await store.refresh();
   await using _screen = await render(<RemoteAdmissionNotifications />);
   expect(mocks.add).toHaveBeenCalledTimes(1);
   const [options] = mocks.add.mock.calls[0]!;
@@ -65,7 +70,9 @@ it("uses one incoming stack, dismisses immutable keys, and re-raises only for un
 it("closes stale inline actions while owner review is inaccessible", async () => {
   vi.clearAllMocks();
   mocks.add.mockReturnValue("synthetic-toast");
-  const request = vi.fn().mockResolvedValue(admissionSnapshot([admissionFixture({ id: "stale-inline-test" })]));
+  const request = vi
+    .fn()
+    .mockResolvedValue(admissionSnapshot([admissionFixture({ id: "stale-inline-test" })]));
   store = createAdmissionStore(request);
   await store.refresh();
   await using _screen = await render(<RemoteAdmissionNotifications />);
@@ -85,9 +92,7 @@ it("renders the same context card inside the real notification's expandable cont
   await store.refresh();
   await using _notifications = await render(<RemoteAdmissionNotifications />);
   const [options] = mocks.add.mock.calls[0]!;
-  await using screen = await render(
-    <TooltipProvider>{options.data.bodyContent}</TooltipProvider>,
-  );
+  await using screen = await render(<TooltipProvider>{options.data.bodyContent}</TooltipProvider>);
   const summary = screen.container.querySelector("summary")!;
   expect(summary.textContent).toContain("From Authenticated laptop");
   expect(summary.textContent).toContain("Sender project");
@@ -100,18 +105,34 @@ it("renders the same context card inside the real notification's expandable cont
   expect(screen.container.querySelector("strong")?.textContent).toBe("synthetic workspace");
 });
 
-it.each(["off", "notifications", "both"])("never creates request OS notifications in mode %s", async (mode) => {
-  vi.clearAllMocks();
-  mocks.add.mockReturnValue("in-app-only");
-  const native = vi.fn();
-  using _notification = stubGlobal("Notification", class { static permission = "granted"; constructor() { native(); } });
-  const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
-  notificationMode = mode;
-  try {
-    store = createAdmissionStore(vi.fn().mockResolvedValue(admissionSnapshot([admissionFixture({ id: `no-os-${mode}` })])));
-    await store.refresh();
-    await using _screen = await render(<RemoteAdmissionNotifications />);
-    expect(mocks.add).toHaveBeenCalledTimes(1);
-    expect(native).not.toHaveBeenCalled();
-  } finally { notificationMode = "off"; focus.mockRestore(); }
-});
+it.each(["off", "notifications", "both"])(
+  "never creates request OS notifications in mode %s",
+  async (mode) => {
+    vi.clearAllMocks();
+    mocks.add.mockReturnValue("in-app-only");
+    const native = vi.fn();
+    using _notification = stubGlobal(
+      "Notification",
+      class {
+        static permission = "granted";
+        constructor() {
+          native();
+        }
+      },
+    );
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    notificationMode = mode;
+    try {
+      store = createAdmissionStore(
+        vi.fn().mockResolvedValue(admissionSnapshot([admissionFixture({ id: `no-os-${mode}` })])),
+      );
+      await store.refresh();
+      await using _screen = await render(<RemoteAdmissionNotifications />);
+      expect(mocks.add).toHaveBeenCalledTimes(1);
+      expect(native).not.toHaveBeenCalled();
+    } finally {
+      notificationMode = "off";
+      focus.mockRestore();
+    }
+  },
+);

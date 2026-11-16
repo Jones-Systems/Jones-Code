@@ -19,10 +19,14 @@ export const servicesLayer = Delivery.layer.pipe(
 const linkSnapshot = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const listed = yield* links.list;
-  const generations = yield* Effect.forEach(listed, (link) => links.currentGeneration(link.environmentId).pipe(
-    Effect.map((generation) => [link.environmentId, Option.getOrNull(generation), link.status]),
-  ));
-  return JSON.stringify(generations.toSorted((a,b) => String(a[0]).localeCompare(String(b[0]))));
+  const generations = yield* Effect.forEach(listed, (link) =>
+    links
+      .currentGeneration(link.environmentId)
+      .pipe(
+        Effect.map((generation) => [link.environmentId, Option.getOrNull(generation), link.status]),
+      ),
+  );
+  return JSON.stringify(generations.toSorted((a, b) => String(a[0]).localeCompare(String(b[0]))));
 });
 
 export const start = Effect.gen(function* () {
@@ -39,10 +43,19 @@ export const start = Effect.gen(function* () {
       if (snapshot !== previous || clock - lastReconcile >= Coordinator.FALLBACK_MS) {
         previous = snapshot;
         lastReconcile = clock;
-        yield* coordinator.reconcile().pipe(Effect.catch(() => Effect.logWarning("Origin launch reconciliation is unavailable; retained intent will be revisited.")));
+        yield* coordinator
+          .reconcile()
+          .pipe(
+            Effect.catch(() =>
+              Effect.logWarning(
+                "Origin launch reconciliation is unavailable; retained intent will be revisited.",
+              ),
+            ),
+          );
       }
       const intentChanged = yield* Effect.race(
-        signals.take.pipe(Effect.as(true)), Effect.sleep(1_000).pipe(Effect.as(false)),
+        signals.take.pipe(Effect.as(true)),
+        Effect.sleep(1_000).pipe(Effect.as(false)),
       );
       if (intentChanged) lastReconcile = -Infinity;
     }

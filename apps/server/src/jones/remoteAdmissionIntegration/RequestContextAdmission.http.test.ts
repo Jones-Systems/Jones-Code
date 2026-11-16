@@ -49,9 +49,9 @@ const headers = (title: string, context: LinkedRequestContext) => ({
   }),
   [LINKED_REQUEST_CONTEXT_HEADER]: encodeLinkedRequestContext(context),
 });
-const memory = Layer.effectDiscard(migrateCore.pipe(Effect.andThen(migrateIntegration),Effect.andThen(syntheticReceiverAuth))).pipe(
-  Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
-);
+const memory = Layer.effectDiscard(
+  migrateCore.pipe(Effect.andThen(migrateIntegration), Effect.andThen(syntheticReceiverAuth)),
+).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 it.effect(
   "B1-11: real linked MCP intake stores context and reuses bytes after title/time changes",

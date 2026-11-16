@@ -13,13 +13,19 @@ export const remoteAdmissionFeatures = Effect.gen(function* () {
   const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
   if (Option.isNone(intake) || Option.isNone(sql)) return {};
   const tables = makeJonesTablePresence(sql.value);
-  if (!(yield* tables("jones_remote_admission_attempts")) || !(yield* tables("jones_remote_admission_recovered_notices"))) return {};
+  if (
+    !(yield* tables("jones_remote_admission_attempts")) ||
+    !(yield* tables("jones_remote_admission_recovered_notices"))
+  )
+    return {};
   return {
     remoteAdmissionObservationVersion: Review.REMOTE_ADMISSION_OBSERVATION_VERSION,
     remoteAdmissionPeerStatusVersion: Review.REMOTE_ADMISSION_PEER_STATUS_VERSION,
     remoteAdmissionRetryObservationVersion: Review.REMOTE_ADMISSION_RETRY_OBSERVATION_VERSION,
     remoteAdmissionRecoveryStatusVersion: Review.REMOTE_ADMISSION_RECOVERY_STATUS_VERSION,
-    remoteAdmissionRecoveredResultObservationVersion: Review.REMOTE_ADMISSION_RECOVERED_RESULT_VERSION,
-    remoteAdmissionCapabilitiesRegisterVersion: Review.REMOTE_ADMISSION_CAPABILITIES_REGISTER_VERSION,
+    remoteAdmissionRecoveredResultObservationVersion:
+      Review.REMOTE_ADMISSION_RECOVERED_RESULT_VERSION,
+    remoteAdmissionCapabilitiesRegisterVersion:
+      Review.REMOTE_ADMISSION_CAPABILITIES_REGISTER_VERSION,
   };
 }).pipe(Effect.catch(() => Effect.succeed({})));

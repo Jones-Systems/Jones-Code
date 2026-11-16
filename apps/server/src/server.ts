@@ -863,7 +863,12 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(jonesUpdatesHttpApiLayer.pipe(Layer.provide(JonesSourceRelation.layer))),
       Layer.provide(fleetUpdatesHttpApiLayer),
       Layer.provide(importedHistoryHttpApiLayer),
-      Layer.provide(Layer.merge(JonesHttp.remoteAdmissionHttpApiLayer, JonesHttp.remoteAdmissionReviewHttpApiLayer)),
+      Layer.provide(
+        Layer.merge(
+          JonesHttp.remoteAdmissionHttpApiLayer,
+          JonesHttp.remoteAdmissionReviewHttpApiLayer,
+        ),
+      ),
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(queueCompatibilityHttpApiLayer),
       JonesHttp.provideConversationAndVoiceReview,

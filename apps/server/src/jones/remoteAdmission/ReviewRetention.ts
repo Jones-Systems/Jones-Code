@@ -3,9 +3,12 @@ import type * as SqlClient from "effect/sql/SqlClient";
 
 // Only Jones detail is pruned here. Upstream receipts, durable restrictions,
 // predecessor fences, unresolved results and unacknowledged notices are untouched.
-export const makeReviewRetention = (sql: SqlClient.SqlClient, invalidate: Effect.Effect<void> = Effect.void) => {
+export const makeReviewRetention = (
+  sql: SqlClient.SqlClient,
+  invalidate: Effect.Effect<void> = Effect.void,
+) => {
   const prune = Effect.fn("ReviewRetention.prune")(function* (now: string) {
-    const cutoff = new Date(Date.parse(now)-30*86400000).toISOString();
+    const cutoff = new Date(Date.parse(now) - 30 * 86400000).toISOString();
     // A restored grant still needs its predecessor's verified invocation and
     // command fingerprint. Retain the entire ancestry while any descendant is
     // pending, live, or inside its own terminal retention window.

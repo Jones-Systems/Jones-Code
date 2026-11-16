@@ -37,12 +37,12 @@ export function requestBlockedReason(state: AdmissionState, bindingKey: string) 
     : state.deciding.has(bindingKey)
       ? "Recording this decision…"
       : state.loadFailed
-      ? "Owner review is unavailable. Refresh server state before deciding."
-      : state.loading
-        ? "Refreshing owner review. Wait for current server state before deciding."
-        : state.unconfirmed.has(bindingKey)
-          ? "This decision outcome is unconfirmed. Await server confirmation; do not resend."
-          : null;
+        ? "Owner review is unavailable. Refresh server state before deciding."
+        : state.loading
+          ? "Refreshing owner review. Wait for current server state before deciding."
+          : state.unconfirmed.has(bindingKey)
+            ? "This decision outcome is unconfirmed. Await server confirmation; do not resend."
+            : null;
 }
 
 export function actionableAdmissions(state: AdmissionState) {

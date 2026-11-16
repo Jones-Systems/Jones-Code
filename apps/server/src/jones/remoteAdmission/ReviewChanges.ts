@@ -26,16 +26,18 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const pending = yield* Effect.acquireRelease(Queue.sliding<void>(1), Queue.shutdown);
   const signals = yield* Effect.acquireRelease(PubSub.sliding<void>(1), PubSub.shutdown);
-  yield* Effect.forever(Effect.gen(function* () {
-    yield* Queue.take(pending);
-    // BEGIN IMMEDIATE serializes behind the transaction that requested the wake.
-    // Nested transactions in callers therefore cannot publish before outer commit.
-    // A rollback (or failed barrier) still only invalidates; reads must revalidate.
-    yield* sql.withTransaction(Effect.void).pipe(
-      Effect.catchTags({ SqlError: () => Effect.void }),
-    );
-    yield* PubSub.publish(signals, undefined);
-  })).pipe(Effect.forkScoped);
+  yield* Effect.forever(
+    Effect.gen(function* () {
+      yield* Queue.take(pending);
+      // BEGIN IMMEDIATE serializes behind the transaction that requested the wake.
+      // Nested transactions in callers therefore cannot publish before outer commit.
+      // A rollback (or failed barrier) still only invalidates; reads must revalidate.
+      yield* sql
+        .withTransaction(Effect.void)
+        .pipe(Effect.catchTags({ SqlError: () => Effect.void }));
+      yield* PubSub.publish(signals, undefined);
+    }),
+  ).pipe(Effect.forkScoped);
 
   const subscribe = PubSub.subscribe(signals).pipe(
     Effect.map((subscription) => ({ wait: PubSub.take(subscription) })),
@@ -48,19 +50,23 @@ const make = Effect.gen(function* () {
       readonly isReady: (snapshot: A) => boolean;
       readonly timeoutMs: number;
     }) {
-      return yield* Effect.scoped(Effect.gen(function* () {
-        const subscription = yield* subscribe;
-        const duration = Number.isFinite(input.timeoutMs) ? Math.max(0, Math.min(50000, input.timeoutMs)) : 0;
-        const deadline = (yield* Clock.currentTimeMillis) + duration;
-        for (;;) {
-          const snapshot = yield* input.read;
-          if (input.isReady(snapshot)) return snapshot;
-          const remaining = deadline - (yield* Clock.currentTimeMillis);
-          if (remaining <= 0) return snapshot;
-          // Take consumes only an invalidation, never an authorization or result.
-          yield* subscription.wait.pipe(Effect.timeoutOption(remaining));
-        }
-      }));
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const subscription = yield* subscribe;
+          const duration = Number.isFinite(input.timeoutMs)
+            ? Math.max(0, Math.min(50000, input.timeoutMs))
+            : 0;
+          const deadline = (yield* Clock.currentTimeMillis) + duration;
+          for (;;) {
+            const snapshot = yield* input.read;
+            if (input.isReady(snapshot)) return snapshot;
+            const remaining = deadline - (yield* Clock.currentTimeMillis);
+            if (remaining <= 0) return snapshot;
+            // Take consumes only an invalidation, never an authorization or result.
+            yield* subscription.wait.pipe(Effect.timeoutOption(remaining));
+          }
+        }),
+      );
     }),
   });
 });

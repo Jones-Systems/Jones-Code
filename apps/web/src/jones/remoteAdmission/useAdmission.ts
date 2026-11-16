@@ -61,7 +61,9 @@ export function useAdmissionOverview() {
   const reviews = reviewControllersFor(environmentIds, registryRevision);
   const overview = {
     subscribe: (listener: () => void) => {
-      const unsubscribes = entries.map((store, index) => reviews[index]?.subscribe(listener) ?? store.subscribe(listener));
+      const unsubscribes = entries.map(
+        (store, index) => reviews[index]?.subscribe(listener) ?? store.subscribe(listener),
+      );
       return () => {
         for (const unsubscribe of unsubscribes) unsubscribe();
       };
@@ -88,7 +90,10 @@ export function useAdmissionOverview() {
     watch: () => {
       const stops = entries.map((store, index) => {
         const review = reviews[index];
-        if (review) { void review.load(); return () => {}; }
+        if (review) {
+          void review.load();
+          return () => {};
+        }
         return watch(store);
       });
       return () => {

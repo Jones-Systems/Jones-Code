@@ -1395,7 +1395,11 @@ export const layerTools = Layer.mergeAll(
   toolkitRegistration(RemoteAdmissionCancel.toolkit, RemoteAdmissionCancel.handlers),
   Layer.unwrap(
     Effect.serviceOption(RemoteAdmissionProtocol.ReceiverPeerProtocol).pipe(
-      Effect.map((service) => Option.isNone(service) ? Layer.empty : toolkitRegistration(RemoteAdmissionProtocol.toolkit, RemoteAdmissionProtocol.handlers)),
+      Effect.map((service) =>
+        Option.isNone(service)
+          ? Layer.empty
+          : toolkitRegistration(RemoteAdmissionProtocol.toolkit, RemoteAdmissionProtocol.handlers),
+      ),
     ),
   ),
   DecisionSnapshotToolkitRegistrationLive,

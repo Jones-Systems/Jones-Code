@@ -33,14 +33,27 @@ export function RequestsPage() {
         ) : environments.length === 0 ? (
           <p role="status">Connect a receiving environment to review its requests.</p>
         ) : null}
-        {!environments.some((environment) => environment.environmentId === LAPTOP_RECEIVER) ? <section aria-label="Requests on Laptop"><h2 className="text-sm font-medium">Laptop</h2><p className="text-xs text-muted-foreground">Not connected · Request state unavailable</p></section> : null}
-        {[...environments].sort((a, b) => Number(b.environmentId === LAPTOP_RECEIVER) - Number(a.environmentId === LAPTOP_RECEIVER)).map((environment) => (
-          <EnvironmentRequests
-            key={environment.environmentId}
-            environmentId={environment.environmentId}
-            label={environment.displayLabel}
-          />
-        ))}
+        {!environments.some((environment) => environment.environmentId === LAPTOP_RECEIVER) ? (
+          <section aria-label="Requests on Laptop">
+            <h2 className="text-sm font-medium">Laptop</h2>
+            <p className="text-xs text-muted-foreground">
+              Not connected · Request state unavailable
+            </p>
+          </section>
+        ) : null}
+        {[...environments]
+          .sort(
+            (a, b) =>
+              Number(b.environmentId === LAPTOP_RECEIVER) -
+              Number(a.environmentId === LAPTOP_RECEIVER),
+          )
+          .map((environment) => (
+            <EnvironmentRequests
+              key={environment.environmentId}
+              environmentId={environment.environmentId}
+              label={environment.displayLabel}
+            />
+          ))}
       </WorkspacePageContainer>
     </main>
   );
@@ -54,10 +67,20 @@ export function EnvironmentRequests({
   readonly label: string;
 }) {
   const controller = useReviewController(environmentId);
-  return controller ? <ReviewPage environmentId={environmentId} label={label} /> : <LegacyEnvironmentRequests environmentId={environmentId} label={label} />;
+  return controller ? (
+    <ReviewPage environmentId={environmentId} label={label} />
+  ) : (
+    <LegacyEnvironmentRequests environmentId={environmentId} label={label} />
+  );
 }
 
-function LegacyEnvironmentRequests({ environmentId, label }: { environmentId: EnvironmentId; label: string }) {
+function LegacyEnvironmentRequests({
+  environmentId,
+  label,
+}: {
+  environmentId: EnvironmentId;
+  label: string;
+}) {
   const state = useAdmission(environmentId);
   const { snapshot, store, loadFailed, loadFailure, loading, error } = state;
   const terminal = loadFailure === "unauthorized" || loadFailure === "unsupported";
