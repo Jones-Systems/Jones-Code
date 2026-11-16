@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type ReactNode,
+} from "react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
   PersonalWorkstreamsController,
@@ -141,13 +148,15 @@ function Group({
     if (pendingRef.current) return;
     pendingRef.current = true;
     setPending(true);
-    try {
-      const result = await operation();
-      if (!result.ok) showPersonalFailure(result.failure);
-    } finally {
-      pendingRef.current = false;
-      setPending(false);
-    }
+    return Promise.resolve()
+      .then(operation)
+      .then((result) => {
+        if (!result.ok) showPersonalFailure(result.failure);
+      })
+      .finally(() => {
+        pendingRef.current = false;
+        setPending(false);
+      });
   };
   const index = state.workstreams.findIndex((entry) => entry.id === item.id);
   return (
@@ -358,9 +367,14 @@ export function WorkstreamSidebarSection({
   const containerRef = useRef<HTMLDivElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [deletePending, setDeletePending] = useState(false);
+  const [deleteFailed, setDeleteFailed] = useState(false);
   const deletePendingRef = useRef(false);
   const cancelDeleteRef = useRef<HTMLButtonElement>(null);
   const removedRef = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Restore failure focus after the committed DOM has enabled Cancel.
+  useLayoutEffect(() => {
+    if (deleteFailed && !deletePending) cancelDeleteRef.current?.focus();
+  }, [deleteFailed, deletePending]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Dismiss an idle confirmation when its live target disappears; pending optimistic removal retains ownership here.
   useEffect(() => {
     if (
@@ -436,14 +450,14 @@ export function WorkstreamSidebarSection({
     clearDrag();
     if (!next) return;
     reorderPending.current = true;
-    void (async () => {
-      try {
-        const result = await controller.reorder(source, next);
+    void Promise.resolve()
+      .then(() => controller.reorder(source, next))
+      .then((result) => {
         if (!result.ok) showPersonalFailure(result.failure);
-      } finally {
+      })
+      .finally(() => {
         reorderPending.current = false;
-      }
-    })();
+      });
   };
   const focusAfterRemoval = (id: string) => {
     const index = state.workstreams.findIndex((entry) => entry.id === id);
@@ -474,20 +488,23 @@ export function WorkstreamSidebarSection({
       return;
     deletePendingRef.current = true;
     setDeletePending(true);
-    try {
-      const result = await controller.remove(deleteTarget.id);
-      if (result.ok) {
-        removedRef.current = true;
-        setDeleteTarget(null);
-        focusAfterRemoval(deleteTarget.id);
-      } else {
-        showPersonalFailure(result.failure);
-        requestAnimationFrame(() => cancelDeleteRef.current?.focus());
-      }
-    } finally {
-      deletePendingRef.current = false;
-      setDeletePending(false);
-    }
+    setDeleteFailed(false);
+    return Promise.resolve()
+      .then(() => controller.remove(deleteTarget.id))
+      .then((result) => {
+        if (result.ok) {
+          removedRef.current = true;
+          setDeleteTarget(null);
+          focusAfterRemoval(deleteTarget.id);
+        } else {
+          showPersonalFailure(result.failure);
+          setDeleteFailed(true);
+        }
+      })
+      .finally(() => {
+        deletePendingRef.current = false;
+        setDeletePending(false);
+      });
   };
   const insertionLine = (
     <div

@@ -227,9 +227,28 @@ export function WorkstreamNativeSidebar({
     if (placeThread) {
       if (neighbor && !external && (!canReorder(thread) || !canReorder(neighbor))) return false;
       busy.current = true;
-      try {
-        return await placeThread(thread, target.id, neighbor, target.after);
-      } catch {
+      return Promise.resolve()
+        .then(() => placeThread(thread, target.id, neighbor, target.after))
+        .catch(() => {
+          showPersonalFailure({
+            action: "reorder",
+            reason: "failed",
+            environmentId: thread.environmentId,
+            dedupeKey: `reorder:${personalThreadKey(thread)}:failed`,
+          });
+          return false;
+        })
+        .finally(() => {
+          busy.current = false;
+        });
+    }
+    if (external || groupId(thread) !== target.id) return move(thread, target.id);
+    if (!neighbor || !canReorder(thread) || !canReorder(neighbor)) return false;
+    busy.current = true;
+    return Promise.resolve()
+      .then(() => reorder(thread, neighbor, target.after))
+      .then(() => true)
+      .catch(() => {
         showPersonalFailure({
           action: "reorder",
           reason: "failed",
@@ -237,27 +256,10 @@ export function WorkstreamNativeSidebar({
           dedupeKey: `reorder:${personalThreadKey(thread)}:failed`,
         });
         return false;
-      } finally {
+      })
+      .finally(() => {
         busy.current = false;
-      }
-    }
-    if (external || groupId(thread) !== target.id) return move(thread, target.id);
-    if (!neighbor || !canReorder(thread) || !canReorder(neighbor)) return false;
-    busy.current = true;
-    try {
-      await reorder(thread, neighbor, target.after);
-      return true;
-    } catch {
-      showPersonalFailure({
-        action: "reorder",
-        reason: "failed",
-        environmentId: thread.environmentId,
-        dedupeKey: `reorder:${personalThreadKey(thread)}:failed`,
       });
-      return false;
-    } finally {
-      busy.current = false;
-    }
   };
   const pointerActions = useRef({ locate, place, threads, groupId, validTarget });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- A gesture may span controller updates; release uses the latest committed rows and membership.
