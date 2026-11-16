@@ -16,7 +16,7 @@ import {
   resolvePendingUserInputAnswer,
   type PendingUserInputAnswer,
   type PendingUserInputDraftAnswer,
-} from "@t3tools/client-runtime/state/pending-user-input";
+} from "./jones/questionAnswer/pendingAnswers";
 
 import { collectInlineContextIds } from "./lib/composerContextReferences";
 import {
@@ -83,6 +83,8 @@ export interface PendingUserInputProgress<Q extends UserInputQuestion = UserInpu
   resolvedAnswer: PendingUserInputAnswer | null;
   usingCustomAnswer: boolean;
   answeredQuestionCount: number;
+  answeredByIndex: boolean[];
+  firstUnansweredIndex: number;
   isLastQuestion: boolean;
   isComplete: boolean;
   canAdvance: boolean;
@@ -129,9 +131,10 @@ export function withdrawDisplacedCustomAnswerFromPrompt(
 function countAnsweredPendingUserInputQuestions(
   questions: ReadonlyArray<UserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
+  options: { notes?: boolean } = {},
 ): number {
   return questions.reduce((count, question) => {
-    return resolvePendingUserInputAnswer(question, draftAnswers[question.id]) !== null
+    return resolvePendingUserInputAnswer(question, draftAnswers[question.id], options) !== null
       ? count + 1
       : count;
   }, 0);
@@ -141,17 +144,22 @@ export function derivePendingUserInputProgress<Q extends UserInputQuestion>(
   questions: ReadonlyArray<Q>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
   questionIndex: number,
+  options: { notes?: boolean } = {},
 ): PendingUserInputProgress<Q> {
   const normalizedQuestionIndex =
     questions.length === 0 ? 0 : Math.max(0, Math.min(questionIndex, questions.length - 1));
   const activeQuestion = questions[normalizedQuestionIndex] ?? null;
   const activeDraft = activeQuestion ? draftAnswers[activeQuestion.id] : undefined;
   const resolvedAnswer = activeQuestion
-    ? resolvePendingUserInputAnswer(activeQuestion, activeDraft)
+    ? resolvePendingUserInputAnswer(activeQuestion, activeDraft, options)
     : null;
   const customAnswer =
     activeQuestion?.allowCustomAnswer === false ? "" : (activeDraft?.customAnswer ?? "");
-  const answeredQuestionCount = countAnsweredPendingUserInputQuestions(questions, draftAnswers);
+  const answeredQuestionCount = countAnsweredPendingUserInputQuestions(
+    questions,
+    draftAnswers,
+    options,
+  );
   const isLastQuestion =
     questions.length === 0 ? true : normalizedQuestionIndex >= questions.length - 1;
 
@@ -167,8 +175,19 @@ export function derivePendingUserInputProgress<Q extends UserInputQuestion>(
     usingCustomAnswer:
       (activeQuestion?.initialAnswer !== undefined ? customAnswer : customAnswer.trim()).length > 0,
     answeredQuestionCount,
+    answeredByIndex: questions.map(
+      (question) =>
+        resolvePendingUserInputAnswer(question, draftAnswers[question.id], options) !== null,
+    ),
+    firstUnansweredIndex: questions.findIndex(
+      (question) =>
+        resolvePendingUserInputAnswer(question, draftAnswers[question.id], options) === null,
+    ),
     isLastQuestion,
-    isComplete: buildPendingUserInputAnswers(questions, draftAnswers) !== null,
+    isComplete: buildPendingUserInputAnswers(questions, draftAnswers, options) !== null,
     canAdvance: resolvedAnswer !== null,
   };
 }
+
+
+export type { PendingUserInputDraftAnswer, PendingUserInputAnswer } from "./jones/questionAnswer/pendingAnswers";

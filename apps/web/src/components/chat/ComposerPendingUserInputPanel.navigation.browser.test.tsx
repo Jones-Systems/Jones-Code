@@ -7,7 +7,7 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { makeThreadRequestsResolvedAnnouncer } from "@t3tools/client-runtime/state/thread-requests";
-import { useLayoutEffect, useRef, type ComponentProps } from "react";
+import { useLayoutEffect, type ComponentProps } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
@@ -84,8 +84,6 @@ interface ProbeProps {
 }
 
 function useProbeRequests({ environmentId, projection, loading = false, draftTarget }: ProbeProps) {
-  const promptRef = useRef("");
-  const composerRef = useRef(null);
   const requests = usePendingThreadRequests({
     environmentId,
     activeThreadId: projection.thread.id,
@@ -94,8 +92,6 @@ function useProbeRequests({ environmentId, projection, loading = false, draftTar
     composerDraftTarget: draftTarget ?? { environmentId, threadId: projection.thread.id },
     setComposerDraftPrompt: (target, prompt) =>
       useComposerDraftStore.getState().setPrompt(target, prompt),
-    promptRef,
-    composerRef,
     setThreadError: () => {},
   });
   const draft = usePendingUserInputDraft({
