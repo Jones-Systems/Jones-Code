@@ -3432,6 +3432,14 @@
         "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
       ],
       "scope": "Storage cleanup results initially render five rows total across selected environments, expand by ten, and preserve retirement guards. A read-only MCP adapter pages the same session report with exact filters, snapshot consistency, explicit omissions and a serialized response budget; it cannot evaluate or execute cleanup."
+    },
+    {
+      "id": "workspace-session-duty",
+      "tests": [
+        "apps/server/src/jones/workspaceRetirement/SessionDuty.test.ts",
+        "apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs"
+      ],
+      "scope": "Immutable open claim handles, interruption-safe registration, independent release retries, permanent multiple-generation downgrade and exact validated runtime-use retirement links. Existing producer lifetime remains the sole drain authority; old/unlinked and unsupported producers retain uncertainty."
     }
   ]
 }
