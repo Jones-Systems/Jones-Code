@@ -24,7 +24,10 @@ it.effect.each(["starting", "running"] as const)(
     Effect.gen(function* () {
       const threadId = ThreadId.make("synthetic:fleet-activity");
       let pendingRuntimeRequest: OrchestrationV2ThreadShell["pendingRuntimeRequest"] = null;
-      let native: ProviderRuntimeObservation = { status: "unknown", reason: "runtime_not_resident" };
+      let native: ProviderRuntimeObservation = {
+        status: "unknown",
+        reason: "runtime_not_resident",
+      };
       const dependencies = Layer.mergeAll(
         Layer.mock(Orchestrator.OrchestratorV2)({
           getThreadShell: () =>
