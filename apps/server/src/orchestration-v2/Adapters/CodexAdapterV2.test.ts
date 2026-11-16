@@ -22,6 +22,7 @@ import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttrib
 import { materializeCodexReplayAppIdentity } from "../../jones/runtimeIdentity/CodexReplayIdentity.ts";
 import * as NodeURL from "node:url";
 import { CONTINUITY_RELOAD_CUE } from "../../jones/goals/continuity/capsule.ts";
+import { continuationPrompt } from "../../jones/updates/continuationPrompt.ts";
 
 import { historyResponseItems, selectHistory } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
@@ -2843,6 +2844,105 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         awaitTerminal: (count: number) => changes.until(() => terminalEvents().length >= count),
       };
     });
+
+  it.effect.each([false, true])(
+    "resumes the original conversation with restart input and owns its terminal (early native start %s)",
+    (earlyNativeStart) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = "restart-input-thread";
+          const nativeTurnId = "restart-input-turn";
+          const prompt =
+            "Continue where you left off. Reconcile prior actions before repeating them.";
+          const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt });
+          const methods: string[] = [];
+          const transcript = makeCodexReplayTranscript({
+            scenario: `restart-input-${earlyNativeStart}`,
+            entries: [
+              ...preamble.slice(0, 5),
+              {
+                type: "expect_outbound",
+                frame: {
+                  id: 3,
+                  method: "thread/resume",
+                  params: {
+                    threadId: nativeThreadId,
+                    excludeTurns: true,
+                    config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  },
+                },
+              },
+              ...(earlyNativeStart ? preamble.slice(7) : []),
+              {
+                type: "emit_inbound",
+                frame: {
+                  id: 3,
+                  result: {
+                    thread: { id: nativeThreadId, updatedAt: 1782622450 },
+                    model: CODEX_TEST_MODEL_SELECTION.model,
+                    modelProvider: "openai",
+                    serviceTier: null,
+                  },
+                },
+              },
+              ...preamble.slice(5).map((entry) => withReplayRequestId(entry, 4)),
+              {
+                type: "emit_inbound",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                  },
+                },
+              },
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript, undefined, (method) =>
+            Effect.sync(() => {
+              methods.push(method);
+            }),
+          );
+          const resumed = yield* harness.runtime.resumeThread({
+            providerThread: harness.providerThread,
+          });
+          const input = {
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: resumed,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("restart-input-attempt"),
+              text: prompt,
+            }),
+            restartContinuationOfRunId: RunId.make("interrupted-run"),
+          };
+          yield* harness.runtime.startTurn(
+            continuationPrompt(input, {
+              sameNativeThread: true,
+              noteContinuation: false,
+              context: "",
+              userText: prompt,
+            }),
+          );
+          yield* harness.awaitTerminal(1);
+          assert.equal(resumed.nativeThreadRef?.nativeId, nativeThreadId);
+          assert.equal(methods.filter((method) => method === "thread/start").length, 1);
+          assert.equal(methods.filter((method) => method === "turn/start").length, 1);
+          assert.equal(harness.terminalEvents().length, 1);
+          assert.equal(harness.terminalEvents()[0]?.providerThreadId, resumed.id);
+          assert.equal(harness.terminalEvents()[0]?.runOrdinal, input.runOrdinal);
+          assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              layerNodeServicesWithCrypto,
+            ),
+          ),
+        ),
+      ),
+  );
 
   const makeRetirementHarness = (input: {
     readonly allowProducerRetirement: boolean;
