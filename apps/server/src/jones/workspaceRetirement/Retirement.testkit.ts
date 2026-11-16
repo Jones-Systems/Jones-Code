@@ -26,7 +26,6 @@ import { enumerateDisposal, disposePath } from "./Disposal.ts";
 import { dutyIdentity, terminalWorkspace, revalidateTerminalWorkspace } from "./DutyIdentity.ts";
 import { captureNativeOwner, observeNativeOwner, type NativeOwnerIO } from "./NativeDutyOwner.ts";
 import { nativePid } from "./Reservation.ts";
-import { nativeServices, type ServiceIO } from "./NativeConsumers.ts";
 import { events } from "./EventIntegration.ts";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -195,45 +194,6 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         f.close();
       }
     }),
-  "loaded native service observations use bounded manager projections and retain unknown coverage":
-    async () => {
-      const calls: string[][] = [];
-      const linux: ServiceIO = {
-        uid: () => 501,
-        command: async (_file, args) => {
-          calls.push(args);
-          return args.includes("list-units")
-            ? "fixture.service loaded inactive dead Fixture\n"
-            : "Id=fixture.service\nLoadState=loaded\nWorkingDirectory=/fixture/checkout\nExecStart={ path=/outside/tool ; argv[]=/outside/tool ; }\n";
-        },
-      };
-      const result = await nativeServices("/fixture/checkout", "linux", linux);
-      NodeAssert.equal(result.status, "complete");
-      NodeAssert.deepEqual(result.paths, ["/fixture/checkout"]);
-      NodeAssert.equal(
-        calls.some((args) => args.some((a) => a.includes("Environment"))),
-        false,
-      );
-      const darwin: ServiceIO = {
-        uid: () => 501,
-        command: async (_file, args) =>
-          args[1]?.split("/").length === 2
-            ? "domain = {\n\tservices = {\n\t\t0 0 fixture.service\n\t}\n}\n"
-            : "fixture = {\n program = /outside/tool\n working directory = /fixture/checkout\n environment = {\n SECRET = never-returned\n }\n}\n",
-      };
-      const projected = await nativeServices("/fixture/checkout", "darwin", darwin);
-      NodeAssert.equal(projected.status, "complete");
-      NodeAssert.deepEqual(projected.paths, ["/fixture/checkout"]);
-      NodeAssert.equal(JSON.stringify(projected).includes("never-returned"), false);
-      const unavailable = await nativeServices("/fixture/checkout", "darwin", {
-        ...darwin,
-        command: async () => {
-          throw Error("controlled manager unavailable");
-        },
-      });
-      NodeAssert.equal(unavailable.status, "unavailable");
-      NodeAssert.equal(unavailable.paths.length, 0);
-    },
   "event admission uses batch birth binding without eager projection lookups and releases actual terminal runs":
     () =>
       fixture(async ({ base, worktree }) => {

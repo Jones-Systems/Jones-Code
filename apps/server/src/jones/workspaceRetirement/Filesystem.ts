@@ -115,6 +115,11 @@ export async function readBounded(path: string, limit: number) {
     await file.close();
   }
 }
+export function subprocessTimeout(budgetMs: number, maximumMs = Infinity) {
+  if (!Number.isFinite(budgetMs) || budgetMs <= 0)
+    throw new Error("subprocess_timeout_budget_invalid");
+  return Math.max(1, Math.floor(Math.min(maximumMs, budgetMs)));
+}
 export function git(cwd: string, args: readonly string[], timeout = 10000): Promise<Buffer> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -148,7 +153,7 @@ export function git(cwd: string, args: readonly string[], timeout = 10000): Prom
         cwd,
         ...args,
       ],
-      { env, encoding: "buffer", timeout, maxBuffer: 32 * 1024 * 1024 },
+      { env, encoding: "buffer", timeout: subprocessTimeout(timeout), maxBuffer: 32 * 1024 * 1024 },
       (error, stdout) => (error ? reject(error) : resolve(stdout)),
     ),
   );
