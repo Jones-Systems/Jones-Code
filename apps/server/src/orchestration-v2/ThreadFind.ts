@@ -196,6 +196,32 @@ function resultForSelection(
   };
 }
 
+const encodeEffectFromJsonStringStructThreadIdThreadIdCwdOptionalStringQuery = Schema.encodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      threadId: ThreadId,
+      cwd: Schema.optional(Schema.String),
+      query: Schema.String,
+      skills: OrchestrationV2SearchThreadInput.fields.skills,
+    }),
+  ),
+);
+const encodeEffectFromJsonStringArrayThreadId = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Array(ThreadId)),
+);
+const encodeEffectFromJsonStringArrayStructThreadIdThreadIdIdTurnItemId = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ threadId: ThreadId, id: TurnItemId }))),
+);
+const decodeUnknownEffectFromJsonStringOrchestrationV2TurnItemJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(OrchestrationV2TurnItemJson),
+);
+const isUnionProjectionStoreReadErrorProjectionStoreThreadNotFoundError = Schema.is(
+  Schema.Union([
+    Schema.suspend(() => ProjectionStoreReadError),
+    Schema.suspend(() => ProjectionStoreThreadNotFoundError),
+  ]),
+);
+
 export const makeThreadFind = Effect.fn("makeThreadFind")(function* (
   readIndex: (threadId: ThreadId) => Effect.Effect<
     readonly (Omit<FindRow, "position"> & {
@@ -205,24 +231,11 @@ export const makeThreadFind = Effect.fn("makeThreadFind")(function* (
   >,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const encodeCacheKey = Schema.encodeEffect(
-    Schema.fromJsonString(
-      Schema.Struct({
-        threadId: ThreadId,
-        cwd: Schema.optional(Schema.String),
-        query: Schema.String,
-        skills: OrchestrationV2SearchThreadInput.fields.skills,
-      }),
-    ),
-  );
-  const encodeThreadIds = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(ThreadId)));
-  const encodeSources = Schema.encodeEffect(
-    Schema.fromJsonString(Schema.Array(Schema.Struct({ threadId: ThreadId, id: TurnItemId }))),
-  );
-  const decodeItem = Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2TurnItemJson));
-  const isSnapshotError = Schema.is(
-    Schema.Union([ProjectionStoreReadError, ProjectionStoreThreadNotFoundError]),
-  );
+  const encodeCacheKey = encodeEffectFromJsonStringStructThreadIdThreadIdCwdOptionalStringQuery;
+  const encodeThreadIds = encodeEffectFromJsonStringArrayThreadId;
+  const encodeSources = encodeEffectFromJsonStringArrayStructThreadIdThreadIdIdTurnItemId;
+  const decodeItem = decodeUnknownEffectFromJsonStringOrchestrationV2TurnItemJson;
+  const isSnapshotError = isUnionProjectionStoreReadErrorProjectionStoreThreadNotFoundError;
   const load = Effect.fn("ThreadFind.load")(function* (
     threadId: ThreadId,
     rows: readonly FindRow[],

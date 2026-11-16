@@ -7,9 +7,13 @@
     "apps/server/src/textGeneration/jones/remoteEvaluationModel.test.ts",
     "apps/server/src/textGeneration/jones/remoteEvaluationModel.ts",
     "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.ts",
-    "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.test.ts"
+    "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.test.ts",
+    "apps/server/src/textGeneration/jones/claudeCommandFailure.ts"
   ],
-  "hookPaths": ["apps/server/src/provider/Drivers/ClaudeDriver.ts"],
+  "hookPaths": [
+    "apps/server/src/provider/Drivers/ClaudeDriver.ts",
+    "apps/server/src/textGeneration/ClaudeTextGeneration.ts"
+  ],
   "tombstones": [],
   "allowedImports": [
     {
@@ -27,6 +31,10 @@
     {
       "from": "apps/server/src/textGeneration/ClaudeTextGeneration.ts",
       "to": "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.ts"
+    },
+    {
+      "from": "apps/server/src/textGeneration/ClaudeTextGeneration.ts",
+      "to": "apps/server/src/textGeneration/jones/claudeCommandFailure.ts"
     }
   ]
 }

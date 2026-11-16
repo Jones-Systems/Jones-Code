@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   CommandId,
   ThreadId,
@@ -228,7 +229,9 @@ it.effect(
           ),
         ).toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
 );
 
 it.effect(
@@ -248,7 +251,9 @@ it.effect(
         yield* Boundary.beforeCleanupPath(f.linked).pipe(Effect.provide(f.configured()));
         expect(f.calls).toEqual([]);
       }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
 );
 
 it.effect(
@@ -272,7 +277,9 @@ it.effect(
         expect(yield* fs.exists(workspace)).toBe(true);
         expect(yield* fs.exists(`${workspace}/.git`)).toBe(false);
       }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
 );
 
 it.effect("configured managed detached recreation retains its real native breadcrumb path", () =>
@@ -299,7 +306,7 @@ it.effect("configured managed detached recreation retains its real native breadc
       expect(f.calls).toEqual([]);
       expect(yield* fs.exists(f.linked)).toBe(true);
     }),
-  ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+  ).pipe(Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)))),
 );
 
 it.effect(
@@ -324,5 +331,7 @@ it.effect(
         expect(f.calls).toEqual([]);
         expect(Option.isNone(yield* Effect.serviceOption(Lifecycle.WorkspaceLifecycle))).toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
 );

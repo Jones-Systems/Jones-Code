@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   T3_MCP_TOOL_NAMES,
+  resolveT3McpSummaryAction,
   resolveT3McpToolDefinition,
   resolveT3McpToolPresentation,
 } from "./t3McpToolPresentation.ts";
@@ -59,6 +60,9 @@ describe("resolveT3McpToolPresentation", () => {
         "mcp__t3_code__",
         "mcp__t3code__",
         "T3-code.",
+        "t3code.",
+        "t3-code-direct.",
+        "mcp__t3_code_direct__",
         "t3_code/",
         "t3code:",
         "mcp_t3-code_",
@@ -81,27 +85,33 @@ describe("resolveT3McpToolPresentation", () => {
   });
 });
 
-it("resolves keyed launch lookup and fence across provider names", () => {
-  for (const [name, labels, summaryAction] of [
-    [
-      "t3_thread_launch_lookup",
-      ["Look up", "Looking up", "Looked up", "a keyed thread launch"],
-      "thread-read",
-    ],
-    [
-      "t3_thread_launch_fence",
-      ["Resolve", "Resolving", "Resolved", "an unknown thread launch"],
-      "thread-launch-resolve",
-    ],
-  ] as const) {
-    for (const prefix of ["", "mcp__t3-code__", "T3-code."]) {
-      expect(resolveT3McpToolDefinition(`${prefix}${name}`)).toEqual({
-        displayName: `${labels[0]} ${labels[3]}`,
-        labels,
-        icon: "t3-code",
-        summaryAction,
-      });
-    }
-    expect(resolveT3McpToolDefinition(`mcp__another-server__${name}`)).toBeNull();
-  }
+describe("resolveT3McpToolDefinition", () => {
+  it("labels an action tool call as the action it ran", () => {
+    expect(
+      resolveT3McpToolDefinition("mcp__t3-code__preview_act", { action: "type" })?.labels,
+    ).toEqual(resolveT3McpToolDefinition("preview_type")?.labels);
+    expect(resolveT3McpToolDefinition("t3_thread_transfer", { action: "fork" })?.displayName).toBe(
+      resolveT3McpToolDefinition("t3_thread_fork")?.displayName,
+    );
+    expect(resolveT3McpToolDefinition("preview_act", { action: "unknown" })?.labels[2]).toBe(
+      "Used",
+    );
+  });
+});
+
+describe("resolveT3McpSummaryAction", () => {
+  it("summarizes an action tool by the action each call ran", () => {
+    expect(resolveT3McpSummaryAction("mcp__t3-code__t3_queue", { action: "list" })).toBe(
+      "queue-list",
+    );
+    expect(resolveT3McpSummaryAction("t3_queue", { action: "edit" })).toBe("queue-edit");
+    expect(resolveT3McpSummaryAction("t3_thread_transfer", { action: "status" })).toBe(
+      "thread-transfers",
+    );
+    expect(resolveT3McpSummaryAction("t3_thread_configure", {})).toBe("thread-configuration");
+    expect(resolveT3McpSummaryAction("schedule_task", { scheduledTaskId: "task-1" })).toBe(
+      "schedule-update",
+    );
+    expect(resolveT3McpSummaryAction("delegate_task", { task: "x" })).toBe("delegate");
+  });
 });

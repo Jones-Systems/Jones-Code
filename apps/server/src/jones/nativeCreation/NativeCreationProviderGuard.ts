@@ -95,8 +95,14 @@ export const bindNativeProviderGuard = Effect.fn("bindNativeProviderGuard")(func
       nativeCreationCanonicalJson(state.binding) !== nativeCreationCanonicalJson(binding))
   )
     return yield* refused("Native provider binding cannot be replaced or reconstructed");
+  yield* Authority.recordNativeCreationExecutionBinding(state.context, binding).pipe(
+    Effect.mapError(() => refused("Native execution lost its captured process or generation")),
+  );
   state.binding = Object.freeze({ ...binding });
 });
+const decodeNativeCreationWholeOperationEvidence = Schema.decodeEffect(
+  NativeCreationWholeOperationEvidence,
+);
 
 // The Codex send owner calls this only after its exact physical request acknowledgement.
 export const acknowledgeNativeProviderGuard = Effect.fn("acknowledgeNativeProviderGuard")(
@@ -131,7 +137,7 @@ export const acknowledgeNativeProviderGuard = Effect.fn("acknowledgeNativeProvid
       input.providerThread.nativeThreadRef?.nativeId !== binding.nativeThreadId
     )
       return yield* refused("Native provider acknowledgement differs from its captured operation");
-    state.acknowledgement = yield* Schema.decodeEffect(NativeCreationWholeOperationEvidence)({
+    state.acknowledgement = yield* decodeNativeCreationWholeOperationEvidence({
       version: 1,
       outcome: "confirmed_success",
       effectId: state.effectId,

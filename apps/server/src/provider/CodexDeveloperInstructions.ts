@@ -4,15 +4,12 @@ import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeI
 
 import {
   T3_CODE_BROWSER_TOOL_INSTRUCTIONS,
+  T3_CODE_DEVICE_TOOL_INSTRUCTIONS,
   T3_CODE_ORCHESTRATION_SECTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
 
 /** Codex silently truncates additionalContext values over 1,000 tokens, counted as UTF-8 bytes / 4. */
 export const CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES = 4_000;
-
-const T3_CODE_DEVICE_TOOL_INSTRUCTIONS = `## Jones Code devices
-
-For iOS Simulators and Android Emulators here, call \`device_list\`, then \`device_open\`. Drive the device with the exact \`agent-device\` launcher and flags it returns, on every command. Prefer \`agent-device snapshot -i\` refs over coordinates. Use \`device_screenshot\` to see the screen. Use \`xcrun simctl\` or \`adb\` only for builds, logs, and ports. If a platform is unavailable, say so.`;
 
 export interface T3CodeToolAvailability {
   readonly browser: boolean;
@@ -46,7 +43,8 @@ export function buildCodexAdditionalContext(
   runtime: CodexRuntimeInfo,
   toolsAvailable: boolean | T3CodeToolAvailability = true,
 ): Record<string, V2TurnStartParams__AdditionalContextEntry> {
-  const tools = toolInstructions(toolsAvailable);
+  const availability = normalizeAvailability(toolsAvailable);
+  const tools = toolInstructions(availability);
   // Split values to fit per-entry caps; number keys because Codex emits them in key order.
   return {
     ...Object.fromEntries(
@@ -59,6 +57,17 @@ export function buildCodexAdditionalContext(
       kind: "application",
       value: buildRuntimeInstructions({ appIdentity: APP_IDENTITY, harness: "Codex", ...runtime }),
     },
-    ...(tools ? { t3_code_tools: { kind: "application", value: tools } } : {}),
+    ...(availability.browser &&
+    availability.device &&
+    Buffer.byteLength(tools, "utf8") > CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES
+      ? {
+          // Codex truncates each value independently. Keep both authored blocks
+          // intact, and retain the primary tool key for the native device block.
+          t3_code_tools: { kind: "application", value: T3_CODE_DEVICE_TOOL_INSTRUCTIONS },
+          t3_code_tools_browser: { kind: "application", value: T3_CODE_BROWSER_TOOL_INSTRUCTIONS },
+        }
+      : tools
+        ? { t3_code_tools: { kind: "application", value: tools } }
+        : {}),
   };
 }

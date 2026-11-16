@@ -48,6 +48,12 @@ export default defineConfig({
         dependsOn: ["t3#build"],
         cache: false,
       },
+      // CI bundle jobs skip the Linux browser secret helper; packaging stages one per arch.
+      "build:bundle": {
+        command: "node scripts/build-preview-annotation-css.mjs && vp pack",
+        dependsOn: ["t3#build"],
+        cache: false,
+      },
       dev: {
         command:
           "node scripts/build-browser-secret.mjs && node scripts/build-preview-annotation-css.mjs && cross-env T3CODE_DESKTOP_DEV=1 vp pack --watch",
@@ -117,6 +123,7 @@ export default defineConfig({
       entry: {
         boot: "src/boot.ts",
         compileCache: "src/compileCache.ts",
+        serverCompileCache: "src/serverCompileCache.ts",
         "jones-cold-backend-custody": "src/jones/updates/jonesColdBackendCustody.ts",
       },
       plugins: [coldCustodyExternal],
@@ -179,7 +186,10 @@ export default defineConfig({
       outExtensions: () => ({ js: ".cjs" }),
       entry: ["src/preview-pick-preload.ts"],
       deps: {
-        alwaysBundle: (id) => id === "react-grab" || id.startsWith("react-grab/"),
+        alwaysBundle: (id) =>
+          id === "react-grab" ||
+          id.startsWith("react-grab/") ||
+          id === "@t3tools/shared/keybindingMatching",
       },
     },
     {

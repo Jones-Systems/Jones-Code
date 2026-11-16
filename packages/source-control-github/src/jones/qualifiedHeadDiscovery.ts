@@ -1,3 +1,4 @@
+import { normalizeHost } from "@t3tools/source-control-core/server/pullRequestUtils";
 import { PositiveInt, TrimmedNonEmptyString } from "@t3tools/contracts";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import * as Effect from "effect/Effect";
@@ -132,7 +133,7 @@ export const listQualifiedHeadPullRequests = Effect.fn("listQualifiedHeadPullReq
       return yield* new QualifiedHeadPageLimitError({});
     }).pipe(
       Effect.provideService(GitHubRequestPolicy.PinnedGitHubCredential, {
-        host: GitHubRequestPolicy.normalizeHost(input.locator.host),
+        host: normalizeHost(input.locator.host),
         token: credential.token,
         credentialFingerprint: credential.fingerprint,
       }),

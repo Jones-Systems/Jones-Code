@@ -21,6 +21,8 @@ import {
 const isContinuationMessage = (messageId: string): boolean =>
   messageId.startsWith("message:jones:task-continue:");
 
+const compiledIs1 = Schema.is(TaskContinuationError);
+
 export const requirementFor = Effect.fn("TaskContinuation.requirementFor")(function* (
   store: TaskContinuationStore["Service"] | undefined,
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "providerThreads">,
@@ -31,7 +33,7 @@ export const requirementFor = Effect.fn("TaskContinuation.requirementFor")(funct
   if ("_tag" in ancestry) return yield* ancestry;
   if (!ancestry.some((ancestor) => isContinuationMessage(ancestor.userMessageId))) return undefined;
   const root = continuationRoot(projection.runs, run);
-  if (Schema.is(TaskContinuationError)(root)) return yield* root;
+  if (compiledIs1(root)) return yield* root;
   if (!isContinuationMessage(root.userMessageId))
     return yield* new TaskContinuationError({ reason: "ancestry_invalid" });
   if (store === undefined) {

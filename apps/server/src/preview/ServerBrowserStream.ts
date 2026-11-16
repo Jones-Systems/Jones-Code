@@ -1,3 +1,4 @@
+import { companionCloseReason } from "../jones/previewCompanion/streamCloseReason.ts";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import {
   AuthOrchestrationReadScope,
@@ -25,10 +26,9 @@ import { authenticateMediaRequest } from "../auth/http.ts";
 import { assetResponseHeaders } from "../http.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
-import { companionCloseReason } from "../jones/previewCompanion/streamCloseReason.ts";
+import { requestUrl } from "../requestUrl.ts";
 
 const PREVIEW_STREAM_ROUTE_PREFIX = "/api/preview-stream";
-/** Matches `PREVIEW_STREAM_TAB_GONE_CODE` in the client. */
 const TAB_GONE_CODE = 4404;
 
 const DEFAULT_QUALITY = 70;
@@ -56,7 +56,7 @@ const parseMessage = (chunk: Uint8Array | string): unknown => {
 // Request middleware owns tracing, including long-lived WebSocket sessions.
 const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBrowser["Service"]) {
   const request = yield* HttpServerRequest.HttpServerRequest;
-  const url = HttpServerRequest.toURL(request);
+  const url = requestUrl(request);
   if (Option.isNone(url)) return HttpServerResponse.text("Bad Request", { status: 400 });
   if (url.value.pathname === `${PREVIEW_STREAM_ROUTE_PREFIX}/download`) {
     return yield* serveDownload(browser, url.value.searchParams);
@@ -164,7 +164,9 @@ const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBr
               const superseded = pending;
               pending = output;
               // Never sent, but Chromium still waits for its ack.
-              return superseded ? Effect.forkScoped(superseded.ack) : Effect.void;
+              return superseded
+                ? Effect.forkScoped(superseded.ack).pipe(Effect.asVoid)
+                : Effect.void;
             }
             case "viewport":
             case "control":
@@ -187,12 +189,13 @@ const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBr
           }
         }),
       );
-      const receive = (chunk: Uint8Array | string) => {
+      // Incoming messages share the session span; frame acknowledgements are frequent.
+      const receive = Effect.fnUntraced(function* (chunk: Uint8Array | string) {
         const message = parseMessage(chunk);
         // Ownership serializes actions in the service. Keep reading so dialog
         // replies and takeover can unblock an action already waiting on the page.
         if (!isAck(message))
-          return canOperate
+          return yield* canOperate
             ? viewer.input(message).pipe(Effect.forkScoped, Effect.asVoid)
             : Effect.void;
         const ack = inFlight;
@@ -200,11 +203,11 @@ const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBr
         inFlight = null;
         pending = null;
         // Forked: Chromium acks are paced and must not hold up input.
-        return Effect.andThen(
+        return yield* Effect.andThen(
           ack ? Effect.forkScoped(ack) : Effect.void,
           next ? sendFrame(next) : Effect.void,
         );
-      };
+      });
       const receiveInput = reader.pull.pipe(
         Effect.flatMap((chunks) => Effect.forEach(chunks, receive, { discard: true })),
       );

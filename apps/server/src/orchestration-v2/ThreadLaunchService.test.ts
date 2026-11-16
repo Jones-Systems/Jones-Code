@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as ProviderInstances from "../provider/ProviderInstanceRegistry.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
@@ -81,6 +82,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
@@ -127,6 +129,8 @@ const project = {
   defaultModelSelection: modelSelection,
   defaultThreadEnvMode: null,
   scripts: [],
+  pinnedAt: null,
+  archivedAt: null,
   createdAt: "2026-06-20T00:00:00.000Z",
   updatedAt: "2026-06-20T00:00:00.000Z",
   deletedAt: null,
@@ -254,6 +258,10 @@ function makeHarness(options: HarnessOptions = {}) {
     (_input: Parameters<GitWorkflow.GitWorkflowService["Service"]["removeWorktree"]>[0]) =>
       Effect.void,
   );
+  const deleteLocalBranch = vi.fn(
+    (_input: Parameters<GitWorkflow.GitWorkflowService["Service"]["deleteLocalBranch"]>[0]) =>
+      Effect.void,
+  );
   const runSetup = vi.fn(
     options.runSetup ?? (() => Effect.succeed({ status: "no-script" as const })),
   );
@@ -311,6 +319,7 @@ function makeHarness(options: HarnessOptions = {}) {
         (() => Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" })),
       remoteBranchExists: options.remoteBranchExists ?? (() => Effect.succeed(true)),
       removeWorktree,
+      deleteLocalBranch,
       ...options.git,
     }),
     Layer.succeed(ProjectSetupScriptRunner.ProjectSetupScriptRunner, {
@@ -380,6 +389,8 @@ function makeHarness(options: HarnessOptions = {}) {
               faviconPath: null,
               projectIcon: null,
               scripts: project.scripts,
+              pinnedAt: null,
+              archivedAt: null,
               createdAt: project.createdAt,
               updatedAt: project.updatedAt,
               deletedAt: project.deletedAt,
@@ -389,7 +400,12 @@ function makeHarness(options: HarnessOptions = {}) {
   });
   const layerTitleRegeneration = ThreadTitleRegeneration.layer.pipe(
     Layer.provide(
-      Layer.mergeAll(layerThreadManagement, layerProjectedProjects, layerExternalServices),
+      Layer.mergeAll(
+        layerThreadManagement,
+        layerProjectedProjects,
+        layerExternalServices,
+        NodeServices.layer,
+      ),
     ),
   );
   return {
@@ -407,6 +423,7 @@ function makeHarness(options: HarnessOptions = {}) {
     ),
     createWorktree,
     removeWorktree,
+    deleteLocalBranch,
     renameBranch,
     generateBranchName,
     generateThreadTitle,
@@ -1053,6 +1070,7 @@ it.effect.each(
           NodeCrypto.layer,
           Scheduler.layer,
           Layer.mock(SecretRequests.SecretRequests)({}),
+          ManagedPolicy.layerTest(),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         ),
       ),
@@ -1119,12 +1137,17 @@ it.effect(
           NodeCrypto.layer,
           Scheduler.layer,
           Layer.mock(SecretRequests.SecretRequests)({}),
+          ManagedPolicy.layerTest(),
         ),
       ),
     );
     return Effect.gen(function* () {
       const tasks = yield* ScheduledTasks.ScheduledTaskService;
-      const threadId = ThreadId.make("thread:missing");
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const { threadId } = yield* launches.launch(
+        launchInput({ command: "command:missing", thread: "thread:missing" }),
+      );
       const { task } = yield* tasks.upsert({
         title: "Daily audit",
         prompt: "Audit performance and crashes.",
@@ -1138,6 +1161,11 @@ it.effect(
         interactionMode: "default",
         createdBy: "user",
         creationSource: "web",
+      });
+      yield* threads.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("command:missing:delete"),
+        threadId,
       });
       const result = yield* tasks.runNow({ id: task.id });
       assert.equal(result.task.lastRunStatus, "failed");
@@ -1156,6 +1184,7 @@ it.effect("runs a thread-bound automation on the provider the thread uses now", 
         NodeCrypto.layer,
         Scheduler.layer,
         Layer.mock(SecretRequests.SecretRequests)({}),
+        ManagedPolicy.layerTest(),
       ),
     ),
   );
@@ -1232,6 +1261,21 @@ it.effect("retains automation and sender attribution while a message waits in th
     assert.equal(message?.scheduledTaskId, scheduledTaskId);
     assert.equal(message?.senderThreadId, senderThreadId);
     assert.equal(message?.text, "Run the audit");
+    // A fresh send queues instead of steering, so it needs no steerable run.
+    const fresh = yield* threads.sendToThread({
+      projectId,
+      commandId: CommandId.make("command:automation:queued-fresh"),
+      threadId: launched.threadId,
+      messageId: MessageId.make("message:automation:queued-fresh"),
+      text: "Start over",
+      attachments: [],
+      mode: "steer",
+      freshContext: true,
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    assert.equal(fresh.delivery, "queued");
+    assert.isTrue(fresh.run.freshContext);
   }).pipe(Effect.provide(harness.layer));
 });
 
@@ -1260,7 +1304,9 @@ class LegacyLauncherPty implements PtyAdapter.PtyProcess {
   }
 }
 
-it.layer(NodeServices.layer, { excludeTestServices: true })(
+const isThreadLaunchThreadLaunchError = Schema.is(ThreadLaunch.ThreadLaunchError);
+
+it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer), { excludeTestServices: true })(
   "Legacy launcher private D actual owner",
   (it) => {
     it.effect.each(
@@ -1466,8 +1512,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
           );
           assert.equal(result._tag, "Failure");
           if (result._tag === "Failure") {
-            assert.isTrue(Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure));
-            if (Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure))
+            assert.isTrue(isThreadLaunchThreadLaunchError(result.failure));
+            if (isThreadLaunchThreadLaunchError(result.failure))
               assert.equal(
                 result.failure.bootstrapThreadDisposition,
                 scenario === "missing_method" || scenario === "reused" ? undefined : "deleted",
@@ -1596,7 +1642,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
   },
 );
 
-it.layer(NodeServices.layer, { excludeTestServices: true })(
+it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer), { excludeTestServices: true })(
   "Legacy worktree actual SQL journal",
   (it) => {
     it.effect.each([
@@ -1834,7 +1880,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
           const preparation = projection.runs[0]!.legacyPreparation;
           assert.isDefined(
             preparation,
-            Result.isFailure(result) && Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure)
+            Result.isFailure(result) && isThreadLaunchThreadLaunchError(result.failure)
               ? canonicalLegacyPayload(result.failure.cause)
               : "Missing actual journal",
           );
@@ -2523,6 +2569,7 @@ function scratchHarness() {
         NodeCrypto.layer,
         Scheduler.layer,
         Layer.mock(SecretRequests.SecretRequests)({}),
+        ManagedPolicy.layerTest(),
       ),
     ),
   );
@@ -2738,11 +2785,34 @@ it.effect.each(["stable", "upstream/release"])(
       Effect.provide(
         GitVcsDriver.layer.pipe(
           Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "launch-remote-git-" })),
-          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         ),
       ),
     ),
 );
+
+it.effect("fetches the origin base from the remote it already resolved", () => {
+  let fetchInput: Deferred.Deferred<unknown> | null = null;
+  const harness = makeHarness({
+    fetchWorktreeBaseCommit: (input) => Deferred.succeed(fetchInput!, input).pipe(Effect.as(null)),
+  });
+  return Effect.gen(function* () {
+    fetchInput = yield* Deferred.make<unknown>();
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    yield* launches.launch(
+      launchInput({
+        command: "command:launch:resolved-remote",
+        thread: "thread:launch:resolved-remote",
+        workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
+      }),
+    );
+    assert.deepEqual(yield* Deferred.await(fetchInput), {
+      cwd: project.workspaceRoot,
+      refName: "main",
+      remote: { remoteName: "origin", branchName: "main" },
+    });
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect("shows the fetch diagnosis when preparing a worktree from origin fails", () => {
   const detail =
@@ -2793,73 +2863,98 @@ it.effect("shows the fetch diagnosis when preparing a worktree from origin fails
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("retries a failed workspace preparation on the same run", () => {
-  let fetchFailures = 1;
+it.effect("rejects a preparation retry after the project disables its provider", () => {
+  let fetchAttempts = 0;
   const harness = makeHarness({
     fetchWorktreeBaseCommit: () =>
-      fetchFailures-- > 0
+      fetchAttempts++ === 0
         ? Effect.fail(
             new GitCommandError({
               operation: "GitVcsDriver.fetchRemote",
               command: "git",
               cwd: project.workspaceRoot,
-              detail: "Git could not update a local reference.",
-              exitCode: 1,
+              detail: "Git could not reach the remote.",
+              exitCode: 128,
             }),
           )
         : Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
   });
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
-    const layerOutbox = yield* EffectOutbox.EffectOutboxV2;
+    const settings = yield* ServerSettings.ServerSettingsService;
     const threads = yield* ThreadManagement.ThreadManagementService;
     const launched = yield* launches.launch(
       launchInput({
-        command: "command:launch:retry",
-        thread: "thread:launch:retry",
-        message: "Retry me",
+        command: "command:launch:disabled-preparation-retry",
+        thread: "thread:launch:disabled-preparation-retry",
+        message: "Start from origin",
         workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
       }),
     );
-    yield* waitUntil(launched.threadId, () =>
-      threads
-        .getThreadProjection(launched.threadId)
-        .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
-    );
-    const failed = yield* threads.getThreadProjection(launched.threadId);
-    const runId = failed.runs[0]!.id;
-    assert.equal(
-      failed.turnItems.find((item) => item.type === "error")?.failure.code,
-      ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
-    );
+    yield* preparationSettled(launched.threadId);
+    yield* settings.updateSettings({
+      projectSettingsOverrides: {
+        [projectId]: { providerInstances: { [modelSelection.instanceId]: { enabled: false } } },
+      },
+    });
 
-    const retry = {
-      commandId: CommandId.make("command:launch:retry:1"),
-      threadId: launched.threadId,
-      runId,
-    };
-    yield* launches.retryPreparation(retry);
-    yield* waitUntil(launched.threadId, () =>
-      layerOutbox
-        .listByCommandId(CommandId.make("command:launch:retry:1:release"))
-        .pipe(Effect.map((effects) => effects.length === 1)),
-    );
-    const retried = yield* threads.getThreadProjection(launched.threadId);
-    assert.equal(retried.runs.length, 1);
-    assert.equal(retried.runs[0]?.status, "starting");
-    assert.equal(retried.thread.worktreePath, "/repo-worktrees/feature");
-    assert.equal(retried.turnItems.find((item) => item.type === "error")?.status, "cancelled");
-    assert.equal(
-      retried.turnItems.find((item) => item.type === "command_execution")?.status,
-      "completed",
-    );
-    assert.equal(harness.createWorktree.mock.calls.length, 1);
-
-    const rejected = yield* launches
-      .retryPreparation({ ...retry, commandId: CommandId.make("command:launch:retry:2") })
+    const error = yield* launches
+      .retryPreparation({
+        commandId: CommandId.make("command:launch:disabled-preparation-retry:retry"),
+        threadId: launched.threadId,
+        runId: launched.projection.runs[0]!.id,
+      })
       .pipe(Effect.flip);
-    assert.equal(rejected._tag, "OrchestratorDispatchError");
+
+    assert.equal(error._tag, "ThreadManagementProviderInstanceDisabledError");
+    assert.equal((yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status, "failed");
+    assert.equal(fetchAttempts, 1);
   }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("does not release a prepared run after the project disables its provider", () => {
+  return Effect.gen(function* () {
+    const setupEntered = yield* Deferred.make<void>();
+    const allowSetup = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      runSetup: () =>
+        Deferred.succeed(setupEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(allowSetup)),
+          Effect.as({ status: "no-script" as const }),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:launch:disable-during-preparation",
+          thread: "thread:launch:disable-during-preparation",
+          message: "Prepare a worktree",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+      );
+      yield* Deferred.await(setupEntered);
+      yield* settings.updateSettings({
+        projectSettingsOverrides: {
+          [projectId]: { providerInstances: { [modelSelection.instanceId]: { enabled: false } } },
+        },
+      });
+      yield* Deferred.succeed(allowSetup, undefined);
+      const projection = yield* preparationSettled(launched.threadId);
+      assert.equal(projection.runs[0]?.status, "failed");
+      const effects = yield* (yield* EffectOutbox.EffectOutboxV2).listByCommandId(
+        CommandId.make("command:launch:disable-during-preparation:release"),
+      );
+      assert.isFalse(
+        effects.some(
+          (effect) =>
+            effect.request.type === "provider-turn.start" &&
+            effect.request.runId === launched.projection.runs[0]?.id,
+        ),
+      );
+    }).pipe(Effect.provide(harness.layer));
+  });
 });
 
 it.effect.each(["fails", "is interrupted"] as const)(
@@ -3023,6 +3118,21 @@ it.effect.each(["failed", "interrupted"] as const)(
         createdBy: "user",
         creationSource: "web",
       });
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`command:launch:late-queued-follow-up-${ending}:wake`),
+        threadId: launched.threadId,
+        messageId: MessageId.make(`message:launch:late-queued-follow-up-${ending}:wake`),
+        text: "Background task completed.",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "provider",
+      });
+      const wake = (yield* threads.getThreadProjection(launched.threadId)).runs.at(-1)!;
+      assert.equal(wake.status, "queued");
+      assert.isTrue(wake.queueHeld);
+
       // Nor does the next one, though the run that message started is now the
       // latest and carries no workspace preparation.
       yield* threads.sendToThread({
@@ -3200,6 +3310,9 @@ it.effect("replays a server-allocated launch", () =>
       assert.equal(first.threadId, retry.threadId);
       assert.isFalse(first.resumed);
       assert.isTrue(retry.resumed);
+      // Clients drop their pending copy once the thread reaches the message's commit.
+      assert.isNumber(first.sequence);
+      assert.equal(retry.sequence, first.sequence);
       assert.equal(harness.runSetup.mock.calls.length, 1);
       assert.equal(retry.projection.messages.length, 1);
       assert.equal(retry.projection.runs.length, 1);
@@ -3885,8 +3998,15 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
 it.effect("cancels tracked setup before provider work is released", () =>
   Effect.gen(function* () {
     const entered = yield* Deferred.make<void>();
+    const renamed = yield* Deferred.make<void>();
     const harness = makeHarness({
-      runSetup: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+      renameBranch: (input) =>
+        Deferred.succeed(renamed, undefined).pipe(Effect.as({ branch: input.newBranch })),
+      runSetup: () =>
+        Deferred.await(renamed).pipe(
+          Effect.andThen(Deferred.succeed(entered, undefined)),
+          Effect.andThen(Effect.never),
+        ),
     });
     yield* Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -3907,6 +4027,11 @@ it.effect("cancels tracked setup before provider work is released", () =>
       const projection = yield* threads.getThreadProjection(launched.threadId);
       assert.equal(projection.runs[0]?.status, "failed");
       assert.isNull(projection.thread.worktreePath);
+      assert.deepEqual(harness.deleteLocalBranch.mock.calls[0]?.[0], {
+        cwd: "/repo",
+        refName: "generated-branch",
+        force: true,
+      });
       assert.isEmpty(
         yield* layerOutbox.listByCommandId(CommandId.make(`${input.commandId}:release`)),
       );
@@ -3979,6 +4104,40 @@ it.effect("leaves a top-level existing-worktree setup running in the background 
   }),
 );
 
+it.effect(
+  "deletes a claimed worktree's branch when setup is cancelled before checkout returns",
+  () =>
+    Effect.gen(function* () {
+      const claimed = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        createWorktree: (_input, options) =>
+          (options?.progress?.onWorktreeClaimed?.("/repo-worktrees/feature") ?? Effect.void).pipe(
+            Effect.andThen(Deferred.succeed(claimed, undefined)),
+            Effect.andThen(Effect.never),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        const launched = yield* launches.launch(
+          launchInput({
+            command: "launch:cancel-claimed",
+            thread: "thread:cancel-claimed",
+            message: "Start",
+            workspace: { type: "worktree", baseRef: "main" },
+          }),
+        );
+        yield* Deferred.await(claimed);
+        assert.isTrue(yield* tracker.cancel(launched.threadId));
+        assert.equal(harness.removeWorktree.mock.calls[0]?.[0].path, "/repo-worktrees/feature");
+        assert.equal(
+          harness.deleteLocalBranch.mock.calls[0]?.[0].refName,
+          harness.createWorktree.mock.calls[0]?.[0].newRefName,
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
 it.effect("stops an in-flight branch rename when tracked setup is cancelled", () =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();
@@ -4023,6 +4182,10 @@ it.effect("stops an in-flight branch rename when tracked setup is cancelled", ()
       );
       assert.equal(harness.renameBranch.mock.calls.length, 0);
       assert.isNull((yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath);
+      assert.equal(
+        harness.deleteLocalBranch.mock.calls[0]?.[0].refName,
+        harness.createWorktree.mock.calls[0]?.[0].newRefName,
+      );
     }).pipe(Effect.provide(harness.layer));
   }),
 );
@@ -4172,8 +4335,8 @@ it.effect.each(["sequence", "records", "stream"] as const)(
             }),
           ),
         );
-      assert.isTrue(Schema.is(ThreadLaunch.ThreadLaunchError)(failure));
-      if (!Schema.is(ThreadLaunch.ThreadLaunchError)(failure)) return;
+      assert.isTrue(isThreadLaunchThreadLaunchError(failure));
+      if (!isThreadLaunchThreadLaunchError(failure)) return;
       assert.equal(failure.operation, "update-thread");
       assert.equal(failure.commandId, createCommandId);
       assert.equal(failure.projectId, projectId);
@@ -4697,6 +4860,10 @@ it.effect(
   },
 );
 
+const decodeEffectFromJsonStringQueueDispatchCommand = Schema.decodeEffect(
+  Schema.fromJsonString(QueueDispatchCommand),
+);
+
 it.effect.each(["known", "lost"] as const)(
   "legacy preflight journals %s fetch failure and never repeats it",
   (kind) => {
@@ -4727,7 +4894,7 @@ it.effect.each(["known", "lost"] as const)(
       );
       if (kind === "lost") {
         const changed = legacyPreflightBinding(`fetch-${kind}`);
-        const decoded = yield* Schema.decodeEffect(Schema.fromJsonString(QueueDispatchCommand))(
+        const decoded = yield* decodeEffectFromJsonStringQueueDispatchCommand(
           changed.canonicalPayload,
         );
         const payload = {
@@ -4799,7 +4966,7 @@ it.effect(
   },
 );
 
-it.layer(NodeServices.layer, { excludeTestServices: true })(
+it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer), { excludeTestServices: true })(
   "Legacy launcher never-invoked failure owner",
   (it) => {
     const qualifyFailure = (deletePersistenceFails: boolean) =>
@@ -4815,7 +4982,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
           Effect.gen(function* () {
             if (!ChildProcess.isStandardCommand(command))
               return yield* Effect.die("Unexpected synthetic pipeline");
-            const args = [...command.args];
+            const args = command.args.map((word) =>
+              Redacted.isRedacted(word) ? Redacted.value(word) : word,
+            );
             commands.push(args);
             if (args.includes("add"))
               return yield* Effect.die("Never-invoked owner must not enter worktree mutation");
@@ -4957,8 +5126,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             );
           assert.isTrue(Result.isFailure(result));
           if (Result.isFailure(result)) {
-            assert.isTrue(Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure));
-            if (Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure)) {
+            assert.isTrue(isThreadLaunchThreadLaunchError(result.failure));
+            if (isThreadLaunchThreadLaunchError(result.failure)) {
               if (deletePersistenceFails)
                 assert.isUndefined(result.failure.bootstrapThreadDisposition);
               else
@@ -5027,11 +5196,11 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
       });
     it.effect(
       "reports deleted only after actual no-control failure D and retains uploaded bytes",
-      () => qualifyFailure(false),
+      () => qualifyFailure(false).pipe(Effect.provide(NodeCrypto.layer)),
     );
     it.effect(
       "retains the durable failed shell and undefined disposition when actual SQL failure D cannot commit",
-      () => qualifyFailure(true),
+      () => qualifyFailure(true).pipe(Effect.provide(NodeCrypto.layer)),
     );
   },
 );
@@ -5170,6 +5339,74 @@ it.effect("enqueues provider work only after setup has been initiated", () =>
   }),
 );
 
+it.effect("retries a failed workspace preparation on the same run", () => {
+  let fetchFailures = 1;
+  const harness = makeHarness({
+    fetchWorktreeBaseCommit: () =>
+      fetchFailures-- > 0
+        ? Effect.fail(
+            new GitCommandError({
+              operation: "GitVcsDriver.fetchRemote",
+              command: "git",
+              cwd: project.workspaceRoot,
+              detail: "Git could not update a local reference.",
+              exitCode: 1,
+            }),
+          )
+        : Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const layerOutbox = yield* EffectOutbox.EffectOutboxV2;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launched = yield* launches.launch(
+      launchInput({
+        command: "command:launch:retry",
+        thread: "thread:launch:retry",
+        message: "Retry me",
+        workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
+      }),
+    );
+    yield* waitUntil(launched.threadId, () =>
+      threads
+        .getThreadProjection(launched.threadId)
+        .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
+    );
+    const failed = yield* threads.getThreadProjection(launched.threadId);
+    const runId = failed.runs[0]!.id;
+    assert.equal(
+      failed.turnItems.find((item) => item.type === "error")?.failure.code,
+      ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+    );
+
+    const retry = {
+      commandId: CommandId.make("command:launch:retry:1"),
+      threadId: launched.threadId,
+      runId,
+    };
+    yield* launches.retryPreparation(retry);
+    yield* waitUntil(launched.threadId, () =>
+      layerOutbox
+        .listByCommandId(CommandId.make("command:launch:retry:1:release"))
+        .pipe(Effect.map((effects) => effects.length === 1)),
+    );
+    const retried = yield* threads.getThreadProjection(launched.threadId);
+    assert.equal(retried.runs.length, 1);
+    assert.equal(retried.runs[0]?.status, "starting");
+    assert.equal(retried.thread.worktreePath, "/repo-worktrees/feature");
+    assert.equal(retried.turnItems.find((item) => item.type === "error")?.status, "cancelled");
+    assert.equal(
+      retried.turnItems.find((item) => item.type === "command_execution")?.status,
+      "completed",
+    );
+    assert.equal(harness.createWorktree.mock.calls.length, 1);
+
+    const rejected = yield* launches
+      .retryPreparation({ ...retry, commandId: CommandId.make("command:launch:retry:2") })
+      .pipe(Effect.flip);
+    assert.equal(rejected._tag, "OrchestratorDispatchError");
+  }).pipe(Effect.provide(harness.layer));
+});
 it.effect("launch reaches setup while unbounded optional provenance is skipped", () =>
   Effect.gen(function* () {
     const captures: Array<{ threadId: string; path: string | null }> = [];

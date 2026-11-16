@@ -1,13 +1,11 @@
-name: Native enrollment candidate
+name: SQLite runtime candidate
 
 on:
   pull_request:
     paths:
       - .github/workflows/native-enrollment-candidate.yml
-      - apps/server/src/jones/workstreams/enrollment/**
       - scripts/jones/native-enrollment/**
       - packages/shared/src/nodeSqliteClient*
-      - apps/server/src/environment/NativeStoreAuthority*
       - apps/server/src/environment/nativeStoreAuthorityPersistence*
   workflow_dispatch:
 

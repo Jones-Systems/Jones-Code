@@ -1,3 +1,5 @@
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import * as ProviderInstanceRegistryMutator from "../../../provider/ProviderInstanceRegistryMutator.ts";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -140,11 +142,23 @@ export const makeCatalogHarness = Effect.fn("CatalogTest.makeHarness")(function*
   const instances = yield* ProviderInstanceRegistry.makeProviderInstanceRegistry({
     drivers: [driver],
     configMap: configuration(...entries),
-  });
+  }).pipe(
+    Effect.provideService(SecretResolver.SecretResolver, {
+      read: (references) => Effect.succeed(references.map(() => undefined)),
+      invalidate: () => Effect.void,
+      label: (provider) => Effect.succeed(provider),
+    }),
+  );
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const services = yield* Layer.build(
     ProviderRegistry.layer.pipe(
+      Layer.provide(
+        Layer.succeed(
+          ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator,
+          instances.mutator,
+        ),
+      ),
       Layer.provideMerge(
         Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, instances.registry),
       ),
@@ -158,6 +172,7 @@ export const makeCatalogHarness = Effect.fn("CatalogTest.makeHarness")(function*
           // Hold the unrelated background fetch; the service scope owns its interruption.
           refresh: Effect.never,
           forceRefresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
+          refreshOnDemand: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
           refreshInBackground: Effect.void,
         }),
       ),

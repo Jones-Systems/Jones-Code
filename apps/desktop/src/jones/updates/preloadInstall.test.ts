@@ -40,6 +40,7 @@ vi.mock("electron-updater", () => ({ autoUpdater: {} }));
 let bridge: DesktopBridge;
 beforeAll(async () => {
   vi.stubGlobal("window", { addEventListener: vi.fn() });
+  vi.stubGlobal("document", Object.assign(new EventTarget(), { fullscreenElement: null }));
   await import("../../preload.ts");
   bridge = mocks.expose.mock.calls.find(([name]) => name === "desktopBridge")![1];
 });
@@ -204,7 +205,7 @@ describe("desktop install IPC decoding", () => {
 
   effectIt.effect("routes the handle through the real IPC decoder to the staged installer", () =>
     Effect.gen(function* () {
-      const { invoke, installStaged, install } = harness();
+      const { invoke, installStaged, install } = harness(true);
       yield* invoke("staged-build-123");
       expect(installStaged).toHaveBeenCalledExactlyOnceWith("staged-build-123");
       expect(install).not.toHaveBeenCalled();

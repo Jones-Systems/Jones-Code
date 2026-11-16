@@ -328,6 +328,8 @@ describe("hold reasons", () => {
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
             getThreadRecords: () => Effect.succeed(projection),
+            // Upstream recovery reads queued messages by ID; the fixture has none.
+            getMessagesById: () => Effect.succeed(new Map()),
           }),
           Layer.mock(EventSink.EventSinkV2)({
             commitCommand: (input) => {

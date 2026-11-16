@@ -80,11 +80,12 @@ behavior, telemetry collection, or provider configuration changed.
 ### Expected thread responses
 
 When a goal and background work coexist, the background-work banner and its
-Stop action precede the goal in the collapsed composer stack. Expand **Show
-other notices** to reach goal controls. Child questions and urgent notices
-retain their priority. Browser verification used an isolated synthetic result
-wait beside an active goal: Stop remained visible, and keyboard expansion made
-the goal's Clear control reachable. Settle persisted across reload. Server
+Stop action precede the goal in the thread status at the end of the timeline;
+both stay visible there. Child questions and urgent notices retain their
+priority. The earlier browser verification used the composer stack layout,
+where an isolated synthetic result wait beside an active goal kept Stop
+visible and keyboard expansion reached the goal's Clear control, and Settle
+persisted across reload. The end-of-timeline layout is unverified in a browser. Server
 integration tests cover Stop, held queues, subsequent Settle and legitimate
 queued-message/approval blockers. Native mobile and packaged desktop remain
 unverified; the projection fixture does not prove live provider termination.
@@ -172,6 +173,9 @@ The active thread composer exposes
 Its header uses the [batch action](../../apps/web/src/jones/queue/QueuedSteerBatchAction.tsx)
 and the [shared selector](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.ts);
 native mobile consumes the same selector through its own queue sheet.
+The layout regression in the Jones browser test exercises long queued content,
+control alignment and containment at 800px and 320px browser widths. Full-app
+Browser-panel navigation and packaged clients require separate runtime evidence.
 
 For the account-change journey, start a synthetic active Codex turn and queue
 four ordinary messages whose saved account, provider thread and model differ

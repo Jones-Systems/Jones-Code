@@ -1,4 +1,4 @@
-import { nativeWorkstreamThreadKey } from "@t3tools/client-runtime/state/workstreams";
+import { personalThreadKey } from "@t3tools/client-runtime/jones/workstreams/personal";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { ThreadListV2ListItem, ThreadListV2ThreadListItem } from "../threads/threadListV2";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
@@ -61,7 +61,7 @@ export function projectMobileWorkstreamList(
   const unassigned: ThreadListV2ThreadListItem[] = [];
   const unknown: ThreadListV2ThreadListItem[] = [];
   for (const item of active) {
-    const key = nativeWorkstreamThreadKey(item.item.thread.environmentId, item.item.thread.id);
+    const key = personalThreadKey(item.item.thread);
     const group = groupForKey.get(key);
     if (!group)
       (!projection.confirmedUnassignedKeys || projection.confirmedUnassignedKeys.has(key)
@@ -129,9 +129,7 @@ export function projectMobileWorkstreamList(
       ...(item.type === "v2-thread"
         ? {
             secondaryWorkstreamLabel: (
-              projection.secondaryLabelsByKey.get(
-                nativeWorkstreamThreadKey(item.item.thread.environmentId, item.item.thread.id),
-              ) ?? []
+              projection.secondaryLabelsByKey.get(personalThreadKey(item.item.thread)) ?? []
             ).join(" · "),
           }
         : {}),

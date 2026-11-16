@@ -2,13 +2,16 @@ import { expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import { QueuedSteerBatchCapability, QueuedSteerBatchCommand } from "./queuedSteerBatch.ts";
 import { ExecutionEnvironmentCapabilities } from "../environment.ts";
+const compiledDecodeSync1 = Schema.decodeSync(
+  Schema.Struct({ queuedSteerBatch: ExecutionEnvironmentCapabilities.fields.queuedSteerBatch }),
+);
+const compiledIs2 = Schema.is(QueuedSteerBatchCapability);
+
 it("keeps the batch capability optional for old environments", () => {
-  const legacy = Schema.decodeSync(
-    Schema.Struct({ queuedSteerBatch: ExecutionEnvironmentCapabilities.fields.queuedSteerBatch }),
-  )({});
+  const legacy = compiledDecodeSync1({});
   expect(legacy.queuedSteerBatch).toBeUndefined();
   expect(
-    Schema.is(QueuedSteerBatchCapability)({
+    compiledIs2({
       maxInputChars: 120000,
       maxAttachments: 100,
       maxItems: 100,

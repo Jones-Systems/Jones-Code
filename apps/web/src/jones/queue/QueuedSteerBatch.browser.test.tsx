@@ -6,6 +6,8 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { page } from "vite-plus/test/browser";
+import "~/index.css";
 
 const state = vi.hoisted(() => ({
   projection: null as unknown,
@@ -13,6 +15,15 @@ const state = vi.hoisted(() => ({
   batch: vi.fn(),
   row: vi.fn(),
 }));
+vi.mock(import("@t3tools/client-runtime/state/thread-workflows"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    deriveThreadQueueWorkflowState: ((
+      ...args: Parameters<typeof actual.deriveThreadQueueWorkflowState>
+    ) => ({ ...actual.deriveThreadQueueWorkflowState(...args), canReorder: true })) as never,
+  };
+});
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
   useThreadProjection: (() => ({ projection: state.projection })) as never,
@@ -39,6 +50,17 @@ vi.mock(import("../../assets/assetUrls"), async (original) => ({
   useAssetUrls: (() => []) as never,
 }));
 
+// Model the frozen additive queue command interface; exact package/runtime qualification remains blocked by L5-REQ05.
+vi.mock(import("../../state/threads"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    threadEnvironment: {
+      ...actual.threadEnvironment,
+      reorderQueuedRun: { label: "environment-data:commands:thread:reorder-queued-run" },
+    },
+  } as never;
+});
 import {
   QueuedRunsControl,
   type QueuedRunsControlHandle,
@@ -83,6 +105,7 @@ function queueProjection(count = 22): OrchestrationV2ThreadProjection {
       attachments: [],
       createdBy: "user",
       creationSource: "web",
+      createdAt: DateTime.makeUnsafe("2026-10-20T12:00:00Z"),
       updatedAt: DateTime.makeUnsafe("2026-10-20T12:00:00Z"),
     })),
     runtimeRequests: [],
@@ -120,6 +143,9 @@ async function render(props: Partial<React.ComponentProps<typeof QueuedRunsContr
       threadId={"thread:test" as never}
       optimisticMessages={[]}
       editingRunId={null}
+      editBlockedReason={null}
+      timestampFormat="locale"
+      onOpenThread={() => undefined}
       onEditQueuedRun={() => undefined}
       onCancelEdit={() => undefined}
       {...props}
@@ -320,4 +346,45 @@ describe("queue header batch action", () => {
       expect(state.row).not.toHaveBeenCalled();
     },
   );
+});
+
+it("keeps queue controls grouped and contained at narrow widths", async () => {
+  setupTest();
+  const projection = queueProjection(2);
+  state.projection = {
+    ...projection,
+    messages: projection.messages.map((message) => ({
+      ...message,
+      text: "A long queued message with an identifier: " + "long-identifier".repeat(30),
+    })),
+  };
+  const originalViewport = { width: window.innerWidth, height: window.innerHeight };
+  try {
+    await page.viewport(800, 700);
+    await using screen = await render();
+    const container = screen.container;
+    container.style.width = "640px";
+    const row = container.querySelector("li")!;
+    const grip = button(row, "Reorder queued message (drag, or press the arrow keys)")!;
+    const edit = button(row, "Edit queued message")!;
+    const remove = button(row, "Remove queued message")!;
+    const center = (node: Element) => {
+      const rect = node.getBoundingClientRect();
+      return rect.top + rect.height / 2;
+    };
+    expect(Math.abs(center(grip) - center(edit))).toBeLessThan(1);
+    expect(Math.abs(center(grip) - center(remove))).toBeLessThan(1);
+    await page.viewport(320, 700);
+    container.style.width = "240px";
+    await vi.waitFor(() => {
+      expect(container.scrollWidth).toBeLessThanOrEqual(container.clientWidth);
+      for (const control of container.querySelectorAll("button")) {
+        const rect = control.getBoundingClientRect();
+        expect(rect.left).toBeGreaterThanOrEqual(container.getBoundingClientRect().left - 1);
+        expect(rect.right).toBeLessThanOrEqual(container.getBoundingClientRect().right + 1);
+      }
+    });
+  } finally {
+    await page.viewport(originalViewport.width, originalViewport.height);
+  }
 });

@@ -1,8 +1,4 @@
-import {
-  useComposerDraftStore,
-  type ComposerThreadDraftState,
-  type ComposerThreadTarget,
-} from "../../composerDraftStore";
+import { useComposerDraftStore, type ComposerThreadDraftState } from "../../composerDraftStore";
 import {
   clearSubmittedComposer,
   restoreFailedComposerSend,
@@ -39,34 +35,9 @@ export function createPendingComposerRecovery(
         owner.composerImagesRef.current = [];
         owner.composerFilesRef.current = [];
         owner.composerTerminalContextsRef.current = [];
+        if (owner.composerEnvironmentContextsRef) owner.composerEnvironmentContextsRef.current = [];
       }
       restored = undefined;
     },
   };
-}
-
-export function createPendingPromptRecovery(target: ComposerThreadTarget, prompt: string) {
-  const expectedDraft = useComposerDraftStore.getState().getComposerDraft(target);
-  return createPendingComposerRecovery(() => ({
-    routeThreadKey: "pending-plan",
-    currentRouteThreadKeyRef: { current: null },
-    composerDraftTarget: target,
-    promptRef: { current: "" },
-    expectedDraft,
-    isCurrentSend: () => true,
-    backgroundDraftOpened: true,
-    composerImagesRef: { current: [] },
-    composerFilesRef: { current: [] },
-    composerTerminalContextsRef: { current: [] },
-    snapshot: {
-      prompt,
-      images: [],
-      files: [],
-      terminalContexts: [],
-      previewAnnotations: [],
-      reviewComments: [],
-      threadContexts: [],
-    },
-    resetCursor: () => {},
-  }));
 }

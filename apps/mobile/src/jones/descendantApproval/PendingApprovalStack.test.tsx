@@ -1,3 +1,5 @@
+import type { SharedValue } from "react-native-reanimated";
+import { EnvironmentId } from "@t3tools/contracts";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { RuntimeRequestId } from "@t3tools/contracts";
@@ -84,6 +86,9 @@ vi.mock("../../features/threads/QuestionAttachments", () => ({
     onChangeText: (value: string) => void;
   }) => <input value={value} onChange={(event) => onChangeText(event.target.value)} />,
 }));
+vi.mock("../../state/entities", () => ({
+  useLiveThreadLinkLabels: (markdown: string) => markdown,
+}));
 vi.mock("../../native/SelectableMarkdownText", () => ({
   SelectableMarkdownText: ({ markdown }: { markdown: string }) => <span>{markdown}</span>,
 }));
@@ -101,6 +106,9 @@ import { PendingApprovalStack, descendantApprovalStackHeight } from "./PendingAp
 const derived = (value: number) => ({ value }) as DerivedValue<number>;
 function questionProps(): PendingUserInputCardProps {
   return {
+    environmentId: EnvironmentId.make("parent-environment"),
+    cardProgress: { value: 1 } as SharedValue<number>,
+    cardCoverage: { value: 0 } as SharedValue<number>,
     canOperateThread: true,
     pendingUserInput: {
       requestId: RuntimeRequestId.make("parent-question"),

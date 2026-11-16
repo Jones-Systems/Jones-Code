@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
 import * as Effect from "effect/Effect";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -71,10 +71,12 @@ const request = Effect.fn("jonesImportedHistory.request")(function* (
   });
 });
 
+const encodeImportedHistoryStart = Schema.encodeEffect(ImportedHistoryStart);
+
 export const importedHistoryIdentity = Effect.fn("jonesImportedHistory.identity")(function* (
   command: ImportedHistoryStart,
 ) {
-  const encoded = yield* Schema.encodeEffect(ImportedHistoryStart)(command);
+  const encoded = yield* encodeImportedHistoryStart(command);
   const digest = (value: unknown) =>
     Effect.tryPromise(async () => {
       const bytes = new TextEncoder().encode(importedHistoryCanonicalJson(value));
@@ -87,7 +89,10 @@ export const importedHistoryIdentity = Effect.fn("jonesImportedHistory.identity"
 });
 
 export function createImportedHistoryCommands<R, E>(
-  runtime: Atom.AtomRuntime<EnvironmentRegistry | HttpClient.HttpClient | Crypto.Crypto | R, E>,
+  runtime: Atom.AtomRuntime<
+    EnvironmentRegistry | HttpClient.HttpClient | SecureRandom.SecureRandom | R,
+    E
+  >,
 ) {
   return {
     prepare: createEnvironmentCommand(runtime, {

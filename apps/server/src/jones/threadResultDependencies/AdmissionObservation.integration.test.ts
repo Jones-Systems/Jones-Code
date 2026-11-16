@@ -62,6 +62,7 @@ const admissions = Intake.layer.pipe(
     Layer.mock(Providers.ProviderInstanceRegistry)({ getCatalogSource: () => undefined }),
   ),
 );
+const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 
 it.effect.each([
   "refused",
@@ -221,7 +222,7 @@ it.effect.each([
             return { sequence: sent.sequence };
           }).pipe(
             Effect.mapError((error) =>
-              Schema.is(OrchestratorMcpFailure)(error)
+              isOrchestratorMcpFailure(error)
                 ? error
                 : new Intake.RemoteAdmissionIntakeError({ cause: error }),
             ),

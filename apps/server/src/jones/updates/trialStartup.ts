@@ -22,6 +22,7 @@ export const hasJonesTrialAuthority = Effect.gen(function* () {
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
   return descriptor || launcher.requiresQualifiedTrialGate === true;
 });
+const isJonesTrialGateError = Schema.is(JonesTrialGateError);
 
 export const awaitJonesTrialStartup = <E, R>(input: {
   readonly waitUntilParked: Effect.Effect<void, E, R>;
@@ -56,7 +57,7 @@ export const awaitJonesTrialStartup = <E, R>(input: {
             return pending;
           },
           catch: (cause) =>
-            Schema.is(JonesTrialGateError)(cause)
+            isJonesTrialGateError(cause)
               ? cause
               : new JonesTrialGateError({ step: "identity", uncertain: false, cause }),
         }),
@@ -68,10 +69,15 @@ export const awaitJonesTrialStartup = <E, R>(input: {
             await pending;
           },
           catch: (cause) =>
-            Schema.is(JonesTrialGateError)(cause)
+            isJonesTrialGateError(cause)
               ? cause
               : new JonesTrialGateError({ step: "cancel", uncertain: false, cause }),
-        }).pipe(Effect.catch((error) => (error.uncertain ? Effect.fail(error) : Effect.void))),
+        }).pipe(
+          Effect.catchIf(
+            (error) => !error.uncertain,
+            () => Effect.void,
+          ),
+        ),
     );
   });
   return runEffect();

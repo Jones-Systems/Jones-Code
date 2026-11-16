@@ -1,7 +1,7 @@
 // One OpenCode 2 process serves all directories; share it across instance threads.
 import type { OpenCodeClient } from "@opencode/client/effect";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as P from "effect/Predicate";
@@ -43,8 +43,8 @@ export class OpenCode2Server extends Context.Service<
  * otherwise, so T3 supplies its own and keeps it in memory.
  */
 const generatePassword = Effect.gen(function* () {
-  const crypto = yield* Crypto.Crypto;
-  const bytes = yield* crypto.randomBytes(32).pipe(Effect.orDie);
+  const random = yield* SecureRandom.SecureRandom;
+  const bytes = yield* random.randomBytes(32);
   return Redacted.make(Base64Url.encode(bytes), { label: "OPENCODE_PASSWORD" });
 });
 
@@ -149,8 +149,12 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
       Effect.tap(remember),
     );
     return OpenCode2Server.of({
-      withConnection: (use, _hooks, consumerKind = "other") =>
-        Effect.suspend(() => (latest === undefined ? connect : Effect.succeed(latest))).pipe(
+      withConnection: Effect.fn("OpenCode2Server.withConnection")(function (
+        use,
+        _hooks,
+        consumerKind = "other",
+      ) {
+        return Effect.suspend(() => (latest === undefined ? connect : Effect.succeed(latest))).pipe(
           Effect.flatMap((connection) =>
             OpenCodeCreationPolicy.authorizeConsumption(
               undefined,
@@ -158,7 +162,8 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
               consumerKind,
             ).pipe(Effect.andThen(() => use(connection))),
           ),
-        ),
+        );
+      }),
     });
   }
 
@@ -171,31 +176,34 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
     verify: (url) => connectTo(url, password, false).pipe(Effect.flatMap(remember)),
   });
   return OpenCode2Server.of({
-    withConnection: (use, creationHooks, consumerKind) =>
-      owner.withServer(
-        (server) => {
-          // The owner verifies every server it starts before lending it out.
-          if (latest?.url !== server.url) {
-            return Effect.die(new Error("OpenCode 2 server was lent before verification."));
-          }
-          if (
-            server.runtimeGeneration !== undefined &&
-            (latest.ownedProcess?.runtimeGeneration !== server.runtimeGeneration ||
-              latest.ownedProcess?.incarnation !== server.ownedProcess?.incarnation)
-          ) {
-            latest = {
-              ...latest,
-              ownedProcess: Object.freeze({
-                runtimeGeneration: server.runtimeGeneration,
-                isRunning: server.isRunning,
-                ...(server.ownedProcess !== undefined ? server.ownedProcess : {}),
-              }),
-            };
-          }
-          return use(latest);
-        },
-        creationHooks,
-        consumerKind,
-      ),
+    withConnection: Effect.fn("OpenCode2Server.withConnection")(
+      function (use, creationHooks, consumerKind) {
+        return owner.withServer(
+          (server) => {
+            // The owner verifies every server it starts before lending it out.
+            if (latest?.url !== server.url) {
+              return Effect.die(new Error("OpenCode 2 server was lent before verification."));
+            }
+            if (
+              server.runtimeGeneration !== undefined &&
+              (latest.ownedProcess?.runtimeGeneration !== server.runtimeGeneration ||
+                latest.ownedProcess?.incarnation !== server.ownedProcess?.incarnation)
+            ) {
+              latest = {
+                ...latest,
+                ownedProcess: Object.freeze({
+                  runtimeGeneration: server.runtimeGeneration,
+                  isRunning: server.isRunning,
+                  ...(server.ownedProcess !== undefined ? server.ownedProcess : {}),
+                }),
+              };
+            }
+            return use(latest);
+          },
+          creationHooks,
+          consumerKind,
+        );
+      },
+    ),
   });
 });

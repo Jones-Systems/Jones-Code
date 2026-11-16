@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { SETTLEMENT_RESTORE_CAPABILITY } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -80,7 +81,7 @@ const providerInstance = {
 } satisfies ProviderInstance;
 
 const Platform = Layer.merge(
-  NodeServices.layer,
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
@@ -153,7 +154,7 @@ const runtimeFor = <EC, ED, RD>(
 
 const scratchConfig = Layer.unwrap(
   Effect.map(makeScratch, (baseDir) => ServerConfig.layerTest(process.cwd(), baseDir)),
-).pipe(Layer.provide(NodeServices.layer));
+).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 const TestLayer = runtimeFor(scratchConfig, SqlitePersistence.layerMemory);
 
 const createThread = Effect.fnUntraced(function* (prefix: string) {
@@ -452,6 +453,8 @@ it.layer(TestLayer)("settlement restore", (it) => {
             },
           ],
         });
+        // Upstream settle-after-run commands carry the thread event sequence they settle at.
+        const settleSequence = yield* orchestrator.getThreadEventSequence(threadId);
         if (mode === "after-run")
           yield* (yield* ThreadManagement.ThreadManagementService).settleAfterRun({
             projectId,
@@ -460,7 +463,9 @@ it.layer(TestLayer)("settlement restore", (it) => {
           });
         yield* Queue.take(settledEvents);
         const settleCommandId =
-          mode === "self" ? `${prefix}-request:settle` : `server:settle-after-run:${run.id}`;
+          mode === "self"
+            ? `${prefix}-request:settle`
+            : `server:settle-after-run:${run.id}:${settleSequence}`;
         assert.equal((yield* rowFor(threadId))?.settle_command_id, settleCommandId);
         assert.equal(
           (yield* restore(threadId, settleCommandId, `${prefix}-restore`)).outcome,
@@ -802,7 +807,9 @@ it.effect("the record survives restart and event compaction on the same database
       const baseDir = yield* makeScratch;
       const runtime = () =>
         runtimeFor(
-          ServerConfig.layerTest(process.cwd(), baseDir).pipe(Layer.provide(NodeServices.layer)),
+          ServerConfig.layerTest(process.cwd(), baseDir).pipe(
+            Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          ),
           SqlitePersistence.layerConfig,
         );
       const threadId = ThreadId.make("restart-thread");
@@ -903,5 +910,5 @@ it.effect("the record survives restart and event compaction on the same database
         });
       }).pipe(Effect.scoped, Effect.provide(runtime()));
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

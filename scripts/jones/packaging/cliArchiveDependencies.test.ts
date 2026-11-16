@@ -57,6 +57,12 @@ function plan(input: ReturnType<typeof fixture>) {
   });
 }
 
+const compiledDecodeSync1 = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({ dependencies: Schema.Record(Schema.String, Schema.String) }),
+  ),
+);
+
 describe("CLI archive patched dependencies", () => {
   it("binds the real committed server externals to their exact mandatory patches", async () => {
     const inputs = await Effect.gen(function* () {
@@ -69,11 +75,7 @@ describe("CLI archive patched dependencies", () => {
         lockfile: yield* fs.readFileString(path.join(root, "pnpm-lock.yaml")),
       };
     }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise);
-    const manifest = Schema.decodeSync(
-      Schema.fromJsonString(
-        Schema.Struct({ dependencies: Schema.Record(Schema.String, Schema.String) }),
-      ),
-    )(inputs.manifest);
+    const manifest = compiledDecodeSync1(inputs.manifest);
     const workspace = Schema.decodeSync(
       fromYaml(
         Schema.Struct({

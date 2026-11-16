@@ -344,7 +344,7 @@ export function ExactSourceUpdateAction({
   const journal = useJonesExecutionJournal();
   const observedReceipt = host.snapshot.observation.state?.operation;
   const observedFreshness = host.snapshot.observation.freshness;
-  // oxlint-disable-next-line t3code/react-effect-budget -- A fresh exact receipt can settle only its persisted duty; rendering and source changes grant no settlement authority.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- A fresh exact receipt can settle only its persisted duty; rendering and source changes grant no settlement authority.
   useEffect(() => {
     if (observedFreshness === "fresh" && observedReceipt !== undefined)
       void reconcileJonesExecution(environmentId, observedReceipt).catch(() => undefined);

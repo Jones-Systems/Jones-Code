@@ -3,9 +3,10 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeProcess from "node:process";
 import * as NodeURL from "node:url";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import {
   OrchestrationV2ThreadLaunchInput,
   OrchestrationV2Command,
@@ -127,7 +128,7 @@ const serve = (raw: unknown) =>
     // dispatches __jones-server-compute there. The proof entry is not a CLI clone.
     process.argv[1] = NodePath.join(binding.sourceRoot, "apps/server/src/bin.ts");
     return yield* runServer.pipe(Effect.provide(ServerConfig.layer(config)));
-  }).pipe(Effect.provide(NodeServices.layer));
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 // Reuse the production RPC schemas and socket codec. No test-only routes or
 // in-process service substitutes are added to runServer.
@@ -156,7 +157,7 @@ export const developmentRpc = async (
           Layer.succeed(
             Socket.WebSocketConstructor,
             (address, protocols) =>
-              new NodeSocket.NodeWS.WebSocket(address, protocols as string | string[] | undefined, {
+              new NodeWS.WebSocket(address, protocols as string | string[] | undefined, {
                 headers: { authorization: `Bearer ${credential}` },
                 maxPayload: 1024 * 1024,
               }) as unknown as globalThis.WebSocket,

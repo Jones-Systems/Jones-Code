@@ -28,9 +28,11 @@ import {
   validateNativeCreationPreparation,
 } from "./NativeCreationPreparation.ts";
 
+const decodeFixtureSetupBinding = Schema.decodeEffect(NativePreparationBinding);
+const decodeFixtureSetupHistory = Schema.decodeEffect(NativeCreationHistoricalBinding);
 const fixture = Effect.gen(function* () {
   const timestamp = "2026-10-07T12:00:00Z";
-  const binding = yield* Schema.decodeEffect(NativePreparationBinding)({
+  const binding = yield* decodeFixtureSetupBinding({
     backend_instance: "fixture-backend",
     environment_id: "fixture-environment",
     project_id: "fixture-project",
@@ -64,7 +66,7 @@ const fixture = Effect.gen(function* () {
       }),
     ),
   );
-  const historical = yield* Schema.decodeEffect(NativeCreationHistoricalBinding)({
+  const historical = yield* decodeFixtureSetupHistory({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -207,6 +209,17 @@ const scenario = Effect.fnUntraced(function* (
         openNativeSetup: (request, hooks) =>
           Effect.gen(function* () {
             ownedControl = hooks.control;
+            const preparedUse = yield* SetupCustody.readConsumedSetupRuntimeUse(hooks.control);
+            assert.strictEqual(preparedUse?.claim.claimId, input.claim.claimId);
+            assert.deepEqual(preparedUse?.basis, input.basis);
+            assert.deepEqual(preparedUse?.start, started);
+            assert.strictEqual(
+              (yield* SetupCustody.readConsumedSetupRuntimeUse({
+                ...hooks.control,
+                terminalId: "foreign-terminal",
+              }).pipe(Effect.result))._tag,
+              "Failure",
+            );
             const plan = {
               control: hooks.control,
               shell: "/bin/fish",
@@ -321,6 +334,11 @@ const scenario = Effect.fnUntraced(function* (
                 Effect.gen(function* () {
                   calls.push("runner");
                   const native = request.nativePreparation!;
+                  const preparedUse = yield* SetupCustody.readConsumedSetupRuntimeUse(
+                    native.control,
+                  );
+                  assert.strictEqual(preparedUse?.claim.claimId, input.claim.claimId);
+                  assert.deepEqual(preparedUse?.start, started);
                   const plan = {
                     control: native.control,
                     shell: "/bin/synthetic-shell",
@@ -531,4 +549,54 @@ it.effect("interrupting native completion cancels the real pending writer before
     assert.deepEqual(value.calls, ["spawn"]);
     assert.equal(value.listeners.size, 0);
   }),
+);
+
+it.effect(
+  "an ordinary or serialized setup control has no consumed native runtime-use capability",
+  () =>
+    Effect.gen(function* () {
+      assert.isNull(yield* SetupCustody.readConsumedSetupRuntimeUse(undefined));
+      const input = yield* fixture;
+      const effectId = digest(
+        canonical({ claimId: input.claim.claimId, stage: "setup", basis: input.basis }),
+      );
+      const start = {
+        kind: "setup" as const,
+        phase: "started" as const,
+        ordinal: 1,
+        timestamp: "2026-10-07T12:00:00Z",
+        effectId,
+        worktreePath: input.basis.worktreePath,
+        terminalId: `native-setup-${digest(effectId)}`,
+      };
+      const control = {
+        claimId: input.claim.claimId,
+        effectId,
+        bootId: input.basis.bootId,
+        producerId: input.basis.producerId,
+        threadId: input.claim.threadId,
+        terminalId: start.terminalId,
+        generation: digest(
+          canonical({ claimId: input.claim.claimId, effectId, bootId: input.basis.bootId }),
+        ),
+        projectCwd: input.basis.projectCwd,
+        worktreePath: input.basis.worktreePath,
+        definitionDigest: digest(input.basis.setupDefinition!),
+      };
+      assert.isNull(yield* SetupCustody.readConsumedSetupRuntimeUse(control));
+      let entered = false;
+      assert.strictEqual(
+        (yield* SetupCustody.withConsumedSetupRuntimeUse(
+          start,
+          input.claim,
+          input.basis,
+          control,
+          Effect.sync(() => {
+            entered = true;
+          }),
+        ).pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.isFalse(entered);
+    }),
 );

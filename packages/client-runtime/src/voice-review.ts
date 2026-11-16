@@ -194,6 +194,8 @@ export const fetchVoiceReviewDiagnostics = Effect.fn("clientRuntime.voiceReview.
   },
 );
 
+const decodeThreadRegistryAssociation = Schema.decodeEffect(ThreadRegistryAssociationPayload);
+
 export const correctThreadRegistryAssociation = Effect.fn(
   "clientRuntime.voiceReview.correctAssociation",
 )(function* (
@@ -201,7 +203,7 @@ export const correctThreadRegistryAssociation = Effect.fn(
     readonly payload: typeof ThreadRegistryAssociationPayload.Type;
   },
 ) {
-  const payload = yield* Schema.decodeEffect(ThreadRegistryAssociationPayload)(input.payload);
+  const payload = yield* decodeThreadRegistryAssociation(input.payload);
   return yield* unwrapReviewError(
     executeAuthenticatedEnvironmentHttpRequest({
       ...input,

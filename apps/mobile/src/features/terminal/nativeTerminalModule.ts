@@ -16,6 +16,10 @@ interface TerminalInputEvent {
   readonly data: string;
 }
 
+interface TerminalPasteEvent {
+  readonly text: string;
+}
+
 interface TerminalResizeEvent {
   readonly cols: number;
   readonly rows: number;
@@ -36,12 +40,18 @@ export interface NativeTerminalSurfaceProps extends ViewProps {
   readonly terminalKey: string;
   readonly initialBuffer: string;
   readonly fontSize: number;
+  /** `[cols, rows]` of the shared PTY, or empty before the server reports one. */
+  readonly sharedGrid?: ReadonlyArray<number>;
   readonly onInput?: (event: NativeSyntheticEvent<TerminalInputEvent>) => void;
+  /** iOS only: clipboard text from a system paste (edit menu, ⌘V, shortcut bar). */
+  readonly onPaste?: (event: NativeSyntheticEvent<TerminalPasteEvent>) => void;
   readonly onResize?: (event: NativeSyntheticEvent<TerminalResizeEvent>) => void;
 }
 
 export interface NativeTerminalSurfaceHandle {
   readonly writeOutput: (data: string, reset: boolean) => Promise<void>;
+  /** Absent on native builds that predate it. */
+  readonly resetInput?: () => Promise<void>;
 }
 
 let cachedNativeTerminalSurfaceView: ComponentType<NativeTerminalSurfaceProps> | undefined;
@@ -82,20 +92,6 @@ export function resolveNativeTerminalSurfaceView(): ComponentType<NativeTerminal
   }
 
   return cachedNativeTerminalSurfaceView ?? null;
-}
-
-export function getNativeTerminalHardwareKeyRevision(): number | null {
-  try {
-    if (typeof requireOptionalNativeModule !== "function") {
-      return null;
-    }
-    const module = requireOptionalNativeModule<{ readonly hardwareKeyRevision?: number }>(
-      NATIVE_TERMINAL_MODULE_NAME,
-    );
-    return module?.hardwareKeyRevision ?? null;
-  } catch {
-    return null;
-  }
 }
 
 export function hasNativeTerminalSurface() {

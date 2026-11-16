@@ -1,3 +1,4 @@
+import * as InProcessMcp from "../../mcp/McpHttpServer.ts";
 import { withOwnerSelectionIngress } from "./ownerIngress.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -287,7 +288,7 @@ function scenario<E>(
         Mcp.layerThreadSelfConfigurationToolkit,
       ).pipe(
         Layer.provide(service),
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(runtime),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
@@ -383,7 +384,7 @@ it.live.each([false, true])(
           const worker = yield* Worker.OrchestrationEffectWorkerV2;
           const sink = yield* Sink.EventSinkV2;
           const before = yield* decodeEvidence(
-            (yield* call("t3_thread_configuration")).structuredContent,
+            (yield* call("t3_thread_configure")).structuredContent,
           );
           assert.isNotNull(before.executionPrecondition);
           const request = {
@@ -501,7 +502,7 @@ it.live(
     scenario("self-configure-refusals", false, ({ call, scope, state }) =>
       Effect.gen(function* () {
         const evidence = yield* decodeEvidence(
-          (yield* call("t3_thread_configuration")).structuredContent,
+          (yield* call("t3_thread_configure")).structuredContent,
         );
         const request = {
           clientRequestId: "invalid",
@@ -569,7 +570,7 @@ it.live(
         );
         assert.notEqual((yield* call("t3_thread_organize", { action: "pin" })).isError, true);
         assert.equal(
-          (yield* decodeEvidence((yield* call("t3_thread_configuration")).structuredContent))
+          (yield* decodeEvidence((yield* call("t3_thread_configure")).structuredContent))
             .configurationRevision,
           evidence.configurationRevision,
         );
@@ -643,7 +644,7 @@ it.live.each(["implicit", "notification"] as const)(
           });
         yield* dispatch("old-system-completion", { type: "queue_after_active" });
         const before = yield* decodeEvidence(
-          (yield* call("t3_thread_configuration")).structuredContent,
+          (yield* call("t3_thread_configure")).structuredContent,
         );
         yield* call("t3_thread_self_configure", {
           clientRequestId: "queue-save",
@@ -801,9 +802,7 @@ it.live("owner selection supersedes an older agent queue selection at execution"
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const sink = yield* Sink.EventSinkV2;
       const worker = yield* Worker.OrchestrationEffectWorkerV2;
-      const before = yield* decodeEvidence(
-        (yield* call("t3_thread_configuration")).structuredContent,
-      );
+      const before = yield* decodeEvidence((yield* call("t3_thread_configure")).structuredContent);
       yield* call("t3_thread_self_configure", {
         clientRequestId: "agent-save-before-owner",
         modelSelection: replacement,
@@ -866,9 +865,7 @@ it.live("owner edit wins over retry; detached runtime cannot authorize a new sav
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const sessions = yield* Sessions.ProviderSessionManagerV2;
-      const before = yield* decodeEvidence(
-        (yield* call("t3_thread_configuration")).structuredContent,
-      );
+      const before = yield* decodeEvidence((yield* call("t3_thread_configure")).structuredContent);
       const request = {
         clientRequestId: "owner-save",
         modelSelection: replacement,
@@ -912,7 +909,7 @@ it.live("owner edit wins over retry; detached runtime cannot authorize a new sav
         ],
       });
       const unavailable = yield* decodeEvidence(
-        (yield* call("t3_thread_configuration")).structuredContent,
+        (yield* call("t3_thread_configure")).structuredContent,
       );
       assert.isNull(unavailable.executionPrecondition);
       const stale = yield* call("t3_thread_self_configure", {
@@ -952,7 +949,7 @@ it.live.each([
         const sink = yield* Sink.EventSinkV2;
         const worker = yield* Worker.OrchestrationEffectWorkerV2;
         const before = yield* decodeEvidence(
-          (yield* call("t3_thread_configuration")).structuredContent,
+          (yield* call("t3_thread_configure")).structuredContent,
         );
         const selection = {
           ...replacement,
@@ -1109,7 +1106,7 @@ it.live(
             dispatchMode: { type: "queue_after_active" },
           });
           const before = yield* decodeEvidence(
-            (yield* call("t3_thread_configuration")).structuredContent,
+            (yield* call("t3_thread_configure")).structuredContent,
           );
           request = {
             clientRequestId: "restart-save",
@@ -1184,7 +1181,7 @@ it.live("restart-required selection retires only the caller attachment in a pool
         const sink = yield* Sink.EventSinkV2;
         const sessions = yield* Sessions.ProviderSessionManagerV2;
         const before = yield* decodeEvidence(
-          (yield* call("t3_thread_configuration")).structuredContent,
+          (yield* call("t3_thread_configure")).structuredContent,
         );
         const source = yield* orchestrator.getThreadProjection(threadId);
         const sibling = ThreadId.make("self-configure-pooled-sibling");
@@ -1302,9 +1299,7 @@ it.live("explicit owner queue choices save at acceptance; automatic captured cho
   scenario("self-configure-explicit-queue", false, ({ threadId, call }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const before = yield* decodeEvidence(
-        (yield* call("t3_thread_configuration")).structuredContent,
-      );
+      const before = yield* decodeEvidence((yield* call("t3_thread_configure")).structuredContent);
       yield* decodeReceipt(
         (yield* call("t3_thread_self_configure", {
           clientRequestId: "explicit-save",
@@ -1471,9 +1466,7 @@ it.live("A3 agent-only save remains prospective for an implicit owner send", () 
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const worker = yield* Worker.OrchestrationEffectWorkerV2;
-      const before = yield* decodeEvidence(
-        (yield* call("t3_thread_configuration")).structuredContent,
-      );
+      const before = yield* decodeEvidence((yield* call("t3_thread_configure")).structuredContent);
       yield* decodeReceipt(
         (yield* call("t3_thread_self_configure", {
           clientRequestId: "agent:B",
@@ -1517,7 +1510,7 @@ it.live.each(["internal", "peer"] as const)(
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* Worker.OrchestrationEffectWorkerV2;
         const before = yield* decodeEvidence(
-          (yield* call("t3_thread_configuration")).structuredContent,
+          (yield* call("t3_thread_configure")).structuredContent,
         );
         yield* decodeReceipt(
           (yield* call("t3_thread_self_configure", {
@@ -1603,7 +1596,7 @@ it.live.each(["setter", "message"] as const)(
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* Worker.OrchestrationEffectWorkerV2;
         const read = () =>
-          call("t3_thread_configuration").pipe(
+          call("t3_thread_configure").pipe(
             Effect.flatMap((r) => decodeEvidence(r.structuredContent)),
           );
         const save = (
@@ -1743,9 +1736,7 @@ it.live.each([false, true])("A5 single promote respects owner pending=%s", (owne
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const worker = yield* Worker.OrchestrationEffectWorkerV2;
-      const before = yield* decodeEvidence(
-        (yield* call("t3_thread_configuration")).structuredContent,
-      );
+      const before = yield* decodeEvidence((yield* call("t3_thread_configure")).structuredContent);
       yield* decodeReceipt(
         (yield* call("t3_thread_self_configure", {
           clientRequestId: "agent:B",

@@ -47,7 +47,9 @@ def clone_file(source, target, required=False):
     return result.returncode == 0
 
 def clone_tree(source, target, profile=False):
-    result = subprocess.run(['/bin/cp', '-cR', str(source), str(target)], capture_output=True, text=True)
+    # Bundle digest includes directory and executable modes. Preserve them under any caller umask.
+    flags = '-cR' if profile else '-cpR'
+    result = subprocess.run(['/bin/cp', flags, str(source), str(target)], capture_output=True, text=True)
     if result.returncode != 0:
         # Preserve partial copy effects inside this new task-owned tree; retained generations are never removed.
         shutil.copytree(source, target, symlinks=True, dirs_exist_ok=True,
@@ -241,7 +243,12 @@ def pair_state(expected, directory, clone_required=False):
             'bytes': sum(path.stat().st_size for path in directory.iterdir()), 'startedAt': started, 'completedAt': time.time()}
     durable(directory / 'pair.json', snapshot, True)
 
+def require_unretired_pair(directory):
+    if any(path.name == 'database-retirement.json' or path.name.startswith('.database-retirement.json.') for path in directory.iterdir()):
+        raise RuntimeError('Recovery database snapshot was retired by its owner; restore held before state mutation.')
+
 def restore_pair(expected, directory, advanced, candidate):
+    require_unretired_pair(directory)
     pair = read(directory / 'pair.json')
     database_settings = pair.get('stateScope') == 'database-settings'
     if pair.get('stateScope') not in (None, 'database-settings') or pair['expected'] != expected or (not database_settings and not (directory / 'state.sqlite').is_file()) or (not database_settings and not (directory / 'profile').is_dir()):

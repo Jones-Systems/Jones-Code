@@ -6,10 +6,9 @@ import {
   type CompletionShell,
 } from "../jones/workspaceRetirement/ScriptCompletionProtocol.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
-import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
 import type { TerminalError, TerminalSessionSnapshot } from "@t3tools/contracts";
+import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
 import {
   projectScriptRuntimeEnv,
   projectScriptTerminalInput,
@@ -26,7 +25,7 @@ import type {
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -141,7 +140,6 @@ export interface ProjectSetupScriptRunnerInput {
   readonly preferredTerminalId?: string;
   readonly legacyPreparation?: LegacySetupPreparationHooks;
   readonly nativePreparation?: NativeSetupPreparationHooks;
-  /** Which project script to run. Defaults to the worktree setup script. */
   readonly trigger?: "setup" | "settle";
   readonly project?: {
     readonly id: ProjectId;
@@ -189,9 +187,19 @@ export class ProjectSetupScriptProjectNotFoundError extends Schema.TaggedError<P
   }
 }
 
+export class ProjectSetupScriptUnsupportedShellError extends Schema.TaggedError<ProjectSetupScriptUnsupportedShellError>()(
+  "ProjectSetupScriptUnsupportedShellError",
+  { shell: Schema.String },
+) {
+  override get message(): string {
+    return "Project script completion is not supported in cmd.exe. Install PowerShell and retry.";
+  }
+}
+
 export const ProjectSetupScriptRunnerError = Schema.Union([
   ProjectSetupScriptOperationError,
   ProjectSetupScriptProjectNotFoundError,
+  ProjectSetupScriptUnsupportedShellError,
 ]);
 export type ProjectSetupScriptRunnerError = typeof ProjectSetupScriptRunnerError.Type;
 
@@ -230,13 +238,9 @@ function lineEditorReading(text: string, previous: boolean): boolean {
   return on === off ? previous : on > off;
 }
 
-function resolveCompletionShell(
-  platform: NodeJS.Platform,
-  env: NodeJS.ProcessEnv,
-): CompletionShell {
-  if (platform === "win32") return "powershell";
-  const shell = env.SHELL ?? "";
-  const name = shell.split("/").at(-1) ?? shell;
+function resolveCompletionShell(shell: string): CompletionShell | null {
+  const name = (shell.split(/[/\\]/).at(-1) ?? shell).toLowerCase().replace(/\.exe$/, "");
+  if (name === "cmd") return null;
   if (name === "fish") return "fish";
   if (name === "pwsh" || name === "powershell") return "powershell";
   return "posix";
@@ -249,12 +253,8 @@ export const make = Effect.gen(function* () {
   const threads = yield* ProjectionStore.ProjectionStoreV2;
   const terminalManager = yield* TerminalManager.TerminalManager;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const serviceScope = yield* Effect.scope;
-  const completionShell = resolveCompletionShell(
-    yield* HostProcess.Platform,
-    yield* HostProcess.Environment,
-  );
 
   const observeTerminalCompletion = Effect.fn("ProjectSetupScriptRunner.observeTerminalCompletion")(
     function* (input: {
@@ -546,7 +546,7 @@ export const make = Effect.gen(function* () {
       legacy?.binding.terminalId ??
       input.preferredTerminalId ??
       (trigger === "settle"
-        ? `settle-${script.id}-${(yield* crypto.randomUUIDv4().pipe(Effect.orDie)).slice(0, 8)}`
+        ? `settle-${script.id}-${(yield* random.uuidV4()).slice(0, 8)}`
         : `setup-${script.id}`);
     if (
       legacy !== undefined &&
@@ -593,15 +593,14 @@ export const make = Effect.gen(function* () {
       input.observeCompletion !== undefined || legacy !== undefined || native !== undefined;
     const observe = input.observeCompletion ?? {};
     const completionToken =
-      captured?.completionToken ??
-      (observe ? (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "") : null);
-    let selectedCompletionShell = completionShell;
+      captured?.completionToken ?? (observe ? (yield* random.uuidV4()).replaceAll("-", "") : null);
+    let selectedCompletionShell: CompletionShell = "posix";
     let commandLine =
       captured?.commandLine ??
       (observe && completionToken
         ? wrapCommandForCompletion(
             script.command,
-            completionShell,
+            selectedCompletionShell,
             completionSentinel(completionToken),
           )
         : script.command);
@@ -609,6 +608,8 @@ export const make = Effect.gen(function* () {
     const openInput = {
       threadId: input.threadId,
       terminalId,
+      // Captured and native definitions carry no opt-in; only a project action can ask to stop on settle.
+      stopOnSettle: "stopOnSettle" in script ? (script.stopOnSettle ?? false) : false,
       cwd,
       worktreePath: input.worktreePath,
       env: { ...env, NO_COLOR: "1", FORCE_COLOR: "0" },
@@ -631,16 +632,12 @@ export const make = Effect.gen(function* () {
                   operation: "open",
                   message: "Native setup completion token is unavailable",
                 });
-              const shellName = plan.shell
-                .split(/[\\/]/u)
-                .at(-1)
-                ?.replace(/\.exe$/iu, "");
-              const shellKind =
-                shellName === "fish"
-                  ? "fish"
-                  : shellName === "pwsh" || shellName === "powershell"
-                    ? "powershell"
-                    : "posix";
+              const shellKind = resolveCompletionShell(plan.shell);
+              if (shellKind === null)
+                return yield* new NativeSetup.NativeSetupControlError({
+                  operation: "open",
+                  message: "Setup completion is unsupported in cmd.exe",
+                });
               selectedCompletionShell = shellKind;
               commandLine = wrapCommandForCompletion(
                 native.script.command,
@@ -673,16 +670,12 @@ export const make = Effect.gen(function* () {
                     operation: "open",
                     detail: "Captured setup shell plan changed.",
                   });
-                const actualShellName = plan.shell
-                  .split(/[\\/]/u)
-                  .at(-1)
-                  ?.replace(/\.exe$/iu, "");
-                const actualCompletionShell =
-                  actualShellName === "fish"
-                    ? "fish"
-                    : actualShellName === "pwsh" || actualShellName === "powershell"
-                      ? "powershell"
-                      : "posix";
+                const actualCompletionShell = resolveCompletionShell(plan.shell);
+                if (actualCompletionShell === null)
+                  return yield* new TerminalManager.LegacyTerminalControlError({
+                    operation: "open",
+                    detail: "Setup completion is unsupported in cmd.exe",
+                  });
                 selectedCompletionShell = actualCompletionShell;
                 if (captured === undefined && completionToken !== null)
                   commandLine = wrapCommandForCompletion(
@@ -726,6 +719,7 @@ export const make = Effect.gen(function* () {
               ...(legacy.neverInvoked === undefined ? {} : { neverInvoked: legacy.neverInvoked }),
               afterSpawn: legacy.afterSpawn,
             });
+    const echoedWrapperLines: string[] = [];
     const observed =
       observe && completionToken
         ? yield* observeTerminalCompletion({
@@ -733,7 +727,7 @@ export const make = Effect.gen(function* () {
             terminalId,
             sentinel: completionSentinel(completionToken),
             sentinelPattern: completionSentinelPattern(completionToken),
-            echoedWrapperLines: () => commandLine.split("\r").filter((line) => line.length > 0),
+            echoedWrapperLines: () => echoedWrapperLines,
             onOutputLine: observe.onOutputLine,
           })
         : undefined;
@@ -797,6 +791,40 @@ export const make = Effect.gen(function* () {
           : Effect.void,
       ),
     );
+    let terminalExitedBeforeShellLookup = false;
+    if (!owned) {
+      const shell = yield* terminalManager.getShell({ threadId: input.threadId, terminalId }).pipe(
+        Effect.catchTags({ TerminalNotRunningError: () => Effect.succeed(null) }),
+        Effect.mapError(
+          (cause) =>
+            new ProjectSetupScriptOperationError({
+              ...errorContext,
+              operation: "openTerminal",
+              cause,
+            }),
+        ),
+      );
+      if (shell === null) {
+        terminalExitedBeforeShellLookup = true;
+        if (observed !== undefined) yield* observed.abandon;
+        readiness.unsubscribe();
+      } else {
+        const actual = resolveCompletionShell(shell);
+        if (observe && completionToken !== null) {
+          if (actual === null) {
+            yield* terminalManager.closeIdle({ threadId: input.threadId, terminalId });
+            return yield* new ProjectSetupScriptUnsupportedShellError({ shell });
+          }
+          selectedCompletionShell = actual;
+          commandLine = wrapCommandForCompletion(
+            script.command,
+            actual,
+            completionSentinel(completionToken),
+          );
+        } else selectedCompletionShell = actual ?? "powershell";
+      }
+    }
+    echoedWrapperLines.push(...commandLine.split("\r").filter((line) => line.length > 0));
     const write = Effect.suspend(() => {
       const writeInput = {
         threadId: input.threadId,
@@ -838,7 +866,11 @@ export const make = Effect.gen(function* () {
     const written = yield* Deferred.make<void, ProjectSetupScriptRunnerError>();
     // Return once the terminal exists; each observer awaits this same single write.
     const writer = yield* (
-      selectedCompletionShell === "powershell" ? Effect.succeed("ready" as const) : readiness.wait
+      terminalExitedBeforeShellLookup
+        ? Effect.succeed("exited" as const)
+        : selectedCompletionShell === "powershell"
+          ? Effect.succeed("ready" as const)
+          : readiness.wait
     ).pipe(
       Effect.flatMap(
         (

@@ -2,16 +2,19 @@ import {
   OrchestratorMcpFailure,
   type OrchestratorMcpThreadReadInput,
   type OrchestratorMcpThreadReadResult,
+  type OrchestratorMcpThreadRun,
   type OrchestratorMcpThreadTimelineItem,
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
+import { withExecutedModelNote } from "@t3tools/provider-core/server/subagentProjection";
 import * as Effect from "effect/Effect";
 
 /**
  * The last reply `runId` gave on the task's thread there, which is its
  * result, read whole however long it is. A failed run prefers its error
  * from the activity view over an earlier reply, without taking another run's.
+ * Led by a note when its provider reported running another model than it asked for.
  */
 export const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
   readThread: (
@@ -29,14 +32,17 @@ export const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
   let reply: OrchestratorMcpThreadTimelineItem | undefined;
   let error: OrchestratorMcpThreadTimelineItem | undefined;
   let afterPosition: number | undefined;
+  let run: OrchestratorMcpThreadRun | undefined;
   while (true) {
     const read = yield* readThread({
       threadId,
       view: failed ? "activity" : "messages",
       limit: 100,
+      runLimit: 50,
       ...(afterPosition === undefined ? {} : { afterPosition }),
     });
     if (read.thread.threadId !== threadId) return yield* incomplete;
+    run ??= read.recentRuns.find((candidate) => candidate.runId === runId);
     reply =
       read.items.findLast((item) => item.type === "assistant_message" && item.runId === runId) ??
       reply;
@@ -86,5 +92,5 @@ export const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
     previousOffset = textOffset;
     part = next;
   }
-  return text;
+  return run === undefined ? text : withExecutedModelNote(text, run.model, run.executedModel);
 });

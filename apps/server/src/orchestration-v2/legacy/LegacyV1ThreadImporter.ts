@@ -396,7 +396,7 @@ const make = Effect.gen(function* () {
           AND message.role IN ('user', 'assistant')
         ORDER BY message.created_at DESC, message.message_id DESC
         LIMIT 1
-      `;
+      `.pipe(NodeSqliteClient.readOnly);
     const latestUser = yield* sql<LegacyMessageRow>`
         SELECT
           message.message_id,
@@ -426,7 +426,7 @@ const make = Effect.gen(function* () {
           AND message.role = 'user'
         ORDER BY message.created_at DESC, message.message_id DESC
         LIMIT 1
-      `;
+      `.pipe(NodeSqliteClient.readOnly);
     return [latestUser[0], latest[0]].filter(
       (message, index, selected): message is LegacyMessageRow =>
         message !== undefined &&
@@ -478,7 +478,7 @@ const make = Effect.gen(function* () {
          OR json_type(projection.payload_json, '$.branchPullRequest') IS NULL
          OR json_type(projection.payload_json, '$.activeOrderKey') IS NULL
       ORDER BY thread.created_at ASC, thread.thread_id ASC
-    `;
+    `.pipe(NodeSqliteClient.readOnly);
     let repairedThreadCount = 0;
     for (const row of repairRows) {
       const decoded = decodeStoredThread(row.payload_json);
@@ -576,7 +576,7 @@ const make = Effect.gen(function* () {
           AND event.event_type = 'thread.created'
       )
       ORDER BY thread.created_at ASC, thread.thread_id ASC
-    `;
+    `.pipe(NodeSqliteClient.readOnly);
     let importedThreadCount = repairedThreadCount;
     let importedMessageCount = 0;
     for (const row of rows) {
@@ -679,7 +679,7 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  // transcript_imported_at never resets; cache confirmed imports for the process lifetime to skip repeated locks and reads.
+  // Both results are final for this process: transcript_imported_at never resets, and only startup shell reconciliation creates legacy rows.
   const confirmedTranscriptThreadIds = new Set<ThreadId>();
 
   const readImport = (threadId: ThreadId) =>
@@ -696,9 +696,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const imported = yield* readImport(threadId);
         if (imported === undefined || imported.transcript_imported_at !== null) {
-          if (imported !== undefined) {
-            confirmedTranscriptThreadIds.add(threadId);
-          }
+          if (imported !== undefined) confirmedTranscriptThreadIds.add(threadId);
           return { importedThreadCount: 0, importedMessageCount: 0 };
         }
         const messages = yield* listMessages(threadId);
@@ -754,19 +752,35 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  // Native threads have no import row to cache, so every open would otherwise
-  // queue this lookup behind writer commits. The reader sees each committed
-  // row; a missing row is not cached because reconcileShells can still add one.
-  // A pending import is rechecked and written under the lock on the writer.
+  // Read the import marker and immutable V2 birth in one reader snapshot.
+  // Reconciliation cannot create a legacy row for an existing V2 birth. Only
+  // that absence is final; unknown IDs remain eligible for a later shell import.
+  // Pending imports are still rechecked and written under the writer lock.
   const ensureTranscript = (threadId: ThreadId) =>
     confirmedTranscriptThreadIds.has(threadId)
       ? Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 })
       : Effect.gen(function* () {
-          const imported = yield* readImport(threadId).pipe(NodeSqliteClient.readOnly);
+          const { imported, nativeV2 } = yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const imported = yield* readImport(threadId);
+                if (imported !== undefined) return { imported, nativeV2: false };
+                const births = yield* sql`
+              SELECT 1 FROM orchestration_events AS event
+                INDEXED BY orchestration_events_v2_created_threads_idx
+              WHERE event.application_event_version = 2
+                AND event.aggregate_kind = 'thread'
+                AND event.stream_id = ${threadId}
+                AND event.event_type = 'thread.created'
+                AND event.event_id <> ${`${IMPORT_EVENT_PREFIX}:thread:${threadId}:created`}
+              LIMIT 1
+            `;
+                return { imported, nativeV2: births.length > 0 };
+              }),
+            )
+            .pipe(NodeSqliteClient.readOnly);
           if (imported === undefined || imported.transcript_imported_at !== null) {
-            if (imported !== undefined) {
-              confirmedTranscriptThreadIds.add(threadId);
-            }
+            if (imported !== undefined || nativeV2) confirmedTranscriptThreadIds.add(threadId);
             return { importedThreadCount: 0, importedMessageCount: 0 };
           }
           return yield* ensureTranscriptBase(threadId);

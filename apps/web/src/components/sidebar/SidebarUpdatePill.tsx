@@ -4,9 +4,17 @@ import {
   routeInstallStatusPill,
 } from "../../jones/installStatus/entrypoints";
 import { useInstallPlan } from "../../jones/installStatus/useInstallPlan";
-import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
+import {
+  type DesktopBridge,
+  type DesktopUpdateState,
+  managedUpdatesDenial,
+} from "@t3tools/contracts";
+import type {
+  JonesUpdateBuildList,
+  JonesUpdateProvenance,
+} from "@t3tools/contracts/jones/jonesUpdates";
 import { TriangleAlertIcon } from "lucide-react";
-import { type ComponentProps, useEffect, useId, useRef, useState } from "react";
+import { type ComponentProps, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { isElectron } from "../../env";
@@ -14,6 +22,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
+import { usePrimaryManagedPolicy } from "../../state/managedPolicy";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   canCheckForUpdate,
@@ -33,6 +42,7 @@ import {
   installLocalDesktopUpdate,
 } from "../../jones/updates/localDesktopUpdate";
 import { showDesktopUpdateDownloadedToast } from "../desktopUpdate.toast";
+import { useCheckProviderUpdates } from "../ProviderUpdatesAction";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { SidebarMenuItem } from "../ui/sidebar";
@@ -130,7 +140,7 @@ function shouldUseSidebarUpdateReleaseNotesPopover(
   showUpdateDetails: boolean,
   state: DesktopUpdateState | null,
 ): boolean {
-  return showUpdateDetails && state?.channel === "nightly" && state.releaseNotes.length > 0;
+  return showUpdateDetails && (state?.releaseNotes.length ?? 0) > 0;
 }
 
 function handleSidebarUpdateReleaseNotesPopoverOpenChange(
@@ -211,7 +221,7 @@ const toastUpdateError: ReportLocalUpdateError = (title, description) => {
   toastManager.add(stackedThreadToast({ type: "error", title, description }));
 };
 
-async function downloadLocalUpdate(
+export async function downloadLocalUpdate(
   bridge: DesktopBridge,
   state: DesktopUpdateState | null,
   {
@@ -241,19 +251,27 @@ async function downloadLocalUpdate(
 export async function installLocalUpdate(
   bridge: Pick<
     DesktopBridge,
-    "getUpdateState" | "installUpdate" | "fleetUpdates" | "installPlan" | "openExternal"
+    "getUpdateState" | "installUpdate" | "openExternal" | "fleetUpdates" | "installPlan"
   >,
   reportError: ReportLocalUpdateError = toastUpdateError,
+  expectedVersion?: string,
 ): Promise<boolean> {
   try {
     // Update everything installs after its own download finishes, so the rendered
     // state can predate the staged selection that the installer requires.
-    const result = await installLocalDesktopUpdate(bridge, await bridge.getUpdateState());
+    const current = await bridge.getUpdateState();
+    const result =
+      current.jones !== undefined
+        ? await installLocalDesktopUpdate(bridge, current)
+        : expectedVersion === undefined
+          ? await bridge.installUpdate()
+          : await bridge.installUpdate(expectedVersion);
     const actionError = getDesktopUpdateActionError(result);
     if (actionError) {
       reportError("Could not install update", actionError);
       return false;
     }
+
     if (!result.accepted) {
       showDesktopUpdateDownloadedToast(bridge, result.state);
       return false;
@@ -272,11 +290,67 @@ export function SidebarUpdatePill() {
   return <SidebarUpdateControl />;
 }
 
+export function JonesBuildReview({
+  build,
+  list,
+  onSelect,
+}: {
+  readonly build: JonesUpdateProvenance;
+  readonly list: JonesUpdateBuildList | undefined;
+  readonly onSelect: (build: JonesUpdateProvenance) => void;
+}) {
+  const selectId = useId();
+  const available = list?.builds ?? [];
+  const choices = available.some((item) => item.artifactId === build.artifactId)
+    ? available
+    : [build, ...available];
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border p-3">
+      <label className="text-sm font-medium" htmlFor={selectId}>
+        Jones Code build
+      </label>
+      <select
+        id={selectId}
+        className="min-w-0 rounded-md border bg-background px-2 py-1.5 text-sm"
+        value={build.artifactId}
+        onChange={(event) => {
+          const choice = choices.find((item) => item.artifactId === Number(event.target.value));
+          if (choice !== undefined) onSelect(choice);
+        }}
+      >
+        {choices.map((item) => (
+          <option key={item.artifactId} value={item.artifactId}>
+            {item.version ?? item.sourceSha} · {item.sourceSha.slice(0, 8)}
+          </option>
+        ))}
+      </select>
+      <p className="text-muted-foreground text-xs">
+        {list === undefined
+          ? "Checking for other qualified builds…"
+          : list.unavailable
+            ? "The build list could not be fully checked."
+            : choices.length === 1
+              ? "No other qualified builds found."
+              : "Recent qualified builds."}
+        {" Download prepares the Laptop. Installation is reviewed separately."}
+      </p>
+    </div>
+  );
+}
+
 function SidebarUpdateControl() {
   const state = useDesktopUpdateState();
   const installPlan = useInstallPlan();
+  // The desktop updates this machine, whose policy the primary environment reports.
+  const updatesDenial = managedUpdatesDenial(usePrimaryManagedPolicy());
   const [isActionPending, setIsActionPending] = useState(false);
+  const [providerCheck, setProviderCheck] = useState<"button" | "dialog" | null>(null);
+  const isCheckingProviders = providerCheck === "button";
   const [isConfirmingEverything, setIsConfirmingEverything] = useState(false);
+  const [reviewedBuild, setReviewedBuild] = useState<JonesUpdateProvenance>();
+  const [buildList, setBuildList] = useState<JonesUpdateBuildList>();
+  const reviewGeneration = useRef(0);
+  const confirmationInFlight = useRef(false);
   const [checkAnimationKey, setCheckAnimationKey] = useState(0);
   const [releaseNotesPopoverHandle] = useState(() => PopoverCreateHandle());
   const suppressReleaseNotesFocusOpen = useRef(false);
@@ -306,12 +380,23 @@ function SidebarUpdateControl() {
   const localUpdateVersion =
     state && action !== "none" ? getDesktopUpdateDownloadedVersion(state) : null;
   const everything = useUpdateEverything(localUpdateVersion);
-  const runsEverything = everything.hasUpdates && !isDownloading;
+  const checkProviderUpdates = useCheckProviderUpdates();
+  const bridge = typeof window === "undefined" ? undefined : window.desktopBridge;
+  const offeredBuild =
+    action === "download" &&
+    state?.jones?.provenance?.version !== undefined &&
+    bridge?.installPlan !== undefined &&
+    bridge.listJonesUpdateBuilds !== undefined &&
+    bridge.selectJonesUpdateBuild !== undefined
+      ? state.jones.provenance
+      : undefined;
+  const hasUpdates = everything.hasUpdates || offeredBuild !== undefined;
+  const runsEverything = hasUpdates && !isDownloading;
   const run = useUpdateEverythingRun();
   const isRunningEverything = run !== null;
   const showCheckIcon = shouldShowDesktopUpdateCheckIcon({
     isAnimationLatched: isCheckAnimationLatched,
-    isChecking: state?.status === "checking",
+    isChecking: state?.status === "checking" || isCheckingProviders,
     prefersReducedMotion,
   });
   const { iconStatus, showUpdateDetails, showUpdateIconState } = resolveSidebarUpdatePresentation({
@@ -322,16 +407,14 @@ function SidebarUpdateControl() {
     showCheckIcon,
   });
   const idleTooltip =
-    !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state) : null;
-  const opensInstallStatus = canOpenInstallStatusPill(
-    installPlan.native,
-    state,
-    everything.hasUpdates,
-  );
+    !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state, updatesDenial) : null;
+  const opensInstallStatus = canOpenInstallStatusPill(installPlan.native, state, hasUpdates);
   const tooltip = opensInstallStatus
     ? "Open Install status"
     : runsEverything
-      ? everything.summary
+      ? offeredBuild === undefined
+        ? everything.summary
+        : `Review Jones Code ${offeredBuild.version} · ${offeredBuild.sourceSha.slice(0, 8)}`
       : showUpdateDetails
         ? state
           ? getDesktopUpdateButtonTooltip(state)
@@ -351,22 +434,20 @@ function SidebarUpdateControl() {
   const showReleaseNotesPopover =
     !isRunningEverything && shouldUseSidebarUpdateReleaseNotesPopover(showUpdateDetails, state);
 
-  useEffect(() => {
-    if (!showReleaseNotesPopover) {
-      releaseNotesPopoverHandle.close();
-      return;
-    }
-
-    const trigger = document.getElementById(releaseNotesTriggerId);
-    if (trigger?.matches(":focus-visible")) {
-      releaseNotesPopoverHandle.open(releaseNotesTriggerId);
-    }
-  }, [releaseNotesPopoverHandle, releaseNotesTriggerId, showReleaseNotesPopover]);
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
+  const [releaseNotesTriggerFocusVisible, setReleaseNotesTriggerFocusVisible] = useState(false);
+  // Release notes close when they stop applying, and open when they start
+  // applying while the trigger already holds keyboard focus.
+  const [releaseNotesShownBefore, setReleaseNotesShownBefore] = useState(showReleaseNotesPopover);
+  if (releaseNotesShownBefore !== showReleaseNotesPopover) {
+    setReleaseNotesShownBefore(showReleaseNotesPopover);
+    setReleaseNotesOpen(showReleaseNotesPopover && releaseNotesTriggerFocusVisible);
+  }
 
   const handleAction = async () => {
     const bridge = window.desktopBridge;
     if (bridge?.installPlan) {
-      const route = await routeInstallStatusPill(bridge, state, everything.hasUpdates).catch(() => {
+      const route = await routeInstallStatusPill(bridge, state, hasUpdates).catch(() => {
         toastUpdateError(
           "Install status unavailable",
           "The native plan could not be read. No update was started.",
@@ -382,7 +463,21 @@ function SidebarUpdateControl() {
     if (isInteractionDisabled) return;
 
     if (runsEverything) {
+      const generation = ++reviewGeneration.current;
+      setReviewedBuild(offeredBuild);
+      setBuildList(undefined);
       setIsConfirmingEverything(true);
+      if (offeredBuild !== undefined && bridge?.listJonesUpdateBuilds !== undefined) {
+        void bridge
+          .listJonesUpdateBuilds()
+          .catch(() => ({ builds: [], unavailable: true }))
+          .then((list) => {
+            if (reviewGeneration.current === generation) setBuildList(list);
+          });
+      }
+      // Machines that still cache an older latest version add their rows while the dialog is open.
+      setProviderCheck("dialog");
+      void checkProviderUpdates({ quiet: true }).finally(() => setProviderCheck(null));
       return;
     }
 
@@ -447,15 +542,25 @@ function SidebarUpdateControl() {
       setIsCheckAnimationLatched(true);
       setCheckAnimationKey((key) => key + 1);
     }
-    void checkForSidebarUpdate(bridge).finally(() => setIsActionPending(false));
+    const appCheck = checkForSidebarUpdate(bridge);
+    setProviderCheck("button");
+    const providersChecked = checkProviderUpdates().finally(() => setProviderCheck(null));
+    void Promise.allSettled([appCheck, providersChecked]).then(() => setIsActionPending(false));
   };
 
-  const runEverything = async () => {
+  const runEverything = async (providersOnly: boolean) => {
+    if (confirmationInFlight.current) return;
     const bridge = window.desktopBridge;
-    setIsConfirmingEverything(false);
-    setIsActionPending(true);
-    const result = await settlePromise(() =>
-      everything.run({
+    const runCombined = async () => {
+      if (reviewedBuild !== undefined) {
+        if ((await bridge?.selectJonesUpdateBuild?.(reviewedBuild)) !== true)
+          throw new Error(
+            "The reviewed build could not be reverified. Open Updates and review again.",
+          );
+        await everything.run({ reviewedBuild });
+        return;
+      }
+      await everything.run({
         ...(bridge && action === "download"
           ? {
               downloadLocal: (reportError) =>
@@ -465,25 +570,31 @@ function SidebarUpdateControl() {
         ...(bridge && action !== "none"
           ? { installLocal: (reportError) => installLocalUpdate(bridge, reportError) }
           : {}),
-      }),
-    );
+      });
+    };
+    const update = providersOnly ? everything.updateProvidersOnly : runCombined;
+    if (update === undefined) return;
+    confirmationInFlight.current = true;
+    setIsConfirmingEverything(false);
+    setIsActionPending(true);
+    const result = await settlePromise(async () => {
+      await update();
+    });
+    confirmationInFlight.current = false;
+    setIsActionPending(false);
     if (result._tag === "Failure") {
       const error = squashAtomCommandFailure(result);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not update everything",
-          description: error instanceof Error ? error.message : "An unexpected error occurred.",
-        }),
+      toastUpdateError(
+        providersOnly ? "Could not update providers" : "Could not update everything",
+        error instanceof Error ? error.message : "An unexpected error occurred.",
       );
     }
-    setIsActionPending(false);
   };
 
   const handleCheckAnimationIteration = () => {
     setIsCheckAnimationLatched(
       shouldContinueDesktopUpdateCheckAnimation({
-        isChecking: state?.status === "checking",
+        isChecking: state?.status === "checking" || isCheckingProviders,
         prefersReducedMotion,
       }),
     );
@@ -503,12 +614,32 @@ function SidebarUpdateControl() {
   const confirmDialog = (
     <UpdateEverythingDialog
       open={isConfirmingEverything}
-      onOpenChange={setIsConfirmingEverything}
-      summary={everything.summary}
-      lines={everything.lines}
+      onOpenChange={(open) => {
+        if (!open) reviewGeneration.current++;
+        setIsConfirmingEverything(open);
+      }}
+      version={everything.version}
+      providerCount={everything.providerCount}
+      rows={everything.rows}
       restarts={everything.restarts}
-      skipped={everything.skipped}
-      onConfirm={() => void runEverything()}
+      checking={providerCheck === "dialog"}
+      onConfirm={() => void runEverything(false)}
+      {...(reviewedBuild === undefined
+        ? {}
+        : {
+            title: "Review updates",
+            confirmLabel: "Download selected build",
+            buildReview: (
+              <JonesBuildReview
+                build={reviewedBuild}
+                list={buildList}
+                onSelect={setReviewedBuild}
+              />
+            ),
+          })}
+      {...(everything.updateProvidersOnly === undefined
+        ? {}
+        : { onProvidersOnly: () => void runEverything(true) })}
     />
   );
 
@@ -520,7 +651,7 @@ function SidebarUpdateControl() {
           ? { status: "downloading", percent: state.downloadPercent }
           : { status: "waiting" };
     return (
-      <SidebarMenuItem className="ml-auto flex min-w-0 flex-1">
+      <SidebarMenuItem className="ml-auto flex flex-1">
         <SidebarUpdateCapsule
           run={run}
           local={local}
@@ -569,9 +700,12 @@ function SidebarUpdateControl() {
       onClick={handleAction}
       onBlur={() => {
         suppressReleaseNotesFocusOpen.current = false;
+        setReleaseNotesTriggerFocusVisible(false);
       }}
       onFocus={(event) => {
-        if (!showReleaseNotesPopover || !event.currentTarget.matches(":focus-visible")) return;
+        const focusVisible = event.currentTarget.matches(":focus-visible");
+        setReleaseNotesTriggerFocusVisible(focusVisible);
+        if (!showReleaseNotesPopover || !focusVisible) return;
         if (suppressReleaseNotesFocusOpen.current) {
           suppressReleaseNotesFocusOpen.current = false;
           return;
@@ -595,12 +729,15 @@ function SidebarUpdateControl() {
     <SidebarMenuItem className="ml-auto shrink-0">
       <Popover
         handle={releaseNotesPopoverHandle}
+        open={releaseNotesOpen && showReleaseNotesPopover}
+        triggerId={releaseNotesTriggerId}
         onOpenChange={(open, details) => {
           if (open && !showReleaseNotesPopover) {
             details.cancel();
             return;
           }
           handleSidebarUpdateReleaseNotesPopoverOpenChange(open, details);
+          if (!details.isCanceled) setReleaseNotesOpen(open);
         }}
       >
         <Tooltip disabled={showReleaseNotesPopover}>
@@ -643,7 +780,7 @@ function SidebarUpdateControl() {
         {showReleaseNotesPopover && state ? (
           <PopoverPopup
             align="center"
-            aria-label="Nightly update release notes"
+            aria-label="Update release notes"
             initialFocus={false}
             onKeyDownCapture={(event) => {
               if (

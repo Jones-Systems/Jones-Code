@@ -99,6 +99,8 @@ const receipt = {
   jobId: stopId,
 } as const;
 
+const compiledIs1 = Schema.is(JonesInstallPlanState);
+
 describe("install-plan renderer authority", () => {
   const decode = Schema.decodeUnknownSync(JonesInstallPlanRequest);
   it("keeps old plan reads decodable and adds only optional client correlation", () => {
@@ -130,8 +132,8 @@ describe("install-plan renderer authority", () => {
         command,
       }),
     ).toThrow();
-    expect(Schema.is(JonesInstallPlanState)(state)).toBe(true);
-    expect(Schema.is(JonesInstallPlanState)({ ...state, clientCommands: 1 })).toBe(true);
+    expect(compiledIs1(state)).toBe(true);
+    expect(compiledIs1({ ...state, clientCommands: 1 })).toBe(true);
   });
 
   it("accepts the bounded request vocabulary and retains CAS and review bindings", () => {
@@ -327,6 +329,20 @@ describe("install-plan renderer authority", () => {
   });
 });
 
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(JonesInstallPlanLaptop);
+const compiledDecodeUnknownSync3 = Schema.decodeUnknownSync(JonesInstallPlanState);
+const compiledDecodeUnknownSync4 = Schema.decodeUnknownSync(JonesInstallPlanResult);
+const compiledDecodeSync5 = Schema.decodeSync(JonesInstallPlanHostOperation);
+const compiledDecodeUnknownSync6 = Schema.decodeUnknownSync(JonesInstallPlanHostOperation);
+const compiledDecodeSync7 = Schema.decodeSync(JonesInstallPlan);
+const compiledDecodeSync8 = Schema.decodeSync(JonesInstallPlanDevice);
+const compiledDecodeUnknownSync9 = Schema.decodeUnknownSync(JonesInstallPlan);
+const compiledDecodeSync10 = Schema.decodeSync(JonesInstallPlanResult);
+
+const decodeIncomingRecovery3 = Schema.decodeSync(JonesInstallPlanRequest);
+
+const decodeIncomingRecovery2 = Schema.decodeSync(JonesInstallPlanState);
+
 describe("install-plan persisted and native output contracts", () => {
   it("keeps native transaction/generation/source evidence on output, distinct from requests", () => {
     const bound = {
@@ -349,7 +365,7 @@ describe("install-plan persisted and native output contracts", () => {
         activeTree: tree,
       },
     };
-    expect(Schema.decodeUnknownSync(JonesInstallPlanLaptop)(bound)).toEqual(bound);
+    expect(compiledDecodeUnknownSync2(bound)).toEqual(bound);
     const observed = {
       ...state,
       current: { ...plan, laptop: bound },
@@ -364,17 +380,18 @@ describe("install-plan persisted and native output contracts", () => {
         activationBlocked: false,
       },
     };
-    expect(Schema.decodeUnknownSync(JonesInstallPlanState)(observed)).toEqual(observed);
+    expect(compiledDecodeUnknownSync3(observed)).toEqual(observed);
     const codec = Schema.toCodecJson(JonesInstallPlanState);
-    expect(Schema.decodeSync(codec)(Schema.encodeUnknownSync(codec)(observed))).toEqual(observed);
+    const decodeJsonState = Schema.decodeSync(codec);
+    expect(decodeJsonState(Schema.encodeUnknownSync(codec)(observed))).toEqual(observed);
     expect(() =>
-      Schema.decodeUnknownSync(JonesInstallPlanLaptop)({
+      compiledDecodeUnknownSync2({
         ...bound,
         gate: { openedAt: at, basis: "plan-install", activeSource: source, activeTree: tree },
       }),
     ).toThrow();
     const closed = { ...bound, gateClosed: { at, reason: "rolled-back" } };
-    expect(Schema.decodeUnknownSync(JonesInstallPlanLaptop)(closed)).toEqual(closed);
+    expect(compiledDecodeUnknownSync2(closed)).toEqual(closed);
   });
 
   it("roundtrips ordinary recovery separately from warm commits and accepts opt-in publication", () => {
@@ -385,9 +402,9 @@ describe("install-plan persisted and native output contracts", () => {
       receiptSha256: "f".repeat(64),
     };
     const observed = { ...state, laptop: { ...state.laptop, ordinaryRecovery } };
-    expect(Schema.decodeSync(JonesInstallPlanState)(observed)).toEqual(observed);
+    expect(decodeIncomingRecovery2(observed)).toEqual(observed);
     expect(
-      Schema.is(JonesInstallPlanState)({
+      compiledIs1({
         ...observed,
         laptop: {
           ...observed.laptop,
@@ -396,7 +413,7 @@ describe("install-plan persisted and native output contracts", () => {
       }),
     ).toBe(false);
     expect(
-      Schema.decodeSync(JonesInstallPlanRequest)({
+      decodeIncomingRecovery3({
         type: "publication",
         acceptOrdinaryRecovery: 1,
       }),
@@ -409,23 +426,24 @@ describe("install-plan persisted and native output contracts", () => {
         tree,
       },
     };
-    expect(
-      Schema.decodeUnknownSync(JonesInstallPlanResult)({ state: observed, publication }),
-    ).toEqual({ state: observed, publication });
+    expect(compiledDecodeUnknownSync4({ state: observed, publication })).toEqual({
+      state: observed,
+      publication,
+    });
   });
 
   it("retains host operation leases, Stop/fence correlation, and directive observations", () => {
     const held = { ...operation, stop: { stopId, lease }, fence: { lease }, receipt };
-    expect(Schema.decodeSync(JonesInstallPlanHostOperation)(held)).toEqual(held);
+    expect(compiledDecodeSync5(held)).toEqual(held);
     const applied = {
       ...operation,
       step: "directive",
       request: { kind: "plan-directive", input: directiveInput },
       directive: { kind: "applied", observedAt: at, directive },
     };
-    expect(Schema.decodeUnknownSync(JonesInstallPlanHostOperation)(applied)).toEqual(applied);
+    expect(compiledDecodeUnknownSync6(applied)).toEqual(applied);
     expect(() =>
-      Schema.decodeUnknownSync(JonesInstallPlanHostOperation)({
+      compiledDecodeUnknownSync6({
         ...operation,
         request: { kind: "operation-stop", input: { operationId, stopId, environmentId } },
       }),
@@ -452,27 +470,27 @@ describe("install-plan persisted and native output contracts", () => {
   });
 
   it("bounds persisted devices and host/Laptop operations without discarding unresolved work", () => {
-    expect(Schema.decodeSync(JonesInstallPlan)(plan)).toEqual(plan);
+    expect(compiledDecodeSync7(plan)).toEqual(plan);
     expect(
-      Schema.decodeSync(JonesInstallPlan)({
+      compiledDecodeSync7({
         ...plan,
         devices: Array.from({ length: 16 }, () => device),
       }).devices,
     ).toHaveLength(16);
     expect(() =>
-      Schema.decodeSync(JonesInstallPlan)({
+      compiledDecodeSync7({
         ...plan,
         devices: Array.from({ length: 17 }, () => device),
       }),
     ).toThrow();
     expect(
-      Schema.decodeSync(JonesInstallPlanDevice)({
+      compiledDecodeSync8({
         ...device,
         operations: Array.from({ length: 16 }, () => operation),
       }).operations,
     ).toHaveLength(16);
     expect(() =>
-      Schema.decodeSync(JonesInstallPlanDevice)({
+      compiledDecodeSync8({
         ...device,
         operations: Array.from({ length: 17 }, () => operation),
       }),
@@ -485,18 +503,18 @@ describe("install-plan persisted and native output contracts", () => {
       result: { status: "held", at, code: "exit-unproved" },
     };
     expect(
-      Schema.decodeUnknownSync(JonesInstallPlanLaptop)({
+      compiledDecodeUnknownSync2({
         ...laptop,
         operations: Array.from({ length: 16 }, () => laptopOperation),
       }).operations,
     ).toHaveLength(16);
     expect(() =>
-      Schema.decodeUnknownSync(JonesInstallPlanLaptop)({
+      compiledDecodeUnknownSync2({
         ...laptop,
         operations: Array.from({ length: 17 }, () => laptopOperation),
       }),
     ).toThrow();
-    expect(() => Schema.decodeUnknownSync(JonesInstallPlan)({ ...plan, schema: 2 })).toThrow();
+    expect(() => compiledDecodeUnknownSync9({ ...plan, schema: 2 })).toThrow();
   });
 
   it("carries read-only refusals, publication withholding and bounded edit outcomes", () => {
@@ -506,16 +524,16 @@ describe("install-plan persisted and native output contracts", () => {
       refused: { code: "gate-closed", message: "Laptop not committed" },
       applied: [{ environmentId, result: "locked-started", reason: "Already dispatched" }],
     };
-    expect(Schema.decodeUnknownSync(JonesInstallPlanResult)(result)).toEqual(result);
+    expect(compiledDecodeUnknownSync4(result)).toEqual(result);
     const outcome = { environmentId, result: "unchanged" };
     expect(() =>
-      Schema.decodeUnknownSync(JonesInstallPlanResult)({
+      compiledDecodeUnknownSync4({
         state,
         applied: Array.from({ length: 17 }, () => outcome),
       }),
     ).toThrow();
     expect(() =>
-      Schema.decodeSync(JonesInstallPlanResult)({
+      compiledDecodeSync10({
         state,
         refused: { code: "gate-closed", message: "x".repeat(513) },
       }),

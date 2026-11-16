@@ -104,6 +104,8 @@ describe("Jones agent app identity", () => {
           name: string,
           handler: (event: { systemPrompt: string }) => { systemPrompt: string },
         ) => handlers.set(name, handler),
+        // The shipped extension now registers the service-tier command at startup.
+        registerCommand: () => {},
       },
     });
     const hook = handlers.get("before_agent_start")!;

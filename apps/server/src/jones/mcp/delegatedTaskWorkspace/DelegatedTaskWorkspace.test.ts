@@ -93,11 +93,10 @@ describe("explicit delegated task workspace", () => {
     }),
   );
 
-  it.effect("ignores the retired replay flag and still validates the workspace", () =>
+  it.effect("refuses an existing worktree that the project does not list", () =>
     Effect.gen(function* () {
       const refused = yield* resolveExplicitDelegatedTaskWorkspace({
         request: { workspaceStrategy: { type: "existing_worktree", worktreePath: "/gone" } },
-        isRetryOfAcceptedDelegation: true,
         project: Effect.succeed(project),
         git: { listWorktreePaths: () => Effect.succeed(["/repo"]) },
         launches: unusedLaunches,

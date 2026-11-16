@@ -1,11 +1,14 @@
 import type { SidebarProjectSortOrder } from "@t3tools/contracts/settings";
 import { sortSidebarV2ProjectGroups } from "../../components/Sidebar.logic";
-import { deriveLogicalProjectKeyFromSettings, getProjectOrderKey } from "../../logicalProject";
+import {
+  deriveLogicalProjectKeyFromSettings,
+  getProjectOrderKey,
+} from "@t3tools/client-runtime/state/project-grouping";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import type { Project, SidebarThreadSummary } from "../../types";
 import { legacyProjectCwdPreferenceKey } from "../../uiStateStore";
 
-export function projectPreferenceIds(project: Project): string[] {
+function projectPreferenceIds(project: Project): string[] {
   return [
     ...new Set([
       getProjectOrderKey(project),

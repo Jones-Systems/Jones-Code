@@ -1,6 +1,8 @@
 import { resolveServerParallelismProfile } from "../jones/serverParallelism/config.ts";
 import * as Schema from "effect/Schema";
 import * as PlatformError from "effect/PlatformError";
+import { vi } from "vite-plus/test";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentHttpApi,
@@ -14,8 +16,7 @@ import * as HttpPlatform from "effect/http/HttpPlatform";
 import * as Etag from "effect/http/Etag";
 import * as ServerHttp from "../http.ts";
 import { expect, it } from "@effect/vitest";
-import { vi } from "vite-plus/test";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -33,8 +34,6 @@ import {
 } from "../cloud/config.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "./ServerEnvironment.ts";
-import * as NativeDescriptor from "../jones/workstreams/native/runtime/descriptor.ts";
-import type { WorkstreamsNativeCapability } from "@t3tools/contracts/jones/workstreamsNative";
 
 class DescriptorTestApi extends HttpApi.make("environment").add(
   EnvironmentHttpApi.groups.metadata,
@@ -113,90 +112,61 @@ const layerIsolatedServerConfig = (baseDir: string) =>
   );
 
 // Descriptor tests do not inherit the launching service's managed-child context.
-const layerDescriptorHost = Layer.merge(
+const layerDescriptorHost = Layer.mergeAll(
   NodeServices.layer,
+  NodeCrypto.layer,
   Layer.succeed(HostProcess.Environment, {}),
 );
 
 it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
-  it.effect("resolves native capability from each request context after descriptor bootstrap", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const baseDir = yield* fs.makeTempDirectoryScoped();
-      // ServerEnvironment is constructed first, as in the real server bootstrap.
-      const environment = yield* ServerEnvironment.ServerEnvironment.pipe(
-        Effect.provide(layerServerEnvironment(baseDir)),
-      );
-      const before = yield* environment.getDescriptor;
-      expect(before.capabilities.workstreamsNative).toBeUndefined();
-      const capability: WorkstreamsNativeCapability = {
-        contract: "workstreams-native/1.0.0",
-        mode: "native-home",
-        registry: {
-          registry_instance_id: "11111111-1111-4111-8111-111111111111",
-          owner_id: "owner:descriptor",
-          canonical_origin: "https://native.workstreams.invalid",
-          home_environment_id: before.environmentId,
-          server_generation: 1,
-        },
-        reads: ["workstreams-read/1.0.0"],
-        placement_proofs: ["workstreams-t3-placement/1.0.0", "workstreams-t3-placement/2.0.0"],
-      };
-      const withPublisher = (value: WorkstreamsNativeCapability | undefined) =>
-        environment.getDescriptor.pipe(
-          Effect.provideService(NativeDescriptor.NativeDescriptor, { read: Effect.succeed(value) }),
+  it.effect(
+    "advertises personal Workstreams without legacy native enrollment in descriptor and HTTP",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        // ServerEnvironment is constructed first, as in the real server bootstrap.
+        const environment = yield* ServerEnvironment.ServerEnvironment.pipe(
+          Effect.provide(layerServerEnvironment(baseDir)),
         );
-      const advertised = yield* withPublisher(capability);
-      expect(advertised).toEqual({
-        ...before,
-        capabilities: { ...before.capabilities, workstreamsNative: capability },
-      });
-      expect((yield* withPublisher(undefined)).capabilities.workstreamsNative).toBeUndefined();
-      expect((yield* environment.getDescriptor).capabilities.workstreamsNative).toBeUndefined();
-      const replacement = {
-        ...capability,
-        registry: { ...capability.registry, server_generation: 2 },
-      };
-      expect((yield* withPublisher(replacement)).capabilities.workstreamsNative).toEqual(
-        replacement,
-      );
-      expect((yield* withPublisher(capability)).capabilities.workstreamsNative).toEqual(capability);
-
-      // The real handler retains the selected app port, while every request reads fresh metadata.
-      let current: WorkstreamsNativeCapability | undefined = capability;
-      const routes = HttpApiBuilder.layer(DescriptorTestApi).pipe(
-        Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
-        Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, environment)),
-        Layer.provide(
-          Layer.succeed(NativeDescriptor.NativeDescriptor, { read: Effect.sync(() => current) }),
-        ),
-        Layer.provideMerge(
-          HttpPlatform.layer.pipe(
-            Layer.provideMerge(NodeServices.layer),
-            Layer.provideMerge(Etag.layerWeak),
+        const before = yield* environment.getDescriptor;
+        expect(before.capabilities.workstreamsPersonal).toEqual({ version: 1 });
+        for (const key of [
+          "workstreamsNative",
+          "workstreamOperations",
+          "workstreamsPeerSetup",
+          "workstreamsLegacyReconciliation",
+          "workstreamsLegacyReceipts",
+        ]) {
+          expect(Object.hasOwn(before.capabilities, key)).toBe(false);
+        }
+        const routes = HttpApiBuilder.layer(DescriptorTestApi).pipe(
+          Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
+          Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, environment)),
+          Layer.provideMerge(
+            HttpPlatform.layer.pipe(
+              Layer.provideMerge(NodeServices.layer),
+              Layer.provideMerge(Etag.layerWeak),
+            ),
           ),
-        ),
-        Layer.provide(NodeServices.layer),
-      );
-      const http = yield* Effect.acquireRelease(
-        Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
-        (handler) => Effect.promise(() => handler.dispose()),
-      );
-      const readHttp = Effect.promise(() =>
-        http.handler(new Request("https://native.invalid/.well-known/t3/environment")),
-      ).pipe(
-        Effect.flatMap((response) => {
-          expect(response.status).toBe(200);
-          return Effect.promise(() => response.json());
-        }),
-        Effect.flatMap(Schema.decodeUnknownEffect(ExecutionEnvironmentDescriptor)),
-      );
-      expect((yield* readHttp).capabilities.workstreamsNative).toEqual(capability);
-      current = undefined;
-      expect((yield* readHttp).capabilities.workstreamsNative).toBeUndefined();
-      current = replacement;
-      expect((yield* readHttp).capabilities.workstreamsNative).toEqual(replacement);
-    }),
+          Layer.provide(NodeServices.layer),
+        );
+        const http = yield* Effect.acquireRelease(
+          Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
+          (handler) => Effect.promise(() => handler.dispose()),
+        );
+        const readHttp = Effect.promise(() =>
+          http.handler(new Request("https://native.invalid/.well-known/t3/environment")),
+        ).pipe(
+          Effect.flatMap((response) => {
+            expect(response.status).toBe(200);
+            return Effect.promise(() => response.json());
+          }),
+          Effect.flatMap(Schema.decodeUnknownEffect(ExecutionEnvironmentDescriptor)),
+        );
+        expect((yield* readHttp).capabilities.workstreamsPersonal).toEqual({ version: 1 });
+        expect(yield* readHttp).toEqual(before);
+      }),
   );
   it.effect.each(["2026-10-20T21:13:43Z", undefined, "invalid"])(
     "forwards only valid embedded build time %s with the descriptor version",
@@ -272,13 +242,37 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
     }),
   );
   it.effect.each([
+    { platform: "darwin", architecture: "arm64", supported: true },
+    { platform: "linux", architecture: "x64", supported: true },
+    { platform: "linux", architecture: "x64", libc: "musl", supported: false },
+    { platform: "win32", architecture: "arm64", supported: false },
+    { platform: "linux", architecture: "arm", supported: false },
+  ] as const)("advertises voice transcription on $platform-$architecture: $supported", (host) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-server-environment-speech-test-",
+      });
+      const descriptor = yield* Effect.gen(function* () {
+        const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+        return yield* serverEnvironment.getDescriptor;
+      }).pipe(
+        Effect.provide(layerServerEnvironment(baseDir)),
+        Effect.provideService(HostProcess.Platform, host.platform),
+        Effect.provideService(HostProcess.Architecture, host.architecture),
+        Effect.provideService(HostProcess.LinuxLibc, "libc" in host ? host.libc : "gnu"),
+      );
+      expect(descriptor.capabilities.voiceTranscription).toBe(host.supported);
+    }),
+  );
+  it.effect.each([
     { name: "missing", content: undefined },
     { name: "empty", content: "" },
     { name: "whitespace-only", content: " \t\n" },
   ])("concurrent initializers recover a $name environment id file", ({ content }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const crypto = yield* Crypto.Crypto;
+      const random = yield* SecureRandom.SecureRandom;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-server-environment-concurrent-test-",
       });
@@ -318,17 +312,17 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
               ),
             ),
         }),
-        Effect.provideService(Crypto.Crypto, {
-          ...crypto,
-          randomUUIDv4: (() =>
+        Effect.provideService(SecureRandom.SecureRandom, {
+          ...random,
+          uuidV4: (() =>
             Effect.gen(function* () {
-              const id = yield* crypto.randomUUIDv4();
+              const id = yield* random.uuidV4();
               if (--remaining === 0) {
                 yield* Deferred.succeed(bothGenerated, undefined);
               }
               yield* Deferred.await(bothGenerated);
               return id;
-            })) as Crypto.Crypto["randomUUIDv4"],
+            })) as SecureRandom.SecureRandom["Service"]["uuidV4"],
         }),
       );
 
@@ -360,9 +354,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
 
       expect(first.environmentId).toBe(second.environmentId);
       expect(first.orchestrationProtocolVersion).toBe(ORCHESTRATION_PROTOCOL_VERSION);
-      expect(second.capabilities.workstreamOperations).toEqual({
-        contract: "workstream-operations/1.0.0",
-      });
+      expect(second.capabilities.workstreamsPersonal).toEqual({ version: 1 });
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.connectionProbe).toBe(true);
       expect(second.capabilities.threadStop).toBe(true);
@@ -526,7 +518,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
   ])("concurrent initializers recover a $name environment id file", ({ content }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const crypto = yield* Crypto.Crypto;
+      const crypto = yield* SecureRandom.SecureRandom;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-server-environment-concurrent-test-",
       });
@@ -567,17 +559,17 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
               ),
             ),
         }),
-        Effect.provideService(Crypto.Crypto, {
+        Effect.provideService(SecureRandom.SecureRandom, {
           ...crypto,
-          randomUUIDv4: (() =>
+          uuidV4: (() =>
             Effect.gen(function* () {
-              const id = yield* crypto.randomUUIDv4();
+              const id = yield* crypto.uuidV4();
               if (--remaining === 0) {
                 yield* Deferred.succeed(bothGenerated, undefined);
               }
               yield* Deferred.await(bothGenerated);
               return id;
-            })) as Crypto.Crypto["randomUUIDv4"],
+            })) as SecureRandom.SecureRandom["Service"]["uuidV4"],
         }),
       );
 
@@ -623,9 +615,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
         });
         expect(descriptor.capabilities.workQueueMetadata).toBe(true);
       }
-      expect(second.capabilities.workstreamOperations).toEqual({
-        contract: "workstream-operations/1.0.0",
-      });
+      expect(second.capabilities.workstreamsPersonal).toEqual({ version: 1 });
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.worktreeDefaultBase).toBe(true);
       expect(second.capabilities.queuedToolBoundaryDelivery).toBe(true);
@@ -793,6 +783,31 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
         expect(writeAttempts).toEqual(operation === "write" ? [tempPath] : []);
       }
     }),
+  );
+
+  it.effect.each(["2026-10-20T21:13:43Z", undefined, "invalid"])(
+    "forwards only valid embedded build time %s with the descriptor version",
+    (startedAt) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        if (startedAt === undefined) delete buildMetadata.jonesBuildStartedAt;
+        else buildMetadata.jonesBuildStartedAt = startedAt;
+        const descriptor = yield* Effect.gen(function* () {
+          return yield* (yield* ServerEnvironment.ServerEnvironment).getDescriptor;
+        }).pipe(
+          Effect.provide(layerServerEnvironment(baseDir)),
+          Effect.ensuring(
+            Effect.sync(() => {
+              delete buildMetadata.jonesBuildStartedAt;
+            }),
+          ),
+        );
+        expect(descriptor.serverVersion).toBe(buildMetadata.version);
+        expect(descriptor.jonesBuildStartedAt).toBe(
+          startedAt === "invalid" ? undefined : startedAt,
+        );
+      }),
   );
 });
 

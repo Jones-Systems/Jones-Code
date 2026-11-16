@@ -76,6 +76,10 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
       "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
     }
   ]
 }

@@ -1,3 +1,4 @@
+import * as InProcessMcp from "../../mcp/McpHttpServer.ts";
 // This acceptance fixture owns a Node child and its bounded shutdown outside the Effect service under test.
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
@@ -71,6 +72,10 @@ it.live.skipIf(!hostSource || !python)(
         stdio: ["pipe", "pipe", "pipe"],
         detached: true,
       });
+      // A child can close its input between the liveness check and the stop write.
+      // Retain stream failures for the scoped teardown instead of an unhandled event.
+      const inputErrors: Error[] = [];
+      child.stdin.on("error", (error) => inputErrors.push(error));
       const exited = new Promise<void>((resolve, reject) => {
         child.once("exit", () => resolve());
         child.once("error", reject);
@@ -110,6 +115,11 @@ it.live.skipIf(!hostSource || !python)(
               stop("SIGKILL");
               yield* drain;
             }
+          }
+          if (inputErrors.length > 0) {
+            return yield* Effect.die(
+              new AggregateError(inputErrors, `Fleet fixture input failed; stderr: ${errors}`),
+            );
           }
         }),
       );
@@ -154,7 +164,7 @@ it.live.skipIf(!hostSource || !python)(
         Layer.provide(Checkpoint.layer(configuration)),
         Layer.provide(runnerWithFixtureEnvironment),
         Layer.provideMerge(liveThreadsLayer),
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
         Layer.provideMerge(NodeServices.layer),
       );
       const invocation = {

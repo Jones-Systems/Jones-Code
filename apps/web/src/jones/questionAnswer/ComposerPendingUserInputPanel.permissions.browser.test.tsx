@@ -2,6 +2,13 @@ import { EnvironmentId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
 import { act, render, fakeTimers } from "../../../test/render";
 import { expect, it, vi } from "vite-plus/test";
 
+// This component fixture supplies its own remote resources/grants; no local primary
+// environment belongs to the scenario. Keep unrelated bootstrap polling out of its clock/HTTP oracle.
+vi.mock(import("~/localEnvironment"), async (original) => ({
+  ...(await original()),
+  isLocalEnvironmentDisabled: () => true,
+}));
+
 vi.mock(import("~/components/ChatMarkdown"), async (importOriginal) => ({
   ...(await importOriginal()),
   default: (({ text }: { text: string }) => <p>{text}</p>) as never,

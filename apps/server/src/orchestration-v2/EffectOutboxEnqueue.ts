@@ -1,3 +1,4 @@
+import * as DeletionWriterFence from "../jones/cleanup/DeletionWriterFence.ts";
 import { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
 import {
@@ -167,12 +168,17 @@ export const enqueue: (
   effects: ReadonlyArray<PendingOrchestrationEffectV2>,
 ) => Effect.Effect<void, EffectOutboxError, SqlClient.SqlClient> = Effect.fnUntraced(
   function* (effects: ReadonlyArray<PendingOrchestrationEffectV2>) {
+    if (effects.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
+    const deletionWriterFence = yield* DeletionWriterFence.make;
     const now = yield* DateTime.now;
     const nowIso = DateTime.formatIso(now);
-    yield* Effect.forEach(
-      effects,
-      (effect) => sql`
+    yield* sql.withTransaction(
+      Effect.forEach(
+        effects,
+        (effect) =>
+          deletionWriterFence.assertMutation({ threadIds: [effect.threadId] }).pipe(
+            Effect.andThen(sql`
         INSERT INTO orchestration_v2_effect_outbox (
           effect_id,
           command_id,
@@ -198,8 +204,10 @@ export const enqueue: (
           ${nowIso}
         )
         ON CONFLICT(effect_id) DO NOTHING
-      `,
-      { concurrency: 1, discard: true },
+      `),
+          ),
+        { concurrency: 1, discard: true },
+      ),
     );
     // Do not signal here: callers enqueue inside a larger transaction,
     // and workers must only observe availability after that transaction

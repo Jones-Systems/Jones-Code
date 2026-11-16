@@ -378,35 +378,25 @@ export function createScenarioContext({
       return capture;
     },
     async completeOnboarding() {
-      const heading = page.getByRole("heading", {
-        name: "Connect your computers",
+      // First run is one Welcome page; finish it with no agent and no project import.
+      const heading = page.getByRole("heading", { level: 1, name: /^Welcome to / });
+      if (!(await heading.isVisible())) return false;
+      const importProjects = page
+        .locator("label", { hasText: /^Import (\d+ )?projects? and their threads/ })
+        .getByRole("checkbox");
+      if ((await importProjects.count()) > 0 && (await importProjects.isChecked())) {
+        await importProjects.click();
+        ctx.assert(!(await importProjects.isChecked()), "First-run project import was declined");
+      }
+      const withoutAgent = page.getByRole("button", {
+        name: "Start without an agent",
         exact: true,
       });
-      if (!(await heading.isVisible())) return false;
-      await page
-        .getByRole("button", {
-          name: "Continue",
-          exact: true,
-        })
-        .click();
-      await page
-        .getByRole("heading", {
-          name: "Connect your agents",
-          exact: true,
-        })
-        .waitFor();
-      await page
-        .getByRole("button", {
-          name: "Continue",
-          exact: true,
-        })
-        .click();
-      await page
-        .getByRole("button", {
-          name: "Do not import projects",
-          exact: true,
-        })
-        .click();
+      await (
+        (await withoutAgent.isVisible())
+          ? withoutAgent
+          : page.getByRole("button", { name: "Start", exact: true })
+      ).click();
       await heading.waitFor({
         state: "hidden",
       });

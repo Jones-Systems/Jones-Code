@@ -59,7 +59,7 @@ export function useWebReviewAuthority(
   selection: string = environmentId,
 ) {
   const authority = createWebReviewAuthority(environmentId, allowed, selection);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Commit/unmount revokes only this control's asynchronous review authority, before any continuation can dispatch.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Commit/unmount revokes only this control's asynchronous review authority, before any continuation can dispatch.
   useLayoutEffect(() => {
     if (allowed) authority.activate();
     return () => authority.revoke();

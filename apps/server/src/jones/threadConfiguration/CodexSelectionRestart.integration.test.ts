@@ -92,7 +92,11 @@ it.live(
               params: {
                 threadId: nativeThread,
                 excludeTurns: true,
-                config: { "tools.update_plan.enabled": true, mcp_optional_startup_grace_ms: 10000 },
+                config: {
+                  "tools.update_plan.enabled": true,
+                  mcp_optional_startup_grace_ms: 10000,
+                  "features.concurrent_reasoning_summaries": true,
+                },
               },
             },
           },

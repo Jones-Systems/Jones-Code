@@ -18,6 +18,7 @@ import {
   TurnItemId,
   WS_METHODS,
   WsRpcGroup,
+  type VcsStatusStreamEvent,
   type OrchestrationProjectShell,
   type OrchestrationV2Command,
   type OrchestrationV2ThreadLaunchInput,
@@ -29,6 +30,7 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ThreadStreamItem,
   type OrchestrationV2TurnItem,
+  type TerminalMetadataStreamEvent,
 } from "@t3tools/contracts";
 import type {
   ConnectionAttemptError,
@@ -91,7 +93,10 @@ const serverConfig: ServerConfig = {
         status: "ready",
         auth: { status: "authenticated" },
         checkedAt: "2026-03-17T19:12:28.000Z",
-        models: [{ slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null }],
+        models: [
+          { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null },
+          { slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null },
+        ],
       },
     ],
     availableEditors: [],
@@ -189,6 +194,8 @@ function run(threadId: ThreadId, id: RunId, ordinal: number, userMessageId: stri
 }
 
 export interface FakeThread {
+  /** Makes this a side chat of that thread. */
+  readonly sideChatOf?: ThreadId;
   readonly id: ThreadId;
   readonly title: string;
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
@@ -231,7 +238,12 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     branch: "main",
     worktreePath: null,
     activeProviderThreadId: null,
-    lineage: { rootThreadId: thread.id, parentThreadId: null, relationshipToParent: null },
+    lineage: {
+      rootThreadId: thread.sideChatOf ?? thread.id,
+      parentThreadId: thread.sideChatOf ?? null,
+      relationshipToParent: null,
+      ...(thread.sideChatOf ? { sideChat: true } : {}),
+    },
     forkedFrom: null,
     createdBy: "user",
     creationSource: "web",
@@ -316,8 +328,12 @@ const json = (body: unknown, status = 200) =>
 // Keyed by thread id: a live thread subscription's queue, for pushing events to it.
 const shellSubscribers = new Set<Queue.Queue<OrchestrationV2ShellStreamItem>>();
 const threadSubscribers = new Map<string, Queue.Queue<OrchestrationV2ThreadStreamItem>>();
+let terminalMetadataSubscriber: Queue.Queue<TerminalMetadataStreamEvent> | null = null;
 let threads: ReadonlyArray<FakeThread> = [];
+let dispatched: OrchestrationV2Command[] = [];
+let acceptCommands = false;
 let sequence = 1;
+let vcsStatusSubscriber: Queue.Queue<VcsStatusStreamEvent> | null = null;
 
 const subscribe = <A>(first: ReadonlyArray<A>, register?: (queue: Queue.Queue<A>) => () => void) =>
   Stream.unwrap(
@@ -340,10 +356,15 @@ let sendHandler:
   | null = null;
 
 const handlers: Record<string, (input: never) => unknown> = {
-  [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (input: OrchestrationV2Command) =>
-    input.type === "message.dispatch"
-      ? (sendHandler?.(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, input) ?? Effect.never)
-      : Effect.succeed({ sequence: ++sequence }),
+  // Every command is recorded. A message dispatch waits for a scenario's deferred send, or for
+  // `acceptCommands`, since a pending command holds every later command on its thread. Other
+  // commands are accepted at once. Accepted commands' events never arrive.
+  [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) => {
+    dispatched.push(command);
+    if (command.type !== "message.dispatch") return Effect.succeed({ sequence: ++sequence });
+    if (sendHandler) return sendHandler(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command);
+    return acceptCommands ? Effect.succeed({ sequence: sequence + 1 }) : Effect.never;
+  },
   [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input: OrchestrationV2ThreadLaunchInput) =>
     sendHandler?.(ORCHESTRATION_V2_WS_METHODS.launchThread, input) ?? Effect.never,
   [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input: { readonly threadId: ThreadId }) =>
@@ -351,6 +372,13 @@ const handlers: Record<string, (input: never) => unknown> = {
       const thread = threads.find((thread) => thread.id === input.threadId);
       if (!thread) throw new Error("Unknown synthetic thread");
       return projectionOf(thread);
+    }),
+  [WS_METHODS.subscribeTerminalMetadata]: () =>
+    subscribe<TerminalMetadataStreamEvent>([{ type: "snapshot", terminals: [] }], (queue) => {
+      terminalMetadataSubscriber = queue;
+      return () => {
+        if (terminalMetadataSubscriber === queue) terminalMetadataSubscriber = null;
+      };
     }),
   [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: () =>
     subscribe<OrchestrationV2ShellStreamItem>(
@@ -392,6 +420,13 @@ const handlers: Record<string, (input: never) => unknown> = {
       },
     );
   },
+  [WS_METHODS.subscribeVcsStatus]: () =>
+    subscribe<VcsStatusStreamEvent>([], (queue) => {
+      vcsStatusSubscriber = queue;
+      return () => {
+        if (vcsStatusSubscriber === queue) vcsStatusSubscriber = null;
+      };
+    }),
   [WS_METHODS.subscribeServerConfig]: () =>
     subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig }]),
 };
@@ -413,6 +448,7 @@ const session: EnvironmentConnectionLease["session"] = {
     subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig }]),
   ready: Effect.void,
   probe: Effect.void,
+  inboundFrames: Effect.succeed(0),
   closed: Effect.never,
 };
 
@@ -432,8 +468,8 @@ export const fakeDriver = {
       },
       session,
     }),
-  checkRoute: () => Effect.succeed<RouteCheck>("answered"),
   preflight: () => Effect.succeed(true),
+  checkHost: () => Effect.succeed<RouteCheck>("unchecked"),
 };
 export type FakeDriver = typeof fakeDriver;
 
@@ -443,8 +479,13 @@ const encodedDescriptor = Schema.encodeSync(ExecutionEnvironmentDescriptor)(
 );
 
 /** Serves the environment's HTTP API and these threads until disposed. */
-export function installFakeEnvironment(fixtures: ReadonlyArray<FakeThread>): Disposable {
+export function installFakeEnvironment(
+  fixtures: ReadonlyArray<FakeThread>,
+  options?: { readonly acceptCommands?: boolean },
+): Disposable {
   threads = fixtures;
+  dispatched = [];
+  acceptCommands = options?.acceptCommands === true;
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
     if (url.origin !== window.location.origin) return realFetch(input, init);
@@ -467,11 +508,23 @@ export function installFakeEnvironment(fixtures: ReadonlyArray<FakeThread>): Dis
       globalThis.fetch = realFetch;
       threads = [];
       sendHandler = null;
+      dispatched = [];
+      acceptCommands = false;
     },
   };
 }
 
+/** Commands the app dispatched to the environment, oldest first. */
+export function dispatchedCommands(): ReadonlyArray<OrchestrationV2Command> {
+  return dispatched;
+}
+
 type ThreadEvent = Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }>["event"];
+
+export async function emitTerminalMetadata(event: TerminalMetadataStreamEvent): Promise<void> {
+  if (terminalMetadataSubscriber === null) throw new Error("No terminal metadata subscription");
+  await Effect.runPromise(Queue.offer(terminalMetadataSubscriber, event));
+}
 
 /** Whether the app holds a live subscription to the thread, so events reach it. */
 export function isThreadSubscribed(threadId: ThreadId): boolean {
@@ -504,6 +557,11 @@ export function runningRun(threadId: ThreadId, id: string, ordinal: number, user
 }
 
 export { userItem };
+
+export async function emitVcsStatus(event: VcsStatusStreamEvent): Promise<void> {
+  if (vcsStatusSubscriber === null) throw new Error("No VCS status subscription");
+  await Effect.runPromise(Queue.offer(vcsStatusSubscriber, event));
+}
 
 export interface DeferredFakeSend {
   readonly method: string;

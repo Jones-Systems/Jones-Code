@@ -2,6 +2,7 @@
 import * as NodeHttp from "node:http";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import type * as Mac from "effect/crypto/Mac";
 import * as Schema from "effect/Schema";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
 import type { JonesActiveInstall } from "./jonesActivation.ts";
@@ -30,11 +31,13 @@ const decodeQuitPreparation = Schema.decodeUnknownSync(
 export const jonesNativeBootstrapCredential = (bootstrap: {
   readonly desktopBootstrapToken: string;
   readonly desktopBootstrapSecret?: string;
-}): Effect.Effect<string> => {
+}): Effect.Effect<string, never, Mac.Mac> => {
   const secret = bootstrap.desktopBootstrapSecret;
   return secret === undefined
     ? Effect.succeed(bootstrap.desktopBootstrapToken)
-    : Effect.map(Clock.currentTimeMillis, (nowMs) => currentDesktopBootstrapToken(secret, nowMs));
+    : Effect.flatMap(Clock.currentTimeMillis, (nowMs) =>
+        currentDesktopBootstrapToken(secret, nowMs),
+      );
 };
 
 /** Bounded printable text for update state; the backend's refusal messages are fixed strings. */

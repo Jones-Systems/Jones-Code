@@ -18,6 +18,10 @@
     {
       "from": "apps/mobile/src/features/threads/use-composer-command-menu.ts",
       "to": "packages/client-runtime/src/jones/providerWorkspaceRefresh.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/use-composer-command-menu.ts",
+      "to": "apps/mobile/src/jones/providerWorkspaceRefresh/useProviderWorkspaceRefresh.ts"
     }
   ]
 }

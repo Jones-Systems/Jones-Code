@@ -33,6 +33,10 @@ import * as ProviderEventIngestor from "../../orchestration-v2/ProviderEventInge
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
+import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
+
+const decodeOrchestrationV2AppThread = Schema.decodeEffect(OrchestrationV2AppThread);
+const decodeOrchestrationV2ProviderThread = Schema.decodeEffect(OrchestrationV2ProviderThread);
 
 const routes = ["write", "writeIfRunCurrent", "writeIfProviderThreadOwner"] as const;
 type Route = (typeof routes)[number];
@@ -67,13 +71,20 @@ const testLayer = Layer.unwrap(
     );
     return Layer.mergeAll(database, stores, sink, ingestor);
   }),
-).pipe(Layer.provideMerge(NodeServices.layer));
+).pipe(
+  Layer.provideMerge(NodeServices.layer),
+  Layer.provide(
+    Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+      getCatalogSource: () => undefined,
+    }),
+  ),
+);
 
 const seed = Effect.gen(function* () {
   const sink = yield* EventSink.EventSinkV2;
   const now = DateTime.makeUnsafe("2026-11-06T12:00:00.000Z");
   const providerThreadId = "provider-thread:node-dedup";
-  const thread = yield* Schema.decodeEffect(OrchestrationV2AppThread)({
+  const thread = yield* decodeOrchestrationV2AppThread({
     createdBy: "user",
     creationSource: "web",
     id: "thread:node-dedup",
@@ -100,7 +111,7 @@ const seed = Effect.gen(function* () {
     lastVisitedAt: null,
     deletedAt: null,
   });
-  const provider = yield* Schema.decodeEffect(OrchestrationV2ProviderThread)({
+  const provider = yield* decodeOrchestrationV2ProviderThread({
     id: providerThreadId,
     driver: "codex",
     providerInstanceId: "codex",

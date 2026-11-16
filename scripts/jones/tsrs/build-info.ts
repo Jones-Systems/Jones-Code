@@ -1,6 +1,6 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -490,7 +490,7 @@ export async function runWithBuildInfo(options: StatefulCheck): Promise<number> 
     }),
   );
   const nonce = Effect.runSync(
-    Effect.flatMap(Crypto.Crypto, (crypto) => crypto.randomUUIDv4()).pipe(
+    Effect.flatMap(SecureRandom.SecureRandom, (crypto) => crypto.uuidV4()).pipe(
       Effect.provide(NodeCrypto.layer),
     ),
   );

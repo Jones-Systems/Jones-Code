@@ -60,7 +60,9 @@ interface Correlation {
   readonly type: ThreadMonitorAction["type"];
   readonly draftRevision: number | undefined;
   readonly messageId: string | undefined;
-  readonly settleCommandId: string | undefined;
+  readonly settleCommandId:
+    | Extract<ThreadMonitorAction, { type: "restore" }>["settleCommandId"]
+    | undefined;
   cancel: (() => void) | undefined;
   terminal: boolean;
   terminalStatus: "accepted" | "rejected" | "unavailable" | null;
@@ -246,7 +248,22 @@ export class ThreadMonitorBroker {
           return;
         }
         if (correlation.unknown && frame.status === "pending") return;
-        if (frame.status === "unknown") correlation.unknown = true;
+        if (frame.status === "unknown") {
+          correlation.unknown = true;
+          // The pending replay may have been dropped after a broker timeout.
+          // A later live result still needs the original identity for a recreated peer.
+          if (
+            this.restoreIdentityReplay &&
+            correlation.type === "restore" &&
+            correlation.settleCommandId !== undefined &&
+            frame.restoreIdentity === undefined
+          ) {
+            frame = {
+              ...frame,
+              restoreIdentity: { type: "restore", settleCommandId: correlation.settleCommandId },
+            };
+          }
+        }
         if (
           frame.submittedDraftRevision !== undefined &&
           frame.submittedDraftRevision !== correlation.draftRevision

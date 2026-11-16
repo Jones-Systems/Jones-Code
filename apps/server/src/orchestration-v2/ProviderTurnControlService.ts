@@ -29,6 +29,7 @@ import * as EventSink from "./EventSink.ts";
 import { awaitRestartTerminal } from "../jones/orchestration/RestartPreparation.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import { STOP_CHILD_BUDGET_MS, STOP_RECOVERY_BUDGET_MS } from "../jones/provider/stopBudgets.ts";
 
 export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnControlError>()(
   "ProviderTurnControlError",
@@ -37,6 +38,8 @@ export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnCon
     operation: Schema.Literals(["interrupt", "restart", "steer"]),
     providerTurnId: ProviderTurnId,
     turnCompleted: Schema.optional(Schema.Boolean),
+    /** The provider never confirmed the stop; Force stop is the way out. */
+    unresponsive: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
@@ -133,7 +136,11 @@ export const layer: Layer.Layer<
       const interruptProviderThread = targetsRecordedSession
         ? providerThread
         : { ...providerThread, providerSessionId: input.providerSessionId };
-      if (providerTurn.status !== "running") {
+      const continuingRun =
+        input.operation === "steer" &&
+        context.run?.status === "running" &&
+        context.run.activeAttemptId === providerTurn.runAttemptId;
+      if (providerTurn.status !== "running" && !continuingRun) {
         if (input.operation === "steer") {
           return yield* new ProviderTurnControlError({
             threadId: input.threadId,
@@ -198,7 +205,7 @@ export const layer: Layer.Layer<
     return ProviderTurnControlServiceV2.of({
       interrupt: Effect.fn("ProviderTurnControlService.interrupt")(
         function* (input) {
-          const interruptDeadline = (yield* Clock.currentTimeMillis) + 10_000;
+          const interruptDeadline = (yield* Clock.currentTimeMillis) + STOP_CHILD_BUDGET_MS;
           const loaded = yield* load({ ...input, operation: "interrupt" });
           const session = Option.isSome(loaded.session)
             ? loaded.session
@@ -238,7 +245,21 @@ export const layer: Layer.Layer<
               providerTurnId: loaded.providerTurn.id,
               requestRuntimeRestart: true,
             })
-            .pipe(Effect.provideService(ProviderControlDeadline, interruptDeadline));
+            .pipe(
+              Effect.provideService(ProviderControlDeadline, interruptDeadline),
+              Effect.catchTags({
+                ProviderAdapterInterruptTimeoutError: (cause) =>
+                  Effect.fail(
+                    new ProviderTurnControlError({
+                      threadId: input.threadId,
+                      operation: "interrupt",
+                      providerTurnId: input.providerTurnId,
+                      unresponsive: true,
+                      cause,
+                    }),
+                  ),
+              }),
+            );
           const remaining = Math.max(0, interruptDeadline - (yield* Clock.currentTimeMillis));
           // Use real time; ingestion fibers do not advance TestClock and would leave Stop blocked.
           yield* Effect.gen(function* () {
@@ -296,7 +317,7 @@ export const layer: Layer.Layer<
               providerTurnId: loaded.providerTurn.id,
               preserveGoal: true,
             })
-            .pipe(Effect.timeout("14 seconds"));
+            .pipe(Effect.timeout(STOP_RECOVERY_BUDGET_MS));
 
           yield* awaitRestartTerminal({
             target: input,
@@ -424,9 +445,19 @@ export const layer: Layer.Layer<
             .pipe(
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  const current = yield* projections.getProviderControlContext(
+                    input.threadId,
+                    input,
+                  );
+                  // A plain rejection from a turn the projection shows completed took nothing in.
+                  // Typed outcomes and every other notification failure stay unknown.
+                  const rejectedByCompletedTurn =
+                    findSteerFailure(cause) === undefined &&
+                    current.providerTurn?.status === "completed";
                   if (
                     message.notification !== undefined &&
-                    !isGoalNotificationNotDelivered(cause)
+                    !isGoalNotificationNotDelivered(cause) &&
+                    !rejectedByCompletedTurn
                   ) {
                     return yield* new ProviderTurnControlError({
                       threadId: input.threadId,
@@ -435,19 +466,11 @@ export const layer: Layer.Layer<
                       cause: new GoalNotificationDeliveryUnknown({ cause }),
                     });
                   }
-                  const current = yield* projections.getProviderControlContext(
-                    input.threadId,
-                    input,
-                  );
                   return yield* new ProviderTurnControlError({
                     threadId: input.threadId,
                     operation: "steer",
                     providerTurnId: input.providerTurnId,
-                    turnCompleted:
-                      isGoalNotificationNotDelivered(cause) ||
-                      (message.notification === undefined &&
-                        findSteerFailure(cause) === undefined &&
-                        current.providerTurn?.status === "completed"),
+                    turnCompleted: isGoalNotificationNotDelivered(cause) || rejectedByCompletedTurn,
                     cause,
                   });
                 }),

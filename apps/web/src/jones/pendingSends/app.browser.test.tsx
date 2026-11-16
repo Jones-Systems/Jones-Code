@@ -15,6 +15,8 @@ import { page, userEvent } from "vite-plus/test/browser";
 // oxlint-disable-next-line t3code/require-disposable-render -- The uncreated-thread subscription holds async act open; _rootCleanup owns this synchronous mount and unmount.
 import { createRoot } from "react-dom/client";
 import "~/index.css";
+// Load the real routed view before the scenario starts its synthetic transport.
+import "../../components/ThreadRouteView";
 import { AppRoot } from "~/AppRoot";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
@@ -92,6 +94,31 @@ vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
   trackRpcRequestSent: () => {},
 }));
 
+// App modules can subscribe before a test starts. Admit real primary HTTP only
+// after this file has installed its synthetic descriptor/session/transport.
+const primaryFixtureAdmission = vi.hoisted(() => {
+  let admit!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    admit = resolve;
+  });
+  return { ready, admit };
+});
+vi.mock(import("~/environments/primary/httpLayer"), async (original) => {
+  const [actual, Effect, Layer] = await Promise.all([
+    original(),
+    import("effect/Effect"),
+    import("effect/Layer"),
+  ]);
+  return {
+    ...actual,
+    layer: Layer.unwrap(
+      Effect.promise(() => primaryFixtureAdmission.ready).pipe(
+        Effect.map(() => actual.layerForCurrentOrigin()),
+      ),
+    ),
+  };
+});
+
 it("opens an uncreated pending target, keeps Retry, then replaces it with one authoritative row", async () => {
   using _pendingCleanup = {
     [Symbol.dispose]: () => {
@@ -103,6 +130,7 @@ it("opens an uncreated pending target, keeps Retry, then replaces it with one au
   const thread = threadWithHistory("send-feedback", 1);
   const other = threadWithHistory("send-feedback-other", 1);
   using _environment = installFakeEnvironment([thread, other]);
+  primaryFixtureAdmission.admit();
   using delivery = deferFakeSends();
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
@@ -227,6 +255,7 @@ it("keeps a deferred send through navigation and reconciles commit before lost A
   const thread = threadWithHistory("send-feedback", 1);
   const other = threadWithHistory("send-feedback-other", 1);
   using _environment = installFakeEnvironment([thread, other]);
+  primaryFixtureAdmission.admit();
   using delivery = deferFakeSends();
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
@@ -279,6 +308,7 @@ it("retries an uncertain send only on request with the identical payload", async
   const thread = threadWithHistory("send-feedback", 1);
   const other = threadWithHistory("send-feedback-other", 1);
   using _environment = installFakeEnvironment([thread, other]);
+  primaryFixtureAdmission.admit();
   using delivery = deferFakeSends();
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
@@ -318,6 +348,7 @@ it("shows a first send locally and reconciles lost launch acknowledgement", asyn
   const thread = threadWithHistory("send-feedback", 1);
   const other = threadWithHistory("send-feedback-other", 1);
   using _environment = installFakeEnvironment([thread, other]);
+  primaryFixtureAdmission.admit();
   using delivery = deferFakeSends();
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,

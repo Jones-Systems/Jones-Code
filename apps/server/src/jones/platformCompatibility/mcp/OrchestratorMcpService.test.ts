@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -163,7 +164,7 @@ describe("Jones MCP provider compatibility", () => {
         model: "gpt-5.4",
       });
       const layerDependencies = Layer.mergeAll(
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: () => Effect.succeed(parentProjection([])),
         }),
@@ -227,7 +228,7 @@ describe("Jones MCP provider compatibility", () => {
         };
         const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
         const layerDependencies = Layer.mergeAll(
-          NodeServices.layer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getCommandReceipt: () => Effect.succeedNone,
             assertProviderInstanceEnabled: () => Effect.void,
@@ -326,7 +327,7 @@ describe("Jones MCP provider compatibility", () => {
       };
       let delegated = false;
       const layerDependencies = Layer.mergeAll(
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getCommandReceipt: () => Effect.succeedNone,
           assertProviderInstanceEnabled: () => Effect.void,
@@ -451,7 +452,7 @@ describe("Jones MCP provider compatibility", () => {
             ]
           : [];
       const dependencies = Layer.mergeAll(
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
         ServerSettings.layerTest(),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getCommandReceipt: (commandId) =>
@@ -617,7 +618,7 @@ it.effect(
           payload: { ...shell, lastVisitedAt: null },
         });
         const dependencies = Layer.mergeAll(
-          NodeServices.layer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
           ServerSettings.layerTest(),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(projection),

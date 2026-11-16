@@ -1,3 +1,4 @@
+import "~/index.css";
 import { act, render } from "../../../test/render";
 import { type ComponentProps } from "react";
 import { describe, expect, it } from "vite-plus/test";
@@ -8,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { ComposerQuickControls } from "./ComposerQuickControls";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
+import type { TraitsPersistence } from "../../components/chat/TraitsPicker";
 
 const instanceId = ProviderInstanceId.make("quick-controls-test");
 const draftId = DraftId.make("quick-controls-test");
@@ -36,7 +38,7 @@ function Fixture({
   ...overrides
 }: {
   descriptors?: ProviderOptionDescriptor[];
-} & Partial<ComponentProps<typeof ComposerQuickControls>>) {
+} & Partial<Omit<ComponentProps<typeof ComposerQuickControls>, keyof TraitsPersistence>>) {
   const selection = useComposerDraftStore(
     (store) => store.stickyModelSelectionByProvider[instanceId],
   );
@@ -60,7 +62,6 @@ function Fixture({
           },
         ]}
         modelOptions={selection?.options}
-        planModeEnabled
         {...overrides}
       />
     </div>
@@ -144,6 +145,27 @@ describe("composer quick controls", () => {
     expect(group.querySelector('[aria-label="High reasoning"]')?.getAttribute("aria-pressed")).toBe(
       "true",
     );
+  });
+
+  it("uses an agent-declared reasoning descriptor rather than its first select", async () => {
+    reset();
+    await using screen = await render(
+      <Fixture
+        descriptors={[
+          { ...effort, id: "mode", label: "Mode", options: [{ id: "code", label: "Code" }] },
+          { ...effort, id: "thought_level", role: "reasoning" },
+        ]}
+      />,
+      { router: false },
+    );
+    const medium = screen.container.querySelector<HTMLButtonElement>(
+      '[aria-label="Medium reasoning"]',
+    )!;
+    await expect.poll(() => medium.disabled).toBe(false);
+    await act(() => medium.click());
+    expect(
+      useComposerDraftStore.getState().stickyModelSelectionByProvider[instanceId]?.options,
+    ).toEqual([{ id: "thought_level", value: "medium" }]);
   });
 
   it("shows only supported efforts, omits unsupported Fast and refuses hidden activation", async () => {

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -22,6 +23,7 @@ import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/ser
 import type { ProviderGoalControlInput } from "@t3tools/provider-core/server/jones/runtimeTypes";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as GoalControl from "./GoalControl.ts";
 import * as GoalStart from "./GoalStartDispatch.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -174,7 +176,8 @@ function fixture(
     runs: active ? [{ status: "running" }] : [],
   });
   const dependencies = Layer.mergeAll(
-    NodeServices.layer,
+    Sqlite.layerMemory,
+    Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
     Layer.mock(Threads.ThreadManagementService)({
       getThreadShell: (id) =>
         Effect.sync(

@@ -1,21 +1,15 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { shouldUseCompactComposerFooter } from "../../components/composerFooterLayout";
 import { observeResize } from "~/lib/observeResize";
 
-const COMPOSER_SHORTCUT_GROUP_GAP_PX = 16;
-const COMPOSER_SHORTCUT_CONVERSATION_MIN_PX = 160;
+const COMPOSER_SHORTCUT_MAX_HEIGHT_PX = 144;
 
 export function resolveComposerShortcutRailsVisibility(input: {
   eligible: boolean;
   formWidth: number;
   hostWidth: number;
   conversationHeight: number;
-  composerHeight: number;
-  currentBandHeight: number;
   groupWidths: readonly number[];
   groupHeights: readonly number[];
-  hasWideActions: boolean;
-  previousVisible: boolean;
 }): boolean {
   const widths = input.groupWidths.filter((width) => width > 0);
   const bandHeight = Math.max(0, ...input.groupHeights);
@@ -25,21 +19,13 @@ export function resolveComposerShortcutRailsVisibility(input: {
     input.hostWidth <= 0 ||
     input.conversationHeight <= 0 ||
     widths.length === 0 ||
-    bandHeight <= 0 ||
-    shouldUseCompactComposerFooter(input.formWidth, { hasWideActions: input.hasWideActions })
+    bandHeight <= 0
   ) {
     return false;
   }
-  const slack = input.previousVisible ? 0 : 1;
-  const requiredWidth =
-    widths.reduce((total, width) => total + width, 0) +
-    Math.max(0, widths.length - 1) * COMPOSER_SHORTCUT_GROUP_GAP_PX;
-  const baseComposerHeight = Math.max(0, input.composerHeight - input.currentBandHeight);
-  return (
-    input.hostWidth >= requiredWidth + slack &&
-    input.conversationHeight >=
-      baseComposerHeight + bandHeight + COMPOSER_SHORTCUT_CONVERSATION_MIN_PX + slack
-  );
+  // The external controls remain available in compact and short layouts. The
+  // band wraps whole groups and scrolls overflowing content instead of hiding it.
+  return true;
 }
 
 export function useComposerShortcutRails(input: {
@@ -50,7 +36,6 @@ export function useComposerShortcutRails(input: {
   accountGroupRef: RefObject<HTMLDivElement | null>;
   effortGroupRef: RefObject<HTMLDivElement | null>;
   eligible: boolean;
-  hasWideActions: boolean;
   contentKey: unknown;
 }) {
   const {
@@ -61,11 +46,9 @@ export function useComposerShortcutRails(input: {
     accountGroupRef,
     effortGroupRef,
     eligible,
-    hasWideActions,
     contentKey,
   } = input;
   const [layout, setLayout] = useState({ visible: false, height: 0 });
-  const visibleRef = useRef(false);
   const measure = () => {
     const form = formRef.current;
     const band = bandRef.current;
@@ -76,13 +59,6 @@ export function useComposerShortcutRails(input: {
     const groupHeights = groupSizes.map((size) => size?.height ?? 0);
     const overlay = host.closest<HTMLElement>("[data-chat-composer-overlay]");
     if (!overlay) return;
-    const currentBandHeight = band.getBoundingClientRect().height;
-    const stack = form.closest<HTMLElement>("[data-chat-composer-stack]");
-    const composerHeight =
-      overlay.dataset.chatComposerLayout === "hero"
-        ? (stack?.getBoundingClientRect().height ?? form.getBoundingClientRect().height) +
-          (host.parentElement?.getBoundingClientRect().height ?? currentBandHeight)
-        : overlay.getBoundingClientRect().height;
     const hostStyle = getComputedStyle(host);
     const hostWidth =
       host.clientWidth -
@@ -93,22 +69,24 @@ export function useComposerShortcutRails(input: {
       formWidth: form.clientWidth,
       hostWidth,
       conversationHeight: workspace.clientHeight,
-      composerHeight,
-      currentBandHeight,
       groupWidths,
       groupHeights,
-      hasWideActions,
-      previousVisible: visibleRef.current,
     });
-    const height = visible ? Math.max(0, ...groupHeights) : 0;
-    visibleRef.current = visible;
+    const content = band.querySelector<HTMLElement>("[data-chat-composer-shortcut-content]");
+    const height = visible
+      ? Math.min(
+          content?.getBoundingClientRect().height ?? Math.max(0, ...groupHeights),
+          COMPOSER_SHORTCUT_MAX_HEIGHT_PX,
+          Math.max(48, Math.floor(workspace.clientHeight / 3)),
+        )
+      : 0;
     setLayout((previous) =>
       previous.visible === visible && previous.height === height ? previous : { visible, height },
     );
   };
 
   const measuredContent = useRef(contentKey);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Remeasure composer rails after committed content changes alter their geometry.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Remeasure composer rails after committed content changes alter their geometry.
   useLayoutEffect(() => {
     if (measuredContent.current !== contentKey) {
       measuredContent.current = contentKey;
@@ -116,7 +94,7 @@ export function useComposerShortcutRails(input: {
     }
   }, [contentKey, measure]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own resize and font-loading subscriptions for composer rail geometry and release them on unmount.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own resize and font-loading subscriptions for composer rail geometry and release them on unmount.
   useLayoutEffect(() => {
     measure();
     if (typeof ResizeObserver === "undefined") return;

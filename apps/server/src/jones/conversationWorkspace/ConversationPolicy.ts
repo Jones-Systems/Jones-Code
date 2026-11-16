@@ -5,7 +5,7 @@ import {
   WorktreeMcpSetupScriptStatus,
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Path from "effect/Path";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -56,7 +56,7 @@ export interface HandoffRecord {
   readonly setup: WorktreeMcpSetupScriptStatus | null;
   readonly result: WorktreeMcpHandoffResult | null;
 }
-const BindingRecord = Schema.Struct({
+export const BindingRecord = Schema.Struct({
   path: Schema.String,
   device: Schema.String,
   inode: Schema.String,
@@ -121,6 +121,11 @@ export class ConversationWorkspaceError extends Schema.TaggedError<ConversationW
     return `Conversation workspace: ${this.reason}.`;
   }
 }
+const isConversationWorkspaceError = Schema.is(ConversationWorkspaceError);
+const decodeBindingOwner = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ id: Schema.String, projectId: Schema.String })),
+);
+
 const io = <A>(
   threadId: string,
   reason: ConversationWorkspaceError["reason"],
@@ -222,7 +227,7 @@ export class ConversationPolicy extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const config = yield* ServerConfig.ServerConfig;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const paths = yield* Path.Path;
   // Registration breaks the construction cycle: ThreadManagement owns the
   // orchestrator which constructs ProviderTurnStart before WorktreeMcpService.
@@ -231,7 +236,7 @@ const make = Effect.gen(function* () {
   const directoryLocks = yield* KeyedLock.make<string>();
   const wrap = (threadId: string) =>
     Effect.mapError((cause: unknown) =>
-      Schema.is(ConversationWorkspaceError)(cause)
+      isConversationWorkspaceError(cause)
         ? cause
         : new ConversationWorkspaceError({ threadId, reason: "storage", cause }),
     );
@@ -254,9 +259,7 @@ const make = Effect.gen(function* () {
           threadId: binding.threadId,
           reason: "storage",
         });
-      const owner = yield* Schema.decodeEffect(
-        Schema.fromJsonString(Schema.Struct({ id: Schema.String, projectId: Schema.String })),
-      )(owners[0].payload_json);
+      const owner = yield* decodeBindingOwner(owners[0].payload_json);
       if (owner.id !== binding.threadId || owner.projectId !== binding.projectId)
         return yield* new ConversationWorkspaceError({
           threadId: binding.threadId,
@@ -505,7 +508,7 @@ const make = Effect.gen(function* () {
         phase: "reserved",
         path: paths.join(
           config.worktreesDir,
-          `conversation-${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          `conversation-${yield* random.uuidV4().pipe(Effect.orDie)}`,
         ),
         setup: null,
         result: null,
@@ -553,26 +556,32 @@ const make = Effect.gen(function* () {
     if (binding !== null) yield* save({ ...binding, state: "attached" });
   });
   return ConversationPolicy.of({
-    registerTurnAttachment: (attach) =>
+    registerTurnAttachment: Effect.fn("ConversationPolicy.registerTurnAttachment")((attach) =>
       Effect.sync(() => {
         turnAttachment = attach;
       }),
-    attachForTurn: (threadId, runId, text, attachments) =>
-      Effect.suspend(() =>
-        turnAttachment === undefined
-          ? Effect.fail(new ConversationWorkspaceError({ threadId, reason: "attach_required" }))
-          : turnAttachment(threadId, runId, text, attachments).pipe(wrap(threadId)),
-      ),
+    ),
+    attachForTurn: Effect.fn("ConversationPolicy.attachForTurn")(
+      (threadId, runId, text, attachments) =>
+        Effect.suspend(() =>
+          turnAttachment === undefined
+            ? Effect.fail(new ConversationWorkspaceError({ threadId, reason: "attach_required" }))
+            : turnAttachment(threadId, runId, text, attachments).pipe(wrap(threadId)),
+        ),
+    ),
     ownsPath: (cwd) => ownsConversationPath(config.stateDir, cwd),
     lookup,
     sharing,
-    allocate: (input) =>
+    allocate: Effect.fn("ConversationPolicy.allocate")((input) =>
       directoryLocks.withLock(
         input.threadId,
         allocate(input).pipe(Effect.uninterruptible, wrap(input.threadId)),
       ),
+    ),
     inherit,
-    startTurn: (threadId, runId) => directoryLocks.withLock(threadId, startTurn(threadId, runId)),
+    startTurn: Effect.fn("ConversationPolicy.startTurn")((threadId, runId) =>
+      directoryLocks.withLock(threadId, startTurn(threadId, runId)),
+    ),
     snapshot,
     readHandoff,
     source,

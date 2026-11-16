@@ -25,6 +25,8 @@ const admissionError = (reason: SqliteReaderAdmissionError["reason"]) =>
   });
 
 export interface ReaderSlot {
+  /** Only an already-ready, non-retiring generation; cold startup stays scoped below. */
+  readonly readyConnection?: () => Connection | undefined;
   readonly acquire: Effect.Effect<Connection | undefined>;
   readonly generation: () => number;
   readonly available?: () => boolean;
@@ -277,7 +279,7 @@ export const makeReaderPool = Effect.fnUntraced(function* (
         const scope = yield* Scope.Scope;
         let watchdog: ReturnType<typeof NodeTimers.setTimeout> | undefined;
         let timedOut = false;
-        let retirement: Fiber.Fiber<void> | undefined;
+        const retired = yield* Deferred.make<void>();
         let starting: Fiber.Fiber<Connection | undefined> | undefined;
         const released = yield* Deferred.make<void>();
         let releasing = false;
@@ -297,7 +299,7 @@ export const makeReaderPool = Effect.fnUntraced(function* (
                   if (starting !== undefined) yield* Fiber.interrupt(starting);
                   if (reserved === undefined) return;
                   const slotId = reserved;
-                  if (retirement !== undefined) yield* Fiber.join(retirement);
+                  if (timedOut) yield* Deferred.await(retired);
                   const safe = yield* slots[slotId]!.settled;
                   NodeTimers.clearTimeout(watchdog);
                   observe({
@@ -330,9 +332,13 @@ export const makeReaderPool = Effect.fnUntraced(function* (
           const slot = slots[slotId]!;
           if (!active) return yield* admissionError("generation-retired");
           const startup = now();
-          // Fork while masked and publish before joining so scope closure can cancel and drain it.
-          starting = yield* Effect.forkChild(restore(slot.acquire));
-          const connection = yield* restore(Fiber.join(starting));
+          let acquiredConnection = slot.readyConnection?.();
+          if (acquiredConnection === undefined) {
+            // Fork while masked and publish before joining so scope closure can cancel and drain it.
+            starting = yield* Effect.forkChild(restore(slot.acquire));
+            acquiredConnection = yield* restore(Fiber.join(starting));
+          }
+          const connection = acquiredConnection;
           observe({
             phase: "startup",
             priority,
@@ -349,7 +355,12 @@ export const makeReaderPool = Effect.fnUntraced(function* (
             () => {
               timedOut = true;
               active = false;
-              retirement = runFork(slot.retire("SQLite reader lease watchdog expired"));
+              // Publish the barrier before retirement can synchronously close the borrower's scope.
+              runFork(
+                Deferred.complete(retired, slot.retire("SQLite reader lease watchdog expired")),
+              );
+              // Retirement proof returns capacity even if the owner cannot close its lease scope.
+              runFork(release(Exit.void));
               owner.interruptUnsafe();
             },
             Math.min(60_000, options.leaseWatchdogMs),

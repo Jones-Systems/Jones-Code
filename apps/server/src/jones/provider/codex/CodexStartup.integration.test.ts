@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -18,9 +19,9 @@ import {
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Replay from "effect-codex-app-server/replay";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
-import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -297,6 +298,7 @@ function replayEnsure(
     },
   ];
 }
+const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
   "real %s startup failure settles one durable run and daemon effect while independent Codex work progresses",
@@ -311,7 +313,6 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
       const config = yield* ServerConfig.ServerConfig.pipe(Effect.provide(configContext));
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const crypto = yield* Crypto.Crypto;
       const home = path.join(config.baseDir, "codex-home");
       yield* fs.makeDirectory(home);
       const awaiting = yield* Deferred.make<void>();
@@ -452,6 +453,7 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
         transcript: silentTranscript,
         driver: silentReplay,
       });
+      const digest = yield* Digest.Digest;
       const registry = ProviderAdapterRegistry.layerFromAdaptersEffect(
         Effect.gen(function* () {
           const allocator = yield* IdAllocator.IdAllocatorV2;
@@ -509,11 +511,11 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
             ],
             ({ instanceId, clientFactory }) =>
               Codex.makeCodexAdapterV2({
+                digest,
                 instanceId,
                 clientFactory,
-                settings: Schema.decodeSync(CodexSettings)({ homePath: home }),
+                settings: decodeCodexSettings({ homePath: home }),
                 environment: { CODEX_HOME: home },
-                crypto,
                 fileSystem: fs,
                 idAllocator: allocator,
                 serverConfig: config,
@@ -524,6 +526,7 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
         Layer.provide(IdAllocator.layer),
         Layer.provide(ControlAdmission.layer),
         Layer.provide(NodeServices.layer),
+        Layer.provide(NodeCrypto.layer),
       );
       const runtime = Harness.layerWithRegistryAndServices(
         { name: "codex-startup-composition", runtimePolicyOverride: { cwd } },
@@ -532,6 +535,7 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
           serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, config),
           databaseLayer: Sqlite.layerFromPath(config.dbPath).pipe(
             Layer.provide(NodeServices.layer),
+            Layer.provide(NodeCrypto.layer),
           ),
         },
       );
@@ -823,8 +827,14 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
           assert.equal(state.cursor, replay.transcript.entries.length);
         }
       }).pipe(Effect.provide(services));
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
+
+const compiledRecoverySchema3 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+const compiledRecoverySchema2 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+const compiledRecoverySchema1 = Schema.decodeEffect(CodexSettings);
 
 it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as const)(
   "a new ordinary send reconciles a preboundary native creation before admission: %s",
@@ -837,7 +847,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
       const config = yield* ServerConfig.ServerConfig.pipe(Effect.provide(configContext));
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const crypto = yield* Crypto.Crypto;
+      const digest = yield* Digest.Digest;
       const home = path.join(config.baseDir, "codex-home");
       yield* fs.makeDirectory(home);
       const threadId = ThreadId.make("publication-new-send-thread");
@@ -999,12 +1009,12 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         Effect.gen(function* () {
           admission = yield* ControlAdmission.ControlAdmission;
           const allocator = yield* IdAllocator.IdAllocatorV2;
-          const settings = yield* Schema.decodeEffect(CodexSettings)({ homePath: home });
+          const settings = yield* compiledRecoverySchema1({ homePath: home });
           const adapter = yield* Codex.makeCodexAdapterV2({
             instanceId,
             settings,
             environment: { CODEX_HOME: home },
-            crypto,
+            digest,
             fileSystem: fs,
             idAllocator: allocator,
             serverConfig: config,
@@ -1059,6 +1069,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         Layer.provide(IdAllocator.layer),
         Layer.provide(ControlAdmission.layer),
         Layer.provide(NodeServices.layer),
+        Layer.provide(NodeCrypto.layer),
       );
       let publicationFailures = 0;
       const faultStore = Layer.effect(
@@ -1100,7 +1111,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
           if (!cancelledHandoff) return "";
           const projection = yield* orchestrator.getThreadProjection(threadId);
           const replayState = yield* Ref.get(replay.state);
-          const diagnostic = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+          const diagnostic = yield* compiledRecoverySchema2({
             stage,
             failure,
             runs: projection.runs,
@@ -1186,7 +1197,6 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
           const claimed = Option.getOrThrow(
             yield* outbox.claimNext({
               workerId: "publication-cancelled-worker",
-              leaseDurationMs: 30_000,
               excludeTitleGeneration: true,
             }),
           );
@@ -1235,38 +1245,32 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
             ["initialize", "thread/start"],
           );
         }
-        const terminal =
-          mode !== "unknown-steer"
-            ? yield* orchestrator.streamStoredEvents.pipe(
-                Stream.filter(
-                  ({ event }) =>
-                    event.type === "run.updated" &&
-                    event.threadId === threadId &&
-                    event.payload.ordinal === finalOrdinal &&
-                    ["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(
-                      event.payload.status,
-                    ),
-                ),
-                Stream.take(1),
-                Stream.runDrain,
-                Effect.forkScoped({ startImmediately: true }),
-              )
-            : undefined;
+        const terminal = yield* orchestrator.streamStoredEvents.pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "run.updated" &&
+              event.threadId === threadId &&
+              event.payload.ordinal === finalOrdinal &&
+              event.payload.userMessageId === MessageId.make("publication-new-send:new-owner") &&
+              ["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(
+                event.payload.status,
+              ),
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped({ startImmediately: true }),
+        );
         if (cancelledHandoff)
           yield* EffectWorker.runDaemon.pipe(Effect.forkScoped({ startImmediately: true }));
         yield* send("new-owner", newPrompt);
         yield* worker.drain();
         yield* traceRecovery("final-start-drained");
-        if (terminal !== undefined) {
-          yield* Fiber.join(terminal);
-          yield* traceRecovery("final-terminal-observed");
-          yield* worker.drain();
-        }
+        yield* Fiber.join(terminal);
+        yield* traceRecovery("final-terminal-observed");
+        yield* worker.drain();
         const recovered = yield* orchestrator.getThreadProjection(threadId);
         const replayState = yield* Ref.get(replay.state);
-        const recoveryDiagnostic = yield* Schema.encodeEffect(
-          Schema.fromJsonString(Schema.Unknown),
-        )({
+        const recoveryDiagnostic = yield* compiledRecoverySchema3({
           run: recovered.runs[finalOrdinal - 1],
           errors: recovered.turnItems.flatMap((item) =>
             item.runId === recovered.runs[finalOrdinal - 1]?.id && item.type === "error"
@@ -1329,5 +1333,5 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
           ),
         ),
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );

@@ -20,6 +20,8 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import "~/index.css";
+// Resolve the real routed view before the fixture starts its controlled connection.
+import "../../components/ThreadRouteView";
 import { AppRoot } from "../../AppRoot";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 import { __setClientSettingsForTests } from "../../hooks/useSettings";
@@ -125,6 +127,31 @@ vi.mock(import("../../rpc/requestLatencyState"), async (original) => ({
   trackRpcRequestSent: () => {},
 }));
 
+// App modules can subscribe before a test starts. Admit real primary HTTP only
+// after this file has installed its synthetic descriptor/session/transport.
+const primaryFixtureAdmission = vi.hoisted(() => {
+  let admit!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    admit = resolve;
+  });
+  return { ready, admit };
+});
+vi.mock(import("~/environments/primary/httpLayer"), async (original) => {
+  const [actual, Effect, Layer] = await Promise.all([
+    original(),
+    import("effect/Effect"),
+    import("effect/Layer"),
+  ]);
+  return {
+    ...actual,
+    layer: Layer.unwrap(
+      Effect.promise(() => primaryFixtureAdmission.ready).pipe(
+        Effect.map(() => actual.layerForCurrentOrigin()),
+      ),
+    ),
+  };
+});
+
 it.each([false, true])(
   "restores editable rejection and sends a deliberate new identity into the proven target; launch: %s",
   async (launch) => {
@@ -139,6 +166,7 @@ it.each([false, true])(
     };
     const existing = threadWithHistory("confirmed-rejection", 1);
     using _environment = installFakeEnvironment([existing]);
+    primaryFixtureAdmission.admit();
     using delivery = deferFakeSends();
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,
@@ -262,6 +290,7 @@ it.each(["failed", "superseded"] as const)(
       [Symbol.dispose]: () => useComposerDraftStore.setState(previous, true),
     };
     using _environment = installFakeEnvironment([threadWithHistory("recovery-navigation", 1)]);
+    primaryFixtureAdmission.admit();
     using delivery = deferFakeSends();
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,

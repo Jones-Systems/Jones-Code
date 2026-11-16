@@ -118,6 +118,14 @@ const snapshot = (carriers: ReadonlyArray<ImportedApplicationAttachmentCarrierV1
   };
 };
 
+const compiledDecodeUnknownOption1 = Schema.decodeUnknownOption(
+  ImportedApplicationAttachmentBirthV1,
+);
+const compiledDecodeOption2 = Schema.decodeOption(ImportedApplicationAttachmentBirthV1);
+const compiledDecodeUnknownOption3 = Schema.decodeUnknownOption(
+  ImportedApplicationAttachmentSourceV1,
+);
+
 describe("imported application attachment inventory", () => {
   it("keeps all message roles, null and zero carriers, and distinct answers with duplicate request IDs", () => {
     const carriers = [
@@ -289,20 +297,16 @@ describe("imported application attachment inventory", () => {
   it("rejects excess source/birth fields and nonpositive application birth sequence", () => {
     expect(
       Option.isNone(
-        Schema.decodeUnknownOption(ImportedApplicationAttachmentBirthV1)({
+        compiledDecodeUnknownOption1({
           ...birth,
           nativeGeneration: "unproved",
         }),
       ),
     ).toBe(true);
+    expect(Option.isNone(compiledDecodeOption2({ ...birth, sequence: 0 }))).toBe(true);
     expect(
       Option.isNone(
-        Schema.decodeOption(ImportedApplicationAttachmentBirthV1)({ ...birth, sequence: 0 }),
-      ),
-    ).toBe(true);
-    expect(
-      Option.isNone(
-        Schema.decodeUnknownOption(ImportedApplicationAttachmentSourceV1)({
+        compiledDecodeUnknownOption3({
           ...snapshot([]).header.source,
           arbitraryCompleteness: true,
         }),

@@ -43,7 +43,7 @@ const make = Effect.gen(function* () {
   const sessions = yield* Sessions.ProviderSessionManagerV2;
   const serial = yield* Semaphore.make(1);
   return UserResponseRequestMcpService.of({
-    request: (scope, input) =>
+    request: Effect.fn("UserResponseRequestMcpService.request")((scope, input) =>
       serial.withPermits(1)(
         Effect.gen(function* () {
           const key = `${encodeURIComponent(encodeKeyPart(scope.requestNamespace))}:${encodeURIComponent(encodeKeyPart(input.clientRequestId))}`;
@@ -134,6 +134,7 @@ const make = Effect.gen(function* () {
           return { requestId, status: request.status, created: !hadReceipt };
         }),
       ),
+    ),
   });
 });
 export const layer = Layer.effect(UserResponseRequestMcpService, make);

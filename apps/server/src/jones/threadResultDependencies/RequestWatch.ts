@@ -34,6 +34,8 @@ export class RequestWatch extends Context.Service<
   }
 >()("t3/jones/threadResultDependencies/RequestWatch") {}
 
+const compiledIs1 = Schema.is(OrchestratorMcpFailure);
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const store = makeDependencyStore(sql, makeJonesTablePresence(sql));
@@ -219,7 +221,7 @@ const make = Effect.gen(function* () {
         }),
       ),
     Effect.mapError((error) =>
-      Schema.is(OrchestratorMcpFailure)(error)
+      compiledIs1(error)
         ? error
         : new OrchestratorMcpFailure({
             code: "orchestration_error",

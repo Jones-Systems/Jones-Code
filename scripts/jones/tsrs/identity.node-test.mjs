@@ -627,13 +627,17 @@ NodeTest.test(
         );
         NodeAssert.ok(
           diagnosticLines
-            .filter((line) => /error TS\d+/.test(line))
+            .filter((line) => /error TS\d+/.test(line) && !line.includes("TS377047"))
             .every((line) => /TS377017|TS377067/.test(line)),
           diagnostics,
         );
         NodeAssert.equal(
           fnSuggestions.length,
           context.provider ? 0 : suggestions.length,
+          diagnostics,
+        );
+        NodeAssert.ok(
+          fnSuggestions.every((line) => line.includes("error TS377047")),
           diagnostics,
         );
         for (const file of files) {

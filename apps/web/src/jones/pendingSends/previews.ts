@@ -41,7 +41,7 @@ export function usePendingPreviewRelease(
     }) ?? [];
   const resources = messages.flatMap((message) => selectMessageImageResources(message.attachments));
   const urls = useAssetUrls(environmentId, resources);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Preload authoritative image URLs before releasing store-owned local previews.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Preload authoritative image URLs before releasing store-owned local previews.
   useEffect(() => {
     let cancelled = false;
     const images: HTMLImageElement[] = [];

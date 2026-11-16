@@ -167,6 +167,7 @@ it.effect(
       const enrichment = yield* PubSub.unbounded<Enrichment.ProjectEnrichmentChange>();
       const threadReads = Layer.mock(Threads.ThreadManagementService)({
         readShellSnapshot: orchestrator.readShellSnapshot,
+        listActiveShellIndex: orchestrator.listActiveShellIndex,
         getThreadShell: orchestrator.getThreadShell,
         listActiveSubagentThreadIds: () =>
           f.projection.listActiveSubagentThreadIds().pipe(Effect.orDie),

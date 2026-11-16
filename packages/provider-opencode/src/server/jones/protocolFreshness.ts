@@ -112,6 +112,8 @@ export const makeOpenCodeProtocolFreshness = <E>(
     }
     let current: Epoch = { source: undefined };
     let lastSuccess = Option.none<ProbedOpenCode>();
+    // Counts admission results and recorded fallbacks; a slower status read cannot replace one.
+    let admissionWrites = 0;
 
     const read = (refresh: boolean): Effect.Effect<ProbedOpenCode, Failure> =>
       Effect.uninterruptibleMask((restore) =>
@@ -156,6 +158,7 @@ export const makeOpenCodeProtocolFreshness = <E>(
           if (current === epoch && Exit.isSuccess(exit)) {
             epoch.success = { result: exit.value, startedAt: now };
             lastSuccess = Option.some(exit.value);
+            admissionWrites += 1;
           }
           // Completion is masked even when the caller was interrupted; waiters cannot be stranded.
           delete epoch.flight;
@@ -167,6 +170,23 @@ export const makeOpenCodeProtocolFreshness = <E>(
     return {
       get: read(false),
       refresh: read(true),
+      // Status checks are not admissions. They probe directly, so health and catalog discovery do
+      // not wait on host identity reads, and they leave admission epochs untouched. The result is a
+      // hot read only; an admission still re-verifies the source and version before trusting it.
+      observe: Effect.suspend(() => {
+        const writesAtStart = admissionWrites;
+        return Effect.tap(probe, (probed) =>
+          Effect.sync(() => {
+            if (admissionWrites === writesAtStart) lastSuccess = Option.some(probed);
+          }),
+        );
+      }),
       lastSuccess: Effect.sync(() => lastSuccess),
+      // Hot reads only: an admission still re-verifies the source and version before it trusts this.
+      record: (probed: ProbedOpenCode) =>
+        Effect.sync(() => {
+          lastSuccess = Option.some(probed);
+          admissionWrites += 1;
+        }),
     };
   });

@@ -7,7 +7,7 @@ export function useHeaderControlsClearance(
   minimum: number,
 ) {
   const [clearance, setClearance] = useState(minimum);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Reserve the live fixed controls' overlap before fitting host readings; own resize subscriptions until either element changes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reserve the live fixed controls' overlap before fitting host readings; own resize subscriptions until either element changes.
   useLayoutEffect(() => {
     const header = headerRef.current;
     if (!header || !controls) {

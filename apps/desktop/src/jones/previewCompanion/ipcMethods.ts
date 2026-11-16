@@ -90,6 +90,8 @@ export const setTicketProviderReady = DesktopIpc.makeIpcMethod({
   }),
 });
 
+const compiledDecodeUnknownEffect1 = Schema.decodeUnknownEffect(DesktopCompanionTicketResponse);
+
 export const completeTicket = DesktopIpc.makeIpcMethod({
   channel: Channels.COMPLETE_TICKET,
   // Decode after sender validation, replacing schema errors that could contain a ticket URL.
@@ -97,7 +99,7 @@ export const completeTicket = DesktopIpc.makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("CompanionIpc.completeTicket")(function* (raw, event) {
     yield* mainRenderer(event);
-    const response = yield* Schema.decodeUnknownEffect(DesktopCompanionTicketResponse)(raw).pipe(
+    const response = yield* compiledDecodeUnknownEffect1(raw).pipe(
       Effect.mapError(() => new CompanionIpcPayloadError()),
     );
     yield* (yield* CompanionUplink.CompanionUplink).completeTicket(response);

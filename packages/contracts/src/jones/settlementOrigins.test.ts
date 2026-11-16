@@ -10,6 +10,9 @@ import {
 
 const item = { threadId: "thread:origin", settledAtMs: 1_700_000_000_123 };
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(SettlementOriginsCapability);
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(SettlementOriginsResult);
+
 describe("settlement origins contracts", () => {
   it("negotiates an optional v1 capability independently of thread settlement", () => {
     const descriptor = {
@@ -31,7 +34,7 @@ describe("settlement origins contracts", () => {
       }).capabilities.settlementOrigins,
     ).toEqual({ schemaVersion: "jones.settlement-origins/v1" });
     expect(() =>
-      Schema.decodeUnknownSync(SettlementOriginsCapability)({
+      compiledDecodeUnknownSync1({
         schemaVersion: "jones.settlement-origins/v2",
       }),
     ).toThrow();
@@ -50,9 +53,7 @@ describe("settlement origins contracts", () => {
 
   it("preserves positional query identity and the conservative unknown result", () => {
     const items = ["client", "other", "unknown"].map((origin) => ({ ...item, origin }));
-    expect(Schema.decodeUnknownSync(SettlementOriginsResult)({ items })).toEqual({ items });
-    expect(() =>
-      Schema.decodeUnknownSync(SettlementOriginsResult)({ items: [{ ...item, origin: "manual" }] }),
-    ).toThrow();
+    expect(compiledDecodeUnknownSync2({ items })).toEqual({ items });
+    expect(() => compiledDecodeUnknownSync2({ items: [{ ...item, origin: "manual" }] })).toThrow();
   });
 });

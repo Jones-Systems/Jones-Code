@@ -1,0 +1,345 @@
+diff --git a/dist/rpc/RpcClient.js b/dist/rpc/RpcClient.js
+--- a/dist/rpc/RpcClient.js
++++ b/dist/rpc/RpcClient.js
+@@ -49 +49,2 @@
+-export const makeNoSerialization = /*#__PURE__*/Effect.fnUntraced(function* (group, options) {
++export const makeNoSerialization = (group, options) => makeNoSerializationInternal(group, options).pipe(Effect.map(({ client, write }) => ({ client, write })));
++const makeNoSerializationInternal = /*#__PURE__*/Effect.fnUntraced(function* (group, options) {
+@@ -62,6 +63,5 @@
+-  const clearEntries = Effect.fnUntraced(function* (exit) {
+-    // Resuming callers can synchronously start new requests.
+-    const pending = Array.from(entries.values());
+-    entries.clear();
+-    // Once detached, every entry must complete even if delivery is interrupted.
+-    for (const entry of pending) {
++  const clearEntries = (exit, requestIds = entries.keys()) => Effect.sync(() => {
++    const pending = Array.from(requestIds, id => [id, entries.get(id)]);
++    for (const [id] of pending) entries.delete(id);
++    for (const [, entry] of pending) {
++      if (!entry) continue;
+@@ -69 +69,3 @@
+-        yield* exit._tag === "Success" ? Queue.end(entry.queue) : Queue.failCause(entry.queue, exit.cause);
++        if (exit._tag === "Success") Queue.endUnsafe(entry.queue);
++        else Queue.failCauseUnsafe(entry.queue, exit.cause);
++        entry.cancelDelivery();
+@@ -74 +76 @@
+-  }, Effect.uninterruptible);
++  });
+@@ -168,0 +171,74 @@
++    // The terminal protocol permits eight unacknowledged chunks. Include the
++    // active delivery until acceptance; the consumer queue is unchanged.
++    const pending = [];
++    let pendingChunks = 0;
++    let stopped = false;
++    let ending = false;
++    const wakeDelivery = Latch.makeUnsafe();
++    let deliveryStarted = false;
++    let deliveryFiber;
++    const clearDelivery = () => {
++      stopped = true;
++      pending.length = 0;
++      pendingChunks = 0;
++    };
++    const cancelDelivery = () => {
++      clearDelivery();
++      deliveryFiber?.interruptUnsafe();
++    };
++    const deliver = Effect.gen(function* () {
++      while (!stopped) {
++        const message = pending.shift();
++        if (!message) {
++          wakeDelivery.closeUnsafe();
++          yield* wakeDelivery.await;
++          continue;
++        }
++        if (message._tag === "Exit") {
++          entries.delete(id);
++          clearDelivery();
++          yield* message.exit._tag === "Success" ? Queue.end(queue) : Queue.failCause(queue, message.exit.cause);
++          return;
++        }
++        const dropped = yield* Queue.offerAll(queue, message.values);
++        if (stopped || dropped.length > 0) return;
++        pendingChunks -= 1;
++        // Release the slot before ACK: a synchronous sender may replenish it.
++        if (supportsAck) {
++          yield* options.onFromClient({
++            message: { _tag: "Ack", requestId: id },
++            context
++          });
++        }
++      }
++    }).pipe(Effect.catchCause(cause => {
++      clearDelivery();
++      return Queue.failCause(queue, cause).pipe(Effect.asVoid);
++    }));
++    const write = message => Effect.suspend(() => {
++      if (stopped || ending) return Effect.void;
++      if (message._tag === "Chunk") {
++        if (pendingChunks >= 8) {
++          Queue.failCauseUnsafe(queue, Cause.die(new RpcClientError({
++            reason: new RpcClientDefect({
++              message: "RPC stream exceeded its pending response limit",
++              cause: new Error("Received more than eight unaccepted stream chunks")
++            })
++          })));
++          entries.delete(id);
++          cancelDelivery();
++          return sendInterrupt(id, [], context).pipe(Effect.forkIn(scope, { startImmediately: true }), Effect.asVoid);
++        }
++        pendingChunks += 1;
++      } else {
++        ending = true;
++      }
++      pending.push(message);
++      wakeDelivery.openUnsafe();
++      if (deliveryStarted) return Effect.void;
++      deliveryStarted = true;
++      return deliver.pipe(Effect.interruptible, Effect.forkIn(scope, { startImmediately: true }), Effect.tap(fiber => Effect.sync(() => {
++        deliveryFiber = fiber;
++        if (stopped) fiber.interruptUnsafe();
++      })), Effect.asVoid);
++    });
+@@ -169,0 +246 @@
++      cancelDelivery();
+@@ -180 +257,3 @@
+-      context
++      context,
++      write,
++      cancelDelivery
+@@ -250,10 +329,4 @@
+-          return Queue.offerAll(entry.queue, message.values).pipe(supportsAck ? Effect.flatMap(dropped =>
+-          // values are dropped when the queue was shutdown by an interrupted
+-          // consumer, so the server should not be asked for more
+-          dropped.length > 0 ? Effect.void : options.onFromClient({
+-            message: {
+-              _tag: "Ack",
+-              requestId: message.requestId
+-            },
+-            context: entry.context
+-          })) : identity, Effect.catchCause(cause => Queue.failCause(entry.queue, cause)));
++          if (!supportsAck) {
++            return Queue.offerAll(entry.queue, message.values).pipe(Effect.catchCause(cause => Queue.failCause(entry.queue, cause)));
++          }
++          return entry.write(message);
+@@ -265,0 +339 @@
++          if (entry._tag === "Queue" && supportsAck) return entry.write(message);
+@@ -302 +376,2 @@
+-    write
++    write,
++    abort: clearEntries
+@@ -339,2 +414,3 @@
+-    write
+-  } = yield* makeNoSerialization(group, {
++    write,
++    abort
++  } = yield* makeNoSerializationInternal(group, {
+@@ -378,2 +454 @@
+-            const entry = entries.get(message.requestId);
+-            if (!entry) return Effect.void;
++            // Buffered chunks can be accepted after Exit removed the decode entry.
+@@ -468,6 +543 @@
+-          return Effect.forEach(requestIds, requestId => write({
+-            _tag: "Exit",
+-            clientId: 0,
+-            requestId,
+-            exit: exit
+-          })).pipe(Effect.uninterruptible);
++          return abort(exit, requestIds);
+diff --git a/dist/rpc/RpcGroup.d.ts b/dist/rpc/RpcGroup.d.ts
+--- a/dist/rpc/RpcGroup.d.ts
++++ b/dist/rpc/RpcGroup.d.ts
+@@ -144 +144,4 @@
+-export type HandlersServices<Rpcs extends Rpc.Any, Handlers> = keyof Handlers extends infer K ? K extends keyof Handlers & string ? HandlerServices<Rpcs, K, Handlers[K]> : never : never;
++export type HandlersServices<Rpcs extends Rpc.Any, Handlers> = keyof Handlers extends infer K ? K extends keyof Handlers & string ? K extends keyof RpcsByTag<Rpcs> ? RpcsByTag<Rpcs>[K] extends infer Current extends Rpc.Any ? HandlerServices<Current, K, Handlers[K]> : never : HandlerServices<Rpcs, K, Handlers[K]> : never : never;
++type RpcsByTag<Rpcs extends Rpc.Any> = {
++    readonly [Current in Rpcs as Current["_tag"]]: Current;
++};
+diff --git a/src/rpc/RpcClient.ts b/src/rpc/RpcClient.ts
+--- a/src/rpc/RpcClient.ts
++++ b/src/rpc/RpcClient.ts
+@@ -279 +279,4 @@
+-> = Effect.fnUntraced(function*<Rpcs extends Rpc.Any, E, const Flatten extends boolean = false>(
++> = (group, options) =>
++  makeNoSerializationInternal(group, options).pipe(Effect.map(({ client, write }) => ({ client, write })))
++
++const makeNoSerializationInternal = Effect.fnUntraced(function*<Rpcs extends Rpc.Any, E, const Flatten extends boolean = false>(
+@@ -303,0 +307 @@
++  type StreamResponse = Extract<FromServer<Rpcs>, { readonly _tag: "Chunk" | "Exit" }>
+@@ -314,0 +319,2 @@
++    readonly write: (message: StreamResponse) => Effect.Effect<void>
++    readonly cancelDelivery: () => void
+@@ -327,6 +333,9 @@
+-  const clearEntries = Effect.fnUntraced(function*(exit: Exit.Exit<never>) {
+-    // Resuming callers can synchronously start new requests.
+-    const pending = Array.from(entries.values())
+-    entries.clear()
+-    // Once detached, every entry must complete even if delivery is interrupted.
+-    for (const entry of pending) {
++  const clearEntries = (
++    exit: Exit.Exit<never, unknown>,
++    requestIds: Iterable<RequestId> = entries.keys()
++  ) => Effect.sync(() => {
++    // Detach the captured entries before resuming any caller, which can synchronously request again.
++    const pending = Array.from(requestIds, (id) => [id, entries.get(id)] as const)
++    for (const [id] of pending) entries.delete(id)
++    for (const [, entry] of pending) {
++      if (!entry) continue
+@@ -334,3 +343,3 @@
+-        yield* (exit._tag === "Success"
+-          ? Queue.end(entry.queue as any)
+-          : Queue.failCause(entry.queue as any, exit.cause)) as Effect.Effect<void>
++        if (exit._tag === "Success") Queue.endUnsafe(entry.queue)
++        else Queue.failCauseUnsafe(entry.queue, exit.cause)
++        entry.cancelDelivery()
+@@ -341 +350 @@
+-  }, Effect.uninterruptible)
++  })
+@@ -492,0 +502,86 @@
++    // The terminal protocol permits eight unacknowledged chunks. Include the
++    // active delivery until acceptance; the consumer queue is unchanged.
++    const pending: Array<StreamResponse> = []
++    let pendingChunks = 0
++    let stopped = false
++    let ending = false
++    const wakeDelivery = Latch.makeUnsafe()
++    let deliveryStarted = false
++    let deliveryFiber: Fiber.Fiber<void> | undefined
++    const clearDelivery = () => {
++      stopped = true
++      pending.length = 0
++      pendingChunks = 0
++    }
++    const cancelDelivery = () => {
++      clearDelivery()
++      deliveryFiber?.interruptUnsafe()
++    }
++    const deliver = Effect.gen(function*() {
++      while (!stopped) {
++        const message = pending.shift()
++        if (!message) {
++          wakeDelivery.closeUnsafe()
++          yield* wakeDelivery.await
++          continue
++        }
++        if (message._tag === "Exit") {
++          entries.delete(id)
++          clearDelivery()
++          yield* message.exit._tag === "Success"
++            ? Queue.end(queue)
++            : Queue.failCause(queue, message.exit.cause)
++          return
++        }
++        const dropped = yield* Queue.offerAll(queue, message.values)
++        if (stopped || dropped.length > 0) return
++        pendingChunks -= 1
++        // Release the slot before ACK: a synchronous sender may replenish it.
++        if (supportsAck) {
++          yield* options.onFromClient({
++            message: { _tag: "Ack", requestId: id },
++            context
++          })
++        }
++      }
++    }).pipe(
++      Effect.catchCause((cause) => {
++        clearDelivery()
++        return Queue.failCause(queue, cause).pipe(Effect.asVoid)
++      })
++    )
++    const write = (message: StreamResponse): Effect.Effect<void> => Effect.suspend(() => {
++      if (stopped || ending) return Effect.void
++      if (message._tag === "Chunk") {
++        if (pendingChunks >= 8) {
++          Queue.failCauseUnsafe(queue, Cause.die(new RpcClientError({
++            reason: new RpcClientDefect({
++              message: "RPC stream exceeded its pending response limit",
++              cause: new Error("Received more than eight unaccepted stream chunks")
++            })
++          })))
++          entries.delete(id)
++          cancelDelivery()
++          return sendInterrupt(id, [], context).pipe(
++            Effect.forkIn(scope, { startImmediately: true }),
++            Effect.asVoid
++          )
++        }
++        pendingChunks += 1
++      } else {
++        ending = true
++      }
++      pending.push(message)
++      wakeDelivery.openUnsafe()
++      if (deliveryStarted) return Effect.void
++      deliveryStarted = true
++      return deliver.pipe(
++        Effect.interruptible,
++        Effect.forkIn(scope, { startImmediately: true }),
++        Effect.tap((fiber) => Effect.sync(() => {
++          deliveryFiber = fiber
++          if (stopped) fiber.interruptUnsafe()
++        })),
++        Effect.asVoid
++      )
++    })
+@@ -495,0 +591 @@
++        cancelDelivery()
+@@ -514 +610,3 @@
+-      context
++      context,
++      write,
++      cancelDelivery
+@@ -606,13 +704,6 @@
+-        return Queue.offerAll(entry.queue, message.values).pipe(
+-          supportsAck
+-            ? Effect.flatMap((dropped) =>
+-              // values are dropped when the queue was shutdown by an interrupted
+-              // consumer, so the server should not be asked for more
+-              dropped.length > 0 ? Effect.void : options.onFromClient({
+-                message: { _tag: "Ack", requestId: message.requestId },
+-                context: entry.context
+-              })
+-            )
+-            : identity,
+-          Effect.catchCause((cause) => Queue.failCause(entry.queue, cause))
+-        )
++        if (!supportsAck) {
++          return Queue.offerAll(entry.queue, message.values).pipe(
++            Effect.catchCause((cause) => Queue.failCause(entry.queue, cause))
++          )
++        }
++        return entry.write(message)
+@@ -623,0 +715 @@
++        if (entry._tag === "Queue" && supportsAck) return entry.write(message)
+@@ -660 +752 @@
+-  return { client, write } as const
++  return { client, write, abort: clearEntries } as const
+@@ -718 +810 @@
+-  const { client, write } = yield* makeNoSerialization(group, {
++  const { client, write, abort } = yield* makeNoSerializationInternal(group, {
+@@ -761,2 +853 @@
+-          const entry = entries.get(message.requestId)
+-          if (!entry) return Effect.void
++          // Buffered chunks can be accepted after Exit removed the decode entry.
+@@ -841,4 +932 @@
+-        return Effect.forEach(
+-          requestIds,
+-          (requestId) => write({ _tag: "Exit", clientId: 0, requestId, exit: exit as any })
+-        ).pipe(Effect.uninterruptible)
++        return abort(exit, requestIds)
+diff --git a/src/rpc/RpcGroup.ts b/src/rpc/RpcGroup.ts
+--- a/src/rpc/RpcGroup.ts
++++ b/src/rpc/RpcGroup.ts
+@@ -215 +215,5 @@
+-  K extends keyof Handlers & string ? HandlerServices<Rpcs, K, Handlers[K]> : never :
++  K extends keyof Handlers & string ?
++    K extends keyof RpcsByTag<Rpcs> ?
++      RpcsByTag<Rpcs>[K] extends infer Current extends Rpc.Any ? HandlerServices<Current, K, Handlers[K]> : never
++    : HandlerServices<Rpcs, K, Handlers[K]>
++  : never :
+@@ -216,0 +221,5 @@
++
++// Each handler looks up its own RPC by tag. Passing the whole union to every
++// handler costs handlers x RPCs instantiations, which exhausts the checker's
++// per-expression budget for a group of about 200 RPCs.
++type RpcsByTag<Rpcs extends Rpc.Any> = { readonly [Current in Rpcs as Current["_tag"]]: Current }

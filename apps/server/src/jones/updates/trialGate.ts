@@ -334,6 +334,8 @@ async function isCommittedRestart(
 }
 
 /** Holds startup until an exact trial grant or a fully evidenced committed child restart. */
+const compiledIs1 = Schema.is(JonesTrialGateError);
+
 export async function awaitJonesTrialCommit(input: {
   descriptorPath?: string | undefined;
   home: string;
@@ -391,7 +393,7 @@ export async function awaitJonesTrialCommit(input: {
     )
       throw new Error("Descriptor identity or artifact paths differ.");
   } catch (cause) {
-    if (Schema.is(JonesTrialGateError)(cause)) throw cause;
+    if (compiledIs1(cause)) throw cause;
     throw new JonesTrialGateError({ step: "identity", uncertain: false, cause });
   }
   try {
@@ -404,7 +406,7 @@ export async function awaitJonesTrialCommit(input: {
     if (legacyStagedHandle !== undefined)
       throw new Error("Legacy trial evidence is readable only for its committed generation.");
   } catch (cause) {
-    if (Schema.is(JonesTrialGateError)(cause)) throw cause;
+    if (compiledIs1(cause)) throw cause;
     throw new JonesTrialGateError({ step: "identity", uncertain: false, cause });
   }
   const reservationPath = NodePath.join(NodePath.dirname(descriptorPath), "resume-dispatched.json");
@@ -437,7 +439,7 @@ export async function awaitJonesTrialCommit(input: {
     let reservationPublished = false;
     const finish = (cause?: unknown) => {
       if (terminal) {
-        if (Schema.is(JonesTrialGateError)(cause) && cause.uncertain) terminalCause = cause;
+        if (compiledIs1(cause) && cause.uncertain) terminalCause = cause;
         return;
       }
       terminal = true;
@@ -497,7 +499,7 @@ export async function awaitJonesTrialCommit(input: {
         cancelled(signal);
         finish();
       } catch (cause) {
-        if (Schema.is(JonesTrialGateError)(cause)) finish(cause);
+        if (compiledIs1(cause)) finish(cause);
         else if (cause instanceof PublicationFailure) {
           reservationPublished = cause.published;
           finish(new JonesTrialGateError({ step, uncertain: cause.published, cause: cause.cause }));

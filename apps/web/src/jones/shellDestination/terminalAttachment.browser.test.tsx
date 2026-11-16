@@ -1,6 +1,7 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { nextTerminalAttachSeedState } from "@t3tools/client-runtime/state/terminal";
+import { Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { act, render } from "../../../test/render";
 import { focusTerminal } from "../../lib/terminalFocus";
@@ -25,7 +26,10 @@ vi.mock(import("../../state/use-atom-command"), () => ({
 }));
 vi.mock(import("../../state/terminalSessions"), async (original) => ({
   ...(await original()),
-  useAttachedTerminalSession: state.attach as never,
+  // Observe the current atom boundary before the WASM surface starts, retaining
+  // the exact launch-field assertions from the former hook-based fixture.
+  attachedTerminalSessionAtom: (environmentId, terminal) =>
+    Atom.make(state.attach({ environmentId, terminal })),
 }));
 vi.mock(import("../../terminal/ghostty/surface"), async (original) => ({
   ...(await original()),

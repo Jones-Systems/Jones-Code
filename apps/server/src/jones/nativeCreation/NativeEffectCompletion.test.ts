@@ -27,8 +27,9 @@ const upstreamOnly = Outbox.layer.pipe(
   Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
 );
 
+const decodeExecutionReference = Schema.decodeEffect(NativeCreationExecutionReferenceV2);
 const reference = (effectId: string) =>
-  Schema.decodeEffect(NativeCreationExecutionReferenceV2)({
+  decodeExecutionReference({
     version: 2,
     claimId: "claim:completion",
     stageCommandId: commandId,
@@ -36,55 +37,83 @@ const reference = (effectId: string) =>
     stage: "native_command",
   });
 
-it.effect("ordinary succeed is one guarded UPDATE that reads no payload and no Jones table", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const outbox = yield* Outbox.EffectOutboxV2;
-    assert.deepEqual(yield* sql`SELECT name FROM sqlite_master WHERE name LIKE 'jones_%'`, []);
-    yield* outbox.enqueue([
-      {
-        id: "effect:ordinary:start",
-        commandId,
-        threadId,
-        request: { type: "provider-turn.start", runId: RunId.make("run:ordinary") },
-      },
-      {
-        id: "effect:ordinary:continue",
-        commandId,
-        threadId,
-        request: {
-          type: "provider-runtime.continue",
-          sourceRunId: RunId.make("run:ordinary"),
-          preparedForRestart: true,
+it.effect(
+  "upstream-only ordinary succeed checks deletion-table presence then performs one guarded UPDATE without payload or Jones-table data reads",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const outbox = yield* Outbox.EffectOutboxV2;
+      assert.deepEqual(yield* sql`SELECT name FROM sqlite_master WHERE name LIKE 'jones_%'`, []);
+      yield* outbox.enqueue([
+        {
+          id: "effect:ordinary:start",
+          commandId,
+          threadId,
+          request: { type: "provider-turn.start", runId: RunId.make("run:ordinary") },
         },
-      },
-    ]);
-    // Lease rows as a worker claim would; claiming needs projection state this test omits.
-    yield* sql`UPDATE orchestration_v2_effect_outbox SET status='running', attempt_count=1,
-        lease_owner='worker', lease_expires_at='2099-01-01T00:00:00.000Z'`;
-    for (const effectId of ["effect:ordinary:start", "effect:ordinary:continue"]) {
-      const queries: Array<string> = [];
-      const succeeded = yield* outbox.succeed({ effectId, workerId: "worker" }).pipe(
-        Effect.provideService(Statement.CurrentTransformer, (statement) =>
-          Effect.sync(() => {
-            queries.push(statement.compile()[0]);
-            return statement;
-          }),
-        ),
+        {
+          id: "effect:ordinary:continue",
+          commandId,
+          threadId,
+          request: {
+            type: "provider-runtime.continue",
+            sourceRunId: RunId.make("run:ordinary"),
+            preparedForRestart: true,
+          },
+        },
+      ]);
+      // Lease rows as a worker claim would; claiming needs projection state this test omits.
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET status='running', attempt_count=1,
+        lease_owner='worker'`;
+      for (const effectId of ["effect:ordinary:start", "effect:ordinary:continue"]) {
+        const queries: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+        const succeeded = yield* outbox.succeed({ effectId, workerId: "worker" }).pipe(
+          Effect.provideService(Statement.CurrentTransformer, (statement) =>
+            Effect.sync(() => {
+              queries.push(statement.compile());
+              return statement;
+            }),
+          ),
+        );
+        assert.isTrue(succeeded);
+        assert.strictEqual(queries.length, 2);
+        assert.deepEqual(queries[0], [
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+          ["jones_deletion_worktree_admissions"],
+        ]);
+        assert.strictEqual(
+          queries[1]![0].replace(/\s+/g, " ").trim(),
+          `
+        UPDATE orchestration_v2_effect_outbox
+        SET status = 'succeeded', lease_owner = NULL,
+            completed_at = ?, updated_at = ?, last_error = NULL
+        WHERE effect_id = ? AND status = 'running' AND lease_owner = ?
+          AND 1 = 1
+          AND json_type(payload_json, '$.request') IS NULL
+          AND json_type(payload_json, '$.nativeCreationExecutionReference') IS NULL
+          AND 1 = 1
+        RETURNING effect_id
+      `
+            .replace(/\s+/g, " ")
+            .trim(),
+        );
+        assert.deepEqual(queries[1]![1], [
+          "1970-01-01T00:00:00.000Z",
+          "1970-01-01T00:00:00.000Z",
+          effectId,
+          "worker",
+        ]);
+        assert.match(queries[1]![0].trim(), /^UPDATE orchestration_v2_effect_outbox/);
+        assert.notInclude(queries[1]![0], "jones_");
+      }
+      assert.deepEqual(
+        yield* sql`SELECT effect_id, status FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+        [
+          { effect_id: "effect:ordinary:continue", status: "succeeded" },
+          { effect_id: "effect:ordinary:start", status: "succeeded" },
+        ],
       );
-      assert.isTrue(succeeded);
-      assert.strictEqual(queries.length, 1);
-      assert.match(queries[0]!.trim(), /^UPDATE orchestration_v2_effect_outbox/);
-      assert.notInclude(queries[0]!, "jones_");
-    }
-    assert.deepEqual(
-      yield* sql`SELECT effect_id, status FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
-      [
-        { effect_id: "effect:ordinary:continue", status: "succeeded" },
-        { effect_id: "effect:ordinary:start", status: "succeeded" },
-      ],
-    );
-  }).pipe(Effect.provide(upstreamOnly)),
+    }).pipe(Effect.provide(upstreamOnly)),
 );
 
 it.effect(

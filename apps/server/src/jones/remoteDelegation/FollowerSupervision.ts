@@ -1,15 +1,9 @@
 import type { NodeId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as Schedule from "effect/Schedule";
 
-const backoff = Schedule.exponential(Duration.seconds(2)).pipe(
-  Schedule.modifyDelay(({ duration }) =>
-    Effect.succeed(Duration.min(duration, Duration.minutes(5))),
-  ),
-);
+import { FollowRetrySchedule } from "./retrySchedule.ts";
 
 /** Keep recovery in the owning fiber so its single-flight entry survives every retry. */
 export const retry = Effect.fn("RemoteFollowerSupervision.retry")(function* <A, E, R>(
@@ -19,6 +13,7 @@ export const retry = Effect.fn("RemoteFollowerSupervision.retry")(function* <A, 
     readonly taskId?: NodeId;
   },
 ): Effect.fn.Return<A, never, R> {
+  const backoff = yield* FollowRetrySchedule;
   return yield* operation.pipe(
     Effect.catchCause((cause) => {
       // Shutdown wins even when an interrupted operation's finalizer also defects.

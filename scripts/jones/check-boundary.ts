@@ -338,11 +338,11 @@ function resolveImport(
   aliases: Map<string, string>,
 ): { target?: string; internal: boolean } {
   let candidate: string | undefined;
-  const assetSpecifier = specifier.replace(/\?(?:url|raw|inline)(?:&no-inline)?$/, "");
+  const assetSpecifier = specifier.replace(/\?(?:worker&)?(?:url|raw|inline)(?:&no-inline)?$/, "");
   if (specifier.startsWith("."))
     candidate = NodePath.posix.join(NodePath.posix.dirname(from), assetSpecifier);
   else if (specifier.startsWith("~/") && /^apps\/[^/]+\//.test(from))
-    candidate = `${from.split("/").slice(0, 2).join("/")}/src/${specifier.slice(2)}`;
+    candidate = `${from.split("/").slice(0, 2).join("/")}/src/${assetSpecifier.slice(2)}`;
   else candidate = aliases.get(specifier);
   const internal =
     candidate !== undefined ||
@@ -537,7 +537,7 @@ export function checkBoundary(
     acceptedUnsupported,
     scannedFiles,
     coverage:
-      "TypeScript AST: import/export, import-equals, import types, literal dynamic import and bare require. Computed calls fail conservatively unless exact source/anchor hashes and expressions have visible unsupported-case dispositions; contracts cannot use these dispositions. Resolution covers relative files, Vite url/raw/inline/no-inline asset queries, app ~/ aliases, exact workspace and nested mobile package exports (types/import/default); other internal aliases fail conservatively. Does not follow eval, indirect loaders, wildcard exports, arbitrary tsconfig aliases or external package re-exports.",
+      "TypeScript AST: import/export, import-equals, import types, literal dynamic import and bare require. Computed calls fail conservatively unless exact source/anchor hashes and expressions have visible unsupported-case dispositions; contracts cannot use these dispositions. Resolution covers relative files, Vite url/raw/inline/no-inline and worker&url asset queries, app ~/ aliases, exact workspace and nested mobile package exports (types/import/default); other internal aliases fail conservatively. Does not follow eval, indirect loaders, wildcard exports, arbitrary tsconfig aliases or external package re-exports.",
   };
 }
 function git(root: string, args: string[]): string {
@@ -610,13 +610,15 @@ export function runCli(args: string[]): number {
   const tree = new Map<string, string>();
   for (const name of new Set(files)) {
     if (!/^(?:apps|packages|scripts)\//.test(name) && !requiredSnapshots.has(name)) continue;
-    safePath(name);
+    // Non-source files (such as Astro `[...locale]` routes) are never read, so only scanned names
+    // need the safe-path check.
     if (
       !sourcePattern.test(name) &&
       !/^(?:(?:apps|packages)\/[^/]+|apps\/mobile\/modules\/[^/]+)\/package\.json$/.test(name) &&
       !requiredSnapshots.has(name)
     )
       continue;
+    safePath(name);
     const full = NodePath.join(root, name);
     let stat;
     try {

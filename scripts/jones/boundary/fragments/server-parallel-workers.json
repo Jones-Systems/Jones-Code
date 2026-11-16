@@ -12,7 +12,10 @@
     "apps/server/src/jones/workspace/nativeSearchRuntime.test.ts",
     "apps/server/src/jones/workspace/searchWorkerProxy.ts",
     "apps/server/src/jones/workspace/searchWorkerProxy.test.ts",
-    ".github/workflows/server-parallel-qualification.yml"
+    ".github/workflows/server-parallel-qualification.yml",
+    "apps/server/src/jones/workspace/fileWriteSerialization.ts",
+    "apps/server/src/jones/workspace/fileWriteSerialization.test.ts",
+    "apps/server/src/jones/workspace/residentContentWrite.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -152,6 +155,10 @@
     {
       "from": "apps/server/src/serverRuntimeStartup.test.ts",
       "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceFileSystem.ts",
+      "to": "apps/server/src/jones/workspace/fileWriteSerialization.ts"
     }
   ]
 }

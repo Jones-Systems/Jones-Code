@@ -198,8 +198,10 @@ function report(): TokenAccountingReport {
   };
 }
 
+const compiledDecodeSync1 = Schema.decodeSync(TokenAccountingReadResult);
+
 function ready(saved = report()): TokenAccountingReadResult {
-  return Schema.decodeSync(TokenAccountingReadResult)({
+  return compiledDecodeSync1({
     state: "ready",
     report: saved,
     readAt: READ_AT,
@@ -261,6 +263,8 @@ function deferredRead() {
   testState.read.mockReturnValueOnce(promise);
   return (value = ready()) => resolve(AsyncResult.success(value));
 }
+
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(TokenAccountingReadResult);
 
 describe("saved token accounting panel", () => {
   let renderer: Screen;
@@ -597,7 +601,7 @@ describe("saved token accounting panel", () => {
     "renders the fixed $status unavailable state with read observation",
     async ({ status, reason, text }) => {
       await using _fixture = await setupTest();
-      const unavailable = Schema.decodeUnknownSync(TokenAccountingReadResult)({
+      const unavailable = compiledDecodeUnknownSync2({
         state: "unavailable",
         status,
         reason,

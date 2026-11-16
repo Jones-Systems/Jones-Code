@@ -10,9 +10,11 @@ import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as Uplink from "./CompanionUplink.ts";
 import * as Ipc from "./ipcMethods.ts";
 
+const compiledDecodeSync1 = Schema.decodeSync(DesktopCompanionState);
+
 function fixture(available = true, destroyed = false) {
   const calls: string[] = [];
-  const state = Schema.decodeSync(DesktopCompanionState)({
+  const state = compiledDecodeSync1({
     config: {
       enabled: true,
       environmentId: "env",

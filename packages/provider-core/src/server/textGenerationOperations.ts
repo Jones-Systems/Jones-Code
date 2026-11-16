@@ -28,6 +28,8 @@ import {
   sanitizeThreadTitle,
 } from "./textGenerationUtils.ts";
 
+export const TranscriptionPostProcessingOutput = Schema.Struct({ transcription: Schema.String });
+
 export type Operation = keyof ProviderTextGeneration;
 
 export interface Request<S extends Schema.Top> {
@@ -78,6 +80,8 @@ export const decodeJsonReply = <S extends Schema.Top>(
   );
 };
 
+const compiledDecodeUnknownEffect1 = Schema.decodeUnknownEffect(RemoteRequestEvaluationResult);
+
 export function fromRunner(
   name: string,
   run: Runner,
@@ -97,7 +101,7 @@ export function fromRunner(
       modelSelection: input.modelSelection,
       ...prompt,
     });
-    return yield* Schema.decodeUnknownEffect(RemoteRequestEvaluationResult)(generated).pipe(
+    return yield* compiledDecodeUnknownEffect1(generated).pipe(
       Effect.mapError(
         (cause) =>
           new TextGenerationError({
@@ -196,6 +200,17 @@ export function fromRunner(
     };
   });
 
+  const generateTranscriptionPostProcessing: ProviderTextGeneration["generateTranscriptionPostProcessing"] =
+    Effect.fn(`${name}.generateTranscriptionPostProcessing`)(function* (input) {
+      return yield* run({
+        operation: "generateTranscriptionPostProcessing",
+        cwd: input.cwd,
+        prompt: input.prompt,
+        outputSchema: TranscriptionPostProcessingOutput,
+        modelSelection: input.modelSelection,
+      });
+    });
+
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = Effect.fn(
     `${name}.generateReviewGuide`,
   )(function* (input) {
@@ -215,5 +230,6 @@ export function fromRunner(
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateTranscriptionPostProcessing,
   } satisfies ProviderTextGeneration;
 }

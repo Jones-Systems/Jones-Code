@@ -81,8 +81,8 @@ inside chat also need the appropriate host capability.
 ## Evidence and upkeep
 
 The [Workstreams sidebar](workstreams.md) records its bounded assignment and
-details journeys. Its synthetic renderer checks do not qualify a live registry
-connection or native enrollment.
+personal grouping journeys. Its synthetic renderer checks do not qualify
+cross-environment propagation or an installed client.
 
 The source/link review above passed only as documentation inspection. Runtime
 journeys in both entries were **not run**: this docs-only lane has no launched

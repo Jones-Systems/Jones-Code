@@ -46,7 +46,10 @@ function conversationLibraryHttpError(
   } as EnvironmentConversationLibraryError;
 }
 
-function readRequestBody(request: HttpServerRequest.HttpServerRequest, traceId: string) {
+const readRequestBody = Effect.fn("readRequestBody")(function (
+  request: HttpServerRequest.HttpServerRequest,
+  traceId: string,
+) {
   const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
     return Effect.fail(conversationLibraryHttpError("invalid", traceId));
@@ -83,7 +86,7 @@ function readRequestBody(request: HttpServerRequest.HttpServerRequest, traceId: 
       return Effect.succeed(bytes);
     }),
   );
-}
+});
 
 function decodeLibraryRequest(bytes: Uint8Array, traceId: string) {
   return Effect.try({

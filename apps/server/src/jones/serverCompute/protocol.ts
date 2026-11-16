@@ -217,9 +217,16 @@ function envelope(
     !record(value) ||
     !sameBootstrap(value as unknown as Bootstrap, boot) ||
     !counter(value.requestId) ||
-    !["open", "close", "status", "list", "search", "searchContents", "refresh"].includes(
-      String(value.operation),
-    ) ||
+    ![
+      "open",
+      "close",
+      "status",
+      "list",
+      "search",
+      "searchContents",
+      "refresh",
+      "refreshContent",
+    ].includes(String(value.operation)) ||
     !isToken(value.token) ||
     value.token.authorityId !== boot.authorityId ||
     value.token.slotId !== boot.slotId ||

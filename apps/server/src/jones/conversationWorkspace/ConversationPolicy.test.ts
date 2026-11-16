@@ -1,3 +1,9 @@
+import {
+  readRuntimeUseTarget,
+  revalidateRuntimeUseConversation,
+} from "../cleanup/RuntimeUseConversation.ts";
+import * as Exit from "effect/Exit";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off -- Small synthetic repositories and exact cleanup belong to this fixture.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -99,9 +105,32 @@ it.effect(
             "second instructions\n",
           );
           assert.isTrue(yield* service.acceptsCwd(input.threadId, binding.path));
+          const runtimeScope = { ...input, worktreePath: null, cwd: binding.path };
+          const runtimeTarget = yield* readRuntimeUseTarget(runtimeScope);
+          assert.equal(runtimeTarget.path, binding.path);
+          assert.deepEqual(runtimeTarget.conversation, yield* service.lookup(input.threadId));
+          yield* revalidateRuntimeUseConversation(runtimeTarget.conversation);
+          assert.deepEqual(
+            yield* sql.withTransaction(readRuntimeUseTarget(runtimeScope)),
+            runtimeTarget,
+          );
+          for (const bad of [
+            { ...runtimeScope, threadId: "unrelated" },
+            { ...runtimeScope, projectId: "foreign-project" },
+            { ...runtimeScope, worktreePath: repo },
+            { ...runtimeScope, cwd: binding.path + "-replacement" },
+          ])
+            assert.isTrue(Exit.isFailure(yield* Effect.exit(readRuntimeUseTarget(bad))));
+
           assert.isFalse(yield* service.acceptsCwd("unrelated", binding.path));
           assert.isFalse(yield* service.acceptsCwd(input.threadId, repo));
           assert.equal(yield* service.dispose(input.threadId, false), "disposed");
+          assert.isTrue(Exit.isFailure(yield* Effect.exit(readRuntimeUseTarget(runtimeScope))));
+          assert.isTrue(
+            Exit.isFailure(
+              yield* Effect.exit(revalidateRuntimeUseConversation(runtimeTarget.conversation)),
+            ),
+          );
           const resumed = yield* service.startTurn(input.threadId, "turn:resumed");
           assert.equal(resumed!.binding.path, binding.path);
           assert.equal(resumed!.binding.commit, next!.binding.commit);
@@ -156,5 +185,5 @@ it.effect(
           );
         }).pipe(Effect.provide(policyLayer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

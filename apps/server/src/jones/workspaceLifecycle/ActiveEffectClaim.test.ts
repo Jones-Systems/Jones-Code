@@ -27,9 +27,7 @@ const fixture = Effect.gen(function* () {
       request: { type: "terminal.cleanup" },
     },
   ]);
-  const captured = Option.getOrThrow(
-    yield* outbox.claimNext({ workerId: "worker", leaseDurationMs: 30_000 }),
-  );
+  const captured = Option.getOrThrow(yield* outbox.claimNext({ workerId: "worker" }));
   return { outbox, captured };
 });
 
@@ -55,24 +53,24 @@ const heldReadFixture = Effect.gen(function* () {
 });
 
 it.effect(
-  "short execution writes no renewal and a scoped handle cannot be reused after settlement",
+  "short execution performs no observation write and a scoped handle cannot be reused after settlement",
   () =>
     Effect.gen(function* () {
       const { outbox, captured } = yield* fixture;
-      let renewals = 0;
+      let observations = 0;
       const observed = {
         ...outbox,
-        renew: (input: Parameters<typeof outbox.renew>[0]) => {
-          renewals++;
-          return outbox.renew(input);
+        get: (id: string) => {
+          observations++;
+          return outbox.get(id);
         },
       };
-      const handle = yield* withActiveEffectClaim(observed, captured, 30_000, true, (claim) =>
+      const handle = yield* withActiveEffectClaim(observed, captured, 10_000, true, (claim) =>
         Effect.gen(function* () {
           yield* TestClock.adjust("9 seconds");
           assert.strictEqual(
-            Option.getOrThrow(yield* outbox.get(captured.id)).leaseExpiresAt,
-            captured.leaseExpiresAt,
+            Option.getOrThrow(yield* outbox.get(captured.id)).updatedAt,
+            captured.updatedAt,
           );
           assert.isTrue(
             yield* claim.settle((current) =>
@@ -83,7 +81,7 @@ it.effect(
         }),
       );
       yield* TestClock.adjust("1 minute");
-      assert.strictEqual(renewals, 0);
+      assert.strictEqual(observations, 0);
       assert.strictEqual(
         (yield* handle.use(() => Effect.void).pipe(Effect.flip))._tag,
         "EffectClaimLost",
@@ -96,15 +94,15 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const { outbox, captured } = yield* fixture;
-      let renewals = 0;
+      let observations = 0;
       const observed = {
         ...outbox,
-        renew: (input: Parameters<typeof outbox.renew>[0]) => {
-          renewals++;
-          return outbox.renew(input);
+        get: (id: string) => {
+          observations++;
+          return outbox.get(id);
         },
       };
-      yield* withActiveEffectClaim(observed, captured, 30_000, false, (claim) =>
+      yield* withActiveEffectClaim(observed, captured, 10_000, false, (claim) =>
         Effect.gen(function* () {
           yield* TestClock.adjust("40 seconds");
           assert.strictEqual(yield* guardClaim(Effect.succeed("completed")), "completed");
@@ -115,32 +113,37 @@ it.effect(
           );
         }),
       );
-      assert.strictEqual(renewals, 0);
+      assert.strictEqual(observations, 0);
     }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
-  "unknown renewal outcome fails the guarded wait once and fences every later boundary",
+  "unknown observation outcome fails the guarded wait once and fences every later boundary",
   () =>
     Effect.gen(function* () {
       const { outbox, captured } = yield* fixture;
       const entered = yield* Deferred.make<CurrentEffectClaim["Service"]>();
-      let renewals = 0;
+      let observations = 0;
       let usedAfterLoss = false;
+      let firstRead = true;
       const observed = {
         ...outbox,
-        renew: () => {
-          renewals++;
+        get: (id: string) => {
+          if (firstRead) {
+            firstRead = false;
+            return outbox.get(id);
+          }
+          observations++;
           return Effect.fail(
             new Outbox.EffectOutboxError({
-              operation: "renew",
+              operation: "get",
               effectId: captured.id,
               cause: "Synthetic lost SQL reply",
             }),
           );
         },
       };
-      const fiber = yield* withActiveEffectClaim(observed, captured, 30_000, true, (claim) =>
+      const fiber = yield* withActiveEffectClaim(observed, captured, 10_000, true, (claim) =>
         Deferred.succeed(entered, claim).pipe(Effect.andThen(guardClaim(Effect.never))),
       ).pipe(Effect.forkChild);
       const handle = yield* Deferred.await(entered);
@@ -156,26 +159,26 @@ it.effect(
         )
         .pipe(Effect.flip);
       yield* TestClock.adjust("1 minute");
-      assert.strictEqual(renewals, 1);
+      assert.strictEqual(observations, 1);
       assert.isFalse(usedAfterLoss);
     }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
-  "issue and renewal SQL share one claim permit while independent provider waits release it",
+  "issue and ownership observation share one claim permit while independent provider waits release it",
   () =>
     Effect.gen(function* () {
       const { outbox, captured } = yield* fixture;
       const issued = yield* Deferred.make<void>();
       const finishIssue = yield* Deferred.make<void>();
       const childChecked = yield* Deferred.make<void>();
-      const renewed = yield* Deferred.make<void>();
+      const observedAgain = yield* Deferred.make<void>();
       const observed = {
         ...outbox,
-        renew: (input: Parameters<typeof outbox.renew>[0]) =>
-          outbox.renew(input).pipe(Effect.tap(() => Deferred.succeed(renewed, undefined))),
+        get: (id: string) =>
+          outbox.get(id).pipe(Effect.tap(() => Deferred.succeed(observedAgain, undefined))),
       };
-      yield* withActiveEffectClaim(observed, captured, 30_000, true, (claim) =>
+      yield* withActiveEffectClaim(observed, captured, 10_000, true, (claim) =>
         Effect.gen(function* () {
           const issue = yield* claim
             .use(() =>
@@ -198,16 +201,16 @@ it.effect(
           yield* TestClock.adjust("10 seconds");
           assert.isFalse(yield* Deferred.isDone(childChecked));
           assert.strictEqual(
-            Option.getOrThrow(yield* outbox.get(captured.id)).leaseExpiresAt,
-            captured.leaseExpiresAt,
+            Option.getOrThrow(yield* outbox.get(captured.id)).updatedAt,
+            captured.updatedAt,
           );
           yield* Deferred.succeed(finishIssue, undefined);
           yield* Fiber.join(issue);
-          yield* Deferred.await(renewed);
+          yield* Deferred.await(observedAgain);
           const live = Option.getOrThrow(yield* outbox.get(captured.id));
-          assert.notStrictEqual(live.leaseExpiresAt, captured.leaseExpiresAt);
+          assert.strictEqual(live.updatedAt, captured.updatedAt);
           yield* claim.use((current) =>
-            Effect.sync(() => assert.strictEqual(current.leaseExpiresAt, live.leaseExpiresAt)),
+            Effect.sync(() => assert.strictEqual(current.updatedAt, live.updatedAt)),
           );
           assert.isTrue(
             yield* claim.settle((current) =>
@@ -225,7 +228,7 @@ it.effect(
     Effect.gen(function* () {
       const { outbox, captured } = yield* fixture;
       const sql = yield* SqlClient.SqlClient;
-      yield* withActiveEffectClaim(outbox, captured, 30_000, true, (claim) =>
+      yield* withActiveEffectClaim(outbox, captured, 10_000, true, (claim) =>
         Effect.gen(function* () {
           const changed = yield* claim.use(() =>
             sql.withTransaction(
@@ -272,24 +275,27 @@ it.effect(
 );
 
 it.effect(
-  "a public check holding an old SQL snapshot retains custody across renewal and completes once",
+  "a public check holding an old SQL snapshot retains custody across observation and completes once",
   () =>
     Effect.gen(function* () {
       const { outbox, captured, observed, readCaptured, releaseRead } = yield* heldReadFixture;
       const started = yield* Deferred.make<void>();
       const finish = yield* Deferred.make<void>();
-      const renewed = yield* Deferred.make<void>();
-      let renewals = 0;
+      const observedAgain = yield* Deferred.make<void>();
+      let observations = 0;
       let dispatches = 0;
       let completions = 0;
-      const renewing = {
+      const observing = {
         ...observed,
-        renew: (input: Parameters<typeof outbox.renew>[0]) => {
-          renewals++;
-          return outbox.renew(input).pipe(Effect.tap(() => Deferred.succeed(renewed, undefined)));
-        },
+        get: (id: string) =>
+          observed.get(id).pipe(
+            Effect.tap(() => {
+              observations++;
+              return observations === 2 ? Deferred.succeed(observedAgain, undefined) : Effect.void;
+            }),
+          ),
       };
-      yield* withActiveEffectClaim(renewing, captured, 30_000, true, (claim) =>
+      yield* withActiveEffectClaim(observing, captured, 10_000, true, (claim) =>
         Effect.gen(function* () {
           const operation = yield* guardClaim(
             Effect.gen(function* () {
@@ -302,25 +308,25 @@ it.effect(
           ).pipe(Effect.forkChild);
           assert.deepEqual(Option.getOrThrow(yield* Deferred.await(readCaptured)), captured);
           yield* TestClock.adjust("10 seconds");
-          assert.strictEqual(renewals, 0);
+          assert.strictEqual(observations, 0);
           assert.strictEqual(dispatches, 0);
           assert.strictEqual(
-            Option.getOrThrow(yield* outbox.get(captured.id)).leaseExpiresAt,
-            captured.leaseExpiresAt,
+            Option.getOrThrow(yield* outbox.get(captured.id)).updatedAt,
+            captured.updatedAt,
           );
           yield* Deferred.succeed(releaseRead, undefined);
           yield* Deferred.await(started);
-          yield* Deferred.await(renewed);
+          yield* Deferred.await(observedAgain);
           const live = Option.getOrThrow(yield* outbox.get(captured.id));
-          assert.notStrictEqual(live.leaseExpiresAt, captured.leaseExpiresAt);
+          assert.strictEqual(live.updatedAt, captured.updatedAt);
           yield* claim.use((current) =>
-            Effect.sync(() => assert.strictEqual(current.leaseExpiresAt, live.leaseExpiresAt)),
+            Effect.sync(() => assert.strictEqual(current.updatedAt, live.updatedAt)),
           );
           assert.isFalse(yield* claim.hasLost);
           assert.strictEqual(completions, 0);
           yield* Deferred.succeed(finish, undefined);
           assert.strictEqual(yield* Fiber.join(operation), "completed");
-          assert.strictEqual(renewals, 1);
+          assert.strictEqual(observations, 3);
           assert.strictEqual(dispatches, 1);
           assert.strictEqual(completions, 1);
           assert.isFalse(yield* claim.hasLost);
@@ -342,12 +348,12 @@ it.effect(
       assert.strictEqual(settled.attemptCount, captured.attemptCount);
       assert.strictEqual(settled.commandId, captured.commandId);
       assert.strictEqual(settled.payloadIdentity, captured.payloadIdentity);
-      assert.isNull(settled.leaseExpiresAt);
+      assert.isNull(settled.leaseOwner);
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect.each(["worker", "attempt", "payload", "expiry"] as const)(
-  "a held public check still rejects external %s changes when renewal is due",
+it.effect.each(["worker", "attempt", "payload", "generation"] as const)(
+  "a held public check still rejects external %s changes when observation is due",
   (change) =>
     Effect.gen(function* () {
       const { outbox, captured, observed, readCaptured, releaseRead } = yield* heldReadFixture;
@@ -361,8 +367,8 @@ it.effect.each(["worker", "attempt", "payload", "expiry"] as const)(
       if (change === "payload")
         yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json='{"type": "terminal.cleanup"}'
           WHERE effect_id=${captured.id}`;
-      if (change === "expiry")
-        yield* sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at='2099-01-01T00:00:00.000Z'
+      if (change === "generation")
+        yield* sql`UPDATE orchestration_v2_effect_outbox SET updated_at='2099-01-01T00:00:00.000Z'
           WHERE effect_id=${captured.id}`;
       const changed = yield* outbox.get(captured.id);
       if (change === "payload") {
@@ -370,16 +376,13 @@ it.effect.each(["worker", "attempt", "payload", "expiry"] as const)(
         assert.deepEqual(current.request, captured.request);
         assert.notStrictEqual(current.payloadIdentity, captured.payloadIdentity);
       }
-      let renewals = 0;
+      let observations = 0;
       let dispatches = 0;
-      const renewing = {
+      const observing = {
         ...observed,
-        renew: (input: Parameters<typeof outbox.renew>[0]) => {
-          renewals++;
-          return outbox.renew(input);
-        },
+        get: (id: string) => observed.get(id),
       };
-      yield* withActiveEffectClaim(renewing, captured, 30_000, true, (claim) =>
+      yield* withActiveEffectClaim(observing, captured, 10_000, true, (claim) =>
         Effect.gen(function* () {
           const operation = yield* guardClaim(
             Effect.sync(() => {
@@ -388,7 +391,7 @@ it.effect.each(["worker", "attempt", "payload", "expiry"] as const)(
           ).pipe(Effect.forkChild);
           assert.deepEqual(yield* Deferred.await(readCaptured), changed);
           yield* TestClock.adjust("10 seconds");
-          assert.strictEqual(renewals, 0);
+          assert.strictEqual(observations, 0);
           yield* Deferred.succeed(releaseRead, undefined);
           const result = yield* Fiber.await(operation);
           assert.strictEqual(result._tag, "Failure");
@@ -414,7 +417,7 @@ it.effect.each(["worker", "attempt", "payload", "expiry"] as const)(
             "EffectClaimLost",
           );
           yield* TestClock.adjust("1 minute");
-          assert.strictEqual(renewals, 0);
+          assert.strictEqual(observations, 0);
           assert.strictEqual(dispatches, 0);
           assert.deepEqual(yield* outbox.get(captured.id), changed);
         }).pipe(Effect.ensuring(Deferred.succeed(releaseRead, undefined))),
@@ -422,35 +425,37 @@ it.effect.each(["worker", "attempt", "payload", "expiry"] as const)(
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect("cancellation invalidates admission before the next renewal or terminal success", () =>
-  Effect.gen(function* () {
-    const { outbox, captured } = yield* fixture;
-    yield* withActiveEffectClaim(outbox, captured, 30_000, true, (claim) =>
-      Effect.gen(function* () {
-        const cancelled = yield* outbox.cancelUnsettled({
-          threadId: captured.threadId,
-          effectTypes: [captured.request.type],
-          reason: "Synthetic cancellation",
-        });
-        yield* claim.invalidate();
-        yield* outbox.signalCancellations(cancelled);
-        yield* TestClock.adjust("40 seconds");
-        assert.strictEqual(
-          (yield* claim.use(() => Effect.void).pipe(Effect.flip))._tag,
-          "EffectClaimLost",
-        );
-        assert.strictEqual(
-          (yield* claim
-            .settle((current) =>
-              outbox.succeed({ effectId: current.id, workerId: "worker", claim: current }),
-            )
-            .pipe(Effect.flip))._tag,
-          "EffectClaimLost",
-        );
-        const row = Option.getOrThrow(yield* outbox.get(captured.id));
-        assert.strictEqual(row.status, "cancelled");
-        assert.isNull(row.leaseExpiresAt);
-      }),
-    );
-  }).pipe(Effect.provide(layer)),
+it.effect(
+  "cancellation invalidates admission before the next observation or terminal success",
+  () =>
+    Effect.gen(function* () {
+      const { outbox, captured } = yield* fixture;
+      yield* withActiveEffectClaim(outbox, captured, 10_000, true, (claim) =>
+        Effect.gen(function* () {
+          const cancelled = yield* outbox.cancelUnsettled({
+            threadId: captured.threadId,
+            effectTypes: [captured.request.type],
+            reason: "Synthetic cancellation",
+          });
+          yield* claim.invalidate();
+          yield* outbox.signalCancellations(cancelled);
+          yield* TestClock.adjust("40 seconds");
+          assert.strictEqual(
+            (yield* claim.use(() => Effect.void).pipe(Effect.flip))._tag,
+            "EffectClaimLost",
+          );
+          assert.strictEqual(
+            (yield* claim
+              .settle((current) =>
+                outbox.succeed({ effectId: current.id, workerId: "worker", claim: current }),
+              )
+              .pipe(Effect.flip))._tag,
+            "EffectClaimLost",
+          );
+          const row = Option.getOrThrow(yield* outbox.get(captured.id));
+          assert.strictEqual(row.status, "cancelled");
+          assert.isNull(row.leaseOwner);
+        }),
+      );
+    }).pipe(Effect.provide(layer)),
 );

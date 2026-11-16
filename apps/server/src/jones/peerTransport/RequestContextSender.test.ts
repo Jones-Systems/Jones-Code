@@ -298,7 +298,6 @@ it.effect.each([
   "t3_thread_launch",
   "t3_thread_link",
   "schedule_task",
-  "update_scheduled_task",
   "run_scheduled_task_now",
 ])("screens %s", (tool) =>
   send(source, tool).pipe(

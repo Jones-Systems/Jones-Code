@@ -1,3 +1,4 @@
+import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import { ScheduledTaskUpsertInput, type ScheduledTask } from "@t3tools/contracts";
@@ -98,6 +99,7 @@ const lifetime = <A, E>(
         ),
       );
     const dependencies = Layer.mergeAll(
+      ManagedPolicy.layerTest(),
       NodeCrypto.layer,
       Layer.mock(Scheduler.Scheduler)({
         register: <E, R>(_name: string, work: Effect.Effect<void, E, R>) =>

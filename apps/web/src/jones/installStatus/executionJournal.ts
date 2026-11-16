@@ -144,7 +144,7 @@ export function useJonesExecutionJournal() {
     webJonesJournal.getSnapshot,
     webJonesJournal.getSnapshot,
   );
-  // oxlint-disable-next-line t3code/react-effect-budget -- Controls remain held until the durable uncertainty journal has been restored; storage failure never falls back to memory.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Controls remain held until the durable uncertainty journal has been restored; storage failure never falls back to memory.
   useEffect(() => {
     void webJonesJournal.load().catch(() => undefined);
   }, []);

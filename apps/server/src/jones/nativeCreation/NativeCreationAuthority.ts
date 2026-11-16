@@ -75,6 +75,9 @@ const issuedExecutions = new WeakMap<
   NativeCreationExecutionContextV2,
   {
     readonly reference: NativeCreationExecutionReferenceV2;
+    readonly recordBinding: (
+      binding: import("@t3tools/contracts").ProviderRuntimeBinding,
+    ) => Effect.Effect<void, Repository.NativeCreationRepositoryError>;
     readonly authorize: (
       input: NativeCreationExecutionStageInput,
     ) => Effect.Effect<NativeCreationHistoricalBinding, NativeCreationAuthorityError>;
@@ -85,6 +88,22 @@ const issuedExecutions = new WeakMap<
 export const getNativeCreationExecutionReference = (
   context: NativeCreationExecutionContextV2,
 ): NativeCreationExecutionReferenceV2 | null => issuedExecutions.get(context)?.reference ?? null;
+
+// Record the physical generation on this issued execution before its provider side effect.
+export const recordNativeCreationExecutionBinding = Effect.fn(
+  "recordNativeCreationExecutionBinding",
+)(function* (
+  context: NativeCreationExecutionContextV2,
+  binding: import("@t3tools/contracts").ProviderRuntimeBinding,
+) {
+  const execution = issuedExecutions.get(context);
+  if (execution === undefined)
+    return yield* new Repository.NativeCreationRepositoryError({
+      code: "unresolved_claim",
+      message: "Native binding has no issued execution",
+    });
+  yield* execution.recordBinding(binding);
+});
 
 // A recheck does not replace the separate durable start required by each actual effect.
 export const authorizeNativeCreationExecution = Effect.fn("authorizeNativeCreationExecution")(
@@ -163,12 +182,16 @@ const unavailable = () =>
     message: "Native creation authority has not been qualified",
   });
 export const NativeCreationGrantResolverUnavailable = Layer.succeed(NativeCreationGrantResolver, {
-  resolveCurrent: () => Effect.fail(unavailable()),
+  resolveCurrent: Effect.fn("NativeCreationGrantResolver.resolveCurrent")(() =>
+    Effect.fail(unavailable()),
+  ),
 });
 export const NativeCreationBindingResolverUnavailable = Layer.succeed(
   NativeCreationBindingResolver,
   {
-    resolveCurrent: () => Effect.fail(unavailable()),
+    resolveCurrent: Effect.fn("NativeCreationBindingResolver.resolveCurrent")(() =>
+      Effect.fail(unavailable()),
+    ),
   },
 );
 
@@ -184,6 +207,7 @@ export class NativeCreationAuthority extends Context.Service<
     readonly issueExecution?: (input: {
       readonly reference: NativeCreationExecutionReferenceV2;
       readonly timestamp: string;
+      readonly expectedClaim: Repository.NativeExecutionProcessClaim;
     }) => Effect.Effect<
       NativeCreationExecutionContextV2,
       Repository.NativeCreationRepositoryError | NativeCreationAuthorityError
@@ -195,6 +219,10 @@ export class NativeCreationAuthority extends Context.Service<
   }
   // @effect-diagnostics-next-line deterministicKeys:off - Preserve the pre-extraction service key for compatibility.
 >()("t3/nativeCreation/NativeCreationAuthority") {}
+const decodeNativeCreationExecutionReferenceV2 = Schema.decodeEffect(
+  NativeCreationExecutionReferenceV2,
+);
+const decodeAuthSessionId = Schema.decodeUnknownEffect(Schema.toType(AuthSessionId));
 
 const makeNativeCreationAuthority = Effect.gen(function* () {
   const sessions = yield* AuthSessions.AuthSessionRepository;
@@ -308,9 +336,7 @@ const makeNativeCreationAuthority = Effect.gen(function* () {
     Effect.fn("NativeCreationAuthority.issueExecution")(function* (
       input: Parameters<NonNullable<NativeCreationAuthority["Service"]["issueExecution"]>>[0],
     ) {
-      const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)(
-        input.reference,
-      ).pipe(
+      const reference = yield* decodeNativeCreationExecutionReferenceV2(input.reference).pipe(
         Effect.mapError(
           () =>
             new NativeCreationAuthorityError({
@@ -327,10 +353,12 @@ const makeNativeCreationAuthority = Effect.gen(function* () {
       }
       if (
         repository.readExecutionReference === undefined ||
-        repository.startEffectV2 === undefined
+        repository.startEffectV2 === undefined ||
+        repository.recordExecutionBinding === undefined
       ) {
         return yield* unavailable();
       }
+      const expectedClaim = Object.freeze({ ...input.expectedClaim });
       const resolved = yield* repository.readExecutionReference(reference);
       const intent = resolved.history.intent;
       const preparation = yield* validateNativeCreationPreparation(
@@ -353,9 +381,7 @@ const makeNativeCreationAuthority = Effect.gen(function* () {
           message: "Native execution preparation differs from its immutable claim",
         });
       }
-      const actorSessionId = yield* Schema.decodeUnknownEffect(Schema.toType(AuthSessionId))(
-        intent.actorSessionId,
-      ).pipe(
+      const actorSessionId = yield* decodeAuthSessionId(intent.actorSessionId).pipe(
         Effect.mapError(
           () =>
             new NativeCreationAuthorityError({
@@ -379,6 +405,7 @@ const makeNativeCreationAuthority = Effect.gen(function* () {
         reference,
         input.timestamp,
         authorize(authorityInput),
+        expectedClaim,
       );
       if (
         started.status !== "started" ||
@@ -400,6 +427,8 @@ const makeNativeCreationAuthority = Effect.gen(function* () {
       const context = Object.freeze({}) as NativeCreationExecutionContextV2;
       issuedExecutions.set(context, {
         reference: Object.freeze({ ...reference }),
+        recordBinding: (binding) =>
+          repository.recordExecutionBinding!({ reference, expectedClaim, binding }),
         authorize: Effect.fn("NativeCreationAuthority.authorizeExecution")(function* (
           actual: NativeCreationExecutionStageInput,
         ) {

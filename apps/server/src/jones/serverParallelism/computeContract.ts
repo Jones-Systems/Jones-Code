@@ -43,6 +43,8 @@ export interface WorkspaceJobs {
     readonly output: ProjectSearchContentsResult;
   };
   readonly refresh: { readonly input: undefined; readonly output: void };
+  /** Strict resident-only scan; never creates or silently replaces a finder. */
+  readonly refreshContent: { readonly input: undefined; readonly output: void };
 }
 
 export type ComputeFailureReason =

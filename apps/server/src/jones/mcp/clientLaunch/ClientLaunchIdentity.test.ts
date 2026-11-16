@@ -25,6 +25,10 @@ it("uses RFC 8785 ordering, numbers and escaping", () => {
 it("isolates namespaces without exposing them and excludes resolved defaults", () => {
   const first = clientLaunchIds("synthetic-private-namespace", "request");
   expect(first.commandId).toMatch(/^mcp-launch:v1:[0-9a-f]{64}$/);
+  expect(first.commandId).toBe(
+    "mcp-launch:v1:f943db547b2bf6ac74bfd02e63a5a49ddb90a9ca45e565fa36d0d8a2080bda2a",
+  );
+  expect(first.commandId).toHaveLength(78);
   expect(JSON.stringify(first)).not.toContain("synthetic-private-namespace");
   expect(first.threadId).toBe(first.messageId);
   expect(first).not.toEqual(clientLaunchIds("other", "request"));

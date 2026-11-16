@@ -76,6 +76,8 @@
     "packages/client-runtime/src/jones/updates/executor.ts",
     "packages/client-runtime/src/jones/updates/targetStatus.test.ts",
     "packages/client-runtime/src/jones/updates/targetStatus.ts",
+    "apps/server/src/jones/updates/preparation/responsivenessSource.ts",
+    "apps/server/src/jones/updates/preparation/responsivenessSource.test.ts",
     "apps/server/src/jones/updates/preparation/cleanupDemand.ts",
     "apps/server/src/jones/updates/preparation/cleanupDemand.test.ts"
   ],

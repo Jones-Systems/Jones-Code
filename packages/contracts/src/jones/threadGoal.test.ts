@@ -8,6 +8,8 @@ const decodeDetail = Schema.decodeUnknownSync(OrchestratorMcpThreadDetail);
 const decodeGoalInput = Schema.decodeUnknownSync(ThreadGoalInput);
 
 const oldListItem = {
+  // The current upstream list row requires its project identity; Jones goal fields stay additive.
+  projectId: "project",
   threadId: "thread",
   title: "Title",
   createdBy: "user",

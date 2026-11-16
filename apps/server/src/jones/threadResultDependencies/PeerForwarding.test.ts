@@ -47,7 +47,9 @@ const withPeer = (seen: Seen[], mode: "old" | "held" | "lost" | "answered") =>
   Forwarding.layer.pipe(
     Layer.provideMerge(threadPorts),
     Layer.provide(Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone })),
-    Layer.provide(Layer.mock(Links.PeerLinks)({ get: () => Effect.succeedNone })),
+    Layer.provide(
+      Layer.mock(Links.PeerLinks)({ enabled: Effect.succeed(true), get: () => Effect.succeedNone }),
+    ),
     Layer.provide(
       Layer.mock(Peers.PeerMcpClient)({
         call: (input) =>

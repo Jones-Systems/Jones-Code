@@ -68,6 +68,9 @@ const failed = (_cause: unknown) =>
     code: "orchestration_error",
     message: "Remote task observation could not be reconciled.",
   });
+const encodeRemoteTaskObservationJson = Schema.encodeEffect(
+  Schema.fromJsonString(RemoteTaskObservation),
+);
 
 /** Uses the parent's command lock; dispatch skips reacquiring that same lock. */
 export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
@@ -86,19 +89,27 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
     if (!(yield* tables("jones_remote_task_observations"))) return undefined;
     return (yield* sql<Row>`SELECT observation_json, notices_json, signal_pending FROM jones_remote_task_observations WHERE parent_thread_id = ${parentThreadId} AND task_id = ${taskId}`)[0];
   });
+  const remoteTask = (tasks: ReadonlyArray<OrchestrationV2Subagent>, taskId: NodeId) =>
+    tasks.find(
+      (candidate) =>
+        candidate.id === taskId &&
+        candidate.origin === "app_owned" &&
+        candidate.driver === "remote",
+    );
+  // Reading a stored observation needs the exact task binding, not parent run history.
   const readTask = (parentThreadId: ThreadId, taskId: NodeId) =>
-    projections.getThreadRecords(parentThreadId, ["subagents", "runs"]).pipe(
-      Effect.map((parent) => ({
-        parent,
-        task: parent.subagents.find(
-          (candidate) =>
-            candidate.id === taskId &&
-            candidate.origin === "app_owned" &&
-            candidate.driver === "remote",
-        ),
-      })),
+    projections.getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] }).pipe(
+      Effect.map((parent) => ({ parent, task: remoteTask(parent.subagents, taskId) })),
       Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.void }),
     );
+  // Question reconciliation keeps its task and queue/active-run snapshot in one transaction.
+  const readQuestionTask = (parentThreadId: ThreadId, taskId: NodeId) =>
+    projections
+      .getThreadRecords(parentThreadId, ["subagents", "runs"], { subagentIds: [taskId] })
+      .pipe(
+        Effect.map((parent) => ({ parent, task: remoteTask(parent.subagents, taskId) })),
+        Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.void }),
+      );
   const readRemoteTaskObservation = (parentThreadId: ThreadId, taskId: NodeId) =>
     sql
       .withTransaction(
@@ -133,9 +144,7 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
               if (!(yield* tables("jones_remote_task_observations")))
                 return yield* failed(undefined);
               const previous = yield* readRow(input.parentThreadId, input.taskId);
-              const json = yield* Schema.encodeEffect(Schema.fromJsonString(RemoteTaskObservation))(
-                input.observation,
-              );
+              const json = yield* encodeRemoteTaskObservationJson(input.observation);
               if (previous?.observation_json === json && previous.signal_pending === 0)
                 return undefined;
               yield* sql`INSERT INTO jones_remote_task_observations (parent_thread_id, task_id, observation_json, signal_pending)
@@ -170,7 +179,7 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
       .withLock(
         parentThreadId,
         Effect.gen(function* () {
-          const current = yield* readTask(parentThreadId, taskId);
+          const current = yield* readQuestionTask(parentThreadId, taskId);
           if (current === undefined) return;
           const { parent, task } = current;
           const row = yield* readRow(parentThreadId, taskId);
@@ -241,7 +250,7 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
               commandId: CommandId.make(`server:remote-question:${key}`),
               threadId: parentThreadId,
               messageId: MessageId.make(`message:remote-question:${key}`),
-              text: `Delegated task ${taskId} is blocked on a question in linked environment ${observation.environmentId}. Read it with t3_pending_request_read using environmentId ${observation.environmentId}, threadId ${observation.threadId}, requestId ${request.requestId}. Answer through t3_pending_request_respond with those same IDs when the answer follows from the task or the user's instructions; otherwise ask the user. If it is no longer pending, it was answered or dismissed.`,
+              text: `Delegated task ${taskId} is blocked on a question in linked environment ${observation.environmentId}. Read it with t3_pending_request action read using environmentId ${observation.environmentId}, threadId ${observation.threadId}, requestId ${request.requestId}. Answer through t3_pending_request action respond with those same IDs when the answer follows from the task or the user's instructions; otherwise ask the user. If it is no longer pending, it was answered or dismissed.`,
               notification: {
                 source: { kind: "delegated_task", taskIds: [taskId] },
                 outcome: "updated",

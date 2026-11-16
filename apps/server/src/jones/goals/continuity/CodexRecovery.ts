@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import * as Fiber from "effect/Fiber";
 import type * as Scope from "effect/Scope";
-import { continuityDigest } from "./model.ts";
+import { continuityDigest, CONTINUITY_LIMITS } from "./model.ts";
 
 type CompactionPoint = Extract<RecoveryBoundary["point"], { type: "compaction" }>;
 
@@ -94,7 +94,7 @@ export function makeCodexRecovery<E>(input: {
       return yield* new GoalContinuityError({ reason: projection.reason });
     if (
       projection.outcome === "context" &&
-      new TextEncoder().encode(projection.text).byteLength > 4096
+      new TextEncoder().encode(projection.text).byteLength > CONTINUITY_LIMITS.capsuleBytes
     )
       return yield* new GoalContinuityError({ reason: "projection_too_large" });
     return projection;

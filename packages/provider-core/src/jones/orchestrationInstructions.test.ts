@@ -8,6 +8,8 @@ import {
   t3AcpPromptWithInstructions,
 } from "../server/orchestrationInstructions.ts";
 
+const decodeDelegateTask = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
+
 it("routes actual owner actions to durable open input without plan mode or duplicate permissions", () => {
   for (const text of [
     "t3_request_user_response",
@@ -52,8 +54,7 @@ it("routes separate-session delegation through delegate_task with valid workspac
     ),
   ];
   assert.lengthOf(examples, 3);
-  const decode = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
-  const decoded = examples.map(([, json]) => decode(JSON.parse(json ?? "")));
+  const decoded = examples.map(([, json]) => decodeDelegateTask(JSON.parse(json ?? "")));
   assert.deepEqual(
     decoded.map((input) => input.workspaceStrategy?.type),
     ["worktree", "existing_worktree", "worktree"],
@@ -120,7 +121,7 @@ it("carries handoff provenance and requires receiver acceptance before taking ow
 it("retains Jones identity and whole upstream-sized instruction segments", () => {
   const injected = t3AcpPromptWithInstructions({
     prompt: "Inspect the repository.",
-    state: { interactionMode: "default", hasT3Mcp: true },
+    state: { interactionMode: "default", hasT3Mcp: true, hasDeviceTools: false },
   });
   assert.include(injected, "Jones Code interaction mode: Default");
   assert.include(injected, "Jones Code collaborative browser");
@@ -131,7 +132,11 @@ it("retains Jones identity and whole upstream-sized instruction segments", () =>
 
 it("reinjects ACP guidance only when mode or tool availability changes", () => {
   const prompt = "Continue.";
-  const defaultState = { interactionMode: "default", hasT3Mcp: true } as const;
+  const defaultState = {
+    interactionMode: "default",
+    hasT3Mcp: true,
+    hasDeviceTools: false,
+  } as const;
 
   assert.equal(
     t3AcpPromptWithInstructions({ prompt, state: defaultState, previousState: defaultState }),
@@ -147,7 +152,7 @@ it("reinjects ACP guidance only when mode or tool availability changes", () => {
   );
   const withoutMcp = t3AcpPromptWithInstructions({
     prompt,
-    state: { interactionMode: "default", hasT3Mcp: false },
+    state: { interactionMode: "default", hasT3Mcp: false, hasDeviceTools: false },
   });
   assert.include(withoutMcp, "Jones Code interaction mode: Default");
   assert.notInclude(withoutMcp, "Jones Code collaborative browser");

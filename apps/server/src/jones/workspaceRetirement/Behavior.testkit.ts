@@ -62,6 +62,9 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
       const root = NodePath.join(worktree, "build");
       await NodeFSP.mkdir(root);
       await NodeFSP.writeFile(NodePath.join(root, "a"), "abc");
+      // This scenario changes an authenticated 0644 baseline to 0600 even under a private umask.
+      await NodeFSP.chmod(NodePath.join(root, "a"), 0o644);
+      NodeAssert.equal((await NodeFSP.lstat(NodePath.join(root, "a"))).mode & 0o777, 0o644);
       await NodeFSP.symlink(NodePath.join(base, "never-read"), NodePath.join(root, "link"));
       const record = await attest({
         worktree,

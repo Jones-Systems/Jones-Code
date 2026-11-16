@@ -492,7 +492,7 @@ export async function runSmoke() {
         async () => {
           await main.waitForFunction(
             () =>
-              document.body.innerText.includes("Connect your computers") ||
+              /^Welcome to /.test(document.querySelector("h1")?.textContent ?? "") ||
               !!document.querySelector('[data-testid="composer-editor"]') ||
               document.querySelector("aside"),
           );

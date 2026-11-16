@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off - Owns synthetic SQLite files and captured cross-process fixture children.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
@@ -38,7 +40,7 @@ const withStore = <A, E, R>(
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "connection-hints-" });
     const store = yield* Store.make({ directory, protection });
     return yield* use(store, directory);
-  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)), Effect.scoped);
 
 describe("isolated desktop compatibility hints", () => {
   it.effect(

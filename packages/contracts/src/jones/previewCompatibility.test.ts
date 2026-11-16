@@ -16,6 +16,15 @@ const decodeSnapshot = Schema.decodeUnknownSync(PreviewSessionSnapshot);
 const { recording: _recording, ...legacyStatusFields } = PreviewAutomationStatus.fields;
 const decodeLegacyStatus = Schema.decodeSync(Schema.Struct(legacyStatusFields));
 
+const LegacyHost = Schema.Struct({
+  ...PreviewAutomationHostIdentity.fields,
+  supportedOperations: Schema.optional(
+    Schema.Array(Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS)),
+  ),
+  runtimeIdentity: Schema.optional(PreviewAutomationRuntimeIdentity),
+});
+const decodeLegacyHost = Schema.decodeSync(LegacyHost);
+
 describe("preview resilience mixed-version wire compatibility", () => {
   it("lets an old snapshot reader ignore the additive headless flag", () => {
     const legacy = {
@@ -31,13 +40,6 @@ describe("preview resilience mixed-version wire compatibility", () => {
     expect(decodeSnapshot(legacy)).toEqual(legacy);
   });
   it("keeps ping outside the baseline operations array accepted by legacy servers", () => {
-    const LegacyHost = Schema.Struct({
-      ...PreviewAutomationHostIdentity.fields,
-      supportedOperations: Schema.optional(
-        Schema.Array(Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS)),
-      ),
-      runtimeIdentity: Schema.optional(PreviewAutomationRuntimeIdentity),
-    });
     const host = {
       clientId: "desktop-1",
       environmentId: "environment-1",
@@ -45,7 +47,7 @@ describe("preview resilience mixed-version wire compatibility", () => {
       supportsPing: true,
       supportsSnapshotBarrier: true,
     };
-    expect(Schema.decodeSync(LegacyHost)(host)).toEqual({
+    expect(decodeLegacyHost(host)).toEqual({
       clientId: host.clientId,
       environmentId: host.environmentId,
       supportedOperations: host.supportedOperations,

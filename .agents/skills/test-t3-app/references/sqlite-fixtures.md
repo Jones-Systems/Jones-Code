@@ -10,6 +10,8 @@ The server copies the V1 `state.sqlite` into `statev2.sqlite` only when `statev2
 
 Start the target runtime once before seeding so all migrations have run. Use an isolated base directory. Stop the server before writes to avoid racing application state or an active projection.
 
+A separate private, in-process synthetic-presentation capability can be supplied by a qualified task harness after recovery and before activation. It uses the server's real projection service and one transaction, with exact source, private-home, database, descriptor, ownership and once-only checks. The normal entrypoint provides no capability or public selector. Its use requires prior consumer-inertness and reader-root isolation proof; it creates no executable history or native callback. This does not authorize external SQLite writes while a server is running.
+
 ## Use the helper
 
 List tables:
@@ -47,33 +49,3 @@ Most V2 rows carry a `payload_json` that must decode against the schemas in `pac
 Direct projection writes are appropriate for ephemeral visual states, edge-case counts, long titles, long timelines, and similar UI fixtures. They do not create a coherent event history. Leave the event log (`orchestration_events`) unchanged, and do not use direct projection writes to claim backend business behavior works.
 
 Use the app's commands or APIs for behavior tests. Use `node apps/server/src/bin.ts auth ...` for auth state rather than editing `auth_pairing_links` or `auth_sessions`.
-
-## Empty native Workstreams home
-
-On Linux, use `node apps/server/src/jones/workstreams/testing/nativeHomeFixture.ts
-<absolute-home>` from a disposable source copy stamped with the exact candidate's
-`jonesSource` and a preview package version. Set the copy's version with
-`node scripts/update-release-package-versions.ts <preview-version>` before source
-stamping; qualified receipts reject the unstamped `0.1.2` package version.
-Create `<absolute-home>` as a new, empty, owned `0700` directory
-outside `~/.t3`; the helper refuses nonempty, shared or symlinked targets. The
-caller owns that directory's lifetime and any partially prepared home after a
-failure. Stop all consumers before removing the caller's exact fixture directory.
-
-The helper creates synthetic environment/launcher metadata and a synthetic
-receipt, then calls real authority enrollment, registry key/init commands,
-SessionStore startup (including its signing key), and source-setup
-plan/apply/readback. It saves `source-setup-request.json` and native
-config, including `bootstrap.source_session_id` (the issued AuthSession ID,
-not an enrollment ID or bearer). This exercises source services; the receipt
-attests no packaged executable, installation or launcher process.
-
-Keep the home stopped through setup: standalone plan/readback require a quiesced
-rollback-journal database. Start the isolated app only after preparation.
-`vp run dev --home-dir <absolute-home> --no-seed` supports renderer inspection;
-native mutations additionally require a current launcher IPC parent and server
-ownership. The dev runner removes launcher context, so this command alone does
-not qualify native assignment acceptance. Do not stamp durable source,
-reuse live state, or treat direct SQL rows as business-behavior proof. The adjacent
-`nativeHomeFixture.test.ts` checks startup selection and the empty native HTTP
-read using the real persisted registry and keys.

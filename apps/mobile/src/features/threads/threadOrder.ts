@@ -3,6 +3,7 @@ import {
   generateSpreadPinOrderKeys,
   pinOrderKeyBetween,
   planPinnedReorder,
+  planPinnedMove,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -98,7 +99,10 @@ export function createThreadMovePlanner(input: {
     if (!writableIds.has(movedId)) return null;
     const nextIds = threadOrderAfterMove(orderedIds, movedId, direction);
     if (nextIds === null) return null;
-    const assignments = planPinnedReorder({ orderedIds: nextIds, keysById, movedId });
+    const assignments =
+      typeof direction === "string"
+        ? planPinnedMove({ orderedIds, keysById, movedId, direction })
+        : planPinnedReorder({ orderedIds: nextIds, keysById, movedId });
     return assignments === null ||
       assignments.length === 0 ||
       assignments.some((assignment) => !writableIds.has(assignment.id))

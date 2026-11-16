@@ -3,6 +3,17 @@ import { assert, describe, it } from "@effect/vitest";
 import { buildRuntimeInstructions } from "./runtimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
+  it("leaves PR linking to a session that already carries it, and keeps runtime identity", () => {
+    const instructions = buildRuntimeInstructions({
+      harness: "Antigravity",
+      model: "gemini-3.8-flash",
+      pullRequestLinking: false,
+    });
+
+    assert.include(instructions, "through the Antigravity harness, as gemini-3.8-flash.");
+    assert.notInclude(instructions, "<pull_request_linking>");
+  });
+
   it("keeps absent identity unknown and describes the supplied Jones build", () => {
     const unknown = buildRuntimeInstructions({ harness: "Codex" });
     assert.include(unknown, "App identity and build source are unavailable");
@@ -30,7 +41,7 @@ describe("buildRuntimeInstructions", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
 
     assert.include(instructions, "Link each PR you create, take over, or push to");
-    assert.include(instructions, "one link_pull_request per PR");
+    assert.include(instructions, "every stack layer");
     assert.include(instructions, "Skip PRs you only read or review");
     assert.include(instructions, "If linking fails, say so.");
     assert.notInclude(instructions, "git log -1");
@@ -58,7 +69,10 @@ describe("buildRuntimeInstructions", () => {
       instructions,
       "After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>.",
     );
-    assert.include(instructions, "Never wait with sleep");
+    assert.include(
+      instructions,
+      "For PR waits, no sleep, loops, gh --watch, Monitor or ScheduleWakeup.",
+    );
     assert.include(instructions, "call unwatch_pull_request");
   });
 });

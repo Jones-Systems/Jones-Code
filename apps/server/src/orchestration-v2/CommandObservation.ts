@@ -17,6 +17,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { makeGoalResumeCorrelation } from "../jones/goals/GoalResumeCorrelation.ts";
 
+const compiledDecodeEffect1 = Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2RunJson));
+
 export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuery")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -105,17 +107,15 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
         const receipt = receipts[0];
         let correlation: OrchestrationCommandObservation["correlation"] = "missing";
         let turn: OrchestrationCommandObservation["turn"] = null;
-        let created = yield* Effect.forEach(births, (e) =>
-          Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2RunJson))(e.payload_json),
-        );
+        let created = yield* Effect.forEach(births, (e) => compiledDecodeEffect1(e.payload_json));
         let releaseBinding = false;
         if (receipt?.command_type === "prepared-run.release" && receipt.status === "accepted") {
           const releases = yield* Effect.forEach(
             events.filter((e) => e.event_type === "run.updated"),
             (e) =>
-              Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2RunJson))(
-                e.payload_json,
-              ).pipe(Effect.map((run) => ({ run, sequence: e.sequence }))),
+              compiledDecodeEffect1(e.payload_json).pipe(
+                Effect.map((run) => ({ run, sequence: e.sequence })),
+              ),
           );
           const legacyReleases = releases.filter(({ run }) => run.legacyBootstrap !== undefined);
           if (legacyReleases.length > 1) correlation = "ambiguous";
@@ -198,9 +198,7 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
           events.some((e) => e.sequence === receipt.result_sequence)
         ) {
           if (receipt.result_sequence <= snapshotSequence && runs[0] !== undefined) {
-            const run = yield* Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2RunJson))(
-              runs[0].payload_json,
-            );
+            const run = yield* compiledDecodeEffect1(runs[0].payload_json);
             if (run.id !== created[0]!.id) correlation = "mismatched";
             else {
               const messages = yield* sql<{

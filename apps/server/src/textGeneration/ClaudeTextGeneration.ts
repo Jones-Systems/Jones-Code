@@ -22,7 +22,6 @@ import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
   getClaudeCatalogModelCapabilities,
-  isClaudeCatalogUltracodeEffort,
   normalizeClaudeCatalogEffort,
   resolveClaudeCatalogApiModelId,
   resolveClaudeCatalogEffort,
@@ -34,6 +33,7 @@ import {
   makeClaudeEnvironment,
 } from "../provider/Drivers/ClaudeHome.ts";
 import { classifyClaudeEvaluatorLaunchArgs } from "./jones/claudeEvaluatorLaunch.ts";
+import { claudeCommandFailure } from "./jones/claudeCommandFailure.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 /** `--tools` takes bare names; patterns go in the allow list. */
@@ -50,6 +50,10 @@ const CLAUDE_INVESTIGATION_ALLOWED = [
 // Denies override allows; block git --output/-o because allowed trailing args can otherwise write anywhere.
 const CLAUDE_INVESTIGATION_DENIED = ["Bash(git * --output*)", "Bash(git * -o *)"].join(",");
 
+const NO_SESSION_PERSISTENCE = "--no-session-persistence";
+// Claude Code before 2.0.63 exits with this on stderr; those runs retry without the flag.
+const NO_SESSION_PERSISTENCE_REJECTED = `error: unknown option '${NO_SESSION_PERSISTENCE}'`;
+
 const ClaudeOutputEnvelope = Schema.Struct({
   structured_output: Schema.Unknown,
 });
@@ -64,22 +68,36 @@ const decodeClaudeOutput = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Union([ClaudeOutputEnvelope, Schema.Array(ClaudeOutputMessage)])),
 );
 
+// Only `success` results carry `result`; error subtypes such as
+// error_max_structured_output_retries report through `errors` instead.
 const ClaudeErrorResult = Schema.Struct({
   is_error: Schema.Literal(true),
   result: Schema.optionalKey(Schema.Unknown),
+  errors: Schema.optionalKey(Schema.Unknown),
 });
 const isClaudeErrorResult = Schema.is(ClaudeErrorResult);
 const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 // Claude reports JSON errors on stdout; stderr may contain only wrapper notices.
-function claudeErrorResult(stdout: string): string | undefined {
+function claudeErrorResult(stdout: string, surfaceErrorList: boolean): string | undefined {
   const output = Option.getOrUndefined(decodeJsonOption(stdout));
   const messages: ReadonlyArray<unknown> = Array.isArray(output) ? output : [output];
   const errors = messages.filter(isClaudeErrorResult);
+  const details = errors.map((message) => {
+    if (typeof message.result === "string") return message.result.trim();
+    // The errors list is opaque to a remote evaluator, so it never reaches the caller.
+    if (!surfaceErrorList || !Array.isArray(message.errors)) return "";
+    return (
+      message.errors
+        .filter((error): error is string => typeof error === "string")
+        // error_during_execution mixes CLI telemetry into the list.
+        .filter((error) => !error.startsWith("[ede_diagnostic]"))
+        .join("\n")
+        .trim()
+    );
+  });
   return (
-    errors
-      .map((message) => (typeof message.result === "string" ? message.result.trim() : ""))
-      .findLast((result) => result.length > 0) ??
+    details.findLast((detail) => detail.length > 0) ??
     (errors.length > 0 ? "Claude CLI reported an error without details." : undefined)
   );
 }
@@ -174,7 +192,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       resolvedEffort,
       resolvedModelSelection.model,
     );
-    const ultracode = isClaudeCatalogUltracodeEffort(resolvedEffort);
+    const ultracode = findDescriptor("ultracode")?.currentValue;
     const thinkingDescriptor = findDescriptor("thinking");
     const fastModeDescriptor = findDescriptor("fastMode");
     // Only a chosen value; otherwise Claude Code's own default applies, as in chat turns.
@@ -188,7 +206,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       disableAllHooks: true,
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
-      ...(ultracode ? { ultracode: true } : {}),
+      ...(typeof ultracode === "boolean" ? { ultracode } : {}),
     };
     const settingsJson = yield* encodeJsonForOperation(
       operation,
@@ -196,7 +214,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       "Failed to encode Claude CLI settings.",
     );
 
-    const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
+    const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
+      noSessionPersistence: boolean,
+    ) {
       const workingDirectory =
         operation === "generateThreadTitle" || operation === "evaluateRemoteRequest"
           ? yield* fileSystem
@@ -233,6 +253,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
             : ["--tools", ""]),
           ...(operation === "evaluateRemoteRequest" ? ["--disallowedTools", "mcp__*"] : []),
           "--disable-slash-commands",
+          ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
           // managed-mcp.json already isolates servers and makes Claude reject this flag.
           ...(managedMcpConfig ? [] : ["--strict-mcp-config"]),
           "--permission-mode",
@@ -272,24 +293,26 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         { concurrency: "unbounded" },
       );
 
-      const reportedError = claudeErrorResult(stdout);
-      if (exitCode !== 0 || reportedError !== undefined) {
-        const stderrDetail = stderr.trim();
-        const stdoutDetail = stdout.trim();
-        const detail = reportedError ?? (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
-        return yield* new TextGenerationError({
-          operation,
-          detail:
-            detail.length > 0
-              ? `Claude CLI command failed: ${detail.slice(0, 2_000)}`
-              : `Claude CLI command failed with code ${exitCode}.`,
-        });
-      }
-
-      return stdout;
+      return { stdout, stderr, exitCode };
     });
 
-    const rawStdout = yield* runClaudeCommand().pipe(
+    const rawStdout = yield* runClaudeCommand(true).pipe(
+      Effect.filterOrElse(
+        (result) =>
+          result.exitCode === 0 || !result.stderr.includes(NO_SESSION_PERSISTENCE_REJECTED),
+        () => runClaudeCommand(false),
+      ),
+      Effect.flatMap(({ stdout, stderr, exitCode }) => {
+        const detail = claudeCommandFailure({
+          stdout,
+          stderr,
+          exitCode,
+          reportedError: claudeErrorResult(stdout, operation !== "evaluateRemoteRequest"),
+        });
+        return detail === undefined
+          ? Effect.succeed(stdout)
+          : Effect.fail(new TextGenerationError({ operation, detail }));
+      }),
       Effect.scoped,
       Effect.timeoutOption(investigate?.timeoutMs ?? CLAUDE_TIMEOUT_MS),
       Effect.flatMap(

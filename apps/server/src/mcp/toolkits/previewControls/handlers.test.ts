@@ -66,7 +66,9 @@ it.effect.each([
       );
       const tab = yield* manager.open({ threadId, url: "http://localhost:3000" });
       const layerDependencies = Layer.mergeAll(
-        PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer)),
+        PreviewAutomationBroker.layer.pipe(
+          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        ),
         Layer.succeed(Preview.PreviewManager, manager),
         Layer.succeed(McpInvocationContext.McpInvocationContext, scope),
         McpToolAccessTestkit.liveThreadsLayer,
@@ -202,5 +204,5 @@ it.effect("REC-R t3_preview_close retires the server target through the real bro
       yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
       expect(routed.at(-1)?.tabId).toBe(tabId);
     }),
-  ),
+  ).pipe(Effect.provide(NodeCrypto.layer)),
 );

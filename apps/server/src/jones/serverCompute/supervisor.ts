@@ -73,7 +73,7 @@ type Slot = {
   cooldownUntil: number;
   failures: number;
   allocationsUsed: number;
-  foreground?: "open" | "refresh" | undefined;
+  foreground?: "open" | "refresh" | "refreshContent" | undefined;
   planned: boolean;
   readonly keys: Set<Key>;
 };
@@ -227,6 +227,17 @@ export class ComputeSupervisor {
       )
         throw computeFailure("unavailable");
       if (signal?.aborted) throw computeFailure("cancelled");
+      if (operation === "refreshContent" && handle.key.variant !== "content")
+        throw computeFailure("protocol");
+      // Strict write reconciliation cannot turn an evicted logical handle into a new finder.
+      // enqueue captures its token and increments pending synchronously before eviction can run.
+      if (
+        operation === "refreshContent" &&
+        (!registration.key.physical ||
+          registration.key.physical.state !== "ready" ||
+          this.slots[registration.key.physical.token.slotId]!.state !== "ready")
+      )
+        throw computeFailure("unavailable");
       const key = registration.key,
         wireInput = operation === "open" ? key.key : (input ?? null);
       if (!validInput(operation, wireInput)) throw computeFailure("protocol");
@@ -677,7 +688,8 @@ export class ComputeSupervisor {
     const started = performance.now();
     let timing: ComputeRequestTiming | undefined, failure: unknown;
     let continuationStarted: number | undefined;
-    if (operation === "open" || operation === "refresh") slot.foreground = operation;
+    if (operation === "open" || operation === "refresh" || operation === "refreshContent")
+      slot.foreground = operation;
     this.counts();
     try {
       const result = await child.request(request, signal, (event) => {
@@ -781,7 +793,7 @@ export class ComputeSupervisor {
       }
       const result = await this.request(slot, key, job.operation, job.input, job.controller.signal);
       const output =
-        job.operation === "refresh"
+        job.operation === "refresh" || job.operation === "refreshContent"
           ? undefined
           : job.operation === "searchContents"
             ? {

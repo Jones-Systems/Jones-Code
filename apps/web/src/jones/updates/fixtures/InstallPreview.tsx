@@ -31,7 +31,7 @@ import type { InstallPreviewFixture } from "./install-preview-bridge";
 
 function ObservedUpdate({ fixture }: { readonly fixture: InstallPreviewFixture }) {
   const state = useDesktopUpdateState();
-  // oxlint-disable-next-line t3code/react-effect-budget -- Expose production update atom observations to the mounted install fixture controller.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Expose production update atom observations to the mounted install fixture controller.
   useEffect(() => fixture.observe(state), [fixture, state]);
   return (
     <output data-testid="observed-update" className="block font-mono text-xs">
@@ -185,13 +185,13 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
       setFailure(error instanceof Error ? error.message : String(error));
     }
   };
-  // oxlint-disable-next-line t3code/react-effect-budget -- Register fixture mount readiness after the production controls commit.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Register fixture mount readiness after the production controls commit.
   useEffect(() => {
     document.documentElement.classList.add("dark");
     applyThemePalette("t3-chat", "dark");
     fixture.mounted(isElectron);
   }, [fixture]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Isolated fixture binds the production runner to scripted native and host receipts.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Isolated fixture binds the production runner to scripted native and host receipts.
   useEffect(() => {
     const services = fixture.plan.services(fixture.bridge);
     const controller = startInstallPlanController(

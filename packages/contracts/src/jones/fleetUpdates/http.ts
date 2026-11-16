@@ -27,7 +27,7 @@ export function makeFleetUpdatesHttpGroup({
     error: [
       EnvironmentScopeRequiredError,
       EnvironmentInternalError,
-      FleetHostError.pipe(HttpApiSchema.status(409)),
+      FleetHostError.annotate({ httpApiStatus: 409 }).pipe(HttpApiSchema.status(409)),
     ],
     success: FleetHostStatus,
   } as const;

@@ -267,7 +267,6 @@ function timeline(threadId: string) {
   const environmentId = EnvironmentId.make("source");
   const props: ComponentProps<typeof MessagesTimeline> = {
     isWorking: false,
-    activeTurnInProgress: false,
     listRef: createRef(),
     latestRun: null,
     turnDiffSummaries: [],
@@ -276,7 +275,6 @@ function timeline(threadId: string) {
     onOpenTurnDiff: () => {},
     onOpenThread: () => {},
     onForkFromRun: async () => {},
-    onRollbackCheckpoint: () => {},
     supportsConversationRollback: false,
     onRevertToTurnCount: () => {},
     isRevertingCheckpoint: false,
@@ -293,7 +291,6 @@ function timeline(threadId: string) {
     emptyPlaceholderInset: 0,
     liveFollowEnabled: true,
     onIsAtEndChange: () => {},
-    onManualNavigation: () => {},
     onRunShellCommand: vi.fn(),
     timelineEntries: ["native-a", "native-b"].map((id) => ({
       id: `entry-${id}`,

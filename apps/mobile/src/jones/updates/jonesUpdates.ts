@@ -36,7 +36,7 @@ import { AsyncResult } from "effect/reactivity";
 
 export const jonesUpdates = createJonesUpdateAtoms(connectionAtomRuntime);
 
-export function confirmJonesHostInstall(message: string): Promise<boolean> {
+function confirmJonesHostInstall(message: string): Promise<boolean> {
   return new Promise((resolve) => {
     Alert.alert(
       "Install on host",
@@ -50,7 +50,7 @@ export function confirmJonesHostInstall(message: string): Promise<boolean> {
   });
 }
 
-export function chooseJonesHostRecovery(
+function chooseJonesHostRecovery(
   preflight: JonesRecoveryPreflight,
 ): Promise<JonesRecoveryPolicy | null> {
   return new Promise((resolve) => {

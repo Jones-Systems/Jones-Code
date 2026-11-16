@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
@@ -37,6 +38,7 @@ it.effect("skips non-server opens and preserves saved thread choices at admissio
       Layer.merge(Manager.layer, Selection.layer).pipe(
         Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "preview-open-binding-" })),
         Layer.provide(NodeServices.layer),
+        Layer.provideMerge(NodeCrypto.layer),
       ),
     ),
   ),

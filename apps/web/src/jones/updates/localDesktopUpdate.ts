@@ -1,7 +1,7 @@
 import { routeLaptopDownload, routeLaptopInstall } from "../installStatus/entrypoints";
 import { jonesBuildLabel, jonesBuildLabels } from "./buildVersion";
 import { outcomeBuildRefs } from "./buildPairs";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import { runtime } from "../../lib/runtime";
 import { toastManager } from "../../components/ui/toast";
@@ -195,7 +195,7 @@ async function prepareLocalFleetCampaign(
       "The staged desktop source is unavailable; enrolled updates cannot be prepared.",
     );
   const campaignId = await runtime.runPromise(
-    Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
+    SecureRandom.SecureRandom.pipe(Effect.flatMap((crypto) => crypto.uuidV4())),
   );
   const prepared = await bridge.fleetUpdates({
     action: "prepare",

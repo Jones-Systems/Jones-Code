@@ -367,3 +367,119 @@ it.effect("passes the supported qualification log option only when explicitly su
     }),
   ),
 );
+
+it.effect.each(["scan-failure", "false-readiness"] as const)(
+  "strict content refresh fails honestly on %s",
+  (mode) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scanFiles = vi.fn(() =>
+          mode === "scan-failure"
+            ? { ok: false as const, error: "scan refused" }
+            : { ok: true as const, value: undefined },
+        );
+        const waitForIndexReady = vi.fn<FileFinder["waitForIndexReady"]>(async () => ({
+          ok: true,
+          value: true,
+        }));
+        const finder = { destroy: vi.fn(), waitForIndexReady, scanFiles } as unknown as FileFinder;
+        vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+        const runtime = yield* WorkspaceSearchIndex.make("/workspace/project", "content");
+        waitForIndexReady.mockResolvedValueOnce({ ok: true, value: false });
+        const result = yield* runtime.refreshContent().pipe(Effect.result);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag:
+              mode === "scan-failure"
+                ? "WorkspaceSearchIndexRefreshFailed"
+                : "WorkspaceSearchIndexScanTimedOut",
+          },
+        });
+        expect(scanFiles).toHaveBeenCalledTimes(1);
+        expect(waitForIndexReady.mock.calls).toEqual(
+          mode === "scan-failure" ? [[15000]] : [[15000], [15000]],
+        );
+      }),
+    ),
+);
+
+it.effect("strict content cancellation retains the finder until native readiness settles", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const entered = Promise.withResolvers<void>();
+      const ready = Promise.withResolvers<Awaited<ReturnType<FileFinder["waitForIndexReady"]>>>();
+      const destroy = vi.fn();
+      const waitForIndexReady = vi.fn<FileFinder["waitForIndexReady"]>(async () => ({
+        ok: true,
+        value: true,
+      }));
+      const finder = {
+        destroy,
+        waitForIndexReady,
+        scanFiles: vi.fn(() => ({ ok: true, value: undefined })),
+      } as unknown as FileFinder;
+      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+      yield* Effect.gen(function* () {
+        const runtime = yield* WorkspaceSearchIndex.make("/workspace/project", "content");
+        waitForIndexReady.mockImplementationOnce(() => {
+          entered.resolve();
+          return ready.promise;
+        });
+        const work = yield* runtime.refreshContent().pipe(Effect.forkChild);
+        yield* Effect.promise(() => entered.promise);
+        const cancellation = yield* Fiber.interrupt(work).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(cancellation.pollUnsafe()).toBeUndefined();
+        expect(destroy).not.toHaveBeenCalled();
+        ready.resolve({ ok: true, value: true });
+        yield* Fiber.join(cancellation);
+        expect(work.pollUnsafe()).toMatchObject({ _tag: "Failure" });
+      }).pipe(Effect.ensuring(Effect.sync(() => ready.resolve({ ok: true, value: true }))));
+    }),
+  ),
+);
+
+it.effect("strict real native scans expose successive versions of the same physical file", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* Effect.promise(() => import("node:fs/promises"));
+      const os = yield* Effect.promise(() => import("node:os"));
+      const path = yield* Effect.promise(() => import("node:path"));
+      const directory = yield* Effect.acquireRelease(
+        Effect.promise(async () =>
+          fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jones-native-versions-"))),
+        ),
+        (root) => Effect.promise(() => fs.rm(root, { recursive: true, force: true })),
+      );
+      const file = path.join(directory, "same.md");
+      yield* Effect.promise(() => fs.writeFile(file, "Plan\n"));
+      const runtime = yield* WorkspaceSearchIndex.make(directory, "content");
+      const query = (text: string) =>
+        runtime.searchContents({
+          query: text,
+          limit: 10,
+          caseSensitive: true,
+          wholeWord: true,
+          useRegex: false,
+        });
+      expect((yield* query("Plan")).matches.map((match) => match.lineContent)).toEqual(["Plan"]);
+      let previous = "Plan";
+      for (const version of ["Replacement", "Successive", "Final"]) {
+        yield* Effect.promise(() => fs.writeFile(file, version + "\n"));
+        yield* runtime.refreshContent();
+        expect((yield* query(previous)).matches).toEqual([]);
+        expect((yield* query(version)).matches).toEqual([
+          {
+            path: "same.md",
+            lineNumber: 1,
+            lineContent: version,
+            matchRanges: [{ start: 0, end: version.length }],
+          },
+        ]);
+        expect(yield* Effect.promise(() => fs.readFile(file, "utf8"))).toBe(version + "\n");
+        previous = version;
+      }
+    }),
+  ),
+);

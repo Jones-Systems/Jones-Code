@@ -2,6 +2,8 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
+import * as NodeProcess from "node:process";
+import { qualifiedPayloadDigest } from "../cloud/qualifiedRuntime.ts";
 import * as NodePath from "node:path";
 import { expect, it } from "vite-plus/test";
 import {
@@ -9,6 +11,7 @@ import {
   assertPrivateSetupRuntime,
   inspectPrivateSetupRuntime,
   isUnattestedPrivateSetupArtifact,
+  projectAuthenticatedPrivateSetupPayload,
 } from "./privateSetupCompatibility.ts";
 
 const executable = "#!/bin/sh\nexit 0\n";
@@ -194,6 +197,138 @@ it.each(["provenance", "payload", "root-entry"])(
       const before = await NodeFSP.readFile(f.path);
       await expect(archivePrivateSetupProvenance(preimage, f.archive, f.uid)).rejects.toThrow();
       expect(await NodeFSP.readFile(f.path)).toEqual(before);
+      await expect(NodeFSP.lstat(f.archive)).rejects.toMatchObject({ code: "ENOENT" });
+    }),
+);
+
+async function pairedPayload(f: { root: string; directory: string }) {
+  const payloadDirectory = NodePath.join(f.root, "authenticated-payload");
+  await NodeFSP.mkdir(payloadDirectory, { mode: 0o700 });
+  for (const name of ["client", "node_modules", "resource-monitor"]) {
+    await NodeFSP.mkdir(NodePath.join(payloadDirectory, name), { mode: 0o700 });
+    await NodeFSP.chmod(NodePath.join(payloadDirectory, name), 0o755);
+  }
+  for (const [name, bytes, executable] of [
+    ["t3", "#!/bin/sh\nexit 0\n", true],
+    ["node_modules/helper", "helper bytes", true],
+    ["client/index.html", "page bytes", false],
+  ] as const) {
+    if (name !== "t3") {
+      await NodeFSP.writeFile(NodePath.join(f.directory, name), bytes);
+      await NodeFSP.chmod(NodePath.join(f.directory, name), executable ? 0o700 : 0o600);
+    }
+    await NodeFSP.writeFile(NodePath.join(payloadDirectory, name), bytes);
+    await NodeFSP.chmod(NodePath.join(payloadDirectory, name), executable ? 0o711 : 0o600);
+  }
+  await NodeFSP.symlink("../t3", NodePath.join(f.directory, "client/entry"));
+  await NodeFSP.symlink("../t3", NodePath.join(payloadDirectory, "client/entry"));
+  return payloadDirectory;
+}
+
+it.each([0o077, 0o022])("projects only authenticated scratch under caller umask %s", (umask) =>
+  fixture(async (f) => {
+    const beforeUmask = NodeProcess.umask(umask);
+    try {
+      const payloadDirectory = await pairedPayload(f);
+      const preimage = await f.inspect();
+      const original = await NodeFSP.lstat(f.path);
+      expect(await qualifiedPayloadDigest(payloadDirectory)).not.toBe(preimage.payloadSha256);
+      await projectAuthenticatedPrivateSetupPayload({
+        preimage,
+        payloadDirectory,
+        uid: f.uid,
+        artifact,
+      });
+      expect(await qualifiedPayloadDigest(payloadDirectory)).toBe(preimage.payloadSha256);
+      expect((await NodeFSP.stat(NodePath.join(payloadDirectory, "t3"))).mode & 0o777).toBe(0o700);
+      expect(
+        (await NodeFSP.stat(NodePath.join(payloadDirectory, "client/index.html"))).mode & 0o777,
+      ).toBe(0o600);
+      expect(await NodeFSP.readlink(NodePath.join(payloadDirectory, "client/entry"))).toBe("../t3");
+      const projected = await NodeFSP.lstat(NodePath.join(payloadDirectory, "t3"));
+      await projectAuthenticatedPrivateSetupPayload({
+        preimage,
+        payloadDirectory,
+        uid: f.uid,
+        artifact,
+      });
+      expect((await NodeFSP.lstat(NodePath.join(payloadDirectory, "t3"))).ino).toBe(projected.ino);
+      expect(await NodeFSP.readFile(f.path, "utf8")).toBe(preimage.text);
+      const after = await NodeFSP.lstat(f.path);
+      expect([after.dev, after.ino, after.uid, after.mode]).toEqual([
+        original.dev,
+        original.ino,
+        original.uid,
+        original.mode,
+      ]);
+      await assertPrivateSetupRuntime(preimage, f.uid);
+      await expect(NodeFSP.lstat(f.archive)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      NodeProcess.umask(beforeUmask);
+    }
+  }),
+);
+
+it.each([
+  "content",
+  "length",
+  "path",
+  "type",
+  "link",
+  "owner-execute",
+  "nonexecutable",
+  "partial-execute",
+  "partial-read",
+])(
+  "refuses unsupported private projection %s before any scratch chmod or provenance movement",
+  (kind) =>
+    fixture(async (f) => {
+      const payloadDirectory = await pairedPayload(f);
+      if (kind === "content")
+        await NodeFSP.writeFile(NodePath.join(payloadDirectory, "client/index.html"), "PAGE BYTES");
+      if (kind === "length")
+        await NodeFSP.appendFile(NodePath.join(payloadDirectory, "client/index.html"), "changed");
+      if (kind === "path")
+        await NodeFSP.writeFile(NodePath.join(payloadDirectory, "client/extra"), "extra");
+      if (kind === "type") {
+        await NodeFSP.unlink(NodePath.join(payloadDirectory, "node_modules/helper"));
+        await NodeFSP.mkdir(NodePath.join(payloadDirectory, "node_modules/helper"));
+      }
+      if (kind === "link") {
+        await NodeFSP.unlink(NodePath.join(payloadDirectory, "client/entry"));
+        await NodeFSP.symlink(
+          "../node_modules/helper",
+          NodePath.join(payloadDirectory, "client/entry"),
+        );
+      }
+      if (kind === "owner-execute")
+        await NodeFSP.chmod(NodePath.join(f.directory, "node_modules/helper"), 0o600);
+      if (kind === "nonexecutable")
+        await NodeFSP.chmod(NodePath.join(f.directory, "client/index.html"), 0o700);
+      if (kind === "partial-execute") await NodeFSP.chmod(NodePath.join(f.directory, "t3"), 0o710);
+      if (kind === "partial-read") await NodeFSP.chmod(NodePath.join(f.directory, "t3"), 0o740);
+      const preimage = await f.inspect();
+      const original = await NodeFSP.lstat(f.path);
+      const rawDigest = await qualifiedPayloadDigest(payloadDirectory);
+      await expect(
+        projectAuthenticatedPrivateSetupPayload({
+          preimage,
+          payloadDirectory,
+          uid: f.uid,
+          artifact,
+        }),
+      ).rejects.toMatchObject({ reason: "occupied-cache" });
+      expect(await qualifiedPayloadDigest(payloadDirectory)).toBe(rawDigest);
+      expect((await NodeFSP.stat(NodePath.join(payloadDirectory, "t3"))).mode & 0o777).toBe(0o711);
+      expect(await NodeFSP.readFile(f.path, "utf8")).toBe(preimage.text);
+      const after = await NodeFSP.lstat(f.path);
+      expect([after.dev, after.ino, after.uid, after.mode]).toEqual([
+        original.dev,
+        original.ino,
+        original.uid,
+        original.mode,
+      ]);
+      await assertPrivateSetupRuntime(preimage, f.uid);
       await expect(NodeFSP.lstat(f.archive)).rejects.toMatchObject({ code: "ENOENT" });
     }),
 );

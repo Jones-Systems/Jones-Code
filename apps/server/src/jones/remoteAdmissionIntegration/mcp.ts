@@ -9,6 +9,8 @@ import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as RemoteAdmissionIntake from "./RemoteAdmissionIntake.ts";
 import { screensRemoteOperation } from "./operations.ts";
 
+const compiledIs1 = Schema.is(OrchestratorMcpFailure);
+
 export const wrap = Effect.fn("RemoteAdmissionMcp.wrap")(function* <E>(
   tool: Tool.Any,
   handler: (params: object) => Effect.Effect<unknown, E>,
@@ -16,15 +18,18 @@ export const wrap = Effect.fn("RemoteAdmissionMcp.wrap")(function* <E>(
   const intake = yield* Effect.serviceOption(RemoteAdmissionIntake.RemoteAdmissionIntake);
   if (Option.isNone(intake)) return handler;
   const services = yield* Effect.context<never>();
+  const decodeParameters = Schema.decodeUnknownEffect(
+    tool.parametersSchema as Schema.Codec<unknown>,
+  );
   intake.value.register(
     tool.name,
     (params, invocation) =>
-      Schema.decodeUnknownEffect(tool.parametersSchema as Schema.Codec<unknown>)(params).pipe(
+      decodeParameters(params).pipe(
         Effect.flatMap((decoded) => handler(decoded as object)),
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
         Effect.provide(services),
         Effect.mapError((error) =>
-          Schema.is(OrchestratorMcpFailure)(error)
+          compiledIs1(error)
             ? error
             : new RemoteAdmissionIntake.RemoteAdmissionIntakeError({ cause: error }),
         ),

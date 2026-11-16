@@ -93,6 +93,7 @@ function fixture(projects: ReadonlyArray<OrchestrationProjectShell>, supportsCi 
     const ci = yield* GitHubPullRequestProvider.makeCiReader.pipe(
       Effect.provideService(GitHubRest.GitHubRest, {
         credential: () => Effect.die("CI reads must use the pinned credential"),
+        appCredential: () => Effect.die("CI reads must use the pinned credential"),
         rest: (request) =>
           Effect.gen(function* () {
             const pinned = yield* GitHubRequestPolicy.PinnedGitHubCredential;

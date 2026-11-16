@@ -57,13 +57,15 @@ export const VoiceReviewNativeBinding = Schema.Record(Schema.String, Schema.Unkn
   );
 export type VoiceReviewNativeBinding = typeof VoiceReviewNativeBinding.Type;
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(VoiceReviewNativeBinding);
+
 export const voiceReviewNativeBindingFromEnv = (
   env: NodeJS.ProcessEnv,
 ): VoiceReviewNativeBinding | null => {
   try {
     const raw = env.T3CODE_VOICE_REVIEW_NATIVE_BINDING;
     if (raw === undefined || raw.length > 4096) return null;
-    return Schema.decodeUnknownSync(VoiceReviewNativeBinding)(JSON.parse(raw));
+    return compiledDecodeUnknownSync1(JSON.parse(raw));
   } catch {
     return null;
   }

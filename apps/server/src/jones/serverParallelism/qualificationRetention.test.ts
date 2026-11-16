@@ -182,6 +182,7 @@ function milestoneController() {
     to: number;
     collections: number[];
   }[] = [];
+  const lastLive = new Map<number, number>();
   let changed = deferred();
   let closed = false;
   let advancing = false;
@@ -210,6 +211,11 @@ function milestoneController() {
   };
   const edge = async (milestone: Milestone, signal?: AbortSignal) => {
     if (closed) return;
+    if (milestone.kind === "retire") {
+      // Root259: the last live sample must precede closing admission/entering native retirement.
+      expect(lastCollection?.pids).toContain(milestone.pid);
+      lastLive.set(milestone.pid, lastCollection!.ordinal);
+    }
     const gate = deferred();
     const release = () => {
       signal?.removeEventListener("abort", abort);
@@ -302,7 +308,11 @@ function milestoneController() {
     if (last.kind !== "sampler-wait") throw new Error("Missing next sampler identity");
     expect(last.ordinal).toBe(first.ordinal + 1);
     expect(collected).toBeGreaterThan(before);
-    expect(lastCollection?.pids.includes(boundary.pid)).toBe(boundary.kind === "retire");
+    expect(lastLive.has(boundary.pid)).toBe(true);
+    expect(lastLive.get(boundary.pid)).toBeLessThanOrEqual(before);
+    // New resource reads exclude the closed capture during retirement AND journal proof;
+    // native exit/journal guards below still own actual retirement and allocation charges.
+    expect(lastCollection?.pids.includes(boundary.pid)).toBe(false);
     if (boundary.kind === "replacement-pool") throw new Error("Unexpected sampler boundary");
     samplerReceipts.push({
       kind: boundary.kind,
@@ -391,6 +401,13 @@ function milestoneController() {
   };
 }
 
+// Every resource read also requests this worker's own pid, so a synthetic child that shared
+// it would look live after retirement. Skip the worker pid within the synthetic range.
+function syntheticChildPid(ordinal: number, workerPid = process.pid) {
+  const pid = 10_000 + ordinal;
+  return pid >= workerPid ? pid + 1 : pid;
+}
+
 function fixture(holdReplacement = false, startupFailure?: Error) {
   const clock = milestoneController();
   let firstFailure: { cause: unknown } | undefined;
@@ -440,7 +457,7 @@ function fixture(holdReplacement = false, startupFailure?: Error) {
         build: bootstrap.build,
       });
       expect(bootstrap.authorityId).toBe("qualification");
-      const pid = 10_000 + children.length;
+      const pid = syntheticChildPid(children.length);
       starts++;
       await clock.edge({ kind: "startup", stage: "entered", pid, bootstrap, command: _command });
       if (startupFailure) throw startupFailure;
@@ -812,6 +829,18 @@ it.each([
     }
   },
 );
+
+it("never gives a synthetic child the worker's own pid", () => {
+  expect([0, 1, 2, 3].map((ordinal) => syntheticChildPid(ordinal, 10_001))).toEqual([
+    10_000, 10_002, 10_003, 10_004,
+  ]);
+  expect([0, 1, 2].map((ordinal) => syntheticChildPid(ordinal, 4_000))).toEqual([
+    10_001, 10_002, 10_003,
+  ]);
+  expect([0, 1, 2].map((ordinal) => syntheticChildPid(ordinal, 99_999))).toEqual([
+    10_000, 10_001, 10_002,
+  ]);
+});
 
 it("observes startup rejection before the replacement-pool milestone without advancing time", async () => {
   const startupFailure = new Error("controlled startup rejection");

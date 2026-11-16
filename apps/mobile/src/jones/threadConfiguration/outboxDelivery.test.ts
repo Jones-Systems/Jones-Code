@@ -248,7 +248,8 @@ function dispatcher(send: (method: string, payload: unknown) => Promise<unknown>
     const session: RpcSession = {
       client,
       initialConfig: Effect.die("Replay must not read capabilities or catalog"),
-      subscribeServerConfig: (input) => client.subscribeServerConfig(input),
+      subscribeServerConfig: (input) => client.subscribeServerConfig(input ?? {}),
+      inboundFrames: Effect.succeed(0),
       ready: Effect.void,
       probe: Effect.void,
       closed: Effect.never,

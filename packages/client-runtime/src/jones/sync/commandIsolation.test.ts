@@ -12,7 +12,7 @@ import {
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -83,11 +83,8 @@ describe("stop observation isolation evidence", () => {
               ),
           } as EnvironmentRegistry.EnvironmentRegistry["Service"]),
           Layer.succeed(
-            Crypto.Crypto,
-            Crypto.make({
-              randomBytes: (size) => new Uint8Array(size),
-              digest: (_algorithm, data) => Effect.succeed(data),
-            }),
+            SecureRandom.SecureRandom,
+            SecureRandom.make((size) => new Uint8Array(size)),
           ),
         ),
       );

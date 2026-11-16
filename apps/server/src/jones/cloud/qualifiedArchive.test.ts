@@ -4,17 +4,18 @@ import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeProcess from "node:process";
 import * as NodeZlib from "node:zlib";
 import { extractQualifiedLinuxArchive } from "./qualifiedArchive.ts";
 
-type Entry = { name: string; kind?: string; data?: string; link?: string };
+type Entry = { name: string; kind?: string; data?: string; link?: string; mode?: number };
 function archive(entries: Entry[]) {
   const buffers: Buffer[] = [];
   for (const entry of entries) {
     const bytes = Buffer.from(entry.data ?? "");
     const header = Buffer.alloc(512);
     header.write(entry.name, 0, 100);
-    header.write("0000700\0", 100);
+    header.write(`${(entry.mode ?? 0o700).toString(8).padStart(7, "0")}\0`, 100);
     header.write(`${bytes.length.toString(8).padStart(11, "0")}\0`, 124);
     header.fill(32, 148, 156);
     header.write(entry.kind ?? "0", 156);
@@ -89,4 +90,33 @@ it("rejects files written through previously extracted symlink directories", asy
       await NodeAssert.rejects(NodeFSP.access(NodePath.join(directory, "client", "file")));
     },
   );
+});
+
+// This worker owns its umask; extraction must retain authenticated executable bits.
+it("preserves archive executable bits under a restrictive umask without granting shared writes", async () => {
+  const prior = NodeProcess.umask(0o077);
+  try {
+    await extract(
+      [
+        { name: "runtime/", kind: "5" },
+        { name: "runtime/t3", data: "executable", mode: 0o755 },
+        { name: "runtime/node_modules/empty-helper", mode: 0o755 },
+        { name: "runtime/client/index.html", data: "fixture", mode: 0o644 },
+      ],
+      async (directory, run) => {
+        await run();
+        for (const name of ["t3", "node_modules/empty-helper"]) {
+          const mode = (await NodeFSP.stat(NodePath.join(directory, name))).mode;
+          assert.equal(mode & 0o111, 0o111);
+          assert.equal(mode & 0o666, 0o600);
+        }
+        assert.equal(
+          (await NodeFSP.stat(NodePath.join(directory, "client/index.html"))).mode & 0o777,
+          0o600,
+        );
+      },
+    );
+  } finally {
+    NodeProcess.umask(prior);
+  }
 });

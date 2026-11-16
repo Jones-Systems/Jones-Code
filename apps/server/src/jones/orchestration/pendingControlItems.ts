@@ -1,19 +1,6 @@
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import * as Schema from "effect/Schema";
 
-export const encodePendingControlRequests = Schema.encodeEffect(
-  Schema.fromJsonString(
-    Schema.Array(
-      Schema.Struct({
-        id: Schema.String,
-        nodeId: Schema.String,
-        type: Schema.Literals(["user_input_request", "approval_request"]),
-      }),
-    ),
-  ),
-);
-
-export function pendingControlRequests(
+function pendingControlRequests(
   projection: Pick<OrchestrationV2ThreadProjection, "runtimeRequests">,
 ) {
   return projection.runtimeRequests.flatMap((request) =>

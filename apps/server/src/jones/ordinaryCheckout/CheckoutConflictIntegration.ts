@@ -281,11 +281,9 @@ const make = Effect.gen(function* () {
       ...deletion,
       start: Effect.fn("CheckoutConflictIntegration.start")(function* (input) {
         const key = yield* deletionKey(input.target);
-        return yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* assertNoOrdinary([key]);
-            return yield* deletion.start(input);
-          }),
+        return yield* deletion.start(
+          input,
+          assertNoOrdinary([key]).pipe(Effect.mapError(deletionError)),
         );
       }, Effect.mapError(deletionError)),
       revalidate: Effect.fn("CheckoutConflictIntegration.revalidate")(function* (
@@ -295,11 +293,12 @@ const make = Effect.gen(function* () {
         live,
       ) {
         const key = yield* deletionKey(captured.target);
-        return yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* assertNoOrdinary([key]);
-            return yield* deletion.revalidate(captured, ordinal, rules, live);
-          }),
+        return yield* deletion.revalidate(
+          captured,
+          ordinal,
+          rules,
+          live,
+          assertNoOrdinary([key]).pipe(Effect.mapError(deletionError)),
         );
       }, Effect.mapError(deletionError)),
     },

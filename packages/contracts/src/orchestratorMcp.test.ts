@@ -11,10 +11,18 @@ import {
 
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
+const decodeThreadDetail = Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadDetail);
+const decodeThreadListResult = Schema.decodeUnknownSync(
+  OrchestratorMcp.OrchestratorMcpThreadListResult,
+);
+const decodeThreadListItem = Schema.decodeUnknownSync(
+  OrchestratorMcp.OrchestratorMcpThreadListItem,
+);
 
 describe("orchestrator MCP contracts", () => {
   const threadListItem = {
     threadId: "thread:background-work",
+    projectId: "project:background-work",
     title: "Waiting for background work",
     createdBy: "user",
     creationSource: "web",
@@ -37,7 +45,6 @@ describe("orchestrator MCP contracts", () => {
   };
   const threadDetail = {
     ...threadListItem,
-    projectId: "project:background-work",
     activeRunId: null,
     titleRegeneration: null,
     branch: null,
@@ -66,9 +73,7 @@ describe("orchestrator MCP contracts", () => {
       pendingBackgroundTasksTruncated: false,
     };
     const detailPayload = { ...threadDetail, ...backgroundWork };
-    expect(
-      Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadDetail)(detailPayload),
-    ).toEqual(detailPayload);
+    expect(decodeThreadDetail(detailPayload)).toEqual(detailPayload);
     const listPayload = {
       projectId: threadDetail.projectId,
       currentThreadId: null,
@@ -76,25 +81,19 @@ describe("orchestrator MCP contracts", () => {
       nextCursor: 1,
       total: 2,
     };
-    expect(
-      Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadListResult)(listPayload),
-    ).toEqual(listPayload);
+    expect(decodeThreadListResult(listPayload)).toEqual(listPayload);
     const empty = {
       ...threadListItem,
       pendingBackgroundTasks: [],
       backgroundHoldsCompletion: false,
       pendingBackgroundTasksTruncated: false,
     };
-    expect(Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadListItem)(empty)).toEqual(
-      empty,
-    );
+    expect(decodeThreadListItem(empty)).toEqual(empty);
   });
 
   it("keeps absent background evidence unknown in older detail and paged peer payloads", () => {
-    const detail = Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadDetail)(
-      threadDetail,
-    );
-    const list = Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadListResult)({
+    const detail = decodeThreadDetail(threadDetail);
+    const list = decodeThreadListResult({
       projectId: threadDetail.projectId,
       currentThreadId: null,
       threads: [threadListItem],
@@ -224,6 +223,8 @@ describe("self settlement contracts", () => {
   });
 });
 
+const compiledIs1 = Schema.is(OrchestratorMcp.OrchestratorMcpThreadActivityObservation);
+
 it("keeps native activity optional and validates explicit incomplete background evidence", () => {
   const decode = Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadActivityObservation);
   expect(
@@ -240,7 +241,7 @@ it("keeps native activity optional and validates explicit incomplete background 
     reason: "native_background_coverage_incomplete",
   });
   expect(
-    Schema.is(OrchestratorMcp.OrchestratorMcpThreadActivityObservation)({
+    compiledIs1({
       foreground: null,
       background: "busy",
       backgroundStatus: "known",

@@ -241,7 +241,6 @@ it.effect(
       const workerId = "ordered-action-worker";
       const claim = outbox.claimNext({
         workerId,
-        leaseDurationMs: 30_000,
         excludeTitleGeneration: true,
       });
       yield* outbox.enqueue([first]);
@@ -263,11 +262,8 @@ it.effect(
         DateTime.formatIso(Option.getOrThrow(yield* outbox.nextClaimableAt())),
         Option.getOrThrow(yield* outbox.get(title.id)).availableAt,
       );
-      assert.equal(
-        Option.getOrThrow(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })).id,
-        title.id,
-      );
-      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })));
+      assert.equal(Option.getOrThrow(yield* outbox.claimNext({ workerId })).id, title.id);
+      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId })));
       yield* TestClock.adjust("999 millis");
       assert.isTrue(Option.isNone(yield* claim));
       yield* TestClock.adjust("1 millis");
@@ -279,10 +275,7 @@ it.effect(
       assert.equal(Option.getOrThrow(yield* outbox.get(title.id)).status, "running");
       assert.equal(Option.getOrThrow(yield* outbox.get(laterTitle.id)).attemptCount, 0);
       assert.isTrue(yield* outbox.succeed({ effectId: title.id, workerId }));
-      assert.equal(
-        Option.getOrThrow(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })).id,
-        laterTitle.id,
-      );
+      assert.equal(Option.getOrThrow(yield* outbox.claimNext({ workerId })).id, laterTitle.id);
     }).pipe(Effect.scoped, Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer())))),
 );
 
@@ -437,7 +430,6 @@ it.effect("RES-1 urgent claims and deadlines share the allowlist and durable ava
     yield* outbox.enqueue([...excluded, ...urgent]);
     const claim = outbox.claimNext({
       workerId: "urgent-eligibility",
-      leaseDurationMs: 30_000,
       urgentOnly: true,
     });
     assert.isTrue(Option.isNone(yield* claim));
@@ -471,24 +463,18 @@ it.effect(
       const urgent = pending("later-urgent", "interrupt", threadId);
       const workerId = "urgent-predecessor-worker";
       yield* outbox.enqueue([first]);
-      assert.equal(
-        Option.getOrThrow(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })).id,
-        first.id,
-      );
+      assert.equal(Option.getOrThrow(yield* outbox.claimNext({ workerId })).id, first.id);
       assert.isTrue(
         yield* outbox.retry({ effectId: first.id, workerId, error: "retry", delayMs: 1_000 }),
       );
       yield* outbox.enqueue([urgent]);
-      const claim = outbox.claimNext({ workerId, leaseDurationMs: 30_000, urgentOnly: true });
+      const claim = outbox.claimNext({ workerId, urgentOnly: true });
       assert.isTrue(Option.isNone(yield* claim));
       assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt({ urgentOnly: true })));
       yield* TestClock.adjust("1 second");
       assert.isTrue(Option.isNone(yield* claim));
       assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt({ urgentOnly: true })));
-      assert.equal(
-        Option.getOrThrow(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })).id,
-        first.id,
-      );
+      assert.equal(Option.getOrThrow(yield* outbox.claimNext({ workerId })).id, first.id);
       assert.isTrue(Option.isNone(yield* claim));
       assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt({ urgentOnly: true })));
       assert.isTrue(yield* outbox.succeed({ effectId: first.id, workerId }));

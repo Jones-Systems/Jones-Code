@@ -58,6 +58,10 @@ export interface RuntimeRequest {
   admit: Effect.Effect<void, RetirementError>;
   revalidate: Effect.Effect<void, RetirementError>;
 }
+const compiledMain3acaCodec16 = Schema.is(RetirementError);
+
+const compiledMain3acaCodec15 = Schema.decodeEffect(Configuration);
+
 export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
   request: RuntimeRequest,
 ) {
@@ -70,7 +74,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
   const selected =
     config.workspaceLifecycle === undefined
       ? null
-      : yield* Schema.decodeEffect(Configuration)(config.workspaceLifecycle).pipe(
+      : yield* compiledMain3acaCodec15(config.workspaceLifecycle).pipe(
           Effect.mapError(
             (cause) =>
               new RetirementError({
@@ -123,7 +127,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
       }),
   }).pipe(Effect.result);
   const mapError = Effect.mapError((cause: unknown) =>
-    Schema.is(RetirementError)(cause)
+    compiledMain3acaCodec16(cause)
       ? cause
       : new RetirementError({ target: request.worktree, reason: "observation_failed", cause }),
   );

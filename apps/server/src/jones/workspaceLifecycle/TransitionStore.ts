@@ -213,10 +213,31 @@ export class ProvenanceStore extends Context.Service<
   }
 >()("t3/jones/workspaceLifecycle/TransitionStore/ProvenanceStore") {}
 
+const compiledIncomingSchema9 = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      projectId: Schema.String,
+      updatedAt: Schema.String,
+      worktreePath: Schema.NullOr(Schema.String),
+      branch: Schema.NullOr(Schema.String),
+    }),
+  ),
+);
+
+const compiledIncomingSchema8 = Schema.decodeEffect(Provenance);
+
+const compiledIncomingSchema7 = Schema.decodeEffect(ProvenanceFact);
+
+const compiledIncomingSchema6 = Schema.decodeEffect(Schema.fromJsonString(ProvenanceFact));
+
+const compiledIncomingSchema5 = Schema.decodeEffect(ProvenanceEntry);
+
+const compiledIncomingSchema4 = Schema.is(LifecycleError);
+
 const makeProvenanceStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const storage = (cause: unknown) =>
-    Schema.is(LifecycleError)(cause) ? cause : new LifecycleError({ reason: "storage", cause });
+    compiledIncomingSchema4(cause) ? cause : new LifecycleError({ reason: "storage", cause });
   const decode = Schema.decodeEffect(Schema.fromJsonString(Provenance));
   const lookup = Effect.fn("ProvenanceStore.lookup")(function* (input: {
     readonly path?: string;
@@ -256,19 +277,17 @@ const makeProvenanceStore = Effect.gen(function* () {
         for (const fact of facts)
           remainingBytes -= new TextEncoder().encode(fact.fact_json).byteLength;
         if (remainingBytes < 0) return yield* new LifecycleError({ reason: "unavailable" });
-        return yield* Schema.decodeEffect(ProvenanceEntry)({
+        return yield* compiledIncomingSchema5({
           provenance,
           threads: [...new Set(relations.map((r) => r.thread_id))],
           tasks: [...new Set(relations.map((r) => r.task_id).filter(Boolean))],
-          facts: yield* Effect.forEach(facts, (r) =>
-            Schema.decodeEffect(Schema.fromJsonString(ProvenanceFact))(r.fact_json),
-          ),
+          facts: yield* Effect.forEach(facts, (r) => compiledIncomingSchema6(r.fact_json)),
         });
       }),
     );
   }, Effect.mapError(storage));
   const fact = Effect.fn("ProvenanceStore.fact")(function* (input: ProvenanceFact) {
-    const fact = yield* Schema.decodeEffect(ProvenanceFact)(input);
+    const fact = yield* compiledIncomingSchema7(input);
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const owners =
@@ -352,23 +371,14 @@ const makeProvenanceStore = Effect.gen(function* () {
       }
     }, Effect.mapError(storage)),
     capture: Effect.fn("ProvenanceStore.capture")(function* (input, threadId, taskId, runId) {
-      const record = yield* Schema.decodeEffect(Provenance)(input);
+      const record = yield* compiledIncomingSchema8(input);
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           const current = yield* sql<{
             payload_json: string;
           }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${threadId}`;
           if (!current[0]) return yield* new LifecycleError({ reason: "identity" });
-          const bound = yield* Schema.decodeEffect(
-            Schema.fromJsonString(
-              Schema.Struct({
-                projectId: Schema.String,
-                updatedAt: Schema.String,
-                worktreePath: Schema.NullOr(Schema.String),
-                branch: Schema.NullOr(Schema.String),
-              }),
-            ),
-          )(current[0].payload_json);
+          const bound = yield* compiledIncomingSchema9(current[0].payload_json);
           if (
             bound.projectId !== record.project_id ||
             bound.updatedAt !== record.target.threadRevision ||

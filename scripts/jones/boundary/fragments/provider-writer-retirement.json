@@ -16,6 +16,7 @@
     "apps/server/src/jones/providerRetirement/providerRecoveryRetirement.test.ts",
     "apps/server/src/jones/provider/codex/CodexRetirement.ts",
     "apps/server/src/jones/provider/codex/CodexRetirement.test.ts",
+    "apps/server/src/jones/provider/codex/CodexCapturedLifetime.ts",
     "packages/provider-core/src/server/jones/providerControlOutcome.ts",
     "packages/provider-core/src/server/jones/providerControlOutcome.test.ts",
     "apps/server/src/jones/provider/claudeRetirement/retirement.ts",
@@ -60,6 +61,10 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
       "to": "packages/shared/src/jones/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexCapturedLifetime.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",

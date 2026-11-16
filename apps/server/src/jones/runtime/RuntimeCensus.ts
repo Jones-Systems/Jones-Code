@@ -47,6 +47,7 @@ export class RuntimeCensus extends Context.Service<
     ) => Effect.Effect<ApplicationOperatingCounts, RuntimeCensusReadError>;
   }
 >()("t3/jones/runtime/RuntimeCensus") {}
+const isRuntimeCensusReadError = Schema.is(RuntimeCensusReadError);
 
 const make = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -131,14 +132,15 @@ const make = Effect.gen(function* () {
     } as const;
   });
   return RuntimeCensus.of({
-    readOperatingCounts: (projectId) =>
+    readOperatingCounts: Effect.fn("RuntimeCensus.readOperatingCounts")((projectId) =>
       readOperatingCounts(projectId).pipe(
         Effect.mapError((cause) =>
-          Schema.is(RuntimeCensusReadError)(cause)
+          isRuntimeCensusReadError(cause)
             ? cause
             : new RuntimeCensusReadError({ reason: "census_unavailable", cause }),
         ),
       ),
+    ),
   });
 });
 

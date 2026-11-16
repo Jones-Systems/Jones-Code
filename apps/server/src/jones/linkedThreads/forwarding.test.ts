@@ -48,11 +48,16 @@ it.effect(
         getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
       }),
       Layer.mock(Projects.ProjectService)({ getById: () => Effect.succeedNone }),
-      Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
+      Layer.mock(PeerLinks.PeerLinks)({
+        enabled: Effect.succeed(true),
+        get: () => Effect.succeedNone,
+      }),
       Layer.mock(Peers.PeerMcpClient)({
         call: (input) => {
           calls.push(input);
-          return Schema.decodeEffect(input.success)({
+          // Each generic peer call supplies its own result schema.
+          const decode = Schema.decodeEffect(input.success);
+          return decode({
             threadId: destination,
             projectId: liveThreadShell(destination).projectId,
             modelSelection: liveThreadShell(destination).modelSelection,

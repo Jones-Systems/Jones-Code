@@ -72,6 +72,19 @@ const commands = [
   { type: "pointer", ...tab, phase: "click", x: 0, y: 0 },
 ];
 
+const compiledEncodeSync1 = Schema.encodeSync(CompanionUp);
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(CompanionUp);
+const compiledEncodeSync3 = Schema.encodeSync(CompanionDown);
+const compiledDecodeUnknownSync4 = Schema.decodeUnknownSync(CompanionDown);
+const compiledDecodeUnknownSync5 = Schema.decodeUnknownSync(DesktopBrowserEvent);
+const compiledDecodeUnknownSync6 = Schema.decodeUnknownSync(DesktopBrowserCommand);
+const compiledDecodeUnknownSync7 = Schema.decodeUnknownSync(PreviewRenderHostSelection);
+const compiledDecodeUnknownSync8 = Schema.decodeUnknownSync(PreviewCompanionCapabilities);
+const compiledDecodeUnknownOption9 = Schema.decodeUnknownOption(CompanionUp);
+const compiledDecodeUnknownOption10 = Schema.decodeUnknownOption(CompanionDown);
+const compiledDecodeSync11 = Schema.decodeSync(CompanionDown);
+const compiledDecodeSync12 = Schema.decodeSync(CompanionUp);
+
 describe("Preview companion wire contracts", () => {
   it("uses additive Jones endpoints and protocol 1", () => {
     expect(PREVIEW_COMPANION_PROTOCOL).toBe(1);
@@ -89,9 +102,7 @@ describe("Preview companion wire contracts", () => {
     { type: "unmountedAck", ...tab },
     ...events.map((event) => ({ type: "browser", event })),
   ])("round trips uplink $type messages", (wire) => {
-    expect(Schema.encodeSync(CompanionUp)(Schema.decodeUnknownSync(CompanionUp)(wire))).toEqual(
-      wire,
-    );
+    expect(compiledEncodeSync1(compiledDecodeUnknownSync2(wire))).toEqual(wire);
   });
 
   it.each([
@@ -104,22 +115,20 @@ describe("Preview companion wire contracts", () => {
     { type: "assignments", tabs: [] },
     ...commands.map((command) => ({ type: "browser", command })),
   ])("round trips downlink $type messages", (wire) => {
-    expect(Schema.encodeSync(CompanionDown)(Schema.decodeUnknownSync(CompanionDown)(wire))).toEqual(
-      wire,
-    );
+    expect(compiledEncodeSync3(compiledDecodeUnknownSync4(wire))).toEqual(wire);
   });
 
   it("preserves the existing desktop event and command payloads", () => {
     for (const event of events) {
-      expect(Schema.decodeUnknownSync(CompanionUp)({ type: "browser", event })).toEqual({
+      expect(compiledDecodeUnknownSync2({ type: "browser", event })).toEqual({
         type: "browser",
-        event: Schema.decodeUnknownSync(DesktopBrowserEvent)(event),
+        event: compiledDecodeUnknownSync5(event),
       });
     }
     for (const command of commands) {
-      expect(Schema.decodeUnknownSync(CompanionDown)({ type: "browser", command })).toEqual({
+      expect(compiledDecodeUnknownSync4({ type: "browser", command })).toEqual({
         type: "browser",
-        command: Schema.decodeUnknownSync(DesktopBrowserCommand)(command),
+        command: compiledDecodeUnknownSync6(command),
       });
     }
   });
@@ -128,9 +137,7 @@ describe("Preview companion wire contracts", () => {
     const decodeId = Schema.decodeUnknownSync(PreviewCompanionHostId);
     expect(decodeId(" Mini_1-a ")).toBe("Mini_1-a");
     expect(decodeId("a".repeat(64))).toBe("a".repeat(64));
-    expect(
-      Schema.decodeUnknownSync(CompanionUp)({ ...hello, label: ` ${"a".repeat(64)} ` }),
-    ).toEqual({
+    expect(compiledDecodeUnknownSync2({ ...hello, label: ` ${"a".repeat(64)} ` })).toEqual({
       ...hello,
       label: "a".repeat(64),
     });
@@ -139,20 +146,18 @@ describe("Preview companion wire contracts", () => {
   it.each(["", " ", "a".repeat(65), "mini.local", "mini/1", "mini 1", "méni"])(
     "rejects invalid host ID %j",
     (hostId) => {
-      expect(() => Schema.decodeUnknownSync(CompanionUp)({ ...hello, hostId })).toThrow();
-      expect(() =>
-        Schema.decodeUnknownSync(PreviewRenderHostSelection)({ ...selection, hostId }),
-      ).toThrow();
+      expect(() => compiledDecodeUnknownSync2({ ...hello, hostId })).toThrow();
+      expect(() => compiledDecodeUnknownSync7({ ...selection, hostId })).toThrow();
     },
   );
 
   it.each(["", " ", "a".repeat(65)])("rejects invalid host label %j", (label) => {
-    expect(() => Schema.decodeUnknownSync(CompanionUp)({ ...hello, label })).toThrow();
+    expect(() => compiledDecodeUnknownSync2({ ...hello, label })).toThrow();
   });
 
   it("keeps V1 unsupported capabilities disabled and clipboard support explicit", () => {
     expect(
-      Schema.decodeUnknownSync(PreviewCompanionCapabilities)({
+      compiledDecodeUnknownSync8({
         ...capabilities,
         clipboardText: false,
       }),
@@ -161,15 +166,11 @@ describe("Preview companion wire contracts", () => {
       clipboardText: false,
     });
     for (const key of ["uploads", "downloads", "recording"]) {
-      expect(() =>
-        Schema.decodeUnknownSync(PreviewCompanionCapabilities)({ ...capabilities, [key]: true }),
-      ).toThrow();
+      expect(() => compiledDecodeUnknownSync8({ ...capabilities, [key]: true })).toThrow();
     }
+    expect(() => compiledDecodeUnknownSync8({ ...capabilities, cdp: false })).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(PreviewCompanionCapabilities)({ ...capabilities, cdp: false }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(PreviewCompanionCapabilities)({
+      compiledDecodeUnknownSync8({
         ...capabilities,
         clipboardText: undefined,
       }),
@@ -177,24 +178,22 @@ describe("Preview companion wire contracts", () => {
   });
 
   it("rejects unsupported protocols and malformed known messages", () => {
-    expect(() => Schema.decodeUnknownSync(CompanionUp)({ ...hello, protocol: 2 })).toThrow();
-    expect(() => Schema.decodeUnknownSync(CompanionDown)({ ...welcome, protocol: 2 })).toThrow();
+    expect(() => compiledDecodeUnknownSync2({ ...hello, protocol: 2 })).toThrow();
+    expect(() => compiledDecodeUnknownSync4({ ...welcome, protocol: 2 })).toThrow();
+    expect(() => compiledDecodeUnknownSync2({ ...hello, runtimeIdentity: null })).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(CompanionUp)({ ...hello, runtimeIdentity: null }),
+      compiledDecodeUnknownSync2({ type: "browser", event: { type: "attached" } }),
     ).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(CompanionUp)({ type: "browser", event: { type: "attached" } }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(CompanionDown)({ type: "browser", command: { type: "release" } }),
+      compiledDecodeUnknownSync4({ type: "browser", command: { type: "release" } }),
     ).toThrow();
   });
 
   it.each(["future-message", "thread.create", "orchestration.dispatch"])(
     "lets transport ignore unknown %s envelopes through Option decoding",
     (type) => {
-      expect(Option.isNone(Schema.decodeUnknownOption(CompanionUp)({ type }))).toBe(true);
-      expect(Option.isNone(Schema.decodeUnknownOption(CompanionDown)({ type }))).toBe(true);
+      expect(Option.isNone(compiledDecodeUnknownOption9({ type }))).toBe(true);
+      expect(Option.isNone(compiledDecodeUnknownOption10({ type }))).toBe(true);
     },
   );
 
@@ -207,21 +206,34 @@ describe("Preview companion wire contracts", () => {
       { ...heartbeat, sentAt: -1 },
       { ...heartbeat, sentAt: Number.MAX_SAFE_INTEGER + 1 },
     ]) {
-      expect(() => Schema.decodeUnknownSync(CompanionUp)(wire)).toThrow();
-      expect(() => Schema.decodeUnknownSync(CompanionDown)(wire)).toThrow();
+      expect(() => compiledDecodeUnknownSync2(wire)).toThrow();
+      expect(() => compiledDecodeUnknownSync4(wire)).toThrow();
     }
-    expect(() => Schema.decodeUnknownSync(CompanionDown)({ ...welcome, heartbeatMs: 0 })).toThrow();
+    expect(() => compiledDecodeUnknownSync4({ ...welcome, heartbeatMs: 0 })).toThrow();
+    expect(() => compiledDecodeUnknownSync4({ ...welcome, connectionGeneration: -1 })).toThrow();
+    expect(() => compiledDecodeSync11({ type: "mount", ...tab, tabId: "a".repeat(129) })).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(CompanionDown)({ ...welcome, connectionGeneration: -1 }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeSync(CompanionDown)({ type: "mount", ...tab, tabId: "a".repeat(129) }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeSync(CompanionUp)({ type: "mounted", ...tab, threadId: "a".repeat(129) }),
+      compiledDecodeSync12({ type: "mounted", ...tab, threadId: "a".repeat(129) }),
     ).toThrow();
   });
 });
+
+const compiledEncodeSync13 = Schema.encodeSync(PreviewRenderHostSelection);
+const compiledDecodeSync14 = Schema.decodeSync(PreviewRenderHostSelection);
+const compiledDecodeSync15 = Schema.decodeSync(DesktopCompanionTicketResponse);
+const compiledEncodeSync16 = Schema.encodeSync(DesktopCompanionTicketResponse);
+const compiledDecodeUnknownSync17 = Schema.decodeUnknownSync(DesktopCompanionTicketResponse);
+const compiledEncodeSync18 = Schema.encodeSync(PreviewCompanionHostsResponse);
+const compiledDecodeUnknownSync19 = Schema.decodeUnknownSync(PreviewCompanionHostsResponse);
+const compiledEncodeSync20 = Schema.encodeSync(PreviewCompanionDefaultSelectionInput);
+const compiledDecodeUnknownSync21 = Schema.decodeUnknownSync(PreviewCompanionDefaultSelectionInput);
+const compiledEncodeSync22 = Schema.encodeSync(PreviewCompanionThreadSelectionInput);
+const compiledDecodeUnknownSync23 = Schema.decodeUnknownSync(PreviewCompanionThreadSelectionInput);
+const compiledDecodeSync24 = Schema.decodeSync(PreviewCompanionThreadSelectionInput);
+const compiledEncodeSync25 = Schema.encodeSync(PreviewCompanionThreadSelectionResponse);
+const compiledDecodeUnknownSync26 = Schema.decodeUnknownSync(
+  PreviewCompanionThreadSelectionResponse,
+);
 
 describe("Preview companion HTTP payloads", () => {
   it("preserves explicit-tag constructors and requires selection tags on the wire", () => {
@@ -229,16 +241,10 @@ describe("Preview companion HTTP payloads", () => {
     const companion = { _tag: "companion", hostId: "mini-1" } as const;
     for (const wire of [server, companion]) {
       expect(PreviewRenderHostSelection.make(wire)).toEqual(wire);
-      expect(
-        Schema.encodeSync(PreviewRenderHostSelection)(
-          Schema.decodeSync(PreviewRenderHostSelection)(wire),
-        ),
-      ).toEqual(wire);
+      expect(compiledEncodeSync13(compiledDecodeSync14(wire))).toEqual(wire);
     }
-    expect(() => Schema.decodeUnknownSync(PreviewRenderHostSelection)({})).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(PreviewRenderHostSelection)({ hostId: "mini-1" }),
-    ).toThrow();
+    expect(() => compiledDecodeUnknownSync7({})).toThrow();
+    expect(() => compiledDecodeUnknownSync7({ hostId: "mini-1" })).toThrow();
   });
 
   it("preserves ready ticket tags through construction and wire round trips", () => {
@@ -247,11 +253,11 @@ describe("Preview companion HTTP payloads", () => {
       environmentId: "environment-1",
       result: { _tag: "ready", url: "ws://companion.invalid/ticket" },
     } as const;
-    const decoded = Schema.decodeSync(DesktopCompanionTicketResponse)(wire);
+    const decoded = compiledDecodeSync15(wire);
     expect(DesktopCompanionTicketResponse.make(decoded)).toEqual(decoded);
-    expect(Schema.encodeSync(DesktopCompanionTicketResponse)(decoded)).toEqual(wire);
+    expect(compiledEncodeSync16(decoded)).toEqual(wire);
     expect(() =>
-      Schema.decodeUnknownSync(DesktopCompanionTicketResponse)({
+      compiledDecodeUnknownSync17({
         ...wire,
         result: { url: wire.result.url },
       }),
@@ -282,37 +288,21 @@ describe("Preview companion HTTP payloads", () => {
       ],
       environmentDefault: selection,
     };
-    expect(
-      Schema.encodeSync(PreviewCompanionHostsResponse)(
-        Schema.decodeUnknownSync(PreviewCompanionHostsResponse)(wire),
-      ),
-    ).toEqual(wire);
+    expect(compiledEncodeSync18(compiledDecodeUnknownSync19(wire))).toEqual(wire);
   });
 
   it("allows server or companion defaults, and only thread overrides can be cleared", () => {
     for (const value of [{ _tag: "server" }, selection]) {
       const wire = { selection: value };
-      expect(
-        Schema.encodeSync(PreviewCompanionDefaultSelectionInput)(
-          Schema.decodeUnknownSync(PreviewCompanionDefaultSelectionInput)(wire),
-        ),
-      ).toEqual(wire);
-      expect(
-        Schema.encodeSync(PreviewCompanionThreadSelectionInput)(
-          Schema.decodeUnknownSync(PreviewCompanionThreadSelectionInput)(wire),
-        ),
-      ).toEqual(wire);
+      expect(compiledEncodeSync20(compiledDecodeUnknownSync21(wire))).toEqual(wire);
+      expect(compiledEncodeSync22(compiledDecodeUnknownSync23(wire))).toEqual(wire);
     }
-    expect(Schema.decodeSync(PreviewCompanionThreadSelectionInput)({ selection: null })).toEqual({
+    expect(compiledDecodeSync24({ selection: null })).toEqual({
       selection: null,
     });
-    expect(() =>
-      Schema.decodeUnknownSync(PreviewCompanionDefaultSelectionInput)({ selection: null }),
-    ).toThrow();
-    expect(() => Schema.decodeUnknownSync(PreviewCompanionThreadSelectionInput)({})).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(PreviewRenderHostSelection)({ _tag: "companion" }),
-    ).toThrow();
+    expect(() => compiledDecodeUnknownSync21({ selection: null })).toThrow();
+    expect(() => compiledDecodeUnknownSync23({})).toThrow();
+    expect(() => compiledDecodeUnknownSync7({ _tag: "companion" })).toThrow();
   });
 
   it("reports inherited selection separately from existing tab bindings", () => {
@@ -324,10 +314,6 @@ describe("Preview companion HTTP payloads", () => {
         { tabId: "companion-tab", hostId: "mini-2" },
       ],
     };
-    expect(
-      Schema.encodeSync(PreviewCompanionThreadSelectionResponse)(
-        Schema.decodeUnknownSync(PreviewCompanionThreadSelectionResponse)(wire),
-      ),
-    ).toEqual(wire);
+    expect(compiledEncodeSync25(compiledDecodeUnknownSync26(wire))).toEqual(wire);
   });
 });

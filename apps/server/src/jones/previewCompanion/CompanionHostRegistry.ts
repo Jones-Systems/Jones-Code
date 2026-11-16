@@ -134,7 +134,9 @@ const make = Effect.gen(function* () {
     });
   return CompanionHostRegistry.of({
     hosts: Effect.sync(() => [...statuses.values()]),
-    status: (hostId) => Effect.sync(() => statuses.get(hostId)),
+    status: Effect.fn("CompanionHostRegistry.status")((hostId) =>
+      Effect.sync(() => statuses.get(hostId)),
+    ),
     events: Stream.fromPubSub(events),
     send,
     assign: Effect.fn("CompanionHostRegistry.assign")(function* (hostId, key) {

@@ -10,6 +10,13 @@ import * as Exit from "effect/Exit";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SqlClient from "effect/sql/SqlClient";
+import {
+  qualificationContent,
+  qualificationVariant,
+  qualificationResidentOrder,
+  qualificationFixture,
+  qualificationFixtureId,
+} from "../../../apps/server/src/jones/serverParallelism/qualificationFixture.ts";
 import { make } from "../../../apps/server/src/jones/workspace/nativeSearchRuntime.ts";
 import { percentiles } from "../../../apps/server/src/jones/serverParallelism/combinedQualification.ts";
 const [output, profile] = process.argv.slice(2);
@@ -59,14 +66,15 @@ const request = async (key) => {
   if (key.variant === "content") {
     const absent = await execute(
       native.searchContents({
-        query: "qualification-absent-marker",
+        query: qualificationFixture.zeroMatchQuery,
         limit: 32,
         caseSensitive: true,
         wholeWord: false,
-        useRegex: false,
+        useRegex: qualificationFixture.zeroMatchUseRegex,
       }),
     );
-    if (absent.matches.length !== 0) throw new Error("Baseline absent marker unexpectedly matched");
+    if (absent.matches.length !== 0 || absent.truncated || absent.regexFallbackError !== undefined)
+      throw new Error("Baseline zero-match traversal failed or fell back");
   }
 };
 try {
@@ -74,12 +82,12 @@ try {
     const cwd = NodePath.join(scratch, `workspace-${index}`);
     await NodeFSP.mkdir(cwd);
     await NodeFSP.writeFile(NodePath.join(cwd, ".gitignore"), "ignored/\n");
-    const content = `needle-${index} alpha beta\n`.repeat(256);
+    const content = qualificationContent(index);
     for (let file = 0; file < files; file++)
       await NodeFSP.writeFile(NodePath.join(cwd, `file-${file}.txt`), content);
-    keys.push({ cwd, variant: index % 2 === 0 ? "paths" : "content" });
+    keys.push({ cwd, variant: qualificationVariant(index) });
   }
-  for (const key of keys.slice(0, 4 * count)) await runtime(key);
+  for (const key of qualificationResidentOrder(count)) await runtime(keys[key]);
   for (let window = 0; window < 3; window++) {
     const writer = [],
       control = [],
@@ -183,6 +191,7 @@ try {
   const median = (values) => [...values].sort((a, b) => a - b)[1];
   report = {
     schema: "jones.server-parallelism.baseline/v1",
+    fixtureId: qualificationFixtureId,
     outcome: "passed",
     source: process.env.JONES_SP_SOURCE_SHA,
     profile,
@@ -204,6 +213,7 @@ try {
 } catch (cause) {
   report = {
     schema: "jones.server-parallelism.baseline/v1",
+    fixtureId: qualificationFixtureId,
     outcome: "failed",
     source: process.env.JONES_SP_SOURCE_SHA,
     profile,

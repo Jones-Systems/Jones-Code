@@ -4,9 +4,10 @@ import { resolveHighlightLanguage } from "../../lib/highlightLanguage";
 import { highlightReviewSelectedLines } from "../../features/review/highlightReviewSelectedLines";
 import type { ReviewRenderableLineRow } from "../../features/review/reviewModel";
 
-vi.mock("expo", async () => {
+vi.mock("react-native-nitro-modules", async () => {
   const { createWasmHighlightsModule } = await import("../../lib/highlights.testing");
-  return { requireOptionalNativeModule: () => createWasmHighlightsModule() };
+  const highlights = createWasmHighlightsModule();
+  return { NitroModules: { hasHybridObject: () => true, createHybridObject: () => highlights } };
 });
 
 describe("Jones review highlighting on the native tokenizer", () => {

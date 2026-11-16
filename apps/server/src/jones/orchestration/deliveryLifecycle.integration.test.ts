@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -16,7 +17,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Replay from "effect-codex-app-server/replay";
-import * as Crypto from "effect/Crypto";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -206,6 +207,7 @@ const terminal = (
     params: { threadId: nativeId, turn: turn(`delivery-turn-${ordinal}`, status) },
   },
 });
+const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const fixture = (runEffectWorker: boolean) =>
   Effect.gen(function* () {
@@ -216,7 +218,6 @@ const fixture = (runEffectWorker: boolean) =>
     const config = yield* ServerConfig.ServerConfig.pipe(Effect.provide(configContext));
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const crypto = yield* Crypto.Crypto;
     const home = path.join(config.baseDir, "synthetic-codex-home");
     yield* fs.makeDirectory(home);
     const firstComplete = yield* Deferred.make<void>();
@@ -320,6 +321,7 @@ const fixture = (runEffectWorker: boolean) =>
     const nativeRegistry = Registry.layerFromAdaptersEffect(
       Effect.gen(function* () {
         const allocator = yield* IdAllocator.IdAllocatorV2;
+        const digest = yield* Digest.Digest;
         return yield* Effect.forEach(
           [
             { instanceId: instanceA, transcript: transcriptA, driver: replayA },
@@ -328,10 +330,10 @@ const fixture = (runEffectWorker: boolean) =>
           ({ instanceId, transcript, driver }) => {
             const factory = CodexTestkit.makeCodexReplayClientFactory({ transcript, driver });
             return Codex.makeCodexAdapterV2({
+              digest,
               instanceId,
-              settings: Schema.decodeSync(CodexSettings)({ homePath: home }),
+              settings: decodeCodexSettings({ homePath: home }),
               environment: { CODEX_HOME: home },
-              crypto,
               fileSystem: fs,
               idAllocator: allocator,
               serverConfig: config,
@@ -388,7 +390,7 @@ const fixture = (runEffectWorker: boolean) =>
             ),
         });
       }),
-    ).pipe(Layer.provide(nativeRegistry));
+    ).pipe(Layer.provide(nativeRegistry), Layer.provide(NodeCrypto.layer));
     const database = Database.layerMemory;
     const eventStore = EventStore.layer.pipe(Layer.provide(database));
     const runtime = Harness.layerWithRegistryAndServices(

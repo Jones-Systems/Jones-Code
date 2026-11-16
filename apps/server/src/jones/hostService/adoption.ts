@@ -1300,6 +1300,14 @@ export async function adoptHost(
           });
         } else await extractQualifiedLinuxArchive(artifact.archive, payload);
         await verifyAdoptionArtifact(artifact.directory, artifact.metadata.source, host);
+        if (artifact === inspected.active && inspected.privateSetupProvenance !== undefined) {
+          await PrivateSetup.projectAuthenticatedPrivateSetupPayload({
+            preimage: inspected.privateSetupProvenance.preimage,
+            payloadDirectory: payload,
+            uid: host.uid,
+            artifact: artifact.metadata,
+          });
+        }
         const enrolled = await enrollQualifiedRuntime({
           baseDir: plan.baseDir,
           artifact: { ...artifact.artifact, payloadDirectory: payload },

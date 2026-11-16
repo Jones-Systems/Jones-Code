@@ -30,6 +30,7 @@ const makeRelay = (restricted = true) => {
         }
       }
     },
+    () => {},
     restricted ? companionCdpPolicy : undefined,
   );
   return {
@@ -134,7 +135,7 @@ describe("companion CDP policy", () => {
       );
     await settle();
     expect(send.mock.calls).toEqual([
-      ["Browser.setDownloadBehavior", { behavior: "deny" }, undefined],
+      ["Page.setDownloadBehavior", { behavior: "deny" }, undefined],
       ["Browser.setDownloadBehavior", { behavior: "deny" }, undefined, undefined],
       ["Browser.setDownloadBehavior", { behavior: "deny" }, "child", undefined],
     ]);

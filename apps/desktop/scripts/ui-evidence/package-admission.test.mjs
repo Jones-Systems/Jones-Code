@@ -99,10 +99,10 @@ NodeTest.test(
         closure,
         configuration: {},
       });
-      const require = NodeModule.createRequire(
+      const fixtureRequire = NodeModule.createRequire(
         NodePath.join(stage, "app/apps/desktop/package.json"),
       );
-      NodeAssert.equal(require("alias"), 42);
+      NodeAssert.equal(fixtureRequire("alias"), 42);
       const args = await bwrapArguments({
         stage,
         runtime: { directory: "/synthetic/electron" },

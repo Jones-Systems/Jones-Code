@@ -1,5 +1,9 @@
 import * as NodeAssert from "node:assert/strict";
 
+import {
+  T3_CODE_BROWSER_TOOL_INSTRUCTIONS,
+  T3_CODE_DEVICE_TOOL_INSTRUCTIONS,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 import { describe, it } from "vite-plus/test";
 import {
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
@@ -67,19 +71,71 @@ describe("Codex runtime context", () => {
 
 describe("Codex orchestration context", () => {
   it("preserves Jones delegation ownership and model options in Codex context", () => {
+    const context = buildCodexAdditionalContext({
+      model: "gpt-5.3-codex",
+      reasoningEffort: "high",
+    });
+    const sections = Object.entries(context)
+      .filter(([key]) => key.startsWith("t3_code_orchestration_"))
+      .map(([, entry]) => entry);
     const orchestration = Object.entries(buildCodexAdditionalContext({ model: "gpt-6.1-sol" }))
       .filter(([key]) => key.startsWith("t3_code_orchestration_"))
       .map(([, entry]) => entry.value)
       .join("\n");
 
-    NodeAssert.ok(orchestration.includes("For other providers, prefer native subagent tools"));
-    NodeAssert.ok(orchestration.includes("Use `delegate_task` for every Claude child"));
-    NodeAssert.ok(orchestration.includes("inheritedOptions"));
-    NodeAssert.ok(orchestration.includes("For an independent T3 delegated review round"));
-    NodeAssert.ok(orchestration.includes("Do not use `t3_thread_send` on `childThreadId`"));
-    NodeAssert.ok(orchestration.includes("Follow a running delegate's `next` instruction"));
-  });
+    NodeAssert.ok(
+      orchestration.includes(
+        "Use `delegate_task` for every Claude child, including same-provider work such as Claude to Claude: " +
+          "when you are a Claude agent asked to make subagents, or the child should be a Claude agent, " +
+          "create app-owned `delegate_task` children with a Claude target even when a native Claude subagent tool supports the chosen model.",
+      ),
+    );
 
+    NodeAssert.ok(
+      orchestration.includes(
+        "For other providers, prefer native subagent tools for same-provider work only when they support the chosen model " +
+          "and no model options are requested or inherited, and neither the user nor the workstream asks for a separate session " +
+          "or rules out native subagents; use `delegate_task` with that provider instance and model in every other case.",
+      ),
+    );
+
+    NodeAssert.ok(
+      orchestration.includes(
+        "Also use `delegate_task` for cross-provider or explicitly T3-owned child tasks.",
+      ),
+    );
+
+    NodeAssert.ok(
+      orchestration.includes(
+        "When model options are requested or the child keeps the parent's provider instance and model with nonempty `inheritedOptions` " +
+          "from `orchestrator_capabilities`, use `delegate_task` even for native-supported models. " +
+          "Native subagents cannot reliably apply T3 model options. " +
+          "Read the selected model's descriptors from `orchestrator_capabilities` and put settings in `target.options`, not only in the prompt. " +
+          'Claude commonly uses {"effort":"max","fastMode":true}; Codex uses {"reasoningEffort":"max","serviceTier":"priority"}. ' +
+          "Do not translate max to high or ignore unsupported settings: report a capability mismatch. " +
+          "Options inherit only for the same provider instance and model; explicit entries override individual values, and [] or {} clears them. " +
+          "Check the returned providerInstanceId, model, and options against the requested selection.",
+      ),
+    );
+
+    NodeAssert.ok(
+      orchestration.includes(
+        "For an independent T3 delegated review round, call `delegate_task` again. " +
+          "Include the original brief, prior findings, responses, and unresolved objections in the new task prompt. " +
+          "Track each round by its own `taskId` and use a distinct `clientRequestId`, stable across retries of that round.",
+      ),
+    );
+    NodeAssert.equal(
+      sections.map((entry) => entry.value).join("\n\n"),
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
+    );
+    NodeAssert.match(context.t3_code_runtime!.value, /running in Jones Code/);
+    NodeAssert.match(context.t3_code_runtime!.value, /product ID: jones-code/);
+    NodeAssert.match(
+      context.t3_code_runtime!.value,
+      /as gpt-5\.3-codex with high reasoning effort/,
+    );
+  });
   it("delivers all authored sections in key order with the actual app identity", () => {
     const context = buildCodexAdditionalContext({
       model: "gpt-5.3-codex",
@@ -128,6 +184,32 @@ describe("Jones browser developer instructions", () => {
       .t3_code_tools!.value;
     NodeAssert.match(browserOnly, /preview_open/);
     NodeAssert.doesNotMatch(browserOnly, /device_open/);
+  });
+});
+
+describe("Codex device context", () => {
+  it("delivers both complete tool blocks when their combined value exceeds the native cap", () => {
+    const context = buildCodexAdditionalContext(
+      { model: "custom-model" },
+      { browser: true, device: true },
+    );
+    const toolValues = Object.entries(context)
+      .filter(([key]) => key.startsWith("t3_code_tools"))
+      .map(([, entry]) => entry.value);
+    const delivered = toolValues.join("\n\n");
+    NodeAssert.ok(delivered.includes(T3_CODE_BROWSER_TOOL_INSTRUCTIONS));
+    NodeAssert.ok(delivered.includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS));
+    NodeAssert.equal(delivered.split(T3_CODE_BROWSER_TOOL_INSTRUCTIONS).length - 1, 1);
+    NodeAssert.equal(delivered.split(T3_CODE_DEVICE_TOOL_INSTRUCTIONS).length - 1, 1);
+  });
+  it("adds the shared device block only when the session holds device access", () => {
+    const tools = (device: boolean) =>
+      buildCodexAdditionalContext({ model: "gpt-6.1-sol" }, { browser: true, device }).t3_code_tools
+        ?.value ?? "";
+
+    NodeAssert.ok(tools(true).includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS));
+    NodeAssert.ok(!tools(true).includes("ToolSearch"));
+    NodeAssert.ok(!tools(false).includes("## T3 Code devices"));
   });
 });
 

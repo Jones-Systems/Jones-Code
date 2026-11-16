@@ -105,7 +105,7 @@ export function makeBetterRouteRecovery(input: {
     );
     return (
       candidate >= 0 &&
-      candidate < fallback &&
+      candidate < (fallback === -1 ? routes.length : fallback) &&
       (state.cooldowns.get(connectionRouteId(observation.route.target)) ?? 0n) <= now
     );
   };

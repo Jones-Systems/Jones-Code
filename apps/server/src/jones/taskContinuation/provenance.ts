@@ -8,12 +8,14 @@ import * as Schema from "effect/Schema";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import { sourceBinding, TaskContinuationError } from "./sourceBinding.ts";
 
+const compiledIs1 = Schema.is(TaskContinuationError);
+
 export function nativeSessionProvenance(
   task: OrchestrationV2Subagent,
   child: Parameters<typeof sourceBinding>[1],
 ): DelegatedTaskNativeSession | undefined {
   const binding = sourceBinding(task, child);
-  if (Schema.is(TaskContinuationError)(binding)) return undefined;
+  if (compiledIs1(binding)) return undefined;
   return {
     nativeSessionId: binding.nativeSessionId,
     sourceRunId: binding.sourceRunId,

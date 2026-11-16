@@ -4,6 +4,7 @@ import type {
   ContinuityRecoveryCapability,
   ContinuitySnapshot,
 } from "@t3tools/contracts";
+import { codexContinuityContext } from "./codexTransport.ts";
 import { buildRecoveryCapsule } from "./capsule.ts";
 import { continuityDigest, CONTINUITY_LIMITS, utf8Bytes } from "./model.ts";
 
@@ -109,6 +110,50 @@ describe("bounded fresh continuity capsule", () => {
       buildRecoveryCapsule({ ...snapshot(), owner: largeOwner }, { ...input, owner: largeOwner }),
     ).toEqual({ outcome: "hold", reason: "projection_too_large" });
   });
+
+  it.each([4000, 4001, 4096])(
+    "preserves a valid %s-byte essential envelope with long native identity",
+    (bytes) => {
+      const longOwner = {
+        ...owner,
+        environmentId: "e".repeat(36),
+        threadId: "t".repeat(36),
+        providerThreadId: "p".repeat(105),
+        nativeThreadId: "n".repeat(772 + bytes - 4001),
+      } as ContinuityOwner;
+      const state: ContinuitySnapshot = {
+        ...snapshot(),
+        owner: longOwner,
+        status: "blocked",
+        generation: "9223372036854775807",
+        focus: null,
+        intent: {
+          ...snapshot().intent,
+          goalId: "g".repeat(256),
+          revision: "9223372036854775807",
+          northStar: "x".repeat(4096),
+          preservedQualities: [],
+          finishItems: [{ id: "finish", text: "x".repeat(4096) }],
+          startEvidence: [{ id: "start", reference: "x".repeat(4096), assertion: "Requested" }],
+        },
+        nextActions: [],
+        evidence: [],
+      };
+      const projection = buildRecoveryCapsule(state, { ...input, owner: longOwner });
+      expect(projection.outcome).toBe("context");
+      if (projection.outcome !== "context") return;
+      expect(utf8Bytes(projection.text)).toBe(bytes);
+      const context = codexContinuityContext(projection.text)!;
+      expect(
+        Object.values(context)
+          .map((entry) => entry.value)
+          .join(""),
+      ).toBe(projection.text);
+      for (const entry of Object.values(context))
+        expect(utf8Bytes(entry.value)).toBeLessThanOrEqual(4000);
+      expect(JSON.parse(projection.text.split("\n")[1]!).owner).toEqual(longOwner);
+    },
+  );
 
   it("holds terminal, detached, unresolved, corrupt and mismatched records; absence preserves ordinary behavior", () => {
     expect(buildRecoveryCapsule(null, input)).toEqual({ outcome: "absent" });

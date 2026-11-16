@@ -24,6 +24,8 @@ import { recreate, RecreationHold, type RecreationInput } from "./Native.ts";
 import { acquireNativeFixture, releaseNativeFixture, partialSource } from "./Native.testkit.ts";
 import { deferRestore, prepareTurn, withTurnClaims } from "./Runtime.ts";
 
+const encodeRetirementReceipt = Schema.encodeEffect(RetirementReceiptJson);
+
 class NativeFixtureError extends Schema.TaggedError<NativeFixtureError>()("NativeFixtureError", {
   cause: Schema.Defect(),
 }) {
@@ -242,7 +244,7 @@ it.effect(
         // Only the thread binding is consumed by the native restore boundary.
         yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,created_at,updated_at,payload_json)
       VALUES(${threadId},'project','Restore fixture','codex','full-access','default','2026-11-06T00:00:00Z','2026-11-06T00:00:00Z',${JSON.stringify({ id: threadId, projectId: "project", worktreePath: f.checkout, branch: "task" })})`;
-        yield* sql`INSERT INTO jones_workspace_retirement_receipts VALUES(${receipt.id},${receipt.incarnation},${f.checkout},'retired',${yield* Schema.encodeEffect(RetirementReceiptJson)(receipt)})`;
+        yield* sql`INSERT INTO jones_workspace_retirement_receipts VALUES(${receipt.id},${receipt.incarnation},${f.checkout},'retired',${yield* encodeRetirementReceipt(receipt)})`;
         yield* sql`INSERT INTO jones_workspace_retirement_state VALUES(${f.checkout},${receipt.incarnation},'retired',${receipt.id})`;
         expect(yield* deferRestore(threadId)).toBe(true);
         let committed = false;

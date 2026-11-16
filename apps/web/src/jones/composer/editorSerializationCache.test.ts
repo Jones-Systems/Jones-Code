@@ -31,11 +31,22 @@ it("serializes once per document identity and retains only the current document"
   expect(serializeEditorDoc).toHaveBeenCalledTimes(4);
 });
 
-it("does not share cached maps between editors even for the same document", () => {
+it("keeps independent per-editor last entries while sharing immutable serializer output", () => {
   const first = createEditorSerializationCache();
   const second = createEditorSerializationCache();
   const sharedDoc = doc("shared");
+  const otherDoc = doc("other");
   vi.mocked(serializeEditorDoc).mockClear();
-  expect(first(sharedDoc)).not.toBe(second(sharedDoc));
+  const sharedMap = first(sharedDoc);
+  expect(sharedMap.value).toBe("shared");
+  expect(second(sharedDoc)).toBe(sharedMap);
   expect(serializeEditorDoc).toHaveBeenCalledTimes(2);
+  expect(first(otherDoc).value).toBe("other");
+  expect(serializeEditorDoc).toHaveBeenCalledTimes(3);
+  expect(second(sharedDoc)).toBe(sharedMap);
+  expect(serializeEditorDoc).toHaveBeenCalledTimes(3);
+  expect(first(sharedDoc)).toBe(sharedMap);
+  expect(serializeEditorDoc).toHaveBeenCalledTimes(4);
+  expect(second(sharedDoc)).toBe(sharedMap);
+  expect(serializeEditorDoc).toHaveBeenCalledTimes(4);
 });

@@ -24,7 +24,7 @@ export function GlobalHostStatusIndicators() {
   const environmentId = selection !== null && environmentIds.includes(selection) ? selection : null;
 
   if (selection !== null && environmentId === null) setSelection(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Clear the previously retained global host source when a specific environment becomes selected.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Clear the previously retained global host source when a specific environment becomes selected.
   useEffect(() => {
     if (environmentId === null && retainedEnvironmentId !== null) {
       clearRetainedHostStatus(retainedEnvironmentId);
@@ -32,7 +32,7 @@ export function GlobalHostStatusIndicators() {
     }
   }, [environmentId]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own global host discovery and visibility observation while no specific environment is selected.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own global host discovery and visibility observation while no specific environment is selected.
   useEffect(() => {
     if (environmentId !== null) return;
     let active = true;

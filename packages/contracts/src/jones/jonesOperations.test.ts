@@ -37,6 +37,11 @@ const receipt = {
   updatedAt: at,
 } as const;
 
+const compiledDecodeSync1 = Schema.decodeSync(JonesOperationStopInput);
+const compiledDecodeSync2 = Schema.decodeSync(JonesOperationFenceInput);
+const compiledDecodeUnknownSync3 = Schema.decodeUnknownSync(JonesOperationFenceInput);
+const compiledDecodeUnknownSync4 = Schema.decodeUnknownSync(JonesOperationStopInput);
+
 describe("durable Jones operation contracts", () => {
   it("requires UUID v4 identities and full lowercase source commits", () => {
     const decodeId = Schema.decodeUnknownSync(JonesOperationId);
@@ -112,15 +117,13 @@ describe("durable Jones operation contracts", () => {
   it("binds repeatable Stop and fence requests to an exact operation and environment", () => {
     const stop = { operationId, stopId, environmentId };
     const fence = start;
-    expect(Schema.decodeSync(JonesOperationStopInput)(stop)).toEqual(stop);
-    expect(Schema.decodeSync(JonesOperationFenceInput)(fence)).toEqual(fence);
-    expect(() =>
-      Schema.decodeUnknownSync(JonesOperationFenceInput)({ operationId, environmentId }),
-    ).toThrow();
-    expect(() => Schema.decodeUnknownSync(JonesOperationStopInput)(fence)).toThrow();
+    expect(compiledDecodeSync1(stop)).toEqual(stop);
+    expect(compiledDecodeSync2(fence)).toEqual(fence);
+    expect(() => compiledDecodeUnknownSync3({ operationId, environmentId })).toThrow();
+    expect(() => compiledDecodeUnknownSync4(fence)).toThrow();
     for (const input of [{ operationId }, { environmentId }]) {
-      expect(() => Schema.decodeUnknownSync(JonesOperationStopInput)(input)).toThrow();
-      expect(() => Schema.decodeUnknownSync(JonesOperationFenceInput)(input)).toThrow();
+      expect(() => compiledDecodeUnknownSync4(input)).toThrow();
+      expect(() => compiledDecodeUnknownSync3(input)).toThrow();
     }
   });
 
@@ -223,6 +226,9 @@ describe("durable Jones operation contracts", () => {
   });
 });
 
+const compiledDecodeSync5 = Schema.decodeSync(JonesRecoveryPreflightInput);
+const compiledDecodeUnknownSync6 = Schema.decodeUnknownSync(JonesRecoveryPreflightInput);
+
 describe("target-owned recovery preflight contracts", () => {
   const binding = {
     environmentId,
@@ -250,13 +256,13 @@ describe("target-owned recovery preflight contracts", () => {
   };
 
   it("carries target binding, capacity and independently admissible recovery policies", () => {
-    expect(Schema.decodeSync(JonesRecoveryPreflightInput)(binding)).toEqual(binding);
+    expect(compiledDecodeSync5(binding)).toEqual(binding);
     const decode = Schema.decodeUnknownSync(JonesRecoveryPreflight);
     expect(decode(preflight)).toEqual(preflight);
     for (const field of Object.keys(binding)) {
       const incomplete: Record<string, unknown> = { ...binding };
       delete incomplete[field];
-      expect(() => Schema.decodeUnknownSync(JonesRecoveryPreflightInput)(incomplete)).toThrow();
+      expect(() => compiledDecodeUnknownSync6(incomplete)).toThrow();
     }
     const firstInstall = {
       ...preflight,

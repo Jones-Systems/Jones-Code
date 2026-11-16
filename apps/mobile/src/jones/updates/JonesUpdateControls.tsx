@@ -41,7 +41,7 @@ import {
 } from "./jonesUpdates";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../../features/settings/components/SettingsSection";
-import { SettingsActionRow } from "../../features/settings/components/SettingsActionRow";
+import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
 
 const decodeOperationReceipt = Schema.decodeUnknownSync(JonesOperationReceipt);
 const decodeRecoveryPreflight = Schema.decodeUnknownSync(JonesRecoveryPreflight);
@@ -65,14 +65,14 @@ export function JonesUpdateControls({
   const session = mobileJonesUpdateSession(environmentId);
   const saved = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   const authority = useRef({ environmentId, allowed, mounted: false });
-  // oxlint-disable-next-line t3code/react-effect-budget -- Native Alert callbacks must see committed host/permission authority and lose it synchronously on unmount.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Native Alert callbacks must see committed host/permission authority and lose it synchronously on unmount.
   useLayoutEffect(() => {
     authority.current = { environmentId, allowed, mounted: true };
     return () => {
       authority.current.mounted = false;
     };
   }, [environmentId, allowed]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Fresh subscription receipts reconcile the external session retained across screen remounts and lost replies.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fresh subscription receipts reconcile the external session retained across screen remounts and lost replies.
   useEffect(() => {
     const receipt = observed.state?.operation;
     if (observed.freshness === "fresh" && receipt?.environmentId === environmentId)

@@ -20,7 +20,6 @@ import {
 } from "@t3tools/shared/composerContextClipboard";
 import { threadContextRecord, threadContextReference } from "../../lib/composerContextRecords";
 import { formatInlineContextReference } from "../../lib/composerContextReferences";
-import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
   NO_QUESTION_ATTACHMENT_CAPABILITIES,
   type QuestionAnswerAttachmentCapabilities,
@@ -785,7 +784,7 @@ it.each(["question-test", "foreign-environment"])(
     const sentAnswer = JSON.parse(output("answer")!) as { approach: string };
     expect(sentAnswer.approach).toContain(
       source === "question-test"
-        ? formatThreadLink(record.threadId, "Related thread")
+        ? "[Related thread](t3-thread://v2/question-test/related)"
         : "environmentId: foreign-environment",
     );
     expect(sentAnswer.approach).toContain("Synthetic bounded thread excerpt");

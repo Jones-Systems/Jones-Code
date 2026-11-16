@@ -50,6 +50,7 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderEventIngestor from "../../orchestration-v2/ProviderEventIngestor.ts";
+import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -57,6 +58,8 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import { makeProviderControlTerminalDrain } from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 
+const isProviderEventPublishError = Schema.is(ProviderEventIngestor.ProviderEventPublishError);
+const isProviderEventNormalizeError = Schema.is(ProviderEventIngestor.ProviderEventNormalizeError);
 const driver = ProviderDriverKind.make("codex");
 export const modes = [
   "current",
@@ -246,6 +249,9 @@ export const historyScenario = ({
   );
   const sinkLayer = EventSink.layer.pipe(Layer.provide(stores));
   const dependencies = Layer.mergeAll(
+    Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+      getCatalogSource: () => undefined,
+    }),
     stores,
     sinkLayer,
     IdAllocator.layer,
@@ -974,9 +980,8 @@ export const historyScenario = ({
       assert.isTrue(Exit.isFailure(result));
       if (Exit.isFailure(result)) {
         const error = Cause.squash(result.cause);
-        assert.isTrue(Schema.is(ProviderEventIngestor.ProviderEventPublishError)(error));
-        if (Schema.is(ProviderEventIngestor.ProviderEventPublishError)(error))
-          assert.strictEqual(error.cause, publicationFailure);
+        assert.isTrue(isProviderEventPublishError(error));
+        if (isProviderEventPublishError(error)) assert.strictEqual(error.cause, publicationFailure);
       }
     }
     const rejectedError = normalizationFailure && mode !== "superseded-same-session";
@@ -984,9 +989,8 @@ export const historyScenario = ({
       assert.isTrue(Exit.isFailure(result));
       if (Exit.isFailure(result)) {
         const error = Cause.squash(result.cause);
-        assert.isTrue(Schema.is(ProviderEventIngestor.ProviderEventNormalizeError)(error));
-        if (Schema.is(ProviderEventIngestor.ProviderEventNormalizeError)(error))
-          assert.strictEqual(error.cause, admissionFailure);
+        assert.isTrue(isProviderEventNormalizeError(error));
+        if (isProviderEventNormalizeError(error)) assert.strictEqual(error.cause, admissionFailure);
       }
     } else if (uncertainPublication && readback !== "found") {
       assert.isTrue(Exit.isFailure(result));
@@ -994,7 +998,7 @@ export const historyScenario = ({
       assert.isTrue(Exit.isFailure(result));
       const failure = Exit.isFailure(result) ? Cause.squash(result.cause) : undefined;
       assert.instanceOf(failure, ProviderEventIngestor.ProviderEventPublishError);
-      if (!Schema.is(ProviderEventIngestor.ProviderEventPublishError)(failure))
+      if (!isProviderEventPublishError(failure))
         return assert.fail("Expected the historical write's publication error");
       assert.equal(failure.providerSessionId, providerSessionId);
       assert.equal(failure.eventCount, 1);

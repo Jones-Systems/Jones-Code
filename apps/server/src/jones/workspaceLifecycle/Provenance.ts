@@ -64,6 +64,10 @@ export class ProvenanceSidecar extends Context.Service<
   }
 >()("t3/jones/workspaceLifecycle/Provenance/ProvenanceSidecar") {}
 
+const compiledIncomingSchema1 = Schema.decodePromise(Schema.fromJsonString(ProvenanceRecord), {
+  onExcessProperty: "error",
+});
+
 const publish = Effect.fn("ProvenanceSidecar.publish")((record: Record) =>
   Effect.tryPromise({
     try: async () => {
@@ -99,9 +103,9 @@ const publish = Effect.fn("ProvenanceSidecar.publish")((record: Record) =>
             const read = await input.read(bytes, 0, bytes.length, 0);
             if (read.bytesRead !== stat.size || read.bytesRead > 65536)
               throw new Error("Changed provenance sidecar");
-            const existing = await Schema.decodePromise(Schema.fromJsonString(ProvenanceRecord), {
-              onExcessProperty: "error",
-            })(new TextDecoder().decode(bytes.subarray(0, read.bytesRead)));
+            const existing = await compiledIncomingSchema1(
+              new TextDecoder().decode(bytes.subarray(0, read.bytesRead)),
+            );
             if (canonical(existing) !== canonical(record))
               throw new Error("Conflicting provenance sidecar");
           } finally {
@@ -170,8 +174,10 @@ const incarnation = (
     admin: source.target.gitDirectoryIdentity,
     ...(recreation === null ? {} : { recreation }),
   })}`;
+const compiledIncomingSchema2 = Schema.is(LifecycleError);
+
 const error = (cause: unknown) =>
-  Schema.is(LifecycleError)(cause) ? cause : new LifecycleError({ reason: "unavailable", cause });
+  compiledIncomingSchema2(cause) ? cause : new LifecycleError({ reason: "unavailable", cause });
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const identity = yield* ServerEnvironmentIdentity;

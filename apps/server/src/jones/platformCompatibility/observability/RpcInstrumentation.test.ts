@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
   type AuthEnvironmentScope,
   ScheduledTaskError,
   ScheduledTaskId,
@@ -102,11 +103,11 @@ describe("WS RPC instrumentation middleware", () => {
       Effect.gen(function* () {
         const group = groupOf(
           WS_METHODS.serverProbe,
-          WS_METHODS.scheduledTasksList,
+          WS_METHODS.scheduledTasksRunNow,
           WS_METHODS.serverRetryResourceTelemetry,
           WS_METHODS.pullRequestsSubscribeRefreshes,
           WS_METHODS.scheduledTasksSubscribe,
-          WS_METHODS.serverGetSettings,
+          WS_METHODS.serverGetConfig,
         );
         const client = yield* RpcTest.makeClient(group).pipe(
           Effect.provide(
@@ -114,7 +115,7 @@ describe("WS RPC instrumentation middleware", () => {
               group.toLayerHandler(WS_METHODS.serverProbe, () =>
                 Effect.succeed({}).pipe(Effect.withSpan("serverProbe.child")),
               ),
-              group.toLayerHandler(WS_METHODS.scheduledTasksList, () =>
+              group.toLayerHandler(WS_METHODS.scheduledTasksRunNow, () =>
                 Effect.annotateCurrentSpan({ "scheduled_task.id": taskId }).pipe(
                   Effect.andThen(new ScheduledTaskError({ message: "List failed." })),
                 ),
@@ -131,14 +132,16 @@ describe("WS RPC instrumentation middleware", () => {
                   Stream.fail(new ScheduledTaskError({ message: "Subscription failed." })),
                 ),
               ),
-              group.toLayerHandler(WS_METHODS.serverGetSettings, () => Effect.die("broken")),
-              readOnlyConnection,
+              group.toLayerHandler(WS_METHODS.serverGetConfig, () => Effect.die("broken")),
+              connectionMiddleware([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]),
             ),
           ),
         );
 
         assert.deepStrictEqual(yield* client[WS_METHODS.serverProbe]({}), {});
-        const listError = yield* client[WS_METHODS.scheduledTasksList]({}).pipe(Effect.flip);
+        const listError = yield* client[WS_METHODS.scheduledTasksRunNow]({ id: taskId }).pipe(
+          Effect.flip,
+        );
         assert.equal(listError._tag, "ScheduledTaskError");
         const rejection = yield* client[WS_METHODS.serverRetryResourceTelemetry]({}).pipe(
           Effect.flip,
@@ -152,7 +155,7 @@ describe("WS RPC instrumentation middleware", () => {
           client[WS_METHODS.scheduledTasksSubscribe]({}),
         ).pipe(Effect.flip);
         assert.equal(subscribeError._tag, "ScheduledTaskError");
-        const settingsExit = yield* Effect.exit(client[WS_METHODS.serverGetSettings]({}));
+        const settingsExit = yield* Effect.exit(client[WS_METHODS.serverGetConfig]({}));
         assert.isTrue(Exit.hasDies(settingsExit));
 
         assert.deepStrictEqual(
@@ -168,10 +171,10 @@ describe("WS RPC instrumentation middleware", () => {
               },
             ],
             [
-              "ws.rpc.scheduledTasks.list",
+              "ws.rpc.scheduledTasks.runNow",
               {
                 ...rpcSpanDefaults,
-                "rpc.method": WS_METHODS.scheduledTasksList,
+                "rpc.method": WS_METHODS.scheduledTasksRunNow,
                 "rpc.aggregate": "scheduledTasks",
                 "rpc.stream": false,
                 "scheduled_task.id": taskId,
@@ -205,10 +208,10 @@ describe("WS RPC instrumentation middleware", () => {
               },
             ],
             [
-              "ws.rpc.server.getSettings",
+              "ws.rpc.server.getConfig",
               {
                 ...rpcSpanDefaults,
-                "rpc.method": WS_METHODS.serverGetSettings,
+                "rpc.method": WS_METHODS.serverGetConfig,
                 "rpc.aggregate": "server",
                 "rpc.stream": false,
               },
@@ -231,11 +234,11 @@ describe("WS RPC instrumentation middleware", () => {
         assert.deepStrictEqual(
           [
             requestCount(snapshots, WS_METHODS.serverProbe, "success"),
-            requestCount(snapshots, WS_METHODS.scheduledTasksList, "failure"),
+            requestCount(snapshots, WS_METHODS.scheduledTasksRunNow, "failure"),
             requestCount(snapshots, WS_METHODS.serverRetryResourceTelemetry, "failure"),
             requestCount(snapshots, WS_METHODS.pullRequestsSubscribeRefreshes, "success"),
             requestCount(snapshots, WS_METHODS.scheduledTasksSubscribe, "failure"),
-            requestCount(snapshots, WS_METHODS.serverGetSettings, "failure"),
+            requestCount(snapshots, WS_METHODS.serverGetConfig, "failure"),
           ].map((state) => state?.count),
           [1, 1, 1, 1, 1, 1],
         );

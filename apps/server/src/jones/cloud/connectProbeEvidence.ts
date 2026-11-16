@@ -14,6 +14,10 @@ export interface ConnectHttpEvidence {
   readonly rayId?: string;
 }
 
+const decodeDescriptorJson = Schema.decodeEffect(
+  Schema.fromJsonString(ExecutionEnvironmentDescriptor),
+);
+
 export type ConnectLocalEvidence = "matching_environment" | "different_environment" | "unverified";
 
 const CONTENT_TYPES = new Set([
@@ -64,11 +68,7 @@ export const probeConnectLoopback = Effect.fn("ConnectReachability.loopbackDescr
               return Effect.succeed(next);
             },
           ),
-          Effect.flatMap((bytes) =>
-            Schema.decodeEffect(Schema.fromJsonString(ExecutionEnvironmentDescriptor))(
-              new TextDecoder().decode(bytes),
-            ),
-          ),
+          Effect.flatMap((bytes) => decodeDescriptorJson(new TextDecoder().decode(bytes))),
           Effect.map((descriptor): ConnectLocalEvidence =>
             descriptor.environmentId === expectedId
               ? "matching_environment"

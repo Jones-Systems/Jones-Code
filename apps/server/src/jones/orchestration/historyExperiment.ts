@@ -1,3 +1,4 @@
+import { isArrayNonEmpty } from "effect/Array";
 // @effect-diagnostics nodeBuiltinImport:off -- The immutable benchmark source identity is hashed synchronously at module initialization before runtime acquisition.
 import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Synchronous source binding hashes the exact SQL owner file before the frozen query experiment runs.
@@ -18,6 +19,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+
+const requireNonEmptyBatch = <A>(batch: Array<A>): [A, ...Array<A>] => {
+  if (!isArrayNonEmpty(batch)) throw new Error("Historical fixture batch must contain rows");
+  return batch;
+};
+
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 
@@ -142,76 +149,80 @@ export const seedHistory = Effect.fn("seedV2HistoryExperiment")(function* (count
       (_, offset) => start + offset,
     );
     yield* sql`INSERT INTO orchestration_v2_projection_messages ${sql.insert(
-      indexes.map((index) => {
-        const id = historyMessageId(index);
-        const runId = index % 3 === 0 ? "active-run" : null;
-        return {
-          message_id: id,
-          thread_id: historyThreadId,
-          run_id: runId,
-          node_id: null,
-          role: "user",
-          streaming: 0,
-          created_at: iso,
-          updated_at: iso,
-          payload_json: JSON.stringify({
-            id,
-            threadId: historyThreadId,
-            runId,
-            nodeId: null,
+      requireNonEmptyBatch(
+        indexes.map((index) => {
+          const id = historyMessageId(index);
+          const runId = index % 3 === 0 ? "active-run" : null;
+          return {
+            message_id: id,
+            thread_id: historyThreadId,
+            run_id: runId,
+            node_id: null,
             role: "user",
-            text: `Message ${index}`,
-            attachments: [],
-            streaming: false,
-            createdBy: "user",
-            creationSource: "web",
-            createdAt: iso,
-            updatedAt: iso,
-          }),
-        };
-      }),
+            streaming: 0,
+            created_at: iso,
+            updated_at: iso,
+            payload_json: JSON.stringify({
+              id,
+              threadId: historyThreadId,
+              runId,
+              nodeId: null,
+              role: "user",
+              text: `Message ${index}`,
+              attachments: [],
+              streaming: false,
+              createdBy: "user",
+              creationSource: "web",
+              createdAt: iso,
+              updatedAt: iso,
+            }),
+          };
+        }),
+      ),
     )}`;
     yield* sql`INSERT INTO orchestration_v2_projection_turn_items ${sql.insert(
-      indexes.map((index) => {
-        const id = `item-${String(index).padStart(6, "0")}`;
-        const item = {
-          id,
-          threadId: historyThreadId,
-          runId: null,
-          nodeId: null,
-          providerThreadId: null,
-          providerTurnId: null,
-          nativeItemRef: null,
-          parentItemId: null,
-          ordinal: index + 1,
-          status: "completed",
-          title: null,
-          startedAt: iso,
-          completedAt: iso,
-          updatedAt: iso,
-          type: "user_message",
-          messageId: historyMessageId(index),
-          text: `Message ${index}`,
-          attachments: [],
-          createdBy: "user",
-          creationSource: "web",
-          inputIntent: "turn_start",
-        };
-        return {
-          turn_item_id: id,
-          thread_id: historyThreadId,
-          run_id: null,
-          node_id: null,
-          provider_thread_id: null,
-          provider_turn_id: null,
-          parent_item_id: null,
-          ordinal: index + 1,
-          type: item.type,
-          status: item.status,
-          updated_at: iso,
-          payload_json: JSON.stringify(item),
-        };
-      }),
+      requireNonEmptyBatch(
+        indexes.map((index) => {
+          const id = `item-${String(index).padStart(6, "0")}`;
+          const item = {
+            id,
+            threadId: historyThreadId,
+            runId: null,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: index + 1,
+            status: "completed",
+            title: null,
+            startedAt: iso,
+            completedAt: iso,
+            updatedAt: iso,
+            type: "user_message",
+            messageId: historyMessageId(index),
+            text: `Message ${index}`,
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+            inputIntent: "turn_start",
+          };
+          return {
+            turn_item_id: id,
+            thread_id: historyThreadId,
+            run_id: null,
+            node_id: null,
+            provider_thread_id: null,
+            provider_turn_id: null,
+            parent_item_id: null,
+            ordinal: index + 1,
+            type: item.type,
+            status: item.status,
+            updated_at: iso,
+            payload_json: JSON.stringify(item),
+          };
+        }),
+      ),
     )}`;
   }
 });

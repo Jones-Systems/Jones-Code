@@ -4,6 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
+import { jonesNativeHelperSource } from "../../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts";
 import {
   packagedDesktopFaultPoints,
   preparePackagedDesktopHelperFault,
@@ -60,7 +61,9 @@ activate()
 `;
 
 async function fixture(body, source = control) {
-  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-desktop-preload-"));
+  const root = await NodeFSP.mkdtemp(
+    NodePath.join(await NodeFSP.realpath(NodeOS.tmpdir()), "jones-desktop-preload-"),
+  );
   await NodeFSP.chmod(root, 0o700);
   try {
     const home = NodePath.join(root, "home");
@@ -384,32 +387,37 @@ def launch(active, descriptor=None):
     );
 }
 
-async function deferredLaunchFixture(body, mode = "returned") {
-  await fixture(async (f) => {
-    const appPath = NodePath.join(f.root, "Previous.app");
-    const executablePath = NodePath.join(appPath, "Contents/MacOS/previous");
-    await NodeFSP.mkdir(NodePath.dirname(executablePath), { recursive: true, mode: 0o700 });
-    await NodeFSP.writeFile(executablePath, "not an executable app", { mode: 0o600 });
-    f.active = { ...f.active, appPath, executablePath };
-    const selected = await installSelection(f);
-    const prepared = await preparePackagedDesktopHelperFault({
-      fixtureRoot: f.root,
-      helper: f.helper,
-      manifest: f.manifest,
-      selection: selected.selection,
-      point: "before-pair",
-      observeRelaunch: true,
-    });
-    await selected.prepare();
-    const result = await execute(f, prepared, [
-      f.helper,
-      "--manifest",
-      f.manifest,
-      "--activate",
-      f.intent,
-    ]);
-    await body({ ...f, prepared, result });
-  }, launchServicesControl(mode));
+async function deferredLaunchFixture(body, mode = "returned", options = {}) {
+  await fixture(
+    async (f) => {
+      const appPath = NodePath.join(f.root, "Previous.app");
+      const executablePath = NodePath.join(appPath, "Contents/MacOS/previous");
+      await NodeFSP.mkdir(NodePath.dirname(executablePath), { recursive: true, mode: 0o700 });
+      await NodeFSP.writeFile(executablePath, "not an executable app", { mode: 0o600 });
+      f.active = { ...f.active, appPath, executablePath, generation: "control-generation" };
+      const selected = await installSelection(f);
+      const prepared = await preparePackagedDesktopHelperFault({
+        fixtureRoot: f.root,
+        helper: f.helper,
+        manifest: f.manifest,
+        selection: selected.selection,
+        point: "before-pair",
+        observeRelaunch: true,
+        ...options,
+        ...(options.launchContext ? { launchContext: options.launchContext(f) } : {}),
+      });
+      await selected.prepare();
+      const result = await execute(f, prepared, [
+        f.helper,
+        "--manifest",
+        f.manifest,
+        "--activate",
+        f.intent,
+      ]);
+      await body({ ...f, prepared, result });
+    },
+    options.source ?? launchServicesControl(mode),
+  );
 }
 
 NodeTest.test(
@@ -590,6 +598,7 @@ NodeTest.test("no-relaunch proof requires every launch observation absent", asyn
     NodeAssert.equal(result.code, 0, result.stderr);
     await prepared.assertNoRelaunch();
     for (const name of [
+      "launch-context.json",
       "launch-services.json",
       "launch-return.json",
       "launch-observation-failure.json",
@@ -674,7 +683,7 @@ NodeTest.test(
   async () => {
     await fixture(async (f) => {
       const selected = await installSelection(f);
-      for (const point of ["storage", "reserve", "exit-wait"])
+      for (const point of ["storage", "reserve"])
         await NodeAssert.rejects(
           preparePackagedDesktopHelperFault({
             fixtureRoot: f.root,
@@ -825,5 +834,439 @@ NodeTest.test(
         });
       });
     }
+  },
+);
+
+// Native identity APIs below are deliberate portable doubles. These controls
+// exercise ordering/containment and never attest libproc or a packaged app.
+function custodyControl(mode) {
+  return (
+    mode === "released-relaunch"
+      ? relaunchControl(false)
+      : mode === "mutated-before-relaunch"
+        ? relaunchControl(true)
+        : control
+  )
+    .replace("import json, pathlib, sys", "import json, pathlib, sys, os")
+    .replace(
+      "def storage_preflight(*args): pass",
+      `
+def proof(pid): return dict(pid=pid, startSec=1, startUsec=0, executable='/control/' + str(pid))
+def kernel_process_sample(pid): return proof(pid), os.getppid()
+def valid_kernel_process(p): return set(p) == {'pid', 'startSec', 'startUsec', 'executable'}
+def valid_kernel_processes(ps): return bool(ps) and all(valid_kernel_process(p) for p in ps)
+def valid_process_proofs(ps): return valid_kernel_processes(ps)
+def valid_process_roles(ps): return ps == [{'role': 'main', 'pid': os.getppid()}]
+def prove_quiescence(active):
+    ${mode === "unknown-writer" ? "raise RuntimeError('writer inspection unavailable')" : "pass"}
+def storage_preflight(*args): pass
+`,
+    )
+    .replace(
+      "def alive(proof): return kernel_process_identity(proof)",
+      `def alive(p):
+    kernel_process_identity(p)
+    if p['pid'] == int(os.environ['CONTROL_PID']): return ${mode === "lost-controller" ? "False" : "True"}
+    return ${mode === "live-writer" ? "True" : "not pathlib.Path(os.environ['JONES_PACKAGED_DESKTOP_FAULT_PLAN']).with_name('release.json').exists()"}`,
+    )
+    .replace(
+      "    preparation_step = 'storage'",
+      `    captured_processes = [proof(os.getppid())]
+    preparation_step = 'storage'`,
+    )
+    .replace("stop_exact([123])", "stop_exact(captured_processes)")
+    .replace(
+      "    any(alive(proof) for proof in proofs)",
+      mode === "missed-exit-wait" ? "    pass" : "    any(alive(proof) for proof in proofs)",
+    )
+    .replace(
+      "        pair_state()",
+      mode === "missed-before-pair" ? "        swap_bundle()" : "        pair_state()",
+    )
+    .replace(
+      "        storage_preflight()",
+      mode === "missed-storage" ? "        pass" : "        storage_preflight()",
+    )
+    .replace(
+      "        reserve_recovery_capacity()",
+      mode === "missed-reserve"
+        ? "        prepare_bundle()"
+        : "        reserve_recovery_capacity()",
+    )
+    .replace(
+      "def pair_state(*args):",
+      "def prepare_bundle(): raise AssertionError('bundle escaped')\ndef swap_bundle(): raise AssertionError('swap escaped')\ndef pair_state(*args):",
+    );
+}
+
+async function custodyFixture(point, mode = "released") {
+  await fixture(async (f) => {
+    const selected = await installSelection(f);
+    let prepared;
+    let custody;
+    let callback;
+    const launcher = NodePath.join(f.root, "main.py");
+    await NodeFSP.writeFile(
+      launcher,
+      String.raw`
+import os, pathlib, subprocess, sys, time
+plan = pathlib.Path(sys.argv[1])
+deadline = time.monotonic() + 5
+while not plan.exists():
+    assert time.monotonic() < deadline
+    time.sleep(0.01)
+env = dict(os.environ, PYTHONPATH=str(plan.parent), PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1',
+           JONES_PACKAGED_DESKTOP_FAULT_PLAN=str(plan), JONES_PACKAGED_DESKTOP_INSTALL_FAULT='1', T3CODE_HOME=sys.argv[4])
+raise SystemExit(subprocess.call(['/usr/bin/python3', sys.argv[2], '--manifest', sys.argv[3], '--activate', sys.argv[5]], env=env))
+`,
+      { mode: 0o600 },
+    );
+    const proof = (pid) => ({ pid, startSec: 1, startUsec: 0, executable: "/control/" + pid });
+    const result = await runOwnedChild(
+      "/usr/bin/python3",
+      [
+        launcher,
+        NodePath.join(f.root, "python-preload/fault-plan.json"),
+        f.helper,
+        f.manifest,
+        selected.active.home,
+        f.intent,
+      ],
+      {
+        cwd: f.root,
+        timeout: 5000,
+        env: { PATH: "/usr/bin:/bin", HOME: f.root, CONTROL_PID: String(process.pid) },
+        onSpawn: async (pid) => {
+          await selected.prepare();
+          const intent = JSON.parse(await NodeFSP.readFile(f.intent));
+          intent.processes = [{ role: "main", pid }];
+          await NodeFSP.writeFile(f.intent, JSON.stringify(intent), { mode: 0o600 });
+          prepared = await preparePackagedDesktopHelperFault({
+            fixtureRoot: f.root,
+            helper: f.helper,
+            manifest: f.manifest,
+            selection: selected.selection,
+            point,
+            observeRelaunch: true,
+            controller: {
+              identity: proof(process.pid),
+              main: {
+                ...proof(mode === "wrong-parent" ? pid + 1 : pid),
+                startSec: mode === "stale-parent" ? 2 : 1,
+              },
+              timeoutMs: 500,
+            },
+          });
+          if (["lost-controller", "wrong-parent", "stale-parent", "missed-storage"].includes(mode))
+            return;
+          const deadline = Date.now() + 2000;
+          while (true) {
+            try {
+              custody = await prepared.readCustody();
+              break;
+            } catch (error) {
+              if (error.code !== "ENOENT" || Date.now() >= deadline) throw error;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          if (mode === "timeout") return;
+          if (mode === "selection-symlink") {
+            await NodeFSP.rename(selected.selection, selected.selection + ".original");
+            await NodeFSP.symlink(selected.selection + ".original", selected.selection);
+          }
+          if (mode === "helper-drift") await NodeFSP.appendFile(f.helper, "\n");
+          if (mode === "manifest-drift") await NodeFSP.appendFile(f.manifest, "\n");
+          if (mode === "selection-drift") await NodeFSP.appendFile(selected.selection, "\n");
+          if (mode === "claim-drift")
+            await NodeFSP.appendFile(NodePath.join(f.tx, "prepare-intent.json"), " ");
+          if (mode === "replayed-release") {
+            await NodeFSP.writeFile(NodePath.join(f.root, "python-preload/release.json"), "{}", {
+              mode: 0o600,
+            });
+            return;
+          }
+          if (mode.endsWith("-drift") || mode === "selection-symlink") {
+            await NodeFSP.writeFile(
+              NodePath.join(f.root, "python-preload/release.json"),
+              JSON.stringify({
+                protocol: 1,
+                planSha256: prepared.planSha256,
+                custodySha256: custody.custodySha256,
+              }),
+              { mode: 0o600 },
+            );
+          } else callback = await prepared.releaseCustody(custody);
+        },
+      },
+    );
+    const passing = mode === "released" || mode === "released-relaunch";
+    NodeAssert.equal(result.code, passing ? 0 : 125, result.stderr);
+    if (passing) {
+      const fault = await prepared.readReceipt();
+      NodeAssert.equal(fault.pid, custody.helper.pid);
+      NodeAssert.equal(fault.point, point);
+      NodeAssert.equal(callback, undefined);
+      if (mode === "released-relaunch") {
+        const receipt = await prepared.readRelaunchReceipt();
+        NodeAssert.equal(receipt.pid, custody.helper.pid);
+        NodeAssert.equal(
+          receipt.state[f.active.databasePath].sha256,
+          NodeCrypto.createHash("sha256").update("unchanged-before-relaunch").digest("hex"),
+        );
+        NodeAssert.equal(
+          await NodeFSP.readFile(NodePath.join(f.active.profile, "started"), "utf8"),
+          "started",
+        );
+      }
+      await NodeAssert.rejects(prepared.releaseCustody(custody), { code: "EEXIST" });
+    } else if (mode === "mutated-before-relaunch") {
+      await prepared.readReceipt();
+      await NodeAssert.rejects(prepared.readRelaunchReceipt());
+      await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(f.active.profile, "started")), {
+        code: "ENOENT",
+      });
+    } else {
+      await NodeAssert.rejects(NodeFSP.lstat(prepared.receiptPath), { code: "ENOENT" });
+    }
+    for (const name of ["previous-pair", "trial-descriptor.json", "commit-grant.json"])
+      await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(f.tx, name)), { code: "ENOENT" });
+  }, custodyControl(mode));
+}
+
+for (const point of packagedDesktopFaultPoints)
+  NodeTest.test("controller releases same captured helper before " + point, () =>
+    custodyFixture(point),
+  );
+for (const mode of [
+  "wrong-parent",
+  "stale-parent",
+  "selection-symlink",
+  "lost-controller",
+  "timeout",
+  "live-writer",
+  "unknown-writer",
+  "replayed-release",
+  "claim-drift",
+  "helper-drift",
+  "manifest-drift",
+  "selection-drift",
+  "missed-storage",
+  "missed-reserve",
+  "missed-exit-wait",
+  "missed-before-pair",
+])
+  NodeTest.test("controller containment refuses " + mode, () =>
+    custodyFixture(
+      mode === "missed-reserve"
+        ? "reserve"
+        : mode === "missed-exit-wait"
+          ? "exit-wait"
+          : mode === "missed-before-pair"
+            ? "before-pair"
+            : "storage",
+      mode,
+    ),
+  );
+
+for (const point of packagedDesktopFaultPoints)
+  NodeTest.test("controller quiet baseline precedes real relaunch entry for " + point, () =>
+    custodyFixture(point, "released-relaunch"),
+  );
+NodeTest.test("controller refuses changed protected state before reopen", () =>
+  custodyFixture("storage", "mutated-before-relaunch"),
+);
+
+const pinnedScript = jonesNativeHelperSource.match(
+  /^LAUNCH_SERVICES_SCRIPT = r'''([\s\S]*?)'''/m,
+)[1];
+const fixtureArguments = [
+  "--use-mock-keychain",
+  "--remote-debugging-port=0",
+  "--remote-debugging-address=127.0.0.1",
+];
+const launchContext = (f) => ({
+  protocol: 1,
+  originalScriptSha256: NodeCrypto.createHash("sha256").update(pinnedScript).digest("hex"),
+  arguments: fixtureArguments,
+  environment: { HOME: f.active.home, CFFIXED_USER_HOME: f.active.home, TMPDIR: f.active.profile },
+});
+function contextControl(throws = false) {
+  const source = launchServicesControl("returned")
+    .replace(
+      "def launch_services(request):",
+      "LAUNCH_SERVICES_SCRIPT = r'''" +
+        pinnedScript +
+        "'''\ndef launch_services(request):\n" +
+        "    if request.get('probe'):\n        durable(tx / 'probe.json', {'request':request, 'scriptSha256': __import__('hashlib').sha256(LAUNCH_SERVICES_SCRIPT.encode()).hexdigest()})\n        return {'protocol':1, 'status':'available'}\n" +
+        "    durable(tx / 'effective-request.json', {'request':request, 'scriptSha256': __import__('hashlib').sha256(LAUNCH_SERVICES_SCRIPT.encode()).hexdigest()})\n" +
+        (throws
+          ? "    raise " +
+            (throws === "error"
+              ? "ValueError('control error')"
+              : "KeyboardInterrupt('control cancellation')") +
+            "\n"
+          : ""),
+    )
+    .replace(
+      "'environment': {}",
+      `'environment': {'T3CODE_HOME': active['home'], 'T3CODE_DESKTOP_USER_DATA_DIR': active['profile'], 'T3CODE_JONES_ACTIVE_MANIFEST': str(manifest_path), 'T3CODE_JONES_ACTIVE_GENERATION': active['generation']}`,
+    );
+  return source.replace(
+    /\nactivate\(\)\s*$/,
+    `
+launch_services({'probe': True})
+try:
+    activate()
+finally:
+    assert __import__('hashlib').sha256(LAUNCH_SERVICES_SCRIPT.encode()).hexdigest() == '${NodeCrypto.createHash("sha256").update(pinnedScript).digest("hex")}'
+    durable(tx / 'restored.json', {'restored': True})
+`,
+  );
+}
+NodeTest.test(
+  "launch context changes exactly the one request and restores the pinned script on return or cancellation",
+  async () => {
+    for (const throws of [false, "error", "cancel"]) {
+      await deferredLaunchFixture(
+        async ({ prepared, result, tx, active }) => {
+          NodeAssert.equal(
+            result.code,
+            throws === "cancel" ? null : throws === "error" ? 1 : 0,
+            result.stderr,
+          );
+          if (throws === "cancel") NodeAssert.equal(result.signal, "SIGINT");
+          const probe = JSON.parse(await NodeFSP.readFile(NodePath.join(tx, "probe.json")));
+          NodeAssert.deepEqual(probe.request, { probe: true });
+          NodeAssert.equal(probe.scriptSha256, launchContext({ active }).originalScriptSha256);
+          const effective = JSON.parse(
+            await NodeFSP.readFile(NodePath.join(tx, "effective-request.json")),
+          );
+          NodeAssert.deepEqual(effective.request.arguments, fixtureArguments);
+          NodeAssert.equal(effective.request.environment.HOME, active.home);
+          NodeAssert.notEqual(
+            effective.scriptSha256,
+            launchContext({ active }).originalScriptSha256,
+          );
+          NodeAssert.equal(
+            JSON.parse(await NodeFSP.readFile(NodePath.join(tx, "restored.json"))).restored,
+            true,
+          );
+          const observation = await prepared.readLaunchObservation();
+          NodeAssert.deepEqual(observation.launchContext.effectiveRequest, effective.request);
+          NodeAssert.equal(observation.activationAllowed, false);
+          const path = NodePath.join(NodePath.dirname(prepared.planPath), "launch-context.json");
+          const bytes = await NodeFSP.readFile(path);
+          const changed = JSON.parse(bytes);
+          changed.effectiveRequest.arguments.push("--no-sandbox");
+          await NodeFSP.writeFile(path, JSON.stringify(changed));
+          await NodeAssert.rejects(prepared.readLaunchObservation());
+          await NodeFSP.writeFile(path, bytes);
+        },
+        "returned",
+        { source: contextControl(throws), launchContext },
+      );
+    }
+  },
+);
+NodeTest.test(
+  "absent launch context leaves the fake launch_services request unshimmed",
+  async () => {
+    await deferredLaunchFixture(
+      async ({ prepared, result, tx }) => {
+        NodeAssert.equal(result.code, 0, result.stderr);
+        const effective = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(tx, "effective-request.json")),
+        );
+        NodeAssert.equal(effective.request.arguments, undefined);
+        NodeAssert.equal(effective.request.environment.HOME, undefined);
+        NodeAssert.equal(
+          effective.scriptSha256,
+          launchContext({ active: {} }).originalScriptSha256,
+        );
+        await prepared.readLaunchObservation();
+      },
+      "returned",
+      { source: contextControl() },
+    );
+  },
+);
+NodeTest.test(
+  "launch context rejects unknown flags, foreign or symlinked homes, extra keys and script hash mismatch before activation",
+  async () => {
+    for (const change of [
+      (context) => context.arguments.push("--no-sandbox"),
+      (context) => {
+        context.environment.TMPDIR = "/tmp";
+      },
+      (context) => {
+        context.environment.PYTHONPATH = context.environment.HOME;
+      },
+      (context) => {
+        context.originalScriptSha256 = "0".repeat(64);
+      },
+      (context) => {
+        context.script = "arbitrary script";
+      },
+      async (context, f) => {
+        const link = NodePath.join(f.root, "home-link");
+        await NodeFSP.symlink(f.active.home, link);
+        context.environment.HOME = context.environment.CFFIXED_USER_HOME = link;
+      },
+    ]) {
+      await fixture(async (f) => {
+        const selected = await installSelection(f);
+        const context = launchContext(f);
+        context.arguments = [...context.arguments];
+        await change(context, f);
+        await NodeAssert.rejects(
+          preparePackagedDesktopHelperFault({
+            fixtureRoot: f.root,
+            ...f,
+            intent: undefined,
+            selection: selected.selection,
+            point: "before-pair",
+            observeRelaunch: true,
+            launchContext: context,
+          }),
+        );
+        await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(f.tx, "journal.json")), {
+          code: "ENOENT",
+        });
+      }, contextControl());
+    }
+    await fixture(
+      async (f) => {
+        const selected = await installSelection(f);
+        await NodeAssert.rejects(
+          preparePackagedDesktopHelperFault({
+            fixtureRoot: f.root,
+            ...f,
+            intent: undefined,
+            selection: selected.selection,
+            point: "before-pair",
+            observeRelaunch: true,
+            launchContext: launchContext(f),
+          }),
+          /script hash mismatch/,
+        );
+      },
+      contextControl().replace('ObjC.import("AppKit")', 'ObjC.import("changed")'),
+    );
+  },
+);
+NodeTest.test(
+  "exit-wait relaunch observes replies without inventing a quiet before-pair comparison",
+  async () => {
+    await deferredLaunchFixture(
+      async ({ prepared, result }) => {
+        NodeAssert.equal(result.code, 0, result.stderr);
+        const observed = await prepared.readLaunchObservation();
+        NodeAssert.equal(observed.launchReturn.identity.pid, 321);
+        NodeAssert.equal(observed.beforeRelaunch.beforePairStateSha256, undefined);
+        await NodeAssert.rejects(prepared.readBeforePairState());
+      },
+      "returned",
+      { point: "exit-wait" },
+    );
   },
 );

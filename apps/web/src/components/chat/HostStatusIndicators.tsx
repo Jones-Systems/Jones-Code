@@ -33,7 +33,7 @@ function EnvironmentHostStatusIndicators({ environmentId }: { environmentId: Env
     return retained.cache;
   });
   const [snapshot, setSnapshot] = useState<HostStatusSnapshot | null>(() => cache.snapshot);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own host-status observation and retire callbacks when the selected environment changes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own host-status observation and retire callbacks when the selected environment changes.
   useEffect(() => {
     let active = true;
     const stop = observeHostStatus(

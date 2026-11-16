@@ -9,6 +9,8 @@ import * as Schema from "effect/Schema";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import { readCodexGoalState } from "./providerGoal.ts";
 
+const compiledEncodeEffect1 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
 describe("existing Codex provider goal read", () => {
   const cursor = "native-goal-thread";
   const context = Effect.succeed({ nativeThreadId: cursor, stopped: false });
@@ -55,7 +57,7 @@ describe("existing Codex provider goal read", () => {
         context,
       );
       NodeAssert.deepEqual(result, { nativeThreadId: cursor, state, reasonCode });
-      const serialized = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(result);
+      const serialized = yield* compiledEncodeEffect1(result);
       NodeAssert.equal(serialized.includes("private objective"), false);
     }),
   );
@@ -97,7 +99,7 @@ describe("existing Codex provider goal read", () => {
         context,
       );
       NodeAssert.equal(result.reasonCode, code === -32601 ? "unsupported" : "rpc_error");
-      const serialized = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(result);
+      const serialized = yield* compiledEncodeEffect1(result);
       NodeAssert.equal(serialized.includes("private error"), false);
     }),
   );

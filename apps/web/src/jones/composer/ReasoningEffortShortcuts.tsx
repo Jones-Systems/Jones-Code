@@ -1,3 +1,4 @@
+import { isReasoningSelect } from "@t3tools/client-runtime/model-traits";
 import type { Ref } from "react";
 import type { ProviderInstanceId } from "@t3tools/contracts";
 import {
@@ -38,10 +39,7 @@ export function ReasoningEffortShortcuts({
     ) => void;
   }) {
   const traits = useTraitsSelection(props);
-  const descriptor = traits.selectDescriptors.find(
-    ({ id }) =>
-      id === "reasoningEffort" || id === "effort" || id === "variant" || id === "reasoning",
-  );
+  const descriptor = traits.selectDescriptors.find(isReasoningSelect);
   const rows = resolveModelEffortShortcutRows({
     driverKind: props.provider,
     models: props.models,
@@ -94,7 +92,7 @@ export function ReasoningEffortShortcuts({
                   onClick={() => {
                     if (disabled || !row.model || !props.instanceId) return;
                     if (sameModel && row.descriptor) {
-                      traits.handleSelectChange(row.descriptor, cell.effort.value);
+                      traits.changeSelect(row.descriptor, cell.effort.value);
                     } else {
                       props.onProviderModelSelect?.(props.instanceId, row.model, {
                         effort: cell.effort,
@@ -137,7 +135,13 @@ export function ReasoningEffortShortcuts({
           size="xs"
           aria-label={`${descriptor.label}: ${option.label}`}
           aria-pressed={selectedValue === option.id}
-          disabled={!props.visible || traits.isSelectChangeDisabled(descriptor, option.id)}
+          disabled={
+            !props.visible ||
+            ((traits.ultrathinkInBodyText ||
+              (props.allowPromptInjectedEffort === false &&
+                descriptor.promptInjectedValues?.includes(option.id))) &&
+              descriptor.id === traits.primarySelectDescriptor?.id)
+          }
           tabIndex={props.visible ? undefined : -1}
           title={
             bodyTextLocked
@@ -148,7 +152,7 @@ export function ReasoningEffortShortcuts({
           }
           onClick={() => {
             if (!props.visible) return;
-            traits.handleSelectChange(descriptor, option.id);
+            traits.changeSelect(descriptor, option.id);
           }}
         >
           {EFFORT_SHORT_LABELS.get(option.id) ?? option.label}

@@ -332,6 +332,11 @@ it.each(["malformed", "public", "symlink", "unknown", "interrupted"])(
         { mode: damage === "public" ? 0o644 : 0o600 },
       );
     }
+    // A restrictive host umask must not turn the public-file fixture into a private file.
+    if (damage === "public") {
+      await NodeFSP.chmod(tail, 0o644);
+      expect((await NodeFSP.stat(tail)).mode & 0o777).toBe(0o644);
+    }
     await expect(assertStageNotRevoked(f.root, f.selection.stagedHandle)).rejects.toThrow();
     await expect(retireNativeStage(f.root, f.baseline, undefined, input)).rejects.toThrow();
     expect(await restoreStagedSelection(f.root, f.baseline)).toEqual(f.selection);

@@ -6,74 +6,40 @@ const roomy = {
   formWidth: 900,
   hostWidth: 1000,
   conversationHeight: 700,
-  composerHeight: 220,
-  currentBandHeight: 0,
   groupWidths: [116, 200],
   groupHeights: [80, 80],
-  hasWideActions: false,
-  previousVisible: false,
 };
 
-describe("composer shortcut rails fit", () => {
-  it("uses the complete natural footprints and a sixteen pixel gap", () => {
-    expect(resolveComposerShortcutRailsVisibility({ ...roomy, hostWidth: 332 })).toBe(false);
-    expect(resolveComposerShortcutRailsVisibility({ ...roomy, hostWidth: 333 })).toBe(true);
-    expect(
-      resolveComposerShortcutRailsVisibility({ ...roomy, hostWidth: 332, previousVisible: true }),
-    ).toBe(true);
-    expect(
-      resolveComposerShortcutRailsVisibility({ ...roomy, hostWidth: 331, previousVisible: true }),
-    ).toBe(false);
-  });
+describe("composer shortcut rails availability", () => {
+  it.each([620, 619, 536, 320])(
+    "keeps the external controls at compact form width %i",
+    (formWidth) => {
+      expect(resolveComposerShortcutRailsVisibility({ ...roomy, formWidth })).toBe(true);
+    },
+  );
 
-  it("retains 160 pixels for conversation and restores with one pixel slack", () => {
-    expect(resolveComposerShortcutRailsVisibility({ ...roomy, conversationHeight: 460 })).toBe(
-      false,
-    );
-    expect(resolveComposerShortcutRailsVisibility({ ...roomy, conversationHeight: 461 })).toBe(
-      true,
-    );
-    expect(
-      resolveComposerShortcutRailsVisibility({
-        ...roomy,
-        conversationHeight: 460,
-        previousVisible: true,
-      }),
-    ).toBe(true);
-  });
+  it.each([332, 331, 200, 116])(
+    "keeps groups available for wrapping or scrolling at host width %i",
+    (hostWidth) => {
+      expect(resolveComposerShortcutRailsVisibility({ ...roomy, hostWidth })).toBe(true);
+    },
+  );
 
-  it("excludes the currently displayed band so it cannot toggle its own fit", () => {
-    expect(resolveComposerShortcutRailsVisibility({ ...roomy, conversationHeight: 461 })).toBe(
-      true,
-    );
-    expect(
-      resolveComposerShortcutRailsVisibility({
-        ...roomy,
-        conversationHeight: 461,
-        composerHeight: 300,
-        currentBandHeight: 80,
-        previousVisible: true,
-      }),
-    ).toBe(true);
-  });
+  it.each([480, 320, 160])(
+    "keeps the controls in short conversations of height %i",
+    (conversationHeight) => {
+      expect(resolveComposerShortcutRailsVisibility({ ...roomy, conversationHeight })).toBe(true);
+    },
+  );
 
   it.each([
-    { formWidth: 619 },
-    { formWidth: 779, hasWideActions: true },
+    { formWidth: 0 },
     { hostWidth: 0 },
+    { conversationHeight: 0 },
     { eligible: false },
     { groupWidths: [] },
     { groupHeights: [0] },
-  ])("hides immediately when a required fit condition is lost: %j", (change) => {
-    expect(
-      resolveComposerShortcutRailsVisibility({ ...roomy, previousVisible: true, ...change }),
-    ).toBe(false);
-  });
-
-  it("keeps the existing ordinary and wide-action compact boundaries", () => {
-    expect(resolveComposerShortcutRailsVisibility({ ...roomy, formWidth: 620 })).toBe(true);
-    expect(
-      resolveComposerShortcutRailsVisibility({ ...roomy, formWidth: 780, hasWideActions: true }),
-    ).toBe(true);
+  ])("retains unavailable or unmounted controls outside the tab order: %j", (change) => {
+    expect(resolveComposerShortcutRailsVisibility({ ...roomy, ...change })).toBe(false);
   });
 });

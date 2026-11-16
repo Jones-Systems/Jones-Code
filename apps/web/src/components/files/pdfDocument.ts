@@ -1,4 +1,4 @@
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+import { getDocument, GlobalWorkerOptions, PDFWorker } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import fallbackUrl from "pdfjs-dist/wasm/openjpeg_nowasm_fallback.js?url";
 
@@ -31,8 +31,16 @@ export class BinaryDataFactory {
   }
 }
 
+// Without a shared worker, pdf.js starts a worker and recompiles its 1.3 MB script for every document.
+let worker: PDFWorker | undefined;
+
+export function sharedPdfWorker() {
+  return (worker ??= new PDFWorker());
+}
+
 export function openPdf(bytes: ArrayBuffer) {
   return getDocument({
+    worker: sharedPdfWorker(),
     data: new Uint8Array(bytes),
     useSystemFonts: true,
     useWorkerFetch: false,

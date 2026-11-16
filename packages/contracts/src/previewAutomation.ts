@@ -433,6 +433,52 @@ export const PreviewAutomationScrollInput = Schema.Struct({
 );
 export type PreviewAutomationScrollInput = typeof PreviewAutomationScrollInput.Type;
 
+/** Strict input for each `preview_act` action. */
+export const PreviewAutomationActInputs = {
+  click: PreviewAutomationClickInput,
+  type: PreviewAutomationTypeInput,
+  hover: PreviewAutomationHoverInput,
+  select: PreviewAutomationSelectInput,
+  drag: PreviewAutomationDragInput,
+  upload: PreviewAutomationUploadInput,
+  press: PreviewAutomationPressInput,
+  scroll: PreviewAutomationScrollInput,
+} as const;
+export type PreviewAutomationAction = keyof typeof PreviewAutomationActInputs;
+
+/** One flat shape for every page action. The server decodes it with the action's strict input. */
+export const PreviewAutomationActInput = Schema.Struct({
+  action: Schema.Literals([
+    "click",
+    "type",
+    "hover",
+    "select",
+    "drag",
+    "upload",
+    "press",
+    "scroll",
+  ]),
+  ...PreviewAutomationTabTargetFields,
+  locator: Schema.optional(Locator),
+  selector: Schema.optional(LegacySelector),
+  x: Schema.optional(Schema.Finite),
+  y: Schema.optional(Schema.Finite),
+  button: Schema.optional(Schema.Literals(["left", "right", "middle"])),
+  clickCount: Schema.optional(Schema.Int),
+  text: Schema.optional(Schema.String),
+  clear: Schema.optional(Schema.Boolean),
+  values: Schema.optional(Schema.Array(Schema.String)),
+  source: Schema.optional(Locator),
+  target: Schema.optional(Locator),
+  paths: Schema.optional(Schema.Array(Schema.String)),
+  key: Schema.optional(Schema.String),
+  modifiers: PreviewAutomationPressInput.fields.modifiers,
+  deltaX: Schema.optional(Schema.Finite),
+  deltaY: Schema.optional(Schema.Finite),
+  timeoutMs: Schema.optional(Schema.Int),
+});
+export type PreviewAutomationActInput = typeof PreviewAutomationActInput.Type;
+
 export const PreviewAutomationEvaluateInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   expression: Schema.String.check(Schema.isTrimmed())
@@ -528,8 +574,17 @@ export const PreviewAutomationSnapshot = Schema.Struct({
     width: Schema.Int,
     height: Schema.Int,
   }),
+  /** The capture before `screenshot` was capped for the agent, when requested and larger. */
+  fullScreenshot: Schema.optional(
+    Schema.Struct({ data: Schema.String, width: Schema.Int, height: Schema.Int }),
+  ),
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
+
+export const PreviewAutomationSnapshotInput = Schema.Struct({
+  fullScreenshot: Schema.optional(Schema.Boolean),
+});
+export type PreviewAutomationSnapshotInput = typeof PreviewAutomationSnapshotInput.Type;
 
 export const PreviewAutomationRecordingStatus = Schema.Struct({
   tabId: PreviewTabId,
@@ -751,20 +806,22 @@ export class PreviewAutomationTimeoutError extends Schema.TaggedError<PreviewAut
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationOptionalRemoteDiagnosticFields,
     unreconciled: Schema.optional(Schema.Boolean),
+    reason: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {
     if (this.unreconciled)
       return "This browser tab has an earlier action with an unknown outcome. This action was not started. A snapshot reconciles only earlier click, type, press, scroll, or evaluate actions; other earlier actions require their exact late reply. Recording state in preview_status, when reported, and preview_recording_operation, if available, clear no fence.";
     const summary = `Preview automation ${this.operation} timed out after ${this.timeoutMs}ms.`;
+    const detailed = this.reason === undefined ? summary : `${summary} ${this.reason}`;
     if (
       this.outcome === "unknown" &&
       (this.operation === "recordingStart" || this.operation === "recordingStop")
     )
-      return `${summary} A snapshot cannot reconcile this recording operation; the tab stays blocked until its exact late reply. Recording state in preview_status, when reported, and preview_recording_operation, if available, clear no fence.${this.tabId ? " Other tabs are allowed; open a new tab with reuseExistingTab: false." : ""}`;
+      return `${detailed} A snapshot cannot reconcile this recording operation; the tab stays blocked until its exact late reply. Recording state in preview_status, when reported, and preview_recording_operation, if available, clear no fence.${this.tabId ? " Other tabs are allowed; open a new tab with reuseExistingTab: false." : ""}`;
     return this.outcome === "unknown"
-      ? `${summary} The action may have been applied; reconcile via preview_snapshot before repeating. A snapshot reconciles controlled page actions only; other actions require their late reply.`
-      : summary;
+      ? `${detailed} The action may have been applied; reconcile via preview_snapshot before repeating. A snapshot reconciles controlled page actions only; other actions require their late reply.`
+      : detailed;
   }
 }
 
@@ -834,7 +891,11 @@ export class PreviewAutomationInvalidSelectorError extends Schema.TaggedError<Pr
     if (this.staleRef)
       return "This element ref is stale. Navigation, dialogs, and new snapshots replace refs; take a fresh snapshot and use its refs.";
     if (this.selectorKind !== undefined && this.selectorLength !== undefined) {
-      return `Preview automation ${this.operation} received an invalid ${this.selectorKind} (${this.selectorLength} characters).`;
+      const guidance =
+        this.selectorKind === "locator"
+          ? "Use aria-ref=<ref> from the latest snapshot or a Playwright role/text selector; put CSS in selector."
+          : "selector takes CSS; use locator for aria-ref=<ref>, role, or text targets.";
+      return `Preview automation ${this.operation} received an invalid ${this.selectorKind} (${this.selectorLength} characters). ${guidance}`;
     }
     return `Preview automation ${this.operation} received an invalid selector.`;
   }

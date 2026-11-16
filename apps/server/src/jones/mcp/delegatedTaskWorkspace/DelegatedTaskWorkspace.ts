@@ -14,13 +14,6 @@ type ExplicitWorkspace = NonNullable<OrchestratorMcpDelegateTaskInput["workspace
 
 export interface DelegatedTaskWorkspaceInput {
   readonly request: Pick<OrchestratorMcpDelegateTaskInput, "isolation" | "workspaceStrategy">;
-  /**
-   * Ignored. A retry is answered from the recorded delegation before either resolver runs,
-   * so neither one ever sees a replay. Kept optional only so the two existing call sites
-   * that still pass `false` compile; remove it with them.
-   * @deprecated
-   */
-  readonly isRetryOfAcceptedDelegation?: boolean;
   /** The child's project (see resolveDelegatedTaskProject); loaded only when a strategy needs validating. */
   readonly project: Effect.Effect<
     { readonly id: ProjectId; readonly workspaceRoot: string },
@@ -39,13 +32,6 @@ const realPath = (path: string) =>
 export interface DelegatedTaskProjectInput {
   readonly request: Pick<OrchestratorMcpDelegateTaskInput, "projectId" | "workspaceStrategy">;
   readonly parentProjectId: ProjectId;
-  /**
-   * Ignored. A retry is answered from the recorded delegation before either resolver runs,
-   * so neither one ever sees a replay. Kept optional only so the two existing call sites
-   * that still pass `false` compile; remove it with them.
-   * @deprecated
-   */
-  readonly isRetryOfAcceptedDelegation?: boolean;
   /** Fails with invalid_request when the project does not exist. */
   readonly loadProject: (
     projectId: ProjectId,

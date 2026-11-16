@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic Git repositories and exact fixture teardown; no provider executable or installed state.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -407,5 +408,5 @@ it.effect.each([
         assert.isFalse(yield* policy.acceptsCwd(threadId, binding.path));
       }).pipe(Effect.provide(services));
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

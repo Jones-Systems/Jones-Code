@@ -14,7 +14,7 @@ import { readApplicationBirthRecord } from "../importedHistory/ApplicationBirth.
 import * as ThreadMetadataReads from "../orchestration/threadMetadataReads.ts";
 import { readSelectionEventRevision } from "../threadConfiguration/selectionRevision.ts";
 import { makeDependencyStore } from "../threadResultDependencies/DependencyStore.ts";
-import * as Evidence from "../workstreams/nativeProvider/evidence.ts";
+import * as Evidence from "./historicalSettlementEvidence.testkit.ts";
 import { captureNativeProviderSettlementProof } from "../workstreams/nativeProvider/settlementProof.ts";
 import { readEventLogPrunedThrough } from "./EventLogPruneBoundary.ts";
 import { makeJonesTablePresence } from "./JonesTablePresence.ts";
@@ -34,11 +34,42 @@ interface Reader {
 }
 const readers: ReadonlyArray<Reader> = [
   {
+    file: "startRefusal/Store.ts",
+    classification: "tolerate",
+    after:
+      "A persistent refusal certificate with a missing settlement event is unknown: recovery retains the unread claim and current delivery without reserving or offering a successor. Missing attempt-birth evidence denies arming an existing hold.",
+    proof:
+      "startRefusal/Orchestrator.integration.test.ts (upstream-like pruning after crash before reservation); startRefusal/Store.test.ts (missing settlement proof)",
+  },
+  {
+    file: "goals/GoalControl.ts",
+    classification: "tolerate",
+    after:
+      "Incomplete event history discards session-local resume intent before processing replay or advancing its cursor; an unresolved dispatch receipt and binding uncertainty stay unknown and never authorize resend.",
+    proof:
+      "goals/GoalControl.integration.test.ts (pruned Stop, registration and finite-replay races, boundary failure, unknown start)",
+  },
+  {
     file: "cleanup/DeletionAdmission.ts",
     classification: "tolerate",
     after:
       "A pruned `thread.deleted` event fails closed (original_birth_or_deletion_command_unavailable at start, original_deletion_event_changed at revalidation); a deletion that is still its stream's head is kept.",
     proof: "cleanup/DeletionAdmission.test.ts",
+  },
+  {
+    file: "cleanup/DeletionGroupWitness.ts",
+    classification: "tolerate",
+    after:
+      "Capture and revalidation read the deletion event, the group's births and its newest edge, run, attempt and session rows; a pruned one fails closed (original_group_deletion_boundary_unavailable, a native_edge/parent_execution/parent_session _unavailable reason, or original_group_generation_changed), never as a smaller group.",
+    proof: "cleanup/DeletionGroupWitness.test.ts (pruned group rows)",
+  },
+  {
+    file: "orchestration/QueueHoldProvenance.ts",
+    classification: "tolerate",
+    after:
+      "The result names only holds the history proves automatic; a pruned event can only shrink that set, so an unproven hold stays held.",
+    proof:
+      "orchestration/QueueHoldProvenance.test.ts (history pruned the way the upstream pruner does)",
   },
   {
     file: "ordinaryCheckout/OrdinaryCheckoutSqlite.ts",
@@ -87,8 +118,7 @@ const readers: ReadonlyArray<Reader> = [
     classification: "capture",
     after:
       "The settlement proof row copies the receipt and events at commit; without a proof the reader returns the receipt with no events and the consumer reports unknown (evidence_conflict).",
-    proof:
-      "persistence/EventLogPruning.test.ts, workstreams/nativeProvider/service.test.ts (missing_event)",
+    proof: "persistence/EventLogPruning.test.ts (captured proof and missing pruned events)",
   },
   {
     file: "nativeCreation/NativeCreationExecutionSqlite.ts",
@@ -135,6 +165,20 @@ const readers: ReadonlyArray<Reader> = [
     proof: "none: needs the full provider fixture, reasoned from code",
   },
   {
+    file: "cleanup/RuntimeUseInstallation.ts",
+    classification: "unaffected",
+    after:
+      "Records the global maximum sequence once, inside the installing migration; the newest event is its stream's head, which the pruner always keeps.",
+    proof: "persistence/EventLogPruning.test.ts (high-water readers)",
+  },
+  {
+    file: "testing/SyntheticPresentation.ts",
+    classification: "unaffected",
+    after:
+      "Private presentation fixture installer; its collision check also reads the projection tables, and a pruned event only frees an id it would have refused. Not a production reader.",
+    proof: "n/a",
+  },
+  {
     file: "importedHistory/ApplicationBirth.ts",
     classification: "unaffected",
     after: "Reads `thread.created`, which the pruner always keeps.",
@@ -145,6 +189,14 @@ const readers: ReadonlyArray<Reader> = [
     classification: "unaffected",
     after: "Reads `thread.created` (and ApplicationBirth), which the pruner always keeps.",
     proof: "persistence/EventLogPruning.test.ts (ApplicationBirth)",
+  },
+  {
+    file: "threadResultDependencies/WakeObligations.ts",
+    classification: "tolerate",
+    after:
+      "A missing run-attempt.created event denies accepted-start release even when its matching attempt projection survives. The persistent hold retains the answer and outgoing duty across restart; it remains ineligible for wake admission.",
+    proof:
+      "threadResultDependencies/WakeObligations.test.ts (pruned attempt birth before accepted start)",
   },
   {
     file: "threadResultDependencies/DependencyStore.ts",
@@ -459,11 +511,20 @@ it.effect("high-water readers read the same retained stream-head maximum after p
     });
     const dependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
     const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
+    // The global maximum the runtime-use installation records inside its migration.
+    const globalMaximum = Effect.map(
+      sql<{
+        readonly maximum: number | null;
+      }>`SELECT max(sequence) AS maximum FROM orchestration_events`,
+      (rows) => rows[0]?.maximum,
+    );
     assert.strictEqual(yield* dependencies.sequence, 6);
     assert.strictEqual((yield* metadata.list()).snapshotSequence, 5);
+    assert.strictEqual(yield* globalMaximum, 6);
     assert.deepEqual(yield* pruneEventLogLikeUpstream(6), [2]);
     assert.strictEqual(yield* dependencies.sequence, 6);
     assert.strictEqual((yield* metadata.list()).snapshotSequence, 5);
+    assert.strictEqual(yield* globalMaximum, 6);
   }).pipe(Effect.provide(Layer.provideMerge(ThreadMetadataReads.layer, database))),
 );
 

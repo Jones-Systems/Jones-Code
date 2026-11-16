@@ -1,12 +1,15 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
+import { EnvironmentId, ThreadId } from "./baseSchemas.ts";
 import {
-  PreviewAutomationRuntimeIdentity,
   PreviewAutomationHost,
+  PreviewAutomationInvalidSelectorError,
+  PreviewAutomationRuntimeIdentity,
   PreviewAutomationStatus,
 } from "./previewAutomation.ts";
 import { PreviewSessionSnapshot, PreviewEvent } from "./preview.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 const decodeSessionSnapshot = Schema.decodeUnknownSync(PreviewSessionSnapshot);
 const decodePreviewEvent = Schema.decodeUnknownSync(PreviewEvent);
 
@@ -112,5 +115,40 @@ describe("PreviewAutomationStatus", () => {
         viewport: { width: 412, height: 915 },
       }).viewport,
     ).toEqual({ width: 412, height: 915 });
+  });
+});
+
+describe("PreviewAutomationInvalidSelectorError", () => {
+  const invalidSelector = (selectorKind: "locator" | "selector") =>
+    new PreviewAutomationInvalidSelectorError({
+      operation: "click",
+      environmentId: EnvironmentId.make("environment-1"),
+      threadId: ThreadId.make("thread-1"),
+      providerSessionId: "session-1",
+      providerInstanceId: ProviderInstanceId.make("claude"),
+      clientId: "desktop",
+      connectionId: "connection-1",
+      requestId: "request-1",
+      timeoutMs: 15_000,
+      remoteTag: "Error",
+      remoteMessageLength: 0,
+      cause: null,
+      selectorKind,
+      selectorLength: 42,
+    });
+
+  it("tells agents which locator forms are accepted and where CSS goes", () => {
+    const { message } = invalidSelector("locator");
+    expect(message).toContain("aria-ref=");
+    expect(message).toMatch(/role/);
+    expect(message).toMatch(/text/);
+    expect(message).toMatch(/CSS[^.]*\bselector\b/);
+  });
+
+  it("points an invalid CSS selector at the locator alternative", () => {
+    const { message } = invalidSelector("selector");
+    expect(message).toMatch(/CSS/);
+    expect(message).toMatch(/\blocator\b/);
+    expect(message).toContain("aria-ref=");
   });
 });

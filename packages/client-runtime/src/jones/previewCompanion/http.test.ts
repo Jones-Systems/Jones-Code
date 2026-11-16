@@ -71,12 +71,18 @@ describe("companion shared authenticated HTTP owner", () => {
   it("only treats an undeclared endpoint 404 as older-server unsupported", () => {
     expect(
       isCompanionEndpointUnsupported(
-        new RemoteEnvironmentAuthUndeclaredStatusError("https://fixture.test", 404),
+        new RemoteEnvironmentAuthUndeclaredStatusError({
+          requestUrl: "https://fixture.test",
+          status: 404,
+        }),
       ),
     ).toBe(true);
     expect(
       isCompanionEndpointUnsupported(
-        new RemoteEnvironmentAuthUndeclaredStatusError("https://fixture.test", 403),
+        new RemoteEnvironmentAuthUndeclaredStatusError({
+          requestUrl: "https://fixture.test",
+          status: 403,
+        }),
       ),
     ).toBe(false);
     expect(

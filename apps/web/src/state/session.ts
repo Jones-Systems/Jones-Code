@@ -25,15 +25,16 @@ export function useEnvironmentScope(
   environmentId: EnvironmentId | null,
   scope: AuthEnvironmentScope,
 ): boolean {
-  const result = useAtomValue(
+  // Select the grant: every revalidation emits a new result, and most consumers are list rows.
+  return useAtomValue(
     environmentId === null
       ? EMPTY_SESSION_STATE_ATOM
       : environmentSession.sessionStateAtom(environmentId),
+    (result) => sessionHasScope(result, scope),
   );
-  return sessionHasScope(result, scope);
 }
 
-function sessionHasScope(
+export function sessionHasScope(
   result: AsyncResult.AsyncResult<AuthSessionState, unknown>,
   scope: AuthEnvironmentScope,
 ): boolean {
@@ -172,10 +173,14 @@ export function readPreparedConnection(environmentId: EnvironmentId) {
  * `data` may be stale during revalidation; permission checks use the strict access helpers.
  * `isPending` includes initial reads and bounded recovery attempts.
  */
-export function useEnvironmentSessionState(environmentId: EnvironmentId) {
-  const result = useAtomValue(environmentSession.sessionStateAtom(environmentId));
+export function useEnvironmentSessionState(environmentId: EnvironmentId | null) {
+  const result = useAtomValue(
+    environmentId === null
+      ? EMPTY_SESSION_STATE_ATOM
+      : environmentSession.sessionStateAtom(environmentId),
+  );
   return {
-    data: Option.getOrNull(AsyncResult.value(result)),
+    data: AsyncResult.getOrElse(result, () => null),
     hasError: result._tag === "Failure",
     isPending: result.waiting,
   };

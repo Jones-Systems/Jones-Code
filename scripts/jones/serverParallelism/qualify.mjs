@@ -1,4 +1,5 @@
 // CI/qualified-host entry. No installed server or provider environment is used.
+import { qualificationFixtureId } from "../../../apps/server/src/jones/serverParallelism/qualificationFixture.ts";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -55,6 +56,7 @@ try {
     : undefined;
   const usable =
     baseline?.schema === "jones.server-parallelism.baseline/v1" &&
+    baseline.fixtureId === qualificationFixtureId &&
     baseline.profile === profile &&
     typeof process.env.JONES_SP_SOURCE_SHA === "string" &&
     /^[a-f0-9]{40}$/.test(process.env.JONES_SP_SOURCE_SHA) &&

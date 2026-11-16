@@ -230,7 +230,7 @@ export async function syntheticCodexPeer(connectionFromStart, decodeResponse) {
     });
     await rpc("notifications/initialized", {}, true);
   };
-  const read = async () => content(await tool("t3_thread_configuration"));
+  const read = async () => content(await tool("t3_thread_configure"));
   const thread = () => ({
     id: nativeThreadId,
     sessionId: nativeThreadId,

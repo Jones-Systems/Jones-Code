@@ -28,6 +28,7 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderEventIngestor from "../../orchestration-v2/ProviderEventIngestor.ts";
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type {
@@ -170,6 +171,9 @@ export function registerAcceptedTerminalRecoveryTests(
       const dependencies = Layer.mergeAll(
         stores,
         EventSink.layer.pipe(Layer.provide(stores)),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getCatalogSource: () => undefined,
+        }),
         IdAllocator.layer,
         ThreadCommandExecutor.layer,
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
@@ -376,9 +380,14 @@ export function registerAcceptedTerminalRecoveryTests(
           },
           afterStart: (closed) =>
             Effect.gen(function* () {
-              yield* Effect.raceFirst(Deferred.await(waitingForLateEvent), Deferred.await(closed));
+              // The provider commit-batch consumer pulls the next source element before the
+              // previous one is processed, so the late-event request may precede finalization.
+              // Finalization must still precede closing, with the subscription retained.
+              yield* Effect.raceFirst(Deferred.await(finalized), Deferred.await(closed));
               assert.isFalse(yield* Deferred.isDone(closed));
               assert.isTrue(yield* Deferred.isDone(finalized));
+              yield* Effect.raceFirst(Deferred.await(waitingForLateEvent), Deferred.await(closed));
+              assert.isFalse(yield* Deferred.isDone(closed));
               yield* Deferred.succeed(releaseLateEvents, undefined);
             }),
         });

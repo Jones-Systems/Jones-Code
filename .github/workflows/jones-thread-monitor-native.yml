@@ -26,7 +26,6 @@ on:
       - apps/web/src/AppRoot.tsx
       - apps/web/src/connection/platform.ts
       - apps/web/src/lib/backgroundActivityReporter.ts
-      - apps/web/src/components/chat/useProposedPlanSend.ts
       - apps/web/src/components/chat/PanelLayoutControls.tsx
       - apps/web/src/components/ChatView.tsx
       - apps/web/src/components/RightPanelTabs.tsx

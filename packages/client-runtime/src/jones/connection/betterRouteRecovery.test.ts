@@ -1,3 +1,5 @@
+import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
+import { unusedAuthorization } from "./unusedAuthorization.ts";
 import { EnvironmentId, ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -78,6 +80,7 @@ const makeHarness = Effect.fn("ConnectRecoveryTest.makeHarness")(function* (opti
   const released: Array<PreparedConnection> = [];
   const closures: Array<Deferred.Deferred<never, ConnectionTransientError>> = [];
   const driver = yield* ConnectionDriver.make.pipe(
+    Effect.provideService(RemoteEnvironmentAuthorization, unusedAuthorization),
     Effect.provideService(ConnectionResolver.ConnectionResolver, {
       prepare: (catalog) =>
         Effect.gen(function* () {
@@ -119,6 +122,7 @@ const makeHarness = Effect.fn("ConnectRecoveryTest.makeHarness")(function* (opti
                 subscribeServerConfig: () => Stream.die("No config stream in this test."),
                 ready: Effect.void,
                 probe: Effect.void,
+                inboundFrames: Effect.succeed(0),
                 closed: Deferred.await(closed),
               } satisfies RpcSession.RpcSession;
             }),
@@ -229,7 +233,7 @@ describe("Connect preferred route recovery through the production driver and sup
     Effect.gen(function* () {
       const h = yield* makeHarness();
       h.restore();
-      expect(yield* h.driver.preflight(entry, connectionRoutes(entry)[0]!)).toBe(true);
+      expect(yield* h.driver.preflightForRecovery!(entry, connectionRoutes(entry)[0]!)).toBe(true);
       expect(h.prepared).toHaveLength(1);
       expect(h.sockets).toHaveLength(0);
     }),
@@ -492,7 +496,9 @@ describe("Connect preferred route recovery through the production driver and sup
     Effect.gen(function* () {
       const h = yield* makeHarness();
       h.restore({ preparation: Effect.never });
-      const fiber = yield* Effect.forkChild(h.driver.preflight(entry, connectionRoutes(entry)[0]!));
+      const fiber = yield* Effect.forkChild(
+        h.driver.preflightForRecovery!(entry, connectionRoutes(entry)[0]!),
+      );
       yield* Deferred.await(h.preflightStarted);
       yield* Fiber.interrupt(fiber);
       expect(h.cancelled()).toBe(1);
@@ -504,7 +510,7 @@ describe("Connect preferred route recovery through the production driver and sup
     Effect.gen(function* () {
       const h = yield* makeHarness();
       h.restore();
-      expect(yield* h.driver.preflight(entry, connectionRoutes(entry)[1]!)).toBe(false);
+      expect(yield* h.driver.preflightForRecovery!(entry, connectionRoutes(entry)[1]!)).toBe(false);
       const secureTarget = new BearerConnectionTarget({
         environmentId,
         label: preferred.label,
@@ -536,7 +542,9 @@ describe("Connect preferred route recovery through the production driver and sup
         ],
         enabled: true,
       };
-      expect(yield* h.driver.preflight(clearEntry, connectionRoutes(clearEntry)[1]!)).toBe(false);
+      expect(
+        yield* h.driver.preflightForRecovery!(clearEntry, connectionRoutes(clearEntry)[1]!),
+      ).toBe(false);
       expect(h.prepared).toHaveLength(0);
       expect(h.sockets).toHaveLength(0);
     }),
@@ -587,17 +595,19 @@ describe("Connect preferred route recovery through the production driver and sup
           ),
         };
         h.restore();
-        const silent = yield* Effect.forkChild(h.driver.preflight(entry, publicRoute));
+        const silent = yield* Effect.forkChild(h.driver.preflightForRecovery!(entry, publicRoute));
         yield* TestClock.adjust("2 seconds");
         expect(yield* Fiber.join(silent)).toBe(false);
         expect(h.prepared).toHaveLength(0);
         descriptorId = environmentId;
-        const answered = yield* Effect.forkChild(h.driver.preflight(entry, publicRoute));
+        const answered = yield* Effect.forkChild(
+          h.driver.preflightForRecovery!(entry, publicRoute),
+        );
         yield* TestClock.adjust("2 seconds");
         expect(yield* Fiber.join(answered)).toBe(true);
         expect(h.prepared).toHaveLength(1);
         h.restore({ preparation: Effect.never });
-        const bounded = yield* Effect.forkChild(h.driver.preflight(entry, publicRoute));
+        const bounded = yield* Effect.forkChild(h.driver.preflightForRecovery!(entry, publicRoute));
         yield* TestClock.adjust("2 seconds");
         yield* drain;
         yield* TestClock.adjust("13 seconds");

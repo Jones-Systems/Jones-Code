@@ -63,7 +63,7 @@ export function JonesBlockedHostUpdates({
     return run(environmentId, request);
   };
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Read qualified host update state on environment selection and fence responses when that owner retires.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read qualified host update state on environment selection and fence responses when that owner retires.
   useEffect(() => {
     void run(environmentId, { action: "state" });
     return () => {

@@ -213,6 +213,9 @@ it("ignores custom models that shadow a preferred slug", () => {
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
 });
 
+const compiledDecodeEffect1 = Schema.decodeEffect(CodexSettings);
+const compiledEncodeEffect2 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
 it.effect(
   "publishes qualified full-map quota with receipt provenance and fresh model capabilities",
   () =>
@@ -222,7 +225,7 @@ it.effect(
         codex: { primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: 1791000000 } },
         other: { secondary: { usedPercent: 10, windowDurationMins: 10080, resetsAt: 1792000000 } },
       };
-      const settings = yield* Schema.decodeEffect(CodexSettings)({});
+      const settings = yield* compiledDecodeEffect1({});
       const status = yield* checkCodexProviderStatus(
         settings,
         () =>
@@ -272,9 +275,7 @@ it.effect(
         status.qualifiedQuota?.capabilityRefs.map((ref) => [ref.modelId, ref.reasoningEfforts]),
         [["gpt-6.1-sol", ["medium"]]],
       );
-      const serializedQuota = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
-        status.qualifiedQuota ?? null,
-      );
+      const serializedQuota = yield* compiledEncodeEffect2(status.qualifiedQuota ?? null);
       assert.strictEqual(serializedQuota.includes("private@example.com"), false);
       assert.strictEqual(serializedQuota.includes("private-quota-account-sentinel"), false);
       assert.strictEqual(serializedQuota.includes("ordinaryUsageAllowed"), false);
@@ -292,7 +293,7 @@ it.effect(
   "a failed full probe publishes failed quota rather than an eligible last-good value",
   () =>
     Effect.gen(function* () {
-      const settings = yield* Schema.decodeEffect(CodexSettings)({});
+      const settings = yield* compiledDecodeEffect1({});
       const status = yield* checkCodexProviderStatus(settings, () =>
         Effect.fail(
           new CodexErrors.CodexAppServerSpawnError({
@@ -305,9 +306,7 @@ it.effect(
       assert.strictEqual(status.qualifiedQuota?.complete, false);
       assert.strictEqual(status.qualifiedQuota?.quotaReceivedAt, null);
       assert.strictEqual(status.qualifiedQuota?.rateLimitsByLimitId, null);
-      const serializedQuota = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
-        status.qualifiedQuota ?? null,
-      );
+      const serializedQuota = yield* compiledEncodeEffect2(status.qualifiedQuota ?? null);
       assert.strictEqual(serializedQuota.includes("private fixture error"), false);
     }).pipe(
       Effect.provide(layerProbePlatform),
@@ -322,7 +321,7 @@ it.effect(
   "preserves managedAuth as argument four and never qualifies its skipped native usage",
   () =>
     Effect.gen(function* () {
-      const settings = yield* Schema.decodeEffect(CodexSettings)({});
+      const settings = yield* compiledDecodeEffect1({});
       const managedAuth = {
         status: "authenticated" as const,
         type: "chatgpt",
@@ -372,9 +371,7 @@ it.effect(
       assert.strictEqual(result.qualifiedQuota?.status, "unsupported");
       assert.strictEqual(result.qualifiedQuota?.failureCode, "unsupported_account");
       assert.strictEqual(result.qualifiedQuota?.rateLimitsByLimitId, null);
-      const json = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
-        result.qualifiedQuota,
-      );
+      const json = yield* compiledEncodeEffect2(result.qualifiedQuota);
       assert.strictEqual(json.includes("private-native-account"), false);
       assert.strictEqual(json.includes("private-managed-email"), false);
       assert.strictEqual(json.includes("native-sentinel"), false);
@@ -389,7 +386,7 @@ it.effect(
 
 it.effect("a bounded whole-probe timeout cannot qualify a partial quota response", () =>
   Effect.gen(function* () {
-    const settings = yield* Schema.decodeEffect(CodexSettings)({});
+    const settings = yield* compiledDecodeEffect1({});
     const fiber = yield* checkCodexProviderStatus(settings, () => Effect.never).pipe(
       Effect.forkChild,
     );

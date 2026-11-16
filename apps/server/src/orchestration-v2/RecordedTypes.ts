@@ -492,23 +492,27 @@ type EventMemberForType<Member, EventType extends string> = Member extends {
     : never
   : never;
 
+const eventTypePredicates = new Map(
+  OrchestrationV2DomainEvent.members.map((event) => [event, Schema.is(event.fields.type)]),
+);
+
 type PublicEventMember = (typeof OrchestrationV2DomainEvent.members)[number];
 // Extend each member separately so exact event extraction retains its discriminant.
 const threadCreated = OrchestrationV2DomainEvent.members.find(
   (event): event is EventMemberForType<PublicEventMember, "thread.created"> =>
-    Schema.is(event.fields.type)("thread.created"),
+    eventTypePredicates.get(event)!("thread.created"),
 );
 const threadLifecycle = OrchestrationV2DomainEvent.members.find(
   (event): event is EventMemberForType<PublicEventMember, "thread.archived"> =>
-    Schema.is(event.fields.type)("thread.archived"),
+    eventTypePredicates.get(event)!("thread.archived"),
 );
 const runCreated = OrchestrationV2DomainEvent.members.find(
   (event): event is EventMemberForType<PublicEventMember, "run.created"> =>
-    Schema.is(event.fields.type)("run.created"),
+    eventTypePredicates.get(event)!("run.created"),
 );
 const runUpdated = OrchestrationV2DomainEvent.members.find(
   (event): event is EventMemberForType<PublicEventMember, "run.updated"> =>
-    Schema.is(event.fields.type)("run.updated"),
+    eventTypePredicates.get(event)!("run.updated"),
 );
 if (!threadCreated || !threadLifecycle || !runCreated || !runUpdated) {
   throw new Error("Missing upstream lifecycle event schema for recorded events.");
@@ -534,22 +538,26 @@ export const RecordedLifecycleEvent = Schema.Union([
 ]);
 export type RecordedLifecycleEvent = typeof RecordedLifecycleEvent.Type;
 
+const jsonEventTypePredicates = new Map(
+  OrchestrationV2DomainEventJson.members.map((event) => [event, Schema.is(event.fields.type)]),
+);
+
 type PublicJsonEventMember = (typeof OrchestrationV2DomainEventJson.members)[number];
 const threadCreatedJson = OrchestrationV2DomainEventJson.members.find(
   (event): event is EventMemberForType<PublicJsonEventMember, "thread.created"> =>
-    Schema.is(event.fields.type)("thread.created"),
+    jsonEventTypePredicates.get(event)!("thread.created"),
 );
 const threadLifecycleJson = OrchestrationV2DomainEventJson.members.find(
   (event): event is EventMemberForType<PublicJsonEventMember, "thread.archived"> =>
-    Schema.is(event.fields.type)("thread.archived"),
+    jsonEventTypePredicates.get(event)!("thread.archived"),
 );
 const runCreatedJson = OrchestrationV2DomainEventJson.members.find(
   (event): event is EventMemberForType<PublicJsonEventMember, "run.created"> =>
-    Schema.is(event.fields.type)("run.created"),
+    jsonEventTypePredicates.get(event)!("run.created"),
 );
 const runUpdatedJson = OrchestrationV2DomainEventJson.members.find(
   (event): event is EventMemberForType<PublicJsonEventMember, "run.updated"> =>
-    Schema.is(event.fields.type)("run.updated"),
+    jsonEventTypePredicates.get(event)!("run.updated"),
 );
 if (!threadCreatedJson || !threadLifecycleJson || !runCreatedJson || !runUpdatedJson) {
   throw new Error("Missing upstream JSON lifecycle event schema for recorded events.");

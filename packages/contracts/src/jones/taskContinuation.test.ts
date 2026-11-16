@@ -3,6 +3,8 @@ import * as Schema from "effect/Schema";
 import { TaskContinueInput, TaskContinuationEvidence } from "./taskContinuation.ts";
 import { OrchestratorMcpDelegateTaskResult } from "../orchestratorMcp.ts";
 
+const compiledIs1 = Schema.is(TaskContinuationEvidence);
+
 describe("guarded task continuation contract", () => {
   const decode = Schema.decodeUnknownSync(TaskContinueInput);
   it("requires a stable bounded key and accepts an optional native compare guard", () => {
@@ -39,14 +41,10 @@ describe("guarded task continuation contract", () => {
       verifiedRunId: null,
       account: "unavailable",
     };
-    expect(Schema.is(TaskContinuationEvidence)(evidence)).toBe(true);
-    expect(Schema.is(TaskContinuationEvidence)({ ...evidence, sourceAttemptId: "attempt" })).toBe(
-      true,
-    );
-    expect(
-      Schema.is(TaskContinuationEvidence)({ ...evidence, sourceEvidence: "legacy_start_batch" }),
-    ).toBe(false);
-    expect(Schema.is(TaskContinuationEvidence)({ ...evidence, account: "verified" })).toBe(false);
+    expect(compiledIs1(evidence)).toBe(true);
+    expect(compiledIs1({ ...evidence, sourceAttemptId: "attempt" })).toBe(true);
+    expect(compiledIs1({ ...evidence, sourceEvidence: "legacy_start_batch" })).toBe(false);
+    expect(compiledIs1({ ...evidence, account: "verified" })).toBe(false);
   });
   it("decodes older task results and preserves optional captured session provenance", () => {
     const legacy = {

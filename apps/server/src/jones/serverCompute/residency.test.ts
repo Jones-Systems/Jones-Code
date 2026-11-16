@@ -742,3 +742,72 @@ it("charges post-cut future requests to the original per-key queue cap and unlin
   await other;
   expect(old.requests.filter((r) => r.operation === "list")).toHaveLength(1);
 });
+
+it("strict content refresh refuses unopened/released handles without creating or rescanning paths", async () => {
+  const f = fixture();
+  const unopened = f.pool.register({ cwd: "/synthetic/content", variant: "content" });
+  await expect(f.pool.run(unopened, "refreshContent", undefined)).rejects.toMatchObject({
+    reason: "unavailable",
+  });
+  expect(f.children).toEqual([]);
+  const paths = await f.acquire(1);
+  const before = f.children.flatMap((child) => child.requests).length;
+  await expect(f.pool.run(paths, "refreshContent", undefined)).rejects.toMatchObject({
+    reason: "protocol",
+  });
+  expect(f.children.flatMap((child) => child.requests)).toHaveLength(before);
+  await f.pool.ensure(unopened);
+  f.pool.release(unopened.handleId);
+  await expect(f.pool.run(unopened, "refreshContent", undefined)).rejects.toMatchObject({
+    reason: "unavailable",
+  });
+  expect(
+    f.children
+      .flatMap((child) => child.requests)
+      .filter((request) => request.operation === "refreshContent"),
+  ).toEqual([]);
+});
+
+it("strict content scans retain one captured incarnation and never coalesce separate writes", async () => {
+  const f = fixture();
+  const handle = f.pool.register({ cwd: "/synthetic/content", variant: "content" });
+  await f.pool.ensure(handle);
+  const token = f.token(handle);
+  const gate = f.hold(handle, "refreshContent");
+  const first = f.pool.run(handle, "refreshContent", undefined);
+  await gate.entered.promise;
+  const second = f.pool.run(handle, "refreshContent", undefined);
+  const paths = await f.acquire(1);
+  expect(
+    f.owner(handle).requests.filter((request) => request.operation === "refreshContent"),
+  ).toHaveLength(1);
+  expect(f.counts()).toMatchObject({ activeForegroundOpenRefresh: 1 });
+  gate.release.resolve();
+  await first;
+  await second;
+  const requests = f
+    .owner(handle)
+    .requests.filter((request) => request.operation === "refreshContent");
+  expect(requests).toHaveLength(2);
+  expect(requests.map((request) => request.token)).toEqual([token, token]);
+  expect(requests[0]!.requestId).not.toBe(requests[1]!.requestId);
+  f.pool.release(paths.handleId);
+});
+
+it("strict refresh never silently recreates an evicted content incarnation", async () => {
+  const f = fixture();
+  const handle = f.pool.register({ cwd: "/synthetic/content", variant: "content" });
+  await f.pool.ensure(handle);
+  const old = f.token(handle);
+  for (let i = 0; i < 8; i++) await f.acquire(i);
+  expect(
+    f.children
+      .flatMap((child) => [...child.entries.values()])
+      .some((token) => token.keyId === old.keyId),
+  ).toBe(false);
+  const before = f.children.flatMap((child) => child.requests).length;
+  await expect(f.pool.run(handle, "refreshContent", undefined)).rejects.toMatchObject({
+    reason: "unavailable",
+  });
+  expect(f.children.flatMap((child) => child.requests)).toHaveLength(before);
+});

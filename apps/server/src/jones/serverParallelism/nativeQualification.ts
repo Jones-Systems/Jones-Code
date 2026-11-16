@@ -1,4 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Qualified synthetic harness owns every workspace, journal and captured child.
+import { CapturedSampling, untilSamplingAbort } from "./capturedSampling.ts";
+import {
+  qualificationContent,
+  qualificationVariant,
+  qualificationResidentOrder,
+  qualificationFixture,
+  qualificationFixtureId,
+  assertBalancedCohorts,
+} from "./qualificationFixture.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -20,7 +29,7 @@ import {
   type DiagnosticIdentity,
   type DiagnosticSink,
 } from "./diagnosticObservation.ts";
-import { isKey } from "../serverCompute/protocol.ts";
+import { isKey, type Request } from "../serverCompute/protocol.ts";
 import { ProcessSlot, withComputeChildOperations } from "../serverCompute/processSlot.ts";
 import type { ComputeChild } from "../serverCompute/processSlot.ts";
 import { isComputeFailure } from "../serverCompute/failure.ts";
@@ -99,6 +108,8 @@ export async function runNativeQualification(options: NativeQualificationOptions
   const macPerformanceCores = await sampleMacPerformanceCores();
   const active = new Map<number, number>();
   const keySlots = new Map<string, number>();
+  const keyBindings = new Map<string, { pid: number; token: Request["token"] }>();
+  const sampling = new WeakMap<EvidenceGeneration, CapturedSampling>();
   const keyIdentity = (cwd: string, variant: string) => JSON.stringify([cwd, variant]);
   type ResourceRow = {
     at: number;
@@ -268,6 +279,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
         faulted: false,
       };
       generations.push(record);
+      sampling.set(record, new CapturedSampling());
       let child: ProcessSlot;
       try {
         child = await ProcessSlot.start(
@@ -316,6 +328,10 @@ export async function runNativeQualification(options: NativeQualificationOptions
           if (request.operation === "open") {
             coldReopens++;
             if (isKey(request.input)) {
+              keyBindings.set(keyIdentity(request.input.cwd, request.input.variant), {
+                pid: child.pid,
+                token: Object.freeze({ ...request.token }),
+              });
               keySlots.set(
                 keyIdentity(request.input.cwd, request.input.variant),
                 request.token.slotId,
@@ -339,7 +355,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
                   ? typeof request.input === "object" &&
                     request.input !== null &&
                     "query" in request.input &&
-                    request.input.query === "qualification-absent-marker"
+                    request.input.query === qualificationFixture.zeroMatchQuery
                     ? "absent-grep"
                     : "positive-grep"
                   : "other",
@@ -396,6 +412,20 @@ export async function runNativeQualification(options: NativeQualificationOptions
           }
         },
         retire: async () => {
+          // Finish a genuine last-live checkpoint, then atomically close this capture to new reads.
+          // Other generations keep their independent sampling admissions while this one drains.
+          let samplingFailure: unknown;
+          try {
+            await generationEvidence.checkpoint(record, "before-retirement");
+            await untilSamplingAbort(sampleResources(), options.signal);
+          } catch (cause) {
+            samplingFailure = cause;
+          }
+          try {
+            await sampling.get(record)!.closeAndDrain(options.signal);
+          } catch (cause) {
+            samplingFailure ??= cause;
+          }
           record.retirementStartedAt = performance.now();
           const identity = { pid: child.pid, bootstrap: record.bootstrap };
           emit("retire-begin", identity);
@@ -408,6 +438,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
           }
           record.exitCapturedAt = performance.now();
           active.delete(child.pid);
+          if (samplingFailure !== undefined) throw samplingFailure;
         },
       });
     },
@@ -449,9 +480,23 @@ export async function runNativeQualification(options: NativeQualificationOptions
   };
   async function collectResources() {
     const before = new Set([...active].filter(([, jobs]) => jobs > 0).map(([pid]) => pid));
-    const subjects = generations.filter(
-      (record) => record.pid !== undefined && record.exitCapturedAt === undefined,
-    );
+    const releases: Array<() => void> = [];
+    const subjects = generations.filter((record) => {
+      if (record.pid === undefined || record.exitCapturedAt !== undefined) return false;
+      const release = sampling.get(record)!.acquire();
+      if (release === undefined) return false;
+      releases.push(release);
+      return true;
+    });
+    const pendingReads = new Set<Promise<unknown>>();
+    const trackRead = (pending: Promise<unknown>) => {
+      const settled = pending.then(
+        () => {},
+        () => {},
+      );
+      pendingReads.add(settled);
+      void settled.then(() => pendingReads.delete(settled));
+    };
     const bindings = subjects.map((record) => ({
       pid: record.pid!,
       bootstrap: record.bootstrap,
@@ -496,7 +541,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
           [],
           ["diagnostic-cpu-stat-only:resource-fields-unavailable"],
         );
-      } else sample = await (options.sample ?? sampleProcesses)(requested, diagnostic);
+      } else sample = await (options.sample ?? sampleProcesses)(requested, diagnostic, trackRead);
     } catch (cause) {
       if (diagnostic)
         diagnosticSink({
@@ -510,6 +555,14 @@ export async function runNativeQualification(options: NativeQualificationOptions
         });
       sample = processResourceSample(requested, [], ["sampler-threw"]);
     } finally {
+      if (pendingReads.size === 0) {
+        for (const release of releases) release();
+      } else {
+        const drained = Promise.all(pendingReads).then(() => {
+          for (const release of releases) release();
+        });
+        await untilSamplingAbort(drained, options.signal);
+      }
       if (diagnostic && cpuStart)
         diagnosticSink({
           kind: "resource",
@@ -572,10 +625,12 @@ export async function runNativeQualification(options: NativeQualificationOptions
       const cwd = NodePath.join(directory, `workspace-${key}`);
       await NodeFSP.mkdir(cwd);
       await NodeFSP.writeFile(NodePath.join(cwd, ".gitignore"), "ignored/\n");
-      const content = `needle-${key} alpha beta\n`.repeat(256);
+      const content = qualificationContent(key, files);
+      if (Buffer.byteLength(content) * files > qualificationFixture.maxWorkspaceBytes)
+        throw new Error("Qualification workspace exceeds fixed density bound");
       for (let file = 0; file < files; file++)
         await NodeFSP.writeFile(NodePath.join(cwd, `file-${file}.txt`), content);
-      keys.push(supervisor.register({ cwd, variant: key % 2 === 0 ? "paths" : "content" }));
+      keys.push(supervisor.register({ cwd, variant: qualificationVariant(key) }));
     }
     const qualifyGeneration = (handle: LogicalFinderHandle) =>
       generationEvidence.qualify(handle, phase, async () => {
@@ -613,16 +668,20 @@ export async function runNativeQualification(options: NativeQualificationOptions
           handle,
           "searchContents",
           {
-            query: "qualification-absent-marker",
+            query: qualificationFixture.zeroMatchQuery,
             limit: 32,
             caseSensitive: true,
             wholeWord: false,
-            useRegex: false,
+            useRegex: qualificationFixture.zeroMatchUseRegex,
           },
           controller.signal,
         );
-        if (absent.matches.length !== 0)
-          throw new Error("Synthetic absent marker unexpectedly matched");
+        if (
+          absent.matches.length !== 0 ||
+          absent.truncated ||
+          absent.regexFallbackError !== undefined
+        )
+          throw new Error("Fixed native zero-match traversal failed or fell back");
       } else {
         const result = await supervisor.run(
           handle,
@@ -635,8 +694,8 @@ export async function runNativeQualification(options: NativeQualificationOptions
       await qualifyGeneration(handle);
     };
     setPhase("cold-all-resident");
-    for (const handle of keys.slice(0, 4 * count))
-      await supervisor.ensure(handle, controller.signal);
+    for (const key of qualificationResidentOrder(count))
+      await supervisor.ensure(keys[key]!, controller.signal);
     const warmCounts = observations.filter((event) => "counts" in event).at(-1);
     if (!warmCounts || !("counts" in warmCounts) || warmCounts.counts.physicalEntries !== 4 * count)
       throw new Error("All-resident native cohort was not constructed");
@@ -645,8 +704,15 @@ export async function runNativeQualification(options: NativeQualificationOptions
         .slice(0, 4 * count)
         .filter((handle) => keySlots.get(keyIdentity(handle.key.cwd, handle.key.variant)) === slot),
     );
-    if (cohorts.some((cohort) => cohort.length !== 4))
-      throw new Error("Incomplete native process cohort mapping");
+    assertBalancedCohorts(cohorts);
+    const cohortMapping = cohorts.map((cohort, slot) =>
+      cohort.map((handle) => {
+        const binding = keyBindings.get(keyIdentity(handle.key.cwd, handle.key.variant));
+        if (!binding || binding.token.slotId !== slot || !captured.has(binding.pid))
+          throw new Error("Captured native cohort binding unavailable");
+        return { ...handle.key, ...binding };
+      }),
+    );
     // Include path-only initial cohorts before warm-idle without changing the workload keys.
     for (const cohort of cohorts) await qualifyGeneration(cohort[0]!);
     setPhase("warm-idle");
@@ -966,6 +1032,14 @@ export async function runNativeQualification(options: NativeQualificationOptions
         basisGrepFailure: record.basisGrepFailure ?? null,
         poolReads: record.poolReads,
       })),
+      fixture: {
+        ...qualificationFixture,
+        repetitions: files === 512 ? qualificationFixture.repetitions : 256,
+        id: qualificationFixtureId,
+        files,
+        count,
+      },
+      cohortMapping,
       productiveOverlapSamples,
       executions,
       resourceCoverage,

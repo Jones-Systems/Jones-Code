@@ -4,6 +4,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+const compiledMain3acaCodec37 = Schema.decodeEffect(
+  Schema.fromJsonString(WorkspaceRetirementOutcome),
+);
+
 export const lookup = Effect.gen(function* () {
   const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
   return Effect.fn("WorkspaceRetirement.lookupOutcome")(
@@ -13,9 +17,7 @@ export const lookup = Effect.gen(function* () {
         outcome_json: string | null;
       }>`SELECT outcome_json FROM jones_workspace_retirement_intents WHERE thread_id=${threadId} ORDER BY rowid DESC LIMIT 1`;
       if (!rows[0]?.outcome_json) return { retirementObservation: "none" as const };
-      const retirement = yield* Schema.decodeEffect(
-        Schema.fromJsonString(WorkspaceRetirementOutcome),
-      )(rows[0].outcome_json);
+      const retirement = yield* compiledMain3acaCodec37(rows[0].outcome_json);
       return { retirementObservation: "recorded" as const, retirement };
     },
     Effect.orElseSucceed(() => ({ retirementObservation: "unavailable" as const })),

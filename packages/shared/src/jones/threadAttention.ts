@@ -37,6 +37,7 @@ export interface ThreadRunSummary {
     | (Omit<OrchestrationV2ProviderSettlement, "completedAt"> & { readonly completedAt: string })
     | null;
   readonly assistantMessageId: MessageId | null;
+  readonly providerActivityStarted?: boolean;
   /** The provider turn ended while the run remains open for settlement. */
   readonly turnEnded?: boolean;
   readonly sourcePlanRef?: {
@@ -133,6 +134,7 @@ function shellLatestRun(thread: OrchestrationV2ThreadShell): ThreadRunSummary | 
                       },
               }),
           assistantMessageId: null,
+          providerActivityStarted: false,
         } satisfies ThreadRunSummary);
   return latestRun;
 }
@@ -155,11 +157,7 @@ export function shellAttentionInput(
   pendingSubagentRequest: PendingSubagentRequest | null = null,
 ): ThreadAttentionInput {
   const runtime = shellRuntime(thread);
-  // A nonblocking input is actionable only once the provider is no longer working.
-  const runtimeIsWorking =
-    runtime?.status === "preparing" ||
-    runtime?.status === "starting" ||
-    runtime?.status === "running";
+  // An open question needs attention independently of whether execution is blocked.
   return {
     latestRun: shellLatestRun(thread),
     runtime,
@@ -167,9 +165,7 @@ export function shellAttentionInput(
       thread.pendingRuntimeRequest !== null &&
       thread.pendingRuntimeRequest.kind !== "user_input" &&
       thread.pendingRuntimeRequest.kind !== "auth_refresh",
-    hasPendingUserInput:
-      thread.pendingRuntimeRequest?.kind === "user_input" &&
-      (thread.pendingRuntimeRequest.blocking !== false || !runtimeIsWorking),
+    hasPendingUserInput: thread.pendingRuntimeRequest?.kind === "user_input",
     pendingSubagentRequest,
     interactionMode: thread.interactionMode,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
@@ -294,7 +290,7 @@ export function isDelegatedTaskShownUnderParent(
   const from = task.delegatedFrom;
   if (from === undefined || parents === null) return false;
   let row = parents.get(from.threadId);
-  if (row === undefined) return false;
+  if (row === undefined || row.archivedAt !== null) return false;
   if (subagentRequest(task) === null && !taskRequests.has(task.id)) return true;
   const seen = new Set<ThreadId>();
   while (row.lineage.relationshipToParent === "subagent") {
@@ -334,10 +330,21 @@ export function pendingSubagentRequestsByThread(
       if (requests.get(parentId) !== "approval") requests.set(parentId, request);
       const parent = byId.get(parentId);
       parentId =
-        parent?.lineage.relationshipToParent === "subagent" ? parent.lineage.parentThreadId : null;
+        parent?.lineage.relationshipToParent === "subagent" || parent?.lineage.sideChat === true
+          ? parent.lineage.parentThreadId
+          : null;
     }
   };
   for (const child of threads) {
+    if (child.lineage.sideChat === true) {
+      const kind = child.pendingRuntimeRequest?.kind;
+      const parentId = child.lineage.parentThreadId;
+      if (parentId !== null && kind !== undefined && kind !== "auth_refresh") {
+        const request = kind === "user_input" ? "user_input" : "approval";
+        if (requests.get(parentId) !== "approval") requests.set(parentId, request);
+      }
+      continue;
+    }
     if (child.lineage.relationshipToParent !== "subagent") continue;
     const request = subagentRequest(child);
     if (request !== null) flag(child.lineage.parentThreadId, request, new Set([child.id]));

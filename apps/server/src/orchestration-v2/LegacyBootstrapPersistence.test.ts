@@ -56,6 +56,11 @@ type RecordedEventForType<EventType extends RecordedLifecycleEvent["type"]> = Ex
 > &
   Extract<RecordedLifecycleEventJson, { type: EventType }>;
 
+const compiledDecodeSync1 = Schema.decodeSync(OrchestrationV2DomainEventJson);
+const compiledDecodeSync2 = Schema.decodeSync(RecordedLifecycleEventJson);
+const compiledDecodeSync3 = Schema.decodeSync(RecordedLifecycleEvent);
+const compiledEncodeSync4 = Schema.encodeSync(RecordedLifecycleEventJson);
+
 it("recorded event codecs preserve upstream pull request link payloads", () => {
   const input = {
     id: EventId.make("recorded-codec:pull-request"),
@@ -73,13 +78,13 @@ it("recorded event codecs preserve upstream pull request link payloads", () => {
       stack: null,
     },
   } satisfies typeof OrchestrationV2DomainEventJson.Encoded;
-  const publicEvent = Schema.decodeSync(OrchestrationV2DomainEventJson)(input);
-  const recordedEvent = Schema.decodeSync(RecordedLifecycleEventJson)(input);
+  const publicEvent = compiledDecodeSync1(input);
+  const recordedEvent = compiledDecodeSync2(input);
   assert.deepStrictEqual(recordedEvent, publicEvent);
-  assert.deepStrictEqual(Schema.decodeSync(RecordedLifecycleEvent)(publicEvent), publicEvent);
-  assert.deepStrictEqual(Schema.encodeSync(RecordedLifecycleEventJson)(recordedEvent), input);
+  assert.deepStrictEqual(compiledDecodeSync3(publicEvent), publicEvent);
+  assert.deepStrictEqual(compiledEncodeSync4(recordedEvent), input);
   assert.throws(() =>
-    Schema.decodeSync(RecordedLifecycleEventJson)({
+    compiledDecodeSync2({
       ...input,
       payload: { ...input.payload, number: 0 },
     }),
@@ -245,6 +250,8 @@ it.effect(
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+const compiledEncodeEffect5 = Schema.encodeEffect(OrchestrationV2ThreadStreamItem);
 
 it.effect(
   "private preflight leaves existing and deleted projections unchanged and preserves mixed live and replay cursors",
@@ -439,9 +446,7 @@ it.effect(
           served[1]!.kind === "event" ? served[1]!.sequence : null,
           visible[0]!.sequence,
         );
-        const publicFrames = yield* Effect.forEach(served, (item) =>
-          Schema.encodeEffect(OrchestrationV2ThreadStreamItem)(item),
-        );
+        const publicFrames = yield* Effect.forEach(served, (item) => compiledEncodeEffect5(item));
         const serializedFrames = yield* encodeJson(publicFrames);
         assert.notInclude(serializedFrames, "legacy-bootstrap.preflight");
         assert.notInclude(serializedFrames, "legacyBootstrapClaim");
@@ -536,6 +541,12 @@ it.effect(
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+const compiledDecodeEffect6 = Schema.decodeEffect(RecordedLifecycleEvent);
+const compiledEncodeEffect7 = Schema.encodeEffect(RecordedLifecycleEventJson);
+const compiledEncodeEffect8 = Schema.encodeEffect(RecordedRunJson);
+const compiledDecodeEffect9 = Schema.decodeEffect(RecordedLifecycleEventJson);
+const compiledEncodeEffect10 = Schema.encodeEffect(RecordedAppThreadJson);
 
 it.effect("recorded thread and run values survive SQL reopen and native projection rebuild", () =>
   Effect.gen(function* () {
@@ -635,14 +646,11 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
       } satisfies RecordedEventForType<"run.updated">,
     ];
     for (const input of runEventInputs) {
-      const event = yield* Schema.decodeEffect(RecordedLifecycleEvent)(input);
+      const event = yield* compiledDecodeEffect6(input);
       assert.deepStrictEqual(event, input);
-      const encoded = yield* Schema.encodeEffect(RecordedLifecycleEventJson)(event);
-      assert.deepStrictEqual(encoded.payload, yield* Schema.encodeEffect(RecordedRunJson)(run));
-      assert.deepStrictEqual(
-        yield* Schema.decodeEffect(RecordedLifecycleEventJson)(encoded),
-        input,
-      );
+      const encoded = yield* compiledEncodeEffect7(event);
+      assert.deepStrictEqual(encoded.payload, yield* compiledEncodeEffect8(run));
+      assert.deepStrictEqual(yield* compiledDecodeEffect9(encoded), input);
     }
     const threadEventBase = {
       threadId,
@@ -662,17 +670,11 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
       } satisfies RecordedLifecycleEvent & RecordedLifecycleEventJson,
     ];
     for (const input of threadEventInputs) {
-      const event = yield* Schema.decodeEffect(RecordedLifecycleEvent)(input);
+      const event = yield* compiledDecodeEffect6(input);
       assert.deepStrictEqual(event, input);
-      const encoded = yield* Schema.encodeEffect(RecordedLifecycleEventJson)(event);
-      assert.deepStrictEqual(
-        encoded.payload,
-        yield* Schema.encodeEffect(RecordedAppThreadJson)(thread),
-      );
-      assert.deepStrictEqual(
-        yield* Schema.decodeEffect(RecordedLifecycleEventJson)(encoded),
-        input,
-      );
+      const encoded = yield* compiledEncodeEffect7(event);
+      assert.deepStrictEqual(encoded.payload, yield* compiledEncodeEffect10(thread));
+      assert.deepStrictEqual(yield* compiledDecodeEffect9(encoded), input);
     }
     yield* Effect.scoped(
       Effect.gen(function* () {

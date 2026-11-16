@@ -16,6 +16,7 @@ it.effect(
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "jones-checkpoint-config-" });
       const flags = {
         mode: Option.some("web" as const),
+        lan: Option.none(),
         port: Option.some(4888),
         host: Option.some("127.0.0.1"),
         baseDir: Option.some(root),

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { AcpRegistrySettings } from "@t3tools/provider-acp-registry/settings";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
@@ -38,11 +39,13 @@ function layerAcpRegistryProviderAdapterRegistryReplay(
   transcript: AcpReplayTranscript,
   options: { readonly replayGate?: ProviderReplayGate } = {},
 ) {
-  // Production's ProviderHostLive binds Jones identity; replay must send the same prompt.
   const layerHost = Layer.effect(
     ProviderHost.ProviderHost,
     Effect.map(ProviderHost.ProviderHost, (host) => ({ ...host, appIdentity: APP_IDENTITY })),
-  ).pipe(Layer.provide(TestProviderHost.layer()), Layer.provide(NodeServices.layer));
+  ).pipe(
+    Layer.provide(TestProviderHost.layer()),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
 
   return ProviderAdapterRegistry.layerFromAdaptersEffect(
     Effect.gen(function* () {
@@ -51,7 +54,7 @@ function layerAcpRegistryProviderAdapterRegistryReplay(
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const replayGate = options.replayGate;
       const replayDir = yield* fileSystem
-        .makeTempDirectory({
+        .makeTempDirectoryScoped({
           prefix: `t3-orchestration-v2-acp-registry-replay-${transcript.scenario}-`,
         })
         .pipe(Effect.orDie);
@@ -81,6 +84,7 @@ function layerAcpRegistryProviderAdapterRegistryReplay(
       Layer.mergeAll(
         layerHost,
         NodeServices.layer,
+        NodeCrypto.layer,
         IdAllocator.layer,
         Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({
           resolve: () => Effect.die("ACP registry resolver must not run during replay"),

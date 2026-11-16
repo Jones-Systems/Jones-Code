@@ -163,11 +163,15 @@ const v2Item = {
 };
 const v2 = { ...fixture, schema: "codex.t3-work-queue-metadata/v2", items: [v2Item] };
 
+const compiledEncodeSync1 = Schema.encodeSync(WorkQueueMetadata);
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(WorkQueueMetadataV1);
+const compiledDecodeUnknownSync3 = Schema.decodeUnknownSync(WorkQueueMetadataV2);
+
 describe("v2 native handoff metadata", () => {
   it("round trips v1 unchanged and accepts nullable v2 evidence without manufacturing proof", () => {
-    expect(Schema.encodeSync(WorkQueueMetadata)(decode(fixture))).toEqual(fixture);
-    expect(Schema.decodeUnknownSync(WorkQueueMetadataV1)(fixture)).toEqual(fixture);
-    expect(Schema.decodeUnknownSync(WorkQueueMetadataV2)(v2)).toEqual(v2);
+    expect(compiledEncodeSync1(decode(fixture))).toEqual(fixture);
+    expect(compiledDecodeUnknownSync2(fixture)).toEqual(fixture);
+    expect(compiledDecodeUnknownSync3(v2)).toEqual(v2);
     expect(decode(v2)).toEqual(v2);
     const unconfirmed = { ...v2, items: [{ ...item, payload_sha256: null, native_handoff: null }] };
     expect(decode(unconfirmed)).toEqual(unconfirmed);
@@ -209,7 +213,7 @@ const v3 = {
 describe("v3 recorded handoff metadata", () => {
   it("preserves accepted pre-start evidence without inventing an exact turn", () => {
     expect(decode(v3)).toEqual(v3);
-    expect(Schema.encodeSync(WorkQueueMetadata)(decode(v3))).toEqual(v3);
+    expect(compiledEncodeSync1(decode(v3))).toEqual(v3);
     expect(decode({ ...v3, items: [v2Item] })).toEqual({ ...v3, items: [v2Item] });
     const unconfirmed = { ...v3, items: [{ ...v2Item, native_handoff: null }] };
     expect(decode(unconfirmed)).toEqual(unconfirmed);
@@ -222,7 +226,7 @@ describe("v3 recorded handoff metadata", () => {
         const native_handoff = { ...pendingHandoff, turn_state };
         const sample = { ...v3, items: [{ ...v2Item, native_handoff }] };
         expect(decode(sample)).toEqual(sample);
-        expect(Schema.encodeSync(WorkQueueMetadata)(decode(sample))).toEqual(sample);
+        expect(compiledEncodeSync1(decode(sample))).toEqual(sample);
         expect(() => decode({ ...sample, schema: v2.schema })).toThrow();
       }
     },
@@ -260,7 +264,7 @@ describe("v4 assignment metadata", () => {
       "17ae0653442857991848476847676481fee5c593f88a1056a4ff3f275cbbac1b",
     );
     expect(decode(v4)).toEqual(v4);
-    expect(Schema.encodeSync(WorkQueueMetadata)(decode(v4))).toEqual(v4);
+    expect(compiledEncodeSync1(decode(v4))).toEqual(v4);
     expect(
       v4.items
         .map((row: { assignment: { state: string } | null }) => row.assignment?.state ?? null)
@@ -283,7 +287,7 @@ describe("v4 assignment metadata", () => {
   });
   it("preserves old versions and rejects v4 fields on their closed items", () => {
     for (const old of [fixture, v2, v3]) {
-      expect(Schema.encodeSync(WorkQueueMetadata)(decode(old))).toEqual(old);
+      expect(compiledEncodeSync1(decode(old))).toEqual(old);
       expect(() =>
         decode({ ...old, items: old.items.map((row) => ({ ...row, assignment: null })) }),
       ).toThrow();

@@ -8,12 +8,15 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Probe from "../startRefusal/Probe.ts";
+import { wakeEligible } from "./WakeObligations.ts";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -47,8 +50,9 @@ export class DependencyReactor extends Context.Service<
 >()("t3/jones/threadResultDependencies/DependencyReactor") {}
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const store = makeDependencyStore(sql, makeJonesTablePresence(sql));
+  const probe = yield* Effect.serviceOption(Probe.Probe);
   const changes = yield* Changes.DependencyChanges;
   const watcher = yield* RequestWatch.RequestWatch;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -57,12 +61,12 @@ const make = Effect.gen(function* () {
   const running = new Map<string, { generation: number; fiber?: Fiber.Fiber<void> }>();
   const mutate = makeCommit(sql, store, changes);
   const wake = Effect.fn("DependencyReactor.wake")(function* (dependency: Dependency) {
-    const messageId = MessageId.make(yield* crypto.randomUUIDv4());
+    const messageId = MessageId.make(yield* crypto.uuidV4());
     const value = notification(dependency);
     yield* orchestrator
       .dispatch({
         type: "message.dispatch",
-        commandId: CommandId.make(yield* crypto.randomUUIDv4()),
+        commandId: CommandId.make(yield* crypto.uuidV4()),
         messageId,
         threadId: dependency.waiterThreadId,
         text: `${value.summary}\n\n${value.detail}`,
@@ -94,6 +98,7 @@ const make = Effect.gen(function* () {
       )
         return;
       if (current.state === "resolved") {
+        if (!wakeEligible(current)) return;
         yield* wake(current);
         return;
       }
@@ -214,6 +219,7 @@ const make = Effect.gen(function* () {
         if (
           dependency.state === "released" ||
           dependency.state === "delivered" ||
+          (dependency.state === "resolved" && !wakeEligible(dependency)) ||
           (previous?.generation !== undefined && previous.generation !== dependency.generation)
         ) {
           if (previous) {
@@ -223,6 +229,7 @@ const make = Effect.gen(function* () {
         }
         if (
           ["released", "delivered"].includes(dependency.state) ||
+          (dependency.state === "resolved" && !wakeEligible(dependency)) ||
           running.has(dependency.dependencyId) ||
           changes.isSending(dependency.dependencyId)
         )
@@ -297,12 +304,21 @@ const make = Effect.gen(function* () {
       source.pipe(
         Stream.filter(
           (event) =>
+            event.type === "provider-turn.updated" ||
             event.type === "run.updated" ||
             event.type === "thread.unarchived" ||
             event.type === "thread.unsettled",
         ),
         Stream.runForEach((event) =>
-          reconcile([event.threadId]).pipe(
+          Effect.gen(function* () {
+            if (event.type === "provider-turn.updated") {
+              for (const hold of yield* store.wakes.armedBy(event.id)) {
+                const open = Option.isSome(probe) ? yield* probe.value.open(event.threadId) : false;
+                yield* mutate(store.wakes.finishArming(hold, open));
+              }
+            }
+            yield* reconcile([event.threadId]);
+          }).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("Dependency event reconciliation failed", { cause }),
             ),

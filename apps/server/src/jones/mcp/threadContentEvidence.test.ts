@@ -1,3 +1,4 @@
+import * as NodeCryptoServices from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Independently verify raw fragment bytes in the synchronous synthetic consumer fixture.
 import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -386,6 +387,7 @@ const serviceLayer = (
     Layer.provide(
       Layer.mergeAll(
         NodeServices.layer,
+        NodeCryptoServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           readRemoteTaskObservation: () => Effect.undefined,
           ...management,
@@ -645,6 +647,58 @@ describe("native read service content evidence", () => {
           assert.deepEqual(decodeResult(JSON.parse(JSON.stringify(encoded))), result);
           assert.deepEqual(decodeToolRead(input), input);
           assert.equal(f.acknowledgements, 0);
+        }).pipe(Effect.provide(f.layer));
+      }),
+  );
+
+  it.effect(
+    "keeps legacy surrogate-safe paging alongside negotiated revision-bound UTF-16 slices",
+    () =>
+      Effect.gen(function* () {
+        const f = readFixture();
+        f.setRows([{ ...f.row(), item: { ...f.primary, text: "😀X" } }]);
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const request = { threadId: f.child.thread.id, itemId, maxCharsPerItem: 1 };
+          const legacy = yield* service.readThread(f.scope, request);
+          assert.equal(legacy.items[0]!.text, "😀");
+          assert.equal(legacy.items[0]!.nextTextOffset, 2);
+          assert.isTrue(legacy.items[0]!.textTruncated);
+          assert.isUndefined(legacy.items[0]!.contentEvidence);
+          assert.equal(f.acknowledgements, 0);
+          const first = yield* service.readThread(f.scope, { ...request, contentEvidence: optIn });
+          const original = available(first.items[0]!);
+          assert.equal(
+            original.contentSha256,
+            "be6dd4279c40d9e26a89e012d3c01c9164d1a6484693464b8efd5dbcce7ecedc",
+          );
+          assert.equal(first.items[0]!.text, "\ud83d");
+          assert.equal(first.items[0]!.nextTextOffset, 1);
+          const second = yield* service.readThread(f.scope, {
+            ...request,
+            textOffset: 1,
+            contentEvidence: { ...optIn, expectedRevision: original.contentRevision },
+          });
+          assert.equal(second.items[0]!.text, "\ude00");
+          assert.equal(second.items[0]!.nextTextOffset, 2);
+          assert.equal(f.acknowledgements, 0);
+          const last = yield* service.readThread(f.scope, {
+            ...request,
+            textOffset: 2,
+            contentEvidence: { ...optIn, expectedRevision: original.contentRevision },
+          });
+          assert.equal(last.items[0]!.text, "X");
+          assertCoverage([first.items[0]!, second.items[0]!, last.items[0]!]);
+          // Continuations do not acknowledge delivery; only the complete offset-zero read does.
+          assert.equal(f.acknowledgements, 0);
+          const full = yield* service.readThread(f.scope, {
+            ...request,
+            maxCharsPerItem: 3,
+            contentEvidence: { ...optIn, expectedRevision: original.contentRevision },
+          });
+          assert.equal(full.items[0]!.text, "😀X");
+          assert.isFalse(full.items[0]!.textTruncated);
+          assert.equal(f.acknowledgements, 1);
         }).pipe(Effect.provide(f.layer));
       }),
   );

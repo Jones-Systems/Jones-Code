@@ -54,6 +54,8 @@ const composedPair = Effect.fn("shellFanout.composedPair")(function* (input: {
   }>();
   let liveStarts = 0;
   const threads = boundedService<ThreadManagementService.ThreadManagementService["Service"]>({
+    listActiveShellIndex: () =>
+      Effect.die("untrimmed shell subscription must not read the shell index"),
     readShellSnapshot: () =>
       Effect.succeed(
         Effect.succeed({ schemaVersion: 1, snapshotSequence: 0, threads: [], archivedThreads: [] }),
@@ -306,6 +308,8 @@ for (const clients of [1, 2, 8, 32]) {
         const threadManagement = boundedService<
           ThreadManagementService.ThreadManagementService["Service"]
         >({
+          listActiveShellIndex: () =>
+            Effect.die("untrimmed shell subscription must not read the shell index"),
           readShellSnapshot: () =>
             Effect.sync(() => {
               snapshots++;

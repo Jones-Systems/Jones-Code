@@ -10,6 +10,7 @@ import {
   makeReplayServerConfig,
 } from "../../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
 import * as CodexReplay from "effect-codex-app-server/replay";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -36,7 +37,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as TestClock from "effect/testing/TestClock";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
@@ -71,11 +72,30 @@ const database = Layer.effectDiscard(runMigrations().pipe(Effect.map(() => undef
   Layer.provideMerge(memory),
 );
 const realRepository = RepositorySqlite.layer.pipe(Layer.provideMerge(database));
+
+const decodeEffectNativePreparationBinding = Schema.decodeEffect(NativePreparationBinding);
+const decodeEffectNativeCreationHistoricalBinding = Schema.decodeEffect(
+  NativeCreationHistoricalBinding,
+);
+const decodeEffectOrchestrationV2Command = Schema.decodeEffect(OrchestrationV2Command);
+const decodeEffectNativeCreationExecutionReferenceV2 = Schema.decodeEffect(
+  NativeCreationExecutionReferenceV2,
+);
+const encodeEffectFromJsonStringOutboxNativeOrchestrationEffectPayloadV2 = Schema.encodeEffect(
+  Schema.fromJsonString(Outbox.NativeOrchestrationEffectPayloadV2),
+);
+const decodeEffectNativeCreationWholeOperationEvidence = Schema.decodeEffect(
+  NativeCreationWholeOperationEvidence,
+);
+const decodeEffectAuthSessionsAuthSessionRecord = Schema.decodeEffect(
+  AuthSessions.AuthSessionRecord,
+);
+
 const fixture = Effect.gen(function* () {
   yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(now)));
   const repository = yield* Repository.NativeCreationRepository;
   const sql = yield* SqlClient.SqlClient;
-  const binding = yield* Schema.decodeEffect(NativePreparationBinding)({
+  const binding = yield* decodeEffectNativePreparationBinding({
     backend_instance: "sql-fixture-backend",
     environment_id: "sql-fixture-environment",
     project_id: "sql-fixture-project",
@@ -109,7 +129,7 @@ const fixture = Effect.gen(function* () {
       }),
     ),
   );
-  const historical = yield* Schema.decodeEffect(NativeCreationHistoricalBinding)({
+  const historical = yield* decodeEffectNativeCreationHistoricalBinding({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -145,7 +165,7 @@ const fixture = Effect.gen(function* () {
     Effect.succeed(historical),
   );
   yield* sql`INSERT INTO native_creation_automation_enrollments(session_id,enrolled_at) VALUES(${actor},${now})`;
-  const command = yield* Schema.decodeEffect(OrchestrationV2Command)({
+  const command = yield* decodeEffectOrchestrationV2Command({
     type: "prepared-run.release",
     commandId: `${prepared.commandId}:native:v2:message`,
     threadId: prepared.threadId,
@@ -157,7 +177,7 @@ const fixture = Effect.gen(function* () {
     prepared.commandId,
     command.commandId,
   ]);
-  const normalized = yield* Schema.decodeEffect(OrchestrationV2Command)({
+  const normalized = yield* decodeEffectOrchestrationV2Command({
     type: "message.dispatch",
     createdBy: "user",
     creationSource: "server",
@@ -171,7 +191,7 @@ const fixture = Effect.gen(function* () {
   });
   yield* repository.recordNormalizedCommand(claimId, normalized);
   yield* repository.reserveCommand(claimId, command);
-  const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)({
+  const reference = yield* decodeEffectNativeCreationExecutionReferenceV2({
     version: 2,
     claimId,
     stageCommandId: command.commandId,
@@ -203,14 +223,12 @@ const fixture = Effect.gen(function* () {
       }),
     );
   const enqueue = Effect.gen(function* () {
-    const payload = yield* Schema.encodeEffect(
-      Schema.fromJsonString(Outbox.NativeOrchestrationEffectPayloadV2),
-    )({
+    const payload = yield* encodeEffectFromJsonStringOutboxNativeOrchestrationEffectPayloadV2({
       request: { type: "provider-turn.start", runId: command.runId },
       nativeCreationExecutionReference: reference,
     });
-    yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,lease_expires_at,created_at,updated_at)
-      VALUES(${reference.effectId},${command.commandId},${command.threadId},'provider-turn.start',${payload},'running',1,${now},'sql-worker',${deadline},${now},${now})`;
+    yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,created_at,updated_at)
+      VALUES(${reference.effectId},${command.commandId},${command.threadId},'provider-turn.start',${payload},'running',1,${now},'sql-worker',${now},${now})`;
   });
   const seedRuntime = Effect.gen(function* () {
     const providerPayload = nativeCreationCanonicalJson({
@@ -226,7 +244,7 @@ const fixture = Effect.gen(function* () {
       VALUES('sql-provider-thread',${command.threadId},'codex','sql-provider-session','active',${now},${providerPayload})`;
     yield* sql`INSERT INTO orchestration_v2_projection_provider_session_bindings(provider_session_id,thread_id) VALUES('sql-provider-session',${command.threadId})`;
   });
-  const evidence = yield* Schema.decodeEffect(NativeCreationWholeOperationEvidence)({
+  const evidence = yield* decodeEffectNativeCreationWholeOperationEvidence({
     version: 1,
     outcome: "confirmed_success",
     effectId: reference.effectId,
@@ -239,7 +257,7 @@ const fixture = Effect.gen(function* () {
     attemptId: "sql-attempt",
     coverage: "whole_operation",
   });
-  const session = yield* Schema.decodeEffect(AuthSessions.AuthSessionRecord)({
+  const session = yield* decodeEffectAuthSessionsAuthSessionRecord({
     sessionId: actor,
     subject: "Synthetic native actor",
     scopes: ["orchestration:operate"],
@@ -291,7 +309,6 @@ const fixture = Effect.gen(function* () {
           revoke: () => Effect.succeed(false),
           revokeAllExcept: () => Effect.succeed([]),
           setLastConnectedAt: () => Effect.void,
-          setClientConnection: () => Effect.void,
         }),
       ),
     ),
@@ -313,13 +330,27 @@ const fixture = Effect.gen(function* () {
   );
   const issue = Effect.gen(function* () {
     const authority = yield* Authority.NativeCreationAuthority;
-    return yield* authority.issueExecution!({ reference, timestamp: now });
+    return yield* authority.issueExecution!({
+      reference,
+      timestamp: now,
+      expectedClaim: {
+        workerId: "sql-worker",
+        expectedAttempt: 1,
+        claimedAt: now,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        runId: command.runId,
+        requestDigest: nativeCreationSha256(
+          nativeCreationCanonicalJson({ type: "provider-turn.start", runId: command.runId }),
+        ),
+      },
+    });
   }).pipe(Effect.provide(authorityLayer));
   const confirmation = {
     reference,
     workerId: "sql-worker",
     expectedAttempt: 1,
-    leaseExpiresAt: deadline,
+    claimedAt: now,
     evidence,
   };
   const effect: Outbox.OrchestrationEffectV2 = {
@@ -332,7 +363,6 @@ const fixture = Effect.gen(function* () {
     attemptCount: 1,
     availableAt: now,
     leaseOwner: "sql-worker",
-    leaseExpiresAt: deadline,
     createdAt: now,
     updatedAt: now,
     completedAt: null,
@@ -534,6 +564,15 @@ type Mode =
   | "transport-generation"
   | "transport-resume"
   | "transport-failure";
+
+const decodeEffectNativeWorkspaceVerified = Schema.decodeEffect(NativeWorkspaceVerified);
+const decodeEffectProviderRuntimeBinding = Schema.decodeEffect(ProviderRuntimeBinding);
+const decodeUnknownEffectOrchestrationV2ProviderThread = Schema.decodeUnknownEffect(
+  OrchestrationV2ProviderThread,
+);
+const decodeEffectCodexSettings = Schema.decodeEffect(CodexSettings);
+const decodeEffectOrchestrationV2AppThread = Schema.decodeEffect(OrchestrationV2AppThread);
+
 const scenario = (mode: Mode) =>
   Effect.gen(function* () {
     const f = yield* fixture;
@@ -544,7 +583,7 @@ const scenario = (mode: Mode) =>
     const provenanceCaptures: string[] = [];
     const original = yield* f.repository.readExecutionReference!(f.reference);
     const resources = original.history.intent.resources;
-    const verified = yield* Schema.decodeEffect(NativeWorkspaceVerified)({
+    const verified = yield* decodeEffectNativeWorkspaceVerified({
       claimId: f.reference.claimId,
       basis: {
         bootId: "synthetic-boot",
@@ -573,7 +612,7 @@ const scenario = (mode: Mode) =>
       },
       setupTerminalId: null,
     });
-    const binding = yield* Schema.decodeEffect(ProviderRuntimeBinding)({
+    const binding = yield* decodeEffectProviderRuntimeBinding({
       threadId: f.command.threadId,
       providerThreadId: "sql-provider-thread",
       providerSessionId: "sql-provider-session",
@@ -582,7 +621,7 @@ const scenario = (mode: Mode) =>
       nativeThreadId: "synthetic-native",
       runtimeGeneration: "sql-generation",
     });
-    const providerThread = yield* Schema.decodeUnknownEffect(OrchestrationV2ProviderThread)({
+    const providerThread = yield* decodeUnknownEffectOrchestrationV2ProviderThread({
       id: binding.providerThreadId,
       appThreadId: binding.threadId,
       ownerNodeId: null,
@@ -660,11 +699,11 @@ const scenario = (mode: Mode) =>
           });
           let opened = 0;
           const requests: Array<string> = [];
-          const settings = yield* Schema.decodeEffect(CodexSettings)({});
+          const settings = yield* decodeEffectCodexSettings({});
           const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
             instanceId: binding.providerInstanceId,
             settings,
-            crypto: yield* Crypto.Crypto,
+            digest: yield* Digest.Digest,
             environment: {},
             fileSystem: fs,
             idAllocator: allocator,
@@ -769,7 +808,7 @@ const scenario = (mode: Mode) =>
               });
             yield* runtime.injectHistory({ providerThread: loaded, messages: [], context: "" });
             if (mode === "transport-send-revoked") yield* f.revoke;
-            const appThread = yield* Schema.decodeEffect(OrchestrationV2AppThread)({
+            const appThread = yield* decodeEffectOrchestrationV2AppThread({
               createdBy: "system",
               creationSource: "server",
               id: f.command.threadId,
@@ -843,7 +882,12 @@ const scenario = (mode: Mode) =>
         }),
       ).pipe(
         Effect.provide(
-          Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+          ),
         ),
       );
     const start = Layer.succeed(

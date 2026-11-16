@@ -56,6 +56,8 @@ const fixture = (overrides: Partial<Storage> = {}) => {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+const compiledDecodeSync1 = Schema.decodeSync(StopCurrentThreadRuntimeInput);
+
 describe("retained runtime stop pointer", () => {
   it("reads exact request after remount and refuses overwrite until exact completion", () => {
     const f = fixture();
@@ -66,7 +68,7 @@ describe("retained runtime stop pointer", () => {
     expect(() =>
       remount.clear({
         ...input,
-        commandId: Schema.decodeSync(StopCurrentThreadRuntimeInput)({
+        commandId: compiledDecodeSync1({
           ...input,
           commandId: "command:other",
         }).commandId,

@@ -314,10 +314,9 @@ export function makeProviderRecoveryPublication(ports: {
         );
       const handle: CapturedRuntimeBindingPublication = { binding, complete };
       const readCompleted = assertCurrent.pipe(
-        Effect.flatMap((current) =>
-          sameObserved(current.runtimeIdentity?.observed, input.observed)
-            ? Effect.succeed(current)
-            : failure("The completed runtime identity observation changed."),
+        Effect.filterOrElse(
+          (current) => sameObserved(current.runtimeIdentity?.observed, input.observed),
+          () => failure("The completed runtime identity observation changed."),
         ),
         Effect.mapError(failure),
       );

@@ -36,6 +36,7 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderEventIngestor from "../../orchestration-v2/ProviderEventIngestor.ts";
+import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
@@ -175,6 +176,9 @@ it.effect.each([1, 3])(
     let reads = 0;
     let writes = 0;
     const dependencies = Layer.mergeAll(
+      Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+        getCatalogSource: () => undefined,
+      }),
       IdAllocator.layer,
       ThreadCommandExecutor.layer,
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
@@ -219,6 +223,9 @@ it.effect("a model read after subagent publication retries only the read and wri
   let reads = 0;
   let writes = 0;
   const dependencies = Layer.mergeAll(
+    Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+      getCatalogSource: () => undefined,
+    }),
     IdAllocator.layer,
     ThreadCommandExecutor.layer,
     Layer.mock(GitVcsDriver.GitVcsDriver)({}),
@@ -413,6 +420,9 @@ it.effect(
       }),
     ).pipe(Layer.provide(sinkLayer));
     const dependencies = Layer.mergeAll(
+      Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+        getCatalogSource: () => undefined,
+      }),
       IdAllocator.layer,
       ThreadCommandExecutor.layer,
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),

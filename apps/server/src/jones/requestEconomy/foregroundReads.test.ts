@@ -399,6 +399,8 @@ it.layer(layerSuite, { excludeTestServices: true })("foreground reads", (it) => 
         Effect.provideService(
           ThreadManagementService.ThreadManagementService,
           boundedService<ThreadManagementService.ThreadManagementService["Service"]>({
+            listActiveShellIndex: () =>
+              Effect.die("untrimmed shell subscription must not read the shell index"),
             readShellSnapshot: () =>
               Effect.succeed(
                 Effect.succeed({

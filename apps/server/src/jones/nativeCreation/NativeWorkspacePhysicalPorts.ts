@@ -1,4 +1,8 @@
 import type * as SetupCustody from "./NativeWorkspaceSetupCustody.ts";
+import {
+  makeRuntimeUseCreationObserver,
+  observeRuntimeUseCreatedMaterial,
+} from "../cleanup/RuntimeUseCreationCapture.ts";
 // @effect-diagnostics nodeBuiltinImport:off - physical ownership needs lstat, which does not follow symlinks.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -48,7 +52,7 @@ export class NativeWorkspaceFileObservation extends Context.Service<
 >()("t3/jones/nativeCreation/NativeWorkspacePhysicalPorts/NativeWorkspaceFileObservation") {}
 
 const nodeFileObservation = NativeWorkspaceFileObservation.of({
-  inspect: (path) =>
+  inspect: Effect.fn("NativeWorkspaceFileObservation.inspect")((path) =>
     Effect.tryPromise({
       try: async () => {
         let stat;
@@ -77,7 +81,8 @@ const nodeFileObservation = NativeWorkspaceFileObservation.of({
       },
       catch: conflict,
     }),
-  readFile: (path) =>
+  ),
+  readFile: Effect.fn("NativeWorkspaceFileObservation.readFile")((path) =>
     Effect.tryPromise({
       try: async () => {
         const stat = await NodeFSP.lstat(path);
@@ -86,6 +91,7 @@ const nodeFileObservation = NativeWorkspaceFileObservation.of({
       },
       catch: conflict,
     }),
+  ),
 });
 
 // This original-owner input is not a grant issuer. No positive owner is installed by this module.
@@ -125,6 +131,20 @@ export class NativeWorkspacePhysicalOwner extends Context.Service<
     }) => Effect.Effect<void, Workspace.NativeWorkspaceError>;
   }
 >()("t3/jones/nativeCreation/NativeWorkspacePhysicalPorts/NativeWorkspacePhysicalOwner") {}
+const decodeClaimOwnerJson = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({ claimId: Schema.NonEmptyString, ownerId: Schema.NonEmptyString }),
+  ),
+);
+const decodeWorkspaceIdentityJson = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      device: Schema.NonEmptyString,
+      inode: Schema.NonEmptyString,
+      birthtime: Schema.Number,
+    }),
+  ),
+);
 
 const make = Effect.gen(function* () {
   const observation = yield* Effect.serviceOption(NativeWorkspaceFileObservation);
@@ -134,6 +154,7 @@ const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService;
   const repository = yield* Repository.NativeCreationRepository;
   const optionalOwner = yield* Effect.serviceOption(NativeWorkspacePhysicalOwner);
+  const observeFreshCreation = yield* makeRuntimeUseCreationObserver;
   const owner = () => Effect.fromOption(optionalOwner).pipe(Effect.mapError(unavailable));
   const directory = Effect.fn("NativeWorkspacePhysicalPorts.directory")(function* (path: string) {
     if (!NodePath.isAbsolute(path) || NodePath.normalize(path) !== path) return yield* conflict();
@@ -173,11 +194,7 @@ const make = Effect.gen(function* () {
   ) {
     if (!repository.readWorkspaceClaim || !repository.readWorkspaceAdmission)
       return yield* unavailable();
-    const decoded = yield* Schema.decodeEffect(
-      Schema.fromJsonString(
-        Schema.Struct({ claimId: Schema.NonEmptyString, ownerId: Schema.NonEmptyString }),
-      ),
-    )(basis.producerId).pipe(Effect.mapError(conflict));
+    const decoded = yield* decodeClaimOwnerJson(basis.producerId).pipe(Effect.mapError(conflict));
     const history = yield* repository
       .readWorkspaceClaim(decoded.claimId)
       .pipe(Effect.mapError(conflict));
@@ -241,7 +258,7 @@ const make = Effect.gen(function* () {
         ? claim.binding.baseBranch.replace(/^refs\/heads\//, "")
         : selectedBase.slice(prefix.length + 1);
     const baseConfiguration = {
-      key: `branch.${claim.resources.branch}.gh-merge-base`,
+      key: `branch.${claim.resources.branch}.t3-merge-base`,
       value: baseBranch,
     };
     const baseConfigurations = [
@@ -413,10 +430,12 @@ const make = Effect.gen(function* () {
         "--format=%(refname)",
         `refs/heads/${claim.resources.branch}`,
       ]);
-      const configurations = yield* Effect.forEach(["gh-merge-base", "t3-merge-base-ref"], (key) =>
-        git
-          .readConfigValue(basis.projectCwd, `branch.${claim.resources.branch}.${key}`)
-          .pipe(Effect.mapError(conflict)),
+      const configurations = yield* Effect.forEach(
+        ["t3-merge-base", "gh-merge-base", "t3-merge-base-ref"],
+        (key) =>
+          git
+            .readConfigValue(basis.projectCwd, `branch.${claim.resources.branch}.${key}`)
+            .pipe(Effect.mapError(conflict)),
       );
       if (
         registration.split("\0").includes(`worktree ${basis.worktreePath}`) ||
@@ -424,6 +443,7 @@ const make = Effect.gen(function* () {
         configurations.some((value) => value !== null)
       )
         return yield* conflict();
+      yield* observeFreshCreation(claim, basis).pipe(Effect.mapError(conflict));
     }
     return basis;
   });
@@ -515,15 +535,9 @@ const make = Effect.gen(function* () {
                 )
                   return yield* deny("unknown", "Physical worktree owner did not prove completion");
                 const path = yield* directory(material.path);
-                const birth = yield* Schema.decodeEffect(
-                  Schema.fromJsonString(
-                    Schema.Struct({
-                      device: Schema.NonEmptyString,
-                      inode: Schema.NonEmptyString,
-                      birthtime: Schema.Number,
-                    }),
-                  ),
-                )(path.birth).pipe(Effect.mapError(conflict));
+                const birth = yield* decodeWorkspaceIdentityJson(path.birth).pipe(
+                  Effect.mapError(conflict),
+                );
                 if (birth.device !== material.device || birth.inode !== material.inode)
                   return yield* conflict();
                 proof = {
@@ -536,6 +550,10 @@ const make = Effect.gen(function* () {
                   configuredSubmodulesDigest: digest(basis.configuredSubmodulesDefinition),
                   baseConfigurationDigest: digest(basis.baseConfigurationDefinition),
                 };
+                if (step.kind === "worktree.add")
+                  yield* observeRuntimeUseCreatedMaterial(basis, proof).pipe(
+                    Effect.mapError(conflict),
+                  );
                 inFlight.set(claim.claimId, proof);
                 completed.add(stepIdentity(step));
                 pending = undefined;

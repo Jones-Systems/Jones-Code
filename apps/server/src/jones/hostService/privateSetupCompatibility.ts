@@ -4,7 +4,11 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { QUALIFIED_RUNTIME_RECEIPT, qualifiedPayloadDigest } from "../cloud/qualifiedRuntime.ts";
+import {
+  QUALIFIED_RUNTIME_RECEIPT,
+  qualifiedPayloadDigest,
+  QualifiedRuntimeBlockedError,
+} from "../cloud/qualifiedRuntime.ts";
 
 interface PrivateSetupArtifact {
   readonly repository: string;
@@ -46,9 +50,9 @@ const digest = (bytes: string | Uint8Array) =>
 const fail = (): never => {
   throw new Error("Private setup runtime evidence or layout differs; preserve and reconcile it.");
 };
-const identity = (stat: NodeFS.BigIntStats) =>
+const identity = (stat: NodeFS.BigIntStats, mode = stat.mode) =>
   JSON.stringify(
-    [stat.dev, stat.ino, stat.uid, stat.mode, stat.nlink, stat.size, stat.mtimeNs].map(String),
+    [stat.dev, stat.ino, stat.uid, mode, stat.nlink, stat.size, stat.mtimeNs].map(String),
   );
 const directoryIdentity = (stat: NodeFS.BigIntStats) =>
   JSON.stringify([stat.dev, stat.ino, stat.uid, stat.mode].map(String));
@@ -275,4 +279,139 @@ export async function archivePrivateSetupProvenance(
     }
   }
   await assertPrivateSetupRuntime(preimage, uid, archiveDirectory);
+}
+
+/** Project only the authenticated scratch onto the exact historical private permission layout. */
+export async function projectAuthenticatedPrivateSetupPayload(input: {
+  readonly preimage: PrivateSetupPreimage;
+  readonly payloadDirectory: string;
+  readonly uid: number;
+  readonly artifact: PrivateSetupArtifact;
+}): Promise<void> {
+  const { preimage, payloadDirectory, uid, artifact } = input;
+  const mismatch = (): never => {
+    throw new QualifiedRuntimeBlockedError(
+      "occupied-cache",
+      "Existing runtime differs from the verified artifact; it was preserved.",
+    );
+  };
+  if (!isUnattestedPrivateSetupArtifact(artifact) || artifact.version !== preimage.version)
+    return mismatch();
+  await assertPrivateSetupRuntime(preimage, uid);
+  const scratch = await NodeFSP.lstat(payloadDirectory, { bigint: true });
+  if (
+    !scratch.isDirectory() ||
+    scratch.uid !== BigInt(uid) ||
+    (scratch.mode & 0o7777n) !== 0o700n ||
+    (await NodeFSP.realpath(payloadDirectory)) !== payloadDirectory ||
+    payloadDirectory === preimage.directory ||
+    payloadDirectory.startsWith(`${preimage.directory}${NodePath.sep}`) ||
+    preimage.directory.startsWith(`${payloadDirectory}${NodePath.sep}`)
+  )
+    return mismatch();
+  if ((await qualifiedPayloadDigest(payloadDirectory)) === preimage.payloadSha256) return;
+
+  const oldEntries: Array<{ path: string; identity: string }> = [];
+  const candidateEntries = new Map<string, { path: string; identity: string }>();
+  const changes: Array<{ path: string; identity: string; mode: number }> = [];
+  const fileDigest = async (path: string, expected: string): Promise<string> => {
+    const fd = await NodeFSP.open(path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+    try {
+      if (identity(await fd.stat({ bigint: true })) !== expected) return mismatch();
+      const hash = NodeCrypto.createHash("sha256");
+      for await (const bytes of fd.createReadStream({ autoClose: false })) hash.update(bytes);
+      if (
+        identity(await fd.stat({ bigint: true })) !== expected ||
+        identity(await NodeFSP.lstat(path, { bigint: true })) !== expected
+      )
+        return mismatch();
+      return hash.digest("hex");
+    } finally {
+      await fd.close();
+    }
+  };
+  const visit = async (relative: string): Promise<void> => {
+    const oldPath = NodePath.join(preimage.directory, relative);
+    const candidatePath = NodePath.join(payloadDirectory, relative);
+    const old = await NodeFSP.lstat(oldPath, { bigint: true });
+    const candidate = await NodeFSP.lstat(candidatePath, { bigint: true });
+    if (old.uid !== BigInt(uid) || candidate.uid !== BigInt(uid)) return mismatch();
+    const oldIdentity = identity(old),
+      candidateIdentity = identity(candidate);
+    oldEntries.push({ path: oldPath, identity: oldIdentity });
+    candidateEntries.set(candidatePath, { path: candidatePath, identity: candidateIdentity });
+    if (old.isDirectory() && candidate.isDirectory()) {
+      if (
+        (old.mode & 0o7777n) !== 0o700n ||
+        (candidate.mode & 0o7022n) !== 0n ||
+        (candidate.mode & 0o700n) !== 0o700n ||
+        (await NodeFSP.realpath(oldPath)) !== oldPath ||
+        (await NodeFSP.realpath(candidatePath)) !== candidatePath
+      )
+        return mismatch();
+      const before =
+        relative === "" ? [...payloadRoots].sort() : (await NodeFSP.readdir(oldPath)).sort();
+      const after = (await NodeFSP.readdir(candidatePath)).sort();
+      if (JSON.stringify(before) !== JSON.stringify(after)) return mismatch();
+      for (const name of before) await visit(NodePath.join(relative, name));
+    } else if (old.isSymbolicLink() && candidate.isSymbolicLink()) {
+      const target = await NodeFSP.readlink(candidatePath);
+      if (
+        NodePath.isAbsolute(target) ||
+        target !== (await NodeFSP.readlink(oldPath)) ||
+        !(await NodeFSP.realpath(oldPath)).startsWith(`${preimage.directory}${NodePath.sep}`) ||
+        !(await NodeFSP.realpath(candidatePath)).startsWith(`${payloadDirectory}${NodePath.sep}`)
+      )
+        return mismatch();
+    } else if (old.isFile() && candidate.isFile()) {
+      const executable = Number(candidate.mode & 0o111n);
+      const mode = 0o600 | (executable & 0o100);
+      if (
+        old.nlink !== 1n ||
+        candidate.nlink !== 1n ||
+        old.size !== candidate.size ||
+        (candidate.mode & 0o7777n) !== BigInt(0o600 | executable) ||
+        (old.mode & 0o7777n) !== BigInt(mode) ||
+        (await fileDigest(oldPath, oldIdentity)) !==
+          (await fileDigest(candidatePath, candidateIdentity))
+      )
+        return mismatch();
+      changes.push({ path: candidatePath, identity: candidateIdentity, mode });
+    } else return mismatch();
+  };
+  const assertEntries = async (entries: Iterable<{ path: string; identity: string }>) => {
+    for (const entry of entries)
+      if (identity(await NodeFSP.lstat(entry.path, { bigint: true })) !== entry.identity)
+        return mismatch();
+  };
+  await visit("");
+  // Finish the complete comparison before changing even one scratch file.
+  await assertPrivateSetupRuntime(preimage, uid);
+  await assertEntries(oldEntries);
+  await assertEntries(candidateEntries.values());
+  for (const change of changes) {
+    const fd = await NodeFSP.open(
+      change.path,
+      NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+    );
+    try {
+      const before = await fd.stat({ bigint: true });
+      if (identity(before) !== change.identity) return mismatch();
+      await fd.chmod(change.mode);
+      await fd.sync();
+      const after = await fd.stat({ bigint: true });
+      if (identity(after) !== identity(before, BigInt(change.mode) | (before.mode & ~0o7777n)))
+        return mismatch();
+      const entry = candidateEntries.get(change.path);
+      if (entry === undefined) return mismatch();
+      entry.identity = identity(after);
+    } finally {
+      await fd.close();
+    }
+  }
+  await assertEntries(oldEntries);
+  await assertEntries(candidateEntries.values());
+  await assertPrivateSetupRuntime(preimage, uid);
+  if ((await qualifiedPayloadDigest(payloadDirectory)) !== preimage.payloadSha256)
+    return mismatch();
 }

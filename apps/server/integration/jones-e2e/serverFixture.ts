@@ -1,3 +1,6 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as ManagedPolicy from "../../src/policy/ManagedPolicy.ts";
+import * as PeerLinkRequests from "../../src/peer/PeerLinkRequests.ts";
 // @effect-diagnostics nodeBuiltinImport:off -- Test-owned loopback listeners only; no child processes or host state.
 import * as NodeHttp from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -5,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentHttpApi,
+  type EnvironmentCloudLinkStateResult,
   type OrchestrationV2LinkOrigin,
   ProjectId,
   ProviderDriverKind,
@@ -32,6 +36,7 @@ import * as AuthHttp from "../../src/auth/http.ts";
 import * as McpOAuth from "../../src/auth/McpOAuth.ts";
 import * as McpOAuthHttp from "../../src/auth/mcpOAuthHttp.ts";
 import * as ServerSecretStore from "../../src/auth/ServerSecretStore.ts";
+import * as CloudLink from "../../src/cloud/CloudLink.ts";
 import * as ServerConfig from "../../src/config.ts";
 import * as ServerEnvironment from "../../src/environment/ServerEnvironment.ts";
 import * as ServerHttp from "../../src/http.ts";
@@ -95,6 +100,14 @@ const mcpClient = McpSchema.McpServerClient.of({
   getClient: Effect.die("JE fixture does not request a client callback"),
 });
 
+const notCloudLinked: EnvironmentCloudLinkStateResult = {
+  linked: false,
+  cloudUserId: null,
+  relayUrl: null,
+  relayIssuer: null,
+  publishAgentActivity: false,
+};
+
 export const makeHome = (prefix: string) =>
   Effect.gen(function* () {
     // The native writer fence must never pick up a running desktop's protected profile.
@@ -127,7 +140,7 @@ export const startServer = (
     const database = yield* Sqlite.layerFromPath(config.dbPath).pipe(Layer.build);
     const dbLayer = Layer.succeedContext(database);
     const configLayer = Layer.succeedContext(configuration);
-    const settings = ServerSettings.layerTest();
+    const settings = ServerSettings.layerTest({ linkedEnvironmentsEnabled: true });
     const registry = ProviderAdapterRegistry.layerFromAdapters([provider]);
     const core = yield* ProviderReplayHarness.layerWithRegistry({ name: "jones-e2e" }, registry, {
       serverConfigLayer: configLayer,
@@ -142,6 +155,8 @@ export const startServer = (
       settings,
       registry,
       NodeServices.layer,
+      NodeCrypto.layer,
+      ManagedPolicy.layerTest(),
     );
     const services = yield* Layer.mergeAll(
       ThreadManagement.layer.pipe(Layer.provide(CommandReceiptStore.layer)),
@@ -189,13 +204,12 @@ export const startServer = (
       Layer.build,
     );
     const registered = yield* Deferred.make<McpServer.McpServer["Service"]>();
-    const tools = Layer.mergeAll(
+    const registrations = Layer.mergeAll(
       McpHttpServer.layerOrchestratorToolkit,
       Layer.effectDiscard(
         McpServer.McpServer.pipe(Effect.flatMap((server) => Deferred.succeed(registered, server))),
       ),
     ).pipe(
-      Layer.provideMerge(McpHttpServer.layerMcpTransport),
       Layer.provide(McpOAuth.layerMcpClientAuthenticator),
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({
@@ -208,14 +222,28 @@ export const startServer = (
       Layer.provide(Layer.mock(ScheduledTasks.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
     );
     const routes = Layer.mergeAll(
       HttpApiBuilder.layer(FixtureApi).pipe(
-        Layer.provide(McpOAuthHttp.layer.pipe(Layer.provide(McpOAuth.layer))),
+        Layer.provide(
+          McpOAuthHttp.layer.pipe(
+            Layer.provide(McpOAuth.layer),
+            // The fixture is never linked to a cloud account; OAuth discovery only reads link state.
+            Layer.provide(
+              Layer.mock(CloudLink.CloudLink)({ linkState: () => Effect.succeed(notCloudLinked) }),
+            ),
+          ),
+        ),
         Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
         Layer.provide(AuthHttp.layerAuthenticatedAuth),
       ),
-      tools,
+      McpHttpServer.layerMcpTransport(registrations).pipe(
+        Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+        Layer.provide(
+          Layer.mock(McpSessionRegistry.McpSessionRegistry)({ resolve: () => Effect.undefined }),
+        ),
+      ),
     ).pipe(Layer.provide(Layer.succeedContext(forwarding)));
     const listening = yield* HttpRouter.serve(routes, {
       disableListenLog: true,
@@ -274,7 +302,7 @@ export const startServer = (
           Effect.provideService(McpSchema.McpServerClient, mcpClient),
         ),
     };
-  });
+  }).pipe(Effect.provide(NodeCrypto.layer));
 
 export type TestServer = Effect.Success<ReturnType<typeof startServer>>;
 

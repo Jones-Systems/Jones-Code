@@ -17,6 +17,8 @@ export const unknownProviderGoal = (
   nativeThreadId: string | null = null,
 ): ProviderGoalReadResult => ({ nativeThreadId, state: "unknown", reasonCode });
 
+const compiledIs1 = Schema.is(CodexSchema.V2ThreadGoalGetResponse__ThreadGoal);
+
 function classifyProviderGoal(response: unknown, nativeThreadId: string): ProviderGoalReadResult {
   if (typeof response !== "object" || response === null || Array.isArray(response)) {
     return unknownProviderGoal("malformed", nativeThreadId);
@@ -25,7 +27,7 @@ function classifyProviderGoal(response: unknown, nativeThreadId: string): Provid
     return unknownProviderGoal("goal_field_omitted", nativeThreadId);
   if (!("goal" in response)) return unknownProviderGoal("malformed", nativeThreadId);
   if (response.goal === null) return { nativeThreadId, state: "inactive", reasonCode: "goal_null" };
-  if (!Schema.is(CodexSchema.V2ThreadGoalGetResponse__ThreadGoal)(response.goal)) {
+  if (!compiledIs1(response.goal)) {
     return unknownProviderGoal("malformed", nativeThreadId);
   }
   if (response.goal.threadId !== nativeThreadId)

@@ -118,7 +118,7 @@ function SectionNotice({ state, reasons }: { state: string; reasons: readonly st
 function CiStatus({ environmentId }: { environmentId: EnvironmentId }) {
   const [visible, setVisible] = useState(() => document.visibilityState === "visible");
   const [now, setNow] = useState(Date.now);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own visibility and freshness timers for the CI status view, releasing both on unmount.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own visibility and freshness timers for the CI status view, releasing both on unmount.
   useEffect(() => {
     const update = () => {
       setVisible(document.visibilityState === "visible");

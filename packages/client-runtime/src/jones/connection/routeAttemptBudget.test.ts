@@ -1,3 +1,5 @@
+import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
+import { unusedAuthorization } from "./unusedAuthorization.ts";
 import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -74,6 +76,7 @@ const makeHarness = Effect.fn("RouteBudgetTest.makeHarness")(function* (options?
       ),
     );
   const driver = yield* ConnectionDriver.make.pipe(
+    Effect.provideService(RemoteEnvironmentAuthorization, unusedAuthorization),
     Effect.provideService(
       ConnectionResolver.ConnectionResolver,
       ConnectionResolver.ConnectionResolver.of({
@@ -119,6 +122,7 @@ const makeHarness = Effect.fn("RouteBudgetTest.makeHarness")(function* (options?
                   subscribeServerConfig: () => Stream.die(new Error("Config stream is not used.")),
                   ready: options?.ready?.(prepared.target) ?? Effect.void,
                   probe: Effect.void,
+                  inboundFrames: Effect.succeed(0),
                   closed: Effect.never,
                 } satisfies RpcSession.RpcSession;
               }),

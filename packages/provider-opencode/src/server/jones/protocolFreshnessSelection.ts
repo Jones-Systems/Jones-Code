@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import type * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
-import type { makeOpenCodeRuntimeProbe } from "../versionProbe.ts";
+import type { makeOpenCodeRuntimeProbe, ProbedOpenCode } from "../versionProbe.ts";
 
 type OpenCodeRuntimeProbe = Effect.Success<
   ReturnType<typeof makeOpenCodeRuntimeProbe<OpenCodeRuntime.OpenCodeRuntimeError>>
@@ -13,8 +13,12 @@ type OpenCodeRuntimeProbe = Effect.Success<
 
 const DRIVER_KIND = ProviderDriverKind.make("opencode");
 
+type ResolveOpenCodeRuntime = Effect.Effect<ProbedOpenCode, OpenCodeRuntime.OpenCodeRuntimeError>;
+
 export function selectOpenCodeRuntimeAdapter(input: {
   readonly probe: OpenCodeRuntimeProbe;
+  /** Admission read for a session the user started; defaults to the fresh protocol probe. */
+  readonly resolve?: ResolveOpenCodeRuntime;
   readonly v1: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly v2: ProviderAdapter.ProviderAdapterV2["Service"];
 }): ProviderAdapter.ProviderAdapterV2["Service"] {
@@ -30,7 +34,7 @@ export function selectOpenCodeRuntimeAdapter(input: {
     planSelectionTransition: (transition) =>
       Effect.flatMap(hot, (adapter) => adapter.planSelectionTransition(transition)),
     openSession: (session) =>
-      input.probe.get.pipe(
+      (input.resolve ?? input.probe.get).pipe(
         Effect.mapError(
           (cause) =>
             new ProviderAdapter.ProviderAdapterOpenSessionError({
@@ -50,6 +54,8 @@ export function selectOpenCodeRuntimeTextGeneration(
   probe: OpenCodeRuntimeProbe,
   v1: ProviderTextGeneration,
   v2: ProviderTextGeneration,
+  /** Admission read for a helper the user started; defaults to the fresh protocol probe. */
+  resolve: ResolveOpenCodeRuntime = probe.get,
 ): ProviderTextGeneration {
   const select = <A>(
     operation: keyof ProviderTextGeneration,
@@ -58,7 +64,7 @@ export function selectOpenCodeRuntimeTextGeneration(
       readonly v2: Effect.Effect<A, TextGenerationError>;
     },
   ) =>
-    probe.get.pipe(
+    resolve.pipe(
       Effect.mapError(
         (cause) =>
           new TextGenerationError({
@@ -99,6 +105,11 @@ export function selectOpenCodeRuntimeTextGeneration(
       select("generateReviewGuide", {
         v1: v1.generateReviewGuide(input),
         v2: v2.generateReviewGuide(input),
+      }),
+    generateTranscriptionPostProcessing: (input) =>
+      select("generateTranscriptionPostProcessing", {
+        v1: v1.generateTranscriptionPostProcessing(input),
+        v2: v2.generateTranscriptionPostProcessing(input),
       }),
   };
 }

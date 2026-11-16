@@ -41,8 +41,7 @@ const FETCH_BAD_PORTS = new Set([
 ]);
 // Dev binds loopback; other interfaces cannot establish port availability.
 const DEV_PORT_PROBE_HOSTS = ["127.0.0.1", "::1"] as const;
-// A pruned migrate-dev-db copy is tens of MB; some worktrees hold a full copy
-// of the live database instead.
+// Migration prunes after copying, so large sources also need an automatic-seeding limit.
 const LARGE_DEV_DATABASE_BYTES = 500 * 1024 * 1024;
 
 /** Only loopback and wildcard binds keep the loopback proxy target reachable. */
@@ -273,6 +272,12 @@ const resolveBaseDir = Effect.fn("dev-runner.resolveBaseDir")(function* (
   const path = yield* Path.Path;
   const configured = baseDir?.trim();
 
+  if (configured === "~") {
+    return yield* HostProcess.HomeDirectory;
+  }
+  if (configured?.startsWith("~/") || configured?.startsWith("~\\")) {
+    return path.join(yield* HostProcess.HomeDirectory, configured.slice(2));
+  }
   if (configured) {
     return path.resolve(configured);
   }
@@ -641,15 +646,22 @@ const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (i
         "userdata",
         "statev2.sqlite",
       );
-      if (yield* exists(source)) {
-        yield* Effect.logInfo(
-          `[dev-runner] seeding ${input.worktreeHome} from ${source} (read-only). --no-seed or T3CODE_DEV_SEED=0 skips this.`,
-        );
-        yield* runRepoScript(
-          "apps/server/scripts/migrate-dev-db.ts",
-          ["--base-dir", input.worktreeHome, "--source", source],
-          input.env,
-        );
+      const info = yield* fs.stat(source).pipe(Effect.option);
+      if (Option.isSome(info)) {
+        if (Number(info.value.size) > LARGE_DEV_DATABASE_BYTES) {
+          yield* Effect.logWarning(
+            `[dev-runner] ${source} exceeds 500 MiB; skipping automatic database seeding and starting with an empty database. Run \`vp run migrate-dev-db\` manually with dev stopped if needed; it may use substantial disk space before pruning.`,
+          );
+        } else {
+          yield* Effect.logInfo(
+            `[dev-runner] seeding ${input.worktreeHome} from ${source} (read-only). --no-seed or T3CODE_DEV_SEED=0 skips this.`,
+          );
+          yield* runRepoScript(
+            "apps/server/scripts/migrate-dev-db.ts",
+            ["--base-dir", input.worktreeHome, "--source", source],
+            input.env,
+          );
+        }
       }
     }
   }
@@ -799,7 +811,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
                 : Effect.logWarning(
                     `[dev-runner] could not remove the tailnet mapping for port ${String(sharedWebPort)}${
                       result.explanation ? `: ${result.explanation}` : ""
-                    }. Remove it with \`tailscale serve --https=${String(sharedWebPort)} off\`.`,
+                    }. Remove it with \`tailscale serve --https=${String(sharedWebPort)} --set-path=/ off\`.`,
                   ),
             ),
           ),
@@ -959,7 +971,7 @@ export const devRunnerCli = Command.make("dev-runner", {
   ),
   seed: Flag.Boolean("seed").pipe(
     Flag.withDescription(
-      "Opt in to seed an empty worktree database from ~/.t3 (read-only, via migrate-dev-db). Off by default; --seed or T3CODE_DEV_SEED=1 enables it. --no-seed overrides the environment.",
+      "Opt in to seed an empty worktree database from ~/.t3 (read-only, via migrate-dev-db) if the source is at most 500 MiB. Off by default; --seed or T3CODE_DEV_SEED=1 enables it. --no-seed overrides the environment.",
     ),
     Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_DEV_SEED")),
   ),

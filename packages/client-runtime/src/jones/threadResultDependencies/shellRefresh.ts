@@ -10,7 +10,9 @@ const sameThread = Schema.toEquivalence(OrchestrationV2ThreadShell);
 
 type ShellDelta = Exclude<
   OrchestrationV2ShellStreamItem,
-  { readonly kind: "snapshot" } | { readonly kind: "synchronized" }
+  | { readonly kind: "snapshot" }
+  | { readonly kind: "snapshot-required" }
+  | { readonly kind: "synchronized" }
 >;
 type ThreadRefresh = Extract<ShellDelta, { readonly kind: "thread.refreshed" | "thread.omitted" }>;
 const refreshThreadId = (item: ThreadRefresh) =>

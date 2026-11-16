@@ -156,7 +156,7 @@ export class WorkerReplies {
           ? "oversize"
           : this.request.operation === "open"
             ? "finder-create"
-            : this.request.operation === "refresh"
+            : this.request.operation === "refresh" || this.request.operation === "refreshContent"
               ? "finder-refresh"
               : "finder-search",
       scanTimedOut: tag === "WorkspaceSearchIndexScanTimedOut",
@@ -220,6 +220,26 @@ export function decodeNativeBlockQualification(argument: string): {
   return Object.freeze({ targetWorkspace: value.targetWorkspace, logFileHint: value.logFileHint });
 }
 
+/** Only the hidden compute child lowers its own caller priority before native/guardian threads exist. */
+export function configureComputeSelfPriority(
+  port = {
+    read: () => NodeOS.getPriority(0),
+    write: (priority: number) => NodeOS.setPriority(0, priority),
+  },
+): number {
+  try {
+    const before = port.read();
+    if (!Number.isInteger(before) || before < -20 || before > 19)
+      throw new Error("Unknown compute priority");
+    const selected = Math.max(before, NodeOS.constants.priority.PRIORITY_BELOW_NORMAL);
+    if (before !== selected) port.write(selected);
+    if (port.read() !== selected) throw new Error("Compute priority readback mismatch");
+    return selected;
+  } catch (cause) {
+    throw computeFailure("unavailable", cause);
+  }
+}
+
 /** Closed hidden command. Root dispatches here before loading the normal server graph. */
 export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>): Promise<void> {
   const platform = HostProcess.Platform.defaultValue();
@@ -239,6 +259,7 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
     process.env.NODE_OPTIONS === "--max-old-space-size=256";
   if (!heapSelected || heapLimit < 256 * 1024 * 1024 || heapLimit > 400 * 1024 * 1024)
     throw computeFailure("unavailable");
+  configureComputeSelfPriority();
   const guardian = new NodeWorkerThreads.Worker(guardianSource, { eval: true, workerData: boot });
   // In a Worker, process.exit would exit only that thread. This callback is on child main.
   guardian.on("error", () => process.kill(process.pid, "SIGKILL"));
@@ -371,6 +392,10 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
             break;
           case "refresh":
             await execute(resident.runtime.refresh(), job.controller.signal);
+            break;
+          case "refreshContent":
+            if (resident.key.variant !== "content") throw computeFailure("protocol");
+            await execute(resident.runtime.refreshContent(), job.controller.signal);
             break;
           case "close":
             // Close is diagnostic teardown only; the allocation tombstone survives until process exit.

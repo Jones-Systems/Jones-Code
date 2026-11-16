@@ -63,6 +63,8 @@ export class RenderHostSelection extends Context.Service<
     readonly release: (key: DesktopTabKey) => Effect.Effect<void>;
   }
 >()("t3/jones/previewCompanion/RenderHostSelection") {}
+const decodeStoredJson = Schema.decodeOption(Schema.fromJsonString(Stored));
+const encodeStoredJson = Schema.encodeEffect(Schema.fromJsonString(Stored));
 
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -80,10 +82,7 @@ const make = Effect.gen(function* () {
           : Effect.fail(new RenderHostSelectionReadError({ reason: "unreadable", cause })),
       ),
     );
-  const decoded =
-    stored === undefined
-      ? Option.some(empty())
-      : Schema.decodeOption(Schema.fromJsonString(Stored))(stored);
+  const decoded = stored === undefined ? Option.some(empty()) : decodeStoredJson(stored);
   if (Option.isNone(decoded)) return yield* new RenderHostSelectionReadError({ reason: "invalid" });
   let state: typeof Stored.Type = decoded.value;
   const bindings = new Map<string, { key: DesktopTabKey; selection: PreviewRenderHostSelection }>();
@@ -99,10 +98,7 @@ const make = Effect.gen(function* () {
             directory,
             prefix: ".preview-render-hosts-",
           });
-          yield* fs.writeFileString(
-            temporary,
-            yield* Schema.encodeEffect(Schema.fromJsonString(Stored))(value),
-          );
+          yield* fs.writeFileString(temporary, yield* encodeStoredJson(value));
           yield* fs.rename(temporary, destination);
           state = value;
         }),
@@ -110,7 +106,7 @@ const make = Effect.gen(function* () {
     );
   return RenderHostSelection.of({
     environmentDefault: Effect.sync(() => state.environmentDefault),
-    thread: (threadId) =>
+    thread: Effect.fn("RenderHostSelection.thread")((threadId) =>
       Effect.sync(() => ({
         selection: Object.hasOwn(state.threads, threadId) ? state.threads[threadId]! : null,
         effective: effective(threadId),
@@ -121,8 +117,11 @@ const make = Effect.gen(function* () {
             hostId: selection._tag === "companion" ? selection.hostId : null,
           })),
       })),
-    setDefault: (selection) => update(() => ({ ...state, environmentDefault: selection })),
-    setThread: (threadId, selection) =>
+    ),
+    setDefault: Effect.fn("RenderHostSelection.setDefault")((selection) =>
+      update(() => ({ ...state, environmentDefault: selection })),
+    ),
+    setThread: Effect.fn("RenderHostSelection.setThread")((threadId, selection) =>
       update(() => {
         const threads = { ...state.threads };
         if (selection === null) delete threads[threadId];
@@ -135,7 +134,8 @@ const make = Effect.gen(function* () {
           });
         return { ...state, threads };
       }),
-    bind: (key, inherited) =>
+    ),
+    bind: Effect.fn("RenderHostSelection.bind")((key, inherited) =>
       Effect.sync(() => {
         const existing = bindings.get(keyOf(key));
         if (existing) {
@@ -154,11 +154,15 @@ const make = Effect.gen(function* () {
         bindings.set(keyOf(key), { key, selection });
         return selection;
       }),
-    binding: (key) => Effect.sync(() => bindings.get(keyOf(key))?.selection),
-    release: (key) =>
+    ),
+    binding: Effect.fn("RenderHostSelection.binding")((key) =>
+      Effect.sync(() => bindings.get(keyOf(key))?.selection),
+    ),
+    release: Effect.fn("RenderHostSelection.release")((key) =>
       Effect.sync(() => {
         bindings.delete(keyOf(key));
       }),
+    ),
   });
 });
 export const layer = Layer.effect(RenderHostSelection, make);

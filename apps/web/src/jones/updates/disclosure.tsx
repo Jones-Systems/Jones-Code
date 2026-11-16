@@ -53,7 +53,9 @@ export function DetailItem({
   return (
     <>
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5">{children}</dd>
+      <dd className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 wrap-anywhere">
+        {children}
+      </dd>
     </>
   );
 }
@@ -61,6 +63,9 @@ export function DetailItem({
 export const DETAIL_PANEL_CLASSNAME =
   "space-y-2 rounded-md bg-muted/40 px-2.5 py-2 text-muted-foreground";
 
-/** The buttons that end an update line in an environment row, kept right-aligned when it wraps. */
+/**
+ * The buttons that end an update line in an environment row, kept right-aligned when it wraps.
+ * The row may shrink so a status line wraps within a narrow environment row instead of overflowing.
+ */
 export const INLINE_ACTIONS_CLASSNAME =
-  "ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5";
+  "ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5";

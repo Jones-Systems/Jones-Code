@@ -1,3 +1,4 @@
+import * as NodeCryptoServices from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -476,6 +477,7 @@ it.effect(
               Stream.runCollect,
               Effect.map((results) => results.at(-1)!.result),
               Effect.provideService(Invocation.McpInvocationContext, scope),
+              Effect.provideService(WorktreeMcp.WorktreeMcpService, service),
               Effect.provide(external),
             );
           const status = yield* toolkit.handle("t3_worktree_status", {}).pipe(
@@ -521,5 +523,5 @@ it.effect(
           ),
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer))),
 );

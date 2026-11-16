@@ -1,3 +1,4 @@
+import * as InProcessMcp from "../../../mcp/McpHttpServer.ts";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -37,7 +38,7 @@ const handlers = Access.toLayer(Probe, {
   ),
 });
 const Server = McpHttpServer.toolkitRegistration(Probe, handlers).pipe(
-  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
   Layer.provideMerge(
     Layer.mock(Threads.ThreadManagementService)({
       getThreadShell: () => Effect.succeed(shell),

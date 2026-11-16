@@ -13,6 +13,7 @@ import {
 import { useState } from "react";
 import { newMessageId } from "~/lib/utils";
 import type { ComposerHandleRef } from "../../composerHandleContext";
+import { DEFAULT_INTERACTION_MODE } from "../../types";
 import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { pendingSends } from "../../jones/pendingSends/store";
@@ -31,12 +32,10 @@ interface ComposerResumeInput {
   readonly resumableRunId: RunId | null;
   readonly hasHeldQueuedRuns: boolean;
   readonly isSendBusy: boolean;
-  readonly isConnecting: boolean;
   readonly isRevertingCheckpoint: boolean;
   readonly threadDetailLoading: boolean;
   readonly activeEnvironmentUnavailable: boolean;
   readonly runtimeMode: RuntimeMode;
-  readonly interactionMode: ProviderInteractionMode;
   readonly localCheckoutBranchMismatch: { readonly currentBranch: string } | null;
   readonly composerRef: ComposerHandleRef;
   readonly persistThreadSettingsForNextTurn: (input: {
@@ -64,12 +63,10 @@ export function useComposerResume(input: ComposerResumeInput) {
     resumableRunId,
     hasHeldQueuedRuns,
     isSendBusy,
-    isConnecting,
     isRevertingCheckpoint,
     threadDetailLoading,
     activeEnvironmentUnavailable,
     runtimeMode,
-    interactionMode,
     localCheckoutBranchMismatch,
     composerRef,
     persistThreadSettingsForNextTurn,
@@ -93,7 +90,6 @@ export function useComposerResume(input: ComposerResumeInput) {
       (resumableRunId === null && !hasHeldQueuedRuns) ||
       isSendBusy ||
       isResuming ||
-      isConnecting ||
       isRevertingCheckpoint ||
       threadDetailLoading ||
       activeEnvironmentUnavailable ||
@@ -117,6 +113,9 @@ export function useComposerResume(input: ComposerResumeInput) {
       if (resumableRunId === null) {
         return resumeThreadQueue({ environmentId, input: { threadId } });
       }
+      // Read before the first await: the composer follows the route, so after the user switches
+      // threads it holds the other thread's model.
+      const modelSelection = composerRef.current?.getSendContext().selectedModelSelection;
       const createdAt = new Date().toISOString();
       const messageId = newMessageId();
       const message = {
@@ -136,13 +135,12 @@ export function useComposerResume(input: ComposerResumeInput) {
           ? { branch: localCheckoutBranchMismatch.currentBranch }
           : {}),
         runtimeMode,
-        interactionMode,
+        interactionMode: DEFAULT_INTERACTION_MODE,
       });
       if (settingsResult._tag === "Failure") {
         pendingSends.failBeforeDispatch(environmentId, threadId, messageId);
         return settingsResult;
       }
-      const modelSelection = composerRef.current?.getSendContext().selectedModelSelection;
       const turnResult = await startThreadTurn({
         environmentId,
         input: {
@@ -157,7 +155,7 @@ export function useComposerResume(input: ComposerResumeInput) {
             attachments: [],
           },
           runtimeMode,
-          interactionMode,
+          interactionMode: DEFAULT_INTERACTION_MODE,
           dispatchMode: "start",
         },
       });

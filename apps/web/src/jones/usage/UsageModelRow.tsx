@@ -38,7 +38,7 @@ export function UsageModelRow({
   return (
     <>
       <tr className="relative border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50">
-        <td className="py-2.5 pr-3 text-left text-xs">{index + 1}</td>
+        <td className="py-2.5 pr-3 pl-2 text-left text-xs">{index + 1}</td>
         <td className="max-w-0 py-2.5 text-left whitespace-normal">
           <div className="flex min-w-0 items-center gap-1.5">
             {/* The overlay opens the model except at the token-details toggle.
@@ -94,7 +94,7 @@ export function UsageModelRow({
           </span>
         </td>
         <td className={cn("hidden py-2.5 pl-6 @2xl:table-cell", rowFigures)}>{costPercent}</td>
-        <td className={cn("py-2.5 pl-3 @2xl:pl-6", rowFigures)}>
+        <td className={cn("py-2.5 pr-2 pl-3 @2xl:pr-0 @2xl:pl-6", rowFigures)}>
           {formatTokens(model.totalTokens)}
           <span
             aria-label="Token percentage"
@@ -103,7 +103,9 @@ export function UsageModelRow({
             {tokenPercent}
           </span>
         </td>
-        <td className={cn("hidden py-2.5 pl-6 @2xl:table-cell", rowFigures)}>{tokenPercent}</td>
+        <td className={cn("hidden py-2.5 pr-2 pl-6 @2xl:table-cell", rowFigures)}>
+          {tokenPercent}
+        </td>
       </tr>
       {expanded ? (
         <tr>

@@ -1,3 +1,5 @@
+import PreviewImageContent from "../files/PreviewImageContent";
+import "~/index.css";
 import { act, render as renderTest, type Screen } from "../../../test/render";
 import { createRef, type KeyboardEventHandler } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -174,6 +176,7 @@ describe("image zoom interactions", () => {
   });
 
   it("hides dialog controls while wheel zoom stops at sixty percent and can zoom back in", async () => {
+    // Pinch and Ctrl+scroll arrive as ctrlKey wheels and zoom; plain wheels pan natively.
     await using _fixture = await setupTest();
     await render("dialog");
     const fittedWidth = Number.parseFloat(image().style.width);
@@ -183,6 +186,7 @@ describe("image zoom interactions", () => {
       new WheelEvent("wheel", {
         bubbles: true,
         cancelable: true,
+        ctrlKey: true,
         deltaY: 10000,
         clientX: 100,
         clientY: 50,
@@ -195,6 +199,7 @@ describe("image zoom interactions", () => {
       new WheelEvent("wheel", {
         bubbles: true,
         cancelable: true,
+        ctrlKey: true,
         deltaY: 10000,
       }),
     );
@@ -204,6 +209,7 @@ describe("image zoom interactions", () => {
       new WheelEvent("wheel", {
         bubbles: true,
         cancelable: true,
+        ctrlKey: true,
         deltaY: -100,
       }),
     );
@@ -229,6 +235,7 @@ describe("image zoom interactions", () => {
       new WheelEvent("wheel", {
         bubbles: true,
         cancelable: true,
+        ctrlKey: true,
         deltaY: -100,
         clientX: 100,
         clientY: 50,
@@ -305,6 +312,43 @@ describe("image zoom interactions", () => {
     await dispatch(region(), pointer("pointerdown", 100));
     await dispatch(region(), pointer("pointerup", 100));
     await click(image());
+    expect(input().value).toBe("100");
+  });
+  it("derives the actual file-panel toolbar from the viewer across zoom and panel resize", async () => {
+    await using _fixture = await setupTest();
+    await act(() =>
+      root.rerender(
+        <div style={{ width: 432, height: 300, display: "flex", flexDirection: "column" }}>
+          <PreviewImageContent
+            src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1000' height='500'%3E%3C/svg%3E"
+            name="Panel fixture"
+          />
+        </div>,
+      ),
+    );
+    Object.defineProperties(image(), {
+      naturalWidth: { value: 1000 },
+      naturalHeight: { value: 500 },
+    });
+    await dispatch(image(), new Event("load"));
+    await act(() => resize([{ contentRect: { width: 400, height: 200 } }]));
+    expect(container.textContent).toContain("1,000 × 500");
+    expect(input().value).toBe("100");
+    expect(image().style.width).toBe("400px");
+    await click(container.querySelector('[aria-label="Actual image size"]')!);
+    expect(input().value).toBe("250");
+    expect(image().style.width).toBe("1000px");
+    await edit("150");
+    expect(input().value).toBe("150");
+    expect(image().style.width).toBe("600px");
+    await act(() => resize([{ contentRect: { width: 200, height: 100 } }]));
+    expect(input().value).toBe("100");
+    expect(image().style.width).toBe("200px");
+    await edit("invalid");
+    expect(input().value).toBe("100");
+    await click(container.querySelector('[aria-label="Zoom in"]')!);
+    expect(input().value).toBe("110");
+    await click(container.querySelector('[aria-label="Fit image"]')!);
     expect(input().value).toBe("100");
   });
 });

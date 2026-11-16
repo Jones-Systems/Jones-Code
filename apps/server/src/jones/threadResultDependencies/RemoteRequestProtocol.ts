@@ -12,6 +12,8 @@ export function threadSendIdentity(requestNamespace: string, requestKey: string)
 }
 
 /** Admission envelopes are assembled from the authenticated invocation, never request IDs alone. */
+const compiledIs1 = Schema.is(ThreadResultRequestDescriptor);
+
 export function admissionOperation(
   envelope: RemoteAdmissionEnvelope,
 ): { origin: string; operation: string } | undefined {
@@ -33,7 +35,7 @@ export function admissionOperation(
     !client?.linked ||
     client.sessionId !== client.remoteOrigin?.linkSessionId ||
     typeof client.remoteOrigin?.environmentId !== "string" ||
-    !Schema.is(ThreadResultRequestDescriptor)(descriptor)
+    !compiledIs1(descriptor)
   )
     return undefined;
   return { origin: client.remoteOrigin.environmentId, operation: descriptor.operationId };

@@ -11,8 +11,7 @@ import {
   ThreadRegistryLabelPayload,
   ThreadRegistryMutationReceipt,
   type ThreadRegistryThread,
-  type T3PlacementIdentity,
-  type T3PlacementResult,
+  type ThreadRegistryComposedThread,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   type EnvironmentSessionPrincipalShape,
@@ -50,7 +49,6 @@ import {
   makeVoiceReviewCompositionFactory,
   type VoiceReviewCompositionFactory,
 } from "./composition.ts";
-import { validateVoiceReviewNativePlacementResult } from "./native.ts";
 
 export const VOICE_REVIEW_MAX_REQUEST_BYTES = 610_000;
 const MAX_RESPONSE_BYTES = 24_000_000;
@@ -146,15 +144,32 @@ const boundedJson = async (response: Response): Promise<unknown> => {
   }
 };
 
+export interface VoiceReviewThreadIdentity {
+  readonly source_instance_id: string;
+  readonly native_thread_id: string;
+}
+export type VoiceReviewPersonalMembership = NonNullable<
+  ThreadRegistryComposedThread["personal_memberships"]
+>[number];
+
 export interface VoiceReviewNativeReadPort {
   readonly identities: (
     threads: readonly ThreadRegistryThread[],
-  ) => ReadonlyMap<string, T3PlacementIdentity>;
+  ) => ReadonlyMap<string, VoiceReviewThreadIdentity>;
   readonly read: (
     principal: EnvironmentSessionPrincipalShape,
-    identities: readonly T3PlacementIdentity[],
-  ) => Promise<T3PlacementResult>;
+    identities: readonly VoiceReviewThreadIdentity[],
+  ) => Promise<readonly VoiceReviewPersonalMembership[]>;
 }
+const decodeThreadRegistryMutationReceipt = Schema.decodeUnknownSync(ThreadRegistryMutationReceipt);
+const decodeVoiceReviewRecentList = Schema.decodeUnknownSync(VoiceReviewRecentList);
+const decodeThreadRegistrySnapshot = Schema.decodeUnknownSync(ThreadRegistrySnapshot);
+const decodeThreadRegistryComposedSnapshot = Schema.decodeSync(ThreadRegistryComposedSnapshot);
+const decodeThreadRegistryWorkstreams = Schema.decodeUnknownSync(ThreadRegistryWorkstreams);
+const decodeThreadRegistryEvents = Schema.decodeUnknownSync(ThreadRegistryEvents);
+const decodeThreadRegistryAssociationPayload = Schema.decodeSync(ThreadRegistryAssociationPayload);
+const decodeThreadRegistryLabelPayload = Schema.decodeSync(ThreadRegistryLabelPayload);
+const decodeVoiceReviewDiagnostics = Schema.decodeUnknownSync(VoiceReviewDiagnostics);
 
 export const makeVoiceReviewBridge = (
   config: VoiceReviewConfig | null,
@@ -374,7 +389,7 @@ export const makeVoiceReviewBridge = (
     payload: typeof ThreadRegistryAssociationPayload.Type | typeof ThreadRegistryLabelPayload.Type,
   ) => {
     const trusted = authorize(principal, true);
-    const result = Schema.decodeUnknownSync(ThreadRegistryMutationReceipt)(
+    const result = decodeThreadRegistryMutationReceipt(
       await request(trusted, `${path}?source_id=${encodeURIComponent(trusted.source_id)}`, payload),
     );
     if (
@@ -395,7 +410,7 @@ export const makeVoiceReviewBridge = (
     recent: async (principal: EnvironmentSessionPrincipalShape, limit = 50) => {
       const trusted = authorize(principal, false);
       const deadline = now() + REQUEST_TIMEOUT_MS;
-      const result = Schema.decodeUnknownSync(VoiceReviewRecentList)(
+      const result = decodeVoiceReviewRecentList(
         await request(
           trusted,
           `/v1/prompt-review/recent?source_id=${encodeURIComponent(trusted.source_id)}&limit=${checkedLimit(limit)}`,
@@ -438,19 +453,19 @@ export const makeVoiceReviewBridge = (
         source_id: trusted.source_id,
       });
       if (cursor !== undefined) query.set("cursor", cursor);
-      const result = Schema.decodeUnknownSync(ThreadRegistrySnapshot)(
+      const result = decodeThreadRegistrySnapshot(
         await request(trusted, `/v1/registry/snapshot?${query}`),
       );
-      const memberships = new Map<
-        string,
-        (typeof ThreadRegistryComposedSnapshot.Type)["threads"][number]["native_memberships"]
-      >();
+      const memberships = new Map<string, readonly VoiceReviewPersonalMembership[]>();
       const unavailable = new Set(result.unavailable);
       try {
-        if (native === undefined) throw new Error("native_read_unavailable");
+        if (native === undefined && result.threads.length > 0)
+          throw new Error("personal_read_unavailable");
+        if (native === undefined)
+          return decodeThreadRegistryComposedSnapshot({ ...result, threads: [] });
         const identities = native.identities(result.threads);
         if (result.threads.some((thread) => !identities.has(thread.thread_key)))
-          unavailable.add("native_memberships");
+          unavailable.add("personal_memberships");
         const unique = new Map(
           result.threads.flatMap((thread) => {
             const identity = identities.get(thread.thread_key);
@@ -458,46 +473,38 @@ export const makeVoiceReviewBridge = (
           }),
         );
         if (unique.size > 0) {
-          const placements = validateVoiceReviewNativePlacementResult(
-            await native.read(principal, Array.from(unique.values())),
-            now(),
-          );
-          if (placements.readiness !== "ready") throw new Error("native_trust_unavailable");
+          const personalMemberships = await native.read(principal, Array.from(unique.values()));
           for (const thread of result.threads) {
             const identity = identities.get(thread.thread_key);
             if (identity === undefined) continue;
             memberships.set(
               thread.thread_key,
-              placements.page.items
-                .filter(
-                  (item) =>
-                    item.source_instance_id === identity.source_instance_id &&
-                    item.native_thread_id === identity.native_thread_id,
-                )
-                .map((placement) => ({
-                  workstream_ref: `native:${placement.workstream_id}`,
-                  placement,
-                })),
+              personalMemberships.filter(
+                (item) =>
+                  item.environment_id === identity.source_instance_id &&
+                  item.thread_id === identity.native_thread_id,
+              ),
             );
           }
         }
       } catch {
         memberships.clear();
-        unavailable.add("native_memberships");
+        unavailable.add("personal_memberships");
       }
-      return Schema.decodeSync(ThreadRegistryComposedSnapshot)({
+      return decodeThreadRegistryComposedSnapshot({
         ...result,
-        partial: result.partial || unavailable.size > result.unavailable.length,
+        partial: result.partial || unavailable.has("personal_memberships"),
         unavailable: Array.from(unavailable),
         threads: result.threads.map((thread) => ({
           ...thread,
-          native_memberships: memberships.get(thread.thread_key) ?? [],
+          native_memberships: [],
+          personal_memberships: memberships.get(thread.thread_key) ?? [],
         })),
       });
     },
     registryWorkstreams: async (principal: EnvironmentSessionPrincipalShape) => {
       const trusted = authorize(principal, false);
-      return Schema.decodeUnknownSync(ThreadRegistryWorkstreams)(
+      return decodeThreadRegistryWorkstreams(
         await request(
           trusted,
           `/v1/registry/workstreams?source_id=${encodeURIComponent(trusted.source_id)}`,
@@ -507,7 +514,7 @@ export const makeVoiceReviewBridge = (
     registryEvents: async (principal: EnvironmentSessionPrincipalShape, after = 0, limit = 50) => {
       const trusted = authorize(principal, false);
       if (!Number.isSafeInteger(after) || after < 0) throw new VoiceReviewConflictError({});
-      return Schema.decodeUnknownSync(ThreadRegistryEvents)(
+      return decodeThreadRegistryEvents(
         await request(
           trusted,
           `/v1/registry/events?source_id=${encodeURIComponent(trusted.source_id)}&after=${after}&limit=${checkedLimit(limit)}`,
@@ -521,21 +528,17 @@ export const makeVoiceReviewBridge = (
       metadataMutation(
         principal,
         "/v1/registry/associations",
-        Schema.decodeSync(ThreadRegistryAssociationPayload)(payload),
+        decodeThreadRegistryAssociationPayload(payload),
       ),
     correctLabel: async (
       principal: EnvironmentSessionPrincipalShape,
       payload: typeof ThreadRegistryLabelPayload.Type,
     ) =>
-      metadataMutation(
-        principal,
-        "/v1/registry/labels",
-        Schema.decodeSync(ThreadRegistryLabelPayload)(payload),
-      ),
+      metadataMutation(principal, "/v1/registry/labels", decodeThreadRegistryLabelPayload(payload)),
     diagnostics: async (principal: EnvironmentSessionPrincipalShape, id: string) => {
       const trusted = authorize(principal, false);
       await get(principal, id);
-      const result = Schema.decodeUnknownSync(VoiceReviewDiagnostics)(
+      const result = decodeVoiceReviewDiagnostics(
         await request(trusted, `/v1/prompt-review/drafts/${encodeURIComponent(id)}/diagnostics`),
       );
       if (result.draft_id !== id || result.source_id !== trusted.source_id)
@@ -664,7 +667,9 @@ const make = Effect.gen(function* () {
       catch: (error) => (isReviewError(error) ? error : new VoiceReviewUnavailableError({})),
     });
   return VoiceReview.of({
-    recent: (principal, limit) => call(() => bridge.recent(principal, limit)),
+    recent: Effect.fn("VoiceReview.recent")((principal, limit) =>
+      call(() => bridge.recent(principal, limit)),
+    ),
     registrySnapshot: Effect.fn("VoiceReviewBridge.registrySnapshot")(
       function* (principal, cursor, limit) {
         const native =
@@ -684,17 +689,28 @@ const make = Effect.gen(function* () {
         );
       },
     ),
-    registryWorkstreams: (principal) => call(() => bridge.registryWorkstreams(principal)),
-    registryEvents: (principal, after, limit) =>
+    registryWorkstreams: Effect.fn("VoiceReview.registryWorkstreams")((principal) =>
+      call(() => bridge.registryWorkstreams(principal)),
+    ),
+    registryEvents: Effect.fn("VoiceReview.registryEvents")((principal, after, limit) =>
       call(() => bridge.registryEvents(principal, after, limit)),
-    correctAssociation: (principal, payload) =>
+    ),
+    correctAssociation: Effect.fn("VoiceReview.correctAssociation")((principal, payload) =>
       call(() => bridge.correctAssociation(principal, payload)),
-    correctLabel: (principal, payload) => call(() => bridge.correctLabel(principal, payload)),
-    diagnostics: (principal, id) => call(() => bridge.diagnostics(principal, id)),
-    list: (principal, scope, limit) => call(() => bridge.list(principal, scope, limit)),
-    get: (principal, id) => call(() => bridge.get(principal, id)),
-    mutate: (principal, id, action, payload) =>
+    ),
+    correctLabel: Effect.fn("VoiceReview.correctLabel")((principal, payload) =>
+      call(() => bridge.correctLabel(principal, payload)),
+    ),
+    diagnostics: Effect.fn("VoiceReview.diagnostics")((principal, id) =>
+      call(() => bridge.diagnostics(principal, id)),
+    ),
+    list: Effect.fn("VoiceReview.list")((principal, scope, limit) =>
+      call(() => bridge.list(principal, scope, limit)),
+    ),
+    get: Effect.fn("VoiceReview.get")((principal, id) => call(() => bridge.get(principal, id))),
+    mutate: Effect.fn("VoiceReview.mutate")((principal, id, action, payload) =>
       call(() => bridge.mutate(principal, id, action, payload)),
+    ),
   });
 });
 

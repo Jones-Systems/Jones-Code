@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 import { retainScopedCommand, claimScopedCommand } from "./scopedCommand.ts";
 import { it, expect } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
@@ -27,7 +28,8 @@ it.effect("retains the actual Codex scope cleanup without adding an outer scope"
   };
   let argv: ReadonlyArray<string> = [];
   const raw = ChildProcessSpawner.make((command) => {
-    if (command._tag === "StandardCommand") argv = command.args;
+    if (command._tag === "StandardCommand")
+      argv = command.args.map((word) => (Redacted.isRedacted(word) ? Redacted.value(word) : word));
     return Effect.die("synthetic boundary: no subprocess");
   });
   return Effect.gen(function* () {

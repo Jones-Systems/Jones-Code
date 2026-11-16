@@ -1,9 +1,14 @@
 import * as SetupCustody from "./NativeWorkspaceSetupCustody.ts";
+import {
+  withRuntimeUseCreationScope,
+  captureRuntimeUseCreationMaterial,
+} from "../cleanup/RuntimeUseCreationCapture.ts";
 import type {
   NativeWorkspaceBasis,
   NativeWorkspaceProof,
   NativeWorkspaceVerified,
 } from "./NativeCreationWorkspaceTypes.ts";
+import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import { AuthSessionId, NativeCreationGuard } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -96,6 +101,9 @@ type StageDetails<T> = T extends Repository.NativeCreationStartedFact
 type WorkspaceStageDetails = StageDetails<
   Extract<Repository.NativeCreationStartedFact, { kind: "fetch" | "worktree" | "setup" }>
 >;
+const decodeAuthSessionId = Schema.decodeEffect(AuthSessionId);
+const decodeNativeCreationGuard = Schema.decodeEffect(NativeCreationGuard);
+const isNativeWorkspaceError = Schema.is(NativeWorkspaceError);
 
 const make = Effect.gen(function* () {
   const repository = yield* Repository.NativeCreationRepository;
@@ -118,8 +126,8 @@ const make = Effect.gen(function* () {
     const history = yield* repository.readWorkspaceClaim(input.claimId);
     if (history.intent.claimId !== input.claimId)
       return yield* denied("conflict", "Workspace claim authority differs");
-    const actorSessionId = yield* Schema.decodeEffect(AuthSessionId)(history.intent.actorSessionId);
-    const guard = yield* Schema.decodeEffect(NativeCreationGuard)({
+    const actorSessionId = yield* decodeAuthSessionId(history.intent.actorSessionId);
+    const guard = yield* decodeNativeCreationGuard({
       schema: "t3.native-creation-guard/v1",
       grantId: history.intent.grantId,
       grantRevision: history.intent.grantRevision,
@@ -143,149 +151,157 @@ const make = Effect.gen(function* () {
       });
     return { history, preparation, authorize, ports: optionalPorts.value };
   });
-  const prepare = Effect.fn("NativeCreationWorkspacePreparation.prepare")(
-    function* (input: NativeWorkspaceInput) {
-      const { history, authorize, ports } = yield* load(input);
-      const intent = history.intent;
-      yield* authorize("worktree");
-      const prior = yield* repository.readWorkspaceVerified!(input.claimId);
-      if (Option.isSome(prior)) {
-        yield* ports
-          .inspect(intent, prior.value.proof)
-          .pipe(
-            Effect.flatMap((basis) =>
-              nativeCreationCanonicalJson(basis) === nativeCreationCanonicalJson(prior.value.basis)
-                ? ports.verify(basis, prior.value.proof)
-                : Effect.fail(denied("conflict", "Workspace birth or Git identity changed")),
-            ),
-          );
-        return prior.value;
-      }
-      const basis = yield* ports.inspect(intent);
-      if (
-        basis.bootId !== intent.claimedBootId ||
-        basis.projectId !== intent.binding.projectId ||
-        basis.projectCwd !== intent.resources.projectCwd ||
-        basis.worktreePath !== intent.resources.worktreePath ||
-        basis.baseRef !== intent.binding.baseBranch ||
-        (intent.binding.runSetupScript && basis.setupDefinition === null)
-      )
-        return yield* denied("conflict", "Canonical workspace basis differs from claim");
-      yield* repository.admitWorkspace!(input.claimId, basis);
-      // Started or uncertain operations stay owned forever; expiry is not permission to replay them.
-      if (
-        history.effects.some((fact) =>
-          ["fetch", "worktree", "setup", "cleanup"].includes(fact.kind),
-        )
-      )
-        return yield* denied(
-          "unknown",
-          "Workspace already has external effect history requiring qualified recovery",
+  const prepareGit = Effect.fn("NativeCreationWorkspacePreparation.prepareGit")(function* (
+    input: NativeWorkspaceInput,
+  ) {
+    const { history, authorize, ports } = yield* load(input);
+    const intent = history.intent;
+    yield* authorize("worktree");
+    const prior = yield* repository.readWorkspaceVerified!(input.claimId);
+    if (Option.isSome(prior)) {
+      yield* ports
+        .inspect(intent, prior.value.proof)
+        .pipe(
+          Effect.flatMap((basis) =>
+            nativeCreationCanonicalJson(basis) === nativeCreationCanonicalJson(prior.value.basis)
+              ? ports.verify(basis, prior.value.proof)
+              : Effect.fail(denied("conflict", "Workspace birth or Git identity changed")),
+          ),
         );
-      let proof: NativeWorkspaceProof | undefined;
-      const revalidate = Effect.fn("NativeCreationWorkspacePreparation.revalidate")(
-        function* (stage: Authority.NativeCreationStage) {
-          yield* authorize(stage);
-          const admitted = yield* repository.readWorkspaceAdmission!(input.claimId);
-          const current = yield* ports.inspect(intent, proof);
-          if (
-            nativeCreationCanonicalJson(admitted) !== nativeCreationCanonicalJson(basis) ||
-            nativeCreationCanonicalJson(current) !== nativeCreationCanonicalJson(basis)
-          )
-            return yield* denied(
-              "conflict",
-              "Workspace path admission, birth or Git registration changed",
-            );
-          if (proof) yield* ports.verify(basis, proof);
-        },
-        Effect.mapError(() =>
-          denied("conflict", "Current workspace authority or physical identity changed"),
-        ),
+      return { kind: "existing" as const, verified: prior.value };
+    }
+    const basis = yield* ports.inspect(intent);
+    if (
+      basis.bootId !== intent.claimedBootId ||
+      basis.projectId !== intent.binding.projectId ||
+      basis.projectCwd !== intent.resources.projectCwd ||
+      basis.worktreePath !== intent.resources.worktreePath ||
+      basis.baseRef !== intent.binding.baseBranch ||
+      (intent.binding.runSetupScript && basis.setupDefinition === null)
+    )
+      return yield* denied("conflict", "Canonical workspace basis differs from claim");
+    yield* repository.admitWorkspace!(input.claimId, basis);
+    // Started or uncertain operations stay owned forever; expiry is not permission to replay them.
+    if (
+      history.effects.some((fact) => ["fetch", "worktree", "setup", "cleanup"].includes(fact.kind))
+    )
+      return yield* denied(
+        "unknown",
+        "Workspace already has external effect history requiring qualified recovery",
       );
-      const effectId = (stage: string) =>
-        nativeCreationSha256(nativeCreationCanonicalJson({ claimId: input.claimId, stage, basis }));
-      const timestamp = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-      let retainedTerminalId: string | null = null;
-      let setupCustody: SetupCustody.NativeWorkspaceSetupCustody | undefined;
-      const run = <A>(
-        details: WorkspaceStageDetails,
-        action: Effect.Effect<A, NativeWorkspaceError>,
-        setupCompletion?: (value: A) => { readonly terminalId: string; readonly exitCode: number },
-      ) =>
-        Effect.uninterruptibleMask((restore) =>
-          Effect.gen(function* () {
-            const stage = details.kind;
-            yield* revalidate(stage);
-            const started = yield* repository.startEffect(
-              input.claimId,
-              {
-                ...details,
-                effectId: effectId(stage),
-                timestamp: yield* timestamp,
-                phase: "started",
-              },
-              authorize(stage),
-            );
-            if (started.kind === "setup") {
-              retainedTerminalId = started.terminalId;
-              setupCustody = SetupCustody.issue(intent, basis, started);
-            }
-            const result = yield* Effect.exit(restore(action));
-            const { ordinal: _ordinal, ...identity } = started;
-            if (identity.kind === "setup") {
-              const terminal =
-                Exit.isSuccess(result) && setupCompletion
-                  ? setupCompletion(result.value)
-                  : { terminalId: retainedTerminalId, exitCode: null };
-              yield* repository.completeEffect(input.claimId, {
-                ...identity,
-                ...terminal,
-                timestamp: yield* timestamp,
-                phase: "completed",
-                result: Exit.isSuccess(result)
-                  ? terminal.exitCode === 0
-                    ? "succeeded"
-                    : "failed"
-                  : "unknown",
-              });
-              if (Exit.isSuccess(result) && terminal.exitCode !== 0)
-                return yield* denied("failed", "Retained setup terminal did not succeed");
-            } else if (identity.kind === "fetch" || identity.kind === "worktree") {
-              yield* repository.completeEffect(input.claimId, {
-                ...identity,
-                timestamp: yield* timestamp,
-                phase: "completed",
-                result: Exit.isSuccess(result) ? "succeeded" : "unknown",
-                ...(identity.kind === "worktree" && Exit.isSuccess(result)
-                  ? { ownership: "created" as const }
-                  : {}),
-              });
-            } else return yield* denied("conflict", "Unexpected workspace effect identity");
-            if (Exit.isFailure(result))
-              return yield* denied(
-                "unknown",
-                "Workspace effect completion is uncertain; retained start cannot replay",
+    let proof: NativeWorkspaceProof | undefined;
+    const revalidate = Effect.fn("NativeCreationWorkspacePreparation.revalidate")(
+      function* (stage: Authority.NativeCreationStage) {
+        yield* authorize(stage);
+        const admitted = yield* repository.readWorkspaceAdmission!(input.claimId);
+        const current = yield* ports.inspect(intent, proof);
+        if (
+          nativeCreationCanonicalJson(admitted) !== nativeCreationCanonicalJson(basis) ||
+          nativeCreationCanonicalJson(current) !== nativeCreationCanonicalJson(basis)
+        )
+          return yield* denied(
+            "conflict",
+            "Workspace path admission, birth or Git registration changed",
+          );
+        if (proof) yield* ports.verify(basis, proof);
+      },
+      Effect.mapError(() =>
+        denied("conflict", "Current workspace authority or physical identity changed"),
+      ),
+    );
+    const effectId = (stage: string) =>
+      nativeCreationSha256(nativeCreationCanonicalJson({ claimId: input.claimId, stage, basis }));
+    const timestamp = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+    const setupState: {
+      terminalId: string | null;
+      custody: SetupCustody.NativeWorkspaceSetupCustody | undefined;
+    } = { terminalId: null, custody: undefined };
+    const run = <A>(
+      details: WorkspaceStageDetails,
+      action: Effect.Effect<A, NativeWorkspaceError>,
+      setupCompletion?: (value: A) => { readonly terminalId: string; readonly exitCode: number },
+    ) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const stage = details.kind;
+          const started = yield* withWorkspaceLease(
+            basis.worktreePath,
+            Effect.gen(function* () {
+              yield* revalidate(stage);
+              const fact = yield* repository.startEffect(
+                input.claimId,
+                {
+                  ...details,
+                  effectId: effectId(stage),
+                  timestamp: yield* timestamp,
+                  phase: "started",
+                },
+                authorize(stage),
               );
-            return result.value;
-          }),
-        );
-      if (intent.binding.startFromOrigin)
-        yield* run(
-          { kind: "fetch", projectCwd: basis.projectCwd, baseRef: basis.baseRef },
-          ports.fetch(basis, revalidate("fetch")),
-        );
-      proof = yield* run(
-        {
-          kind: "worktree",
-          projectCwd: basis.projectCwd,
-          worktreePath: basis.worktreePath,
-          branch: intent.resources.branch,
-          baseRef: basis.baseRef,
-          ownership: "claimed",
-        },
-        ports.createWorktree(basis, intent.resources.branch, revalidate("worktree")).pipe(
-          Effect.flatMap((created) => {
-            if (
+              if (fact.kind === "setup") {
+                setupState.terminalId = fact.terminalId;
+                setupState.custody = SetupCustody.issue(intent, basis, fact);
+              }
+              return fact;
+            }),
+          );
+          const result = yield* Effect.exit(restore(action));
+          const { ordinal: _ordinal, ...identity } = started;
+          if (identity.kind === "setup") {
+            const terminal =
+              Exit.isSuccess(result) && setupCompletion
+                ? setupCompletion(result.value)
+                : { terminalId: setupState.terminalId, exitCode: null };
+            yield* repository.completeEffect(input.claimId, {
+              ...identity,
+              ...terminal,
+              timestamp: yield* timestamp,
+              phase: "completed",
+              result: Exit.isSuccess(result)
+                ? terminal.exitCode === 0
+                  ? "succeeded"
+                  : "failed"
+                : "unknown",
+            });
+            if (Exit.isSuccess(result) && terminal.exitCode !== 0)
+              return yield* denied("failed", "Retained setup terminal did not succeed");
+          } else if (identity.kind === "fetch" || identity.kind === "worktree") {
+            yield* repository.completeEffect(input.claimId, {
+              ...identity,
+              timestamp: yield* timestamp,
+              phase: "completed",
+              result: Exit.isSuccess(result) ? "succeeded" : "unknown",
+              ...(identity.kind === "worktree" && Exit.isSuccess(result)
+                ? { ownership: "created" as const }
+                : {}),
+            });
+          } else return yield* denied("conflict", "Unexpected workspace effect identity");
+          if (Exit.isFailure(result))
+            return yield* denied(
+              "unknown",
+              "Workspace effect completion is uncertain; retained start cannot replay",
+            );
+          return result.value;
+        }),
+      );
+    if (intent.binding.startFromOrigin)
+      yield* run(
+        { kind: "fetch", projectCwd: basis.projectCwd, baseRef: basis.baseRef },
+        ports.fetch(basis, revalidate("fetch")),
+      );
+    proof = yield* run(
+      {
+        kind: "worktree",
+        projectCwd: basis.projectCwd,
+        worktreePath: basis.worktreePath,
+        branch: intent.resources.branch,
+        baseRef: basis.baseRef,
+        ownership: "claimed",
+      },
+      ports.createWorktree(basis, intent.resources.branch, revalidate("worktree")).pipe(
+        Effect.filterOrFail(
+          (created) =>
+            !(
               created.worktreePath !== basis.worktreePath ||
               created.branch !== intent.resources.branch ||
               created.baseRef !== basis.baseRef ||
@@ -295,15 +311,39 @@ const make = Effect.gen(function* () {
                 nativeCreationSha256(basis.configuredSubmodulesDefinition) ||
               created.baseConfigurationDigest !==
                 nativeCreationSha256(basis.baseConfigurationDefinition)
-            )
-              return Effect.fail(
-                denied("conflict", "Created workspace does not match issued resources"),
-              );
-            return Effect.succeed(created);
-          }),
+            ),
+          () => denied("conflict", "Created workspace does not match issued resources"),
         ),
+      ),
+    );
+    yield* revalidate("worktree_ownership");
+    return { kind: "new" as const, basis, proof, run, revalidate, effectId, setupState };
+  });
+  const prepare = Effect.fn("NativeCreationWorkspacePreparation.prepare")(
+    function* (input: NativeWorkspaceInput) {
+      const initial = yield* load(input);
+      yield* initial.authorize("worktree");
+      if (
+        initial.history.effects.some((fact) =>
+          ["fetch", "worktree", "setup", "cleanup"].includes(fact.kind),
+        ) &&
+        Option.isNone(yield* repository.readWorkspaceVerified!(input.claimId))
+      )
+        return yield* denied(
+          "unknown",
+          "Workspace already has external effect history requiring qualified recovery",
+        );
+      // Release the Git-phase lease before the setup writer fiber starts. That
+      // writer acquires its own original workspace custody; awaiting it while
+      // holding this semaphore would deadlock it against its parent.
+      const prepared = yield* withWorkspaceLease(
+        initial.history.intent.resources.worktreePath,
+        prepareGit(input),
       );
-      yield* revalidate("worktree_ownership");
+      if (prepared.kind === "existing") return prepared.verified;
+      const { basis, proof, run, revalidate, effectId, setupState } = prepared;
+      const intent = initial.history.intent;
+      const ports = initial.ports;
       let setupTerminalId: string | null = null;
       if (intent.binding.runSetupScript) {
         const preparedProof = proof;
@@ -320,14 +360,14 @@ const make = Effect.gen(function* () {
                 basis,
                 preparedProof,
                 revalidate("setup"),
-                setupCustody,
+                setupState.custody,
               );
-              if (terminal.terminalId !== retainedTerminalId)
+              if (terminal.terminalId !== setupState.terminalId)
                 return yield* denied(
                   "unknown",
                   "Native setup terminal differs from its reserved start",
                 );
-              retainedTerminalId = terminal.terminalId;
+              setupState.terminalId = terminal.terminalId;
               const exitCode = yield* restoreCompletion(terminal.completion);
               return { terminalId: terminal.terminalId, exitCode };
             }),
@@ -336,14 +376,21 @@ const make = Effect.gen(function* () {
         );
         setupTerminalId = setup.terminalId;
       }
-      yield* revalidate("worktree_ownership");
-      const verified = { claimId: input.claimId, basis, proof, setupTerminalId };
-      yield* repository.recordWorkspaceVerified!(verified);
-      return verified;
+      return yield* withWorkspaceLease(
+        basis.worktreePath,
+        Effect.gen(function* () {
+          yield* revalidate("worktree_ownership");
+          const verified = { claimId: input.claimId, basis, proof, setupTerminalId };
+          yield* captureRuntimeUseCreationMaterial(verified);
+          yield* repository.recordWorkspaceVerified!(verified);
+          return verified;
+        }),
+      );
     },
     Effect.scoped,
+    withRuntimeUseCreationScope,
     Effect.mapError((cause) =>
-      Schema.is(NativeWorkspaceError)(cause)
+      isNativeWorkspaceError(cause)
         ? cause
         : denied("conflict", "Native workspace preparation was rejected"),
     ),
@@ -415,9 +462,7 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.mapError((cause) =>
-      Schema.is(NativeWorkspaceError)(cause)
-        ? cause
-        : denied("conflict", "Workspace recovery was rejected"),
+      isNativeWorkspaceError(cause) ? cause : denied("conflict", "Workspace recovery was rejected"),
     ),
   );
   return NativeCreationWorkspacePreparation.of({ prepare, rollback });

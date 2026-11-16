@@ -43,6 +43,11 @@ export const issueNativeCreationStage = Effect.fn("issueNativeCreationStage")(fu
   return token;
 });
 
+const compiledDecodeEffect1 = Schema.decodeEffect(AuthSessionId);
+const compiledDecodeEffect2 = Schema.decodeEffect(NativeCreationGuard);
+const compiledDecodeEffect3 = Schema.decodeEffect(CommandId);
+const compiledIs4 = Schema.is(Authority.NativeCreationAuthorityError);
+
 export const validateNativeCreationStage = Effect.fn("validateNativeCreationStage")(
   function* (token: NativeCreationStageDispatch, command: OrchestrationV2Command) {
     const lineage = stages.get(token);
@@ -92,8 +97,8 @@ export const validateNativeCreationStage = Effect.fn("validateNativeCreationStag
     const preparation = yield* validateNativeCreationPreparation(
       new TextEncoder().encode(intent.canonicalPreparation),
     );
-    const actorSessionId = yield* Schema.decodeEffect(AuthSessionId)(intent.actorSessionId);
-    const guard = yield* Schema.decodeEffect(NativeCreationGuard)({
+    const actorSessionId = yield* compiledDecodeEffect1(intent.actorSessionId);
+    const guard = yield* compiledDecodeEffect2({
       schema: "t3.native-creation-guard/v1",
       grantId: intent.grantId,
       grantRevision: intent.grantRevision,
@@ -110,14 +115,14 @@ export const validateNativeCreationStage = Effect.fn("validateNativeCreationStag
       yield* repository.readExecutionReference({
         version: 2,
         claimId: lineage.claimId,
-        stageCommandId: yield* Schema.decodeEffect(CommandId)(stageCommandId),
+        stageCommandId: yield* compiledDecodeEffect3(stageCommandId),
         effectId: `native-stage:${stageCommandId}`,
         stage: "native_command",
       });
     return { claimId: lineage.claimId, command };
   },
   Effect.mapError((cause) =>
-    Schema.is(Authority.NativeCreationAuthorityError)(cause)
+    compiledIs4(cause)
       ? cause
       : denied("Native stage authority or ordered acceptance is unavailable"),
   ),

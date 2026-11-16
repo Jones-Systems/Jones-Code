@@ -34,6 +34,7 @@ import {
   canonical,
   CheckoutError,
   operationId,
+  digest,
   type Binding,
   type Evidence,
   type Source,
@@ -98,11 +99,15 @@ const acceptedInput: Accept = {
   effects: [{ effectId: "effect", request, role: "launch" }],
 };
 const source: Source = {
-  kind: "outbox",
+  kind: "outbox_process_v2",
+  commandId: "command",
+  threadId: "thread",
+  runId: null,
+  claimedAt: now,
+  requestDigest: digest(request),
   effectId: "effect",
   workerId: "worker",
   attempt: 1,
-  claimExpiresAt: expiry,
 };
 const binding: Binding = {
   version: 1,
@@ -184,8 +189,8 @@ const seed = Effect.gen(function* () {
       VALUES(${sequence},${id},'thread','thread',${sequence},${type},${now},${sequence === 1 ? null : "command"},'client',${canonical(payload)},'{}',2)`;
   yield* sql`INSERT INTO orchestration_command_receipts(command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error)
     VALUES('command','thread','thread','thread.test',${now},2,'accepted',NULL)`;
-  yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,lease_expires_at,created_at,updated_at)
-    VALUES('effect','command','thread','terminal.cleanup',${canonical(request)},'running',1,${now},'worker',${expiry},${now},${now})`;
+  yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,created_at,updated_at)
+    VALUES('effect','command','thread','terminal.cleanup',${canonical(request)},'running',1,${now},'worker',${now},${now})`;
   return { sql, checkout: yield* OrdinaryCheckout, payload };
 });
 const reserved = Effect.gen(function* () {
@@ -299,45 +304,60 @@ it.effect(
       }),
     ),
 );
-it.effect.each(["worker", "attempt", "deadline", "issuer"] as const)(
-  "rejects a stale or fabricated %s before invocation",
-  (kind) =>
-    provide(
-      Effect.gen(function* () {
-        const { checkout } = yield* seed;
-        yield* checkout.accept(acceptedInput);
-        const changed: Source = {
-          ...source,
-          ...(kind === "worker"
-            ? { workerId: "foreign" }
-            : kind === "attempt"
-              ? { attempt: 2 }
-              : kind === "deadline"
-                ? { claimExpiresAt: later }
-                : {}),
-        };
-        const candidate = {
-          ...binding,
-          source: changed,
-          operationId: operationId("admission", changed),
-          ...(kind === "issuer" ? { issuerId: "fabricated" } : {}),
-        };
-        assert.isTrue(
-          Exit.isFailure(
-            yield* Effect.exit(
-              checkout.reserve({
-                admissionId: "admission",
-                source: changed,
-                now,
-                binding: candidate,
-                evidence: evidence("active"),
-              }),
-            ),
+it.effect.each([
+  "worker",
+  "attempt",
+  "claimed-at",
+  "issuer",
+  "command",
+  "thread",
+  "run",
+  "digest",
+] as const)("rejects a stale or fabricated %s before invocation", (kind) =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* seed;
+      yield* checkout.accept(acceptedInput);
+      const changed: Source = {
+        ...source,
+        ...(kind === "worker"
+          ? { workerId: "foreign" }
+          : kind === "attempt"
+            ? { attempt: 2 }
+            : kind === "claimed-at"
+              ? { claimedAt: later }
+              : kind === "command"
+                ? { commandId: "foreign" }
+                : kind === "thread"
+                  ? { threadId: "foreign" }
+                  : kind === "run"
+                    ? { runId: "foreign" }
+                    : kind === "digest"
+                      ? { requestDigest: "a".repeat(64) }
+                      : {}),
+      };
+      const candidate = {
+        ...binding,
+        source: changed,
+        operationId: operationId("admission", changed),
+        ...(kind === "issuer" ? { issuerId: "fabricated" } : {}),
+      };
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            checkout.reserve({
+              admissionId: "admission",
+              source: changed,
+              now,
+              binding: candidate,
+              evidence: evidence("active"),
+            }),
           ),
-        );
-        assert.deepEqual(yield* checkout.listUnsettled(null, 10), []);
-      }),
-    ),
+        ),
+      );
+      assert.deepEqual(yield* checkout.listUnsettled(null, 10), []);
+    }),
+  ),
 );
 it.effect("outbox success and root retirement cannot settle joined background work", () =>
   provide(
@@ -350,7 +370,7 @@ it.effect("outbox success and root retirement cannot settle joined background wo
         evidence: evidence("active"),
         expectedRevision: use.revision,
       });
-      yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded',lease_owner=NULL,lease_expires_at=NULL WHERE effect_id='effect'`;
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded',lease_owner=NULL WHERE effect_id='effect'`;
       const rootDone = yield* checkout.reconcileEvidence({
         binding,
         evidence: evidence("quiescent"),
@@ -812,8 +832,8 @@ it.effect("a linked checkpoint stays pending until its own attributed participan
       const { checkout, sql, use } = yield* started;
       yield* sql`INSERT INTO orchestration_events(sequence,event_id,aggregate_kind,stream_id,stream_version,event_type,occurred_at,command_id,actor_kind,payload_json,metadata_json,application_event_version)
     VALUES(3,'terminal-event','thread','thread',3,'run.finished',${now},'derived','system','{}','{}',2)`;
-      yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,lease_expires_at,created_at,updated_at)
-    VALUES('checkpoint','derived','thread','checkpoint.capture','{"type":"checkpoint.capture"}','running',1,${now},'worker',${expiry},${now},${now})`;
+      yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,created_at,updated_at)
+    VALUES('checkpoint','derived','thread','checkpoint.capture',${canonical({ type: "checkpoint.capture", runId: "checkpoint-run", scopeId: "checkpoint-scope" })},'running',1,${now},'worker',${now},${now})`;
       const linked = yield* checkout.linkDerived({
         operationId: use.operation_id,
         expectedRevision: use.revision,
@@ -823,7 +843,11 @@ it.effect("a linked checkpoint stays pending until its own attributed participan
         now,
         link: {
           effectId: "checkpoint",
-          request: { type: "checkpoint.capture" },
+          request: {
+            type: "checkpoint.capture",
+            runId: "checkpoint-run",
+            scopeId: "checkpoint-scope",
+          },
           role: "checkpoint",
         },
       });
@@ -847,7 +871,17 @@ it.effect("a linked checkpoint stays pending until its own attributed participan
       const checkpoint: Binding = {
         ...binding,
         executor: "checkpoint",
-        source: { ...source, effectId: "checkpoint" },
+        source: {
+          ...source,
+          effectId: "checkpoint",
+          commandId: "derived",
+          runId: "checkpoint-run",
+          requestDigest: digest({
+            type: "checkpoint.capture",
+            runId: "checkpoint-run",
+            scopeId: "checkpoint-scope",
+          }),
+        },
       };
       const joined = yield* checkout.join({
         target,
@@ -938,11 +972,11 @@ it.effect(
           sql`UPDATE jones_ordinary_checkout_admissions SET command_digest=${"b".repeat(64)}`,
           sql`DELETE FROM jones_ordinary_checkout_admissions`,
           sql`INSERT OR REPLACE INTO jones_ordinary_checkout_effect_links SELECT * FROM jones_ordinary_checkout_effect_links`,
-          sql`UPDATE jones_ordinary_checkout_uses SET worker_id='foreign',revision=revision+1`,
-          sql`INSERT OR REPLACE INTO jones_ordinary_checkout_uses SELECT * FROM jones_ordinary_checkout_uses`,
-          sql`UPDATE jones_ordinary_checkout_lifecycle_events SET evidence_json='{}'`,
-          sql`DELETE FROM jones_ordinary_checkout_lifecycle_events`,
-          sql`INSERT INTO jones_ordinary_checkout_lifecycle_events SELECT operation_id,ordinal+2,ordinal+1,association_id,event_kind,binding_json,evidence_json,recorded_at FROM jones_ordinary_checkout_lifecycle_events`,
+          sql`UPDATE jones_ordinary_checkout_process_uses SET worker_id='foreign',revision=revision+1`,
+          sql`INSERT OR REPLACE INTO jones_ordinary_checkout_process_uses SELECT * FROM jones_ordinary_checkout_process_uses`,
+          sql`UPDATE jones_ordinary_checkout_process_events SET evidence_json='{}'`,
+          sql`DELETE FROM jones_ordinary_checkout_process_events`,
+          sql`INSERT INTO jones_ordinary_checkout_process_events SELECT operation_id,ordinal+2,ordinal+1,association_id,event_kind,binding_json,evidence_json,recorded_at FROM jones_ordinary_checkout_process_events`,
         ])
           assert.isTrue(Exit.isFailure(yield* Effect.exit(mutation)));
         assert.deepEqual(yield* checkout.events(use.operation_id), before);
@@ -1999,7 +2033,7 @@ it.effect(
         f.expire();
         assert.equal((yield* adapter.observe(now)).outcome, "not_invoked");
         const retired = yield* adapter.reconcile(use.revision, now);
-        yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded',lease_owner=NULL,lease_expires_at=NULL WHERE effect_id='effect'`;
+        yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded',lease_owner=NULL WHERE effect_id='effect'`;
         const done = yield* checkout.complete({
           operationId: use.operation_id,
           expectedRevision: retired.revision,
@@ -2154,7 +2188,7 @@ it.effect(
         );
         root.observe({ state: "quiescent", coverage: "complete" });
         const rootDone = yield* a.reconcile(joinedUse.revision, now);
-        yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded',lease_owner=NULL,lease_expires_at=NULL WHERE effect_id='effect'`;
+        yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded',lease_owner=NULL WHERE effect_id='effect'`;
         assert.isTrue(
           Exit.isFailure(
             yield* Effect.exit(
@@ -2229,4 +2263,362 @@ it.effect("permit adapter rejects retirement when a fresh owner observation chan
       assert.equal((yield* checkout.listUnsettled(null, 10))[0]!.revision, activeUse.revision);
     }),
   ),
+);
+
+it.effect(
+  "legacy outbox history blocks invocation and competing uses, but permits guarded retirement and release",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const { checkout, sql } = yield* seed;
+        yield* checkout.accept(acceptedInput);
+        const legacySource: Source = {
+          kind: "outbox",
+          effectId: "effect",
+          workerId: "old-worker",
+          attempt: 1,
+          claimExpiresAt: expiry,
+        };
+        assert.strictEqual(
+          operationId("admission", legacySource),
+          "checkout-use:aee9249a2ac1fc05ee369b26f84ec6c96ba5a9ebdd0a66c756ab5e1f3c90f357",
+        );
+        const legacyBinding: Binding = {
+          ...binding,
+          executor: "transition",
+          source: legacySource,
+          operationId: operationId("admission", legacySource),
+        };
+        const row = {
+          operation_id: legacyBinding.operationId,
+          admission_id: "admission",
+          checkout_key: "/repo",
+          lease_id: "lease",
+          owner_epoch: 0,
+          source_kind: "outbox",
+          effect_id: "effect",
+          worker_id: "old-worker",
+          attempt_count: 1,
+          claim_expires_at: expiry,
+          producer_id: null,
+          state: "reserved",
+          revision: 0,
+          last_event_ordinal: 0,
+          started_at: null,
+          settled_at: null,
+        };
+        yield* sql`INSERT INTO jones_ordinary_checkout_uses ${sql.insert(row)}`;
+        yield* sql`INSERT INTO jones_ordinary_checkout_lifecycle_events ${sql.insert({
+          operation_id: legacyBinding.operationId,
+          ordinal: 1,
+          predecessor_ordinal: 0,
+          association_id: associationId(legacyBinding),
+          event_kind: "bind",
+          binding_json: canonical(legacyBinding),
+          evidence_json: canonical(evidence("active")),
+          recorded_at: now,
+        })}`;
+        yield* sql`UPDATE jones_ordinary_checkout_uses SET revision=1,last_event_ordinal=1 WHERE operation_id=${legacyBinding.operationId}`;
+        const before = yield* checkout.events(legacyBinding.operationId);
+        const ownerBefore = yield* checkout.readOwner("/repo");
+        for (const denied of [
+          checkout.reserve({
+            admissionId: "admission",
+            source: legacySource,
+            binding: legacyBinding,
+            evidence: evidence("active"),
+            now,
+          }),
+          checkout.start({
+            binding: legacyBinding,
+            expectedRevision: 1,
+            target,
+            evidence: evidence("active"),
+          }),
+          checkout.join({
+            binding: { ...legacyBinding, source },
+            expectedRevision: 1,
+            target,
+            evidence: evidence("active"),
+          }),
+          checkout.renew({
+            binding: legacyBinding,
+            expectedRevision: 1,
+            expectedOwnerRevision: ownerBefore!.revision,
+            target,
+            evidence: evidence("active"),
+            expiresAt: later,
+          }),
+        ])
+          assert.isTrue(Exit.isFailure(yield* Effect.exit(denied)));
+        const competing: Source = { kind: "prepared_run", producerId: "legacy-blocked-competitor" };
+        assert.equal(
+          (yield* checkout
+            .reserve({
+              admissionId: "admission",
+              source: competing,
+              now,
+              evidence: evidence("active"),
+              binding: {
+                ...binding,
+                source: competing,
+                operationId: operationId("admission", competing),
+              },
+            })
+            .pipe(Effect.flip)).reason,
+          "conflict",
+        );
+        assert.deepEqual(yield* checkout.events(legacyBinding.operationId), before);
+        assert.deepEqual(yield* checkout.readOwner("/repo"), ownerBefore);
+        const retired = yield* checkout.reconcileEvidence({
+          binding: legacyBinding,
+          evidence: evidence("not_invoked"),
+          expectedRevision: 1,
+        });
+        const completed = yield* checkout.complete({
+          operationId: legacyBinding.operationId,
+          expectedRevision: retired.revision,
+          target,
+          now,
+        });
+        assert.equal(completed.state, "no_effect");
+        const released = yield* checkout.release({
+          operationId: legacyBinding.operationId,
+          expectedRevision: completed.revision,
+          expectedOwner: { revision: ownerBefore!.revision, epoch: ownerBefore!.owner_epoch },
+          target,
+          binding: legacyBinding,
+          evidence: evidence("quiescent"),
+        });
+        assert.equal(released.state, "released");
+        assert.deepEqual(
+          (yield* checkout.events(legacyBinding.operationId)).map((event) => event.event_kind),
+          ["bind", "retire", "release"],
+        );
+        const next = {
+          target,
+          birth: { eventId: "birth", sequence: 1 },
+          leaseId: "legacy-successor",
+          expiresAt: expiry,
+        };
+        const journalBeforeHandoff = yield* checkout.events(legacyBinding.operationId);
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              checkout.handoff({
+                operationId: legacyBinding.operationId,
+                expectedRevision: completed.revision + 1,
+                expectedOwner: { revision: released.revision + 1, epoch: released.owner_epoch },
+                target,
+                binding: legacyBinding,
+                evidence: evidence("quiescent"),
+                next,
+              }),
+            ),
+          ),
+        );
+        assert.deepEqual(yield* checkout.events(legacyBinding.operationId), journalBeforeHandoff);
+        const handed = yield* checkout.handoff({
+          operationId: legacyBinding.operationId,
+          expectedRevision: completed.revision + 1,
+          expectedOwner: { revision: released.revision, epoch: released.owner_epoch },
+          target,
+          binding: legacyBinding,
+          evidence: evidence("quiescent"),
+          next,
+        });
+        assert.equal(handed.owner_epoch, released.owner_epoch + 1);
+        assert.equal(handed.lease_id, "legacy-successor");
+        assert.deepEqual(
+          (yield* checkout.events(legacyBinding.operationId)).map((event) => event.event_kind),
+          ["bind", "retire", "release", "handoff"],
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "ordinary renew rejects a changed captured process before changing owner or journal",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const { checkout, sql, use } = yield* started;
+        const before = yield* checkout.readOwner("/repo");
+        const journal = yield* checkout.events(use.operation_id);
+        yield* sql`UPDATE orchestration_v2_effect_outbox SET lease_owner='replacement',attempt_count=attempt_count+1,updated_at=${later} WHERE effect_id='effect'`;
+        const result = yield* checkout
+          .renew({
+            binding,
+            evidence: evidence("active"),
+            expectedRevision: use.revision,
+            target,
+            expiresAt: later,
+            expectedOwnerRevision: before!.revision,
+          })
+          .pipe(Effect.flip);
+        assert.equal(result.reason, "stale");
+        assert.deepEqual(yield* checkout.readOwner("/repo"), before);
+        assert.deepEqual(yield* checkout.events(use.operation_id), journal);
+      }),
+    ),
+);
+
+it.effect(
+  "a process participant joins and retires through its prepared operation's original journal",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const { checkout, sql } = yield* seed;
+        yield* checkout.accept(acceptedInput);
+        const preparedSource: Source = { kind: "prepared_run", producerId: "prepared-owner" };
+        const prepared: Binding = {
+          ...binding,
+          source: preparedSource,
+          executor: "prepared",
+          operationId: operationId("admission", preparedSource),
+        };
+        const reservation = {
+          admissionId: "admission",
+          source: preparedSource,
+          binding: prepared,
+          now,
+          evidence: evidence("active"),
+        };
+        const reservedUse = yield* checkout.reserve(reservation);
+        const beforeReplay = yield* checkout.events(prepared.operationId);
+        assert.deepEqual(yield* checkout.reserve(reservation), reservedUse);
+        assert.deepEqual(yield* checkout.events(prepared.operationId), beforeReplay);
+        const active = yield* checkout.start({
+          binding: prepared,
+          target,
+          expectedRevision: reservedUse.revision,
+          evidence: evidence("active"),
+        });
+        const participant: Binding = { ...binding, operationId: prepared.operationId };
+        const joined = yield* checkout.join({
+          binding: participant,
+          target,
+          expectedRevision: active.revision,
+          evidence: evidence("active"),
+        });
+        const owner = (yield* checkout.readOwner("/repo"))!;
+        const renewed = yield* checkout.renew({
+          binding: participant,
+          target,
+          expectedRevision: joined.revision,
+          expectedOwnerRevision: owner.revision,
+          expiresAt: expiry,
+          evidence: evidence("active"),
+        });
+        assert.deepEqual(yield* sql`SELECT * FROM jones_ordinary_checkout_process_uses`, []);
+        assert.deepEqual(yield* sql`SELECT * FROM jones_ordinary_checkout_process_events`, []);
+        const retiredRoot = yield* checkout.reconcileEvidence({
+          binding: prepared,
+          expectedRevision: renewed.revision,
+          evidence: evidence("quiescent"),
+        });
+        // Root retirement cannot stand in for the process participant's evidence.
+        assert.equal(
+          (yield* checkout
+            .complete({
+              operationId: prepared.operationId,
+              expectedRevision: retiredRoot.revision,
+              target,
+              now,
+            })
+            .pipe(Effect.flip)).reason,
+          "unknown",
+        );
+        const retiredParticipant = yield* checkout.reconcileEvidence({
+          binding: participant,
+          expectedRevision: retiredRoot.revision,
+          evidence: evidence("quiescent"),
+        });
+        const completed = yield* checkout.complete({
+          operationId: prepared.operationId,
+          expectedRevision: retiredParticipant.revision,
+          target,
+          now,
+        });
+        assert.equal(completed.state, "completed");
+        const journal = yield* checkout.events(prepared.operationId);
+        assert.deepEqual(
+          journal.map((event) => event.event_kind),
+          ["bind", "activate", "join", "renew", "retire", "retire"],
+        );
+        assert.equal(journal[2]!.association_id, associationId(participant));
+        assert.equal(journal[5]!.association_id, associationId(participant));
+        assert.equal(
+          (yield* sql`SELECT * FROM jones_ordinary_checkout_lifecycle_events WHERE operation_id=${prepared.operationId}`)
+            .length,
+          6,
+        );
+        assert.deepEqual(yield* checkout.listUnsettled(null, 1), []);
+      }),
+    ),
+);
+
+it.effect(
+  "mixed-store recovery inventory pages every historical active use once and blocks new admission",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const { checkout, sql, use } = yield* reserved;
+        // An upgrade may encounter an already recorded prepared participant beside
+        // a process claim. This fixture establishes inventory, never execution authority.
+        const preparedSource: Source = { kind: "prepared_run", producerId: "historical-prepared" };
+        const preparedId = operationId("admission", preparedSource);
+        yield* sql`INSERT INTO jones_ordinary_checkout_uses ${sql.insert({
+          operation_id: preparedId,
+          admission_id: "admission",
+          checkout_key: "/repo",
+          lease_id: "lease",
+          owner_epoch: 0,
+          source_kind: "prepared_run",
+          effect_id: null,
+          worker_id: null,
+          attempt_count: null,
+          claim_expires_at: null,
+          producer_id: "historical-prepared",
+          state: "reserved",
+          revision: 0,
+          last_event_ordinal: 0,
+          started_at: null,
+          settled_at: null,
+        })}`;
+        const expected = [use.operation_id, preparedId].sort();
+        const all = yield* checkout.listUnsettled(null, 10);
+        assert.deepEqual(
+          all.map((entry) => entry.operation_id),
+          expected,
+        );
+        const first = yield* checkout.listUnsettled(null, 1);
+        const second = yield* checkout.listUnsettled(first[0]!.operation_id, 1);
+        assert.deepEqual(
+          [...first, ...second].map((entry) => entry.operation_id),
+          expected,
+        );
+        assert.deepEqual(yield* checkout.listUnsettled(second[0]!.operation_id, 1), []);
+        assert.equal(new Set([...first, ...second].map((entry) => entry.operation_id)).size, 2);
+        const competing: Source = { kind: "prepared_launch", producerId: "blocked-new-launch" };
+        assert.equal(
+          (yield* checkout
+            .reserve({
+              admissionId: "admission",
+              source: competing,
+              now,
+              evidence: evidence("active"),
+              binding: {
+                ...binding,
+                executor: "prepared",
+                source: competing,
+                operationId: operationId("admission", competing),
+              },
+            })
+            .pipe(Effect.flip)).reason,
+          "conflict",
+        );
+        assert.deepEqual(yield* checkout.listUnsettled(null, 10), all);
+      }),
+    ),
 );

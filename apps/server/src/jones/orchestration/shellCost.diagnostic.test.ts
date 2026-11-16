@@ -1,3 +1,4 @@
+import * as Arr from "effect/Array";
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic diagnostic JSON goes to stdout; the caller owns retention outside the repository.
 import * as NodeConsole from "node:console";
 import { assert, it } from "@effect/vitest";
@@ -100,9 +101,9 @@ const seed = Effect.fn("shellCost.seed")(function* (historyCount: number) {
     // Batch synthetic persisted projections to keep fixture construction bounded;
     // every measured read still uses the receiving ProjectionStore implementation.
     for (let offset = 0; offset < count; offset += 100) {
-      const indexes = Array.from({ length: Math.min(100, count - offset) }, (_, i) => i + offset);
+      const indexes = Arr.makeBy(Math.min(100, count - offset), (i) => i + offset);
       yield* sql`INSERT INTO orchestration_v2_projection_runs ${sql.insert(
-        indexes.map((index) => {
+        Arr.map(indexes, (index) => {
           const status = id === unrelatedId && index === count - 1 ? "running" : "completed";
           return {
             run_id: runId(id, index),
@@ -135,7 +136,7 @@ const seed = Effect.fn("shellCost.seed")(function* (historyCount: number) {
         }),
       )}`;
       yield* sql`INSERT INTO orchestration_v2_projection_turn_items ${sql.insert(
-        indexes.map((index) => ({
+        Arr.map(indexes, (index) => ({
           turn_item_id: `${id}:item:${index}`,
           thread_id: id,
           run_id: runId(id, index),
@@ -204,11 +205,33 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
     let markerCount = 0;
     let committedSequence = 0;
     const sharedMeasurements: Measurement[] = [];
+    const sharedDecodeMeasurements: Measurement[] = [];
     const sharedShellCalls: ThreadId[] = [];
+    const sharedScalarCalls: ThreadId[] = [];
+    const sharedBatchCalls: Array<ReadonlyArray<ThreadId>> = [];
+    const readBatch: ThreadManagementService.ThreadManagementService["Service"]["readShellSnapshot"] =
+      (options) =>
+        Effect.suspend(() => {
+          const ids = options?.threadIds;
+          if (ids === undefined) return Effect.die("Materialization batch must have explicit IDs");
+          sharedShellCalls.push(...ids);
+          sharedBatchCalls.push([...ids]);
+          return measure(
+            "batch-capture",
+            store.readShellSnapshot(options),
+            sharedMeasurements,
+          ).pipe(
+            Effect.orDie,
+            Effect.map((decode) =>
+              measure("batch-decode", decode, sharedDecodeMeasurements).pipe(Effect.orDie),
+            ),
+          );
+        });
     const readThreadShell: ThreadManagementService.ThreadManagementService["Service"]["getThreadShell"] =
       (id) =>
         Effect.suspend(() => {
           sharedShellCalls.push(id);
+          sharedScalarCalls.push(id);
           return measure(`getThreadShell:${id}`, store.getThreadShell(id), sharedMeasurements).pipe(
             Effect.orDie,
           );
@@ -280,6 +303,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
             ThreadManagementService.ThreadManagementService,
             boundedService<ThreadManagementService.ThreadManagementService["Service"]>({
               getThreadShell: readThreadShell,
+              readShellSnapshot: readBatch,
             }),
           ),
           Effect.provideService(OrchestrationEventStore.OrchestrationEventStore, applicationEvents),
@@ -292,6 +316,8 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
           const threadManagement = boundedService<
             ThreadManagementService.ThreadManagementService["Service"]
           >({
+            listActiveShellIndex: () =>
+              Effect.die("untrimmed shell subscription must not read the shell index"),
             readShellSnapshot: (options) =>
               Effect.gen(function* () {
                 yield* Deferred.succeed(snapshotEntered, undefined);
@@ -435,7 +461,11 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
           yield* PubSub.publishAll(eventBus, events);
           const results = yield* bounded(Effect.forEach(fibers, Fiber.join));
           for (const result of results) {
-            assert.strictEqual(Exit.isSuccess(result), ending === "complete");
+            assert.strictEqual(
+              Exit.isSuccess(result),
+              ending === "complete",
+              Exit.isFailure(result) ? Cause.pretty(result.cause) : undefined,
+            );
             if (ending === "failure" && Exit.isFailure(result)) {
               assert.isTrue(Cause.hasDies(result.cause));
               assert.isTrue(
@@ -477,12 +507,15 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
       }
     }
     assert.sameMembers(sharedShellCalls, ending === "complete" ? [targetId, otherId] : []);
+    assert.deepEqual(sharedScalarCalls, []);
+    assert.deepEqual(sharedBatchCalls, ending === "complete" ? [[targetId, otherId]] : []);
     for (const measurement of sharedMeasurements) {
       assert.isAbove(measurement.statements.length, 0);
       assert.isTrue(measurement.statements.some(({ parameters }) => parameters !== undefined));
     }
     const measurements = [
       ...sharedMeasurements,
+      ...sharedDecodeMeasurements,
       ...observations.flatMap(({ measurements }) => measurements),
     ];
     const queries = yield* queryEvidence(measurements);
@@ -506,6 +539,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
         activeEnrichment,
         fixtureCounts,
         sharedShellCalls,
+        sharedDecodeMeasurements,
         sharedMeasurements: sharedMeasurements.map(({ statements, ...measurement }) => ({
           ...measurement,
           observedSqlStatements: statements.length,

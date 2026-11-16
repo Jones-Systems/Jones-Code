@@ -29,6 +29,12 @@ export class NativeOwnerObservation extends Context.Reference<{
 }) {}
 
 // Only actual duty identity is bound here; optional provenance/registry enrichment never gates ordinary work.
+const compiledMain3acaCodec19 = Schema.decodeEffect(
+  Schema.fromJsonString(PhysicalProcessObservation),
+);
+
+const compiledMain3acaCodec18 = Schema.encodeEffect(DutyHolderJson);
+
 export const hooks = Effect.gen(function* () {
   const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
   const store = Option.isSome(sql)
@@ -96,7 +102,7 @@ export const hooks = Effect.gen(function* () {
       if (worktree === null || store === null) return Effect.void;
       const id = NodeCrypto.randomUUID();
       for (let attempt = 0; attempt <= 20; attempt++) {
-        const holder = yield* Schema.encodeEffect(DutyHolderJson)({
+        const holder = yield* compiledMain3acaCodec18({
           serverPid: nativePid,
           nonce: id,
           kind,
@@ -169,9 +175,7 @@ export const hooks = Effect.gen(function* () {
         observation_json: string;
       }>`SELECT observation_json FROM jones_physical_process_evidence WHERE provider_thread_id=${providerThreadId} AND runtime_generation=${generation} ORDER BY rowid DESC LIMIT 1`;
       if (!rows[0]) return;
-      const decoded = yield* Schema.decodeEffect(Schema.fromJsonString(PhysicalProcessObservation))(
-        rows[0].observation_json,
-      ).pipe(Effect.result);
+      const decoded = yield* compiledMain3acaCodec19(rows[0].observation_json).pipe(Effect.result);
       // Malformed historical evidence never establishes an owner or absence.
       if (decoded._tag === "Failure" || decoded.success.status !== "observed") return;
       const observation = decoded.success;

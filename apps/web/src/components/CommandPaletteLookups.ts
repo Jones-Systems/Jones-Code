@@ -1,10 +1,7 @@
-import {
-  type ClientSettings,
-  type ProjectId,
-  resolveEnvironmentMachineKind,
-} from "@t3tools/contracts";
+import { type ClientSettings, resolveEnvironmentMachineKind } from "@t3tools/contracts";
 
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
+import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { useProjects } from "../state/entities";
 import { useEnvironments } from "../state/environments";
 
@@ -35,16 +32,10 @@ export function useEnvironmentLookups() {
 
 export function useProjectLookups() {
   const projects = useProjects();
-  const projectCwdById = new Map<ProjectId, string>(
-    projects.map((project) => [project.id, project.workspaceRoot]),
-  );
   const projectByKey = new Map(
     projects.map((project) => [`${project.environmentId}:${project.id}`, project]),
   );
-  const projectTitleById = new Map<ProjectId, string>(
-    projects.map((project) => [project.id, project.title]),
-  );
-  return { projectCwdById, projectByKey, projectTitleById };
+  return { projectByKey };
 }
 
 export const selectCommandPaletteClientSettings = (settings: ClientSettings) => ({
@@ -53,3 +44,7 @@ export const selectCommandPaletteClientSettings = (settings: ClientSettings) => 
   sidebarProjectSortOrder: settings.sidebarProjectSortOrder,
   sidebarThreadSortOrder: settings.sidebarThreadSortOrder,
 });
+
+export function useSortedProjectGroups() {
+  return useSidebarProjectGroups();
+}

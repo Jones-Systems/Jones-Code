@@ -120,7 +120,6 @@ const dependencies = Layer.mergeAll(
         cwd: input.cwd,
         createdAt: input.createdAt,
       }),
-    ensureScope: (scope) => Effect.succeed(scope),
   }),
   ProviderAdapters.layerFromAdapters([
     {

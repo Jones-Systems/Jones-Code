@@ -8,7 +8,7 @@ import {
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import { THREAD_MONITOR_GUARDED_SETTLE_CAPABILITY } from "@t3tools/contracts/jones/guardedThreadSettlement";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -26,11 +26,8 @@ import { monitorReplyDispatchMode } from "./actions.ts";
 import { settleThread, startThreadTurn } from "../../operations/commands.ts";
 
 const crypto = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => new Uint8Array(size),
-    digest: (_algorithm, bytes) => Effect.succeed(bytes),
-  }),
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => new Uint8Array(size)),
 );
 const makeSupervisor = Effect.fnUntraced(function* (
   capability: () => string | undefined,
@@ -59,9 +56,10 @@ const makeSupervisor = Effect.fnUntraced(function* (
         },
       } as never),
     ),
-    subscribeServerConfig: (input) => client.subscribeServerConfig(input),
+    subscribeServerConfig: (input = {}) => client.subscribeServerConfig(input),
     ready: Effect.void,
     probe: Effect.void,
+    inboundFrames: Effect.succeed(0),
     closed: Effect.never,
   };
   return EnvironmentSupervisor.EnvironmentSupervisor.of({

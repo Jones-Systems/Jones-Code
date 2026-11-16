@@ -121,6 +121,8 @@ it.effect(
           }),
       });
       const remoteAuthorization = RemoteEnvironmentAuthorization.of({
+        renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
+        rememberCheckedDescriptor: () => Effect.void,
         authorizeBearer: () => Effect.die("unexpected"),
         authorizeDpop: () => Effect.die("unexpected"),
         authorizeDpopHttp: () =>
@@ -177,6 +179,8 @@ it.effect("signs the exact encoded Voice Review and registry request URLs", () =
         }),
     });
     const remoteAuthorization = RemoteEnvironmentAuthorization.of({
+      renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
+      rememberCheckedDescriptor: () => Effect.void,
       authorizeBearer: () => Effect.die("unexpected"),
       authorizeDpop: () => Effect.die("unexpected"),
       authorizeDpopHttp: () =>

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId, type ThreadId } from "@t3tools/contracts";
@@ -34,8 +35,9 @@ import * as Fixture from "./OrphanedRunRecords.testkit.ts";
 
 // The production runtime layer, so the startup recovery pass runs with
 // whatever hooks the server composes into it.
-const PlatformTestLayer = Layer.merge(
+const PlatformTestLayer = Layer.mergeAll(
   NodeServices.layer,
+  NodeCrypto.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),

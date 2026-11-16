@@ -5,8 +5,10 @@ import type { useQueuedSteerBatch } from "./useQueuedSteerBatch";
 
 export function QueuedSteerBatchAction({
   batch,
+  onSend,
 }: {
   readonly batch: ReturnType<typeof useQueuedSteerBatch>;
+  readonly onSend?: () => void;
 }) {
   if (!batch.view) return null;
   return (
@@ -26,7 +28,10 @@ export function QueuedSteerBatchAction({
             variant="ghost-muted"
             disabled={batch.reason !== null}
             aria-busy={batch.pending}
-            onClick={() => void batch.send()}
+            onClick={() => {
+              onSend?.();
+              void batch.send();
+            }}
           >
             <CornerUpRightIcon />
             {batch.label}

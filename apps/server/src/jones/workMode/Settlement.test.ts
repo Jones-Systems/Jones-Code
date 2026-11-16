@@ -7,13 +7,14 @@ import {
   type ServerSettings as ContractServerSettings,
 } from "@t3tools/contracts";
 import { WORK_MODE_SENTINEL } from "@t3tools/shared/jones/workMode";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -151,7 +152,10 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
             )
           : Effect.die(new Error(`Unexpected command: ${command.type}`)),
     }),
-    Layer.mock(TerminalManager.TerminalManager)({ closeIdle: () => Effect.void }),
+    Layer.mock(TerminalManager.TerminalManager)({
+      closeIdle: () => Effect.void,
+      closeOnSettle: () => Effect.void,
+    }),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
       runForThread: () => Effect.succeed({ status: "no-script" } as const),
     }),
@@ -179,13 +183,11 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
     ),
     Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
     Layer.succeed(
-      Crypto.Crypto,
-      Crypto.make({
-        randomBytes: (size) => new Uint8Array(size).fill(1),
-        digest: (_algorithm, data) => Effect.succeed(data),
-      }),
+      SecureRandom.SecureRandom,
+      SecureRandom.make((size) => new Uint8Array(size).fill(1)),
     ),
     FileSystem.layerNoop({ exists: () => Effect.succeed(false) }),
+    Path.layer,
   );
 
   // Runs the first periodic sweep to completion and returns what it dispatched.
@@ -196,7 +198,14 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
     yield* Queue.take(candidateReads);
     yield* service.drain;
     return { commands: yield* Ref.get(commands), recordReads: yield* Ref.get(recordReads) };
-  }).pipe(Effect.provide(ThreadSettlementService.layer.pipe(Layer.provide(dependencies))));
+  }).pipe(
+    Effect.provide(
+      Layer.effect(
+        ThreadSettlementService.ThreadSettlementServiceV2,
+        ThreadSettlementService.make,
+      ).pipe(Layer.provide(dependencies)),
+    ),
+  );
 
   // Changes settings once the sweep is reading history, then lets the read finish.
   const changeSettingsDuringRecordRead = (next: ContractServerSettings) =>

@@ -13,6 +13,8 @@ import { AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import "~/index.css";
 import { SortableProviderRows } from "./SortableProviderRows";
+import { AppRouteModal } from "~/components/AppRouteModal";
+import { ScrollArea } from "~/components/ui/scroll-area";
 
 const state = vi.hoisted(() => ({
   instances: {} as Readonly<Record<string, ProviderInstanceConfig>>,
@@ -33,12 +35,18 @@ const defaultId = defaultInstanceIdForDriver(driver);
 let root: Screen;
 let container: HTMLDivElement;
 let selected: string;
-async function setupTest(): Promise<AsyncDisposable> {
+async function setupTest(modal = false): Promise<AsyncDisposable> {
   let initialized = false;
   let ownedContainer: HTMLDivElement | undefined;
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
+      // A failed assertion must still retire a document-owned keyboard sensor before unmount.
+      if (document.querySelector('[aria-label^="Reorder "][aria-pressed="true"]')) {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }),
+        );
+      }
       await act(async () => screen?.unmount());
     } finally {
       try {
@@ -64,7 +72,10 @@ async function setupTest(): Promise<AsyncDisposable> {
     ownedContainer = container = document.createElement("div");
     container.style.width = "272px";
     document.body.append(container);
-    root = await renderTest(null, { container: container, router: false });
+    root = await renderTest(null, {
+      container: container,
+      router: modal ? "/settings/providers" : false,
+    });
     initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
@@ -74,35 +85,41 @@ async function setupTest(): Promise<AsyncDisposable> {
   }
 }
 
-async function render(readOnly = false, environment = "test") {
+async function render(readOnly = false, environment = "test", modal = false) {
   const rows = Object.entries(state.instances).map(([id, instance]) => ({
     instanceId: ProviderInstanceId.make(id),
     driver: instance.driver,
     explicitInstance: instance,
     isDefault: id === defaultId,
   }));
-  await act(
-    async () =>
-      await root.rerender(
-        <SortableProviderRows
-          environmentId={EnvironmentId.make(environment)}
-          rows={rows}
-          readOnly={readOnly}
-          renderRow={(row) => (
-            <div style={{ height: 72, paddingLeft: 16 }}>
-              <button
-                onClick={() => {
-                  selected = row.instanceId;
-                }}
-                data-provider={row.instanceId}
-              >
-                {row.explicitInstance.displayName}
-              </button>
-              <input type="checkbox" aria-label={`Enable ${row.instanceId}`} />
-            </div>
-          )}
-        />,
-      ),
+  const list = (
+    <SortableProviderRows
+      environmentId={EnvironmentId.make(environment)}
+      rows={rows}
+      readOnly={readOnly}
+      renderRow={(row) => (
+        <div style={{ height: 72, paddingLeft: 16 }}>
+          <button
+            onClick={() => {
+              selected = row.instanceId;
+            }}
+            data-provider={row.instanceId}
+          >
+            {row.explicitInstance.displayName}
+          </button>
+          <input type="checkbox" aria-label={`Enable ${row.instanceId}`} />
+        </div>
+      )}
+    />
+  );
+  await root.rerender(
+    modal ? (
+      <AppRouteModal label="Settings">
+        <ScrollArea className="h-80">{list}</ScrollArea>
+      </AppRouteModal>
+    ) : (
+      list
+    ),
   );
 }
 const order = () =>
@@ -140,6 +157,46 @@ it("reorders with the keyboard while keeping default and other types pinned", as
   state.instances = { ...state.instances };
   await render();
   expect(order()).toEqual([defaultId, "malcolm", "jace", "wallace", "claude"]);
+});
+
+it("reorders and cancels inside the actual Settings modal without closing it", async () => {
+  await using _fixture = await setupTest(true);
+  await render(false, "test", true);
+  const modal = () => document.querySelector('[role="dialog"][aria-label="Settings"]');
+  const modalGrip = () =>
+    modal()!.querySelector<HTMLButtonElement>('[aria-label="Reorder Malcolm"]')!;
+  modalGrip().focus();
+  await userEvent.keyboard(" ");
+  await userEvent.keyboard("{ArrowDown}");
+  await vi.waitFor(() =>
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(
+      "was moved over droppable area jace.",
+    ),
+  );
+  await userEvent.keyboard("{Escape}");
+  expect(modal()).not.toBeNull();
+  expect(modalGrip().hasAttribute("aria-pressed")).toBe(false);
+  expect(state.persist).not.toHaveBeenCalled();
+  modalGrip().focus();
+  await userEvent.keyboard(" ");
+  await userEvent.keyboard("{ArrowDown}");
+  await vi.waitFor(() =>
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(
+      "was moved over droppable area jace.",
+    ),
+  );
+  await userEvent.keyboard(" ");
+  expect(state.persist).toHaveBeenCalledTimes(1);
+  expect(Object.keys(state.persist.mock.calls[0]![0].input.patch.providerInstances)).toEqual([
+    defaultId,
+    "jace",
+    "malcolm",
+    "wallace",
+    "claude",
+  ]);
+  expect(modal()).not.toBeNull();
+  await userEvent.keyboard("{Escape}");
+  await vi.waitFor(() => expect(modal()).toBeNull());
 });
 
 it("keeps selection and enablement independent and cancels a keyboard drag", async () => {

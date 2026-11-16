@@ -24,6 +24,11 @@ export type NativeBootstrapDispatchResult = NativeBootstrapDispatchResultV2;
 const denied = (code: Authority.NativeCreationAuthorityError["code"], message: string) =>
   new Authority.NativeCreationAuthorityError({ code, message });
 
+const compiledDecodeEffect1 = Schema.decodeEffect(CommandId);
+const compiledDecodeEffect2 = Schema.decodeEffect(ThreadId);
+const compiledDecodeEffect3 = Schema.decodeEffect(MessageId);
+const compiledIs4 = Schema.is(Authority.NativeCreationAuthorityError);
+
 export const dispatchNativeBootstrap = Effect.fn("dispatchNativeBootstrap")(
   function* (
     submission: unknown,
@@ -75,9 +80,9 @@ export const dispatchNativeBootstrap = Effect.fn("dispatchNativeBootstrap")(
       return yield* denied("stale_grant", "Verified native principal cannot operate orchestration");
     const owner = repository.value;
     const original = preparation.command;
-    const commandId = yield* Schema.decodeEffect(CommandId)(original.commandId);
-    const threadId = yield* Schema.decodeEffect(ThreadId)(original.threadId);
-    const messageId = yield* Schema.decodeEffect(MessageId)(original.message.messageId);
+    const commandId = yield* compiledDecodeEffect1(original.commandId);
+    const threadId = yield* compiledDecodeEffect2(original.threadId);
+    const messageId = yield* compiledDecodeEffect3(original.message.messageId);
     if (
       commandId !== original.commandId ||
       threadId !== original.threadId ||
@@ -221,7 +226,7 @@ export const dispatchNativeBootstrap = Effect.fn("dispatchNativeBootstrap")(
     return result;
   },
   Effect.mapError((cause) =>
-    Schema.is(Authority.NativeCreationAuthorityError)(cause)
+    compiledIs4(cause)
       ? cause
       : denied(
           "unresolved_claim",

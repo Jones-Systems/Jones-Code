@@ -124,7 +124,7 @@ const make = Effect.gen(function* () {
   });
   return CheckoutTarget.of({
     capture,
-    revalidate: (target) =>
+    revalidate: Effect.fn("CheckoutTarget.revalidate")((target) =>
       capture(target).pipe(
         Effect.flatMap((current) =>
           canonical(current) === canonical(target)
@@ -132,6 +132,7 @@ const make = Effect.gen(function* () {
             : Effect.fail(new CheckoutError({ reason: "stale" })),
         ),
       ),
+    ),
   });
 });
 export const layer = Layer.effect(CheckoutTarget, make);

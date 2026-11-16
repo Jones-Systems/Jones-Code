@@ -51,6 +51,14 @@ vi.mock("../../state/entities", () => ({
   useServerConfigs: () => new Map(),
   useThreadShells: () => [],
 }));
+vi.mock("../../state/projects", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { environmentProjects: { projectsAtom: Atom.make([]) } };
+});
+vi.mock("../../state/workspace", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { workspaceConnections: { environmentsAtom: Atom.make([]) } };
+});
 vi.mock("../../state/server", async () => {
   const { Atom } = await import("effect/reactivity");
   return { serverEnvironment: { configValueAtom: Atom.family(() => Atom.make(null)) } };
@@ -130,7 +138,7 @@ import {
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
 import { threadComposerErrorsAtom } from "../../state/thread-composer-error";
 import { editingQueuedMessageIdsAtom } from "../../state/use-thread-outbox";
-import { restoreRejectedQueuedMessage } from "../../state/use-thread-outbox-drain";
+import { restoreRejectedQueuedMessage } from "../../state/threadOutboxDelivery";
 import { recoverFailedThreadDraft } from "../../state/recover-failed-thread-draft";
 import { editPendingThreadMessage } from "../../state/edit-pending-thread-message";
 import {
@@ -559,8 +567,10 @@ describe("mobile evidence-aware editable recovery", () => {
         branch: null,
         worktreePath: null,
       });
+      const noPendingThreadIdsAtom = Atom.make((): ReadonlySet<ThreadId> => new Set());
       const releaseReconciliation = drafts.subscribeComposerDraftModelReconciliation({
         registry: appAtomRegistry,
+        pendingThreadIdsAtom: () => noPendingThreadIdsAtom,
         threadRefsAtom: Atom.make([
           { environmentId: message.environmentId, threadId: message.threadId },
         ]),

@@ -65,7 +65,7 @@ export const layerReporter = Layer.effectDiscard(
       yield* Effect.forEach(
         entries.keys(),
         (environmentId) =>
-          lanes.submit(environmentId, {
+          lanes.submit(environmentId as EnvironmentId, {
             environmentId: environmentId as EnvironmentId,
             clientId,
             clientKind: "mobile",
@@ -80,7 +80,7 @@ export const layerReporter = Layer.effectDiscard(
             ttlMs: LEASE_TTL_MS,
             observedAt: DateTime.makeUnsafe(observedAtMs),
           }),
-        { discard: true },
+        { concurrency: "unbounded", discard: true },
       );
     }).pipe(Effect.withSpan("mobile.backgroundActivity.report"));
 

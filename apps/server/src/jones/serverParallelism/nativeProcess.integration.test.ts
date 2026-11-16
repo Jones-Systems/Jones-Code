@@ -16,6 +16,39 @@ import { proveAbsent, GenerationJournal } from "../serverCompute/journal.ts";
 import { ComputeSupervisor } from "../serverCompute/supervisor.ts";
 import { ProcessSlot } from "../serverCompute/processSlot.ts";
 
+// The real source child owns synthetic cache/history roots, including its HOME fallback.
+const isolatedWorkerEnvironment = async (scratch: string, sea = false, electron = false) => {
+  const home = NodePath.join(scratch, "native-home");
+  await NodeFSP.mkdir(home, { recursive: true, mode: 0o700 });
+  return minimalWorkerEnvironment({ ...process.env, HOME: home }, sea, electron);
+};
+
+const writeNativeCaseReport = async (
+  count: 2 | 3,
+  report: Awaited<ReturnType<typeof runNativeQualification>>,
+) => {
+  const directory = process.env.JONES_SP_NATIVE_REPORT_DIR;
+  if (directory === undefined) return;
+  if (
+    !NodePath.isAbsolute(directory) ||
+    (await NodeFSP.realpath(directory)) !== NodePath.resolve(directory)
+  )
+    throw new Error("Native report directory must be canonical");
+  const stat = await NodeFSP.lstat(directory);
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    stat.uid !== process.getuid?.() ||
+    (stat.mode & 0o077) !== 0
+  )
+    throw new Error("Native report directory must be privately task-owned");
+  await NodeFSP.writeFile(
+    NodePath.join(directory, `native-N${count}.json`),
+    JSON.stringify(report, null, 2) + "\n",
+    { flag: "wx", mode: 0o600 },
+  );
+};
+
 const manifestPath = process.env.JONES_SP_COMMAND_MANIFEST;
 const parentLossCount = process.env.JONES_SP_PROFILE === "vps" ? 3 : 2;
 // Missing packaging inputs are an explicit skip/unknown, never passing evidence.
@@ -38,14 +71,15 @@ for (const count of [2, 3] as const)
           directory: NodePath.join(scratch, "fixture"),
           command: {
             ...manifest,
-            env: minimalWorkerEnvironment(
-              process.env,
+            env: await isolatedWorkerEnvironment(
+              scratch,
               manifest.runtimeForm === "sea",
               manifest.runtimeForm === "electron",
             ),
           },
         });
         retired = report.shutdownProved;
+        await writeNativeCaseReport(count, report);
         expect(report.productiveOverlapSamples).toBeGreaterThan(0);
         expect(report.predicates.normalTargets).toBe(true);
         expect(report.predicates.resourcesComplete).toBe(true);
@@ -80,7 +114,7 @@ native(
       [fixture, manifestPath!, scratch, String(parentLossCount)],
       {
         stdio: ["ignore", "pipe", "pipe"],
-        env: minimalWorkerEnvironment(process.env, false, false),
+        env: await isolatedWorkerEnvironment(scratch),
       },
     );
     const exited = new Promise<void>((resolve, reject) => {
@@ -120,8 +154,8 @@ native(
       const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
       const command = {
         ...manifest,
-        env: minimalWorkerEnvironment(
-          process.env,
+        env: await isolatedWorkerEnvironment(
+          scratch,
           manifest.runtimeForm === "sea",
           manifest.runtimeForm === "electron",
         ),
@@ -448,8 +482,8 @@ native(
       await NodeFSP.writeFile(NodePath.join(workspace, "matching-build.txt"), "matching smoke\n");
       const command = {
         ...manifest,
-        env: minimalWorkerEnvironment(
-          process.env,
+        env: await isolatedWorkerEnvironment(
+          scratch,
           manifest.runtimeForm === "sea",
           manifest.runtimeForm === "electron",
         ),
@@ -496,6 +530,108 @@ native(
       );
   },
   60_000,
+);
+
+native(
+  "strict content refresh exposes successive real source-worker writes and retires its generation",
+  async () => {
+    const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
+    const scratch = await NodeFSP.realpath(
+      await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-content-writes-")),
+    );
+    let pool: ComputeSupervisor | undefined;
+    let retired = true;
+    let failure: unknown;
+    const cleanupFailures: unknown[] = [];
+    try {
+      const workspace = NodePath.join(scratch, "workspace");
+      await NodeFSP.mkdir(workspace);
+      const file = NodePath.join(workspace, "same.md");
+      await NodeFSP.writeFile(file, "Plan\n");
+      const command = {
+        ...manifest,
+        env: await isolatedWorkerEnvironment(
+          scratch,
+          manifest.runtimeForm === "sea",
+          manifest.runtimeForm === "electron",
+        ),
+      };
+      const journal = await GenerationJournal.acquire(NodePath.join(scratch, "journal"), 2);
+      pool = new ComputeSupervisor({
+        count: 2,
+        build: command.build,
+        journal,
+        start: (boot, register, onExit) => ProcessSlot.start(command, boot, register, onExit),
+      });
+      retired = false;
+      const handle = pool.register({ cwd: workspace, variant: "content" });
+      await pool.ensure(handle);
+      const query = (text: string) =>
+        pool!.run(handle, "searchContents", {
+          query: text,
+          limit: 10,
+          caseSensitive: true,
+          wholeWord: true,
+          useRegex: false,
+        });
+      expect((await query("Plan")).matches.map((match) => match.lineContent)).toEqual(["Plan"]);
+      let previous = "Plan";
+      for (const version of ["Replacement", "Successive", "Final"]) {
+        await NodeFSP.writeFile(file, version + "\n");
+        await pool.run(handle, "refreshContent", undefined);
+        expect((await query(previous)).matches).toEqual([]);
+        expect((await query(version)).matches).toEqual([
+          {
+            path: "same.md",
+            lineNumber: 1,
+            lineContent: version,
+            matchRanges: [{ start: 0, end: version.length }],
+          },
+        ]);
+        expect(await NodeFSP.readFile(file, "utf8")).toBe(version + "\n");
+        previous = version;
+      }
+      await NodeFSP.writeFile(file, "OverlappingFirst\n");
+      const first = pool.run(handle, "refreshContent", undefined);
+      void first.catch(() => {});
+      await NodeFSP.writeFile(file, "OverlappingFinal\n");
+      const second = pool.run(handle, "refreshContent", undefined);
+      await Promise.all([first, second]);
+      expect((await query("OverlappingFirst")).matches).toEqual([]);
+      expect((await query("OverlappingFinal")).matches).toEqual([
+        {
+          path: "same.md",
+          lineNumber: 1,
+          lineContent: "OverlappingFinal",
+          matchRanges: [{ start: 0, end: 16 }],
+        },
+      ]);
+    } catch (cause) {
+      failure = cause;
+    } finally {
+      if (pool) {
+        try {
+          await pool.shutdown();
+          retired = true;
+        } catch (cause) {
+          cleanupFailures.push(cause);
+        }
+      }
+      if (retired) {
+        try {
+          await NodeFSP.rm(scratch, { recursive: true });
+        } catch (cause) {
+          cleanupFailures.push(cause);
+        }
+      }
+    }
+    if (failure !== undefined || cleanupFailures.length > 0)
+      throw new AggregateError(
+        [failure, ...cleanupFailures].filter((cause) => cause !== undefined),
+        "Strict real content refresh failed",
+        { cause: failure ?? cleanupFailures[0] },
+      );
+  },
 );
 
 native(

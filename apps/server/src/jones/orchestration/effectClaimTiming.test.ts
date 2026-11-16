@@ -35,7 +35,7 @@ it.effect("attributes availability-to-claim wait before the durable cancellation
         attemptCount: 1,
         availableAt: "1970-01-01T00:00:00.005Z",
         leaseOwner: "claim-timing",
-        leaseExpiresAt: "1970-01-01T00:01:40.000Z",
+
         createdAt: "1970-01-01T00:00:00.000Z",
         updatedAt: "1970-01-01T00:00:00.020Z",
         completedAt: null,

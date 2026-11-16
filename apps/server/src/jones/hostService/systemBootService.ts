@@ -64,6 +64,7 @@ export function systemServiceUnitFromCgroup(contents: string): string | undefine
   const units = systemServiceUnitsFromCgroup(contents);
   return units.size === 1 ? [...units][0] : undefined;
 }
+const decodeUnknownJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 export const readBinding = Effect.fn("jones.system_boot_service.read_binding")(function* (
   baseDir: string,
@@ -116,9 +117,7 @@ export const readBinding = Effect.fn("jones.system_boot_service.read_binding")(f
   const invalid =
     "The system adoption receipt is damaged, incomplete or inconsistent with this home. Reconcile it through the external administrator; user-service fallback is unavailable.";
   const parsed = record(
-    yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(receipt.value).pipe(
-      Effect.mapError(() => refuse(invalid)),
-    ),
+    yield* decodeUnknownJson(receipt.value).pipe(Effect.mapError(() => refuse(invalid))),
   );
   const plan = record(parsed.plan);
   const unit = record(plan.unit);
@@ -202,6 +201,7 @@ export const readBinding = Effect.fn("jones.system_boot_service.read_binding")(f
     slice: unit.slice,
   } satisfies SystemServiceBinding;
 });
+const isBootServiceInstallError = Schema.is(BootService.BootServiceInstallError);
 
 export const make = Effect.fn("jones.system_boot_service.make")(function* (input: {
   readonly baseDir: string;
@@ -355,16 +355,18 @@ export const make = Effect.fn("jones.system_boot_service.make")(function* (input
     };
   }).pipe(
     Effect.mapError((cause) =>
-      Schema.is(BootService.BootServiceInstallError)(cause)
-        ? cause
-        : new BootService.BootServiceInstallError({ cause }),
+      isBootServiceInstallError(cause) ? cause : new BootService.BootServiceInstallError({ cause }),
     ),
   );
   return BootService.BootService.of({
     status,
-    install: () => Effect.fail(administrator("install, repair or reinstall")),
+    install: Effect.fn("BootService.BootService.install")(() =>
+      Effect.fail(administrator("install, repair or reinstall")),
+    ),
     restart: Effect.fail(administrator("restart")),
-    withStopped: () => Effect.fail(administrator("stop for a release update")),
+    withStopped: Effect.fn("BootService.BootService.withStopped")(() =>
+      Effect.fail(administrator("stop for a release update")),
+    ),
     uninstall: Effect.fail(administrator("uninstall")),
   });
 });

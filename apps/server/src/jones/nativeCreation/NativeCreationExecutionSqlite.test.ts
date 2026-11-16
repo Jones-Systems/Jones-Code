@@ -8,6 +8,11 @@ import { makeNativeExecutionMethods } from "./NativeCreationExecutionSqlite.ts";
 import { NativeCreationRepositoryError } from "./NativeCreationRepository.ts";
 import { NativeCreationExecutionReferenceV2 } from "./NativeCreationExecutionTypes.ts";
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
+
+const decodeEffectNativeCreationExecutionReferenceV2 = Schema.decodeEffect(
+  NativeCreationExecutionReferenceV2,
+);
+
 it.effect("foreign ledger history cannot reconstruct execution authority from old claims", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -32,7 +37,7 @@ it.effect("foreign ledger history cannot reconstruct execution authority from ol
         ),
     };
     const methods = makeNativeExecutionMethods(sql, owner);
-    const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)({
+    const reference = yield* decodeEffectNativeCreationExecutionReferenceV2({
       version: 2,
       claimId: "old-claim",
       stageCommandId: "old-command",
@@ -49,6 +54,7 @@ import {
   AuthSessionId,
   EventId,
   NativeCreationHistoricalBinding,
+  ProviderRuntimeBinding,
   OrchestrationV2Command,
   RunId,
 } from "@t3tools/contracts";
@@ -90,11 +96,28 @@ const database = Layer.effectDiscard(runMigrations().pipe(Effect.map(() => undef
   Layer.provideMerge(memory),
 );
 const realRepository = RepositorySqlite.layer.pipe(Layer.provideMerge(database));
+
+const decodeEffectNativePreparationBinding = Schema.decodeEffect(NativePreparationBinding);
+const decodeEffectNativeCreationHistoricalBinding = Schema.decodeEffect(
+  NativeCreationHistoricalBinding,
+);
+const decodeEffectOrchestrationV2Command = Schema.decodeEffect(OrchestrationV2Command);
+const encodeEffectFromJsonStringOutboxNativeOrchestrationEffectPayloadV2 = Schema.encodeEffect(
+  Schema.fromJsonString(Outbox.NativeOrchestrationEffectPayloadV2),
+);
+const decodeEffectNativeCreationWholeOperationEvidence = Schema.decodeEffect(
+  NativeCreationWholeOperationEvidence,
+);
+const decodeEffectAuthSessionsAuthSessionRecord = Schema.decodeEffect(
+  AuthSessions.AuthSessionRecord,
+);
+const decodeProviderRuntimeBinding = Schema.decodeEffect(ProviderRuntimeBinding);
+
 const fixture = Effect.gen(function* () {
   yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(now)));
   const repository = yield* Repository.NativeCreationRepository;
   const sql = yield* SqlClient.SqlClient;
-  const binding = yield* Schema.decodeEffect(NativePreparationBinding)({
+  const binding = yield* decodeEffectNativePreparationBinding({
     backend_instance: "sql-fixture-backend",
     environment_id: "sql-fixture-environment",
     project_id: "sql-fixture-project",
@@ -128,7 +151,7 @@ const fixture = Effect.gen(function* () {
       }),
     ),
   );
-  const historical = yield* Schema.decodeEffect(NativeCreationHistoricalBinding)({
+  const historical = yield* decodeEffectNativeCreationHistoricalBinding({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -164,7 +187,7 @@ const fixture = Effect.gen(function* () {
     Effect.succeed(historical),
   );
   yield* sql`INSERT INTO native_creation_automation_enrollments(session_id,enrolled_at) VALUES(${actor},${now})`;
-  const command = yield* Schema.decodeEffect(OrchestrationV2Command)({
+  const command = yield* decodeEffectOrchestrationV2Command({
     type: "prepared-run.release",
     commandId: `${prepared.commandId}:native:v2:message`,
     threadId: prepared.threadId,
@@ -176,7 +199,7 @@ const fixture = Effect.gen(function* () {
     prepared.commandId,
     command.commandId,
   ]);
-  const normalized = yield* Schema.decodeEffect(OrchestrationV2Command)({
+  const normalized = yield* decodeEffectOrchestrationV2Command({
     type: "message.dispatch",
     createdBy: "user",
     creationSource: "server",
@@ -190,7 +213,7 @@ const fixture = Effect.gen(function* () {
   });
   yield* repository.recordNormalizedCommand(claimId, normalized);
   yield* repository.reserveCommand(claimId, command);
-  const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)({
+  const reference = yield* decodeEffectNativeCreationExecutionReferenceV2({
     version: 2,
     claimId,
     stageCommandId: command.commandId,
@@ -222,14 +245,12 @@ const fixture = Effect.gen(function* () {
       }),
     );
   const enqueue = Effect.gen(function* () {
-    const payload = yield* Schema.encodeEffect(
-      Schema.fromJsonString(Outbox.NativeOrchestrationEffectPayloadV2),
-    )({
+    const payload = yield* encodeEffectFromJsonStringOutboxNativeOrchestrationEffectPayloadV2({
       request: { type: "provider-turn.start", runId: command.runId },
       nativeCreationExecutionReference: reference,
     });
-    yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,lease_expires_at,created_at,updated_at)
-      VALUES(${reference.effectId},${command.commandId},${command.threadId},'provider-turn.start',${payload},'running',1,${now},'sql-worker',${deadline},${now},${now})`;
+    yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,created_at,updated_at)
+      VALUES(${reference.effectId},${command.commandId},${command.threadId},'provider-turn.start',${payload},'running',1,${now},'sql-worker',${now},${now})`;
   });
   const seedRuntime = Effect.gen(function* () {
     const providerPayload = nativeCreationCanonicalJson({
@@ -245,7 +266,7 @@ const fixture = Effect.gen(function* () {
       VALUES('sql-provider-thread',${command.threadId},'codex','sql-provider-session','active',${now},${providerPayload})`;
     yield* sql`INSERT INTO orchestration_v2_projection_provider_session_bindings(provider_session_id,thread_id) VALUES('sql-provider-session',${command.threadId})`;
   });
-  const evidence = yield* Schema.decodeEffect(NativeCreationWholeOperationEvidence)({
+  const evidence = yield* decodeEffectNativeCreationWholeOperationEvidence({
     version: 1,
     outcome: "confirmed_success",
     effectId: reference.effectId,
@@ -258,7 +279,7 @@ const fixture = Effect.gen(function* () {
     attemptId: "sql-attempt",
     coverage: "whole_operation",
   });
-  const session = yield* Schema.decodeEffect(AuthSessions.AuthSessionRecord)({
+  const session = yield* decodeEffectAuthSessionsAuthSessionRecord({
     sessionId: actor,
     subject: "Synthetic native actor",
     scopes: ["orchestration:operate"],
@@ -306,7 +327,6 @@ const fixture = Effect.gen(function* () {
           revoke: () => Effect.succeed(false),
           revokeAllExcept: () => Effect.succeed([]),
           setLastConnectedAt: () => Effect.void,
-          setClientConnection: () => Effect.void,
         }),
       ),
     ),
@@ -324,13 +344,43 @@ const fixture = Effect.gen(function* () {
   );
   const issue = Effect.gen(function* () {
     const authority = yield* Authority.NativeCreationAuthority;
-    return yield* authority.issueExecution!({ reference, timestamp: now });
+    const context = yield* authority.issueExecution!({
+      reference,
+      timestamp: now,
+      expectedClaim: {
+        workerId: "sql-worker",
+        expectedAttempt: 1,
+        claimedAt: now,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        runId: command.runId,
+        requestDigest: nativeCreationSha256(
+          nativeCreationCanonicalJson({ type: "provider-turn.start", runId: command.runId }),
+        ),
+      },
+    });
+    const physical = yield* decodeProviderRuntimeBinding({
+      threadId: command.threadId,
+      providerThreadId: "sql-provider-thread",
+      providerSessionId: "sql-provider-session",
+      providerInstanceId: historical.providerModelSelection.instanceId,
+      driver: "codex",
+      nativeThreadId: "sql-native-thread",
+      runtimeGeneration: "sql-generation",
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new NativeCreationRepositoryError({ code: "unresolved_claim", message: String(cause) }),
+      ),
+    );
+    yield* Authority.recordNativeCreationExecutionBinding(context, physical);
+    return context;
   }).pipe(Effect.provide(authorityLayer));
   const confirmation = {
     reference,
     workerId: "sql-worker",
     expectedAttempt: 1,
-    leaseExpiresAt: deadline,
+    claimedAt: now,
     evidence,
   };
   const effect: Outbox.OrchestrationEffectV2 = {
@@ -343,7 +393,6 @@ const fixture = Effect.gen(function* () {
     attemptCount: 1,
     availableAt: now,
     leaseOwner: "sql-worker",
-    leaseExpiresAt: deadline,
     createdAt: now,
     updatedAt: now,
     completedAt: null,
@@ -357,7 +406,7 @@ const fixture = Effect.gen(function* () {
       const outbox = yield* Outbox.EffectOutboxV2;
       const claimed = yield* outbox.get(effect.id);
       if (Option.isNone(claimed)) return yield* Effect.die("Missing synthetic claim");
-      return yield* withActiveEffectClaim(outbox, claimed.value, 30_000, true, run);
+      return yield* withActiveEffectClaim(outbox, claimed.value, 10_000, true, run);
     }).pipe(Effect.provide(Outbox.layer));
   const execute = runClaim(() => executeNativeProviderEffect(effect));
   return {
@@ -385,7 +434,7 @@ it.effect(
     Effect.gen(function* () {
       const f = yield* fixture;
       const wrongCommand = { ...f.command, runId: f.command.runId };
-      const mismatched = yield* Schema.decodeEffect(OrchestrationV2Command)({
+      const mismatched = yield* decodeEffectOrchestrationV2Command({
         ...wrongCommand,
         runId: "other-run",
       });
@@ -430,17 +479,17 @@ it.effect(
         "unresolved_claim",
       );
       assert.deepEqual(
-        yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_confirmations`,
+        yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_process_confirmations`,
         [],
       );
       yield* f.repository.confirmExecution!(f.confirmation);
       yield* f.repository.confirmExecution!(f.confirmation);
       assert.deepEqual(
-        yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_starts`,
+        yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_process_claims`,
         [{ count: 1 }],
       );
       assert.deepEqual(
-        yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_confirmations`,
+        yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_process_confirmations`,
         [{ count: 1 }],
       );
       assert.isTrue(
@@ -474,9 +523,10 @@ it.effect(
           return yield* outbox.succeed({ effectId: f.reference.effectId, workerId: "sql-worker" });
         }).pipe(Effect.provide(Outbox.layer)),
       );
-      assert.deepEqual(yield* f.sql`SELECT reason FROM jones_native_creation_execution_holds`, [
-        { reason: "uncertain native outcome" },
-      ]);
+      assert.deepEqual(
+        yield* f.sql`SELECT reason FROM jones_native_creation_execution_process_holds`,
+        [{ reason: "uncertain native outcome" }],
+      );
     }).pipe(Effect.provide(realRepository)),
 );
 
@@ -494,13 +544,29 @@ it.effect("qualified whole-operation port confirms its success through the real 
           Effect.gen(function* () {
             invocations += 1;
             assert.deepEqual(Authority.getNativeCreationExecutionReference(context), f.reference);
+            yield* Authority.recordNativeCreationExecutionBinding(
+              context,
+              yield* decodeProviderRuntimeBinding({
+                threadId: f.command.threadId,
+                providerThreadId: "sql-provider-thread",
+                providerSessionId: "sql-provider-session",
+                providerInstanceId: "codex",
+                driver: "codex",
+                nativeThreadId: "sql-native-thread",
+                runtimeGeneration: "sql-generation",
+              }),
+            );
             return f.evidence;
-          }),
+          }).pipe(
+            Effect.mapError(
+              (cause) => new NativeCreationProviderExecutionError({ message: String(cause) }),
+            ),
+          ),
       }),
     );
     assert.strictEqual(invocations, 1);
     assert.deepEqual(
-      yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_confirmations`,
+      yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_process_confirmations`,
       [{ count: 1 }],
     );
   }).pipe(Effect.provide(realRepository)),
@@ -570,11 +636,11 @@ it.effect("qualified whole-operation failure retains its durable unknown hold", 
       Effect.flip,
     );
     assert.deepEqual(
-      yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_holds`,
+      yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_process_holds`,
       [{ count: 1 }],
     );
     assert.deepEqual(
-      yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_confirmations`,
+      yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_process_confirmations`,
       [],
     );
   }).pipe(Effect.provide(realRepository)),
@@ -618,15 +684,15 @@ it.effect(
       );
       assert.strictEqual(sends, 0);
       assert.deepEqual(
-        yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_starts`,
+        yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_process_claims`,
         [{ count: 1 }],
       );
       assert.deepEqual(
-        yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_holds`,
+        yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_process_holds`,
         [{ count: 1 }],
       );
       assert.deepEqual(
-        yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_confirmations`,
+        yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_process_confirmations`,
         [],
       );
       assert.strictEqual((yield* f.issue.pipe(Effect.flip)).code, "unresolved_claim");
@@ -651,18 +717,18 @@ it.effect("cancellation after native invocation retains a hold before releasing 
     yield* Deferred.await(entered);
     yield* Fiber.interrupt(fiber);
     assert.deepEqual(
-      yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_holds`,
+      yield* f.sql`SELECT COUNT(*) AS count FROM jones_native_creation_execution_process_holds`,
       [{ count: 1 }],
     );
     assert.deepEqual(
-      yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_confirmations`,
+      yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_process_confirmations`,
       [],
     );
   }).pipe(Effect.provide(realRepository)),
 );
 
 it.effect(
-  "native completion needs a strict envelope and the exact confirmed worker, lease and attempt",
+  "native completion needs a strict envelope and the exact confirmed worker, process claim and attempt",
   () =>
     Effect.gen(function* () {
       const f = yield* fixture;
@@ -708,18 +774,48 @@ it.effect(
       );
       assert.isFalse(
         yield* withRow(
-          f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at='2098-01-01T00:00:00.000Z' WHERE effect_id=${f.reference.effectId}`,
-          f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${deadline} WHERE effect_id=${f.reference.effectId}`,
+          f.sql`UPDATE orchestration_v2_effect_outbox SET updated_at='2026-10-02T12:34:57Z' WHERE effect_id=${f.reference.effectId}`,
+          f.sql`UPDATE orchestration_v2_effect_outbox SET updated_at=${now} WHERE effect_id=${f.reference.effectId}`,
           succeed(),
         ),
       );
-      assert.isFalse(
-        yield* withRow(
-          TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2099-06-01T00:00:00Z"))),
-          TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(now))),
-          succeed(),
-        ),
+      // Time alone neither loses the process claim nor proves provider completion.
+      yield* withRow(
+        TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2099-06-01T00:00:00Z"))),
+        TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(now))),
+        f.repository.confirmExecution!(f.confirmation),
       );
+      assert.strictEqual(yield* status, "running");
+      assert.strictEqual(
+        (yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_process_confirmations WHERE effect_id=${f.reference.effectId}`)
+          .length,
+        1,
+      );
+      // The immutable start is never replayed, even with the same operation identity.
+      assert.strictEqual((yield* f.issue.pipe(Effect.result))._tag, "Failure");
+      for (const [change, restore] of [
+        [
+          f.sql`UPDATE orchestration_v2_effect_outbox SET status='failed' WHERE effect_id=${f.reference.effectId}`,
+          f.sql`UPDATE orchestration_v2_effect_outbox SET status='running' WHERE effect_id=${f.reference.effectId}`,
+        ],
+        [
+          f.sql`UPDATE orchestration_v2_effect_outbox SET command_id='changed-command' WHERE effect_id=${f.reference.effectId}`,
+          f.sql`UPDATE orchestration_v2_effect_outbox SET command_id=${f.effect.commandId} WHERE effect_id=${f.reference.effectId}`,
+        ],
+      ] as const) {
+        const confirmed = yield* withRow(
+          change,
+          restore,
+          f.repository.confirmExecution!(f.confirmation).pipe(Effect.result),
+        );
+        assert.strictEqual(confirmed._tag, "Failure");
+      }
+
+      const staleReference = yield* f.repository.confirmExecution!({
+        ...f.confirmation,
+        reference: { ...f.confirmation.reference, claimId: "changed-claim" },
+      }).pipe(Effect.result);
+      assert.strictEqual(staleReference._tag, "Failure");
 
       // A matching proof never admits an envelope the strict decoder rejects.
       const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
@@ -745,54 +841,172 @@ it.effect(
     }).pipe(Effect.provide(Outbox.layer.pipe(Layer.provideMerge(realRepository)))),
 );
 
+it.effect(
+  "blocks a legacy started-but-unconfirmed native effect without adopting or replaying it",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.accept();
+      yield* f.enqueue;
+      yield* f.sql`INSERT INTO jones_native_creation_execution_starts(effect_id,claim_id,command_id,worker_id,expected_attempt,lease_expires_at,reference_json,fact_json)
+      VALUES(${f.reference.effectId},${f.reference.claimId},${f.reference.stageCommandId},'historical-worker',1,${deadline},${nativeCreationCanonicalJson(f.reference)},'{}')`;
+      const started = yield* f.issue.pipe(Effect.result);
+      assert.strictEqual(started._tag, "Failure");
+      assert.strictEqual(
+        (yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_process_claims WHERE effect_id=${f.reference.effectId}`)
+          .length,
+        0,
+      );
+      assert.strictEqual(
+        (yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_starts WHERE effect_id=${f.reference.effectId}`)
+          .length,
+        1,
+      );
+    }).pipe(Effect.provide(realRepository)),
+);
+
+it.effect.each([
+  "worker",
+  "attempt",
+  "claimed-at",
+  "command",
+  "thread",
+  "run",
+  "request-digest",
+] as const)("native start rejects a stale caller's expected %s before recording custody", (field) =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* f.accept();
+    yield* f.enqueue;
+    const expected: Repository.NativeExecutionProcessClaim = {
+      workerId: "sql-worker",
+      expectedAttempt: 1,
+      claimedAt: now,
+      commandId: f.command.commandId,
+      threadId: f.command.threadId,
+      runId: f.command.runId,
+      requestDigest: nativeCreationSha256(nativeCreationCanonicalJson(f.effect.request)),
+      ...(field === "worker" ? { workerId: "stale-worker" } : {}),
+      ...(field === "attempt" ? { expectedAttempt: 2 } : {}),
+      ...(field === "claimed-at" ? { claimedAt: "2026-10-02T12:34:57Z" } : {}),
+      ...(field === "command" ? { commandId: "other-command" } : {}),
+      ...(field === "thread" ? { threadId: "other-thread" } : {}),
+      ...(field === "run" ? { runId: "other-run" } : {}),
+      ...(field === "request-digest" ? { requestDigest: "a".repeat(64) } : {}),
+    };
+    const before = yield* f.sql`SELECT * FROM orchestration_v2_effect_outbox`;
+    const failure = yield* Effect.gen(function* () {
+      const authority = yield* Authority.NativeCreationAuthority;
+      return yield* authority.issueExecution!({
+        reference: f.reference,
+        timestamp: now,
+        expectedClaim: expected,
+      });
+    }).pipe(Effect.provide(f.authorityLayer), Effect.flip);
+    assert.strictEqual(failure.code, "unresolved_claim");
+    assert.deepEqual(yield* f.sql`SELECT * FROM orchestration_v2_effect_outbox`, before);
+    assert.deepEqual(
+      yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`,
+      [],
+    );
+  }).pipe(Effect.provide(realRepository)),
+);
+
+it.effect("native hold before any start blocks issuance and leaves no process claim", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* f.accept();
+    yield* f.enqueue;
+    yield* f.repository.holdExecution!(f.reference, "uncertain before start");
+    assert.strictEqual((yield* f.issue.pipe(Effect.flip)).code, "unresolved_claim");
+    assert.deepEqual(
+      yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`,
+      [],
+    );
+    assert.strictEqual(
+      (yield* f.sql`SELECT * FROM jones_native_creation_execution_process_holds`).length,
+      1,
+    );
+  }).pipe(Effect.provide(realRepository)),
+);
+
+it.effect("a legacy orphan hold blocks native issuance even without a legacy start", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* f.accept();
+    yield* f.enqueue;
+    // Reproduce readable legacy orphan history inside a rollback-only synthetic transaction.
+    // Deferred FK validation lets the start guard encounter it before commit; no orphan is persisted.
+    const rollback = yield* f.sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* f.sql`PRAGMA defer_foreign_keys=ON`;
+          yield* f.sql`INSERT INTO jones_native_creation_execution_holds(effect_id,reason,held_at) VALUES(${f.reference.effectId},'legacy uncertainty',${now})`;
+          assert.deepEqual(yield* f.sql`SELECT * FROM jones_native_creation_execution_starts`, []);
+          assert.strictEqual((yield* f.issue.pipe(Effect.flip)).code, "unresolved_claim");
+          assert.deepEqual(
+            yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`,
+            [],
+          );
+          return yield* Effect.fail("rollback synthetic orphan");
+        }),
+      )
+      .pipe(Effect.flip);
+    assert.strictEqual(rollback, "rollback synthetic orphan");
+    assert.deepEqual(yield* f.sql`SELECT * FROM jones_native_creation_execution_holds`, []);
+  }).pipe(Effect.provide(realRepository)),
+);
+
 it.effect.each(["before", "after"] as const)(
-  "native issue %s first renewal captures the current expiry and completes the same claim",
+  "native issue %s first observation preserves the original generation and completes once",
   (issuance) =>
     Effect.gen(function* () {
       const f = yield* fixture;
       yield* f.accept();
       yield* f.enqueue;
       yield* f.seedRuntime;
-      const initial = DateTime.formatIso(DateTime.add(yield* DateTime.now, { seconds: 30 }));
-      yield* f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${initial}`;
       const outbox = yield* Outbox.EffectOutboxV2;
       const captured = Option.getOrThrow(yield* outbox.get(f.effect.id));
-      if (issuance === "before") yield* f.issue;
-      yield* TestClock.adjust("10 seconds");
-      const renewed = yield* outbox.renew({ claim: captured, leaseDurationMs: 30_000 });
-      if (issuance === "after") {
-        assert.deepEqual(
-          yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_starts`,
-          [],
-        );
-        yield* f.issue;
-      }
-      assert.deepEqual(
-        yield* f.sql`SELECT worker_id,expected_attempt,lease_expires_at FROM jones_native_creation_execution_starts`,
-        [{ worker_id: "sql-worker", expected_attempt: 1, lease_expires_at: renewed }],
-      );
-      assert.strictEqual(
-        (yield* f.repository.confirmExecution!({ ...f.confirmation, leaseExpiresAt: initial }).pipe(
-          Effect.flip,
-        )).code,
-        "unresolved_claim",
-      );
-      yield* f.repository.confirmExecution!({ ...f.confirmation, leaseExpiresAt: renewed });
-      // Renewal stays valid after confirmation and until the guarded terminal UPDATE.
-      yield* TestClock.adjust("10 seconds");
-      const next = yield* outbox.renew({
-        claim: { ...captured, leaseExpiresAt: renewed },
-        leaseDurationMs: 30_000,
-      });
-      assert.strictEqual(
-        (yield* outbox.renew({ claim: captured, leaseDurationMs: 30_000 }).pipe(Effect.flip))._tag,
-        "EffectClaimRenewalRefused",
-      );
-      assert.isTrue(
-        yield* outbox.succeed({
-          effectId: f.effect.id,
-          workerId: "sql-worker",
-          claim: { ...captured, leaseExpiresAt: next },
+      yield* f.runClaim((claim) =>
+        Effect.gen(function* () {
+          if (issuance === "before") yield* f.issue;
+          yield* TestClock.adjust("10 seconds");
+          yield* claim.check;
+          if (issuance === "after") {
+            assert.deepEqual(
+              yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_process_claims`,
+              [],
+            );
+            yield* f.issue;
+          }
+          const starts = yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`;
+          assert.lengthOf(starts, 1);
+          assert.deepEqual(yield* outbox.get(f.effect.id), Option.some(captured));
+          assert.strictEqual(
+            (yield* f.repository.confirmExecution!({
+              ...f.confirmation,
+              claimedAt: "stale-generation",
+            }).pipe(Effect.flip)).code,
+            "unresolved_claim",
+          );
+          yield* f.repository.confirmExecution!(f.confirmation);
+          yield* TestClock.adjust("10 seconds");
+          yield* claim.check;
+          assert.deepEqual(
+            yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`,
+            starts,
+          );
+          assert.strictEqual((yield* f.issue.pipe(Effect.flip)).code, "unresolved_claim");
+          assert.isTrue(
+            yield* claim.settle((current) =>
+              outbox.succeed({ effectId: f.effect.id, workerId: "sql-worker", claim: current }),
+            ),
+          );
+          assert.isFalse(
+            yield* claim.settle((current) =>
+              outbox.succeed({ effectId: f.effect.id, workerId: "sql-worker", claim: current }),
+            ),
+          );
         }),
       );
       assert.isTrue(
@@ -801,104 +1015,131 @@ it.effect.each(["before", "after"] as const)(
           (row) => row.status === "succeeded" && row.attemptCount === 1,
         ),
       );
-      assert.strictEqual(
-        (yield* outbox
-          .renew({ claim: { ...captured, leaseExpiresAt: next }, leaseDurationMs: 30_000 })
-          .pipe(Effect.flip))._tag,
-        "EffectClaimRenewalRefused",
-      );
     }).pipe(Effect.provide(Outbox.layer.pipe(Layer.provideMerge(realRepository)))),
 );
 
-it.effect.each(["cancelled", "hold", "outbox-only-expiry"] as const)(
-  "native renewal atomically refuses %s and cannot recreate or confirm its start",
+it.effect.each(["cancelled", "hold", "legacy-hold", "outbox-only-generation"] as const)(
+  "native captured custody refuses %s without rewriting or recreating its start",
   (change) =>
     Effect.gen(function* () {
       const f = yield* fixture;
       yield* f.accept();
       yield* f.enqueue;
       yield* f.seedRuntime;
-      const initial = DateTime.formatIso(DateTime.add(yield* DateTime.now, { seconds: 30 }));
-      yield* f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${initial}`;
+      yield* f.issue;
       const outbox = yield* Outbox.EffectOutboxV2;
       const captured = Option.getOrThrow(yield* outbox.get(f.effect.id));
-      yield* f.issue;
-      yield* TestClock.adjust("10 seconds");
       if (change === "cancelled")
         yield* f.sql`UPDATE orchestration_v2_effect_outbox SET status='cancelled'`;
       if (change === "hold")
-        yield* f.repository.holdExecution!(f.reference, "Synthetic uncertain native use");
-      if (change === "outbox-only-expiry")
-        yield* f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at='2098-01-01T00:00:00.000Z'`;
-      const before = yield* f.sql`SELECT * FROM orchestration_v2_effect_outbox`;
-      const start = yield* f.sql`SELECT * FROM jones_native_creation_execution_starts`;
-      yield* outbox.renew({ claim: captured, leaseDurationMs: 30_000 }).pipe(Effect.flip);
-      assert.deepEqual(yield* f.sql`SELECT * FROM orchestration_v2_effect_outbox`, before);
-      assert.deepEqual(yield* f.sql`SELECT * FROM jones_native_creation_execution_starts`, start);
-      assert.strictEqual(
-        (yield* f.repository.confirmExecution!({ ...f.confirmation, leaseExpiresAt: initial }).pipe(
-          Effect.flip,
-        )).code,
-        "unresolved_claim",
-      );
-      assert.strictEqual((yield* f.issue.pipe(Effect.flip)).code, "unresolved_claim");
+        yield* f.repository.holdExecution!(f.reference, "Synthetic unknown use");
+      const prove = Effect.gen(function* () {
+        if (change === "legacy-hold") {
+          yield* f.sql`PRAGMA defer_foreign_keys=ON`;
+          yield* f.sql`INSERT INTO jones_native_creation_execution_holds(effect_id,reason,held_at) VALUES(${f.reference.effectId},'legacy unknown',${now})`;
+        }
+        if (change === "outbox-only-generation")
+          yield* f.sql`UPDATE orchestration_v2_effect_outbox SET updated_at='2098-01-01T00:00:00.000Z'`;
+        const before = yield* f.sql`SELECT * FROM orchestration_v2_effect_outbox`;
+        const starts = yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`;
+        assert.strictEqual(
+          (yield* f.repository.confirmExecution!(f.confirmation).pipe(Effect.flip)).code,
+          "unresolved_claim",
+        );
+        assert.strictEqual((yield* f.issue.pipe(Effect.flip)).code, "unresolved_claim");
+        assert.isFalse(
+          yield* outbox.succeed({ effectId: f.effect.id, workerId: "sql-worker", claim: captured }),
+        );
+        assert.deepEqual(yield* f.sql`SELECT * FROM orchestration_v2_effect_outbox`, before);
+        assert.deepEqual(
+          yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`,
+          starts,
+        );
+      });
+      if (change === "legacy-hold")
+        assert.strictEqual(
+          yield* f.sql
+            .withTransaction(prove.pipe(Effect.andThen(Effect.fail("rollback synthetic hold"))))
+            .pipe(Effect.flip),
+          "rollback synthetic hold",
+        );
+      else yield* prove;
     }).pipe(Effect.provide(Outbox.layer.pipe(Layer.provideMerge(realRepository)))),
 );
 
 it.effect(
-  "whole-operation provider wait releases the claim permit and confirmation uses renewed custody",
+  "whole-provider wait releases the claim permit for observations without changing captured custody",
   () =>
     Effect.gen(function* () {
       const f = yield* fixture;
       yield* f.accept();
       yield* f.enqueue;
       yield* f.seedRuntime;
-      const initial = DateTime.formatIso(DateTime.add(yield* DateTime.now, { seconds: 30 }));
-      yield* f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${initial}`;
       const entered = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
       let sends = 0;
-      const fiber = yield* f
-        .runClaim((claim) =>
-          executeNativeProviderEffect(f.effect).pipe(
-            Effect.andThen(
-              claim.settle((current) =>
-                Effect.gen(function* () {
-                  const outbox = yield* Outbox.EffectOutboxV2;
-                  return yield* outbox.succeed({
-                    effectId: current.id,
-                    workerId: current.leaseOwner!,
-                    claim: current,
-                  });
-                }).pipe(Effect.provide(Outbox.layer)),
-              ),
+      let reads = 0;
+      const outbox = yield* Outbox.EffectOutboxV2;
+      const captured = Option.getOrThrow(yield* outbox.get(f.effect.id));
+      const observed = {
+        ...outbox,
+        get: (id: string) =>
+          outbox.get(id).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                reads++;
+              }),
             ),
           ),
-        )
-        .pipe(
-          Effect.provide(f.authorityLayer),
-          Effect.provideService(NativeCreationProviderExecutor, {
-            executeWholeOperation: () =>
-              Effect.gen(function* () {
-                sends++;
-                yield* Deferred.succeed(entered, undefined);
-                yield* Deferred.await(release);
-                return f.evidence;
-              }),
-          }),
-          Effect.forkChild,
-        );
+      };
+      const fiber = yield* withActiveEffectClaim(observed, captured, 10_000, true, (claim) =>
+        executeNativeProviderEffect(f.effect).pipe(
+          Effect.andThen(
+            claim.settle((current) =>
+              outbox.succeed({ effectId: current.id, workerId: "sql-worker", claim: current }),
+            ),
+          ),
+        ),
+      ).pipe(
+        Effect.provide(f.authorityLayer),
+        Effect.provideService(NativeCreationProviderExecutor, {
+          executeWholeOperation: ({ context }) =>
+            Effect.gen(function* () {
+              sends++;
+              yield* Authority.recordNativeCreationExecutionBinding(
+                context,
+                yield* decodeProviderRuntimeBinding({
+                  threadId: f.command.threadId,
+                  providerThreadId: "sql-provider-thread",
+                  providerSessionId: "sql-provider-session",
+                  providerInstanceId: "codex",
+                  driver: "codex",
+                  nativeThreadId: "sql-native-thread",
+                  runtimeGeneration: "sql-generation",
+                }),
+              );
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+              return f.evidence;
+            }).pipe(
+              Effect.mapError(
+                (cause) => new NativeCreationProviderExecutionError({ message: String(cause) }),
+              ),
+            ),
+        }),
+        Effect.forkChild,
+      );
       yield* Deferred.await(entered);
+      const before = yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`;
       for (let interval = 0; interval < 4; interval++) {
+        const readCount = reads;
         yield* TestClock.adjust("10 seconds");
-        const rows = yield* f.sql<{
-          readonly outbox_expiry: string;
-          readonly start_expiry: string;
-        }>`
-        SELECT effect.lease_expires_at AS outbox_expiry,start.lease_expires_at AS start_expiry
-        FROM orchestration_v2_effect_outbox effect JOIN jones_native_creation_execution_starts start ON start.effect_id=effect.effect_id`;
-        assert.strictEqual(rows[0]!.outbox_expiry, rows[0]!.start_expiry);
-        assert.notStrictEqual(rows[0]!.outbox_expiry, initial);
+        assert.isAbove(reads, readCount);
+        assert.deepEqual(yield* outbox.get(f.effect.id), Option.some(captured));
+        assert.deepEqual(
+          yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`,
+          before,
+        );
       }
       yield* Deferred.succeed(release, undefined);
       assert.isTrue(yield* Fiber.join(fiber));
@@ -908,26 +1149,25 @@ it.effect(
         [{ status: "succeeded", attempt_count: 1 }],
       );
       assert.deepEqual(
-        yield* f.sql`SELECT effect_id FROM jones_native_creation_execution_holds`,
+        yield* f.sql`SELECT * FROM jones_native_creation_execution_process_holds`,
         [],
       );
-    }).pipe(Effect.provide(realRepository)),
+    }).pipe(Effect.provide(Outbox.layer.pipe(Layer.provideMerge(realRepository)))),
 );
 
 it.effect.each(["cancellation", "hold"] as const)(
-  "%s after native confirmation wins both renewal and guarded outbox completion",
+  "%s after native confirmation wins guarded completion without changing immutable start",
   (change) =>
     Effect.gen(function* () {
       const f = yield* fixture;
       yield* f.accept();
       yield* f.enqueue;
       yield* f.seedRuntime;
-      const initial = DateTime.formatIso(DateTime.add(yield* DateTime.now, { seconds: 30 }));
-      yield* f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${initial}`;
-      const outbox = yield* Outbox.EffectOutboxV2;
-      const claim = Option.getOrThrow(yield* outbox.get(f.effect.id));
       yield* f.issue;
-      yield* f.repository.confirmExecution!({ ...f.confirmation, leaseExpiresAt: initial });
+      const outbox = yield* Outbox.EffectOutboxV2;
+      const captured = Option.getOrThrow(yield* outbox.get(f.effect.id));
+      yield* f.repository.confirmExecution!(f.confirmation);
+      const starts = yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`;
       if (change === "hold")
         yield* f.repository.holdExecution!(f.reference, "Synthetic late unknown hold");
       else {
@@ -940,51 +1180,46 @@ it.effect.each(["cancellation", "hold"] as const)(
       }
       const before = yield* outbox.get(f.effect.id);
       yield* TestClock.adjust("10 seconds");
-      yield* outbox.renew({ claim, leaseDurationMs: 30_000 }).pipe(Effect.flip);
-      assert.isFalse(yield* outbox.succeed({ effectId: claim.id, workerId: "sql-worker", claim }));
-      assert.deepEqual(yield* outbox.get(claim.id), before);
+      assert.isFalse(
+        yield* outbox.succeed({ effectId: f.effect.id, workerId: "sql-worker", claim: captured }),
+      );
+      assert.deepEqual(yield* outbox.get(f.effect.id), before);
       assert.deepEqual(
-        yield* f.sql`SELECT lease_expires_at FROM jones_native_creation_execution_starts`,
-        [{ lease_expires_at: initial }],
+        yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`,
+        starts,
       );
       assert.strictEqual((yield* f.issue.pipe(Effect.flip)).code, "unresolved_claim");
     }).pipe(Effect.provide(Outbox.layer.pipe(Layer.provideMerge(realRepository)))),
 );
 
 it.effect(
-  "a current outbox snapshot cannot repair independently corrupted native-start lease equality",
+  "a current outbox snapshot cannot adopt a native start captured at another generation",
   () =>
     Effect.gen(function* () {
       const f = yield* fixture;
       yield* f.accept();
       yield* f.enqueue;
       yield* f.seedRuntime;
-      const initial = DateTime.formatIso(DateTime.add(yield* DateTime.now, { seconds: 30 }));
-      yield* f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${initial}`;
       yield* f.issue;
-      yield* f.repository.confirmExecution!({ ...f.confirmation, leaseExpiresAt: initial });
-      yield* TestClock.adjust("10 seconds");
-      const corrupted = DateTime.formatIso(
-        DateTime.add(DateTime.makeUnsafe(initial), { seconds: 1 }),
-      );
-      yield* f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${corrupted}`;
+      yield* f.repository.confirmExecution!(f.confirmation);
+      const before = yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`;
+      yield* f.sql`UPDATE orchestration_v2_effect_outbox SET updated_at='2098-01-01T00:00:00.000Z'`;
       const outbox = yield* Outbox.EffectOutboxV2;
       const current = Option.getOrThrow(yield* outbox.get(f.effect.id));
-      yield* outbox.renew({ claim: current, leaseDurationMs: 30_000 }).pipe(Effect.flip);
-      assert.deepEqual(yield* outbox.get(f.effect.id), Option.some(current));
-      assert.deepEqual(
-        yield* f.sql`SELECT lease_expires_at FROM jones_native_creation_execution_starts`,
-        [{ lease_expires_at: initial }],
-      );
       assert.isFalse(
-        yield* outbox.succeed({ effectId: current.id, workerId: "sql-worker", claim: current }),
+        yield* outbox.succeed({ effectId: f.effect.id, workerId: "sql-worker", claim: current }),
       );
       assert.strictEqual(
         (yield* f.repository.confirmExecution!({
           ...f.confirmation,
-          leaseExpiresAt: corrupted,
+          claimedAt: current.updatedAt,
         }).pipe(Effect.flip)).code,
         "unresolved_claim",
+      );
+      assert.deepEqual(yield* outbox.get(f.effect.id), Option.some(current));
+      assert.deepEqual(
+        yield* f.sql`SELECT * FROM jones_native_creation_execution_process_claims`,
+        before,
       );
     }).pipe(Effect.provide(Outbox.layer.pipe(Layer.provideMerge(realRepository)))),
 );

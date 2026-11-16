@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
 import * as BitbucketDriver from "@t3tools/source-control-bitbucket/server/driver";
@@ -46,7 +47,7 @@ it.effect("asks Bitbucket for the account only once a credential is configured",
       ),
     ),
     Layer.provideMerge(ServerSettings.layerTest()),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 
   return Effect.gen(function* () {

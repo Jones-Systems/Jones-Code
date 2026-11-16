@@ -1,3 +1,4 @@
+import * as NodeCryptoServices from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off -- Disposable HTTP fixtures exercise Vite's actual upgrade proxy.
 import * as NodeHttp from "node:http";
 import * as NodeCrypto from "node:crypto";
@@ -11,6 +12,7 @@ import {
 } from "@t3tools/shared/devProxy";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import { HttpServerRequest } from "effect/http";
 import { createServer } from "vite-plus";
 
@@ -20,13 +22,15 @@ import * as SessionStore from "../../auth/SessionStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 
 const authLayer = EnvironmentAuth.layer.pipe(
+  Layer.provide(ManagedPolicy.layerTest()),
   Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(ServerSecretStore.layer),
   Layer.provide(ServerEnvironment.layerIdentity),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "dev-proxy-auth-" })),
-  Layer.provide(NodeServices.layer),
+  Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCryptoServices.layer)),
 );
 
 it.live("preserves browser authority through API and RPC development proxies", () =>
@@ -45,6 +49,8 @@ it.live("preserves browser authority through API and RPC development proxies", (
     const cookie = `${sessions.cookieName}=${session.sessionToken}`;
     const verified = yield* sessions.verify(session.sessionToken);
     const ticket = yield* auth.issueWebSocketTicket(verified, { use: "media" });
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- Node HTTP callbacks must bridge the real proxy into the test-scoped production auth service.
+    const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
 
     yield* Effect.promise(async () => {
       const observations: { path: string; host: string | undefined; origin: string | undefined }[] =
@@ -63,8 +69,7 @@ it.live("preserves browser authority through API and RPC development proxies", (
         const input = HttpServerRequest.fromWeb(
           new Request(`http://${request.headers.host}${request.url}`, { headers }),
         );
-        // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- Node HTTP callbacks must bridge the real proxy into the test-scoped production auth service.
-        return Effect.runPromise(
+        return runPromise(
           (upgrade
             ? auth.authenticateWebSocketUpgrade(input, request.url === "/ws" ? "rpc" : "media")
             : auth.authenticateHttpRequest(input)
@@ -165,7 +170,9 @@ it.live("preserves browser authority through API and RPC development proxies", (
         expect(await request("/ws", true)).toBe(101);
         expect(await request("/ws", true, { origin: "http://unrelated.invalid" })).toBe(401);
         expect(
-          await request(`/api/preview-stream/ws?wsTicket=${ticket.ticket}`, true, { cookie: "" }),
+          await request(`/api/preview-stream/ws?wsTicket=${Redacted.value(ticket.ticket)}`, true, {
+            cookie: "",
+          }),
         ).toBe(101);
         expect(await request("/api/preview-stream/ws", true, { cookie: "" })).toBe(401);
         expect(

@@ -24,7 +24,7 @@ import packageJson from "../../../package.json" with { type: "json" };
 import * as BootService from "../../cloud/bootService.ts";
 import * as PinnedRuntime from "../../cloud/pinnedRuntime.ts";
 import { serviceStateActiveVersion } from "../../cloud/serviceProtocol.ts";
-import { jonesBootServiceLayer, reconcileService } from "../../cli/service.ts";
+import { jonesBootServiceLayer, reconcileServiceAt } from "../../cli/service.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import { isProcessAlive, PersistedServerRuntimeState } from "../../serverRuntimeState.ts";
 import * as HostServiceConfig from "./HostServiceConfig.ts";
@@ -802,7 +802,7 @@ const make = Effect.gen(function* () {
         const awaitingLogin =
           platform === "darwin" && (yield* consoleLogin) === "gui-login-required";
         yield* config.write(input.baseDir, effectPlan.config);
-        yield* reconcileService({ start: !awaitingLogin }).pipe(
+        yield* reconcileServiceAt(input.baseDir, { start: !awaitingLogin }).pipe(
           Effect.provide(bootLayer(input.baseDir, input.allowLingerEnable === true)),
           Effect.provide(context),
         );

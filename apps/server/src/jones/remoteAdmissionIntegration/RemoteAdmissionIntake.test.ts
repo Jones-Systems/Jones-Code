@@ -538,25 +538,49 @@ it("owner classification accepts administrative browser pairing and desktop bear
 });
 
 it("all remote task and queue mutation surfaces are screened while cancellation passes", () => {
-  for (const operation of [
-    "t3_thread_launch",
-    "t3_thread_send",
-    "delegate_task",
-    "create_threads",
-    "t3_queue_edit",
-    "t3_queue_reorder",
-    "t3_queue_promote_to_steer",
-    "t3_pending_request_respond",
-    "run_scheduled_task_now",
-  ])
-    expect(screensRemoteOperation(operation, {})).toBe(true);
-  for (const operation of [
-    "task_cancel",
-    "t3_queue_cancel",
-    "t3_thread_interrupt",
-    "t3_remote_admission_cancel",
-  ])
-    expect(screensRemoteOperation(operation, {})).toBe(false);
+  for (const [operation, params] of [
+    ["t3_thread_launch", {}],
+    ["t3_thread_send", {}],
+    ["delegate_task", {}],
+    ["create_threads", {}],
+    ["t3_queue", { action: "edit" }],
+    ["t3_queue", { action: "reorder" }],
+    ["t3_queue", { action: "promote_to_steer" }],
+    ["t3_pending_request", { action: "respond" }],
+    ["run_scheduled_task_now", {}],
+  ] as const)
+    expect(
+      screensRemoteOperation(operation, params),
+      `${operation} ${JSON.stringify(params)}`,
+    ).toBe(true);
+  for (const [operation, params] of [
+    ["task_cancel", {}],
+    ["t3_queue", { action: "cancel" }],
+    ["t3_thread_interrupt", {}],
+    ["t3_remote_admission_cancel", {}],
+  ] as const)
+    expect(
+      screensRemoteOperation(operation, params),
+      `${operation} ${JSON.stringify(params)}`,
+    ).toBe(false);
+});
+
+it("action tools screen each call by its action, so reads and the configuration read pass", () => {
+  for (const [operation, params, screened] of [
+    ["t3_queue", { action: "list" }, false],
+    ["t3_queue", { action: "read" }, false],
+    ["t3_pending_request", { action: "list" }, false],
+    ["t3_pending_request", { action: "read" }, false],
+    ["t3_thread_configure", {}, false],
+    ["t3_thread_configure", { modelSelection: { instanceId: "codex", model: "gpt-5" } }, true],
+    ["t3_thread_transfer", { action: "status" }, false],
+    ["t3_thread_transfer", { action: "fork" }, true],
+    ["t3_thread_transfer", { action: "merge_back" }, true],
+  ] as const)
+    expect(
+      screensRemoteOperation(operation, params),
+      `${operation} ${JSON.stringify(params)}`,
+    ).toBe(screened);
 });
 
 it.effect(
@@ -594,7 +618,7 @@ it.effect("an owner approval cannot dispatch a changed project, model, or queue 
     let configuration = { workspace: "/synthetic/a", model: "first", queue: "reviewed bytes" };
     let calls = 0;
     intake.register(
-      "t3_queue_promote_to_steer",
+      "t3_queue",
       () =>
         Effect.sync(() => {
           calls++;
@@ -602,7 +626,7 @@ it.effect("an owner approval cannot dispatch a changed project, model, or queue 
         }),
       () => Effect.succeed(configuration),
     );
-    yield* intake.invoke("t3_queue_promote_to_steer", input, invocation).pipe(Effect.ignore);
+    yield* intake.invoke("t3_queue", input, invocation).pipe(Effect.ignore);
     const record = (yield* intake.snapshot()).pending[0]!;
     configuration = { workspace: "/synthetic/b", model: "second", queue: "changed bytes" };
     expect(
@@ -658,7 +682,7 @@ it.effect(
       let configuration = "queued";
       let calls = 0;
       intake.register(
-        "t3_queue_promote_to_steer",
+        "t3_queue",
         () =>
           Effect.sync(() => {
             calls++;
@@ -667,10 +691,10 @@ it.effect(
           }),
         () => Effect.succeed({ configuration }),
       );
-      expect(yield* intake.invoke("t3_queue_promote_to_steer", input, invocation)).toEqual({
+      expect(yield* intake.invoke("t3_queue", input, invocation)).toEqual({
         sequence: 7,
       });
-      expect(yield* intake.invoke("t3_queue_promote_to_steer", input, invocation)).toEqual({
+      expect(yield* intake.invoke("t3_queue", input, invocation)).toEqual({
         sequence: 7,
       });
       expect(calls).toBe(1);

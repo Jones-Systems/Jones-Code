@@ -1,76 +1,40 @@
-import { type EnvironmentId, type ServerProvider } from "@t3tools/contracts";
-import { type ProviderInstanceEntry } from "../../providerInstances";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { type EnvironmentId, type ProviderInstanceId } from "@t3tools/contracts";
 import {
-  hasCompleteProviderWorkspaceSnapshot,
-  hasCurrentProviderWorkspaceSnapshot,
+  createProviderWorkspaceSnapshotRefreshAtomFamily,
+  isProviderWorkspaceSnapshotScanning,
+  type ProviderWorkspaceSnapshotRefreshState,
 } from "@t3tools/client-runtime/providerSkills";
-import { serverEnvironment } from "../../state/server";
-import { useAtomCommand } from "../../state/use-atom-command";
-import { useEffect, useEffectEvent, useState } from "react";
-import { useStableCallback } from "../../hooks/useStableCallback";
+import { Atom } from "effect/reactivity";
 
-// Jones retry policy gives each provider/workspace selection its own failure budget.
-import {
-  createProviderWorkspaceRefresh,
-  providerWorkspaceRefreshKey,
-} from "@t3tools/client-runtime/jones/provider-workspace-refresh";
+import { serverEnvironment } from "../../state/server";
+
+const providerWorkspaceSnapshotRefresh = createProviderWorkspaceSnapshotRefreshAtomFamily({
+  providers: serverEnvironment.providersValueAtom,
+  refreshProviders: serverEnvironment.refreshProviders,
+});
+
+const idleRefreshAtom: Atom.Atom<ProviderWorkspaceSnapshotRefreshState | undefined> = Atom.make<
+  ProviderWorkspaceSnapshotRefreshState | undefined
+>(undefined).pipe(Atom.withLabel("provider-workspace-snapshot-refresh:idle"));
 
 /**
  * Keeps the selected provider's workspace snapshot fresh for the composer's
- * cwd. Returns a check to run when the user types.
+ * cwd while mounted. Returns a check to run when the user types, and whether
+ * the cwd's skills are still being scanned.
  */
 export function useProviderWorkspaceSnapshotRefresh(input: {
   readonly environmentId: EnvironmentId;
   readonly gitCwd: string | null;
-  readonly selectedProviderEntry: ProviderInstanceEntry | undefined;
-  readonly selectedProviderStatus: ServerProvider | null;
-}) {
-  const { environmentId, gitCwd, selectedProviderEntry, selectedProviderStatus } = input;
-  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
-    reportFailure: false,
-  });
-  const [workspaceRefresh] = useState(createProviderWorkspaceRefresh);
-  const [workspaceRefreshRetry, setWorkspaceRefreshRetry] = useState(0);
-  const workspaceRefreshScopeKey =
-    gitCwd && selectedProviderEntry
-      ? providerWorkspaceRefreshKey(environmentId, selectedProviderEntry.instanceId, gitCwd)
-      : null;
-  useEffect(() => () => workspaceRefresh.pause(), [workspaceRefresh]);
-  const refreshWorkspaceSnapshotIfStale = () => {
-    if (workspaceRefreshScopeKey === null || !gitCwd || !selectedProviderEntry) {
-      workspaceRefresh.update(null);
-      return;
-    }
-    workspaceRefresh.update({
-      key: workspaceRefreshScopeKey,
-      hasSnapshot: hasCompleteProviderWorkspaceSnapshot(selectedProviderStatus, gitCwd),
-      isCurrent: hasCurrentProviderWorkspaceSnapshot(selectedProviderStatus, gitCwd, Date.now()),
-      retryPending:
-        selectedProviderStatus?.workspaceSnapshots?.some(
-          (snapshot) => snapshot.cwd === gitCwd && snapshot.slashCommandsPending === true,
-        ) ?? false,
-      onRetry: () => setWorkspaceRefreshRetry((retry) => retry + 1),
-      refresh: () =>
-        refreshProviders({
-          environmentId,
-          input: { instanceId: selectedProviderEntry.instanceId, cwd: gitCwd },
-        }).then(
-          (result) =>
-            result._tag === "Success" &&
-            hasCompleteProviderWorkspaceSnapshot(
-              result.value.providers.find(
-                (provider) => provider.instanceId === selectedProviderEntry.instanceId,
-              ),
-              gitCwd,
-            ),
-        ),
-    });
+  readonly instanceId: ProviderInstanceId | undefined;
+}): { readonly refresh: () => void; readonly scanning: boolean } {
+  const { environmentId, gitCwd, instanceId } = input;
+  const atom =
+    gitCwd && instanceId
+      ? providerWorkspaceSnapshotRefresh({ environmentId, instanceId, cwd: gitCwd })
+      : idleRefreshAtom;
+  return {
+    refresh: useAtomRefresh(atom),
+    scanning: isProviderWorkspaceSnapshotScanning(useAtomValue(atom)),
   };
-  const refreshWorkspaceSnapshotOnChange = useEffectEvent(refreshWorkspaceSnapshotIfStale);
-  useEffect(() => {
-    refreshWorkspaceSnapshotOnChange();
-    // The Effect Event reads current values; these keys deliberately trigger freshness checks.
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies
-  }, [workspaceRefreshScopeKey, selectedProviderStatus, workspaceRefreshRetry]);
-  return useStableCallback(refreshWorkspaceSnapshotIfStale);
 }

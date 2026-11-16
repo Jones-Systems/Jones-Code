@@ -21,6 +21,8 @@ const debuggee = () => {
     getURL: () => "https://example.test",
     getTitle: () => "Fixture",
     getUserAgent: () => "Electron",
+    isLoadingMainFrame: () => false,
+    isDestroyed: () => false,
   });
   const sendCommand = vi.fn(async (_method: string, _params?: object) => ({}));
   const focusEmulation = vi.fn();
@@ -254,7 +256,7 @@ describe("companion isolation", () => {
         host.isCompanionAssigned,
       );
       yield* settleCommands;
-      expect(companion.sendCommand).toHaveBeenCalledWith("Browser.setDownloadBehavior", {
+      expect(companion.sendCommand).toHaveBeenCalledWith("Page.setDownloadBehavior", {
         behavior: "deny",
       });
       host.replaceCompanionAssignments([]);

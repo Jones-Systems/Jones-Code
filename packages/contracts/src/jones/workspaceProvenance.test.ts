@@ -2,6 +2,12 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import { WorktreeMcpStatusResult } from "../worktreeMcp.ts";
 
+const compiledIncomingSchema12 = Schema.decodeSync(WorktreeMcpStatusResult);
+
+const compiledIncomingSchema11 = Schema.decodeUnknownSync(WorktreeMcpStatusResult);
+
+const compiledIncomingSchema10 = Schema.decodeSync(WorktreeMcpStatusResult);
+
 describe("workspace provenance compatibility", () => {
   const legacy = {
     attached: false,
@@ -11,7 +17,7 @@ describe("workspace provenance compatibility", () => {
     defaultStartFromOrigin: false,
   };
   it("decodes older status results without claiming provenance availability", () => {
-    const status = Schema.decodeSync(WorktreeMcpStatusResult)(legacy);
+    const status = compiledIncomingSchema10(legacy);
     expect(status).toEqual(legacy);
     expect(status.provenance).toBeUndefined();
   });
@@ -50,9 +56,9 @@ describe("workspace provenance compatibility", () => {
         },
       ],
     };
-    const status = Schema.decodeUnknownSync(WorktreeMcpStatusResult)(input);
+    const status = compiledIncomingSchema11(input);
     expect(status.provenance?.[0]?.branch).toBeNull();
     expect(status.provenance?.[0]?.threads).toEqual(["one", "two"]);
-    expect(Schema.decodeSync(WorktreeMcpStatusResult)(status)).toEqual(status);
+    expect(compiledIncomingSchema12(status)).toEqual(status);
   });
 });

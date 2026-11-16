@@ -38,6 +38,9 @@ interface Harness<E extends Error> {
   readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
 }
 
+const encodeEventJson = Schema.encodeEffect(OrchestrationV2DomainEventJson);
+const decodeEventJson = Schema.decodeEffect(OrchestrationV2DomainEventJson);
+
 const admission = (reason: "queue-timeout" | "checkpoint-held") =>
   new SqlError({ reason: classifySqliteError(new SqliteReaderAdmissionError({ reason })) });
 const unavailable = (reason: "queue-timeout" | "checkpoint-held") =>
@@ -346,8 +349,8 @@ export function registerReaderAdmissionStartTests<E extends Error>(
           });
           yield* held.start;
           for (const event of [...harness.events, ...held.events]) {
-            const json = yield* Schema.encodeEffect(OrchestrationV2DomainEventJson)(event);
-            expect(yield* Schema.decodeEffect(OrchestrationV2DomainEventJson)(json)).toEqual(event);
+            const json = yield* encodeEventJson(event);
+            expect(yield* decodeEventJson(json)).toEqual(event);
           }
         }
       }),
