@@ -8,7 +8,7 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import type { ProviderRuntimeObservation } from "./ProviderThreadRuntimeObservation.ts";
-import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -74,7 +74,7 @@ it.effect.each(["starting", "running"] as const)(
         native = {
           status: "working",
           backgroundCoverage: "complete",
-          observedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+          observedAt: DateTime.formatIso(yield* DateTime.now),
           binding: {
             threadId,
             providerThreadId: ProviderThreadId.make("synthetic:provider"),
