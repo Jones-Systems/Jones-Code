@@ -3,6 +3,13 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
 import * as DateTime from "effect/DateTime";
+import {
+  infrastructureBasis,
+  INFRASTRUCTURE_POLICY,
+  type InfrastructureResult,
+  type LinuxProcessAnchor,
+  type InfrastructureReason,
+} from "./LinuxInfrastructureEvidence.ts";
 import { inside, nativePlatform, readBounded } from "./Filesystem.ts";
 
 export const CONSUMER_LIMITS = [
@@ -12,11 +19,28 @@ export const CONSUMER_LIMITS = [
   "general open-file handles are not scanned",
   "lifecycle bindings to other Git directories are outside the participant guard",
 ] as const;
+export interface ProcessPolicy {
+  policy: typeof INFRASTRUCTURE_POLICY;
+  provenance: "local-system-manager-and-proc-metadata";
+  assurance: "accepted-exclusion-not-non-use";
+  rawStatus: Probe["status"];
+  effectiveStatus: Probe["status"];
+  deniedInstances: number;
+  verifiedExclusions: number;
+  unclassifiedInstances: number;
+  nonExemptErrors: number;
+  classes: { "system-user-manager-main": number };
+  reasons: Partial<Record<InfrastructureReason, number>>;
+  basisDigest: string;
+}
+// Only this observation can confer effective coverage. Decoded/copied summaries remain diagnostics.
+const freshPolicies = new WeakMap<Probe, ProcessPolicy>();
 export interface Probe {
   observedAt: number;
   status: "complete" | "partial" | "unavailable";
   paths: readonly string[];
   limits: readonly string[];
+  processPolicy?: ProcessPolicy;
 }
 export interface ConsumerEvidence {
   native: Probe;
@@ -35,24 +59,34 @@ export function consumerDecision(
     unknown: string[] = [],
     coverage: Record<
       string,
-      { status: string; ageMs: number; limits: readonly string[]; reason: string | null }
+      {
+        status: string;
+        ageMs: number;
+        limits: readonly string[];
+        reason: string | null;
+        processPolicy?: ProcessPolicy;
+      }
     > = {};
   for (const [name, probe] of Object.entries(evidence)) {
     const ageMs = now - probe.observedAt;
+    const policy = name === "process" ? freshPolicies.get(probe) : undefined;
+    const effectiveStatus =
+      policy && policy === probe.processPolicy ? policy.effectiveStatus : probe.status;
     coverage[name] = {
       status: probe.status,
       ageMs,
       limits: probe.limits,
+      ...(probe.processPolicy ? { processPolicy: probe.processPolicy } : {}),
       reason:
         !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 120000
           ? "stale_or_invalid_observation"
-          : probe.status !== "complete"
+          : effectiveStatus !== "complete"
             ? "incomplete_" + name + "_coverage"
             : null,
     };
     if (probe.paths.some((p: string) => inside(p, target)))
       holds.push(name === "obligations" ? "obligation" : "active_consumer");
-    if (probe.status !== "complete" || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 120000)
+    if (effectiveStatus !== "complete" || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 120000)
       unknown.push("consumer_evidence_unavailable");
   }
   return {
@@ -101,6 +135,13 @@ async function procText(path: string, limit: number) {
 }
 export interface ProcessProbeIO {
   now?: () => number;
+  capture?: (pid: string) => Promise<LinuxProcessAnchor>;
+  verifyInfrastructure?: (
+    anchor: LinuxProcessAnchor,
+    pid: string,
+    uid: number,
+    remainingMs: number,
+  ) => Promise<InfrastructureResult>;
   command: (file: string, args: string[]) => Promise<string>;
   list: (path: string) => Promise<string[]>;
   uid: () => number | undefined;
@@ -108,7 +149,7 @@ export interface ProcessProbeIO {
   readlink: (path: string) => Promise<string>;
   read: (path: string, limit: number) => Promise<string>;
 }
-const nativeIO: ProcessProbeIO = {
+export const nativeProcessIO: ProcessProbeIO = {
   command,
   list: (path) => NodeFSP.readdir(path),
   uid: () => process.getuid?.(),
@@ -151,7 +192,7 @@ function processErrorCategory(cause: unknown): ProcessCategory {
 export async function processProbe(
   target: string,
   platform: NodeJS.Platform = nativePlatform,
-  io: ProcessProbeIO = nativeIO,
+  io: ProcessProbeIO = nativeProcessIO,
 ): Promise<Probe> {
   const now = io.now ?? (() => performance.now());
   const started = now();
@@ -168,6 +209,40 @@ export async function processProbe(
     const key = `stage=${at},category=${category}`;
     observations.set(key, (observations.get(key) ?? 0) + 1);
   };
+  let deniedInstances = 0,
+    verifiedExclusions = 0,
+    nonExemptErrors = 0;
+  const basis: string[] = [];
+  const policyReasons: Partial<Record<InfrastructureReason, number>> = {};
+  const finish = (status: Probe["status"]): Probe => {
+    const probe: Probe = { observedAt, status, paths: [...paths], limits: limits() };
+    if (platform === "linux" && io.verifyInfrastructure) {
+      const effectiveStatus =
+        status === "partial" &&
+        deniedInstances > 0 &&
+        deniedInstances === verifiedExclusions &&
+        nonExemptErrors === 0
+          ? "complete"
+          : status;
+      const summary: ProcessPolicy = Object.freeze({
+        policy: INFRASTRUCTURE_POLICY,
+        provenance: "local-system-manager-and-proc-metadata",
+        assurance: "accepted-exclusion-not-non-use",
+        rawStatus: status,
+        effectiveStatus,
+        deniedInstances,
+        verifiedExclusions,
+        unclassifiedInstances: deniedInstances - verifiedExclusions,
+        nonExemptErrors,
+        classes: Object.freeze({ "system-user-manager-main": verifiedExclusions }),
+        reasons: Object.freeze(policyReasons),
+        basisDigest: infrastructureBasis(basis),
+      });
+      probe.processPolicy = summary;
+      freshPolicies.set(probe, summary);
+    }
+    return probe;
+  };
   const limits = () => [
     ...CONSUMER_LIMITS,
     `process_probe_coverage:listed=${listed},attempted=${attempted},same_user=${sameUser},other_user=${otherUser}`,
@@ -182,60 +257,116 @@ export async function processProbe(
       listed = pids.length;
       if (pids.length > 4096) {
         record("scan", "pid_bound");
-        return { observedAt, status: "unavailable", paths: [...paths], limits: limits() };
+        nonExemptErrors++;
+        return finish("unavailable");
       }
       for (const pid of pids) {
         if (now() - started > 5000) {
           record("scan", "time_budget");
+          nonExemptErrors++;
           complete = false;
           break;
         }
         attempted++;
-        const base = "/proc/" + pid;
+        let anchor: LinuxProcessAnchor | undefined;
+        let denied = false;
+        const gap = (at: ProcessStage, cause: unknown, link = false) => {
+          const category = processErrorCategory(cause);
+          record(at, category);
+          if (category === "permission") denied = true;
+          if (
+            (cause as NodeJS.ErrnoException).code === "ENOENT" ||
+            (!link && (cause as NodeJS.ErrnoException).code === "ESRCH")
+          )
+            return;
+          complete = false;
+          if (category !== "permission") nonExemptErrors++;
+        };
         try {
           stage = "linux_owner";
-          if ((await io.statUid(base)) !== io.uid()) {
+          if ((await io.statUid("/proc/" + pid)) !== io.uid()) {
             otherUser++;
             continue;
           }
           sameUser++;
+          // The directory remains open across normal same-user surface reads and the helper bracket.
+          try {
+            anchor = await io.capture?.(pid);
+          } catch {
+            /* No anchor means no exception authority. */
+          }
+          const base = anchor?.base ?? "/proc/" + pid;
           for (const name of ["cwd", "exe"] as const) {
             stage = name === "cwd" ? "linux_cwd" : "linux_exe";
             try {
               const p = await io.readlink(base + "/" + name);
               if (inside(p, target)) paths.add(p);
             } catch (cause) {
-              record(stage, processErrorCategory(cause));
-              if ((cause as NodeJS.ErrnoException).code !== "ENOENT") complete = false;
+              gap(stage, cause, true);
             }
           }
-          stage = "linux_cmdline";
-          const argv = await io.read(base + "/cmdline", 1024 * 1024);
-          if (argv.length > 1024 * 1024) {
-            record(stage, "data_bound");
-            complete = false;
-            continue;
-          }
-          if (argvUses(argv, target)) paths.add(target);
-          stage = "linux_maps";
-          const maps = await io.read(base + "/maps", 2 * 1024 * 1024);
-          if (maps.length > 2 * 1024 * 1024) {
-            record(stage, "data_bound");
-            complete = false;
-            continue;
-          }
-          for (const line of maps.split("\n"))
-            if (/^[\da-f]+-[\da-f]+\s+\S*x\S*\s/.test(line)) {
-              const p = line.match(/\s(\/.*)$/)?.[1];
-              if (p && inside(p, target)) paths.add(p);
+          for (const name of ["cmdline", "maps"] as const) {
+            stage = name === "cmdline" ? "linux_cmdline" : "linux_maps";
+            try {
+              const cap = name === "cmdline" ? 1024 * 1024 : 2 * 1024 * 1024;
+              const text = await io.read(base + "/" + name, cap);
+              if (text.length > cap) throw Error("bound_exceeded");
+              if (name === "cmdline") {
+                if (argvUses(text, target)) paths.add(target);
+              } else
+                for (const line of text.split("\n"))
+                  if (/^[\da-f]+-[\da-f]+\s+\S*x\S*\s/.test(line)) {
+                    const p = line.match(/\s(\/.*)$/)?.[1];
+                    if (p && inside(p, target)) paths.add(p);
+                  }
+            } catch (cause) {
+              gap(stage, cause);
             }
+          }
         } catch (cause) {
-          record(stage, processErrorCategory(cause));
-          if (
-            (cause as NodeJS.ErrnoException).code !== "ENOENT" &&
-            (cause as NodeJS.ErrnoException).code !== "ESRCH"
-          )
-            complete = false;
+          gap(stage, cause);
+        } finally {
+          try {
+            if (denied) {
+              deniedInstances++;
+              let result: InfrastructureResult = { kind: "unclassified", reason: "unavailable" };
+              const uid = io.uid();
+              if (deniedInstances > 16) result = { kind: "unclassified", reason: "bounds" };
+              else if (
+                anchor &&
+                uid !== undefined &&
+                io.verifyInfrastructure &&
+                now() - started < 5000
+              ) {
+                try {
+                  result = await io.verifyInfrastructure(
+                    anchor,
+                    pid,
+                    uid,
+                    5000 - (now() - started),
+                  );
+                } catch {
+                  /* A failed verifier cannot suppress a permission hold. */
+                }
+              }
+              if (result.kind === "verified" && /^[a-f0-9]{64}$/.test(result.basisDigest)) {
+                verifiedExclusions++;
+                basis.push(result.basisDigest);
+              } else {
+                const reason = result.kind === "unclassified" ? result.reason : "unavailable";
+                policyReasons[reason] = (policyReasons[reason] ?? 0) + 1;
+              }
+            }
+          } finally {
+            if (anchor) {
+              try {
+                await anchor.close();
+              } catch {
+                nonExemptErrors++;
+                complete = false;
+              }
+            }
+          }
         }
       }
     } else if (platform === "darwin") {
@@ -248,11 +379,13 @@ export async function processProbe(
       listed = pids.length;
       if (pids.length > 4096) {
         record("scan", "pid_bound");
-        return { observedAt, status: "unavailable", paths: [...paths], limits: limits() };
+        nonExemptErrors++;
+        return finish("unavailable");
       }
       for (let i = 0; i < pids.length; i += 64) {
         if (now() - started > 5000) {
           record("scan", "time_budget");
+          nonExemptErrors++;
           complete = false;
           break;
         }
@@ -292,15 +425,20 @@ export async function processProbe(
         paths: [],
         limits: [...CONSUMER_LIMITS, "unsupported platform"],
       };
-    return {
-      observedAt,
-      status: complete ? "complete" : "partial",
-      paths: [...paths],
-      limits: limits(),
-    };
+    if (
+      platform === "linux" &&
+      now() - started > 5000 &&
+      !observations.has("stage=scan,category=time_budget")
+    ) {
+      complete = false;
+      nonExemptErrors++;
+      record("scan", "time_budget");
+    }
+    return finish(complete ? "complete" : "partial");
   } catch (cause) {
     record(stage, processErrorCategory(cause));
-    return { observedAt, status: "unavailable", paths: [...paths], limits: limits() };
+    nonExemptErrors++;
+    return finish("unavailable");
   }
 }
 export async function serviceProbe(target: string, files: readonly string[]): Promise<Probe> {

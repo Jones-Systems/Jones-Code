@@ -104,6 +104,42 @@ const detail = Schema.Struct({
   lineage: Schema.Array(fields),
   nextAction: Schema.String,
 });
+const count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const processPolicy = Schema.Struct({
+  policy: Schema.Literal("linux-systemd-user-manager-main/v1"),
+  provenance: Schema.Literal("local-system-manager-and-proc-metadata"),
+  assurance: Schema.Literal("accepted-exclusion-not-non-use"),
+  rawStatus: Schema.Literals(["complete", "partial", "unavailable"]),
+  effectiveStatus: Schema.Literals(["complete", "partial", "unavailable"]),
+  deniedInstances: count,
+  verifiedExclusions: count,
+  unclassifiedInstances: count,
+  nonExemptErrors: count,
+  classes: Schema.Struct({ "system-user-manager-main": count }),
+  reasons: Schema.Struct({
+    unavailable: Schema.optionalKey(count),
+    identity: Schema.optionalKey(count),
+    provenance: Schema.optionalKey(count),
+    changed: Schema.optionalKey(count),
+    bounds: Schema.optionalKey(count),
+    timeout: Schema.optionalKey(count),
+  }),
+  basisDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+}).check(
+  Schema.makeFilter(
+    (value) =>
+      value.verifiedExclusions <= 16 &&
+      value.deniedInstances === value.verifiedExclusions + value.unclassifiedInstances &&
+      value.classes["system-user-manager-main"] === value.verifiedExclusions &&
+      Object.values(value.reasons).reduce((sum, n) => sum + n, 0) === value.unclassifiedInstances &&
+      (value.effectiveStatus !== "complete" ||
+        value.rawStatus === "complete" ||
+        (value.rawStatus === "partial" &&
+          value.deniedInstances > 0 &&
+          value.unclassifiedInstances === 0 &&
+          value.nonExemptErrors === 0)),
+  ),
+);
 const qualification = Schema.Struct({
   schema: Schema.Literal("workspace-qualification/v1"),
   authority_effect: Schema.Literal("none"),
@@ -140,6 +176,7 @@ const qualification = Schema.Struct({
       coverage: Schema.Record(
         Schema.String,
         Schema.Struct({
+          processPolicy: Schema.optionalKey(processPolicy),
           status: Schema.String,
           ageMs: Schema.Number,
           limits: Schema.Array(Schema.String),
