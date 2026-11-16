@@ -101,7 +101,7 @@ export async function createHost(
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   await window.loadFile(input.content);
   await window.webContents.executeJavaScript(
-    `globalThis.pickerEvents = []; desktopBridge.onUpdateState(value => pickerEvents.push({kind:"state", value})); desktopBridge.onInstallPlan(value => pickerEvents.push({kind:"plan", value}));`,
+    `globalThis.pickerEvents = []; desktopBridge.onUpdateState(value => pickerEvents.push({kind:"state", value})); desktopBridge.onInstallPlan(value => pickerEvents.push({kind:"plan", value})); void 0;`,
   );
   return {
     ...core,
