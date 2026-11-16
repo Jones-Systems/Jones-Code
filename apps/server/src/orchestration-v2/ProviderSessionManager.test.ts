@@ -5901,7 +5901,7 @@ it.effect("MCP caller proof requires the original credential on the actual live 
   }),
 );
 
-it.effect("manager retries original binding publication without another native resume", () =>
+it.effect.each([false, true])("original publication retries do not replay native work or target a replacement: %s", (replaceRuntime) =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
     let failPublication = true;
@@ -5927,6 +5927,17 @@ it.effect("manager retries original binding publication without another native r
       const input = { threadId, providerThread, modelSelection, runtimePolicy };
       assert.isTrue(Exit.isFailure(yield* runtime.resumeThread(input).pipe(Effect.exit)));
       assert.equal((yield* Ref.get(state)).resumeCount, 1);
+      if (replaceRuntime) {
+        yield* manager.close(providerSessionId);
+        const replacement = yield* manager.open({ ...makeTestAdmission().input, threadId,
+          providerSessionId, modelSelection, runtimePolicy });
+        assert.notStrictEqual(replacement, runtime);
+        assert.isTrue(Exit.isFailure(yield* runtime.resumeThread(input).pipe(Effect.exit)));
+        assert.equal((yield* Ref.get(state)).resumeCount, 1);
+        assert.equal((yield* Ref.get(state)).openCount, 2);
+        assert.strictEqual(Option.getOrUndefined(yield* manager.get(providerSessionId)), replacement);
+        return;
+      }
       const recovered = yield* runtime.resumeThread(input);
       assert.equal(recovered.id, providerThread.id);
       assert.equal(recovered.nativeThreadRef?.nativeId, providerThread.nativeThreadRef?.nativeId);
