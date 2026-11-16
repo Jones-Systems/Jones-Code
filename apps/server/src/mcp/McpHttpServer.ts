@@ -56,6 +56,8 @@ import {
 import { DecisionSnapshotToolkit } from "../jones/mcp/decisionSnapshot/tools.ts";
 import { OrganizationMetadataHandlersLive } from "../jones/mcp/organizationMetadata/handlers.ts";
 import { OrganizationMetadataToolkit } from "../jones/mcp/organizationMetadata/tools.ts";
+import { StorageCleanupReportHandlersLive } from "../jones/mcp/storageCleanup/handlers.ts";
+import { StorageCleanupReportToolkit } from "../jones/mcp/storageCleanup/tools.ts";
 import { FleetCheckpointHandlersLive } from "../jones/mcp/fleetCheckpoint/handlers.ts";
 import { FleetCheckpointToolkit } from "../jones/mcp/fleetCheckpoint/tools.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -1343,6 +1345,11 @@ export const OrganizationMetadataRegistrationLive = toolkitRegistration(
   OrganizationMetadataHandlersLive,
 ).pipe(Layer.provide(OrganizationMetadata.layer));
 
+export const layerStorageCleanupReportToolkit = toolkitRegistration(
+  StorageCleanupReportToolkit,
+  StorageCleanupReportHandlersLive,
+);
+
 const SettlementRestoreRegistrationLive = toolkitRegistration(
   SettlementRestoreToolkit,
   SettlementRestoreHandlersLive,
@@ -1382,6 +1389,7 @@ export const layerTools = Layer.mergeAll(
     Layer.provide(UserResponseRequest.layer),
   ),
   OrganizationMetadataRegistrationLive,
+  layerStorageCleanupReportToolkit,
   SettlementRestoreRegistrationLive,
   toolkitRegistration(RemoteAdmissionCancel.toolkit, RemoteAdmissionCancel.handlers),
   DecisionSnapshotToolkitRegistrationLive,
