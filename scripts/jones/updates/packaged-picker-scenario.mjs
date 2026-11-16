@@ -120,6 +120,7 @@ export function createPickerFixture(installedSource, onPrepare = () => {}) {
       throw new Error("Transport download forbidden.");
     },
   };
+  let nextArtifactId = Math.max(...builds.map((build) => build.artifactId)) + 1;
   let mode = "fail",
     release;
   const worker = {
@@ -153,7 +154,7 @@ export function createPickerFixture(installedSource, onPrepare = () => {}) {
     release: () => release?.(),
     rebuild: () => {
       builds[1].attempt++;
-      builds[1].artifactId++;
+      builds[1].artifactId = nextArtifactId++;
       builds[1].digest = "9".repeat(64);
     },
   };
@@ -221,7 +222,27 @@ export async function runPickerScenario(phase, host, fixture) {
     await host.waitForPlan(
       (result) => result.state.current?.laptop.operations.at(-1)?.result?.status === "failed",
     );
-    check("PREP-A1-exact-artifact", fixture.jobs[0].candidate.artifactId, alternate.artifactId);
+    const candidate = fixture.jobs[0].candidate;
+    const reviewedIdentity = { ...alternate };
+    // The catalog timestamp is observation metadata, absent from the immutable candidate schema.
+    delete reviewedIdentity.buildStartedAt;
+    check(
+      "PREP-A1-exact-artifact",
+      {
+        repository: candidate.repository,
+        sourceSha: candidate.source,
+        sourceTree: candidate.tree,
+        workflow: candidate.workflow,
+        runId: candidate.runId,
+        runAttempt: candidate.runAttempt,
+        artifactId: candidate.artifactId,
+        artifactDigest: candidate.artifactDigest,
+        platform: candidate.platform,
+        architecture: candidate.architecture,
+        version: candidate.version,
+      },
+      reviewedIdentity,
+    );
     const snapshots = await call("installPlan", { type: "read" });
     const operation = snapshots.state.current.laptop.operations[0];
     check("PREP-A2-operation-token", fixture.jobs[0].token, operation.operationId);
