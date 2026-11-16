@@ -1,5 +1,7 @@
 import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import type { RecordedServerCommand as OrchestrationV2ServerCommand } from "./RecordedTypes.ts";
+import * as SelfSettlementCaller from "../jones/mcp/SelfSettlementCaller.ts";
+import type { SendIngressPorts } from "../jones/remoteDelegation/SendIngress.ts";
 import * as SendPreparation from "../jones/remoteDelegation/SendPreparation.ts";
 import type { ObservationPorts } from "../jones/remoteDelegation/ObservationHooks.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
@@ -402,7 +404,7 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
-export interface ThreadManagementServiceShape extends ObservationPorts {
+export interface ThreadManagementServiceShape extends ObservationPorts, SendIngressPorts, SelfSettlementCaller.Ports {
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
   ) => Stream.Stream<OrchestrationV2SearchThreadResult, Orchestrator.OrchestratorV2Error>;
@@ -504,6 +506,7 @@ export interface ThreadManagementServiceShape extends ObservationPorts {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
     readonly byOwnAgent: boolean;
+    readonly selfSettlementCaller?: SelfSettlementCaller.CapturedCaller;
   }) => Effect.Effect<
     { readonly sequence: number } | { readonly settlesWhenTurnEnds: true },
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
@@ -625,7 +628,7 @@ const isForceStopThreadError = Schema.is(OrchestrationV2ForceStopThreadError);
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  const remoteHooks = orchestrator as typeof orchestrator & ObservationPorts & SendPreparation.SendPreparationPorts;
+  const remoteHooks = orchestrator as typeof orchestrator & ObservationPorts & SendIngressPorts & SelfSettlementCaller.Ports;
   const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const layerScope = yield* Effect.scope;
   const agentScope = yield* AgentScope;
@@ -1310,6 +1313,13 @@ const make = Effect.gen(function* () {
   const settleThread: ThreadManagementServiceShape["settleThread"] = Effect.fn(
     "orchestrationV2.threadManagement.settleThread",
   )(function* (input) {
+    if (input.byOwnAgent && input.selfSettlementCaller !== undefined) {
+      // Core persists intent and owns terminal/checkpoint/wake/watch settlement.
+      // Never call its private consume method or schedule an ephemeral competitor.
+      yield* SelfSettlementCaller.request(remoteHooks, {threadId: input.threadId,
+        commandId: input.commandId, ...input.selfSettlementCaller});
+      return {settlesWhenTurnEnds: true} as const;
+    }
     const shell = input.byOwnAgent ? yield* orchestrator.getThreadShell(input.threadId) : null;
     if (shell != null && shell.activeRunId !== null) {
       yield* settleAfterRun({
@@ -1859,6 +1869,8 @@ const make = Effect.gen(function* () {
     forceStopThread,
     awaitBackgroundTasks,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
+    ...(remoteHooks.requestSelfSettlement === undefined ? {} : {requestSelfSettlement: remoteHooks.requestSelfSettlement}),
+    ...(remoteHooks.remoteSendReceipts === undefined ? {} : {remoteSendReceipts: remoteHooks.remoteSendReceipts}),
     // Preserve optionality until the core owner's normal parent merge.
     ...(remoteHooks.observeRemoteTask === undefined ? {} : {
       observeRemoteTask: remoteHooks.observeRemoteTask!,
