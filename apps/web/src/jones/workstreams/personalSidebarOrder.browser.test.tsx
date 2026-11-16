@@ -4,10 +4,7 @@ import type * as Context from "effect/Context";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
-import type {
-  PersonalWorkstreamsController,
-  PersonalWorkstreamsState,
-} from "@t3tools/client-runtime/jones/workstreams/personal";
+import type { PersonalWorkstreamsState } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { personalThreadKey } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { AppRoot } from "~/AppRoot";
 import "~/components/ChatView";
@@ -97,10 +94,24 @@ it("traverses displayed workstream groups then Unassigned and skips collapsed gr
     pendingThreadKeys: new Set(),
     canCreate: false,
   };
-  const controller = {
+  const unexpectedMutation = vi.fn(async () => {
+    throw new Error("Navigation must not mutate Workstreams");
+  });
+  const controller: ReturnType<typeof usePersonalWorkstreams>["controller"] = {
     state: Atom.make(state),
     canAssign: () => false,
-  } as unknown as PersonalWorkstreamsController;
+    create: unexpectedMutation,
+    rename: unexpectedMutation,
+    setColor: unexpectedMutation,
+    setLifecycle: unexpectedMutation,
+    reorder: unexpectedMutation,
+    remove: unexpectedMutation,
+    assign: unexpectedMutation,
+    createAndAssign: unexpectedMutation,
+    setEnvironments: vi.fn(),
+    loadCache: vi.fn(),
+    dispose: vi.fn(),
+  };
   vi.mocked(usePersonalWorkstreams).mockReturnValue({ controller, state });
   using _restore = {
     [Symbol.dispose]() {
