@@ -82,6 +82,7 @@ import JonesMigration0151 from "./Migrations/151_JonesWorkspaceRuntimeUses.ts";
 import JonesMigration0152 from "./Migrations/152_JonesPeerLinksAdoption.ts";
 import JonesMigration0153 from "./Migrations/153_JonesPersonalWorkstreams.ts";
 import JonesMigration0154 from "./Migrations/154_JonesStartRefusals.ts";
+import JonesMigration0156 from "./Migrations/156_JonesRemoteAdmissionReview.ts";
 import JonesMigration0155 from "./Migrations/155_JonesPeerWakeObligations.ts";
 
 export const jonesMigrationEntries = [
@@ -141,6 +142,7 @@ export const jonesMigrationEntries = [
   [153, "PersonalWorkstreams", JonesMigration0153],
   [154, "StartRefusals", JonesMigration0154],
   [155, "PeerWakeObligations", JonesMigration0155],
+  [156, "RemoteAdmissionReview", JonesMigration0156],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {

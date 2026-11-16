@@ -66,7 +66,7 @@ export {
 } from "../previewCompanion/registration.ts";
 export { previewCompanionHttpApiLayer } from "../previewCompanion/http.ts";
 
-export { remoteAdmissionHttpApiLayer } from "../remoteAdmissionIntegration/http.ts";
+export { remoteAdmissionHttpApiLayer, remoteAdmissionReviewHttpApiLayer } from "../remoteAdmissionIntegration/http.ts";
 export {
   servicesLayer as remoteAdmissionServicesLayer,
   resumeLayer as remoteAdmissionResumeLayer,

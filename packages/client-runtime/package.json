@@ -686,6 +686,18 @@
     "./provider-instance-ids": {
       "types": "./src/providerInstanceIds.ts",
       "default": "./src/providerInstanceIds.ts"
+    },
+    "./jones/remoteAdmission/controller": {
+      "types": "./src/jones/remoteAdmission/controller.ts",
+      "default": "./src/jones/remoteAdmission/controller.ts"
+    },
+    "./jones/remoteAdmission/adapter": {
+      "types": "./src/jones/remoteAdmission/adapter.ts",
+      "default": "./src/jones/remoteAdmission/adapter.ts"
+    },
+    "./jones/remoteAdmission/reviewHttp": {
+      "types": "./src/jones/remoteAdmission/reviewHttp.ts",
+      "default": "./src/jones/remoteAdmission/reviewHttp.ts"
     }
   },
   "scripts": {

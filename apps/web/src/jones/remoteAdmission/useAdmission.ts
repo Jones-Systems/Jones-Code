@@ -2,6 +2,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { admissionAttention, createAdmissionStore } from "./store";
 import { useEnvironmentIds } from "../../state/environments";
+import { reviewControllersFor, useReviewRegistry } from "./reviewRuntime";
 import { remoteAdmissionRequest } from "./runtime";
 
 const stores = new Map<EnvironmentId, ReturnType<typeof createAdmissionStore>>();
@@ -54,11 +55,13 @@ export function useAdmission(environmentId: EnvironmentId) {
 }
 
 export function useAdmissionOverview() {
+  const registryRevision = useReviewRegistry();
   const environmentIds = useEnvironmentIds();
   const entries = environmentIds.map(storeFor);
+  const reviews = reviewControllersFor(environmentIds, registryRevision);
   const overview = {
     subscribe: (listener: () => void) => {
-      const unsubscribes = entries.map((store) => store.subscribe(listener));
+      const unsubscribes = entries.map((store, index) => reviews[index]?.subscribe(listener) ?? store.subscribe(listener));
       return () => {
         for (const unsubscribe of unsubscribes) unsubscribe();
       };
@@ -67,7 +70,14 @@ export function useAdmissionOverview() {
       let held = 0;
       let unknown = 0;
       let capped = false;
-      for (const store of entries) {
+      for (const [index, store] of entries.entries()) {
+        const review = reviews[index]?.getSnapshot();
+        if (review) {
+          if (review.capabilities?.canDecide === false) continue;
+          held += review.page?.counts.heldAdmissions ?? 0;
+          if (review.loadFailed || !review.page) unknown++;
+          continue;
+        }
         const attention = admissionAttention(store.getSnapshot());
         held += attention.held;
         if (attention.unknown) unknown++;
@@ -76,7 +86,11 @@ export function useAdmissionOverview() {
       return `${held}:${unknown}:${capped ? 1 : 0}`;
     },
     watch: () => {
-      const stops = entries.map(watch);
+      const stops = entries.map((store, index) => {
+        const review = reviews[index];
+        if (review) { void review.load(); return () => {}; }
+        return watch(store);
+      });
       return () => {
         for (const stop of stops) stop();
       };

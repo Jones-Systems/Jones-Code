@@ -1,3 +1,4 @@
+import { syntheticReceiverAuth, syntheticReceiverLayers } from "./receiver.testkit.ts";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, type LinkedRequestContext } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -40,11 +41,12 @@ const policy = {
   revision: "synthetic-policy",
   modelSelection: { instanceId: ProviderInstanceId.make("synthetic"), model: "synthetic" },
 };
-const memory = Layer.effectDiscard(migrateCore.pipe(Effect.andThen(migrateIntegration))).pipe(
+const memory = Layer.effectDiscard(migrateCore.pipe(Effect.andThen(migrateIntegration),Effect.andThen(syntheticReceiverAuth))).pipe(
   Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
 );
 const fixture = (messages: string[]) =>
   Registration.servicesLayer.pipe(
+    Layer.provide(syntheticReceiverLayers),
     Layer.provide(
       Layer.mock(TextGeneration.TextGeneration)({
         evaluateRemoteRequest: (input) =>

@@ -3617,7 +3617,8 @@
     "scripts/jones/boundary/fragments/storage-cleanup-results.json": "jones-owned",
     "apps/web/src/components/BranchToolbarEnvironmentSelector.tsx": "accepted-shared",
     "apps/web/src/hooks/useAddProjectTargets.ts": "accepted-shared",
-    "apps/web/src/components/settings/EnvironmentRoutesList.browser.test.tsx": "jones-tests-in-upstream"
+    "apps/web/src/components/settings/EnvironmentRoutesList.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/ui/select.tsx": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
