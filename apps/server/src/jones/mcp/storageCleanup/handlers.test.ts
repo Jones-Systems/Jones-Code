@@ -98,10 +98,12 @@ it.effect("production registration reads the supplied live report without mutati
         openWorldHint: false,
       });
       const call = (args: Record<string, unknown> = {}, caller = scope) =>
-        server.callTool({ name: "t3_storage_cleanup_report", arguments: args }).pipe(
-          Effect.provideService(Invocation.McpInvocationContext, caller),
-          Effect.provideService(McpSchema.McpServerClient, client),
-        );
+        server
+          .callTool({ name: "t3_storage_cleanup_report", arguments: args })
+          .pipe(
+            Effect.provideService(Invocation.McpInvocationContext, caller),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
       const missing = yield* call();
       expect(missing.isError).toBe(false);
       expect(missing.structuredContent).toMatchObject({
@@ -116,10 +118,13 @@ it.effect("production registration reads the supplied live report without mutati
       const refused = yield* call({ cursor: 1 });
       expect(refused.isError).toBe(true);
       expect(refused.structuredContent).toMatchObject({ reason: "snapshot_required" });
-      const linked = yield* call({}, {
-        ...scope,
-        client: { ...scope.client!, linked: true },
-      });
+      const linked = yield* call(
+        {},
+        {
+          ...scope,
+          client: { ...scope.client!, linked: true },
+        },
+      );
       expect(linked.isError).toBe(false);
       expect(linked.structuredContent).toMatchObject({ report: emptyReport });
       expect(source.reads).toBe(4);
@@ -163,45 +168,52 @@ it.effect("denies callers without orchestration before reading the report", () =
   });
 });
 
-it.effect("forwards explicit linked targets through native routing without reading the local report", () => {
-  const source = backend();
-  const remote = EnvironmentId.make("linked-cleanup-environment");
-  const calls: unknown[] = [];
-  const forwarding = Layer.mock(PeerForwarding.PeerForwarding)({
-    call: (caller, tool, environmentId, input) => {
-      calls.push({ caller, name: tool.name, environmentId, input });
-      return Effect.fail(
-        new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: "Synthetic remote response",
-        }),
-      );
-    },
-  });
-  return Effect.gen(function* () {
-    const toolkit = yield* StorageCleanupReportToolkit.pipe(
-      Effect.provide(
-        McpToolAccess.HandlersLayer.layer(StorageCleanupReportHandlersLive).pipe(
-          Layer.provide(source.layer),
-          Layer.provide(forwarding),
+it.effect(
+  "forwards explicit linked targets through native routing without reading the local report",
+  () => {
+    const source = backend();
+    const remote = EnvironmentId.make("linked-cleanup-environment");
+    const calls: unknown[] = [];
+    const forwarding = Layer.mock(PeerForwarding.PeerForwarding)({
+      call: (caller, tool, environmentId, input) => {
+        calls.push({ caller, name: tool.name, environmentId, input });
+        return Effect.fail(
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "Synthetic remote response",
+          }),
+        );
+      },
+    });
+    return Effect.gen(function* () {
+      const toolkit = yield* StorageCleanupReportToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(StorageCleanupReportHandlersLive).pipe(
+            Layer.provide(source.layer),
+            Layer.provide(forwarding),
+          ),
         ),
-      ),
-    );
-    const input = { environmentId: remote, limit: 1, worktreePath: "/exact/worktree" };
-    const results = yield* toolkit.handle("t3_storage_cleanup_report", input).pipe(
-      Stream.unwrap,
-      Stream.runCollect,
-      Effect.provideService(Invocation.McpInvocationContext, scope),
-      Effect.provide(source.layer),
-    );
-    expect(results.at(-1)?.result).toMatchObject({ message: "Synthetic remote response" });
-    expect(calls).toEqual([{
-      caller: scope,
-      name: "t3_storage_cleanup_report",
-      environmentId: remote,
-      input,
-    }]);
-    expect(source.reads).toBe(0);
-    expect(source.mutations).toBe(0);
-  });
-});
+      );
+      const input = { environmentId: remote, limit: 1, worktreePath: "/exact/worktree" };
+      const results = yield* toolkit
+        .handle("t3_storage_cleanup_report", input)
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provideService(Invocation.McpInvocationContext, scope),
+          Effect.provide(source.layer),
+        );
+      expect(results.at(-1)?.result).toMatchObject({ message: "Synthetic remote response" });
+      expect(calls).toEqual([
+        {
+          caller: scope,
+          name: "t3_storage_cleanup_report",
+          environmentId: remote,
+          input,
+        },
+      ]);
+      expect(source.reads).toBe(0);
+      expect(source.mutations).toBe(0);
+    });
+  },
+);

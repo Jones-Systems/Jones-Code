@@ -435,8 +435,8 @@ Live consumers, tracked edits, nested repositories and other protections still h
                       environmentLabel: label,
                       report,
                       ...(!pending &&
-                      environment.serverConfig?.environment.capabilities.settledWorktreeRetirement ===
-                        true &&
+                      environment.serverConfig?.environment.capabilities
+                        .settledWorktreeRetirement === true &&
                       state.some((e) => e.environmentId === environment.environmentId && e.allowed)
                         ? {
                             onRetire: (entry: StorageCleanupReport["entries"][number]) =>

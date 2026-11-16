@@ -82,7 +82,9 @@ it("distinguishes no session report from an empty finished report", () => {
 });
 
 it("reconstructs all retained full-detail entries without changing omissions or global totals", () => {
-  const entries = Object.freeze(Array.from({ length: 25 }, (_, index) => Object.freeze(entry(index))));
+  const entries = Object.freeze(
+    Array.from({ length: 25 }, (_, index) => Object.freeze(entry(index))),
+  );
   const source = Object.freeze(report(entries));
   const before = JSON.stringify(source);
   const first = page(source);
@@ -169,12 +171,17 @@ it("rejects invalid and unbound cursors while allowing the exact end of retained
   const first = page(source);
   for (const cursor of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 2])
     expect(
-      pageStorageCleanupReport(environmentId, source, { cursor, expectedSnapshot: first.snapshotId }),
+      pageStorageCleanupReport(environmentId, source, {
+        cursor,
+        expectedSnapshot: first.snapshotId,
+      }),
     ).toMatchObject({ reason: "invalid_cursor" });
   expect(pageStorageCleanupReport(environmentId, source, { cursor: 1 })).toMatchObject({
     reason: "snapshot_required",
   });
-  expect(pageStorageCleanupReport(environmentId, source, { expectedSnapshot: "bad" })).toMatchObject({
+  expect(
+    pageStorageCleanupReport(environmentId, source, { expectedSnapshot: "bad" }),
+  ).toMatchObject({
     reason: "invalid_snapshot",
   });
   expect(page(source, { cursor: 1, expectedSnapshot: first.snapshotId })).toMatchObject({
@@ -205,7 +212,10 @@ it("bounds serialized nested detail without truncating or silently skipping an o
   expect(first.report?.entries).toEqual([entry(0)]);
   expect(first.nextCursor).toBe(1);
   expect(
-    pageStorageCleanupReport(environmentId, source, { cursor: 1, expectedSnapshot: first.snapshotId }),
+    pageStorageCleanupReport(environmentId, source, {
+      cursor: 1,
+      expectedSnapshot: first.snapshotId,
+    }),
   ).toMatchObject({ reason: "response_too_large" });
   expect(pageStorageCleanupReport(environmentId, report([large]), {})).toMatchObject({
     reason: "response_too_large",
@@ -225,9 +235,11 @@ it("bounds serialized nested detail without truncating or silently skipping an o
       "utf8",
     ),
   ).toBeLessThanOrEqual(MAX_STORAGE_CLEANUP_REPORT_RESPONSE_BYTES);
-  expect(pageStorageCleanupReport(environmentId, report([]), {
-    worktreePath: "x".repeat(MAX_STORAGE_CLEANUP_REPORT_RESPONSE_BYTES),
-  })).toMatchObject({ reason: "response_too_large" });
+  expect(
+    pageStorageCleanupReport(environmentId, report([]), {
+      worktreePath: "x".repeat(MAX_STORAGE_CLEANUP_REPORT_RESPONSE_BYTES),
+    }),
+  ).toMatchObject({ reason: "response_too_large" });
 });
 
 it("decodes bounded numeric cursors, limits and SHA-256 snapshots", () => {
@@ -245,5 +257,6 @@ it("decodes bounded numeric cursors, limits and SHA-256 snapshots", () => {
     { expectedSnapshot: "a".repeat(64) + "\n" },
     { worktreePath: "" },
     { threadId: "" },
-  ]) expect(() => decode(input)).toThrow();
+  ])
+    expect(() => decode(input)).toThrow();
 });

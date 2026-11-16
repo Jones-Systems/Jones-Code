@@ -271,7 +271,11 @@ it("hides install retention for a server without the additive capability", async
   expect(screen.container.querySelector('[aria-label="Install retention"]')).toBeNull();
 });
 
-function cleanupReport(environmentId: string, count: number, omittedCount = 0): StorageCleanupReport {
+function cleanupReport(
+  environmentId: string,
+  count: number,
+  omittedCount = 0,
+): StorageCleanupReport {
   return {
     trigger: "manual",
     startedAt: "2026-11-16T12:00:00.000Z",
@@ -325,7 +329,9 @@ it("shows five results total across hosts, adds ten, handles the short final pag
   expect(cleanupRows(screen.container)).toHaveLength(5);
   expect(screen.container.textContent).toContain("env-a: 0 removed, 10 kept");
   expect(screen.container.textContent).toContain("env-b: 0 removed, 20 kept");
-  expect(screen.container.textContent).toContain("env-a: 7 additional results omitted from this report.");
+  expect(screen.container.textContent).toContain(
+    "env-a: 7 additional results omitted from this report.",
+  );
   await expect
     .element(screen.getByRole("heading", { name: "/cleanup-test/env-b/worktree-1", exact: true }))
     .toBeInTheDocument();
@@ -387,7 +393,9 @@ it("preserves expansion on query rerenders and resets it for a new report or sel
   state.targets = state.targets.filter(({ environmentId }) => environmentId === "env-b");
   await screen.rerender(view());
   expect(cleanupRows(screen.container)).toHaveLength(5);
-  expect(cleanupRows(screen.container).every((row) => row.textContent?.includes("env-b"))).toBe(true);
+  expect(cleanupRows(screen.container).every((row) => row.textContent?.includes("env-b"))).toBe(
+    true,
+  );
 });
 
 it("mounts only five rows for a report with more than a thousand entries", async () => {
@@ -409,5 +417,7 @@ it("has no expansion controls for five or fewer available entries, including ser
   await expect
     .element(screen.getByRole("button", { name: /^Show (more|all|less)$/ }))
     .not.toBeInTheDocument();
-  expect(screen.container.textContent).toContain("env-a: 9 additional results omitted from this report.");
+  expect(screen.container.textContent).toContain(
+    "env-a: 9 additional results omitted from this report.",
+  );
 });
