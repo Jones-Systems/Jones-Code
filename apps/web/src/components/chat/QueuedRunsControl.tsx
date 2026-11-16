@@ -1,3 +1,6 @@
+import { derivePendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
+import { derivePendingUserInputs } from "../../session-logic";
+import { pendingQuestionBlocksSteering } from "../../jones/questionAnswer/questionAnswerCard";
 import { useAtomValue } from "@effect/atom-react";
 import { serverEnvironment } from "../../state/server";
 import { GripVerticalIcon, ListOrderedIcon } from "lucide-react";
@@ -128,6 +131,7 @@ export function QueuedRunsControl({
     reportFailure: false,
   });
   const importedEligible = importedHistoryContinuationEligible(projection);
+  const liveQuestion = projection ? pendingQuestionBlocksSteering(derivePendingUserInputs(derivePendingThreadRequests(projection).userInputs)) : false;
   const [dragState, setDragState] = useState<{
     readonly runId: RunId;
     readonly insertIndex: number | null;
@@ -251,10 +255,10 @@ export function QueuedRunsControl({
     projection,
     editing: props.editingRunId !== null,
     hasUnsavedMessages: optimisticQueued.length > 0,
-    busy: busyRunId !== null || removals.busy || dragState !== null,
+    busy: liveQuestion || busyRunId !== null || removals.busy || dragState !== null,
     mutationLock: {
       acquire: () => {
-        if (steerInFlightRef.current || removals.isBusy()) return false;
+        if (liveQuestion || steerInFlightRef.current || removals.isBusy()) return false;
         steerInFlightRef.current = true;
         return true;
       },
@@ -271,7 +275,7 @@ export function QueuedRunsControl({
     (!freshContext || workflow.promoteSkipsCompaction === true);
   const canDispatchRun = (freshContext: boolean) =>
     canDispatchQueuedRun({
-      busy: queueBusy,
+      busy: liveQuestion || queueBusy,
       importedHistory: importedEligible,
       canStart: workflow?.canSendNow === true,
       canSteer: canSteerRun(freshContext),
