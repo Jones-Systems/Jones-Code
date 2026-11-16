@@ -1,3 +1,25 @@
+import * as CoreFollowUpCommandOwner from "../jones/orchestration/FollowUpCommandOwner.ts";
+import * as RemoteSendReceipts from "../jones/orchestration/RemoteSendReceiptStore.ts";
+import { terminalDisposition as selfSettlementTerminalDisposition } from "../jones/orchestration/SelfSettlement.ts";
+import { cancelsSelfSettlement, selfSettlementRun, type SelfSettlementIntent } from "./SelfSettlement.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
+import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
+import { DependencyCommit, DependencyWakeCommit } from "../jones/threadResultDependencies/DependencyCommit.ts";
+import * as AutomaticTitles from "../jones/threadTitle/automaticTitles.ts";
+import { titlePolicyApplies, titleSeedFitsExistingTitle } from "../jones/threadTitle/policy.ts";
+import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
+import * as CodexFailover from "../jones/codexFailover/CodexFailover.ts";
+import * as ChildResultHolds from "../jones/orchestration/childResultHolds.ts";
+import * as RemoteObservationHooks from "../jones/remoteDelegation/ObservationHooks.ts";
+import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
+import { checkSettlementRestoreReplay, decideSettlementRestore } from "../jones/settlementRestore/dispatch.ts";
+import { settlementRestoreRejection } from "../jones/settlementRestore/plan.ts";
+import { makeSettlementRestoreStore } from "../jones/settlementRestore/store.ts";
+import type { HoldReservation } from "../jones/startRefusal/model.ts";
+import * as NativeStage from "../jones/nativeCreation/NativeCreationStageDispatch.ts";
+import * as NativeRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
+import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
 import * as StartRefusal from "../jones/startRefusal/Store.ts";
 import * as StartRefusalProbe from "../jones/startRefusal/Probe.ts";
 import { acceptedStartWitness } from "../jones/startRefusal/model.ts";
@@ -389,7 +411,19 @@ export interface OrchestratorV2DispatchResult {
   readonly replayed?: true;
 }
 
-export interface OrchestratorV2Shape {
+export interface OrchestratorV2Shape extends Required<RemoteObservationHooks.ObservationPorts> {
+  readonly requestSelfSettlement: (input: {
+    readonly projectRemaining?: readonly string[];
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+    readonly mcpCredentialId: string;
+    readonly providerInstanceId: ProviderInstanceId;
+  }) => Effect.Effect<SelfSettlementIntent, OrchestratorV2Error>;
+  readonly recoverSelfSettlements: Effect.Effect<void>;
+  readonly remoteSendReceipts: RemoteSendReceipts.RemoteSendReceiptPorts;
+  readonly followUpCommandOwner: import("../jones/remoteDelegation/FollowUp.ts").FollowUpCommandOwner["Service"];
+  readonly recoverCodexFailover: Effect.Effect<void>;
+  readonly recoverPlannedUpdateQueues: Effect.Effect<void>;
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
   readonly recoverDelegatedTask: (
@@ -414,6 +448,10 @@ export interface OrchestratorV2Shape {
   readonly awaitRestartContinuation: (run: OrchestrationV2Run) => Effect.Effect<void>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+  ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
+  readonly dispatchNativeCreationStage: (
+    command: OrchestrationV2Command,
+    lineage: NativeStage.NativeCreationStageDispatch,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
   readonly autoArmLimitRecovery: (input: {
     readonly commandId: CommandId;
@@ -632,6 +670,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.guest-message.dismiss":
     case "thread.settle":
     case "thread.auto-settle":
+    case "thread.settlement.restore":
     case "thread.unsettle":
     case "thread.snooze":
     case "thread.unsnooze":
@@ -683,6 +722,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
       return command.threadId;
     case "delegated_task.request":
     case "delegated_task.remote.request":
+    case "delegated_task.remote.bind":
+    case "delegated_task.remote.hold":
     case "delegated_task.remote.complete":
     case "delegated_task.remote.stop":
     case "delegated_task.wake-policy":
@@ -1550,6 +1591,25 @@ const nativeSubagentRef = (subagent: OrchestrationV2Subagent): DyingNativeSubage
 });
 
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const tables = makeJonesTablePresence(sql);
+  const automaticTitles = yield* AutomaticTitles.make;
+  const settlementRestores = makeSettlementRestoreStore(sql, tables);
+  const dependencies = makeDependencyStore(sql, tables);
+  const remoteSendStore = RemoteSendReceipts.makeRemoteSendReceiptStore(sql, tables);
+  const plannedContinuity = yield* Effect.serviceOption(PlannedUpdateContinuity.PlannedUpdateContinuity);
+  const nativeRepository = yield* Effect.serviceOption(NativeRepository.NativeCreationRepository);
+  const nativeAuthority = yield* Effect.serviceOption(NativeAuthority.NativeCreationAuthority);
+  const decodeNativeCommand = Schema.decodeUnknownEffect(OrchestrationV2Command);
+  const validateNative = (lineage: NativeStage.NativeCreationStageDispatch, command: OrchestrationV2Command) =>
+    Option.isSome(nativeRepository) && Option.isSome(nativeAuthority)
+      ? NativeStage.validateNativeCreationStage(lineage, command).pipe(
+          Effect.provideService(NativeRepository.NativeCreationRepository, nativeRepository.value),
+          Effect.provideService(NativeAuthority.NativeCreationAuthority, nativeAuthority.value))
+      : Effect.fail(new NativeAuthority.NativeCreationAuthorityError({ code: "unsupported_authority",
+          message: "Native stage owners are unavailable." }));
+  const childResultHolds = ChildResultHolds.make({ duties: dependencies.duties,
+    holdsChildResult: (threadId, run, taskId) => codexFailover.holdsChildResult(threadId, run, taskId) });
   const checkpointService = yield* CheckpointServiceV2;
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;
@@ -1913,7 +1973,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.fnUntraced(function* (
       events: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>,
       effects: ReadonlyArray<PendingOrchestrationEffectV2> = [],
-      options: { readonly updateDelegatedCompletionOnly?: boolean } = {},
+      options: { readonly updateDelegatedCompletionOnly?: boolean; readonly startRefusalHold?: HoldReservation } = {},
     ) {
       const withIds = yield* Effect.forEach(events, (event) => makeSystemEvent(event));
       yield* eventSink.writeWithEffects({ events: withIds, effects, ...options });
@@ -2029,7 +2089,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         controls.thread.deletedAt !== null
       )
         return;
-      if (Option.isSome(startRefusals) &&
+      if (Option.isNone(startRefusals) ||
           (yield* startRefusals.value.blocked({
             threadId, parentRunId, generation: delivery.generation, messageId: delivery.messageId,
           }))) return;
@@ -2476,7 +2536,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const queuedMessage = projection.messages.find(
         (candidate) => candidate.id === storedQueuedRun.userMessageId,
       );
-      const modelSelection = queuedRunModelSelection(projection, storedQueuedRun);
+      const failoverSelection = yield* codexFailover.queuedSelection(threadId, storedQueuedRun)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      const modelSelection = failoverSelection ?? queuedRunModelSelection(projection, storedQueuedRun);
       const queuedRun = {
         ...storedQueuedRun,
         modelSelection,
@@ -6980,10 +7042,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     // A run the thread queues for itself continues the task of the run that sent it.
+    const continuedSourceRunId = command.restartContinuationOfRunId ??
+      (yield* codexFailover.continuationSourceRunId(command).pipe(mapDispatchError(command)));
     const continuedTaskId = projection.runs.find((run) =>
-      command.restartContinuationOfRunId === undefined
+      continuedSourceRunId === undefined
         ? command.senderThreadId === command.threadId && isActiveRun(run)
-        : run.id === command.restartContinuationOfRunId,
+        : run.id === continuedSourceRunId,
     )?.delegatedTaskId;
 
     if (projection.thread.settledOverride !== null) {
@@ -7057,6 +7121,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // keeps that name instead of a title generated from a terse prompt such as "work on this".
     const seedsUntitledThread =
       command.titleSeed !== undefined &&
+      titleSeedFitsExistingTitle(projection.thread, command.titleSeed) &&
       (yield* projectionStore.getMessageCount(command.threadId).pipe(mapDispatchError(command))) ===
         0 &&
       !hasTitleSetBeforeFirstMessage(projection.thread, command.titleSeed);
@@ -9988,6 +10053,131 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         result: null,
       },
     });
+  });
+
+  /**
+   * Keeps a linked task open while its original remote launch is unresolved.
+   * Callers hold the parent's dispatch lock.
+   */
+  const dispatchRemoteDelegatedTaskHold = Effect.fn(
+    "orchestrationV2.dispatch.remoteDelegatedTaskHold",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "delegated_task.remote.hold" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.parentThreadId, ["subagents", "turnItems"])
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
+        ),
+      );
+    const task = projection.subagents.find(
+      (task) =>
+        task.id === command.taskId && task.driver === "remote" && task.origin === "app_owned",
+    );
+    if (task === undefined || task.result !== null || task.remoteChild !== undefined) return;
+    const now = yield* DateTime.now;
+    const common = {
+      threadId: command.parentThreadId,
+      ...(task.runId === null ? {} : { runId: task.runId }),
+      nodeId: task.id,
+      driver: task.driver,
+      occurredAt: now,
+    };
+    const emitEvent = emit(events, command);
+    yield* emitEvent({
+      ...common,
+      type: "subagent.updated",
+      payload: { ...task, status: "waiting", progress: command.progress, updatedAt: now },
+    });
+    for (const item of projection.turnItems) {
+      if (item.type === "subagent" && item.subagentId === task.id)
+        yield* emitEvent({
+          ...common,
+          type: "turn-item.updated",
+          payload: { ...item, status: "waiting", progress: command.progress, updatedAt: now },
+        });
+    }
+  });
+
+  const dispatchRemoteDelegatedTaskBind = Effect.fn(
+    "orchestrationV2.dispatch.remoteDelegatedTaskBind",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "delegated_task.remote.bind" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.parentThreadId, ["subagents", "turnItems"])
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
+        ),
+      );
+    const task = projection.subagents.find(
+      (task) =>
+        task.id === command.taskId && task.origin === "app_owned" && task.driver === "remote",
+    );
+    if (
+      task === undefined ||
+      (task.remoteChild !== undefined &&
+        (task.remoteChild.environmentId !== command.remoteChild.environmentId ||
+          task.remoteChild.threadId !== command.remoteChild.threadId ||
+          task.remoteChild.runId !== command.remoteChild.runId))
+    )
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Remote reservation is absent or already bound to another child.",
+      });
+    if (task.remoteChild !== undefined) return;
+    const now = yield* DateTime.now;
+    // A cancellation before acknowledgement still owes the exact child's stop.
+    const remoteChild = {
+      ...command.remoteChild,
+      ...(task.result === null ? {} : { stoppedThere: false }),
+    };
+    const emitEvent = emit(events, command);
+    const common = {
+      threadId: command.parentThreadId,
+      ...(task.runId === null ? {} : { runId: task.runId }),
+      nodeId: task.id,
+      driver: task.driver,
+      occurredAt: now,
+    };
+    yield* emitEvent({
+      ...common,
+      type: "subagent.updated",
+      payload: {
+        ...task,
+        remoteChild,
+        ...(task.result === null
+          ? { status: "running", progress: "Running in the linked environment." }
+          : {}),
+        updatedAt: now,
+      },
+    });
+    for (const item of projection.turnItems) {
+      if (item.type === "subagent" && item.subagentId === task.id)
+        yield* emitEvent({
+          ...common,
+          type: "turn-item.updated",
+          payload: {
+            ...item,
+            remoteChild,
+            ...(task.result === null
+              ? { status: "running", progress: "Running in the linked environment." }
+              : {}),
+            updatedAt: now,
+          },
+        });
+    }
   });
 
   /**
@@ -14351,6 +14541,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : undefined
           : delegatedTaskResultRun(taskRuns);
       if (childRun === undefined) return;
+      if (yield* childResultHolds.holdsFailover(childThreadId, childRun, options.task.id)) return;
       let outcome = runOutcome(childRun);
       let terminalStatus = delegatedTaskTerminalStatus(outcome);
       if (terminalStatus === null) {
@@ -14641,6 +14832,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       childControls.thread.forkedFrom?.type !== "node"
     )
       return;
+    if (yield* childResultHolds.owesDependencies(childThreadId)) return;
+    if (yield* childResultHolds.holdsFailover(childThreadId, latestExecutedRun(childControls.runs))) return;
     const progress = delegatedTaskProgress(childControls);
     // Each task of this child names it, so the parent's other tasks stay unread.
     const parent = yield* projectionStore.getThreadRecords(parentThreadId, ["subagents"], {
@@ -14779,6 +14972,64 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       delivery.messageId !== deliveryRun.userMessageId ||
       delivery.generation !== messageOwnership.generation
     ) {
+      return;
+    }
+
+    const hasClaims = projection.subagents.some(
+      (task) =>
+        task.origin === "app_owned" &&
+        task.runId === parentRun.id &&
+        delivery.taskIds.includes(task.id) &&
+        task.completionDelivery?.state === "claimed",
+    );
+    // With no claims at stake, ordinary finalization can reserve pending siblings
+    // even when refusal evidence is unavailable.
+    const refusal =
+      hasClaims
+        ? Option.isSome(startRefusals)
+          ? yield* startRefusals.value.classify(threadId, runId)
+          : "unknown"
+        : "ordinary";
+    if (refusal === "unknown") return;
+    if (refusal === "qualified") {
+      const successor = {
+        generation: cohort.nextGeneration,
+        messageId: yield* idAllocator.allocate.message({
+          threadId,
+          ordinal: (yield* projectionStore.getMessageCount(threadId)) + 1,
+        }),
+        taskIds: delivery.taskIds,
+      };
+      yield* writeSystemEvents(
+        [
+          {
+            type: "run.updated",
+            threadId,
+            runId: parentRun.id,
+            providerInstanceId: parentRun.providerInstanceId,
+            occurredAt: yield* DateTime.now,
+            payload: {
+              ...parentRun,
+              delegatedCompletion: {
+                ...cohort,
+                nextGeneration: successor.generation + 1,
+                delivery: successor,
+              },
+            },
+          },
+        ],
+        [],
+        {
+          updateDelegatedCompletionOnly: true,
+          startRefusalHold: {
+            threadId,
+            parentRunId: parentRun.id,
+            refusedRunId: runId,
+            source: delivery,
+            successor,
+          },
+        },
+      );
       return;
     }
 
@@ -14967,6 +15218,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.visit":
         yield* dispatchThreadVisit(command, events);
         break;
+      case "thread.settlement.restore": {
+        // Jones settlement restore: the target's own captured placement, one existing event.
+        const decision = yield* decideSettlementRestore(
+          settlementRestores,
+          projectionStore,
+          command,
+        ).pipe(mapDispatchError(command));
+        if (decision.type === "reject")
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: settlementRestoreRejection(decision.code),
+          });
+        if (decision.type === "restore")
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.unsettled",
+            threadId: command.threadId,
+            providerInstanceId: decision.thread.providerInstanceId,
+            occurredAt: decision.thread.updatedAt,
+            payload: decision.thread,
+          });
+        break;
+      }
       case "thread.auto-settle": {
         // Recheck live state; changes and explicit overrides take precedence over the sweep snapshot.
         const thread = yield* projectionStore
@@ -15235,7 +15512,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             projection,
             nextRun === undefined
               ? projection.thread.providerInstanceId
-              : queuedRunModelSelection(projection, nextRun).instanceId,
+              : ((yield* codexFailover.queuedSelection(command.threadId, nextRun).pipe(mapDispatchError(command))) ??
+                  queuedRunModelSelection(projection, nextRun)).instanceId,
           )
         ) {
           return yield* new OrchestratorDispatchError({
@@ -15315,6 +15593,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "delegated_task.remote.request":
         yield* dispatchRemoteDelegatedTaskRequest(command, events);
         break;
+      case "delegated_task.remote.bind":
+        yield* dispatchRemoteDelegatedTaskBind(command, events);
+        break;
+      case "delegated_task.remote.hold":
+        yield* dispatchRemoteDelegatedTaskHold(command, events);
+        break;
       case "delegated_task.remote.complete":
         yield* dispatchRemoteDelegatedTaskComplete(command, events);
         break;
@@ -15375,6 +15659,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandThreadId: dispatchThreadId,
       });
     }
+    if (command.type === "thread.settlement.restore") {
+      const reused = yield* checkSettlementRestoreReplay(settlementRestores, command, receipt.commandType).pipe(mapDispatchError(command));
+      if (reused !== null) return yield* new OrchestratorDispatchError({ commandId: command.commandId,
+        commandType: command.type, cause: settlementRestoreRejection(reused) });
+    }
     const storedEvents = yield* eventSink.readByCommandId({ commandId: command.commandId }).pipe(
       Stream.runCollect,
       Effect.map((events): ReadonlyArray<OrchestrationV2StoredEvent> => Array.from(events)),
@@ -15407,12 +15696,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: OrchestrationV2ServerCommand,
     sideChatIds: ReadonlyArray<ThreadId> = [],
     cancelledTask?: OrchestrationV2Subagent,
+    nativeLineage?: NativeStage.NativeCreationStageDispatch,
   ): Effect.fn.Return<OrchestratorV2DispatchResult, OrchestratorV2Error> {
+    const nativeCommand = nativeLineage === undefined ? undefined
+      : yield* decodeNativeCommand(command).pipe(mapDispatchError(command));
+    const nativeAcceptance = nativeLineage === undefined || nativeCommand === undefined ? undefined
+      : yield* validateNative(nativeLineage, nativeCommand).pipe(mapDispatchError(command));
+    if (nativeLineage === undefined && Option.isSome(nativeRepository))
+      yield* NativeStage.refusePublicNativeReservation(command.commandId).pipe(
+        Effect.provideService(NativeRepository.NativeCreationRepository, nativeRepository.value), mapDispatchError(command));
     yield* Effect.annotateCurrentSpan({
       "orchestration_v2.command_id": command.commandId,
       "orchestration_v2.command_type": command.type,
       "orchestration_v2.thread_id": commandThreadId(command),
     });
+
+    const sendCapture = yield* RemoteSendReceipts.SendCommit;
+    if (sendCapture !== undefined && command.type === "message.dispatch" && sendCapture.commandId !== command.commandId)
+      return yield* new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type,
+        cause: "Remote SEND command identity differs from its authenticated capture." });
+    const remoteSend = sendCapture?.commandId === command.commandId ? sendCapture : undefined;
+    let originalRemoteSend: Effect.Success<ReturnType<typeof remoteSendStore.forCommit>>;
+    if (remoteSend !== undefined) {
+      if (command.type !== "message.dispatch" || command.threadId !== remoteSend.threadId || command.messageId !== remoteSend.messageId)
+        return yield* new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type,
+          cause: "Remote SEND capture does not match this command." });
+      originalRemoteSend = yield* remoteSendStore.forCommit(remoteSend).pipe(mapDispatchError(command));
+      const target = yield* projectionStore.getThread(command.threadId).pipe(mapDispatchError(command));
+      yield* RemoteSendReceipts.assertTargetBirth(remoteSend, target.createdAt).pipe(mapDispatchError(command));
+    }
 
     const existingReceipt = yield* commandReceipts.getByCommandId(command.commandId).pipe(
       Effect.mapError(
@@ -15426,8 +15738,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
     if (Option.isSome(existingReceipt)) {
+      if (remoteSend !== undefined && originalRemoteSend === undefined)
+        return yield* new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type,
+          cause: "The original remote SEND receipt is unavailable; its outcome remains unknown." });
+      if (nativeAcceptance !== undefined) {
+        if (Option.isNone(nativeRepository) || nativeRepository.value.readExecutionReference === undefined)
+          return yield* new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type,
+            cause: "Native acceptance owner is unavailable; ordinary receipt replay is forbidden." });
+        yield* nativeRepository.value.readExecutionReference({ version: 2, claimId: nativeAcceptance.claimId,
+          stageCommandId: nativeAcceptance.command.commandId, effectId: `native-stage:${command.commandId}`,
+          stage: "native_command" }).pipe(mapDispatchError(command));
+      }
       return yield* replayCommandReceipt(command, existingReceipt.value);
     }
+    if (originalRemoteSend !== undefined)
+      return yield* new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type,
+        cause: "This remote SEND was already accepted; return its retained original receipt." });
 
     // Recheck under the lock; the user may have raised modes since sender preflight.
     const limit = yield* DispatchModeLimit;
@@ -15454,7 +15780,52 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     }
 
-    const plan = yield* dispatchOnce(command, sideChatIds).pipe(
+    // Prefinalization serializes only already-certified refusals. During starting,
+    // disposition subtracts in place; survivors reserve when refusal is certified.
+    if (
+      (command.type === "delegated_task.completion-delivery.acknowledge" ||
+        command.type === "delegated_task.completion-delivery.dispose") &&
+      !isUnobservedAcknowledgement(command) &&
+      Option.isSome(startRefusals)
+    ) {
+      const current = yield* projectionStore
+        .getThreadRecords(command.parentThreadId, ["runs", "subagents"])
+        .pipe(mapDispatchError(command));
+      const task = current.subagents.find(
+        (candidate) => candidate.id === command.taskId && candidate.origin === "app_owned",
+      );
+      const cohort = current.runs.find((run) => run.id === task?.runId)?.delegatedCompletion;
+      const deliveryRun = current.runs.find(
+        (run) => run.userMessageId === cohort?.delivery?.messageId,
+      );
+      if (
+        task?.completionDelivery?.state === "claimed" &&
+        cohort?.disposition === "open" &&
+        cohort.delivery?.taskIds.includes(task.id) &&
+        deliveryRun !== undefined &&
+        (yield* startRefusals.value
+          .qualifies(command.parentThreadId, deliveryRun.id)
+          .pipe(mapDispatchError(command)))
+      )
+        yield* finalizeDelegatedCompletionDelivery(command.parentThreadId, deliveryRun.id).pipe(
+          mapDispatchError(command),
+        );
+    }
+
+    let plan = yield* dispatchOnce(command, sideChatIds).pipe(
+      Effect.flatMap((planned) => Effect.gen(function* () {
+        if ((!cancelsSelfSettlement(command) && command.type !== "thread.stop") ||
+          (command.type === "thread.settlement.restore" && planned.events.length === 0)) return planned;
+        const threadId = commandThreadId(command);
+        const current = yield* findThread(threadId);
+        if (current?.selfSettlement == null) return planned;
+        const lastThreadEvent = planned.events.findLast((event) => event.threadId === threadId && "settledOverride" in event.payload);
+        const thread = lastThreadEvent !== undefined && "settledOverride" in lastThreadEvent.payload ? lastThreadEvent.payload : current;
+        const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([...planned.events]);
+        yield* emit(events, command)({ type: "thread.metadata-updated", threadId, occurredAt: yield* DateTime.now,
+          payload: { ...thread, selfSettlement: null } });
+        return { ...planned, events: yield* Ref.get(events) };
+      })),
       Effect.tap((planned) => refuseAboveRuntimeModeCeiling(command, planned.events)),
       Effect.filterOrFail(
         (planned) =>
@@ -15463,6 +15834,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "thread.background-work.settle" ||
           // A stale visit changes no read state.
           command.type === "thread.visit" ||
+          command.type === "thread.settlement.restore" ||
+          command.type === "delegated_task.remote.bind" ||
+          command.type === "delegated_task.remote.hold" ||
           // A read can answer a watch again before a push's reopen lands; nothing is left to clear.
           command.type === "thread.pull-request-watch.checks-reopen" ||
           command.type === "thread.interrupt.unresponsive" ||
@@ -15535,52 +15909,75 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
-    if (plan.events.length === 0 && plan.effects.length === 0 && cancelledTask === undefined) {
-      // A settle that ended nothing still records its receipt: a replayed Stop
-      // effect then finds it instead of settling work that appeared since.
-      const { resultSequence, inserted } = yield* Effect.gen(function* () {
-        const sequence = yield* eventSink.latestSequence({ threadId: commandThreadId(command) });
-        const inserted = yield* commandReceipts.insertIfAbsent({
-          commandId: command.commandId,
-          threadId: commandThreadId(command),
-          commandType: command.type,
-          acceptedAt: yield* DateTime.now,
-          resultSequence: sequence,
-          status: "accepted",
-          error: null,
+    let threadTitleCommit: ThreadTitleCommitContext | undefined;
+    const titleCommand = command.type === "thread.create" ? threadCreateInitialMessage(command) : command;
+    if (titleCommand !== undefined && titlePolicyApplies(titleCommand)) {
+      const threadId = commandThreadId(command);
+      const pending = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([...plan.events]);
+      const projection = yield* getProjectionWithPendingEvents(threadId, pending);
+      const current =
+        titleCommand.type === "thread.title.regeneration.complete" || titleCommand.type === "message.dispatch"
+          ? yield* findThread(threadId)
+          : undefined;
+      // Upstream may already have armed this acceptance; Jones evaluates prior ownership,
+      // while retaining the upstream title seed and the newly accepted message evidence.
+      const titleProjection =
+        titleCommand.type === "message.dispatch" &&
+        current?.titleRegeneration == null &&
+        projection.thread.titleRegeneration?.requestId === command.commandId
+          ? { ...projection, thread: { ...projection.thread, titleRegeneration: null } }
+          : projection;
+      const decision = yield* automaticTitles
+        .plan({
+          command: titleCommand,
+          projection: titleProjection,
+          ...(current?.titleRegeneration == null
+            ? {}
+            : { completingRequestId: current.titleRegeneration.requestId }),
+        })
+        .pipe(mapDispatchError(command));
+      threadTitleCommit = decision.commit;
+      if (decision.arm !== undefined) {
+        const now = yield* DateTime.now;
+        yield* emit(
+          pending,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            ...projection.thread,
+            title: decision.seed ?? projection.thread.title,
+            titleRegeneration: { requestId: decision.arm.requestId, startedAt: now },
+            updatedAt: now,
+          },
         });
-        return { resultSequence: sequence, inserted };
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId: command.commandId,
-              commandType: command.type,
-              cause,
-            }),
-        ),
-      );
-      if (!inserted) {
-        const receipt = yield* mapDispatchError(command)(
-          commandReceipts.getByCommandId(command.commandId),
+        const titleEffect = pendingThreadTitleGenerationEffect(
+          decision.arm.requestId,
+          threadId,
+          decision.arm.initial
+            ? { type: "initial", messageId: decision.arm.messageId }
+            : { type: "regenerate" },
         );
-        if (Option.isNone(receipt)) {
-          return yield* new OrchestratorDispatchError({
-            commandId: command.commandId,
-            commandType: command.type,
-            cause: "Conflicting receipt is not a thread command receipt.",
-          });
-        }
-        return yield* replayCommandReceipt(command, receipt.value);
+        plan = {
+          ...plan,
+          events: yield* Ref.get(pending),
+          effects: [...plan.effects.filter((effect) => effect.id !== titleEffect.id), titleEffect],
+        };
       }
-      return {
-        sequence: resultSequence,
-        storedEvents: [],
-      } satisfies OrchestratorV2DispatchResult;
     }
+
+    if (nativeAcceptance !== undefined && (plan.events.length === 0 ||
+      plan.effects.some((effect) => effect.request.type !== "provider-turn.start")))
+      return yield* new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type,
+        cause: "Native stage requires a recorded event and qualified effect envelope." });
+    if (nativeLineage !== undefined && nativeCommand !== undefined)
+      yield* validateNative(nativeLineage, nativeCommand).pipe(mapDispatchError(command));
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
     const committed = yield* eventSink
       .commitCommand({
+        remoteSend,
         commandId: command.commandId,
         threadId: commandThreadId(command),
         commandType: command.type,
@@ -15598,7 +15995,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   payload: cancelledTask,
                 }).pipe(mapDispatchError(command)),
               ],
-        effects: plan.effects,
+        effects: nativeAcceptance === undefined ? plan.effects : plan.effects.map((effect) => ({ ...effect,
+          nativeCreationExecutionReference: { version: 2 as const, claimId: nativeAcceptance.claimId,
+            stageCommandId: nativeAcceptance.command.commandId, effectId: effect.id, stage: "native_command" as const } })),
+        ...(nativeAcceptance === undefined ? {} : { nativeCreation: nativeAcceptance }),
+        resultRequest: yield* DependencyCommit,
+        dependencyWake: yield* DependencyWakeCommit,
+        threadTitle: threadTitleCommit,
+        codexFailover: codexFailover.commitContext(command),
+        ...(command.type === "thread.settlement.restore" ? { settlementRestore: { settleCommandId: command.settleCommandId } } : {}),
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
@@ -15674,6 +16079,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     } satisfies OrchestratorV2DispatchResult;
   }, withCommandMetrics);
 
+  const codexFailover: CodexFailover.CodexFailoverHooks = yield* CodexFailover.make({
+    dispatch: dispatchWithReceiptEffect,
+    queueAfterFailure: (threadId, runId) =>
+      startNextQueuedRun(threadId, { failedRunId: runId, endedRunId: runId }),
+  });
+
   // Follow-up intake and Stop serialize on the parent before taking the child lock.
   const withSubagentParentLock = <A, E, R>(threadId: ThreadId, dispatch: Effect.Effect<A, E, R>) =>
     appOwnedSubagentParentThreadId(threadId).pipe(
@@ -15685,6 +16096,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
+    if (yield* RemoteSendReceipts.SendPreparation)
+      return yield* new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type,
+        cause: "Workspace preparation cannot recursively dispatch under the target lock." });
     const dispatch = threadDispatch.withLock(
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
@@ -15734,6 +16148,232 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       : dispatch;
   });
 
+  const requestSelfSettlement: OrchestratorV2Shape["requestSelfSettlement"] = (input) =>
+    threadDispatch.withLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const command = {
+          type: "thread.metadata.update" as const,
+          threadId: input.threadId,
+          commandId: input.commandId,
+        };
+        const reject = (cause: string) =>
+          new OrchestratorDispatchError({ ...command, commandType: command.type, cause });
+        // Read the original durable acceptance before looking for a current run: credentials span turns.
+        const existingReceipt = yield* commandReceipts
+          .getByCommandId(input.commandId)
+          .pipe(mapDispatchError(command));
+        if (Option.isSome(existingReceipt)) {
+          const receipt = existingReceipt.value;
+          if (receipt.threadId !== input.threadId || receipt.status === "rejected")
+            return yield* reject("Self-settlement request identity conflicts.");
+          const stored = yield* eventSink
+            .readByCommandId({ commandId: input.commandId })
+            .pipe(Stream.runCollect, mapDispatchError(command));
+          for (const entry of stored) {
+            if (entry.event.type !== "thread.metadata-updated") continue;
+            const intent = entry.event.payload.selfSettlement;
+            if (
+              intent?.commandId === input.commandId &&
+              intent.mcpCredentialId === input.mcpCredentialId &&
+              intent.providerInstanceId === input.providerInstanceId
+            )
+              return intent;
+          }
+          return yield* reject("The original command is not this self-settlement request.");
+        }
+        const projection = yield* projectionStore
+          .getThreadRecords(input.threadId, [
+            "runs",
+            "messages",
+            "runtimeRequests",
+            "attempts",
+            "providerThreads",
+          ])
+          .pipe(mapDispatchError(command));
+        const providerThread = projection.providerThreads.find(
+          (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+        );
+        const owner =
+          providerThread?.providerSessionId == null
+            ? null
+            : {
+                binding: {
+                  providerSessionId: providerThread.providerSessionId,
+                  instanceId: providerThread.providerInstanceId,
+                  providerThreadId: providerThread.id,
+                },
+              };
+        const attached =
+          owner !== null &&
+          (yield* providerSessions.isMcpCallerAttached({
+            threadId: input.threadId,
+            providerSessionId: owner.binding.providerSessionId,
+            providerInstanceId: input.providerInstanceId,
+            mcpCredentialId: input.mcpCredentialId,
+          }));
+        const run = attached
+          ? selfSettlementRun(
+              projection,
+              {
+                providerSessionId: owner!.binding.providerSessionId,
+                providerInstanceId: input.providerInstanceId,
+              },
+              owner!.binding,
+              yield* dependencies.duties(input.threadId).pipe(mapDispatchError(command)),
+            )
+          : undefined;
+        if (run === undefined)
+          return yield* reject(
+            "Self-settlement requires the calling provider's active run without queued or blocked user work.",
+          );
+        if (projection.thread.selfSettlement != null)
+          return yield* reject(
+            "This turn already has an accepted self-settlement request; retry its original clientRequestId.",
+          );
+        const intent: SelfSettlementIntent = {
+          commandId: input.commandId,
+          runId: run.id,
+          mcpCredentialId: input.mcpCredentialId,
+          providerSessionId: owner!.binding.providerSessionId,
+          providerInstanceId: input.providerInstanceId,
+        };
+        const now = yield* DateTime.now;
+        const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: input.threadId,
+          occurredAt: now,
+          payload: { ...projection.thread, selfSettlement: intent },
+        });
+        yield* eventSink
+          .commitCommand({
+            ...command,
+            commandType: command.type,
+            selfSettlementRevalidate: Effect.gen(function* () {
+              const current = yield* projectionStore.getThreadRecords(input.threadId,
+                ["runs", "messages", "runtimeRequests", "attempts", "providerThreads"]).pipe(mapDispatchError(command));
+              const native = current.providerThreads.find((candidate) => candidate.id === current.thread.activeProviderThreadId);
+              const stillAttached = native?.id === owner!.binding.providerThreadId &&
+                native.providerSessionId === owner!.binding.providerSessionId &&
+                native.providerInstanceId === input.providerInstanceId &&
+                (yield* providerSessions.isMcpCallerAttached({ threadId: input.threadId,
+                  providerSessionId: owner!.binding.providerSessionId, providerInstanceId: input.providerInstanceId,
+                  mcpCredentialId: input.mcpCredentialId }));
+              const currentRun = stillAttached ? selfSettlementRun(current,
+                { providerSessionId: owner!.binding.providerSessionId, providerInstanceId: input.providerInstanceId },
+                owner!.binding, yield* dependencies.duties(input.threadId).pipe(mapDispatchError(command))) : undefined;
+              if (currentRun?.id !== run.id || currentRun.activeAttemptId !== run.activeAttemptId || current.thread.selfSettlement != null)
+                return yield* reject("Self-settlement ownership or pending work changed before acceptance.");
+            }),
+            acceptedAt: now,
+            events: yield* Ref.get(events),
+            effects: [],
+            ...(input.projectRemaining === undefined
+              ? {}
+              : {
+                  selfSettlementProjectRemaining: {
+                    commandId: input.commandId,
+                    threadId: input.threadId,
+                    items: input.projectRemaining,
+                  },
+                }),
+          })
+          .pipe(mapDispatchError(command));
+        return intent;
+      }),
+    );
+
+  const cancelSelfSettlement = Effect.fn("Orchestrator.cancelSelfSettlement")(function* (
+    threadId: ThreadId,
+  ) {
+    const thread = yield* projectionStore
+      .getThread(threadId)
+      .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+    if (thread.selfSettlement == null) return;
+    const command = {
+      type: "thread.metadata.update" as const,
+      threadId,
+      commandId: CommandId.make(`${thread.selfSettlement.commandId}:cancel`),
+    };
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.metadata-updated",
+      threadId,
+      occurredAt: now,
+      payload: { ...thread, selfSettlement: null },
+    });
+    yield* eventSink
+      .commitCommand({
+        ...command,
+        commandType: command.type,
+        acceptedAt: now,
+        events: yield* Ref.get(events),
+        effects: [],
+      })
+      .pipe(mapDispatchError(command));
+  });
+
+  const consumeSelfSettlement = Effect.fn("Orchestrator.consumeSelfSettlement")(function* (threadId: ThreadId) {
+    const projection = yield* projectionStore.getThreadRecords(threadId,
+      ["runs", "messages", "runtimeRequests", "attempts"]).pipe(
+        Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+    const intent = projection.thread.selfSettlement;
+    if (intent == null) return;
+    const receipt = yield* commandReceipts.getByCommandId(intent.commandId);
+    if (Option.isNone(receipt) || receipt.value.status !== "accepted" || receipt.value.threadId !== threadId ||
+      receipt.value.commandType !== "thread.metadata.update") {
+      yield* Effect.logWarning("Self-settlement retains an unavailable original acceptance", { threadId, commandId: intent.commandId });
+      return;
+    }
+    const disposition = selfSettlementTerminalDisposition({ projection, acceptedAt: receipt.value.acceptedAt,
+      duties: yield* dependencies.duties(threadId) });
+    if (disposition === "ignore") return;
+    if (disposition === "cancel") return yield* cancelSelfSettlement(threadId);
+    const latest = projection.runs.toSorted((a, b) => b.ordinal - a.ordinal)[0];
+    if (latest === undefined) return;
+    yield* dispatchWithReceiptEffect({ type: "thread.settle", threadId, expectedLatestRunId: latest.id,
+      commandId: CommandId.make(`${intent.commandId}:settle:${latest.id}`),
+    }).pipe(Effect.catch((cause) => Effect.gen(function* () {
+      yield* cancelSelfSettlement(threadId);
+      yield* Effect.logWarning("Self-settlement was cancelled at completion", { threadId, runId: intent.runId, cause });
+    })));
+  });
+  const recoverSelfSettlements = Effect.gen(function* () {
+    const rows = yield* sql<{ thread_id: ThreadId }>`SELECT thread_id FROM orchestration_v2_projection_threads
+      WHERE deleted_at IS NULL AND json_type(payload_json, '$.selfSettlement') = 'object'`;
+    for (const row of rows) yield* threadDispatch.withLock(row.thread_id, consumeSelfSettlement(row.thread_id));
+  }).pipe(Effect.catchCause((cause) => Effect.logWarning("Self-settlement recovery remains held", { cause })));
+
+  const releasePlannedUpdateQueue = Effect.fn("Orchestrator.releasePlannedUpdateQueue")(function* (
+    threadId: ThreadId,
+  ) {
+    if (
+      Option.isNone(plannedContinuity) ||
+      !(yield* plannedContinuity.value.queueThreadIds).includes(threadId)
+    )
+      return;
+    const projection = yield* projectionStore.getThreadProjection(threadId);
+    const commandId = yield* plannedContinuity.value.queueCommand(projection);
+    if (commandId === undefined) return;
+    yield* dispatchWithReceiptEffect({ type: "queue.resume", threadId, commandId });
+    yield* plannedContinuity.value.finishQueue(threadId);
+  });
+  const recoverPlannedUpdateQueues = Effect.gen(function* () {
+    if (Option.isNone(plannedContinuity)) return;
+    for (const threadId of yield* plannedContinuity.value.queueThreadIds)
+      yield* threadDispatch.withLock(threadId, releasePlannedUpdateQueue(threadId));
+  }).pipe(
+    Effect.catchCause((cause) => Effect.logWarning("Planned update queues remain held", { cause })),
+  );
+
   const handleRunUpdate = Effect.fn("Orchestrator.handleRunUpdate")(
     function* (stored: OrchestrationV2StoredEvent) {
       if (stored.event.type !== "run.updated") return;
@@ -15762,10 +16402,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* threadDispatch
           .withLock(
             threadId,
-            (run.status === "completed"
-              ? releaseUnattendedHolds(threadId, run.id)
-              : Effect.void
-            ).pipe(
+            consumeSelfSettlement(threadId).pipe(
+              Effect.andThen(releasePlannedUpdateQueue(threadId)),
+              Effect.andThen(run.status === "failed" ? codexFailover.afterFailedRun(threadId, run.id) : Effect.void),
+              Effect.andThen(run.status === "completed" ? releaseUnattendedHolds(threadId, run.id) : Effect.void),
               Effect.andThen(
                 startNextQueuedRun(threadId, {
                   endedRunId: run.id,
@@ -15931,6 +16571,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const { event } = stored;
     if (event.type === "subagent.updated")
       return !isOrchestrationV2WorkActive(event.payload.status);
+    if (CodexFailover.settlesTurnItem(stored)) return true;
     if (event.type !== "provider-thread.updated") return false;
     if (backgroundWorkHoldsCompletion(event.payload.pendingBackgroundTasks ?? [])) {
       providerThreadsWithBackgroundWork.add(event.payload.id);
@@ -15943,7 +16584,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       afterSequence: terminalEventsAfterSequence,
       eventType: "provider-thread.updated",
     }),
-    eventSink.stream({ afterSequence: terminalEventsAfterSequence, eventType: "subagent.updated" }),
+    Stream.merge(
+      eventSink.stream({ afterSequence: terminalEventsAfterSequence, eventType: "subagent.updated" }),
+      eventSink.stream({ afterSequence: terminalEventsAfterSequence, eventType: "turn-item.updated" }),
+    ),
   ).pipe(
     Stream.filter(settlesChildWork),
     Stream.runForEach((stored) =>
@@ -15951,6 +16595,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         stored.event.threadId,
         Effect.gen(function* () {
           const childThreadId = stored.event.threadId;
+          yield* codexFailover.afterChildWorkSettled(childThreadId);
           const parentThreadId = yield* appOwnedSubagentParentThreadId(childThreadId);
           if (parentThreadId === undefined) return;
           yield* threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(childThreadId));
@@ -16065,6 +16710,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const delegatedTaskResultPending = Effect.fn("Orchestrator.delegatedTaskResultPending")(
     function* (childThreadId: ThreadId, taskId?: NodeId) {
+      if (yield* childResultHolds.owesDependencies(childThreadId)) return true;
       const child = yield* projectionStore.getThreadRecords(
         childThreadId,
         ["runs", "messages", "subagents", "providerThreads", "providerTurns", "attempts"],
@@ -16079,11 +16725,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           delegatedTaskAwaitsWork(runs, child)
         )
           return true;
+        if (yield* childResultHolds.holdsFailover(childThreadId, run, taskId)) return true;
         return yield* childAwaitsRestartContinuation(runs, run);
       }
       const progress = delegatedTaskProgress(child);
       if (progress.state !== "result_available") return true;
       if (progress.resultRun === undefined) return false;
+      if (yield* childResultHolds.holdsFailover(childThreadId, progress.resultRun)) return true;
       return yield* childAwaitsRestartContinuation(child.runs, progress.resultRun);
     },
     (effect, childThreadId, _taskId?) =>
@@ -16233,7 +16881,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const shellProjectionError = (cause: unknown) =>
     new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell"), cause });
 
+  const remoteObservationHooks = yield* RemoteObservationHooks.make(dispatchWithReceiptEffect);
+  const followUpCommandOwner = yield* CoreFollowUpCommandOwner.make(dispatchWithReceiptEffect, commandThreadId);
+  const remoteSendReceipts: RemoteSendReceipts.RemoteSendReceiptPorts = {
+    lookup: remoteSendStore.lookup,
+    withSendCommit: remoteSendStore.withSendCommit,
+    pruneBefore: remoteSendStore.pruneBefore,
+    guardPreparation: (commandId, preparation) => Effect.gen(function* () {
+      const capture = yield* RemoteSendReceipts.SendCommit;
+      if (capture === undefined || capture.commandId !== commandId || (yield* RemoteSendReceipts.SendPreparation))
+        return yield* new RemoteSendReceipts.RemoteSendReceiptError({ reason: "preparation_capture_missing" });
+      return yield* threadDispatch.withLock(capture.threadId, Effect.gen(function* () {
+        if ((yield* remoteSendStore.forCommit(capture)) !== undefined)
+          return yield* new RemoteSendReceipts.RemoteSendReceiptError({ reason: "accepted_receipt_replay_required" });
+        const target = yield* projectionStore.getThread(capture.threadId).pipe(
+          Effect.mapError((cause) => new RemoteSendReceipts.RemoteSendReceiptError({ reason: "target_unavailable", cause })));
+        yield* RemoteSendReceipts.assertTargetBirth(capture, target.createdAt);
+        return yield* preparation.pipe(Effect.provideService(RemoteSendReceipts.SendPreparation, true));
+      }));
+    }),
+  };
+
   return OrchestratorV2.of({
+    ...remoteObservationHooks,
+    requestSelfSettlement,
+    recoverSelfSettlements,
+    remoteSendReceipts,
+    followUpCommandOwner,
+    recoverCodexFailover: codexFailover.recoverCodexFailover,
+    recoverPlannedUpdateQueues,
     resumeQueuedRuns,
     recoverDelegatedTasks,
     recoverDelegatedTask,
@@ -16248,6 +16924,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return effectOutbox.awaitSettled(`effect:restart-continuation:${run.id}`).pipe(Effect.ignore);
     }),
     dispatch: dispatchWithReceipt,
+    dispatchNativeCreationStage: Effect.fn("OrchestratorV2.dispatchNativeCreationStage")(function* (command, lineage) {
+      if (yield* RemoteSendReceipts.SendPreparation)
+        return yield* new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type,
+          cause: "Workspace preparation cannot recursively dispatch under the target lock." });
+      return yield* threadDispatch.withLock(commandThreadId(command),
+        dispatchWithReceiptEffect(command, [], undefined, lineage));
+    }),
     autoArmLimitRecovery: Effect.fn("OrchestratorV2.autoArmLimitRecovery")(function (input) {
       return threadDispatch.withLock(
         input.threadId,
@@ -16476,6 +17159,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 export const layer: Layer.Layer<
   OrchestratorV2,
   never,
+  | SqlClient.SqlClient
   | CheckpointServiceV2
   | FileSystem.FileSystem
   | Path.Path
