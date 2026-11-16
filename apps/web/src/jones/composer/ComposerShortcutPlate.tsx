@@ -30,20 +30,16 @@ export function ComposerShortcutRails({
           <ComposerShortcutPlate visible={visible}>{accounts}</ComposerShortcutPlate>
         </div>
         <div className="pointer-events-auto w-max min-w-0 max-w-full shrink-0">
-          {effort ? <ComposerShortcutPlate visible={visible}>{effort}</ComposerShortcutPlate> : null}
+          {effort ? (
+            <ComposerShortcutPlate visible={visible}>{effort}</ComposerShortcutPlate>
+          ) : null}
         </div>
       </div>
     </div>
   );
 }
 
-function ComposerShortcutPlate({
-  children,
-  visible,
-}: {
-  children: ReactNode;
-  visible: boolean;
-}) {
+function ComposerShortcutPlate({ children, visible }: { children: ReactNode; visible: boolean }) {
   return (
     <div className="relative isolate" style={{ visibility: visible ? "visible" : "hidden" }}>
       <div

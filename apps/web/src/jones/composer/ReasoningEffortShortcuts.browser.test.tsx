@@ -584,7 +584,9 @@ function ShortcutRailsFixture({
   height: number;
   codex: boolean;
   onAccountSelect: ComponentProps<typeof ProviderInstanceShortcuts>["onSelect"];
-  onProviderModelSelect: ComponentProps<typeof ReasoningEffortShortcuts>["onProviderModelSelect"];
+  onProviderModelSelect: NonNullable<
+    ComponentProps<typeof ReasoningEffortShortcuts>["onProviderModelSelect"]
+  >;
 }) {
   const [workspace, setWorkspace] = useState<HTMLDivElement | null>(null);
   const [host, setHost] = useState<HTMLDivElement | null>(null);
@@ -689,19 +691,22 @@ it.each([320, 380, 620, 900])(
         const onAccountSelect = vi.fn();
         const onProviderModelSelect = vi.fn();
         for (const height of [240, 800]) {
-          await act(async () =>
-            await root.rerender(
-              <ShortcutRailsFixture
-                width={width}
-                height={height}
-                codex={codex}
-                onAccountSelect={onAccountSelect}
-                onProviderModelSelect={onProviderModelSelect}
-              />,
-            ),
+          await act(
+            async () =>
+              await root.rerender(
+                <ShortcutRailsFixture
+                  width={width}
+                  height={height}
+                  codex={codex}
+                  onAccountSelect={onAccountSelect}
+                  onProviderModelSelect={onProviderModelSelect}
+                />,
+              ),
           );
           const band = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-rails]")!;
-          const content = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-content]")!;
+          const content = container.querySelector<HTMLElement>(
+            "[data-chat-composer-shortcut-content]",
+          )!;
           await expect.poll(() => band.getBoundingClientRect().height).toBeGreaterThan(0);
           await expect
             .poll(() => band.getBoundingClientRect().height)
@@ -739,7 +744,10 @@ it.each([320, 380, 620, 900])(
           }
           for (const button of [accounts[8]!, efforts[efforts.length - 1]!]) {
             const rect = button.getBoundingClientRect();
-            const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+            const hit = document.elementFromPoint(
+              rect.x + rect.width / 2,
+              rect.y + rect.height / 2,
+            );
             expect(hit === button || button.contains(hit)).toBe(true);
             await userEvent.click(button);
           }
