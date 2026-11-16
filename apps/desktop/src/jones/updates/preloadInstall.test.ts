@@ -11,7 +11,7 @@ import {
   FLEET_UPDATES_CHANNEL,
 } from "../../ipc/channels.ts";
 import { discardUpdate, downloadUpdate, installUpdate } from "../../ipc/methods/updates.ts";
-import * as DesktopUpdates from "../../updates/DesktopUpdates.ts";
+import * as DesktopUpdates from "../../updates/DesktopUpdatesService.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
 
 const mocks = vi.hoisted(() => ({
