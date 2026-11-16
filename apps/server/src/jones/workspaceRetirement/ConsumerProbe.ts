@@ -100,6 +100,7 @@ async function procText(path: string, limit: number) {
   }
 }
 export interface ProcessProbeIO {
+  now?: () => number;
   command: (file: string, args: string[]) => Promise<string>;
   list: (path: string) => Promise<string[]>;
   uid: () => number | undefined;
@@ -115,43 +116,111 @@ const nativeIO: ProcessProbeIO = {
   readlink: (path) => NodeFSP.readlink(path),
   read: procText,
 };
+type ProcessStage =
+  | "scan"
+  | "linux_enumerate"
+  | "linux_owner"
+  | "linux_cwd"
+  | "linux_exe"
+  | "linux_cmdline"
+  | "linux_maps"
+  | "darwin_enumerate"
+  | "darwin_lsof"
+  | "darwin_argv";
+type ProcessCategory =
+  | "permission"
+  | "disappeared"
+  | "data_bound"
+  | "timeout"
+  | "unavailable"
+  | "time_budget"
+  | "pid_bound";
+function processErrorCategory(cause: unknown): ProcessCategory {
+  const error = cause as
+    | (NodeJS.ErrnoException & { killed?: boolean; signal?: string })
+    | null
+    | undefined;
+  if (error?.code === "EACCES" || error?.code === "EPERM") return "permission";
+  if (error?.code === "ENOENT" || error?.code === "ESRCH") return "disappeared";
+  if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || error?.message === "bound_exceeded")
+    return "data_bound";
+  if (error?.code === "ETIMEDOUT" || (error?.killed === true && error.signal === "SIGTERM"))
+    return "timeout";
+  return "unavailable";
+}
 export async function processProbe(
   target: string,
   platform: NodeJS.Platform = nativePlatform,
   io: ProcessProbeIO = nativeIO,
 ): Promise<Probe> {
-  const started = performance.now();
+  const now = io.now ?? (() => performance.now());
+  const started = now();
   const observedAt = DateTime.toEpochMillis(DateTime.nowUnsafe()),
     paths = new Set<string>();
   let complete = true;
+  let listed = 0,
+    attempted = 0,
+    sameUser = 0,
+    otherUser = 0;
+  let stage: ProcessStage = "scan";
+  const observations = new Map<string, number>();
+  const record = (at: ProcessStage, category: ProcessCategory) => {
+    const key = `stage=${at},category=${category}`;
+    observations.set(key, (observations.get(key) ?? 0) + 1);
+  };
+  const limits = () => [
+    ...CONSUMER_LIMITS,
+    `process_probe_coverage:listed=${listed},attempted=${attempted},same_user=${sameUser},other_user=${otherUser}`,
+    ...[...observations]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, count]) => `process_probe_observation:${key},count=${count}`),
+  ];
   try {
     if (platform === "linux") {
+      stage = "linux_enumerate";
       const pids = (await io.list("/proc")).filter((p) => /^\d+$/.test(p));
-      if (pids.length > 4096) throw new Error("bound");
+      listed = pids.length;
+      if (pids.length > 4096) {
+        record("scan", "pid_bound");
+        return { observedAt, status: "unavailable", paths: [...paths], limits: limits() };
+      }
       for (const pid of pids) {
-        if (performance.now() - started > 5000) {
+        if (now() - started > 5000) {
+          record("scan", "time_budget");
           complete = false;
           break;
         }
+        attempted++;
         const base = "/proc/" + pid;
         try {
-          if ((await io.statUid(base)) !== io.uid()) continue;
-          for (const name of ["cwd", "exe"]) {
+          stage = "linux_owner";
+          if ((await io.statUid(base)) !== io.uid()) {
+            otherUser++;
+            continue;
+          }
+          sameUser++;
+          for (const name of ["cwd", "exe"] as const) {
+            stage = name === "cwd" ? "linux_cwd" : "linux_exe";
             try {
               const p = await io.readlink(base + "/" + name);
               if (inside(p, target)) paths.add(p);
             } catch (cause) {
+              record(stage, processErrorCategory(cause));
               if ((cause as NodeJS.ErrnoException).code !== "ENOENT") complete = false;
             }
           }
+          stage = "linux_cmdline";
           const argv = await io.read(base + "/cmdline", 1024 * 1024);
           if (argv.length > 1024 * 1024) {
+            record(stage, "data_bound");
             complete = false;
             continue;
           }
           if (argvUses(argv, target)) paths.add(target);
+          stage = "linux_maps";
           const maps = await io.read(base + "/maps", 2 * 1024 * 1024);
           if (maps.length > 2 * 1024 * 1024) {
+            record(stage, "data_bound");
             complete = false;
             continue;
           }
@@ -161,6 +230,7 @@ export async function processProbe(
               if (p && inside(p, target)) paths.add(p);
             }
         } catch (cause) {
+          record(stage, processErrorCategory(cause));
           if (
             (cause as NodeJS.ErrnoException).code !== "ENOENT" &&
             (cause as NodeJS.ErrnoException).code !== "ESRCH"
@@ -169,18 +239,28 @@ export async function processProbe(
         }
       }
     } else if (platform === "darwin") {
+      stage = "darwin_enumerate";
       const rows = (await io.command("/bin/ps", ["-axo", "pid=,uid="])).trim().split("\n");
       const pids = rows
         .map((r) => r.trim().split(/\s+/))
         .filter((r) => Number(r[1]) === io.uid())
         .map((r) => r[0]!);
-      if (pids.length > 4096) throw new Error("bound");
+      listed = pids.length;
+      if (pids.length > 4096) {
+        record("scan", "pid_bound");
+        return { observedAt, status: "unavailable", paths: [...paths], limits: limits() };
+      }
       for (let i = 0; i < pids.length; i += 64) {
-        if (performance.now() - started > 5000) {
+        if (now() - started > 5000) {
+          record("scan", "time_budget");
           complete = false;
           break;
         }
-        const batch = pids.slice(i, i + 64).join(",");
+        const selected = pids.slice(i, i + 64);
+        attempted += selected.length;
+        sameUser += selected.length;
+        const batch = selected.join(",");
+        stage = "darwin_lsof";
         try {
           const output = await io.command("/usr/sbin/lsof", [
             "-a",
@@ -192,13 +272,16 @@ export async function processProbe(
           ]);
           for (const line of output.split("\n"))
             if (line.startsWith("n") && inside(line.slice(1), target)) paths.add(line.slice(1));
-        } catch {
+        } catch (cause) {
+          record(stage, processErrorCategory(cause));
           complete = false;
         }
+        stage = "darwin_argv";
         try {
           if (argvUses(await io.command("/bin/ps", ["-ww", "-p", batch, "-o", "command="]), target))
             paths.add(target);
-        } catch {
+        } catch (cause) {
+          record(stage, processErrorCategory(cause));
           complete = false;
         }
       }
@@ -213,10 +296,11 @@ export async function processProbe(
       observedAt,
       status: complete ? "complete" : "partial",
       paths: [...paths],
-      limits: CONSUMER_LIMITS,
+      limits: limits(),
     };
-  } catch {
-    return { observedAt, status: "unavailable", paths: [...paths], limits: CONSUMER_LIMITS };
+  } catch (cause) {
+    record(stage, processErrorCategory(cause));
+    return { observedAt, status: "unavailable", paths: [...paths], limits: limits() };
   }
 }
 export async function serviceProbe(target: string, files: readonly string[]): Promise<Probe> {
