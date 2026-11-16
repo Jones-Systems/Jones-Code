@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/sql/SqlClient";
-import { inside, nativePlatform } from "./Filesystem.ts";
+import { inside, nativePlatform, subprocessTimeout } from "./Filesystem.ts";
 import type { Probe } from "./ConsumerProbe.ts";
 
 export interface ServiceIO {
@@ -19,7 +19,7 @@ const nativeIO: ServiceIO = {
         file,
         args,
         {
-          timeout: Math.max(1, Math.min(1500, remainingMs)),
+          timeout: subprocessTimeout(remainingMs, 1500),
           maxBuffer: 2 * 1024 * 1024,
           encoding: "utf8",
         },
@@ -100,13 +100,16 @@ export async function nativeServices(
         .trim()
         .split("\n")
         .filter(Boolean)
-        .map((line) => line.trim().split(/\s+/)[0]!);
+        .map((line) => {
+          const [unit, loadState] = line.trim().split(/\s+/);
+          return { unit: unit!, loadState };
+        });
       if (
         units.length > 2000 ||
-        units.some((unit) => !unit.endsWith(".service") || !/^[A-Za-z0-9_.@\\:-]+$/.test(unit))
+        units.some(({ unit }) => !unit.endsWith(".service") || !/^[A-Za-z0-9_.@\\:-]+$/.test(unit))
       )
         throw new Error("native_service_unit_bound_or_identity");
-      for (const unit of units) {
+      for (const { unit, loadState } of units) {
         // No Environment or arbitrary unit content is requested.
         const projection = await run("systemctl", [
           "--user",
@@ -115,8 +118,28 @@ export async function nativeServices(
           "--no-pager",
           "--property=Id,LoadState,WorkingDirectory,RootDirectory,ExecStart,FragmentPath",
         ]);
-        if (!projection.includes("LoadState=loaded"))
+        const fields = new Map<string, string>();
+        for (const line of projection.replace(/\n$/, "").split("\n")) {
+          const separator = line.indexOf("=");
+          const key = line.slice(0, separator);
+          if (separator < 1 || fields.has(key))
+            throw new Error("native_service_projection_malformed");
+          fields.set(key, line.slice(separator + 1));
+        }
+        const definitionFields = ["WorkingDirectory", "RootDirectory", "ExecStart", "FragmentPath"];
+        if (
+          fields.size !== definitionFields.length + 2 ||
+          fields.get("Id") !== unit ||
+          definitionFields.some((key) => !fields.has(key))
+        )
+          throw new Error("native_service_projection_malformed");
+        if (fields.get("LoadState") !== loadState)
           throw new Error("native_service_load_state_changed");
+        if (loadState === "not-found" && definitionFields.every((key) => fields.get(key) === "")) {
+          count++;
+          continue;
+        }
+        if (loadState !== "loaded") throw new Error("native_service_load_state_unavailable");
         if (uses(projection, target)) paths.add(target);
         count++;
       }
