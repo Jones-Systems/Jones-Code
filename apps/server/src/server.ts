@@ -1,5 +1,6 @@
 import * as SearchGitProbe from "./jones/workspace/SearchGitProbe.ts";
 import * as CoreFollowUpOwner from "./jones/orchestration/FollowUpCommandOwnerLayer.ts";
+import * as PreviewCompanion from "./jones/previewCompanion/registration.ts";
 import * as Scheduler from "./scheduling/Scheduler.ts";
 import * as WorkMode from "./jones/workMode/WorkMode.ts";
 import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
@@ -562,12 +563,15 @@ const layerTerminal = TerminalManager.layer(
   Layer.provide(layerNativeTelemetry),
 );
 
+// One memoized registration serves placement, ServerBrowser and the companion
+// WebSocket route. A route must never construct a separate host registry.
+const layerPreviewCompanionServices = PreviewCompanion.servicesLayer.pipe(
+  Layer.provide(DesktopBrowserChannel.layer),
+);
 const layerPreview = Layer.empty.pipe(
   Layer.provideMerge(PreviewManager.layer),
   Layer.provideMerge(layerPortScanner),
-  Layer.provideMerge(
-    JonesHttp.previewCompanionServicesLayer.pipe(Layer.provide(DesktopBrowserChannel.layer)),
-  ),
+  Layer.provideMerge(layerPreviewCompanionServices),
 );
 
 const layerDevice = DeviceService.layer.pipe(
@@ -938,7 +942,7 @@ const layerMakeRoutes = Layer.mergeAll(
     GuestHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
-    JonesHttp.previewCompanionRouteLayer,
+    PreviewCompanion.routeLayer.pipe(Layer.provide(layerPreviewCompanionServices)),
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
     speechStreamRouteLayer,
@@ -981,6 +985,7 @@ const layerMakeRoutes = Layer.mergeAll(
     // The same activity instance RunExecutionService reports to, by layer memoization.
     Layer.provide(
       ServerBrowser.layer.pipe(
+        Layer.provide(layerPreviewCompanionServices),
         Layer.provide(Layer.merge(DesktopBrowserChannel.layer, PreviewAgentActivity.layer)),
       ),
     ),
