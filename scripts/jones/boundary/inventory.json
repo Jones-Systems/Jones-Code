@@ -3625,7 +3625,12 @@
     "scripts/jones/boundary/fragments/storage-cleanup-results.json": "jones-owned",
     "apps/web/src/components/BranchToolbarEnvironmentSelector.tsx": "accepted-shared",
     "apps/web/src/hooks/useAddProjectTargets.ts": "accepted-shared",
-    "apps/web/src/components/settings/EnvironmentRoutesList.browser.test.tsx": "jones-tests-in-upstream"
+    "apps/web/src/components/settings/EnvironmentRoutesList.browser.test.tsx": "jones-tests-in-upstream",
+    "scripts/jones/boundary/fragments/panel-find.json": "jones-owned",
+    "apps/desktop/src/window/DesktopApplicationMenu.ts": "accepted-shared",
+    "apps/web/src/components/AppSidebarLayout.tsx": "accepted-shared",
+    "apps/web/src/components/RightPanelTabs.tsx": "accepted-shared",
+    "apps/web/src/components/preview/PreviewPanelShell.tsx": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

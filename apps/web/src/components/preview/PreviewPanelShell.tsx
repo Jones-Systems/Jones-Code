@@ -1,3 +1,4 @@
+import { PanelFindScope } from "../../jones/panelFind/PanelFind";
 import { type CSSProperties, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import {
   type PreviewPanelInlineSize,
@@ -13,6 +14,7 @@ export type PreviewPanelMode = "inline" | "sheet" | "sidebar" | "embedded";
 
 interface PreviewPanelShellProps {
   workspaceArea?: boolean;
+  findResetKey?: string;
   workspaceFocusKey?: string;
   workspaceLabel?: string;
   mode: PreviewPanelMode;
@@ -159,9 +161,13 @@ function PreviewPanelShellFrame(
           collapsible && !maximized && "flex justify-end",
         )}
       >
-        <div
+        <PanelFindScope
+          label="side panel"
+          resetKey={props.findResetKey}
+          enabled={open}
+          data-find-default
           className={cn(
-            "flex h-full min-h-0 min-w-0 flex-col",
+            "relative flex h-full min-h-0 min-w-0 flex-col",
             collapsible && !maximized && "shrink-0",
           )}
           style={
@@ -171,7 +177,7 @@ function PreviewPanelShellFrame(
           }
         >
           {props.children}
-        </div>
+        </PanelFindScope>
       </div>
     </div>
   );

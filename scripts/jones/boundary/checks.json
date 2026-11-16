@@ -2332,6 +2332,7 @@
         "apps/server/src/orchestration-v2/FoundationPersistence.test.ts"
       ],
       "commands": [
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t \"resumes the original conversation with restart input\" --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts apps/server/src/jones/updates/continuationPrompt.test.ts apps/server/src/jones/updates/launcherOperation.test.ts apps/server/src/jones/updates/operationHandoff.test.ts apps/server/src/jones/updates/plannedContinuityPolicy.test.ts apps/server/src/jones/updates/serverCapability.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/jones/updates/desktopInstall.test.ts apps/server/src/jones/cloud/shutdownBudget.test.ts apps/server/src/orchestration-v2/ProjectionRecovery.test.ts",
         "vp test run apps/desktop/src/jones/updates/jonesQuitPreparation.test.ts apps/desktop/src/jones/updates/jonesNativePreparation.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/server/src/jones/updates/http.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
@@ -5472,6 +5473,22 @@
         "vp lint apps/server/src/jones/storageCleanup apps/server/src/jones/mcp/storageCleanup apps/web/src/jones/storageCleanupResults apps/web/src/components/settings/StorageSettings.tsx apps/web/src/components/settings/StorageSettings.browser.test.tsx packages/contracts/src/jones/storageCleanupReport.ts apps/server/src/mcp/McpHttpServer.ts packages/contracts/src/index.ts",
         "node scripts/jones/check-boundary.ts --strict",
         "git diff --check"
+      ]
+    },
+    {
+      "id": "jones-panel-find",
+      "tests": [
+        "apps/web/src/jones/panelFind/PanelFind.browser.test.tsx",
+        "apps/desktop/src/window/DesktopApplicationMenu.test.ts",
+        "apps/web/src/components/AppRouteModal.browser.test.tsx",
+        "apps/web/src/components/usage/UsagePage.jones.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/panelFind/PanelFind.browser.test.tsx src/components/AppRouteModal.browser.test.tsx src/components/usage/UsagePage.jones.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/desktop/src/window/DesktopApplicationMenu.test.ts",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/desktop typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     }
   ]

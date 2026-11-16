@@ -1,0 +1,8 @@
+::highlight(panel-find) {
+  background-color: #fde04780;
+  color: inherit;
+}
+::highlight(panel-find-active) {
+  background-color: #fb923c;
+  color: #171717;
+}

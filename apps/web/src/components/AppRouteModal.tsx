@@ -1,3 +1,5 @@
+import { useLocation } from "@tanstack/react-router";
+import { PanelFindScope } from "../jones/panelFind/PanelFind";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
 import { useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -16,6 +18,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
  */
 export function AppRouteModal({ label, children }: { label: string; children: ReactNode }) {
   const closeAppModal = useCloseAppModal();
+  const pathname = useLocation({ select: (location) => location.pathname });
   const [open, setOpen] = useState(true);
   // Text selection that ends on the backdrop is not a dismissal.
   const backdropPressRef = useRef(false);
@@ -90,7 +93,14 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
               aria-hidden
               className="absolute inset-x-0 top-0 hidden h-(--app-modal-titlebar-height) [-webkit-app-region:drag] max-sm:block"
             />
-            {children}
+            <PanelFindScope
+              label={label.toLowerCase()}
+              resetKey={pathname}
+              data-find-default
+              className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+            >
+              {children}
+            </PanelFindScope>
           </DialogPrimitive.Popup>
         </DialogPrimitive.Viewport>
       </DialogPrimitive.Portal>
