@@ -672,28 +672,26 @@ export default function ChatView(props: ChatViewProps) {
   const optimisticState = reconcileOptimisticUserMessages(
     heldOptimisticUserMessages,
     threadId,
-    new Set(serverProjection?.messages.map((message) => message.id) ?? []),
+    new Set([
+      ...(serverProjection?.messages.map((message) => message.id) ?? []),
+      ...serverVisibleTurnItems.flatMap(({ item }) =>
+        item.type === "user_message" ? [item.messageId] : [],
+      ),
+    ]),
   );
   if (optimisticState !== heldOptimisticUserMessages) {
     // Idempotent, and a discarded render only delays revocation to the thread's end.
     optimisticBlobPreviews.handOff(optimisticState);
     setHeldOptimisticUserMessages(optimisticState);
   }
-  const optimisticUserMessages = [
-    ...new Map(
-      [
-        ...pendingSendEntries
-          .filter(
-            (entry) =>
-              entry.environmentId === environmentId &&
-              entry.threadId === threadId &&
-              !entry.visible,
-          )
-          .map((entry) => entry.message),
-        ...optimisticState.messages,
-      ].map((message) => [message.id, message]),
-    ).values(),
-  ];
+  // The pending-send store owns row lifetime, including Dismiss. Local state
+  // retains attachment handoffs only and must not resurrect a removed send.
+  const optimisticUserMessages = pendingSendEntries
+    .filter(
+      (entry) =>
+        entry.environmentId === environmentId && entry.threadId === threadId && !entry.visible,
+    )
+    .map((entry) => entry.message);
   const setOptimisticUserMessages = (action: SetStateAction<ChatMessage[]>) => {
     const next = typeof action === "function" ? action(optimisticUserMessages) : action;
     for (const message of next) pendingSends.admit(environmentId, threadId, message);

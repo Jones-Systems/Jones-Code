@@ -24,6 +24,8 @@ import {
   ENVIRONMENT_ID,
   PROJECT_ID,
   deferFakeSends,
+  assistantItem,
+  runningRun,
   installFakeEnvironment,
   threadWithHistory,
   type FakeDriver,
@@ -400,4 +402,121 @@ it("shows a first send locally and reconciles lost launch acknowledgement", asyn
     .element(page.getByRole("paragraph").filter({ hasText: "Unique new-thread send" }))
     .toBeVisible();
   await vi.waitFor(() => expect(pendingSends.getSnapshot()).toEqual([]));
+});
+
+it("dismisses an uncertain row immediately and never restores it on the next send", async () => {
+  using _pendingCleanup = {
+    [Symbol.dispose]: () => {
+      for (const entry of pendingSends.getSnapshot()) pendingSends.dismiss(entry.key);
+    },
+  };
+  const previousDrafts = useComposerDraftStore.getState();
+  using _restoreDrafts = { [Symbol.dispose]: () => useComposerDraftStore.setState(previousDrafts) };
+  const thread = threadWithHistory("send-feedback", 1);
+  const other = threadWithHistory("send-feedback-other", 1);
+  const active = runningRun(thread.id, "dismiss-active", 2, "active-message");
+  const command = {
+    ...assistantItem(thread.id, active.id, "dismiss-command", 3, "", true),
+    type: "command_execution" as const,
+    input: "rg dismissal-fixture",
+  };
+  using _environment = installFakeEnvironment([
+    { ...thread, runs: [...thread.runs, active], items: [...thread.items, command] },
+    other,
+  ]);
+  primaryFixtureAdmission.admit();
+  using delivery = deferFakeSends();
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  await page.viewport(1400, 900);
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _screen = await render(<AppRoot router={router} />, { router: false });
+  await userEvent.click(page.getByTestId("composer-editor"));
+  await userEvent.type(page.getByTestId("composer-editor"), "Unique uncertain send");
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() => expect(delivery.requests).toHaveLength(1));
+  await act(() => delivery.requests[0]!.reject());
+  await expect.element(page.getByText("Waiting for confirmation", { exact: true })).toBeVisible();
+  expect(delivery.requests).toHaveLength(1);
+  await page.getByRole("button", { name: "Dismiss unsent message", exact: true }).click();
+  await expect
+    .element(page.getByText("Unique uncertain send", { exact: true }))
+    .not.toBeInTheDocument();
+  await expect.element(page.getByText("Running rg", { exact: true })).toBeVisible();
+  await userEvent.click(page.getByTestId("composer-editor"));
+  await userEvent.type(page.getByTestId("composer-editor"), "Next message after dismissal");
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() => expect(delivery.requests).toHaveLength(2));
+  await expect
+    .element(page.getByText("Unique uncertain send", { exact: true }))
+    .not.toBeInTheDocument();
+  expect(pendingSends.getSnapshot().map((entry) => entry.message.text)).toEqual([
+    "Next message after dismissal",
+  ]);
+  await act(async () => {
+    await delivery.requests[1]!.commit();
+    delivery.requests[1]!.acknowledge();
+  });
+});
+
+it("reconciles late local uncertainty against an already-visible server message", async () => {
+  using _pendingCleanup = {
+    [Symbol.dispose]: () => {
+      for (const entry of pendingSends.getSnapshot()) pendingSends.dismiss(entry.key);
+    },
+  };
+  const previousDrafts = useComposerDraftStore.getState();
+  using _restoreDrafts = { [Symbol.dispose]: () => useComposerDraftStore.setState(previousDrafts) };
+  const thread = threadWithHistory("send-feedback", 1);
+  const other = threadWithHistory("send-feedback-other", 1);
+  using _environment = installFakeEnvironment([thread, other]);
+  primaryFixtureAdmission.admit();
+  using delivery = deferFakeSends();
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  await page.viewport(1400, 900);
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _screen = await render(<AppRoot router={router} />, { router: false });
+  await userEvent.click(page.getByTestId("composer-editor"));
+  await userEvent.type(page.getByTestId("composer-editor"), "Unique uncertain send");
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() => expect(delivery.requests).toHaveLength(1));
+  const request = delivery.requests[0]!;
+  await act(async () => {
+    await request.commit();
+    request.acknowledge();
+  });
+  await vi.waitFor(() => expect(pendingSends.getSnapshot()).toEqual([]));
+  await expect.element(page.getByText("Unique uncertain send", { exact: true })).toBeVisible();
+  if (!("messageId" in request.payload)) throw new Error("Expected message dispatch");
+  const messageId = request.payload.messageId;
+  await act(() => {
+    const key = pendingSends.admit(ENVIRONMENT_ID, thread.id, {
+      id: messageId,
+      role: "user",
+      text: "Unique uncertain send",
+      runId: null,
+      createdAt: "2026-03-17T19:12:28.000Z",
+      updatedAt: "2026-03-17T19:12:28.000Z",
+      streaming: false,
+    });
+    pendingSends.issuing(key);
+    pendingSends.finish(key, false);
+  });
+  await vi.waitFor(() => expect(pendingSends.getSnapshot()).toEqual([]));
+  await expect
+    .element(page.getByText("Waiting for confirmation", { exact: true }))
+    .not.toBeInTheDocument();
+  expect(page.getByText("Unique uncertain send", { exact: true }).elements()).toHaveLength(1);
+  expect(delivery.requests).toHaveLength(1);
 });

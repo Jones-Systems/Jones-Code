@@ -733,3 +733,59 @@ it.effect.each([undefined, ...SupersededTerminalTrace.reasons])(
       assert.deepEqual(calls, []);
     }).pipe(Effect.provide(testLayer)),
 );
+
+it.effect.each([false, true])(
+  "delayed retirement starts the recorded successor only for its exact binding (wrong receipt=%s)",
+  (wrongReceipt) =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const entered = yield* Deferred.make<void>();
+      const observing = yield* Deferred.make<void>();
+      const closed = yield* Deferred.make<RuntimeRetirementReceipt>();
+      const calls: string[] = [];
+      let detaching = false;
+      const worker = yield* f.preparation
+        .run({
+          effect: f.effect,
+          interrupt: f.completeOld,
+          detach: Effect.gen(function* () {
+            detaching = true;
+            calls.push("detach");
+            yield* Deferred.succeed(entered, undefined);
+            return yield* new RestartPreparation.RestartPreparationError({
+              threadId: f.target.threadId,
+              stage: "detach",
+              cause: "synthetic caller deadline",
+            });
+          }),
+          captureRetirement: () =>
+            Effect.succeed(
+              detaching
+                ? {
+                    binding: f.binding,
+                    awaitRetired: Effect.gen(function* () {
+                      yield* Deferred.succeed(observing, undefined);
+                      return yield* Deferred.await(closed);
+                    }),
+                  }
+                : null,
+            ),
+          start: Effect.sync(() => {
+            calls.push("start");
+          }),
+        })
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* Deferred.await(observing);
+      assert.deepEqual(calls, ["detach"]);
+      yield* TestClock.adjust("64 seconds");
+      yield* Deferred.succeed(closed, {
+        binding: wrongReceipt ? { ...f.binding, runtimeGeneration: "successor" } : f.binding,
+        evidence: "thread_closed",
+      });
+      const result = yield* Fiber.join(worker);
+      assert.equal(result._tag, wrongReceipt ? "Failure" : "Success");
+      assert.deepEqual(calls, wrongReceipt ? ["detach"] : ["detach", "start"]);
+      if (!wrongReceipt) yield* f.preparation.assertThreadOpen(f.target.threadId);
+    }).pipe(Effect.provide(testLayer)),
+  );
