@@ -1,3 +1,5 @@
+import { ThreadRequestFulfillTool, ThreadDependencyReleaseTool, ThreadRequestObserveTool } from "../../../jones/threadResultDependencies/tools.ts";
+import { ThreadLinksTool, ThreadLinkTool, ThreadHandoffTool } from "../../../jones/linkedThreads/tools.ts";
 import {
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
@@ -363,6 +365,8 @@ const EnvironmentUnlinkTool = Tool.make("t3_environment_unlink", {
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWhileLinksOff);
 
 export const OrchestratorToolkit = Toolkit.make(
+  ThreadRequestFulfillTool, ThreadDependencyReleaseTool, ThreadRequestObserveTool,
+  ThreadLinksTool, ThreadLinkTool, ThreadHandoffTool,
   OrchestratorCapabilitiesTool,
   DelegateTaskTool,
   TaskStatusTool,

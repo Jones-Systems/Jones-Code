@@ -159,3 +159,32 @@ export function prepareThreadContentEvidence(input: {
   }
   return Result.succeed(items);
 }
+
+/** Select a contiguous final page before hashing. Reserve the maximum evidence envelope
+ * per item; later serialization may use less, but must never remove an acknowledged row.
+ */
+export function admitThreadEvidencePage(input: {
+  readonly items: ReadonlyArray<OrchestratorMcpThreadTimelineItem>;
+  readonly maxChars: number;
+  readonly budgetBytes: number;
+  readonly newestFirst: boolean;
+}): Result.Result<{ readonly items: ReadonlyArray<OrchestratorMcpThreadTimelineItem>; readonly start: number }, OrchestratorMcpFailure> {
+  const admitted: Array<OrchestratorMcpThreadTimelineItem> = [];
+  let bytes = 0;
+  for (const item of input.newestFirst ? input.items.toReversed() : input.items) {
+    // Evidence strings are bounded protocol identities plus a pair of hex hashes.
+    // Include original metadata bytes even when its text will be sliced.
+    const preview = { ...item, text: item.text?.slice(0, input.maxChars) ?? null };
+    const size = Buffer.byteLength(JSON.stringify(preview), "utf8") + 2048;
+    if (bytes + size > input.budgetBytes) {
+      if (admitted.length === 0) return Result.fail(new OrchestratorMcpFailure({
+        code: "invalid_request", message: "Content evidence item exceeds the response budget; request a smaller text page.",
+      }));
+      break;
+    }
+    admitted.push(item);
+    bytes += size;
+  }
+  return Result.succeed({ items: input.newestFirst ? admitted.toReversed() : admitted,
+    start: input.newestFirst ? input.items.length - admitted.length : 0 });
+}

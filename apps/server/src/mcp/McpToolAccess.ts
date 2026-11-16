@@ -1,3 +1,4 @@
+import * as RemoteAdmissionMcp from "../jones/remoteAdmissionIntegration/mcp.ts";
 import {
   type EnvironmentId,
   type OrchestrationV2LinkOrigin,
@@ -423,6 +424,8 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
   for (const [name, declaration] of Object.entries<Declaration<unknown>>(declarations)) {
     const tool = toolkit.tools[name];
     if (tool === undefined) continue;
+    handlers[name] = yield* RemoteAdmissionMcp.wrap(tool,
+      handlers[name] as (params: object) => Effect.Effect<unknown, OrchestratorMcpFailure>);
     const remote = remoteCheckOf(declaration);
     if (
       remote === undefined &&

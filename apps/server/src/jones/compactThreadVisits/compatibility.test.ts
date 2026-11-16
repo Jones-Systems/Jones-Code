@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { EventId, ThreadId, type OrchestrationV2DomainEvent } from "@t3tools/contracts";
+import { EventId, ThreadId, type ThreadPullRequestLink, type OrchestrationV2DomainEvent } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { idleThreadProjection, liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import { threadReplayEncodedBytes } from "../../orchestration-v2/ThreadStream.ts";
@@ -42,6 +42,28 @@ describe("subscriber compact visit compatibility", () => {
     expect(expanded.payload.updatedAt).toBe(updated.updatedAt);
     expect(expanded.id).toBe(compact.id);
     expect(expanded.occurredAt).toBe(compact.occurredAt);
+  });
+
+  it("preserves narrow PR updates, explicit unread and omitted opens in delivery order", () => {
+    const adapter = makeCompactVisitCompatibility(false);
+    const link: ThreadPullRequestLink = { host: "github", repository: "Jones-Systems/Jones-Code", number: 1,
+      url: "https://github.com/Jones-Systems/Jones-Code/pull/1", source: "manual",
+      linkedAt: "2026-11-01T00:00:00.000Z", snapshot: null, stack: null };
+    const initial = { ...thread(), pullRequests: [link], opens: { openedAt: 1, score: 2, picks: [] } };
+    adapter.seed(initial);
+    const compact = visit();
+    const updatedLink = { ...link, url: "https://github.com/Jones-Systems/Jones-Code/pull/1?updated" };
+    adapter.project({ ...compact, type: "thread.pull-request-link-updated", payload: updatedLink });
+    const expanded = adapter.project(compact);
+    if (expanded.type !== "thread.visited") throw new Error("expected legacy visit");
+    expect(expanded.payload.pullRequests).toEqual([updatedLink]);
+    expect(expanded.payload.opens).toEqual(initial.opens);
+    adapter.project({ ...compact, type: "thread.marked-unread", payload: { ...expanded.payload, lastVisitedAt: null } });
+    const opensOnly = adapter.project({ ...compact, payload: { lastVisitedAt: null, opens: null } });
+    if (opensOnly.type !== "thread.visited") throw new Error("expected legacy visit");
+    expect(opensOnly.payload.lastVisitedAt).toBeNull();
+    expect(opensOnly.payload.opens).toBeNull();
+    expect(opensOnly.payload.pullRequests).toEqual([updatedLink]);
   });
 
   it("requires a baseline per generation and measures expanded payloads", () => {

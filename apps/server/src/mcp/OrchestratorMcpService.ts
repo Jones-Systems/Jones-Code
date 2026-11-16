@@ -1,3 +1,17 @@
+import { unavailable } from "./threadAccess.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
+import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
+import { DependencyCommit, type OpenRequest } from "../jones/threadResultDependencies/DependencyCommit.ts";
+import { threadSendIdentity } from "../jones/threadResultDependencies/RemoteRequestProtocol.ts";
+import { IncomingLinkedMessage, formatLinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
+import { composeAgentMessage } from "../jones/mcp/agentMessageHeader.ts";
+import { blockingQuestions } from "../jones/remoteDelegation/BlockingQuestions.ts";
+import * as ObservationSupport from "../jones/remoteDelegation/ObservationSupport.ts";
+import type { RemoteTaskObservation } from "@t3tools/contracts";
+import * as Result from "effect/Result";
+import { THREAD_CONTENT_EVIDENCE_CAPABILITY } from "@t3tools/contracts";
+import { prepareThreadContentEvidence, admitThreadEvidencePage } from "../jones/mcp/threadContentEvidence.ts";
 import {
   CommandId,
   type RunId,
@@ -67,7 +81,7 @@ import {
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/jones/threadAttention";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -1257,6 +1271,9 @@ function timelineItemsWithinBudget(
 }
 
 const make = Effect.gen(function* () {
+  const dependencySql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const resultDependencies = Option.isSome(dependencySql)
+    ? makeDependencyStore(dependencySql.value, makeJonesTablePresence(dependencySql.value)) : undefined;
   const random = yield* SecureRandom.SecureRandom;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -1671,6 +1688,45 @@ const make = Effect.gen(function* () {
   const requestKey = (clientRequestId: string | undefined): Effect.Effect<string> =>
     clientRequestId === undefined ? random.uuidV4() : Effect.succeed(clientRequestId);
 
+  const readObservation = Effect.fn("OrchestratorMcpService.readObservation")(function* (
+    scope: McpInvocationScope,
+    threadId: ThreadId,
+    originalRunId: RunId,
+    includeProgress = true,
+  ) {
+    const records = yield* threadManagement
+      .getThreadRecords(threadId, ["runs", "messages", "runtimeRequests", "nodes"], {
+        messageRoles: ["user"],
+      })
+      .pipe(Effect.mapError(threadManagementFailure));
+    const original = records.runs.find((run) => run.id === originalRunId);
+    const questions = blockingQuestions(records);
+    if (original === undefined || questions === undefined)
+      return yield* failure(
+        "orchestration_error",
+        "The remote task observation has no exact run or question attribution.",
+      );
+    const latest = latestTerminalResultRun(records, original);
+    const latestStatus = latest === undefined ? null : taskStatusForRun(latest);
+    return {
+      schemaVersion: "t3.remote-task-observation/v1",
+      environmentId: scope.environmentId,
+      threadId,
+      originalRunId,
+      blockingQuestions: questions,
+      ...(includeProgress
+        ? {
+            childProgress: {
+              hasPendingChildRuns: hasPendingChildRuns(records, original),
+              latestTerminalRunId: latest?.id ?? null,
+              latestTerminalStatus:
+                latestStatus !== null && isTerminalTaskStatus(latestStatus) ? latestStatus : null,
+            },
+          }
+        : {}),
+    } satisfies RemoteTaskObservation;
+  });
+
   const readTask = Effect.fn("OrchestratorMcpService.readTask")(function* (
     scope: McpThreadInvocationScope,
     taskId: NodeId,
@@ -1974,6 +2030,11 @@ const make = Effect.gen(function* () {
           ? task.status
           : "completed";
     const terminal = isTerminalTaskStatus(status);
+    const cached = threadManagement.readRemoteTaskObservation === undefined ? undefined :
+      yield* threadManagement.readRemoteTaskObservation(scope.thread.threadId, task.id);
+    const observed = task.remoteChild?.runId === undefined ? undefined :
+      yield* remoteDelegation.observe(scope, task).pipe(Effect.orElseSucceed(() => undefined));
+    const observation = observed?.observation ?? cached;
     if (
       acknowledgeTerminal &&
       terminal &&
@@ -2020,20 +2081,21 @@ const make = Effect.gen(function* () {
       childNodeId: task.id,
       status,
       workState: terminal ? "result_available" : "working",
-      hasPendingChildRuns: false,
+      hasPendingChildRuns: observation?.childProgress?.hasPendingChildRuns ?? false,
+      ...(observation === undefined ? {} : { remoteObservation: observation }),
       providerInstanceId: task.providerInstanceId,
       model: task.model,
       executedModel: task.executedModel ?? null,
       summary: task.result,
       resultContextTransferId: null,
-      latestTerminalRunId: null,
-      latestTerminalStatus: terminal
+      latestTerminalRunId: observation?.childProgress?.latestTerminalRunId ?? null,
+      latestTerminalStatus: observation?.childProgress?.latestTerminalStatus ?? (terminal
         ? (status as OrchestratorMcpDelegateTaskResult["latestTerminalStatus"])
-        : null,
-      latestTerminalSummary: terminal ? task.result : null,
+        : null),
+      latestTerminalSummary: observed?.latestTerminalSummary ?? (terminal ? task.result : null),
       latestTerminalResultContextTransferId: null,
       // Its questions and approvals are answered in the environment it runs in.
-      hasPendingQuestion: false,
+      hasPendingQuestion: (task.result === null && task.status === "waiting") || (observation?.blockingQuestions.requests.length ?? 0) > 0,
       pendingApproval: null,
       waitTimedOut,
     } satisfies OrchestratorMcpDelegateTaskResult;
@@ -2630,6 +2692,10 @@ const make = Effect.gen(function* () {
           batchThreadCreation: true,
           threadManagement: true,
           incrementalThreadRead: true,
+          threadContentEvidence: THREAD_CONTENT_EVIDENCE_CAPABILITY,
+          remoteTaskObservationVersion: ObservationSupport.version,
+          ...(resultDependencies === undefined || !(yield* resultDependencies.available.pipe(Effect.mapError(unavailable)))
+            ? {} : { threadResultRequestVersion: "t3.thread-result-request/v1" as const }),
           scheduledTasks: true,
           maxBatchThreads: 20,
         },
@@ -3331,7 +3397,7 @@ const make = Effect.gen(function* () {
         .toSorted((left, right) => right.ordinal - left.ordinal)
         .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)
         .map((run) => threadRun(target, run));
-      const { items, start } = timelineItemsWithinBudget(
+      const ordinaryPage = timelineItemsWithinBudget(
         { thread, recentRuns, nextPosition: null, hasMore: false, earlierPosition: null },
         timeline.items.map((row) => ({
           row,
@@ -3341,7 +3407,34 @@ const make = Effect.gen(function* () {
         })),
         newestFirst,
       );
+      let items = ordinaryPage.items;
+      let start = ordinaryPage.start;
+      if (input.contentEvidence !== undefined) {
+        const rendered = timeline.items.map((row) => timelineItem({ row, messagesByThreadId,
+          maxChars: Number.MAX_SAFE_INTEGER }));
+        const offset = input.itemId === undefined ? 0 : (input.textOffset ?? 0);
+        const admission = admitThreadEvidencePage({
+          items: rendered.map((item) => ({ ...item, text: item.text === null ? null : item.text.slice(offset) })),
+          maxChars, newestFirst,
+          budgetBytes: Math.max(THREAD_READ_RESULT_MAX_BYTES / 2, THREAD_READ_RESULT_MAX_BYTES -
+            jsonBytes({ thread, recentRuns, items: [], nextPosition: null, hasMore: false, earlierPosition: null })),
+        });
+        if (Result.isFailure(admission)) return yield* admission.failure;
+        start = admission.success.start;
+        const prepared = prepareThreadContentEvidence({ request: input, environmentId: scope.environmentId,
+          items: rendered.slice(start, start + admission.success.items.length), maxChars,
+          hasMore: timeline.hasMore || admission.success.items.length < rendered.length });
+        if (Result.isFailure(prepared)) return yield* prepared.failure;
+        items = [...prepared.success];
+      }
       const page = timeline.items.slice(start, start + items.length);
+      const dependencyRoster = resultDependencies === undefined ||
+        !(yield* resultDependencies.available.pipe(Effect.mapError(unavailable))) ? undefined : {
+          waitingOn: yield* resultDependencies.dependencies(input.threadId).pipe(Effect.mapError(unavailable)),
+          owedRequests: yield* resultDependencies.requests(input.threadId).pipe(Effect.mapError(unavailable)),
+        };
+      const remoteObservation = input.childProgressForRunId === undefined ? undefined :
+        yield* readObservation(scope, input.threadId, input.childProgressForRunId);
       const returnedRunIds = new Set(
         page.filter((row) => row.sourceThreadId === target.thread.id).map((row) => row.item.runId),
       );
@@ -3393,42 +3486,123 @@ const make = Effect.gen(function* () {
         }
       }
       return {
-        thread,
+        thread: { ...thread, ...dependencyRoster },
         recentRuns,
         items,
+        remoteMessagePolicy: ObservationSupport.linkedMessagePolicy,
+        ...(remoteObservation === undefined ? {} : { remoteObservation }),
         nextPosition: items.at(-1)?.position ?? null,
         hasMore: timeline.hasMore || (!newestFirst && items.length < timeline.items.length),
         earlierPosition: timeline.hasEarlier || start > 0 ? (items[0]?.position ?? null) : null,
       } satisfies OrchestratorMcpThreadReadResult;
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
+      const waiterGeneration =
+        scope.thread &&
+        resultDependencies &&
+        (yield* resultDependencies.available.pipe(Effect.mapError(unavailable)))
+          ? yield* resultDependencies
+              .waiterGeneration(scope.thread.threadId)
+              .pipe(Effect.mapError(unavailable))
+          : 0;
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId, ["runs"]);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* assertTargetWithinLimits(limits, target.thread);
 
       const mode = input.mode ?? "auto";
       const key = yield* requestKey(input.clientRequestId);
-      const messageId = stableOperationMessageId({
-        scope,
-        requestKey: key,
-        operation: "thread-send",
-      });
+      const { commandId, messageId } = threadSendIdentity(scope.requestNamespace, key);
+      let resultRequest: OpenRequest | undefined;
+      if (input.awaitResult === true || input.resultRequest !== undefined) {
+        if (
+          resultDependencies === undefined ||
+          !(yield* resultDependencies.available.pipe(Effect.mapError(unavailable)))
+        )
+          return yield* failure("capability_denied", "Durable result requests are unavailable.");
+        const remote = scope.client?.remoteOrigin;
+        if (
+          input.resultRequest !== undefined &&
+          (scope.client?.linked !== true ||
+            remote === undefined ||
+            remote.linkSessionId !== scope.client.sessionId)
+        )
+          return yield* failure(
+            "capability_denied",
+            "Result descriptors are accepted only from an authenticated linked origin.",
+          );
+        if (
+          input.awaitResult === true &&
+          (parent === undefined ||
+            parent.thread.id === input.threadId ||
+            (target.thread.lineage.relationshipToParent === "subagent" &&
+              target.thread.lineage.parentThreadId === parent.thread.id))
+        )
+          return yield* failure(
+            "invalid_request",
+            "A result dependency needs a different thread and cannot duplicate this thread's app-owned child task.",
+          );
+        if (input.awaitResult === true && scope.client?.linked === true)
+          return yield* failure(
+            "invalid_request",
+            "A linked sender must supply the peer result descriptor.",
+          );
+        if (input.resultRequest !== undefined && remote?.thread === undefined)
+          return yield* failure(
+            "capability_denied",
+            "A linked result request requires its authenticated originating thread.",
+          );
+        const operationId = input.resultRequest?.operationId ?? `result:${messageId}`;
+        resultRequest = {
+          requestId: `request:${messageId}`,
+          operationId,
+          targetThreadId: input.threadId,
+          messageId,
+          commandId,
+          originKind: input.resultRequest === undefined ? "local" : "linked",
+          originEnvironmentId:
+            input.resultRequest === undefined ? scope.environmentId : remote!.environmentId,
+          originThreadId:
+            input.resultRequest === undefined
+              ? parent!.thread.id
+              : ThreadId.make(remote!.thread!.threadId),
+          originLabel:
+            input.resultRequest === undefined
+              ? parent!.thread.title
+              : (remote!.thread!.title ?? "Linked thread"),
+          ...(input.awaitResult !== true
+            ? {}
+            : {
+                localDependency: {
+                  dependencyId: `dependency:${messageId}`,
+                  waiterGeneration,
+                  waiterRunId:
+                    parent!.runs
+                      .filter(ThreadManagementService.isActiveRun)
+                      .toSorted((a, b) => b.ordinal - a.ordinal)[0]?.id ?? null,
+                  targetLabel: target.thread.title,
+                },
+              }),
+        };
+      }
       const result = yield* threadManagement
         .sendToThread({
           projectId: target.thread.projectId,
-          commandId: stableCommandId({
-            scope,
-            requestKey: key,
-            operation: "thread-send",
-          }),
+          commandId,
           threadId: input.threadId,
           ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
-          // A linked environment's agent has no thread here; the link names it.
-          ...(parent === undefined && scope.client?.senderThread !== undefined
-            ? { linkedSender: scope.client.senderThread }
-            : {}),
+          ...(parent === undefined && scope.client?.senderThread !== undefined ? { linkedSender: scope.client.senderThread } : {}),
           messageId,
-          text: input.message,
+          text: composeAgentMessage({
+            body:
+              resultRequest === undefined
+                ? input.message
+                : `Result requested (request ${resultRequest.requestId}). Answer with t3_thread_request_fulfill; ordinary replies do not fulfill this request.\n\n${input.message}`,
+            acceptedAt: yield* Clock.currentTimeMillis,
+            ...(parent === undefined ? {} : { sender: parent.thread }),
+            ...(scope.client?.linked === true
+              ? { remoteSender: formatLinkedMessageOrigin(scope.client) }
+              : {}),
+          }),
           attachments: [],
           mode,
           ...(input.freshContext ? { freshContext: true } : {}),
@@ -3436,15 +3610,37 @@ const make = Effect.gen(function* () {
           creationSource: "mcp",
         })
         .pipe(
+          Effect.provideService(IncomingLinkedMessage, scope.client?.linked === true),
+          Effect.provideService(DependencyCommit, resultRequest),
           Effect.mapError((error) =>
             isThreadManagementError(error)
-              ? threadManagementFailure(error)
-              : failure(
-                  "orchestration_error",
-                  `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                ),
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                  ),
           ),
         );
+      const acceptedRequest =
+        resultRequest === undefined || resultDependencies === undefined
+          ? undefined
+          : yield* resultDependencies
+              .requestByOperation(resultRequest.originEnvironmentId, resultRequest.operationId)
+              .pipe(Effect.mapError(unavailable));
+      if (
+        resultRequest !== undefined &&
+        (acceptedRequest === undefined || acceptedRequest.messageId !== messageId)
+      )
+        return yield* failure(
+          "request_conflict",
+          "The original send did not accept this result request. Use a new request key for new work.",
+        );
+      const acceptedDependency =
+        resultRequest?.localDependency === undefined || resultDependencies === undefined
+          ? undefined
+          : yield* resultDependencies
+              .get(resultRequest.localDependency.dependencyId)
+              .pipe(Effect.mapError(unavailable));
       return {
         threadId: input.threadId,
         link: threadLinkFor(scope, input.threadId, target.thread.title),
@@ -3453,6 +3649,15 @@ const make = Effect.gen(function* () {
         ...(result.run.delegatedTaskId === undefined ? {} : { taskId: result.run.delegatedTaskId }),
         status: result.run.status,
         delivery: result.delivery,
+        ...(acceptedDependency === undefined
+          ? {}
+          : {
+              dependency: {
+                dependencyId: acceptedDependency.dependencyId,
+                requestId: acceptedDependency.requestId,
+                state: acceptedDependency.state,
+              },
+            }),
       } satisfies OrchestratorMcpThreadSendResult;
     }),
     waitForThread: Effect.fn("OrchestratorMcpService.waitForThread")(function* (scope, input) {
@@ -3461,6 +3666,8 @@ const make = Effect.gen(function* () {
         .waitForThread({
           projectId: target.thread.projectId,
           threadId: input.threadId,
+          ...(input.observeBlockingQuestions === true ? { observeBlockingQuestions: true } : {}),
+          ...(input.questionResumeToken === undefined ? {} : { questionResumeToken: input.questionResumeToken }),
           ...(input.runId === undefined ? {} : { runId: input.runId }),
           timeoutMs: Math.min(
             MAX_WAIT_TIMEOUT_MS,
@@ -3492,7 +3699,13 @@ const make = Effect.gen(function* () {
         : [];
       const wakesCaller =
         ownedTask && !childRequests.some((request) => request.status === "pending");
+      const observationRunId = input.childProgressForRunId ?? input.runId ?? result.run?.id;
+      const remoteObservation = observationRunId !== undefined &&
+        (input.observeBlockingQuestions === true || input.childProgressForRunId !== undefined)
+        ? yield* readObservation(scope, input.threadId, observationRunId) : undefined;
       return {
+        ...(remoteObservation === undefined ? {} : { remoteObservation }),
+        ...(result.observationChanged === undefined ? {} : { observationChanged: result.observationChanged }),
         threadId: input.threadId,
         runId: result.run?.id ?? null,
         status,

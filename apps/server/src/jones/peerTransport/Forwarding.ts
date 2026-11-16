@@ -1,3 +1,6 @@
+import * as DateTime from "effect/DateTime";
+import { RuntimeMode } from "@t3tools/contracts";
+import { runtimeModeRank } from "../../mcp/delegatedTaskModes.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import {
   makeDependencyStore,
@@ -103,6 +106,14 @@ export const make = Effect.gen(function* () {
       params,
     ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
     const { environmentId: _target, ...args } = encoded;
+    if (Schema.is(RuntimeMode)(args.runtimeMode)) {
+      const link = yield* links.get(environmentId).pipe(Effect.mapError(unavailable));
+      if (Option.isSome(link) && DateTime.isGreaterThan(link.value.expiresAt, yield* DateTime.now) &&
+          link.value.access !== "read-only" && runtimeModeRank(args.runtimeMode) > runtimeModeRank(link.value.access)) {
+        return yield* new OrchestratorMcpFailure({ code: "runtime_mode_escalation_denied",
+          message: `Linked environment "${link.value.label}" allows ${link.value.access}, not ${args.runtimeMode}.` });
+      }
+    }
     // A pending upload lives here, so it cannot go with the call.
     if (Array.isArray(args.attachments) && args.attachments.length > 0) {
       return yield* new OrchestratorMcpFailure({
@@ -174,7 +185,8 @@ export const make = Effect.gen(function* () {
           records.subagents.some(
             (task) =>
               task.remoteChild?.environmentId === environmentId &&
-              task.remoteChild.threadId === args.threadId,
+              task.remoteChild.threadId === args.threadId &&
+              task.remoteChild.runId === observed.recentRuns.find((run) => run.status === "running" || run.status === "starting" || run.status === "queued")?.runId,
           )
         )
           return yield* new OrchestratorMcpFailure({
