@@ -105,10 +105,12 @@ const fixture = () => {
 const call = (name: string, args: Record<string, unknown>) =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
-    return yield* server.callTool({ name, arguments: args }).pipe(
-      Effect.provideService(Invocation.McpInvocationContext, scope),
-      Effect.provideService(McpSchema.McpServerClient, client),
-    );
+    return yield* server
+      .callTool({ name, arguments: args })
+      .pipe(
+        Effect.provideService(Invocation.McpInvocationContext, scope),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
   });
 
 it("all eight protocol tools advertise object roots before and after JSON codec derivation", () => {
@@ -116,53 +118,57 @@ it("all eight protocol tools advertise object roots before and after JSON codec 
   for (const tool of Object.values(toolkit.tools)) {
     expect(Tool.getJsonSchema(tool)).toMatchObject({ type: "object" });
     expect(advertisedJsonSchema(tool)).toMatchObject({ type: "object" });
-    expect(
-      Tool.getJsonSchemaFromSchema(Schema.toCodecJson(tool.parametersSchema)),
-    ).toMatchObject({ type: "object" });
+    expect(Tool.getJsonSchemaFromSchema(Schema.toCodecJson(tool.parametersSchema))).toMatchObject({
+      type: "object",
+    });
   }
 });
 
-it.effect("production registration preserves both exact selector variants and ack dispositions", () => {
-  const source = fixture();
-  return Effect.gen(function* () {
-    const server = yield* McpServer.McpServer;
-    expect(server.tools.map(({ tool }) => tool.name).toSorted()).toEqual(toolNames);
-    for (const { tool } of server.tools) expect(tool.inputSchema).toMatchObject({ type: "object" });
-    const selectors: ReadonlyArray<DTO.RemoteAdmissionObservationInput> = [
-      { clientRequestId: "original-request" },
-      { attemptId: "retry-attempt", observationKey: "registered-observation" },
-    ];
-    for (const input of selectors) {
-      const result = yield* call("t3_remote_admission_observe", input);
-      expect(result.isError).toBe(false);
-      expect(result.structuredContent).toEqual({ admission: null, result: null });
-      for (const disposition of ["delivered", "suppressed"] as const) {
-        const ack = yield* call("t3_remote_admission_ack", { ...input, disposition });
-        expect(ack.isError).toBe(false);
-        expect(ack.structuredContent).toEqual({ acknowledged: true });
+it.effect(
+  "production registration preserves both exact selector variants and ack dispositions",
+  () => {
+    const source = fixture();
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      expect(server.tools.map(({ tool }) => tool.name).toSorted()).toEqual(toolNames);
+      for (const { tool } of server.tools)
+        expect(tool.inputSchema).toMatchObject({ type: "object" });
+      const selectors: ReadonlyArray<DTO.RemoteAdmissionObservationInput> = [
+        { clientRequestId: "original-request" },
+        { attemptId: "retry-attempt", observationKey: "registered-observation" },
+      ];
+      for (const input of selectors) {
+        const result = yield* call("t3_remote_admission_observe", input);
+        expect(result.isError).toBe(false);
+        expect(result.structuredContent).toEqual({ admission: null, result: null });
+        for (const disposition of ["delivered", "suppressed"] as const) {
+          const ack = yield* call("t3_remote_admission_ack", { ...input, disposition });
+          expect(ack.isError).toBe(false);
+          expect(ack.structuredContent).toEqual({ acknowledged: true });
+        }
       }
-    }
-    const inspectionSelectors: ReadonlyArray<DTO.RemoteAdmissionRecoveryStatusInput> = [
-      { locator: "retained-locator" },
-      { clientRequestId: "original-request", originThreadId: "exact-origin" },
-    ];
-    for (const input of inspectionSelectors) {
-      const result = yield* call("t3_remote_admission_recovery_status", input);
-      expect(result.isError).toBe(false);
-      expect(result.structuredContent).toEqual(inspectionResult);
-    }
-    expect(source.observations).toEqual(selectors.map((input) => ({ scope, input })));
-    expect(source.acknowledgments).toEqual(
-      selectors.flatMap((input) =>
-        ["delivered", "suppressed"].map((disposition) => ({
-          scope,
-          input: { ...input, disposition },
-        })),
-      ),
-    );
-    expect(source.inspections).toEqual(inspectionSelectors);
-  }).pipe(Effect.provide(source.layer));
-});
+      const inspectionSelectors: ReadonlyArray<DTO.RemoteAdmissionRecoveryStatusInput> = [
+        { locator: "retained-locator" },
+        { clientRequestId: "original-request", originThreadId: "exact-origin" },
+      ];
+      for (const input of inspectionSelectors) {
+        const result = yield* call("t3_remote_admission_recovery_status", input);
+        expect(result.isError).toBe(false);
+        expect(result.structuredContent).toEqual(inspectionResult);
+      }
+      expect(source.observations).toEqual(selectors.map((input) => ({ scope, input })));
+      expect(source.acknowledgments).toEqual(
+        selectors.flatMap((input) =>
+          ["delivered", "suppressed"].map((disposition) => ({
+            scope,
+            input: { ...input, disposition },
+          })),
+        ),
+      );
+      expect(source.inspections).toEqual(inspectionSelectors);
+    }).pipe(Effect.provide(source.layer));
+  },
+);
 
 const invalidObservations: ReadonlyArray<Record<string, unknown>> = [
   {},
@@ -194,28 +200,31 @@ const invalidInspections: ReadonlyArray<Record<string, unknown>> = [
   { clientRequestId: "original", originThreadId: "" },
   { clientRequestId: "original", originThreadId: null },
 ];
-it.effect("malformed selectors fail as InvalidParams before any protocol or inspection handler", () => {
-  const source = fixture();
-  return Effect.gen(function* () {
-    const invalidAcks = [
-      ...invalidObservations.map((input) => ({ ...input, disposition: "delivered" })),
-      { clientRequestId: "original" },
-      { attemptId: "attempt", observationKey: "key" },
-      { clientRequestId: "original", disposition: "unknown" },
-      { clientRequestId: "original", disposition: null },
-    ];
-    for (const [name, inputs] of [
-      ["t3_remote_admission_observe", invalidObservations],
-      ["t3_remote_admission_ack", invalidAcks],
-      ["t3_remote_admission_recovery_status", invalidInspections],
-    ] as const) {
-      for (const input of inputs) {
-        const result = yield* call(name, input).pipe(Effect.result);
-        expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "InvalidParams" } });
+it.effect(
+  "malformed selectors fail as InvalidParams before any protocol or inspection handler",
+  () => {
+    const source = fixture();
+    return Effect.gen(function* () {
+      const invalidAcks = [
+        ...invalidObservations.map((input) => ({ ...input, disposition: "delivered" })),
+        { clientRequestId: "original" },
+        { attemptId: "attempt", observationKey: "key" },
+        { clientRequestId: "original", disposition: "unknown" },
+        { clientRequestId: "original", disposition: null },
+      ];
+      for (const [name, inputs] of [
+        ["t3_remote_admission_observe", invalidObservations],
+        ["t3_remote_admission_ack", invalidAcks],
+        ["t3_remote_admission_recovery_status", invalidInspections],
+      ] as const) {
+        for (const input of inputs) {
+          const result = yield* call(name, input).pipe(Effect.result);
+          expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "InvalidParams" } });
+        }
       }
-    }
-    expect(source.observations).toEqual([]);
-    expect(source.acknowledgments).toEqual([]);
-    expect(source.inspections).toEqual([]);
-  }).pipe(Effect.provide(source.layer));
-});
+      expect(source.observations).toEqual([]);
+      expect(source.acknowledgments).toEqual([]);
+      expect(source.inspections).toEqual([]);
+    }).pipe(Effect.provide(source.layer));
+  },
+);

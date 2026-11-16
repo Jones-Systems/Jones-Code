@@ -72,7 +72,8 @@ const RecoveryStatusParameters = Schema.flip(
           ? !Object.hasOwn(input, "clientRequestId") && !Object.hasOwn(input, "originThreadId")
           : Object.hasOwn(input, "clientRequestId") && Object.hasOwn(input, "originThreadId"),
       {
-        expected: "either locator or both clientRequestId and originThreadId, never mixed selectors",
+        expected:
+          "either locator or both clientRequestId and originThreadId, never mixed selectors",
         toJsonSchema: () => ({
           oneOf: [
             {
