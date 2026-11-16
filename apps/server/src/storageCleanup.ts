@@ -11,6 +11,7 @@ import { withOperation } from "./jones/workspaceLifecycle/NativeOperation.ts";
 import { beforeCleanup } from "./jones/workspaceLifecycle/NativeBoundary.ts";
 import * as DeletionWorktreeRemoval from "./jones/cleanup/DeletionWorktreeRemoval.ts";
 import * as EventSink from "./orchestration-v2/EventSink.ts";
+import * as ScratchCleanupAdmission from "./jones/cleanup/ScratchCleanupAdmission.ts";
 import { completedNativeCleanupGroup } from "./jones/cleanup/CompletedNativeCleanup.ts";
 import {
   CheckpointScopeId,
@@ -338,6 +339,7 @@ const compiledMain3acaCodec30 = Schema.is(RetirementError);
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const retirementAction = yield* RetirementOwnerAction.make;
+  const scratchAdmission = yield* ScratchCleanupAdmission.make;
   const settingsService = yield* Settings.ServerSettingsService;
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const engine = yield* Orchestrator.OrchestratorV2;
@@ -1327,7 +1329,26 @@ const make = Effect.gen(function* () {
                 (yield* blockedSinceCheck());
               if (blockedWhileMeasuring !== null) return keep(blockedWhileMeasuring);
               if (yield* settingsChangedSinceCheck) return keep("settings changed since check");
-              yield* fs.remove(worktreePath, { recursive: true });
+              const reason = yield* scratchAdmission.remove({
+                target: { path: worktreeKey, storedPath: thread.worktreePath!,
+                  threadId: thread.id, projectId: thread.projectId, projectRoot: project.workspaceRoot },
+                revalidate: Effect.gen(function* () {
+                  if ((yield* fs.realPath(worktreePath)) !== worktreeKey)
+                    return yield* new ScratchCleanupAdmission.ScratchCleanupError({ reason: "scratch cleanup path identity changed" });
+                  const blocked = (yield* scratchKeepReason(worktreePath, threadIds, settings)) ??
+                    (yield* blockedSinceCheck());
+                  if (blocked !== null || (yield* settingsChangedSinceCheck))
+                    return yield* new ScratchCleanupAdmission.ScratchCleanupError({ reason: blocked ?? "settings changed since check" });
+                }).pipe(Effect.mapError((cause) => new ScratchCleanupAdmission.ScratchCleanupError({
+                  reason: "scratch cleanup revalidation failed", cause,
+                }))),
+                remove: fs.remove(worktreePath, { recursive: true }).pipe(
+                  Effect.mapError((cause) => new ScratchCleanupAdmission.ScratchCleanupError({
+                    reason: "scratch cleanup removal outcome requires reconciliation", cause,
+                  })),
+                ),
+              });
+              if (reason !== null) return keep(reason);
               entries.push({
                 ...entry,
                 outcome: "removed",

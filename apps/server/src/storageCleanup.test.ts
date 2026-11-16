@@ -3131,7 +3131,7 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.effect("removes an idle No project thread's scratch folder past the retention", () =>
+  it.effect("keeps an eligible scratch folder without positive ownership and native-start exclusion", () =>
     runCleanupTest(
       Effect.gen(function* () {
         yield* TestClock.setTime(NOW_MS);
@@ -3149,9 +3149,9 @@ describe("storage cleanup reports and local file policies", () => {
         ]);
         const report = yield* fixture.service.runNow;
         expect(report.entries).toEqual([
-          expect.objectContaining({ path: folder, outcome: "removed" }),
+          expect.objectContaining({ path: folder, outcome: "kept", reason: "Scratch cleanup ownership classification unavailable" }),
         ]);
-        expect(yield* fixture.fs.exists(folder)).toBe(false);
+        expect(yield* fixture.fs.readFileString(`${folder}/notes.md`)).toBe("scratch\n");
       }),
     ),
   );
