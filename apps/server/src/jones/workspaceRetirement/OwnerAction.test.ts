@@ -23,10 +23,9 @@ const fixture = (failure?: ServerSettingsError | Projections.ProjectionStoreRead
         Layer.mergeAll(
           Layer.mock(Projects.ProjectStoreV2)({}),
           Layer.mock(Settings.ServerSettingsService)({
-            getSettings:
-              Schema.is(ServerSettingsError)(failure)
-                ? Effect.fail(failure)
-                : Effect.succeed(DEFAULT_SERVER_SETTINGS),
+            getSettings: Schema.is(ServerSettingsError)(failure)
+              ? Effect.fail(failure)
+              : Effect.succeed(DEFAULT_SERVER_SETTINGS),
           }),
           Layer.mock(Projections.ProjectionStoreV2)({
             getThreadWorktreePaths: () =>
