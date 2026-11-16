@@ -93,8 +93,9 @@ export const toolkit = Toolkit.make(
   NoticeAckTool,
   RecoveryStatusTool,
 );
+const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 const failure = (cause: unknown) =>
-  Schema.is(OrchestratorMcpFailure)(cause)
+  isOrchestratorMcpFailure(cause)
     ? cause
     : new OrchestratorMcpFailure({
         code: "orchestration_error",

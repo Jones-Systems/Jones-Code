@@ -56,6 +56,15 @@ const StoredInvocation = Schema.Struct({
     ),
   }),
 });
+const decodeStoredInvocation = Schema.decodeUnknownEffect(StoredInvocation);
+const decodeScopesJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+const decodeReceiverPolicyJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionReceiverPolicy),
+);
+const decodeAccessBindingJson = Schema.decodeEffect(
+  Schema.fromJsonString(Review.RemoteAdmissionAccessBinding),
+);
+
 /** Immutable verified invocation ceilings plus CURRENT receiver session/project/target policy. */
 export function makeCurrentAuthority(
   sql: SqlClient.SqlClient,
@@ -69,7 +78,7 @@ export function makeCurrentAuthority(
         invocation: unknown;
         params: Record<string, unknown>;
       };
-      const scope = yield* Schema.decodeUnknownEffect(StoredInvocation)(payload.invocation);
+      const scope = yield* decodeStoredInvocation(payload.invocation);
       const client = scope.client;
       if (
         client.sessionId !== record.envelope.identity.clientId ||
@@ -82,17 +91,13 @@ export function makeCurrentAuthority(
       }>`SELECT scopes FROM auth_sessions WHERE session_id=${client.sessionId}
       AND subject='mcp-client' AND method='bearer-access-token' AND revoked_at IS NULL AND expires_at>${now}`)[0];
       if (!session) return false;
-      const scopes = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)))(
-        session.scopes,
-      );
+      const scopes = yield* decodeScopesJson(session.scopes);
       if (!scopes.includes("orchestration:operate")) return false;
       const policy = (yield* sql<{
         policy_json: string;
       }>`SELECT policy_json FROM jones_remote_admission_policy WHERE singleton=1`)[0];
       if (policy) {
-        const current = yield* Schema.decodeEffect(
-          Schema.fromJsonString(RemoteAdmissionReceiverPolicy),
-        )(policy.policy_json);
+        const current = yield* decodeReceiverPolicyJson(policy.policy_json);
         if (current.enabled && current.modelSelection === null) return false;
       }
       const ceiling = clientModeCeiling(client);
@@ -191,9 +196,7 @@ export const runtimeAdaptersLayer = Layer.unwrap(
       for (const grant of grants) {
         if (grant.state !== "active" || grant.expires_at <= now || !grant.destination_thread_id)
           continue;
-        const binding = yield* Schema.decodeEffect(
-          Schema.fromJsonString(Review.RemoteAdmissionAccessBinding),
-        )(grant.binding_json);
+        const binding = yield* decodeAccessBindingJson(grant.binding_json);
         if (
           binding.receiverEnvironmentId !== receiverEnvironmentId ||
           binding.sessionId !== grant.session_id ||

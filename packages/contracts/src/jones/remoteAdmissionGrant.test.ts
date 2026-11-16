@@ -34,9 +34,18 @@ const grant = {
   serverNow: "2026-11-16T14:00:00Z",
 };
 
+const decodeUnknownGrantDuration = Schema.decodeUnknownSync(RemoteAdmissionGrantDuration);
+const decodeUnknownGrantUpdate = Schema.decodeUnknownSync(RemoteAdmissionGrantUpdate);
+const decodeGrantRevoke = Schema.decodeSync(RemoteAdmissionGrantRevoke);
+const decodeUnknownGrantRestore = Schema.decodeUnknownSync(RemoteAdmissionGrantRestore);
+const decodeUnknownGrantRestoreResult = Schema.decodeUnknownSync(RemoteAdmissionGrantRestoreResult);
+const decodeUnknownGrant = Schema.decodeUnknownSync(RemoteAdmissionGrant);
+const decodeUnknownAccessBasis = Schema.decodeUnknownSync(RemoteAdmissionAccessBasis);
+const decodeUnknownBlockedReason = Schema.decodeUnknownSync(RemoteAdmissionBlockedReason);
+
 describe("remote admission access contracts", () => {
   it("supports exactly the accepted durations", () => {
-    const decode = Schema.decodeUnknownSync(RemoteAdmissionGrantDuration);
+    const decode = decodeUnknownGrantDuration;
     for (const duration of [3600, 86400, 172800, 259200, 604800])
       expect(decode(duration)).toBe(duration);
     for (const duration of [0, 60, 86399, 86400.5, "86400", 604801])
@@ -45,35 +54,35 @@ describe("remote admission access contracts", () => {
 
   it("requires exact generation on updates/revokes and a command key on restore", () => {
     const update = { grantId: "grant", expectedGeneration: 1, durationSeconds: 3600 };
-    expect(Schema.decodeUnknownSync(RemoteAdmissionGrantUpdate)(update)).toEqual(update);
+    expect(decodeUnknownGrantUpdate(update)).toEqual(update);
     expect(
-      Schema.decodeSync(RemoteAdmissionGrantRevoke)({
+      decodeGrantRevoke({
         grantId: "grant",
         expectedGeneration: 1,
       }),
     ).toEqual({ grantId: "grant", expectedGeneration: 1 });
     for (const expectedGeneration of [undefined, 0, -1, 1.5])
       expect(() =>
-        Schema.decodeUnknownSync(RemoteAdmissionGrantUpdate)({ ...update, expectedGeneration }),
+        decodeUnknownGrantUpdate({ ...update, expectedGeneration }),
       ).toThrow();
-    expect(() => Schema.decodeUnknownSync(RemoteAdmissionGrantRestore)(update)).toThrow();
+    expect(() => decodeUnknownGrantRestore(update)).toThrow();
     expect(
-      Schema.decodeUnknownSync(RemoteAdmissionGrantRestore)({ ...update, commandKey: "command" })
+      decodeUnknownGrantRestore({ ...update, commandKey: "command" })
         .commandKey,
     ).toBe("command");
   });
 
   it("can return the current revoked successor on an idempotent restore replay", () => {
     const result = { predecessorGrantId: "predecessor", commandKey: "command", successor: grant };
-    expect(Schema.decodeUnknownSync(RemoteAdmissionGrantRestoreResult)(result)).toEqual(result);
+    expect(decodeUnknownGrantRestoreResult(result)).toEqual(result);
     expect(() =>
-      Schema.decodeUnknownSync(RemoteAdmissionGrant)({
+      decodeUnknownGrant({
         ...grant,
         binding: { ...grant.binding, sessionId: undefined },
       }),
     ).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(RemoteAdmissionGrant)({
+      decodeUnknownGrant({
         ...grant,
         binding: { ...grant.binding, operation: "t3_thread_send_attachments" },
       }),
@@ -81,7 +90,7 @@ describe("remote admission access contracts", () => {
   });
 
   it("keeps lease generation and one-message permit revision distinct", () => {
-    const decode = Schema.decodeUnknownSync(RemoteAdmissionAccessBasis);
+    const decode = decodeUnknownAccessBasis;
     expect(decode({ kind: "lease", grantId: "grant", generation: 3 })).toEqual({
       kind: "lease",
       grantId: "grant",
@@ -99,6 +108,6 @@ describe("remote admission access contracts", () => {
       "operation_not_covered",
       "identity_unresolved",
     ])
-      expect(Schema.decodeUnknownSync(RemoteAdmissionBlockedReason)(reason)).toBe(reason);
+      expect(decodeUnknownBlockedReason(reason)).toBe(reason);
   });
 });

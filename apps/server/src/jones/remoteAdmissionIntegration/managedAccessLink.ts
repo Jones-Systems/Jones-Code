@@ -5,6 +5,10 @@ import * as Schema from "effect/Schema";
 import type * as SqlClient from "effect/sql/SqlClient";
 import type { Grant } from "../remoteAdmission/ReceiverAccess.ts";
 
+const decodeAccessBindingJson = Schema.decodeEffect(
+  Schema.fromJsonString(DTO.RemoteAdmissionAccessBinding),
+);
+
 interface ManagedScope {
   readonly managed_scope_id: string;
   readonly receiver_environment_id: string;
@@ -30,9 +34,7 @@ export const managedAccessGrantId = Effect.fn("AdmissionReview.managedAccessLink
     LEFT JOIN jones_remote_admission_grants g ON g.admission_id=a.id
     WHERE a.id=${record.id}`)[0];
   const binding = stored?.binding_json
-    ? yield* Schema.decodeEffect(Schema.fromJsonString(DTO.RemoteAdmissionAccessBinding))(
-        stored.binding_json,
-      )
+    ? yield* decodeAccessBindingJson(stored.binding_json)
     : null;
   const scopes = stored?.managed_scope_id
     ? yield* sql<ManagedScope>`SELECT * FROM jones_remote_managed_scopes
@@ -81,9 +83,7 @@ export const managedAccessGrantId = Effect.fn("AdmissionReview.managedAccessLink
   const visited = new Set<string>();
   while (current && !visited.has(current.grant_id)) {
     visited.add(current.grant_id);
-    const ceiling = yield* Schema.decodeEffect(
-      Schema.fromJsonString(DTO.RemoteAdmissionAccessBinding),
-    )(current.binding_json);
+    const ceiling = yield* decodeAccessBindingJson(current.binding_json);
     if (
       !matchesScope(ceiling) ||
       current.session_id !== ceiling.sessionId ||

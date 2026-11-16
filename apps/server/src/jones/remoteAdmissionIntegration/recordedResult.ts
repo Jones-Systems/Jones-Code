@@ -3,6 +3,10 @@ import * as Schema from "effect/Schema";
 import type * as SqlClient from "effect/sql/SqlClient";
 import { RemoteAdmissionLaunchResult } from "@t3tools/contracts/jones/remoteAdmissionReview";
 
+const decodeLaunchResultJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionLaunchResult),
+);
+
 /** Only an unclaimed denial/cancellation proves refusal. A closed handler with
  * no exact creation evidence remains unknown, regardless of its generic error. */
 export const terminalLaunchResult = (input: {
@@ -56,9 +60,7 @@ export const recordedLaunchResult = Effect.fn("AdmissionRecovery.recordedResult"
     WHERE a.id=${id}`)[0];
   if (!row || row.operation !== "t3_thread_launch") return null;
   if (row.launch_result !== null)
-    return yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionLaunchResult))(
-      row.launch_result,
-    );
+    return yield* decodeLaunchResultJson(row.launch_result);
   if (row.result_json === null && !["denied", "cancelled", "dispatched"].includes(row.status))
     return null;
   return terminalLaunchResult({

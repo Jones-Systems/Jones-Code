@@ -13,6 +13,7 @@ import type {
 } from "@t3tools/contracts";
 import { ProjectRow } from "../../orchestration-v2/ProjectStore.ts";
 import { makeCurrentAuthority } from "./RuntimeAdapters.ts";
+const decodeProjectRow = Schema.decodeEffect(Schema.toCodecJson(ProjectRow));
 const record: RemoteAdmissionRecord = {
   id: "request",
   idempotencyKey: "key",
@@ -62,7 +63,7 @@ const setup = Effect.gen(function* () {
     linkOrigin: { sessionId: "session", label: "Synthetic peer" },
   };
   let shell: OrchestrationV2ThreadShell | null = baseShell;
-  const project = yield* Schema.decodeEffect(Schema.toCodecJson(ProjectRow))({
+  const project = yield* decodeProjectRow({
     projectId: "project",
     title: "Synthetic project",
     workspaceRoot: "/synthetic/project",

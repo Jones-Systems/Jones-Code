@@ -17,6 +17,8 @@ import {
   type ReturnBinding,
 } from "./OriginStore.ts";
 
+const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
+
 export class OriginDelivery extends Context.Service<
   OriginDelivery,
   {
@@ -95,7 +97,7 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.mapError((error) =>
-      Schema.is(OrchestratorMcpFailure)(error) ? error : originConflict(),
+      isOrchestratorMcpFailure(error) ? error : originConflict(),
     ),
   );
   const pending = Effect.fn("OriginDelivery.pending")(
@@ -104,7 +106,7 @@ const make = Effect.gen(function* () {
       yield* changed;
     },
     Effect.mapError((error) =>
-      Schema.is(OrchestratorMcpFailure)(error) ? error : originConflict(),
+      isOrchestratorMcpFailure(error) ? error : originConflict(),
     ),
   );
   const release = Effect.fn("OriginDelivery.release")(
@@ -113,7 +115,7 @@ const make = Effect.gen(function* () {
       yield* changed;
     },
     Effect.mapError((error) =>
-      Schema.is(OrchestratorMcpFailure)(error) ? error : originConflict(),
+      isOrchestratorMcpFailure(error) ? error : originConflict(),
     ),
   );
   return OriginDelivery.of({ prepare, pending, release, isSending: (key) => sending.has(key) });

@@ -14,6 +14,14 @@ import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import { originalReturnBinding } from "./returnBinding.ts";
 import { canonicalJsonStrict } from "../remoteDelegation/shared.ts";
 
+const decodeReturnBindingJson = Schema.decodeSync(
+  Schema.fromJsonString(DTO.RemoteAdmissionReturnBinding),
+);
+const decodeLaunchResultJson = Schema.decodeSync(
+  Schema.fromJsonString(DTO.RemoteAdmissionLaunchResult),
+);
+const decodeScopesJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+
 const unavailable = () =>
   new OrchestratorMcpFailure({
     code: "capability_denied",
@@ -44,13 +52,9 @@ const noticeView = (row: NoticeRow): DTO.RemoteAdmissionRecoveredNotice => ({
   admissionId: row.admission_id,
   recoveredRevision: row.recovered_revision,
   rootAdmissionId: row.root_admission_id,
-  returnBinding: Schema.decodeSync(Schema.fromJsonString(DTO.RemoteAdmissionReturnBinding))(
-    row.return_binding_json,
-  ),
+  returnBinding: decodeReturnBindingJson(row.return_binding_json),
   evidenceDigest: row.evidence_digest,
-  result: Schema.decodeSync(Schema.fromJsonString(DTO.RemoteAdmissionLaunchResult))(
-    row.result_json,
-  ),
+  result: decodeLaunchResultJson(row.result_json),
   deliveryState: row.state === "closed_unknown" ? "undeliverable" : row.state,
 });
 export type ObservationSelector =
@@ -73,9 +77,7 @@ export const makePeerProtocol = (
       AND subject='mcp-client' AND method='bearer-access-token' AND revoked_at IS NULL AND expires_at>${yield* nowIso}`;
     if (
       !rows[0] ||
-      !(yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)))(
-        rows[0].scopes,
-      )).includes("orchestration:operate")
+      !(yield* decodeScopesJson(rows[0].scopes)).includes("orchestration:operate")
     )
       return yield* unavailable();
     return scope.client.sessionId;

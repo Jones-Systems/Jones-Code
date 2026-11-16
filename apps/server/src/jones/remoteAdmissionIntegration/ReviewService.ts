@@ -1,7 +1,7 @@
 import { decodeJson } from "./json.ts";
 import { managedAccessGrantId } from "./managedAccessLink.ts";
 import type { ReviewChanges } from "../remoteAdmission/ReviewChanges.ts";
-import * as Buffer from "node:buffer";
+import * as NodeBuffer from "node:buffer";
 import { findGrantSourceAdmission } from "./grantSource.ts";
 import { lookupRestoreCommand } from "./restoreReadback.ts";
 import { recordedLaunchResult } from "./recordedResult.ts";
@@ -22,6 +22,21 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as Intake from "./RemoteAdmissionIntake.ts";
 import { isRemoteAdmissionOwner } from "./owner.ts";
 import { makeRecoveryStore, ReceiverRecoveryEvidence, RecoveryConflict } from "./RecoveryStore.ts";
+
+const decodeReviewItem = Schema.decodeUnknownEffect(DTO.RemoteAdmissionReviewItem);
+const decodeReviewPage = Schema.decodeUnknownEffect(DTO.RemoteAdmissionReviewPage);
+const isIntakeError = Schema.is(Intake.RemoteAdmissionIntakeError);
+const isReviewError = Schema.is(DTO.RemoteAdmissionReviewError);
+const decodeScopesJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+const decodeAccessBindingJson = Schema.decodeEffect(
+  Schema.fromJsonString(DTO.RemoteAdmissionAccessBinding),
+);
+
+const ChangesCursorJson = Schema.fromJsonString(
+  Schema.Struct({ scope: Schema.String, revision: Schema.Int }),
+);
+const encodeChangesCursorJson = Schema.encodeSync(ChangesCursorJson);
+const decodeChangesCursorJson = Schema.decodeEffect(ChangesCursorJson);
 
 /** Current authority/liveness reads must use the caller's same SQL transaction. */
 export class ReceiverReviewReaders extends Context.Service<
@@ -108,7 +123,7 @@ export function makeReviewService(
       (yield* sql`SELECT 1 FROM jones_remote_admission_extensions WHERE admission_id=${id} AND binding_json IS NOT NULL`)
         .length > 0;
     // Never infer creation from a handler return value or missing projection.
-    return yield* Schema.decodeUnknownEffect(DTO.RemoteAdmissionReviewItem)({
+    return yield* decodeReviewItem({
       record,
       extension: {
         managedAccessGrantId: yield* managedAccessGrantId(
@@ -148,7 +163,7 @@ export function makeReviewService(
         Effect.gen(function* () {
           if (typeof error === "object" && error !== null && "code" in error)
             return yield* Effect.fail(error as DTO.RemoteAdmissionReviewError);
-          const cause = Schema.is(Intake.RemoteAdmissionIntakeError)(error) ? error.cause : error;
+          const cause = isIntakeError(error) ? error.cause : error;
           const tag =
             typeof cause === "object" && cause !== null && "_tag" in cause ? cause._tag : null;
           if (cause === "linked_environments_disabled")
@@ -238,9 +253,9 @@ export function makeReviewService(
         }),
       ),
       Effect.mapError((error) =>
-        Schema.is(DTO.RemoteAdmissionReviewError)(error)
+        isReviewError(error)
           ? error
-          : Schema.is(Intake.RemoteAdmissionIntakeError)(error)
+          : isIntakeError(error)
             ? error
             : new Intake.RemoteAdmissionIntakeError({ cause: error }),
       ),
@@ -293,7 +308,7 @@ export function makeReviewService(
             : null;
         const diagnostics = yield* admissions.review.blockedDiagnostics();
         const snapshot = yield* intake.snapshot();
-        return yield* Schema.decodeUnknownEffect(DTO.RemoteAdmissionReviewPage)({
+        return yield* decodeReviewPage({
           ...projected,
           view: query.view,
           ...(access
@@ -340,17 +355,14 @@ export function makeReviewService(
     p: EnvironmentSessionPrincipalShape,
   ) {
     yield* owner(p);
-    const cursorCodec = Schema.fromJsonString(
-      Schema.Struct({ scope: Schema.String, revision: Schema.Int }),
-    );
     const encode = (revision: number) =>
-      Buffer.Buffer.from(Schema.encodeSync(cursorCodec)({ scope: p.sessionId, revision })).toString(
+      NodeBuffer.Buffer.from(encodeChangesCursorJson({ scope: p.sessionId, revision })).toString(
         "base64url",
       );
     let after: number;
     if (input.after) {
-      const cursor = yield* Schema.decodeEffect(cursorCodec)(
-        Buffer.Buffer.from(input.after, "base64url").toString("utf8"),
+      const cursor = yield* decodeChangesCursorJson(
+        NodeBuffer.Buffer.from(input.after, "base64url").toString("utf8"),
       ).pipe(Effect.mapError(() => new ReviewHistoryUnavailable({})));
       if (cursor.scope !== p.sessionId) return yield* new ReviewHistoryUnavailable({});
       after = cursor.revision;
@@ -363,11 +375,7 @@ export function makeReviewService(
               scopes: string;
             }>`SELECT scopes FROM auth_sessions WHERE session_id=${p.sessionId} AND subject=${p.subject}
           AND method=${p.method} AND revoked_at IS NULL AND expires_at>${yield* nowIso}`;
-            const scopes = active[0]
-              ? yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)))(
-                  active[0].scopes,
-                )
-              : [];
+            const scopes = active[0] ? yield* decodeScopesJson(active[0].scopes) : [];
             if (!scopes.includes("access:write") || !scopes.includes("settings:write"))
               return yield* Effect.fail({
                 code: "review_unavailable",
@@ -527,9 +535,7 @@ export function makeReviewService(
                       ? yield* findGrantSourceAdmission(sql, admissions, old)
                       : null;
                     if (!old || !source) return yield* Effect.fail(unavailable);
-                    const binding = yield* Schema.decodeEffect(
-                      Schema.fromJsonString(DTO.RemoteAdmissionAccessBinding),
-                    )(old.binding_json);
+                    const binding = yield* decodeAccessBindingJson(old.binding_json);
                     const current = {
                       ...source,
                       envelope: {
@@ -569,9 +575,7 @@ export function makeReviewService(
                   expectedGeneration: input.expectedGeneration,
                   commandKey: input.commandKey,
                   durationSeconds: input.durationSeconds,
-                  binding: yield* Schema.decodeEffect(
-                    Schema.fromJsonString(DTO.RemoteAdmissionAccessBinding),
-                  )(old.binding_json),
+                  binding: yield* decodeAccessBindingJson(old.binding_json),
                   now,
                   authorize: Effect.fn("AdmissionReview.restore.authorize")(
                     function* (binding: DTO.RemoteAdmissionAccessBinding) {

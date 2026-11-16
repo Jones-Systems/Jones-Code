@@ -89,6 +89,7 @@ const StoredShell = Schema.Struct({
   deletedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   linkOrigin: OrchestrationV2LinkOrigin,
 });
+const decodeStoredShellJson = Schema.decodeEffect(Schema.fromJsonString(StoredShell));
 const projections = Layer.unwrap(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -97,9 +98,7 @@ const projections = Layer.unwrap(
         const row = (yield* sql<{ shell_json: string }>`
           SELECT shell_json FROM synthetic_receiver_shells WHERE id=${id}`)[0];
         if (!row) return null;
-        const stored = yield* Schema.decodeEffect(Schema.fromJsonString(StoredShell))(
-          row.shell_json,
-        );
+        const stored = yield* decodeStoredShellJson(row.shell_json);
         return { ...liveThreadShell(stored.id), ...stored };
       },
       (effect, id) =>

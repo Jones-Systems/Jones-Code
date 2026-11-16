@@ -31,10 +31,36 @@ import {
   RemoteAdmissionBlockedMark,
 } from "./remoteAdmissionReview.ts";
 
+const persistedRecordJson = Schema.fromJsonString(RemoteAdmissionRecord);
+const decodeBlockedAuditReason = Schema.decodeSync(RemoteAdmissionBlockedAuditReason);
+const decodeUnknownBlockedMark = Schema.decodeUnknownSync(RemoteAdmissionBlockedMark);
+const decodePersistedRecordJson = Schema.decodeSync(persistedRecordJson);
+const encodePersistedRecordJson = Schema.encodeSync(persistedRecordJson);
+const decodeUnknownStatus = Schema.decodeUnknownSync(RemoteAdmissionStatus);
+const decodeUnknownEvaluation = Schema.decodeUnknownSync(RemoteAdmissionEvaluation);
+const decodeUnknownReviewDecision = Schema.decodeUnknownSync(RemoteAdmissionReviewDecision);
+const decodeUnknownDecision = Schema.decodeUnknownSync(RemoteAdmissionDecision);
+const decodeUnknownReviewDecisionResult = Schema.decodeUnknownSync(RemoteAdmissionReviewDecisionResult);
+const decodeRecord = Schema.decodeSync(RemoteAdmissionRecord);
+const decodeUnknownReviewCapabilities = Schema.decodeUnknownSync(RemoteAdmissionReviewCapabilities);
+const decodeReviewCounts = Schema.decodeSync(RemoteAdmissionReviewCounts);
+const decodeUnknownReviewQuery = Schema.decodeUnknownSync(RemoteAdmissionReviewQuery);
+const decodeReviewHttpQuery = Schema.decodeSync(RemoteAdmissionReviewHttpQuery);
+const decodeGrantHttpQuery = Schema.decodeSync(RemoteAdmissionGrantHttpQuery);
+const decodeChangesHttpQuery = Schema.decodeSync(RemoteAdmissionChangesHttpQuery);
+const decodeUnknownReviewConflict = Schema.decodeUnknownSync(RemoteAdmissionReviewConflict);
+const decodeUnknownReviewUnavailable = Schema.decodeUnknownSync(RemoteAdmissionReviewUnavailable);
+const decodeUnknownReviewUnauthorized = Schema.decodeUnknownSync(RemoteAdmissionReviewUnauthorized);
+const decodeReviewError = Schema.decodeSync(RemoteAdmissionReviewError);
+const decodeUnknownEnvironmentHttpConflictError = Schema.decodeUnknownSync(
+  EnvironmentHttpConflictError,
+);
+const decodeUnknownReviewError = Schema.decodeUnknownSync(RemoteAdmissionReviewError);
+
 it("keeps malicious audit facts separate from access-blocked admission marks", () => {
-  expect(Schema.decodeSync(RemoteAdmissionBlockedAuditReason)("malicious")).toBe("malicious");
+  expect(decodeBlockedAuditReason("malicious")).toBe("malicious");
   expect(() =>
-    Schema.decodeUnknownSync(RemoteAdmissionBlockedMark)({
+    decodeUnknownBlockedMark({
       admissionId: "request",
       managedScopeId: "scope",
       reason: "malicious",
@@ -113,10 +139,9 @@ describe("remote admission review compatibility", () => {
   });
   it("keeps the complete persisted V1 bytes and managed hold literals decodable", () => {
     const persisted = JSON.stringify(record);
-    const schema = Schema.fromJsonString(RemoteAdmissionRecord);
-    const decoded = Schema.decodeSync(schema)(persisted);
+    const decoded = decodePersistedRecordJson(persisted);
     expect(decoded).toEqual(record);
-    expect(Schema.encodeSync(schema)(decoded)).toBe(persisted);
+    expect(encodePersistedRecordJson(decoded)).toBe(persisted);
     for (const status of [
       "evaluating",
       "passed",
@@ -127,11 +152,11 @@ describe("remote admission review compatibility", () => {
       "dispatching",
       "dispatched",
     ])
-      expect(Schema.decodeUnknownSync(RemoteAdmissionStatus)(status)).toBe(status);
+      expect(decodeUnknownStatus(status)).toBe(status);
     for (const status of ["blocked", "done", "unknown", "failed"])
-      expect(() => Schema.decodeUnknownSync(RemoteAdmissionStatus)(status)).toThrow();
+      expect(() => decodeUnknownStatus(status)).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(RemoteAdmissionEvaluation)({
+      decodeUnknownEvaluation({
         verdict: "hold",
         category: "access_revoked",
         reason: "revoked",
@@ -142,17 +167,17 @@ describe("remote admission review compatibility", () => {
   it("retains an old client's once decision and strips additive grant intent for V1", () => {
     const once = { id: "admission", bindingDigest: digest, decision: "approve" };
     const extended = { ...once, grant: { durationSeconds: 86400 } };
-    expect(Schema.decodeUnknownSync(RemoteAdmissionReviewDecision)(once)).toEqual(once);
-    expect(Schema.decodeUnknownSync(RemoteAdmissionDecision)(extended)).toEqual(once);
-    expect(Schema.decodeUnknownSync(RemoteAdmissionReviewDecision)(extended)).toEqual(extended);
-    const committed = Schema.decodeUnknownSync(RemoteAdmissionReviewDecisionResult)({
+    expect(decodeUnknownReviewDecision(once)).toEqual(once);
+    expect(decodeUnknownDecision(extended)).toEqual(once);
+    expect(decodeUnknownReviewDecision(extended)).toEqual(extended);
+    const committed = decodeUnknownReviewDecisionResult({
       committed: true,
       record,
       grant: null,
     });
-    expect(Schema.decodeSync(RemoteAdmissionRecord)(committed.record)).toEqual(record);
+    expect(decodeRecord(committed.record)).toEqual(record);
     expect(() =>
-      Schema.decodeUnknownSync(RemoteAdmissionReviewDecisionResult)({
+      decodeUnknownReviewDecisionResult({
         ...committed,
         committed: false,
       }),
@@ -163,7 +188,7 @@ describe("remote admission review compatibility", () => {
     const features = Object.fromEntries(
       Object.keys(RemoteAdmissionReviewFeatures.fields).map((key) => [key, false]),
     );
-    const decode = Schema.decodeUnknownSync(RemoteAdmissionReviewCapabilities);
+    const decode = decodeUnknownReviewCapabilities;
     for (const key of Object.keys(features)) {
       const value = {
         version: REMOTE_ADMISSION_REVIEW_VERSION,
@@ -185,16 +210,16 @@ describe("remote admission review compatibility", () => {
   });
 
   it("uses typed disjoint held counts and bounded opaque per-view paging", () => {
-    expect(Schema.decodeSync(RemoteAdmissionReviewCounts)(counts)).toEqual(counts);
+    expect(decodeReviewCounts(counts)).toEqual(counts);
     for (const delta of [
       { heldAdmissions: 451 },
       { blockedHeldAdmissions: -1 },
       { activeThreads: 1.5 },
     ])
       expect(() =>
-        Schema.decodeSync(RemoteAdmissionReviewCounts)({ ...counts, ...delta }),
+        decodeReviewCounts({ ...counts, ...delta }),
       ).toThrow();
-    const decode = Schema.decodeUnknownSync(RemoteAdmissionReviewQuery);
+    const decode = decodeUnknownReviewQuery;
     for (const view of ["current", "blocked", "done", "unresolved", "inflight", "access"])
       expect(decode({ view, cursor: "opaque-token", limit: 100 })).toEqual({
         view,
@@ -208,17 +233,17 @@ describe("remote admission review compatibility", () => {
 
   it("decodes numeric HTTP query strings without changing local numeric DTOs", () => {
     expect(
-      Schema.decodeSync(RemoteAdmissionReviewHttpQuery)({ view: "current", limit: "50" }),
+      decodeReviewHttpQuery({ view: "current", limit: "50" }),
     ).toEqual({ view: "current", limit: 50 });
-    expect(Schema.decodeSync(RemoteAdmissionGrantHttpQuery)({ limit: "100" })).toEqual({
+    expect(decodeGrantHttpQuery({ limit: "100" })).toEqual({
       limit: 100,
     });
-    expect(Schema.decodeSync(RemoteAdmissionChangesHttpQuery)({ timeoutMs: "50000" })).toEqual({
+    expect(decodeChangesHttpQuery({ timeoutMs: "50000" })).toEqual({
       timeoutMs: 50000,
     });
     for (const limit of ["0", "101", "1.5", "NaN"])
       expect(() =>
-        Schema.decodeSync(RemoteAdmissionReviewHttpQuery)({ view: "current", limit }),
+        decodeReviewHttpQuery({ view: "current", limit }),
       ).toThrow();
   });
 
@@ -242,32 +267,32 @@ describe("remote admission review compatibility", () => {
       message: "Request changed",
       current,
     };
-    expect(Schema.decodeUnknownSync(RemoteAdmissionReviewConflict)(conflict)).toEqual(conflict);
+    expect(decodeUnknownReviewConflict(conflict)).toEqual(conflict);
     expect(() =>
-      Schema.decodeUnknownSync(RemoteAdmissionReviewConflict)({ ...conflict, current: undefined }),
+      decodeUnknownReviewConflict({ ...conflict, current: undefined }),
     ).toThrow();
     const unavailable = { code: "history_unavailable", message: "Refresh required" };
-    expect(Schema.decodeUnknownSync(RemoteAdmissionReviewUnavailable)(unavailable)).toEqual(
+    expect(decodeUnknownReviewUnavailable(unavailable)).toEqual(
       unavailable,
     );
     const unauthorized = {
       code: "review_unavailable",
       message: "Request review is unavailable for this session",
     };
-    expect(Schema.decodeUnknownSync(RemoteAdmissionReviewUnauthorized)(unauthorized)).toEqual(
+    expect(decodeUnknownReviewUnauthorized(unauthorized)).toEqual(
       unauthorized,
     );
     expect(
-      Schema.decodeSync(RemoteAdmissionReviewError)({
+      decodeReviewError({
         code: "owner_required",
         message: "Owner required",
       }).code,
     ).toBe("owner_required");
     const legacyError = { _tag: "EnvironmentHttpConflictError", message: "Legacy conflict" };
-    const oldDecode = Schema.decodeUnknownSync(EnvironmentHttpConflictError);
+    const oldDecode = decodeUnknownEnvironmentHttpConflictError;
     expect(oldDecode(legacyError).message).toBe(legacyError.message);
     expect(oldDecode({ ...legacyError, current }).message).toBe(legacyError.message);
     expect(() => oldDecode(conflict)).toThrow();
-    expect(() => Schema.decodeUnknownSync(RemoteAdmissionReviewError)(legacyError)).toThrow();
+    expect(() => decodeUnknownReviewError(legacyError)).toThrow();
   });
 });

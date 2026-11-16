@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synchronous receiver identity hashes and opaque IDs preserve retained command/fence bytes.
-import * as Crypto from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -14,6 +14,29 @@ import {
   type LaunchEvidenceInput,
 } from "./LaunchRecovery.ts";
 import { canonicalJsonStrict } from "../remoteDelegation/shared.ts";
+
+// Import the runtime schema separately so DTO namespace stays type-only.
+import {
+  RemoteAdmissionGrantIntent as DTOGrantIntent,
+  RemoteAdmissionRecoveredResult as RecoveredSchema,
+  RemoteAdmissionLaunchResult,
+  RemoteAdmissionRecoveryEvidence,
+  RemoteAdmissionAccessBinding,
+} from "@t3tools/contracts/jones/remoteAdmissionReview";
+const decodeGrantIntentJson = Schema.decodeSync(Schema.fromJsonString(DTOGrantIntent));
+const decodeRecoveredResult = Schema.decodeEffect(RecoveredSchema);
+const decodeLaunchResultJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionLaunchResult),
+);
+const decodeRecoveryEvidenceJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionRecoveryEvidence),
+);
+const decodeReceiverPolicyJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionReceiverPolicy),
+);
+const decodeAccessBindingJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionAccessBinding),
+);
 
 export class RecoveryUnavailable extends Schema.TaggedError<RecoveryUnavailable>()(
   "RecoveryUnavailable",
@@ -69,17 +92,9 @@ export const attemptView = (
   createdAt: row.created_at,
   expiresAt: row.expires_at,
   grantIntent: row.grant_intent_json
-    ? Schema.decodeSync(Schema.fromJsonString(DTOGrantIntent))(row.grant_intent_json)
+    ? decodeGrantIntentJson(row.grant_intent_json)
     : null,
 });
-// Import the runtime schema separately so DTO namespace stays type-only.
-import {
-  RemoteAdmissionGrantIntent as DTOGrantIntent,
-  RemoteAdmissionRecoveredResult as RecoveredSchema,
-  RemoteAdmissionLaunchResult,
-  RemoteAdmissionRecoveryEvidence,
-  RemoteAdmissionAccessBinding,
-} from "@t3tools/contracts/jones/remoteAdmissionReview";
 export const makeRecoveryStore = (
   sql: SqlClient.SqlClient,
   admissions: Pick<RemoteAdmission.RemoteAdmission["Service"], "access" | "get">,
@@ -103,15 +118,11 @@ export const makeRecoveryStore = (
       revision: number;
     }>`SELECT result_json,evidence_json,revision FROM jones_remote_admission_recovered_results WHERE admission_id=${id} ORDER BY revision DESC LIMIT 1`;
     return rows[0]
-      ? yield* Schema.decodeEffect(RecoveredSchema)({
+      ? yield* decodeRecoveredResult({
           admissionId: id,
           revision: rows[0].revision,
-          result: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionLaunchResult))(
-            rows[0].result_json,
-          ),
-          evidence: yield* Schema.decodeEffect(
-            Schema.fromJsonString(RemoteAdmissionRecoveryEvidence),
-          )(rows[0].evidence_json),
+          result: yield* decodeLaunchResultJson(rows[0].result_json),
+          evidence: yield* decodeRecoveryEvidenceJson(rows[0].evidence_json),
         })
       : null;
   });
@@ -140,15 +151,11 @@ export const makeRecoveryStore = (
           revision: number;
         }>`SELECT result_json,evidence_json,revision FROM jones_remote_admission_recovered_results WHERE admission_id=${record.id} AND evidence_digest=${digest}`;
         if (existing[0])
-          return yield* Schema.decodeEffect(RecoveredSchema)({
+          return yield* decodeRecoveredResult({
             admissionId: record.id,
             revision: existing[0].revision,
-            result: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionLaunchResult))(
-              existing[0].result_json,
-            ),
-            evidence: yield* Schema.decodeEffect(
-              Schema.fromJsonString(RemoteAdmissionRecoveryEvidence),
-            )(existing[0].evidence_json),
+            result: yield* decodeLaunchResultJson(existing[0].result_json),
+            evidence: yield* decodeRecoveryEvidenceJson(existing[0].evidence_json),
           });
         const result: DTO.RemoteAdmissionRecoveredResult = {
           admissionId: record.id,
@@ -234,11 +241,9 @@ export const makeRecoveryStore = (
           policy_json: string;
         }>`SELECT policy_json FROM jones_remote_admission_policy WHERE singleton=1`)[0];
         if (!currentPolicy) return yield* new RecoveryUnavailable({});
-        const receiverPolicy = yield* Schema.decodeEffect(
-          Schema.fromJsonString(RemoteAdmissionReceiverPolicy),
-        )(currentPolicy.policy_json);
-        const attemptId = Crypto.randomUUID(),
-          childId = Crypto.randomUUID();
+        const receiverPolicy = yield* decodeReceiverPolicyJson(currentPolicy.policy_json);
+        const attemptId = NodeCrypto.randomUUID(),
+          childId = NodeCrypto.randomUUID();
         const envelope = {
           ...record.envelope,
           receiverPolicy,
@@ -270,16 +275,14 @@ export const makeRecoveryStore = (
           if (!binding) return yield* new RecoveryConflict({ reason: "grant_ineligible" });
           yield* admissions.access.createGrantInTransaction({
             admissionId: childId,
-            binding: yield* Schema.decodeEffect(
-              Schema.fromJsonString(RemoteAdmissionAccessBinding),
-            )(binding),
+            binding: yield* decodeAccessBindingJson(binding),
             durationSeconds: input.grant.durationSeconds,
             now,
           });
         }
         yield* sql`INSERT INTO jones_remote_admission_attempts(attempt_id,root_admission_id,predecessor_admission_id,child_admission_id,session_id,command_key,fingerprint,locator,state,
         root_observation_key,grant_intent_json,proof_digest,created_at,expires_at)
-        VALUES(${attemptId},${lineage?.root_admission_id ?? record.id},${record.id},${childId},${record.envelope.identity.clientId},${input.commandKey},${fp},${Crypto.randomUUID()},'prepared',${root.rootObservationKey},
+        VALUES(${attemptId},${lineage?.root_admission_id ?? record.id},${record.id},${childId},${record.envelope.identity.clientId},${input.commandKey},${fp},${NodeCrypto.randomUUID()},'prepared',${root.rootObservationKey},
         ${input.grant ? canonicalJsonStrict(input.grant) : null},${proof.evidence.evidenceDigest},${now},${DateTime.formatIso(DateTime.add(DateTime.makeUnsafe(now), { hours: 24 }))})`;
         yield* admissions.access.bumpInTransaction(
           "attempt",

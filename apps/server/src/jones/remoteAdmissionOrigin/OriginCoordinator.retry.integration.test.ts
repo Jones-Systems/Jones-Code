@@ -206,6 +206,7 @@ const regression = (advanced: "claimed" | "completed", replaceOnReply = false) =
             default:
               return yield* Effect.die(`Unexpected tool: ${input.tool}`);
           }
+          // oxlint-disable-next-line t3code/no-inline-schema-compile -- The generic caller supplies input.success per invocation; validate the unknown fixture response against that exact schema.
           return yield* Schema.decodeUnknownEffect(input.success)(response).pipe(
             Effect.mapError(
               () =>
@@ -314,12 +315,10 @@ const regression = (advanced: "claimed" | "completed", replaceOnReply = false) =
     expect((yield* sql`SELECT * FROM synthetic_wake_receipts`).length).toBe(1);
   }).pipe(Effect.provide(memory));
 
-for (const state of ["claimed", "completed"] as const) {
-  it.effect(
-    `reconciles a lost accepted registration after ${state} and origin restart without discovery`,
-    () => regression(state),
-  );
-}
+it.effect.each(["claimed", "completed"] as const)(
+  "reconciles a lost accepted registration after %s and origin restart without discovery",
+  (state) => regression(state),
+);
 it.effect(
   "replacement during retained retry registration fences local confirmation, wake and ack",
   () => regression("completed", true),

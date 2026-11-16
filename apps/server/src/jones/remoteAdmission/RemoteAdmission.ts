@@ -148,8 +148,9 @@ const digest = (value: unknown) =>
   NodeCrypto.createHash("sha256").update(canonicalJson(value)).digest("hex");
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const identity = Schema.NonEmptyString.check(Schema.isMaxLength(256));
+const decodeIdentity = Schema.decodeEffect(identity);
 const validateIdentity = (value: string) =>
-  Schema.decodeEffect(identity)(value).pipe(
+  decodeIdentity(value).pipe(
     Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })),
   );
 
@@ -198,11 +199,16 @@ const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(
   },
   Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })),
 );
+const decodeRemoteAdmissionEvaluation = Schema.decodeUnknownEffect(RemoteAdmissionEvaluation);
 const decodeRemoteAdmissionRequest = Schema.decodeEffect(RemoteAdmissionRequest);
 const decodeRemoteAdmissionReceiverPolicy = Schema.decodeEffect(RemoteAdmissionReceiverPolicy);
+const decodeAccessBindingJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionAccessBinding),
+);
+const decodeAccessBinding = Schema.decodeEffect(RemoteAdmissionAccessBinding);
 const decodeStoredAccessBinding = Effect.fn("RemoteAdmission.decodeStoredAccessBinding")(
   (json: string) =>
-    Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(json).pipe(
+    decodeAccessBindingJson(json).pipe(
       Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })),
     ),
 );
@@ -268,7 +274,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
         Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })),
       );
       const trustedBinding = input.accessBinding
-        ? yield* Schema.decodeEffect(RemoteAdmissionAccessBinding)(input.accessBinding).pipe(
+        ? yield* decodeAccessBinding(input.accessBinding).pipe(
             Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })),
           )
         : undefined;
@@ -429,7 +435,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
               selection === null ? Effect.succeed(null) : evaluate(inserted.record.envelope),
             ).pipe(
               Effect.timeout(timeoutMs),
-              Effect.flatMap(Schema.decodeUnknownEffect(RemoteAdmissionEvaluation)),
+              Effect.flatMap(decodeRemoteAdmissionEvaluation),
               Effect.map((result) => ({
                 status: result.verdict === "pass" ? "passed" : "held",
                 reason: result.reason,

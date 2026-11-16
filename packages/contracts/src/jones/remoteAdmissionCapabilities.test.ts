@@ -47,19 +47,22 @@ const negotiated = {
   remoteAdmissionCapabilitiesRegisterVersion: REMOTE_ADMISSION_CAPABILITIES_REGISTER_VERSION,
 };
 
+const decodeUnknownCapabilities = Schema.decodeUnknownSync(OrchestratorMcpCapabilitiesResult);
+const decodeOldFeatures = Schema.decodeSync(oldFeatures);
+
 describe("remote admission additive MCP negotiation", () => {
   it("decodes old servers without inventing support", () => {
-    const value = Schema.decodeUnknownSync(OrchestratorMcpCapabilitiesResult)(legacy);
+    const value = decodeUnknownCapabilities(legacy);
     expect(value).toEqual(legacy);
     for (const key of Object.keys(negotiated)) expect(value.features).not.toHaveProperty(key);
   });
 
   it("preserves each new independent key and lets old clients strip them", () => {
-    const decode = Schema.decodeUnknownSync(OrchestratorMcpCapabilitiesResult);
+    const decode = decodeUnknownCapabilities;
     for (const [key, version] of Object.entries(negotiated)) {
       const value = { ...legacy, features: { ...legacy.features, [key]: version } };
       expect(decode(value)).toEqual(value);
-      expect(Schema.decodeSync(oldFeatures)(value.features)).toEqual(legacy.features);
+      expect(decodeOldFeatures(value.features)).toEqual(legacy.features);
       expect(() => decode({ ...legacy, features: { ...legacy.features, [key]: true } })).toThrow();
     }
     const value = { ...legacy, features: { ...legacy.features, ...negotiated } };

@@ -37,13 +37,29 @@ export function ReviewPage({
   const [selected, setSelected] = useState<string | null>(
     matchesReceiver ? initial.get("request") : null,
   );
-  const [accessId, setAccessId] = useState<string | null>(
-    matchesReceiver ? initial.get("access") : null,
-  );
+  const [accessSelection, setAccessSelection] = useState({
+    id: matchesReceiver ? initial.get("access") : null,
+    revision: state.accessSelectionRevision,
+  });
+  const accessId =
+    state.selectedAccess &&
+    accessSelection.revision !== state.accessSelectionRevision &&
+    accessSelection.id === state.selectedAccessFromId
+      ? state.selectedAccess.id
+      : accessSelection.id;
+  // A restore/readback can replace the selected predecessor with its successor.
+  // Reconcile this component's selection before commit, without a second effect render.
+  if (accessSelection.revision !== state.accessSelectionRevision) {
+    setAccessSelection({ id: accessId, revision: state.accessSelectionRevision });
+  }
+  const setAccessId = (id: string | null) => {
+    setAccessSelection({ id, revision: state.accessSelectionRevision });
+  };
   const [reviewBlocked, setReviewBlocked] = useState(false);
   const requested = matchesReceiver ? initial.get("request") : null;
   const digest = initial.get("binding");
   const requestedAccess = matchesReceiver ? initial.get("access") : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile the mounted exact request route with the subscribed owner controller; lookup preserves off-page binding and uncertainty checks.
   useEffect(() => {
     if (requested) void controller.lookup(requested, digest ?? undefined).catch(() => undefined);
   }, [controller, requested, digest]);
@@ -51,15 +67,10 @@ export function ReviewPage({
     setAccessId(id);
     void controller.lookupAccess(id).catch(() => undefined);
   };
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile the mounted exact access route with the subscribed controller, including retained restore-command readback.
   useEffect(() => {
     if (requestedAccess) void controller.lookupAccess(requestedAccess).catch(() => undefined);
   }, [controller, requestedAccess]);
-  useEffect(() => {
-    if (state.selectedAccess) {
-      const id = state.selectedAccess.id;
-      setAccessId((previous) => (previous === state.selectedAccessFromId ? id : previous));
-    }
-  }, [state.selectedAccess, state.selectedAccessFromId]);
   const frozen = useFrozenRows(page?.records ?? [], (item) => bindingKey(item.record));
   const frozenAccess = useFrozenRows(page?.access ?? [], (entry) => entry.id);
   const frozenDiagnostics = useFrozenRows(page?.diagnostics ?? [], (entry) => entry.id);
@@ -506,7 +517,7 @@ function CompactRequest({
         <a
           href={requestHref(environmentId, item.record.id, item.record.bindingDigest)}
           aria-label="Open exact request"
-          className="p-2 text-[10px]"
+          className="p-2 text-3xs"
         >
           ↗
         </a>

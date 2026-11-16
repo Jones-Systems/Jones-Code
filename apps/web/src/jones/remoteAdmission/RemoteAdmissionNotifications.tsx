@@ -26,6 +26,19 @@ import {
   dismissedResults,
   receiverAttention,
 } from "./attentionPersistence";
+// The explicit external revision invalidates compiler-cached persistence reads even
+// when the receiver's controller arrays have not changed (for example, dismissal).
+function receiverAttentionItems(
+  receiver: EnvironmentId,
+  incoming: readonly Item[],
+  results: readonly Item[],
+  _attentionRevision: number,
+) {
+  return {
+    hasIncoming: incoming.some((item) => !dismissedIncoming.has(attentionKey(receiver, item))),
+    results: results.filter((item) => !dismissedResults.has(attentionKey(receiver, item))),
+  };
+}
 export function RemoteAdmissionNotifications() {
   const { environments } = useEnvironments();
   return environments.map((environment) => (
@@ -49,11 +62,15 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
   const attention = useSyncExternalStore(subscribeAttention, attentionRevision);
   const inApp = useClientSettings((settings) => settings.inAppNotificationsEnabled);
   const incoming = state.capabilities?.canDecide && !state.loadFailed ? state.incoming : [];
-  const results = (state.capabilities?.canDecide && !state.loadFailed ? state.results : []).filter(
-    (item) => !dismissedResults.has(attentionKey(receiver, item)),
+  const { hasIncoming, results } = receiverAttentionItems(
+    receiver,
+    incoming,
+    state.capabilities?.canDecide && !state.loadFailed ? state.results : [],
+    attention,
   );
   const incomingId = useRef<string | null>(null);
   const resultId = useRef<string | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Keep the receiver result-feed lease and online/visibility listeners bound to this mounted notification owner; release listeners and stop its feed on unmount.
   useEffect(() => {
     state.controller.setAttentionPersistence(receiverAttention(receiver));
     const reconnect = () => {
@@ -68,12 +85,9 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
       state.controller.stopResults();
     };
   }, [state.controller, receiver]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile persistent attention with owned imperative incoming/result toasts; React renders their subscribed content while the toast manager owns their lifetime.
   useEffect(() => {
-    if (
-      inApp &&
-      incoming.some((item) => !dismissedIncoming.has(attentionKey(receiver, item))) &&
-      !incomingId.current
-    ) {
+    if (inApp && hasIncoming && !incomingId.current) {
       incomingId.current = toastManager.add({
         timeout: 0,
         data: {
@@ -132,7 +146,8 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
       incomingId.current = null;
       resultId.current = null;
     }
-  }, [inApp, incoming, results, state.controller, receiver, label, attention]);
+  }, [inApp, hasIncoming, results, state.controller, receiver, label]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Close this notification owner's imperative incoming/result toast handles on unmount.
   useEffect(() => {
     const a = incomingId;
     const b = resultId;
@@ -167,7 +182,7 @@ function StackHeader({
       >
         {collapsed ? "▸" : "▾"} {title}
       </Button>
-      <a className="mr-3 p-2 text-[10px]" href={requestHref(receiver)} aria-label="Open Requests">
+      <a className="mr-3 p-2 text-3xs" href={requestHref(receiver)} aria-label="Open Requests">
         ↗
       </a>
       <Button size="sm" variant="ghost" aria-label="Dismiss stack" onClick={dismiss}>
@@ -202,6 +217,7 @@ function IncomingStack({
     state.currentHeldCount -
       state.incoming.filter((item) => dismissedIncoming.has(attentionKey(receiver, item))).length,
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Close the owned imperative incoming toast only after its frozen rows are empty and both pointer and focus have left; never remove an active target.
   useEffect(() => {
     if (!frozen.frozen && frozen.rows.length === 0) dismiss();
   }, [frozen.frozen, frozen.rows.length, dismiss]);
@@ -296,7 +312,7 @@ function IncomingRow({
           {view.operation}
         </span>
         <a
-          className="p-2 text-[10px]"
+          className="p-2 text-3xs"
           aria-label="Open exact request"
           href={requestHref(receiver, item.record.id, item.record.bindingDigest)}
         >
@@ -427,7 +443,7 @@ function CreatedRow({
         </button>
         <span className="ml-auto text-right text-xs">{status}</span>
         <a
-          className="p-2 text-[10px]"
+          className="p-2 text-3xs"
           aria-label={available ? "Open exact thread" : "Open exact request"}
           href={
             available
@@ -475,6 +491,7 @@ function LegacyNotifications({ receiver, label }: { receiver: EnvironmentId; lab
   const enabled = useClientSettings((settings) => settings.inAppNotificationsEnabled);
   const toast = useRef<string | null>(null);
   const records = actionableAdmissions(state);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile the legacy owner snapshot and notification preference with its imperative toast handle without changing admission decisions or dismissal keys.
   useEffect(() => {
     const unseen = records.some(
       (record) => !dismissedIncoming.has(JSON.stringify([receiver, admissionBindingKey(record)])),
@@ -499,6 +516,7 @@ function LegacyNotifications({ receiver, label }: { receiver: EnvironmentId; lab
       toast.current = null;
     }
   }, [enabled, state.loadFailed, records, receiver, label]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Close the legacy notification owner's imperative toast handle on unmount.
   useEffect(() => {
     const owned = toast;
     return () => {
@@ -513,7 +531,7 @@ function LegacyStack({ receiver }: { receiver: EnvironmentId }) {
   const frozen = useFrozenRows(rows.slice(0, 3), admissionBindingKey);
   return (
     <div className="space-y-2" {...frozen.handlers}>
-      <a href={requestHref(receiver)} aria-label="Open Requests" className="text-[10px]">
+      <a href={requestHref(receiver)} aria-label="Open Requests" className="text-3xs">
         ↗
       </a>
       {frozen.rows.map((record) => (

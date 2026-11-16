@@ -38,9 +38,24 @@ const identity = {
   recoveredRevision: 1,
 };
 
+const decodeUnknownPeerStatusInput = Schema.decodeUnknownSync(RemoteAdmissionPeerStatusInput);
+const decodeUnknownPeerStatus = Schema.decodeUnknownSync(RemoteAdmissionPeerStatus);
+const decodeUnknownCapabilitiesRegisterInput = Schema.decodeUnknownSync(
+  RemoteAdmissionCapabilitiesRegisterInput,
+);
+const decodeUnknownRecoveredResult = Schema.decodeUnknownSync(RemoteAdmissionRecoveredResult);
+const decodeUnknownRecoveryStatus = Schema.decodeUnknownSync(RemoteAdmissionRecoveryStatus);
+const decodeUnknownRecoveryStatusInput = Schema.decodeUnknownSync(RemoteAdmissionRecoveryStatusInput);
+const decodeUnknownObservationInput = Schema.decodeUnknownSync(RemoteAdmissionObservationInput);
+const decodeUnknownRetryInput = Schema.decodeUnknownSync(RemoteAdmissionRetryInput);
+const decodeAttemptRegisterInput = Schema.decodeSync(RemoteAdmissionAttemptRegisterInput);
+const decodeNoticeRegisterInput = Schema.decodeSync(RemoteAdmissionNoticeRegisterInput);
+const decodeUnknownNoticeRegisterInput = Schema.decodeUnknownSync(RemoteAdmissionNoticeRegisterInput);
+const decodeUnknownNoticeAckInput = Schema.decodeUnknownSync(RemoteAdmissionNoticeAckInput);
+
 describe("remote admission recovery wire separation", () => {
   it("keeps pure peer status free of capability registration and owner counts", () => {
-    const decode = Schema.decodeUnknownSync(RemoteAdmissionPeerStatusInput);
+    const decode = decodeUnknownPeerStatusInput;
     expect(
       decode({ after: "session-revision", timeoutMs: 50000, supports: { retryObservation: true } }),
     ).toEqual({ after: "session-revision", timeoutMs: 50000 });
@@ -58,7 +73,7 @@ describe("remote admission recovery wire separation", () => {
       notices: [],
     };
     expect(
-      Schema.decodeUnknownSync(RemoteAdmissionPeerStatus)({
+      decodeUnknownPeerStatus({
         ...response,
         heldAdmissions: 450,
         ownerSequence: "secret",
@@ -67,7 +82,7 @@ describe("remote admission recovery wire separation", () => {
   });
 
   it("registers each feature independently with exact versions and a coordinator generation", () => {
-    const decode = Schema.decodeUnknownSync(RemoteAdmissionCapabilitiesRegisterInput);
+    const decode = decodeUnknownCapabilitiesRegisterInput;
     const features = {
       peerProjection: REMOTE_ADMISSION_PEER_STATUS_VERSION,
       peerLongPoll: REMOTE_ADMISSION_PEER_STATUS_VERSION,
@@ -107,9 +122,9 @@ describe("remote admission recovery wire separation", () => {
       },
       result,
     };
-    expect(Schema.decodeUnknownSync(RemoteAdmissionRecoveredResult)(recovered)).toEqual(recovered);
+    expect(decodeUnknownRecoveredResult(recovered)).toEqual(recovered);
     expect(() =>
-      Schema.decodeUnknownSync(RemoteAdmissionRecoveredResult)({ ...recovered, revision: 0 }),
+      decodeUnknownRecoveredResult({ ...recovered, revision: 0 }),
     ).toThrow();
     const status = {
       receiverEnvironmentId: "receiver",
@@ -119,9 +134,9 @@ describe("remote admission recovery wire separation", () => {
       confirmedThreadId: "confirmed-thread",
       requestsRoute: "/requests",
     };
-    expect(Schema.decodeUnknownSync(RemoteAdmissionRecoveryStatus)(status)).toEqual(status);
+    expect(decodeUnknownRecoveryStatus(status)).toEqual(status);
     expect(
-      Schema.decodeUnknownSync(RemoteAdmissionRecoveryStatus)({
+      decodeUnknownRecoveryStatus({
         ...status,
         payload: "never disclose",
       }),
@@ -129,7 +144,7 @@ describe("remote admission recovery wire separation", () => {
   });
 
   it("keeps local locator and peer request inspection separate from owner mutation", () => {
-    const decode = Schema.decodeUnknownSync(RemoteAdmissionRecoveryStatusInput);
+    const decode = decodeUnknownRecoveryStatusInput;
     expect(decode({ locator: "opaque-locator" })).toEqual({ locator: "opaque-locator" });
     expect(decode({ clientRequestId: "original-key", originThreadId: "origin" })).toEqual({
       clientRequestId: "original-key",
@@ -138,13 +153,13 @@ describe("remote admission recovery wire separation", () => {
     expect(() => decode({ clientRequestId: "original-key" })).toThrow();
     expect(() => decode({ decision: "approve" })).toThrow();
     expect(
-      Schema.decodeUnknownSync(RemoteAdmissionObservationInput)({
+      decodeUnknownObservationInput({
         clientRequestId: "original-key",
         decision: "approve",
       }),
     ).toEqual({ clientRequestId: "original-key" });
     expect(() =>
-      Schema.decodeUnknownSync(RemoteAdmissionRetryInput)({
+      decodeUnknownRetryInput({
         id: "admission",
         bindingDigest: "a".repeat(64),
       }),
@@ -153,22 +168,22 @@ describe("remote admission recovery wire separation", () => {
 
   it("uses distinct immutable attempt and recovered notice registration identities", () => {
     const attempt = { attemptId: "attempt", observationKey: "new-observation" };
-    expect(Schema.decodeSync(RemoteAdmissionAttemptRegisterInput)(attempt)).toEqual(attempt);
+    expect(decodeAttemptRegisterInput(attempt)).toEqual(attempt);
     const notice = { ...identity, observationKey: "notice-observation" };
-    expect(Schema.decodeSync(RemoteAdmissionNoticeRegisterInput)(notice)).toEqual(notice);
-    expect(() => Schema.decodeUnknownSync(RemoteAdmissionNoticeRegisterInput)(attempt)).toThrow();
+    expect(decodeNoticeRegisterInput(notice)).toEqual(notice);
+    expect(() => decodeUnknownNoticeRegisterInput(attempt)).toThrow();
     for (const disposition of ["delivered", "suppressed"]) {
       const ack = { ...identity, disposition };
-      expect(Schema.decodeUnknownSync(RemoteAdmissionNoticeAckInput)(ack)).toEqual(ack);
+      expect(decodeUnknownNoticeAckInput(ack)).toEqual(ack);
     }
     expect(() =>
-      Schema.decodeUnknownSync(RemoteAdmissionNoticeAckInput)({
+      decodeUnknownNoticeAckInput({
         ...identity,
         disposition: "dismissed",
       }),
     ).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(RemoteAdmissionNoticeAckInput)({
+      decodeUnknownNoticeAckInput({
         admissionId: "admission",
         disposition: "delivered",
       }),

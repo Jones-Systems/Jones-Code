@@ -1,6 +1,10 @@
 import { useEffect } from "react";
 import { createCanonicalReviewClient } from "@t3tools/client-runtime/jones/remoteAdmission/adapter";
-import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
+import {
+  readEnvironment,
+  useEnvironments,
+  type EnvironmentPresentation,
+} from "../../state/environments";
 import { installReviewClient, reviewControllerFor } from "./reviewRuntime";
 import { createReviewTransport } from "./reviewTransport";
 
@@ -15,6 +19,7 @@ function ReceiverClient({ environment }: { environment: EnvironmentPresentation 
     serverConfig,
   } = environment;
   const version = serverConfig?.environment.serverVersion;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Bind capability discovery to the mounted authenticated connection/configuration and fence its pending reply when that binding changes or unmounts.
   useEffect(() => {
     if (phase !== "connected" && phase !== "available") return;
     let current = true;
@@ -22,7 +27,15 @@ function ReceiverClient({ environment }: { environment: EnvironmentPresentation 
     void client
       .capabilities()
       .then((capabilities) => {
-        if (!current || !capabilities.features.has("reviewV2")) return;
+        const latest = readEnvironment(environmentId);
+        if (
+          !current ||
+          !latest ||
+          latest.entry !== entry ||
+          latest.serverConfig?.environment.serverVersion !== version ||
+          !capabilities.features.has("reviewV2")
+        )
+          return;
         if (!reviewControllerFor(environmentId)) installReviewClient(environmentId, client);
         const controller = reviewControllerFor(environmentId);
         void controller?.load();

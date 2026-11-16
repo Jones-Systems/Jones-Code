@@ -59,6 +59,7 @@ function fixture() {
             new OrchestratorMcpFailure({ code: "orchestration_error", message: "Offline" }),
           );
         replyHook();
+        // oxlint-disable-next-line t3code/no-inline-schema-compile -- The generic caller supplies input.success per invocation; retain that exact response decoder.
         return Schema.decodeEffect(input.success)(
           input.tool === "t3_remote_admission_peer_status"
             ? reported

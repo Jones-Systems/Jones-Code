@@ -42,17 +42,19 @@ const CursorSchema = Schema.Struct({
 });
 
 const CursorJson = Schema.fromJsonString(CursorSchema);
+const decodeCursorJson = Schema.decodeEffect(CursorJson);
+const encodeCursorJson = Schema.encodeEffect(CursorJson);
 const decodeCursor = Effect.fn("ReviewProjection.decodeCursor")(function* (cursor: string) {
   const json = yield* Effect.try({
     try: () => NodeBuffer.Buffer.from(cursor, "base64url").toString("utf8"),
     catch: () => new ReviewHistoryUnavailable({}),
   });
-  return yield* Schema.decodeEffect(CursorJson)(json).pipe(
+  return yield* decodeCursorJson(json).pipe(
     Effect.mapError(() => new ReviewHistoryUnavailable({})),
   );
 });
 const encodeCursor = Effect.fn("ReviewProjection.encodeCursor")((cursor: Cursor) =>
-  Schema.encodeEffect(CursorJson)(cursor).pipe(
+  encodeCursorJson(cursor).pipe(
     Effect.map((json) => NodeBuffer.Buffer.from(json).toString("base64url")),
     Effect.mapError(() => new ReviewHistoryUnavailable({})),
   ),

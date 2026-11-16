@@ -6,6 +6,9 @@ import * as DateTime from "effect/DateTime";
 import { managedAccessGrantId } from "./managedAccessLink.ts";
 import { awaitDispatched } from "./receiver.testkit.ts";
 import { p1Owner, p1Scope, p1Services, receiverP1Layer } from "./receiverP1.testkit.ts";
+const decodeAccessBindingJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionAccessBinding),
+);
 const target = () => Effect.succeed({ destination: "destination" });
 const input = {
   clientRequestId: "grant-source",
@@ -56,9 +59,7 @@ it.effect.each(["revoked", "expired"] as const)(
       // A later unrelated grant with the same destination must never win scope selection.
       const original = (yield* admissions.access.getGrant(grant.grant_id))!;
       const otherBinding = {
-        ...(yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(
-          original.binding_json,
-        )),
+        ...(yield* decodeAccessBindingJson(original.binding_json)),
         originThreadId: "unrelated-origin",
       };
       yield* sql.withTransaction(
@@ -179,9 +180,7 @@ it.effect("the latest restored head wins even when its root predates another sco
     yield* sql.withTransaction(
       admissions.access.createGrantInTransaction({
         admissionId: "newer-independent-root",
-        binding: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(
-          original.binding_json,
-        ),
+        binding: yield* decodeAccessBindingJson(original.binding_json),
         durationSeconds: 86400,
         now: DateTime.formatIso(yield* DateTime.now),
       }),

@@ -18,6 +18,7 @@ export function useReview(receiver: EnvironmentId) {
   const controller = reviewControllerFor(receiver);
   if (!controller) throw new Error("Review client is not installed");
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Mount the selected owner controller read alongside its useSyncExternalStore subscription; all rendered snapshots remain controller-owned.
   useEffect(() => {
     void controller.load();
   }, [controller]);

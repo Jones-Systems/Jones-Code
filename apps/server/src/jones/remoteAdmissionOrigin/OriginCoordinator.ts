@@ -34,6 +34,7 @@ const encodeGrant = Schema.encodeSync(Schema.fromJsonString(Review.RemoteAdmissi
 const decodeLaunchResult = Schema.decodeEffect(
   Schema.fromJsonString(Review.RemoteAdmissionLaunchResult),
 );
+const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 
 export const FALLBACK_MS = 600_000;
 export const STALE_MS = 900_000;
@@ -551,7 +552,7 @@ const make = Effect.gen(function* () {
               );
               // Auth failures pause this exact generation. No refresh/re-pair/admin path.
               if (
-                Schema.is(OrchestratorMcpFailure)(error) &&
+                isOrchestratorMcpFailure(error) &&
                 ["capability_denied"].includes(error.code)
               )
                 return;

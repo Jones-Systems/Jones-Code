@@ -68,8 +68,11 @@ const expiry = (now: string, duration: number) =>
   DateTime.formatIso(DateTime.add(DateTime.makeUnsafe(now), { milliseconds: duration * 1000 }));
 const validDuration = (duration: number) =>
   (ACCESS_DURATIONS as readonly number[]).includes(duration);
+const decodeAccessBindingJson = Schema.decodeEffect(
+  Schema.fromJsonString(RemoteAdmissionAccessBinding),
+);
 const decodeStoredBinding = Effect.fn("ReceiverAccess.decodeStoredBinding")((json: string) =>
-  Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(json).pipe(
+  decodeAccessBindingJson(json).pipe(
     Effect.mapError((cause) => new SqlError({ reason: new UnknownError({ cause }) })),
   ),
 );

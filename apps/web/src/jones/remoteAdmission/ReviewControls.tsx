@@ -4,6 +4,7 @@ import type {
   Item,
   Mutation,
 } from "@t3tools/client-runtime/jones/remoteAdmission/controller";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../../components/ui/tooltip";
 import { Button } from "../../components/ui/button";
 import {
   Select,
@@ -119,13 +120,20 @@ export function ReviewControls({
           </Button>
         </div>
       </div>
-      <p
-        role="status"
-        title={disabled ?? undefined}
-        className="h-8 line-clamp-2 text-xs text-muted-foreground"
-      >
-        {disabled}
-      </p>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <p
+              role="status"
+              tabIndex={disabled ? 0 : -1}
+              className="h-8 line-clamp-2 text-xs text-muted-foreground"
+            />
+          }
+        >
+          {disabled}
+        </TooltipTrigger>
+        {disabled ? <TooltipPopup>{disabled}</TooltipPopup> : null}
+      </Tooltip>
     </div>
   );
 }

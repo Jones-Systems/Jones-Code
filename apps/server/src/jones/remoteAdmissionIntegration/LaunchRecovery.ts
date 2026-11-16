@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synchronous receiver identity hashes and opaque IDs preserve retained command/fence bytes.
-import * as Crypto from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import type {
   RemoteAdmissionLaunchResult,
   RemoteAdmissionRecoveryEvidence,
@@ -10,7 +10,7 @@ export const recoveryIdentities = (sessionId: string, clientRequestId: string) =
   return recoveryNamespaceIdentities(`client:${sessionId}`, clientRequestId);
 };
 export const recoveryNamespaceIdentities = (namespace: string, clientRequestId: string) => {
-  const hashed = `mcp:launch:${Crypto.createHash("sha256")
+  const hashed = `mcp:launch:${NodeCrypto.createHash("sha256")
     .update(JSON.stringify([namespace, clientRequestId]))
     .digest("hex")}`;
   const legacy = `mcp:launch:${encodeURIComponent(namespace)}:${encodeURIComponent(clientRequestId)}`;
@@ -48,7 +48,7 @@ export interface LaunchEvidenceInput {
   readonly legacy: RecoveryPath;
 }
 export const evidenceDigest = (value: unknown) =>
-  Crypto.createHash("sha256").update(canonicalJsonStrict(value)).digest("hex");
+  NodeCrypto.createHash("sha256").update(canonicalJsonStrict(value)).digest("hex");
 
 /** Pure classification: call only after prior immutable result and local-live-claim precedence. */
 export function classifyLaunchEvidence(input: LaunchEvidenceInput): {
