@@ -1,3 +1,4 @@
+import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CodexSettings, type ProviderReplayTranscript } from "@t3tools/contracts";
@@ -136,6 +137,7 @@ export function layer(input: {
       config: DEFAULT_CODEX_SETTINGS,
     }).pipe(Effect.map((adapter) => [adapter])),
   ).pipe(
+    Layer.provide(ControlAdmission.layer),
     Layer.provide(
       Layer.mergeAll(
         layerReplayClientFactory,
